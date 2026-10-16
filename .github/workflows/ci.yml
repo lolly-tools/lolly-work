@@ -39,8 +39,8 @@ jobs:
     # the service only has to provide an empty lollywork_test database.
     services:
       postgres:
-        # The official-image mirror avoids anonymous Docker Hub quotas on shared runners.
-        image: public.ecr.aws/docker/library/postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
+        # Keep the exact tested image; the ECR mirror currently rejects pulls with a data limit.
+        image: docker.io/library/postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: lollywork_test

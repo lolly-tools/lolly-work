@@ -667,6 +667,9 @@ A shell that should not mirror a DAM-sized source asks for `index.json?paged=1`.
 holding more than `catalogServing.pagedProviderThreshold` assets (default 2000) then leave
 `assets` and appear under `pagedProviders: [{ id, label, count }]`, where `count` is what
 this caller would see after lifecycle. Without `paged=1` the feed is unchanged.
+Cold sources also appear in `pendingProviders` as visible source IDs, without an invented
+count. The shell preserves held references from these sources while their first listing
+is pending. Removed or inaccessible sources do not receive this deferral.
 
 `GET /api/v1/catalog/assets` browses the same feed one page at a time:
 
@@ -674,16 +677,46 @@ this caller would see after lifecycle. Without `paged=1` the feed is unchanged.
 |---|---|
 | `q` | case-insensitive text over id, name, description, tags, org field values and extracted text |
 | `source` | a provider id, `pack` or `instance` |
+| `scope` | `shared` excludes pack entries; omit for the whole served index |
+| `types` | a bounded comma-separated list of catalog types |
+| `taxonomyKind`, `taxonomyId` | an exact native/legacy node identity; supply both |
 | `section`, `collection` | a provider section or collection name |
 | `tag`, `type` | an exact tag or catalog type |
 | `limit` | page size, default 100, at most 500 |
 | `cursor` | the `nextCursor` of the previous page |
 
-The answer is `{ assets, total, nextCursor, facets, version }`. Entries have the same shape as
+The answer includes `{ assets, total, nextCursor, facets, version, sources, complete, countsScope, capabilities }`. Entries have the same shape as
 the feed's, sorted by name and then id; `total` counts every match; `facets` counts the
-matches by `sources`, `sections`, `collections`, `tags` (top 50) and `types`; `version` is
-the feed version the page came from. The cursor names the last entry returned, so a walk
-neither skips nor repeats an entry when the catalog changes part way through.
+matches by `sources`, `sections`, `collections`, `tags` (top 50), `types` and taxonomy nodes (top 200). `facets.truncated` identifies capped value lists. `version` is
+the feed version the page came from. The cursor names the last entry returned, so an insertion before that position does not shift later page offsets. Renames, removals and changing membership can alter a walk; refresh to read the current listing. This is not a historical snapshot.
+
+The shell requests `?paged=1` during catalog startup and shows shared records in bounded
+pages. Cold providers sync in the background and appear as pending; cached/outage and
+truncated/skipped states remain explicit. `total` and facets count caller-visible indexed
+matches. `complete` is false when a relevant source is pending, stale, unavailable or
+incomplete. These counts never establish exhaustive upstream recall.
+
+Signed clients opt into the same bounded inventory with `?paged=1` on the envelope and
+hash-addressed index requests. Paging has a distinct catalog scope and preserves signature,
+hash and watermark checks. A retained paged source summary is refused after source access
+is withdrawn. Requests without the paging flag retain their existing full-inventory contract.
+
+Live `/api/v1/catalog/search` supports text, source and shared scope, with an explicit
+incomplete candidate result. Exact type/tag/taxonomy filters and cursors are refused on
+that route; use indexed browse for those combinations. The shell also refuses unsupported
+local search-operator syntax in shared browse instead of dropping the operators. A live
+candidate may need source synchronisation before original access; no transformation or AI
+processing is started by browse/search.
+
+The inspector enforces source exposure and retains selected-file identity. Lifecycle
+diagnostics and materialized pins remain inspectable by callers with source access;
+inspection does not grant permission to read unavailable bytes.
+Organisation field edits reuse the existing `catalog.edit` overlay route. Upstream facts
+stay separate. Cross-page selections retain their observed reference; known version changes
+are reported and byte requests carry the observed cache token. This is change detection,
+not durable historical pin retrieval or proof against an overwrite with unchanged metadata.
+Large provider pages are not mirrored on device; deferred catalog pages
+are not a signal to delete saved file references during cache pruning.
 
 Federated bytes (`/catalog/ext/...`) are kept in a bounded memory cache keyed by the entry's
 version (`catalogServing.extCache`, 64 MiB in total and 2 MiB per item by default), after

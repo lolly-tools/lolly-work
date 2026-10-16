@@ -237,7 +237,7 @@ export interface Federation {
   sync(rec: ProviderRecord): Promise<ProviderFragment>;
   /** Enabled providers' fragments for feed composition - cached, refreshed in
    *  the background past TTL, last-good on failure. Never throws. */
-  fragments(): Promise<FragmentView[]>;
+  fragments(options?: { background?: boolean }): Promise<FragmentView[]>;
   /** Append caller-visible federated entries onto a served index. */
   composeIndex(index: AssetIndex, callerGroups: string[]): Promise<AssetIndex>;
   /** Combined fragment hash - folded into catalogVersion so provider refreshes
@@ -301,7 +301,7 @@ export function createFederation(deps: FederationDeps): Federation {
     inflight.set(rec.id, p);
   };
 
-  const fragments: Federation['fragments'] = async () => {
+  const fragments: Federation['fragments'] = async (options = {}) => {
     // Slots keep the store's provider order (the feed's asset order) while the
     // cold ones load concurrently, a few at a time.
     const slots: Array<FragmentView | null> = [];
@@ -317,26 +317,37 @@ export function createFederation(deps: FederationDeps): Federation {
       }
       const slot = slots.push(null) - 1;
       cold.push(async () => {
-        // Only a cold fragment cache needs its persisted index. Recheck the
-        // provider after the second read in case it was disabled or removed.
-        const rec = await deps.store.getProvider(listed.id);
-        if (!rec?.enabled) return;
-        // Cold cache: last-good from the store if it has one (serve stale,
-        // refresh behind), else a blocking first sync (best-effort).
-        if (rec.state.fragment) {
-          cache.set(rec.id, { fragment: rec.state.fragment, fetchedAt: 0, stale: true });
-          refreshInBackground(rec);
-          slots[slot] = { rec, fragment: rec.state.fragment, stale: true };
-          return;
-        }
-        try {
-          slots[slot] = { rec, fragment: await sync(rec), stale: false };
-        } catch {
-          // Never built successfully and upstream is down: nothing to serve yet.
-        }
+        const warm = cache.get(listed.id);
+        if (warm) { slots[slot] = { rec: listed, fragment: warm.fragment, stale: warm.stale }; return; }
+        const running = inflight.get(listed.id);
+        if (running) { await running; const ready = cache.get(listed.id); if (ready) slots[slot] = { rec: listed, fragment: ready.fragment, stale: ready.stale }; return; }
+        const loading = (async () => {
+          // Only a cold fragment cache needs its persisted index. Recheck the
+          // provider after the second read in case it was disabled or removed.
+          const rec = await deps.store.getProvider(listed.id);
+          if (!rec?.enabled) return;
+          // Cold cache: last-good from the store if it has one (serve stale,
+          // refresh behind), else a blocking first sync (best-effort).
+          if (rec.state.fragment) {
+            cache.set(rec.id, { fragment: rec.state.fragment, fetchedAt: 0, stale: true });
+            setImmediate(() => refreshInBackground(rec));
+            slots[slot] = { rec, fragment: rec.state.fragment, stale: true };
+            return;
+          }
+          try {
+            slots[slot] = { rec, fragment: await sync(rec), stale: false };
+          } catch {
+            // Never built successfully and upstream is down: nothing to serve yet.
+          }
+        })();
+        inflight.set(listed.id, loading);
+        try { await loading; } finally { if (inflight.get(listed.id) === loading) inflight.delete(listed.id); }
       });
     }
-    if (cold.length) await boundedAll(cold, COLD_SYNC_CONCURRENCY);
+    if (cold.length) {
+      if (options.background) setImmediate(() => { void boundedAll(cold, COLD_SYNC_CONCURRENCY).catch(() => {}); });
+      else await boundedAll(cold, COLD_SYNC_CONCURRENCY);
+    }
     return slots.filter((s): s is FragmentView => s !== null);
   };
 

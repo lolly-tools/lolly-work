@@ -5260,7 +5260,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (addressedIndex) {
       const kind: CatalogSnapshotKind = addressedIndex[1] === 'assets/index' ? 'assets' : addressedIndex[1] === 'tools/index.slim' ? 'slim' : 'tools';
       const bytes = await catalogDelivery.snapshot(config.instance.pack, { overlays: await store.listOverlays(), groups: user?.groups ?? [],
-        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) }, kind, addressedIndex[2]!);
+        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}), pagedAssets: ctx.url.searchParams.get('paged') === '1' }, kind, addressedIndex[2]!);
       if (!bytes) return sendError(res, 404, 'NOT_FOUND', 'no accessible catalog snapshot');
       sendBytes(req, res, bytes, { contentType: 'application/json; charset=utf-8', headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
     }
@@ -5467,6 +5467,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (rel === CATALOG_INDEX_REL || (catalogSigning && rel === CATALOG_SIG_REL)) {
       const view = await catalogDelivery.current(config.instance.pack, {
         overlays: await store.listOverlays(), groups: user?.groups ?? [],
+        pagedAssets: ctx.url.searchParams.get('paged') === '1',
         ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}),
       });
       if (!view) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
@@ -5498,7 +5499,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // large providers out for the paged browse route to serve instead.
     if (rel === 'assets/index.json') {
       await providersReady;
-      const served = await servedIndex.forCaller({ groups: user?.groups ?? [], paged: ctx.url.searchParams.get('paged') === '1' });
+      const served = await servedIndex.forCaller({ groups: user?.groups ?? [], paged: ctx.url.searchParams.get('paged') === '1', background: ctx.url.searchParams.get('paged') === '1' });
       if (served.status === 'missing') return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
       sendBytes(req, res, served.bytes, { contentType: served.status === 'composed' ? 'application/json; charset=utf-8' : contentType(rel),
         headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
@@ -6007,15 +6008,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const query = parseBrowseQuery(ctx.url.searchParams);
     if ('error' in query) return sendError(res, 400, 'INVALID_INPUT', query.error);
     await providersReady;
-    const served = await servedIndex.forCaller({ groups: user?.groups ?? [] });
-    const etag = `"b${sha256Hex(`${served.version}\n${normalisedQuery(query)}`).slice(0, 32)}"`;
+    const served = await servedIndex.forCaller({ groups: user?.groups ?? [], background: true });
+    const represented = new Set(served.providers.map(provider => provider.id));
+    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)))
+      .map(source => !represented.has(source.id) && source.status === 'current' ? { ...source, status: 'pending', count: undefined } : source);
+    const sources = query.source ? sourceStatuses.filter(source => source.id === query.source) : sourceStatuses;
+    const complete = sources.every(source => source.status === 'current' && !source.truncated && !source.incomplete);
+    const etag = `"b${sha256Hex(`${served.version}\n${normalisedQuery(query)}\n${JSON.stringify(sources)}`).slice(0, 32)}"`;
     if (etagMatches(req, etag)) {
       res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
       res.end();
       return;
     }
     const metaById = query.q ? new Map((await store.listAssetMeta()).map((m) => [m.assetId, m])) : new Map();
-    sendJson(res, 200, browseAssets(served, query, metaById), { 'cache-control': 'private, no-cache', etag });
+    sendJson(res, 200, { ...browseAssets(served, query, metaById), sources, complete, countsScope: 'indexed',
+      capabilities: { modes: ['indexed', 'live'], indexedFilters: ['q', 'scope', 'source', 'type', 'types', 'tag', 'section', 'collection', 'taxonomyKind', 'taxonomyId'], liveFilters: ['q', 'source', 'scope'], liveComplete: false } }, { 'cache-control': 'private, no-cache', etag });
   });
 
   router.add('GET', '/api/v1/catalog/assets/*', async (req, res, ctx) => {
@@ -6048,7 +6055,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         versions: [...rows].sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
       }, { 'cache-control': 'private, no-store' });
     }
-    const entry = instAsset?.entry ?? (await loadAssetIndexById(config.instance.pack)).get(id);
+    await providersReady;
+    const canEdit = !!user && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.edit', ['*'], await store.listGrants());
+    // Inspect keeps lifecycle diagnostics and local pins readable to callers
+    // with source access, even when lifecycle removes the asset from browse.
+    const canInspect = !!user && (await callerSeesAsset(user, id)
+      || !!(canEdit && instAsset && instanceAssetVisible(instAsset, user.groups)));
+    if (!canInspect) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+    const entry = (await servedIndex.forCaller({ groups: user?.groups ?? [] })).index.assets?.find(asset => asset.id === id)
+      ?? instAsset?.entry ?? (id.startsWith(EXT_PREFIX) ? await federation.entry(id) : (await loadAssetIndexById(config.instance.pack)).get(id));
+    if (!entry) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
     const row = await store.getLifecycle(id);
     // For a federated id the effective state can be constrained by an upstream
     // window as well as the local row; surface both so the console can show
@@ -6057,15 +6073,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const [window, credential, meta, fieldDefs] = await Promise.all([
       federation.availabilityWindow(id), store.getCredential(id), store.getAssetMeta(id), store.listCatalogFields(),
     ]);
-    // An overlay counts as existence too (plans/31 section 4): once an org has
-    // filed an asset under its own taxonomy, this instance holds something to
-    // say about that id even when the record itself lives upstream.
-    if (!entry && !row && !window && !credential && !instAsset && !meta) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+    // A metadata overlay does not grant visibility to its source.
     const { state } = combinedState(row ?? undefined, window, Date.now());
     const fields = servedFields(fieldDefs, meta);
     sendJson(res, 200, {
-      id,
-      ...(entry ?? {}),
+      ...entry,
       // The org's own metadata, the same bag the feed carries, plus the
       // definitions so the console can label and validate a row without a
       // second call. Absent definitions mean an org that has not defined any.
@@ -6080,9 +6092,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // only where the PUT would actually be allowed rather than teaching
       // people that Save means 403. Descriptive fields are instance-owned
       // assets only, which the id already says.
-      canEdit: user
-        ? evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.edit', ['*'], await store.listGrants())
-        : false,
+      canEdit,
       ...(window ?? {}),
       ...(instAsset?.origin ? { origin: instAsset.origin } : {}),
       ...(credential?.status === 'embedded' ? { credential: 'embedded' } : {}),
@@ -8105,10 +8115,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('GET', '/api/v1/catalog/sources', async (req, res) => {
     const user = await requireAction(req, res, 'catalog.read'); if (!user) return;
     await providersReady;
-    const fragments = await federation.fragments();
+    const fragments = await federation.fragments({ background: true });
     // The memoised feed already holds what this caller is served, lifecycle
     // applied; the provider rows are read without their large fragments.
-    const visible = (await servedIndex.forCaller({ groups: user.groups })).index;
+    const visible = (await servedIndex.forCaller({ groups: user.groups, background: true })).index;
     const sources = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
     const canManage = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.provider.manage', ['*'], await store.listGrants());
     sendJson(res, 200, { sources, canManage, scope: user.id }, { 'cache-control': 'private, no-store' });
@@ -8131,6 +8141,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return;
     const q = (ctx.url.searchParams.get('q') ?? '').trim().toLowerCase();
     if (!q) return sendError(res, 400, 'INVALID_INPUT', 'q required');
+    if (q.length > 300) return sendError(res, 400, 'INVALID_INPUT', 'q is longer than 300 characters');
+    for (const key of ['tag', 'type', 'types', 'section', 'collection', 'taxonomyKind', 'taxonomyId', 'cursor']) {
+      if (ctx.url.searchParams.has(key)) return sendError(res, 400, 'UNSUPPORTED_FILTER', 'Live search supports only text and source. Use indexed browse for exact filters.');
+    }
+    const scope = ctx.url.searchParams.get('scope');
+    if (scope && scope !== 'shared') return sendError(res, 400, 'INVALID_INPUT', 'scope must be shared when supplied');
+    const source = ctx.url.searchParams.get('source')?.trim();
+    if (source && source.length > 300) return sendError(res, 400, 'INVALID_INPUT', 'source is longer than 300 characters');
     const limit = Math.min(Math.max(Number(ctx.url.searchParams.get('limit') ?? 50) || 50, 1), 200);
     await providersReady;
 
@@ -8156,7 +8174,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         .some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
     const results = new Map<string, unknown>();
     for (const e of composed.assets ?? []) {
-      if (matches(e)) results.set(e.id, e);
+      if ((scope !== 'shared' || e.provider || e.id.startsWith(INST_PREFIX)) && (!source || (e.provider ?? (e.id.startsWith(INST_PREFIX) ? 'instance' : 'pack')) === source) && matches(e)) results.set(e.id, e);
       if (results.size >= limit) break;
     }
 
@@ -8165,7 +8183,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // never fatal.
     const missed: string[] = [];
     const live = (await store.listProviders({ includeFragment: false })).filter((rec) =>
-      rec.enabled && callerSeesProvider(rec, user.groups));
+      rec.enabled && (!source || rec.id === source) && callerSeesProvider(rec, user.groups));
     // Live results lose hidden tags the same way the feed's entries do.
     const tagRules = await loadTagRules(store);
     await Promise.all(live.map(async (rec) => {
@@ -8189,7 +8207,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }));
     sendJson(res, 200, {
-      q, results: [...results.values()], ...(missed.length ? { providersUnavailable: missed } : {}),
+      q, results: [...results.values()], complete: false, countsScope: 'candidates', limit, capabilities: { liveFilters: ['q', 'source', 'scope'] }, ...(missed.length ? { providersUnavailable: missed } : {}),
     }, { 'cache-control': 'private, max-age=30' });
   });
 
