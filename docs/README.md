@@ -70,10 +70,12 @@ For the first external source, open **Providers** at `/admin#/providers`. WebDAV
 | [brandfolder](providers/brandfolder.md) · [optimizely-cmp](providers/optimizely-cmp.md) | Brandfolder read-only; Optimizely CMP in, and optionally exports back out |
 | [imagerelay](providers/imagerelay.md) · [canto](providers/canto.md) | The two halves of the Canto/Image Relay fork |
 | [acquia-dam](providers/acquia-dam.md) · [intelligencebank](providers/intelligencebank.md) | The governance-rich enterprise DAMs |
+| [cloudinary](providers/cloudinary.md) · [orange-logic](providers/orange-logic.md) | Shared media originals and explicitly labelled enterprise DAM renditions; both need tenant qualification |
 | [penpot](providers/penpot.md) | An open, self-hostable design-system source |
 | [gdrive](providers/gdrive.md) | Guided folder/group settings, web-client registration, browser consent and reviewed activation |
 | [dropbox](providers/dropbox.md) · [o365](providers/o365.md) | Registered CLI PKCE consent for Dropbox and Microsoft 365 |
 | live-verify runbooks | [webdav](providers/webdav-live-verify.md) · [canto](providers/canto-live-verify.md) · [imagerelay](providers/imagerelay-live-verify.md) · [intelligencebank](providers/intelligencebank-live-verify.md) · [acquia-dam](providers/acquia-dam-live-verify.md) |
+| Additional tenant passes | [cloudinary](providers/cloudinary-live-verify.md) · [orange-logic](providers/orange-logic-live-verify.md) |
 
 Connecting your first one end to end, with commands:
 [install section 9](install.md#9-connect-a-source).
