@@ -83,7 +83,7 @@ import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
-import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
@@ -287,6 +287,8 @@ export interface AppDeps {
    *  org-config collab bits then say no, so the shell offers no room that cannot
    *  connect. main.ts runs the gateway and leaves this unset. */
   liveCollab?: boolean;
+  /** Native clients exchange their HTTP session for one room-scoped socket ticket. */
+  collabSocketTicket?: (cookie: string, sessionId: string) => string | null;
   /** Byte storage for instance-owned catalog assets (plans/26 §2, plans/27 §5).
    *  main.ts builds the configured driver (pg default / s3); tests and the
    *  Vercel path fall back to an in-memory store. */
@@ -2291,9 +2293,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   router.add('GET', '/activate', async (req, res, ctx) => {
     const html = await (async () => {
+      const code = normalizeUserCode(ctx.url.searchParams.get('code') ?? '');
       const me = await resolveMember(store, req.headers.cookie, sessionVerify);
-      if (!me) return activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/');
-      const code = ctx.url.searchParams.get('code') ?? '';
+      if (!me) return activateSignedOutHtml(config.instance.name, loginPathFor(code ? `/activate?code=${encodeURIComponent(code)}` : '/activate') ?? '/');
       const pend = code ? await deviceAuth.describe(code) : null;
       return activateFormHtml(config.instance.name, {
         ...(code ? { code: normalizeUserCode(code) } : {}),
@@ -9287,6 +9289,23 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     return { session, project, access };
   };
+
+  router.add('POST', '/api/v1/collab/sessions/:id/socket-ticket', async (req, res, ctx) => {
+    const cookie = req.headers.cookie;
+    const user = await resolveMember(store, cookie, sessionVerify);
+    if (!user || !cookie) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    if (!deps.collabSocketTicket || deps.liveCollab === false) return sendError(res, 501, 'UNAVAILABLE', 'native collaboration is not available');
+    const gate = await collabSessionFor(res, user, ctx.params.id ?? null);
+    if (!gate) return;
+    const grants = await store.listGrants();
+    if (!mayJoinCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants)) {
+      return sendError(res, 403, 'FORBIDDEN', 'collaboration is not available');
+    }
+    const ticket = deps.collabSocketTicket(cookie, gate.session.id);
+    if (!ticket) return sendError(res, 429, 'BUSY', 'try again shortly');
+    res.setHeader('cache-control', 'private, no-store');
+    sendJson(res, 200, { ticket });
+  });
 
   registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, people, roomEvents: deps.roomEvents });
   registerVersionRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, rooms: deps.versionRooms,

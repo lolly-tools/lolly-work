@@ -127,6 +127,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
+import { createSocketTickets, SOCKET_TICKET_PROTOCOL } from './socket-tickets.ts';
 
 import { isCompatibleOpVersion, CANVAS_OP_VERSION } from '@lolly-tools/core/canvas-op-v1';
 import type { BoxRow, CanvasOp, GeometryField, OpOrigin, ParamValue, Scalar } from '@lolly-tools/core/canvas-op-v1';
@@ -285,6 +286,8 @@ export interface CollabGateway {
   /** Version restores through the live room (plan 76 M4), injected into the
    *  HTTP app as `AppDeps.versionRooms`. */
   versions: VersionRoomBridge;
+  /** Issue a short-lived credential for one native socket upgrade. */
+  issueSocketTicket(cookie: string, sessionId: string): string | null;
   /** Returns false when the path is not ours - the caller destroys the socket.
    *  True means the gateway has taken ownership (auth continues async). */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean;
@@ -774,6 +777,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   // The room owns its document; persistence owns the snapshot cadence, the
   // quiesce→revision write, and crash recovery (persistence.ts, plans/14 §6).
   const registry = new RoomRegistry(createRoomPersistence({ store }), undefined, store);
+  const socketTickets = createSocketTickets();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
   const sockets = new Set<WebSocket>();
   let closing = false;
@@ -1216,10 +1220,18 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   const admit = async (req: IncomingMessage, socket: Duplex, head: Buffer, sessionId: string): Promise<void> => {
-    // 0. a browser-stamped Origin must be ours (see `isAllowedOrigin`). First,
-    //    because it costs nothing and refuses a cross-site hijack before the
-    //    cookie is even read.
-    if (!isAllowedOrigin(req.headers.origin, config.instance, config.dev.enabled, req.headers.host)) {
+    // 0. Ambient cookies require our Origin. A native upgrade instead proves
+    //    possession of a one-use ticket issued over authenticated HTTP. Neither
+    //    path accepts a foreign origin with only an ambient browser cookie.
+    const protocols = req.headers['sec-websocket-protocol'];
+    if (protocols !== undefined) {
+      const cookie = socketTickets.consume(typeof protocols === 'string' ? protocols : undefined, sessionId);
+      if (!cookie) return refuse(socket, 401, 'UNAUTHORIZED');
+      // The short-lived ticket proves possession of a member's authenticated HTTP
+      // session. Ambient cookies never substitute for that proof on this path.
+      req.headers.cookie = cookie;
+      req.headers['sec-websocket-protocol'] = SOCKET_TICKET_PROTOCOL;
+    } else if (!isAllowedOrigin(req.headers.origin, config.instance, config.dev.enabled, req.headers.host)) {
       return refuse(socket, 403, 'FORBIDDEN_ORIGIN');
     }
 
@@ -1873,6 +1885,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   return {
     agents,
     versions,
+    issueSocketTicket: (cookie, sessionId) => socketTickets.issue(cookie, sessionId),
     handleUpgrade(req, socket, head) {
       // The WHOLE body is guarded, not just the async half. main.ts calls this
       // synchronously from `server.on('upgrade')`, so anything that throws here
@@ -1912,6 +1925,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     notifyComment: (sessionId, frame) => registry.peek(sessionId)?.notifyComment(frame) ?? 0,
     drain,
     close() {
+      socketTickets.clear();
       clearInterval(sweeper);
       // Sockets go, then every room quiesces. The registry is NOT cleared here,
       // because clearing it would make every `releaseIfEmpty` fail and silently

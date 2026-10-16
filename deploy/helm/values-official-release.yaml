@@ -1,0 +1,9 @@
+# Generated from deploy/marketplaces/release.json. Qualified cohort 1.1.1; merge with operator values.
+image:
+  repository: ghcr.io/lolly-tools/lolly-work-server
+  digest: sha256:5fa8b86328bf453635791fc104f4cf6179fc3d3c02a1516da4dea07bd6ae1e55
+renderWorker:
+  enabled: false
+  image:
+    repository: ghcr.io/lolly-tools/lolly-work-render-worker
+    digest: sha256:e15db945956db805a991e73e1c7f1d5ce59cdf0787bd93f2aee023d6fee25b6e

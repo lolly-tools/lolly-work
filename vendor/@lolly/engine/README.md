@@ -439,7 +439,7 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `rebrand-archetype.ts` | 472 | Which archetype a source slide should be poured into (plan 274 section 3.3). | yes | `tests/rebrand-archetype.test.ts` | – |
 | `rebrand-colors.ts` | 834 | Colour assignment by use, with feasibility (plan 274 section 3.3). | yes | `tests/rebrand-colors.test.ts` | – |
 | `rebrand-decisions.ts` | 364 | Carrying a person's decisions into the next revision of a deck, and applying one decision to a plan (plan 274 section 3.3, "persistence and carry-forward"). | yes | `tests/rebrand-decisions.test.ts` | – |
-| `rebrand-design-system.ts` | 1315 | One design system, resolved once for the whole renovation journey (plan 274 sections 3.3 and 3.5). | yes | `tests/rebrand-design-system.test.ts` | – |
+| `rebrand-design-system.ts` | 1317 | One design system, resolved once for the whole renovation journey (plan 274 sections 3.3 and 3.5). | yes | `tests/rebrand-design-system.test.ts` | – |
 | `rebrand-edit.ts` | 733 | Pure edits to a renovation plan (plan 274 section 4, "shopping"): the one set of operations the web view, the CLI and the MCP tool apply, so a group apply or a reorder means the same thing on every surface. | yes | `tests/rebrand-edit.test.ts` | – |
 | `rebrand-fonts.ts` | 162 | Which face a source deck's typefaces become (plan 274 section 3.3). | yes | `tests/rebrand-fonts.test.ts` | – |
 | `rebrand-layout-options.ts` | 198 | Bounded layout recommendations, checked against a real single-slide compile. | no | `tests/rebrand-layout-options.test.ts` | – |
@@ -464,7 +464,7 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `rondo-source.test.ts` | 100 | rondo-source.ts: song files, share links rondocode itself writes (made with pako, as upstream does), canonical bytes, and the ceilings on every untrusted path. | no | none | – |
 | `rondo-source.ts` | 206 | rondo-source.ts: a rondocode song as an asset's bytes. | yes | indirect | yes |
 | `rpm.ts` | 443 | RPM v4 package writer - the container half of a `.rpm`. | yes | `tests/rpm.test.ts` | – |
-| `runtime.ts` | 2820 |  | yes | indirect | – |
+| `runtime.ts` | 2838 |  | yes | indirect | – |
 | `scorm.ts` | 627 | SCORM packaging - the pure half (plans/180 section 6). | yes | `tests/scorm.test.ts` | – |
 | `seal.ts` | 756 | SEAL (hackerfactor.com) signature verifier - pure, DOM-free (globalThis.crypto only, like c2pa-verify.ts / x509.ts). | yes | `tests/seal.test.ts` | yes |
 | `semver-range.ts` | 112 | Minimal SemVer range satisfaction - enough to enforce a tool manifest's `engineVersion` against the running ENGINE_VERSION (loader.ts, P0-3). | yes | `tests/semver-range.test.ts` | – |

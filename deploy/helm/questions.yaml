@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MPL-2.0
+questions:
+  - variable: existingSecret
+    label: Existing installation Secret
+    description: Pre-create DATABASE_URL, LW_SESSION_SECRET, LW_LINK_SECRET and optional LW_IDP_CLIENT_SECRET, LW_CREDENTIAL_SECRET and LW_CATALOG_SIGNING_KEY. Keep keys stable across upgrades.
+    type: string
+    required: true
+    group: Installation
+  - variable: config.instance.baseUrl
+    label: Public HTTPS origin
+    description: Must match ingress and the OIDC client's registered callback origin.
+    type: string
+    required: true
+    default: https://work.example.com
+    group: Identity
+  - variable: config.idp.issuer
+    label: OIDC issuer
+    type: string
+    required: true
+    group: Identity
+  - variable: config.idp.clientId
+    label: OIDC client ID
+    type: string
+    required: true
+    group: Identity
+  - variable: ingress.enabled
+    label: Enable ingress
+    description: Configure hosts and TLS in YAML for your cluster. These questions do not provision a database, identity client, certificate or web shell.
+    type: boolean
+    default: false
+    group: Networking
