@@ -175,6 +175,7 @@ const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => col
   roomEvents: (id, frame) => collab.notifyComment(id, frame),
   // Version restores go through the live room, like an agent's edits (plan 76 M4).
   versionRooms: collab.versions,
+  collabSocketTicket: (cookie, id) => collab.issueSocketTicket(cookie, id),
   onRenderRunner: (runner) => { renderRunner = runner; },
   ...(backgroundPollMs !== undefined ? { backgroundPollMs } : {}),
 });
