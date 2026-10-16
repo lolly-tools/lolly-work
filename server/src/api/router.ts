@@ -30,14 +30,14 @@ const classOptions = new WeakMap<ServerResponse, CachePolicyOptions>();
 export const SERVICE_WORKER_CACHE_CONTROL = 'no-cache, s-maxage=0, no-transform';
 /** Dynamic file routes select their class after resolving the actual file. */
 export function setDeliveryClass(res: ServerResponse, delivery: DeliveryClass, options: CachePolicyOptions = {}): void { classes.set(res, delivery); classOptions.set(res, options); }
-/** The class and options a response was served under, for the route conformance test. */
-export function deliveryClassOf(res: ServerResponse): { delivery: DeliveryClass; options: CachePolicyOptions } {
-  return { delivery: classes.get(res) ?? 'person-private', options: classOptions.get(res) ?? {} };
-}
+/** The class the matched route (or its handler) chose; unmatched responses are person-private. */
+export function deliveryClassOf(res: ServerResponse): DeliveryClass { return classes.get(res) ?? 'person-private'; }
 /** Credentials of any kind keep a response out of a shared cache. */
 export function carriesCredential(req: IncomingMessage): boolean {
   return Object.keys(req.headers).some(name => ['cookie', 'authorization', 'x-lolly-client'].includes(name.toLowerCase()) || name.toLowerCase().startsWith('x-lw-'));
 }
+/** The options a handler passed with setDeliveryClass, for the route conformance test. */
+export function deliveryOptionsOf(res: ServerResponse): CachePolicyOptions { return classOptions.get(res) ?? {}; }
 
 /** Install before dispatch, so auth errors and early raw responses are covered too. */
 export function guardDelivery(req: IncomingMessage, res: ServerResponse): void {

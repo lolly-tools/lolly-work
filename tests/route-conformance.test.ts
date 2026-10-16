@@ -5,18 +5,23 @@
  * leave the person-private default. One sample per route, anonymous and signed
  * in, is then compared with cachePolicy for the class the response was served
  * under, and every public answer is asked again with each kind of credential.
+ * A second app, open to anonymous readers, hosts the connect pack. Every
+ * per-response class in the table has to be reached by some sample.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request, type IncomingHttpHeaders, type Server, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { cachePolicy, type CachePolicyOptions, type DeliveryClass } from '@lolly-tools/core/delivery-v1';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { appRouteDescriptions, buildApp } from '../server/src/api/app.ts';
-import { deliveryClassOf, SERVICE_WORKER_CACHE_CONTROL, type RouteDescription } from '../server/src/api/router.ts';
+import { deliveryClassOf, deliveryOptionsOf, SERVICE_WORKER_CACHE_CONTROL, type RouteDescription } from '../server/src/api/router.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
+import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
+import { ZipBuilder } from '../server/src/links/zip.ts';
 
 const CLASSES: DeliveryClass[] = ['public-immutable', 'public-revalidate', 'public-bounded', 'link', 'instance-private', 'person-private'];
 const PRIVATE = cachePolicy('person-private').cacheControl;
@@ -61,6 +66,9 @@ const RESPONSE_CLASSES: Record<string, DeliveryClass[]> = {
   'GET /connect/:file': ['public-immutable'],
   'HEAD /connect/:file': ['public-immutable'],
   'GET /l/:id': ['link'],
+  // The bare /tools is the shell's gallery page, which this route hands to the shell.
+  'GET /tools/*': ['public-revalidate'],
+  'HEAD /tools/*': ['public-revalidate'],
 };
 
 /** Routes that still take the person-private default instead of naming a
@@ -209,16 +217,31 @@ const CREDENTIALS: Array<Record<string, string>> = [
 ];
 
 interface Sample { status: number; headers: IncomingHttpHeaders; served: { delivery: DeliveryClass; options: CachePolicyOptions } }
-let pack: string, shell: string, server: Server, port: number, owner: string, revision: string, shareLink: string;
+type Expected = [key: string, path: string, headers: Record<string, string>, delivery: DeliveryClass, status: number];
+let pack: string, shell: string, seed: string, server: Server, port: number, openServer: Server, openPort: number;
+let owner: string, revision: string, shareLink: string, packChecksum: string;
 let routes: RouteDescription[] = [];
 let served: ServerResponse | undefined;
+/** Each route and the class a sample of it was served under, as 'GET /path public-immutable'. */
+const reached = new Set<string>();
 
-/** Requests run one at a time, so the last response the server saw is this one. */
-function sample(method: string, path: string, headers: Record<string, string> = {}): Promise<Sample> {
+function routeOf(key: string): RouteDescription {
+  const route = routes.find(candidate => `${candidate.method} ${candidate.path}` === key);
+  assert.ok(route, `${key} is not registered`);
+  return route;
+}
+
+/** Requests run one at a time, so the last response a server saw is this one. */
+function sample(route: RouteDescription, path: string, headers: Record<string, string> = {}, at = port): Promise<Sample> {
   return new Promise((resolve, reject) => {
-    const req = request({ hostname: '127.0.0.1', port, path, method, headers: { 'accept-encoding': 'identity', ...headers } }, res => {
+    const req = request({ hostname: '127.0.0.1', port: at, path, method: route.method, headers: { 'accept-encoding': 'identity', ...headers } }, res => {
       res.resume();
-      res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers, served: deliveryClassOf(served!) }));
+      res.on('end', () => {
+        // Refusals are always private, so only an answer below 400 shows a class in use.
+        const delivery = deliveryClassOf(served!);
+        if (res.statusCode! < 400) reached.add(`${route.method} ${route.path} ${delivery}`);
+        resolve({ status: res.statusCode!, headers: res.headers, served: { delivery, options: deliveryOptionsOf(served!) } });
+      });
     });
     req.on('error', reject); req.end();
   });
@@ -256,8 +279,13 @@ function conforms(where: string, route: RouteDescription, path: string, res: Sam
     assert.equal(control, PRIVATE, `${label}: expected ${PRIVATE}`);
     return;
   }
-  if (credentialed || !delivery.startsWith('public-')) {
-    assert.ok(!shared, `${label}: answered ${control} to a request its class or credentials keep private`);
+  // The anonymous rule asks only that a credentialed answer stays out of shared caches.
+  if (credentialed && delivery.startsWith('public-')) {
+    assert.match(control, /^private\b/, `${label}: answered ${control}, expected a private answer`);
+    return;
+  }
+  if (!delivery.startsWith('public-')) {
+    assert.ok(!shared, `${label}: answered ${control} to a request its class keeps private`);
     assert.ok(control === policy.cacheControl || /^private, no-store\b/.test(control), `${label}: answered ${control}, expected ${policy.cacheControl}`);
     return;
   }
@@ -268,6 +296,22 @@ function conforms(where: string, route: RouteDescription, path: string, res: Sam
     return;
   }
   assert.deepEqual({ control, cdn, surrogate }, { control: policy.cacheControl, cdn: policy.cdnCacheControl, surrogate: policy.surrogateControl }, `${label}: differs from cachePolicy`);
+}
+
+/** Each sample answers its status and class, an anonymous public answer is
+ *  shared, and the same request with any credential stays private. */
+async function expectSamples(samples: Expected[], at = port): Promise<void> {
+  for (const [key, path, headers, delivery, status] of samples) {
+    const route = routeOf(key), res = await sample(route, path, headers, at);
+    assert.equal(res.status, status, `${key} ${path}`);
+    assert.equal(res.served.delivery, delivery, `${key} ${path} served as ${res.served.delivery}`);
+    conforms('anonymous', route, path, res, false);
+    if (delivery.startsWith('public-') && path !== '/sw.js') assert.match(String(res.headers['cache-control']), /^public\b/, `${key} ${path} is not shared`);
+    for (const credential of [...CREDENTIALS, { cookie: owner }]) {
+      const again = await sample(route, path, { ...headers, ...credential }, at);
+      conforms(`with ${Object.keys(credential)[0]}`, route, path, again, true);
+    }
+  }
 }
 
 before(async () => {
@@ -282,7 +326,8 @@ before(async () => {
     { id: 'fixture/tokens/brand', name: 'Fixture tokens', type: 'tokens', formats: [{ format: 'json', url: '/catalog/assets/tokens.json' }] },
     ...['light', 'dark'].map(theme => ({ id: `fixture/logo/${theme}`, type: 'vector', tags: ['logo', 'horizontal', `on-${theme}`], formats: [{ format: 'svg', url: `/catalog/assets/${theme}.svg` }] })),
   ] }));
-  await writeFile(join(pack, 'catalog', 'assets', 'tokens.json'), JSON.stringify({ color: { primary: { $type: 'color', $value: '#123456' } } }));
+  const tokens = JSON.stringify({ color: { primary: { $type: 'color', $value: '#123456' } } });
+  await writeFile(join(pack, 'catalog', 'assets', 'tokens.json'), tokens);
   for (const theme of ['light', 'dark']) await writeFile(join(pack, 'catalog', 'assets', `${theme}.svg`), `<svg xmlns="http://www.w3.org/2000/svg"><title>${theme}</title></svg>`);
   await writeFile(join(pack, 'catalog', 'fonts', 'webfonts', 'Brand.woff2'), 'font bytes');
   await writeFile(join(pack, 'catalog', 'og', 'swatch.png'), 'card bytes');
@@ -307,10 +352,26 @@ before(async () => {
   assert.equal(minted.status, 201);
   const url = new URL((await minted.json() as { url: string }).url);
   shareLink = url.pathname + url.search;
+
+  // An open instance seeds its connect pack from a file, so the hashed pack URL answers anonymously.
+  seed = await mkdtemp(join(tmpdir(), 'lw-route-conformance-seed-'));
+  const zip = new ZipBuilder(new Date('2026-10-16T00:00:00Z'));
+  const entries = { 'manifest.json': JSON.stringify({ format: 'lolly-brand', formatVersion: 3 }),
+    'instance.json': JSON.stringify({ kind: 'instance', name: 'Conformance', instance: 'http://localhost' }), 'tokens.json': tokens, 'pack.sig': 'sig-bytes' };
+  const packed = Buffer.concat([...Object.entries(entries).map(([name, body]) => zip.add(name, Buffer.from(body))), zip.end()]);
+  packChecksum = createHash('sha256').update(packed).digest('hex');
+  await writeFile(join(seed, 'connect.lolly'), packed);
+  const openConfig = parseConfig(JSON.stringify({ instance: { name: 'Conformance', baseUrl: 'http://localhost', pack, connectPack: join(seed, 'connect.lolly') },
+    rateLimit: { enabled: false }, policy: { defaultAccessMode: 'open' }, dev: { enabled: true } }));
+  const openApp = buildApp({ config: openConfig, store: createMemoryStore(), blobs: createMemoryBlobStore(), secrets: { session: 'conformance-open', link: 'conformance-open-link' },
+    fetchImpl: async () => { throw new Error('the conformance test makes no outbound requests'); } });
+  openServer = createServer((req, res) => { served = res; void openApp(req, res); });
+  await new Promise<void>(resolve => openServer.listen(0, '127.0.0.1', resolve));
+  const openAddress = openServer.address(); assert.ok(openAddress && typeof openAddress === 'object'); openPort = openAddress.port;
 });
 after(async () => {
-  await new Promise<void>(resolve => server.close(() => resolve()));
-  await Promise.all([rm(pack, { recursive: true, force: true }), rm(shell, { recursive: true, force: true })]);
+  await Promise.all([server, openServer].map(listening => new Promise<void>(resolve => listening.close(() => resolve()))));
+  await Promise.all([pack, shell, seed].map(dir => rm(dir, { recursive: true, force: true })));
 });
 
 test('every GET and HEAD route has a reviewed delivery class, brand chrome included', () => {
@@ -334,9 +395,9 @@ test('one sample per route, anonymous and signed in, answers cachePolicy for its
   const ordered = [...routes].sort((a, b) => Number(a.path.includes('logout')) - Number(b.path.includes('logout')));
   const statuses = new Set<number>();
   for (const route of ordered) {
-    const path = samplePath(route), anonymous = await sample(route.method, path);
+    const path = samplePath(route), anonymous = await sample(route, path);
     conforms('anonymous', route, path, anonymous, false);
-    const member = await sample(route.method, path, { cookie: owner });
+    const member = await sample(route, path, { cookie: owner });
     conforms('signed-in', route, path, member, true);
     statuses.add(anonymous.status).add(member.status);
   }
@@ -345,10 +406,9 @@ test('one sample per route, anonymous and signed in, answers cachePolicy for its
 });
 
 test('public, link, dynamic and conditional samples match cachePolicy, and any credential keeps them private', async () => {
-  const route = (key: string) => routes.find(candidate => `${candidate.method} ${candidate.path}` === key)!;
-  const logo = `/api/brand/r/${revision}/logo/light`, fresh = await sample('GET', logo);
+  const logo = `/api/brand/r/${revision}/logo/light`, fresh = await sample(routeOf('GET /api/brand/r/:revision/logo/:variant'), logo);
   assert.equal(fresh.status, 200);
-  const samples: Array<[string, string, Record<string, string>, DeliveryClass, number]> = [
+  await expectSamples([
     ['GET /l/:id', shareLink, {}, 'link', 200],
     ['GET /api/brand', '/api/brand', {}, 'public-revalidate', 200],
     ['GET /api/brand/auth.css', '/api/brand/auth.css', {}, 'public-revalidate', 200],
@@ -360,21 +420,14 @@ test('public, link, dynamic and conditional samples match cachePolicy, and any c
     ['GET /', '/', {}, 'public-revalidate', 200],
     ['GET /*', '/tool/swatch', {}, 'public-revalidate', 200],
     ['GET /*', '/_app/chunk.0123456789abcdef.js', {}, 'public-immutable', 200],
+    ['HEAD /*', '/_app/chunk.0123456789abcdef.js', {}, 'public-immutable', 200],
     ['HEAD /*', '/manifest.webmanifest', {}, 'public-revalidate', 200],
     ['GET /*', '/sw.js', {}, 'public-revalidate', 200],
+    ['GET /tools/*', '/tools', {}, 'public-revalidate', 200],
+    ['HEAD /tools/*', '/tools', {}, 'public-revalidate', 200],
     ['GET /catalog/*', '/catalog/og/swatch.png', {}, 'public-bounded', 200],
-  ];
-  for (const [key, path, headers, delivery, status] of samples) {
-    const res = await sample(route(key).method, path, headers);
-    assert.equal(res.status, status, `${key} ${path}`);
-    assert.equal(res.served.delivery, delivery, `${key} ${path} served as ${res.served.delivery}`);
-    conforms('anonymous', route(key), path, res, false);
-    if (delivery.startsWith('public-') && path !== '/sw.js') assert.match(String(res.headers['cache-control']), /^public\b/, `${key} ${path} is not shared`);
-    for (const credential of [...CREDENTIALS, { cookie: owner }]) {
-      const again = await sample(route(key).method, path, { ...headers, ...credential });
-      conforms(`with ${Object.keys(credential)[0]}`, route(key), path, again, true);
-    }
-  }
+    ['HEAD /catalog/*', '/catalog/og/swatch.png', {}, 'public-bounded', 200],
+  ]);
   // Refusals on public routes are private too, whatever the handler wrote.
   const refusals: Array<[string, string, Record<string, string>, number]> = [
     ['GET /api/brand/r/:revision/logo/:variant', `/api/brand/r/${'0'.repeat(64)}/logo/light`, {}, 404],
@@ -383,8 +436,24 @@ test('public, link, dynamic and conditional samples match cachePolicy, and any c
     ['GET /catalog/*', '/catalog/og/missing.png', {}, 404],
   ];
   for (const [key, path, headers, status] of refusals) {
-    const res = await sample(route(key).method, path, headers);
+    const res = await sample(routeOf(key), path, headers);
     assert.equal(res.status, status, `${key} ${path}`);
-    conforms('refused', route(key), path, res, false);
+    conforms('refused', routeOf(key), path, res, false);
   }
+});
+
+test('on an open instance the hashed pack is public-immutable and the plain pack URL stays private', async () => {
+  const hashed = `/connect/pack.${packChecksum.slice(0, 16)}.lolly`;
+  await expectSamples([
+    ['GET /connect/:file', hashed, {}, 'public-immutable', 200],
+    ['HEAD /connect/:file', hashed, {}, 'public-immutable', 200],
+    ['GET /connect/:file', hashed, { 'if-none-match': `"${packChecksum}"` }, 'public-immutable', 304],
+    ['GET /connect/pack.lolly', '/connect/pack.lolly', {}, 'instance-private', 200],
+    ['HEAD /connect/pack.lolly', '/connect/pack.lolly', {}, 'instance-private', 200],
+  ], openPort);
+});
+
+test('a sample reaches every per-response class the table allows', () => {
+  const missed = Object.entries(RESPONSE_CLASSES).flatMap(([key, classes]) => classes.filter(cls => !reached.has(`${key} ${cls}`)).map(cls => `${key} ${cls}`));
+  assert.deepEqual(missed, [], 'no sample is served under these classes; add a sample or remove the allowance from RESPONSE_CLASSES');
 });

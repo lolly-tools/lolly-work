@@ -33,7 +33,7 @@ import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConf
 import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx, type RouteDescription } from './router.ts';
+import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
 import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
 import { cachePolicy, publicStaticDeliveryClass, type DeliveryClass } from '@lolly-tools/core/delivery-v1';
 import { shellDirectories } from '../lib/shell-release.ts';
@@ -309,10 +309,11 @@ export interface AppDeps {
 }
 
 type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
-const appRoutes = new WeakMap<App, () => RouteDescription[]>();
+type DescribeRoutes = ReturnType<typeof createRouter>['descriptions'];
+const appRoutes = new WeakMap<App, DescribeRoutes>();
 /** The method, pattern and delivery class of every route an app registered.
  *  For the route conformance test; serving never reads it. */
-export function appRouteDescriptions(app: App): RouteDescription[] {
+export function appRouteDescriptions(app: App): ReturnType<DescribeRoutes> {
   const describe = appRoutes.get(app);
   if (!describe) throw new TypeError('not an app built by buildApp');
   return describe();
@@ -10714,7 +10715,7 @@ export function buildApp(deps: AppDeps): App {
       if (!res.headersSent) sendError(res, status, err instanceof BrandError ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
     }
   };
-  appRoutes.set(app, () => router.descriptions());
+  appRoutes.set(app, router.descriptions);
   return app;
 }
 
