@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { parseConfig } from '../server/src/config/instance.ts';
@@ -45,9 +45,10 @@ test('AI approval ceiling and capability changes move org-config ETags', async (
   assert.notEqual(ocr.policyVersion, matte.policyVersion);
 });
 
-test('HTTP: member-only uncached leases, admin switch, audit and account revocation', async (t) => {
+/** A live app on a loopback port, with the policy lease and the admin switch. */
+async function serve(t: TestContext, ai: unknown) {
   const store = createMemoryStore();
-  const app = buildApp({ config: config({ enabled: true, capabilities: ['ocr'] }), store, secrets: { session: 'test-session', link: 'test-link' } });
+  const app = buildApp({ config: config(ai), store, secrets: { session: 'test-session', link: 'test-link' } });
   const server = createServer((req, res) => void app(req, res));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -63,6 +64,11 @@ test('HTTP: member-only uncached leases, admin switch, audit and account revocat
   const toggle = (cookie: string, value: string) => fetch(`${base}/api/v1/policy/flags/ai`, {
     method: 'PUT', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ default: value }),
   });
+  return { store, login, read, toggle };
+}
+
+test('HTTP: member-only uncached leases, admin switch, audit and account revocation', async (t) => {
+  const { store, login, read, toggle } = await serve(t, { enabled: true, capabilities: ['ocr'] });
   assert.equal((await read()).status, 401);
   const admin = await login('admin@test');
   const member = await login('member@test');
@@ -80,4 +86,23 @@ test('HTTP: member-only uncached leases, admin switch, audit and account revocat
   assert.ok(user);
   await store.setUserDisabled(user.id, new Date().toISOString());
   assert.equal((await read(member)).status, 401);
+});
+
+test('sing can be approved like the other shell capabilities, and stays off by default', async (t) => {
+  assert.deepEqual(config().policy.ai.capabilities, []);
+  const approved = config({ enabled: true, capabilities: ['sing', 'ocr'] }).policy.ai;
+  assert.deepEqual(approved, { enabled: true, capabilities: ['sing', 'ocr'] });
+  assert.deepEqual(resolveAiPolicy(approved, new Map()), { version: 1, enabled: false, capabilities: [], maxAgeSeconds: 60 });
+  for (const capabilities of [['singing'], ['Sing'], ['sing', 'vm'], ['sing', 'sing']]) {
+    assert.throws(() => config({ enabled: true, capabilities }), /policy.ai.capabilities/, capabilities.join(','));
+  }
+
+  const { login, read, toggle } = await serve(t, { enabled: true, capabilities: ['sing', 'ocr'] });
+  const admin = await login('admin@test');
+  const member = await login('member@test');
+  assert.deepEqual(await (await read(member)).json(), { version: 1, enabled: false, capabilities: [], maxAgeSeconds: 60 });
+  assert.equal((await toggle(admin, 'on')).status, 200);
+  const lease = await read(member);
+  assert.equal(lease.status, 200);
+  assert.deepEqual(await lease.json(), { version: 1, enabled: true, capabilities: ['ocr', 'sing'], maxAgeSeconds: 60 });
 });

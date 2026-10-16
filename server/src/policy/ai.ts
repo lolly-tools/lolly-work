@@ -3,9 +3,11 @@
  * Personal feature choices and injectable flags cannot grant AI execution. */
 import type { FlagGovernance } from './feature-flags.ts';
 
+/** The same names as the Lolly shell's list, so every capability the shell
+ * guards can be approved here. `sing` is Rondocode's singing voices. */
 export const AI_CAPABILITIES = [
   'speech', 'transcription', 'upscale', 'matte', 'ocr', 'depth',
-  'reword', 'ai-detect', 'embedding', 'watermark',
+  'reword', 'ai-detect', 'embedding', 'watermark', 'sing',
 ] as const;
 export type AiCapability = typeof AI_CAPABILITIES[number];
 export interface AiConfig { enabled: boolean; capabilities: AiCapability[] }
