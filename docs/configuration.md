@@ -404,6 +404,34 @@ credential is a secret, `LW_BLOBS_S3_CREDENTIAL`, formatted `<accessKeyId>:<secr
 This is the exit route for media-sized estates and the air-gap story: see
 [off-boarding](offboarding.md).
 
+### Blob limits and integrity
+
+| Driver | How a blob is written and read | Limits |
+|---|---|---|
+| `pg` | One `bytea` value per blob. Every write and read holds the whole blob in Work's memory, and a read briefly needs several times the blob's size because PostgreSQL returns `bytea` as hex text. | At most 500 MiB per blob, because PostgreSQL could store a larger value but not return it. Blobs share the database's storage, backups and a pool of four connections, so large files slow the database for everyone. |
+| `s3` | Streams in 8 MiB parts. A blob that fits in one part is a single `PUT`; a larger one is a multipart upload. A failed or refused upload is aborted, and the object already under that key stays until an upload completes. Reads stream from the store. | 10,000 parts per upload. When the caller gives the length in advance, parts grow past 8 MiB so the blob still fits. A part that fails with a server error or a dropped connection is retried twice. |
+
+Each S3 request signs the SHA-256 of its own body, so the store refuses a part that changed in
+transit. Work also computes the SHA-256 of the whole blob as the parts go out, and records it on
+the object as `x-amz-meta-sha256` when it is known before the object is created: always for a
+single `PUT` or a blob already in memory, and for a streamed multipart upload whose caller
+declared the digest, which Work checks before completing the upload. Objects written by earlier
+versions have no recorded digest. For those, Work reports the S3 ETag, which is not a content
+digest, and reads the bytes back wherever it needs the SHA-256.
+
+Every caller in this release hands the driver a file it already holds in memory, within that
+path's own byte cap: catalog submission, materialization, render and automation outputs,
+design-system pack downloads, staged deliveries and project file parts. The S3 driver sends such
+a file in parts without copying it again, but an upload streams from the client to the bucket
+only once those paths stream too.
+
+For `s3`, give the blob credential `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` and
+`s3:AbortMultipartUpload` on the prefix, and `s3:ListBucket` on the bucket so that a missing blob
+reads as missing rather than refused. Where the store supports it, add a lifecycle rule
+(`AbortIncompleteMultipartUpload`) that removes incomplete multipart uploads after a day: a
+server that stops during an upload leaves its parts behind, and the store keeps them, and bills
+for them, until they are removed.
+
 ## `delivery`
 
 Fixed organization-owned destinations for intentional outbound delivery. This is separate

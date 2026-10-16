@@ -3,15 +3,14 @@
  * bytes in a Map; mirrors the PG driver's semantics (idempotent put, checksum
  * on write, null on unknown) so the conformance suite runs both.
  */
-import { createHash } from 'node:crypto';
-import { bufferToStream, readBlobBody, type BlobStat, type BlobStore } from './types.ts';
+import { bufferToStream, readPutBody, type BlobStat, type BlobStore } from './types.ts';
 
 export function createMemoryBlobStore(): BlobStore {
   const blobs = new Map<string, { content: Buffer; stat: BlobStat }>();
   return {
-    async put(blobId, body, contentType) {
-      const content = await readBlobBody(body);
-      const stat: BlobStat = { blobId, size: content.length, checksum: createHash('sha256').update(content).digest('hex'), contentType };
+    async put(blobId, body, contentType, declared) {
+      const { content, checksum } = await readPutBody(body, declared);
+      const stat: BlobStat = { blobId, size: content.length, checksum, contentType };
       blobs.set(blobId, { content, stat });
       return stat;
     },

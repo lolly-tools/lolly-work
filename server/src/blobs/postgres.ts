@@ -1,16 +1,21 @@
 /**
- * Postgres BlobStore driver - the zero-moving-parts default (plans/26 §2,
- * plans/27 §5). One row per blob in `instance_blobs` (migration 0015): the
+ * Postgres BlobStore driver - the zero-moving-parts default (plans/26,
+ * plans/27). One row per blob in `instance_blobs` (migration 0015): the
  * content as `bytea`, plus size/checksum/content_type. `pg` is imported lazily,
  * exactly like the record store, and this holds its OWN small pool - the blob
  * seam lives beside `Store`, not inside it, so the two never share a driver.
- * A blob is buffered whole (admin-triggered materialization, one at a time),
- * which keeps the driver trivial and correct; the S3 driver is the path for
- * media-sized estates that outgrow PG bytea.
+ * A blob is buffered whole on every write and read, which keeps the driver
+ * trivial and correct; the S3 driver is the path for media-sized estates that
+ * outgrow PG bytea (docs/configuration.md lists both drivers' limits).
  */
-import { createHash } from 'node:crypto';
-import { bufferToStream, readBlobBody, type BlobStat, type BlobStore } from './types.ts';
+import { BlobLimitError, bufferToStream, readPutBody, type BlobStore } from './types.ts';
 import { guardPool, pgPoolOptions } from '../store/pg-options.ts';
+
+/** The largest blob this driver stores. `pg` reads `bytea` back as hex text,
+ *  twice the stored size, and PostgreSQL refuses to build a value over 1 GiB,
+ *  so a blob much past 512 MiB could be written but never read. A read also
+ *  holds several copies of the blob in this process while it decodes. */
+export const POSTGRES_BLOB_MAX_BYTES = 500 * 1024 * 1024;
 
 interface PgPool {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
@@ -24,9 +29,12 @@ export async function createPostgresBlobStore(databaseUrl: string): Promise<Blob
   const pool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl, { max: 4 })), 'blob') as unknown as PgPool;
 
   return {
-    async put(blobId, body, contentType) {
-      const content = await readBlobBody(body);
-      const checksum = createHash('sha256').update(content).digest('hex');
+    async put(blobId, body, contentType, declared) {
+      const { content, checksum } = await readPutBody(body, declared, POSTGRES_BLOB_MAX_BYTES).catch((error: unknown) => {
+        throw error instanceof BlobLimitError
+          ? new BlobLimitError('the pg blob driver stores at most 500 MiB per blob; use blobs.driver "s3" for larger files')
+          : error;
+      });
       await pool.query(
         `insert into instance_blobs (blob_id, content, size, checksum, content_type)
          values ($1, $2, $3, $4, $5)

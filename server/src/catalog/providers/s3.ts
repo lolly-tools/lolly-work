@@ -49,11 +49,14 @@ export interface SignedRequest { url: string; headers: Record<string, string> }
 
 /** Sign a request against the bucket. GET/HEAD by default (empty payload);
  *  `method` + `payloadHash` grow it to signed PUT/DELETE for the BlobStore
- *  driver (plans/27 §5) without an SDK. Exported for the driver tests. */
+ *  driver (plans/27) without an SDK. `headers` are signed and sent too:
+ *  S3 refuses an `x-amz-*` header the signature does not cover, such as
+ *  object metadata. Exported for the driver tests. */
 export function signS3Request(
   opts: {
     options: S3Options; accessKeyId: string; secretAccessKey: string; key?: string;
     query?: Record<string, string>; now?: Date; method?: string; payloadHash?: string;
+    headers?: Record<string, string>;
   },
 ): SignedRequest {
   const region = opts.options.region ?? 'us-east-1';
@@ -73,6 +76,7 @@ export function signS3Request(
   const day = amzDate.slice(0, 8);
   const scope = `${day}/${region}/s3/aws4_request`;
   const headers: Record<string, string> = {
+    ...Object.fromEntries(Object.entries(opts.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value.trim()])),
     host: url.host,
     'x-amz-content-sha256': payloadHash,
     'x-amz-date': amzDate,
