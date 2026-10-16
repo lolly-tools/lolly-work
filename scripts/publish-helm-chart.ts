@@ -71,7 +71,7 @@ export function publishChart(directory: string) {
       gh(['release', 'upload', tag, '--repo', REPOSITORY, local]);
     }
   }
-  if (remote.draft) gh(['api', `${api}/releases/${remote.id}`, '--method', 'PATCH', '--input', '-'], { draft: false });
+  if (remote.draft) gh(['api', `${api}/releases/${remote.id}`, '--method', 'PATCH', '--input', '-'], { draft: false, make_latest: 'false' });
   let indexRelease = findRelease('helm-index');
   const prior = indexRelease?.assets.some((asset: { name: string }) => asset.name === 'index.yaml')
     ? readFileSync(download('helm-index', 'index.yaml', temporary), 'utf8') : undefined;
@@ -86,7 +86,7 @@ export function publishChart(directory: string) {
     gh(['release', 'upload', 'helm-index', '--repo', REPOSITORY, '--clobber', path]);
   }
   gh(['release', 'upload', 'helm-index', '--repo', REPOSITORY, '--clobber', index]);
-  if (indexRelease.draft) gh(['api', `${api}/releases/${indexRelease.id}`, '--method', 'PATCH', '--input', '-'], { draft: false });
+  if (indexRelease.draft) gh(['api', `${api}/releases/${indexRelease.id}`, '--method', 'PATCH', '--input', '-'], { draft: false, make_latest: 'false' });
   console.log(`Published chart ${release.version}; HTTP repository index updated. Artifact Hub admission/status is separate.`);
 }
 
