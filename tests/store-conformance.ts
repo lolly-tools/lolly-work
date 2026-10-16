@@ -283,6 +283,14 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   annotated(await annotate('ses_v_annot_limit', firstNamed.id, { label: 'L1 renamed' }), 'a rename keeps nothing more');
   annotated(await annotate('ses_v_annot_limit', autoA.id, { pinned: false, annotationRev: 1 }), 'unpinned');
   made(await put(write('ses_v_annot_limit', 'named', { again: 1 }, { label: 'Again', createdBy: owner.id })), 'the place is free again');
+  // A kept version stays with whoever first named or pinned it: the owner, at the
+  // limit, renames the editor's pinned version, and it still counts for the editor.
+  for (let i = 1; i < VERSION_NAMED_PER_PERSON; i++) made(await put(write('ses_v_annot_limit', 'named', { e: i }, { label: `E${i}`, createdBy: editor.id })), `editor named ${i}`);
+  annotated(await annotate('ses_v_annot_limit', autoB.id, { label: 'Editor pin', annotationRev: 1 }), 'renamed by a person at the limit');
+  assert.equal(await put(write('ses_v_annot_limit', 'named', { e: 0 }, { label: 'E over', createdBy: editor.id })), 'version-limit',
+    'the renamed version still counts for the person who pinned it');
+  assert.equal(await store.deleteSessionVersion('ses_v_annot_limit', firstNamed.id), true);
+  annotated(await annotate('ses_v_annot_limit', autoA.id, { pinned: true, annotationRev: 2 }), 'and not for the person who renamed it');
   const namedAuto = (await store.listSessionVersions('ses_v_named', { limit: 1 }))[0]!;
   assert.equal(namedAuto.kind, 'auto');
   assert.equal(await annotate('ses_v_named', namedAuto.id, { pinned: true, by: 'usr_named_new' }), 'version-limit',
