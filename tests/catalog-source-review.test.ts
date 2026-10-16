@@ -81,6 +81,7 @@ test('approval remains attached to the old bytes after replacement and does not 
   assert.equal((await store.getInstanceAsset(old.id))?.headVersion, 2);
   const history = await (await read(`/api/v1/catalog/assets/${old.id}/versions`)).json() as any;
   assert.equal(history.metadataHistory, 'not-recorded'); assert.equal(history.sourceReviews[0].sourceReview.files[0].sha256, original.sha256);
+  assert.equal(history.sourceReviewCapability.kind, 'frozen-instance-originals-v1'); assert.equal(history.sourceReviewCapability.maxFiles, 32);
   const next = await post('/api/v1/approvals', request([{ ...original, version: 2, sha256: stat.checksum }]));
   assert.equal(next.status, 201); assert.notEqual((await next.json() as any).sourceReview.fingerprint, approval.sourceReview.fingerprint);
 });

@@ -6109,6 +6109,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return sendJson(res, 200, {
         id, head,
         metadataHistory: 'not-recorded', sourceReviews,
+        sourceReviewCapability: instAsset.origin ? null : { kind: 'frozen-instance-originals-v1', maxFiles: 32, maxFileBytes: 64 * 1024 * 1024, maxTotalBytes: 128 * 1024 * 1024 },
         keep: config.policy.catalog.versionKeep,
         versions: [...rows].sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
       }, { 'cache-control': 'private, no-store' });

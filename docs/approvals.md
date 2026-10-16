@@ -21,6 +21,10 @@ requester/reviewer audience. No source grant is widened by a decision.
 An action must echo `sourceFingerprint` from the displayed review. Older clients
 that cannot display and confirm the frozen subject are refused before a decision
 is recorded. The updated console supplies that fingerprint for approve/reject.
+The version-history response advertises `sourceReviewCapability` only for this
+supported path: at most 64 MiB per file and 128 MiB for the complete subject.
+Clients without that capability keep ordinary history available and do not offer
+a source-review request.
 
 Replacing a file does not transfer review to its replacement. Changing the
 purpose, target or membership creates a different subject. Approval is historical
