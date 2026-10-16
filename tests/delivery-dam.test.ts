@@ -7,6 +7,7 @@ import { sha256Hex } from '../server/src/lib/crypto.ts';
 import type { DeliveryInput, DeliveryProgress } from '../server/src/delivery/types.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { destinationDescriptor, destinationVersion } from '../server/src/delivery/destinations.ts';
+import { readDamOriginal } from '../server/src/delivery/dam-write.ts';
 
 const bytes = Buffer.from('a private original file');
 const input: DeliveryInput = { deliveryId: 'del_fixture', bytes, sha256: sha256Hex(bytes), name: 'Original', format: 'png', contentType: 'image/png' };
@@ -20,7 +21,7 @@ function brandfolderFixture() {
   const calls: string[] = [];
   const fetcher: typeof fetch = async (url, init) => {
     const path = String(url); calls.push(path);
-    assert.equal(init?.redirect, 'error');
+    assert.equal(init?.redirect, path.startsWith('https://original.example') ? 'manual' : 'error');
     if (path.startsWith('https://upload.example') || path.startsWith('https://original.example')) {
       assert.equal(new Headers(init?.headers).has('authorization'), false, 'vendor credentials stay off storage requests');
       if (init?.method === 'PUT') { puts++; assert.deepEqual(Buffer.from(await new Response(init.body).arrayBuffer()), bytes); return new Response(null); }
@@ -126,6 +127,24 @@ test('Cloudinary collisions and byte changes never produce a successful receipt 
   const changed = cloudinaryFixture(); changed.corrupt();
   await assert.rejects(changed.deliver(), /digest mismatch/);
   await assert.rejects(changed.deliver(), /digest mismatch/); assert.equal(changed.uploads, 1);
+});
+
+test('original readback follows only bounded qualified redirects without forwarding credentials', async () => {
+  const urls: string[] = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    urls.push(String(url)); assert.equal(init?.redirect, 'manual'); assert.equal(new Headers(init?.headers).has('authorization'), false);
+    return urls.length === 1 ? new Response(null, { status: 302, headers: { location: '/original' } }) : new Response(bytes);
+  };
+  assert.equal(await readDamOriginal('https://original.example/start', ['https://original.example'], input, fetcher), input.sha256);
+  assert.deepEqual(urls, ['https://original.example/start', 'https://original.example/original']);
+  let calls = 0;
+  await assert.rejects(readDamOriginal('https://original.example/start', ['https://original.example'], input, async () => {
+    calls++; return new Response(null, { status: 302, headers: { location: 'https://127.0.0.1/private' } });
+  }), /outside/); assert.equal(calls, 1);
+  calls = 0;
+  await assert.rejects(readDamOriginal('https://original.example/start', ['https://original.example'], input, async () => {
+    calls++; return new Response(null, { status: 302, headers: { location: '/loop' } });
+  }), /redirect limit/); assert.equal(calls, 4);
 });
 
 test('DAM destination validation is explicit and descriptors disclose capability without configuration', () => {

@@ -162,8 +162,9 @@ section per destination:
 ```
 
 The referenced environment variable holds the Brandfolder API token. Supply exact HTTPS storage
-origins observed and qualified for your tenant; the example origins are placeholders. Redirects
-are refused. Bearer credentials go only to `https://brandfolder.com/api/v4`, never to storage.
+origins observed and qualified for your tenant; the example origins are placeholders. API and
+upload redirects are refused. Original readback follows at most three redirects, checking the
+exact download origin at every hop without API credentials. Bearer credentials go only to `https://brandfolder.com/api/v4`, never to storage.
 `visibility` declares the existing Brandfolder's access policy; it does not change that policy.
 Requalify it when administrators change remote access.
 

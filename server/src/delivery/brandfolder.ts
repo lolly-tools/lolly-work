@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Brandfolder V4 Binary Upload, followed by create and original-byte readback. */
 import { createDamHttp, damRecord, damString } from '../catalog/providers/dam-http.ts';
-import { checkedDamInput, exactOrigins, storageUrl, verifyDamBytes } from './dam-write.ts';
+import { checkedDamInput, exactOrigins, storageUrl, readDamOriginal } from './dam-write.ts';
 import { deliveryFilename } from './s3.ts';
 import type { DeliveryProvider } from './types.ts';
 
@@ -79,7 +79,7 @@ export function createBrandfolderDeliveryProvider(options: BrandfolderDeliveryOp
       if (!Array.isArray(attachments) || attachments.length !== 1) throw new Error('Brandfolder original is not ready; retry this delivery later');
       const attachment = damRecord(attachments[0]), attributes = damRecord(attachment.attributes);
       const original = storageUrl(attributes.url, downloads);
-      const deliveredSha256 = await verifyDamBytes(await http.request(original), input);
+      const deliveredSha256 = await readDamOriginal(original, downloads, input, fetchImpl);
       return { remoteId, deliveredSha256, transformation: 'none' };
     },
   };
