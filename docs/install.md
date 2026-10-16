@@ -830,8 +830,22 @@ For UpCloud, use the [infrastructure module](../deploy/upcloud/README.md) with y
 reviewed image, region, administrator keys/CIDRs and measured network settings.
 Validate the plan before applying through your own infrastructure process. Follow
 the [openSUSE host preparation](../deploy/vm/README.md) for Docker and host security
-on that new target. The neutral package also works on another qualified Docker
-Compose host. No existing Lolly production instance is a qualification target.
+on an openSUSE target. The [reference qualification](../deploy/marketplaces/QUALIFICATION.md)
+also covers UpCloud's public Ubuntu 24.04 amd64 image. On that image, install its
+Docker packages and enable the daemon:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-v2 ca-certificates
+sudo systemctl enable --now docker
+sudo docker compose version
+```
+
+Use an account authorized to run Docker; prefix subsequent Docker commands with
+`sudo` if needed. Configure a stateful host firewall as well as UpCloud's stateless
+firewall, keeping SSH restricted to the actual administrator networks. The neutral
+package also works on another qualified Docker Compose host. No existing Lolly
+production instance is a qualification target.
 
 Prepare a domain that points to the new host and allows TCP 80 and TCP/UDP 443.
 Keep Work, PostgreSQL and worker ports private. Select the actual owner email.
@@ -861,7 +875,8 @@ The directory contains `compose.yaml`, `Caddyfile`, the exact release record and
 mode-0600 `.env` with fresh database/session/link/credential secrets. Copy it
 securely to a dedicated private directory on the new host, preserving `.env`
 permissions. Keep its name and Compose project name stable. Never regenerate
-`.env` over an installed instance.
+`.env` over an installed instance. Use a durable location such as `/srv/lolly-work`;
+temporary directories such as `/tmp` can be cleared on reboot and break bind mounts.
 
 On that host, from the prepared directory:
 

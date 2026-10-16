@@ -91,7 +91,7 @@ Prepared PR description:
 | GHCR | Existing public `lolly-tools` image packages; signed 1.1.1 release record | Confirm administrator/recovery custody; native arm64 runtime remains open |
 | Helm | New upstream publication workflow and immutable chart assets/index layout | First merged-source publication, anonymous download/signature result and Rancher install/upgrade |
 | Artifact Hub | Prepared organization/repository identity and ownership metadata support | Account/name availability, real UUID/email, Verified publisher, then Official review |
-| UpCloud | Existing infrastructure module plus new neutral package recipe | Dedicated fresh target, real identity/output, reboot, cross-version upgrade and independent restore |
+| UpCloud | Existing infrastructure module plus new neutral package recipe and [reference result](QUALIFICATION.md) | Cross-version upgrade, separate-host recovery and organisation OIDC; the current native-password reference passed fresh installation, output, reboot and independent application restore |
 | YunoHost | Existing project package/mirror/tag | Catalogue registration and remaining platform acceptance; preserve beta status |
 | Dokploy | Generated upstream blueprint with PR/update route | Isolated Dokploy acceptance, second-version installed upgrade, maintainer submission and catalogue review |
 

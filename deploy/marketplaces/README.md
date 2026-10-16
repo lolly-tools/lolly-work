@@ -44,10 +44,12 @@ operator-authorized account and does not verify mailbox ownership. Organisation
 OIDC remains available through `LOLLY_AUTH_MODE=oidc` and its issuer/client values.
 
 Operator recipes live in [the installation guide](../../docs/install.md#10-official-neutral-package).
+The [reference qualification](QUALIFICATION.md) records the tested UpCloud target,
+package hashes, reboot/restore outcomes and remaining acceptance limits.
 The [installation directory](../../docs/official-installations.md) records what
 is published and qualified. A prepared blueprint is not an accepted marketplace
-listing. Native arm64 runtime, fresh UpCloud/edge installations and real customer
-identity remain separate acceptance targets.
+listing. Native arm64 runtime, other cloud/edge targets, organisation identity and
+installed-version upgrades still need their own acceptance.
 
 ## Chart publication
 
