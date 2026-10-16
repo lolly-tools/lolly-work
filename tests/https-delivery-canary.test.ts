@@ -10,10 +10,14 @@
  *
  * The protocol has no delete contract (docs/delivery.md), so cleanup uses the
  * receiver's own management API. LW_HTTPS_CANARY_CLEANUP_URL is an HTTPS URL
- * with one {id} placeholder. In finally the canary fills it with each exact id
- * the receiver accepted (or the delivery id, when the outcome is unknown), sends
- * DELETE, and expects 404 or 410 from a GET of that same URL. It never prints
- * the HMAC secret or the cleanup credential.
+ * with one {id} placeholder. After each test the canary fills it with the id
+ * from each receipt, sends DELETE, and expects 404 or 410 from a GET of that
+ * same URL. When a receipt is missing, unusable or has no id, it uses the
+ * delivery id instead and counts the item as removed only after a successful
+ * DELETE, because a receiver that assigns its own ids answers 404 for a
+ * delivery id it still holds. Any cleanup it cannot confirm fails the test
+ * alongside the test's own error. It never prints the HMAC secret or the
+ * cleanup credential.
  *
  * Run only with explicit local credentials:
  *   LW_HTTPS_CANARY=1 \
@@ -26,7 +30,7 @@
  * LW_HTTPS_CANARY_CLEANUP_CREDENTIAL is optional and also accepts '<username>:<password>'.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createHttpsDeliveryProvider } from '../server/src/delivery/https.ts';
@@ -65,18 +69,31 @@ function authorization(credential: string): string {
     : `Basic ${Buffer.from(credential, 'utf8').toString('base64')}`;
 }
 
+/** Each id to remove, and whether it came from a receipt or is the delivery id standing in for one. */
+type Written = Map<string, 'receipt' | 'delivery-id'>;
+
+function record(written: Written, input: DeliveryInput, receipt?: DeliveryReceipt): void {
+  // The adapter reports the delivery id as the remote id when the receipt names none.
+  if (receipt && receipt.remoteId !== input.deliveryId) written.set(receipt.remoteId, 'receipt');
+  else written.set(input.deliveryId, 'delivery-id');
+}
+
 /** Deletes each exact id through the receiver's own API; returns the ids still present or unconfirmed. */
-async function removeExact(s: Settings, ids: Iterable<string>): Promise<string[]> {
+async function removeExact(t: TestContext, s: Settings, written: Written): Promise<string[]> {
   const headers: Record<string, string> = s.cleanupCredential ? { authorization: authorization(s.cleanupCredential) } : {};
   const left: string[] = [];
-  for (const id of ids) {
+  for (const [id, source] of written) {
     const target = s.cleanupUrl.replace('{id}', encodeURIComponent(id));
     try {
       const removed = await fetch(target, { method: 'DELETE', headers, redirect: 'error' });
       await removed.body?.cancel();
       const check = await fetch(target, { headers, redirect: 'error' });
       await check.body?.cancel();
-      const deleted = removed.ok || removed.status === 404 || removed.status === 410;
+      const absent = removed.status === 404 || removed.status === 410;
+      if (absent && source === 'delivery-id') {
+        t.diagnostic(`cleanup by delivery id ${id} found nothing; the receiver may hold it under its own id, so check by hand`);
+      }
+      const deleted = removed.ok || (absent && source === 'receipt');
       if (!deleted || (check.status !== 404 && check.status !== 410)) left.push(id);
     } catch {
       left.push(id);
@@ -85,28 +102,43 @@ async function removeExact(s: Settings, ids: Iterable<string>): Promise<string[]
   return left;
 }
 
+/** Runs the test body, then cleans up; a cleanup it cannot confirm is reported with the body's error, never instead of it. */
+async function withCleanup(t: TestContext, s: Settings, written: Written, body: () => Promise<void>): Promise<void> {
+  let failure: { error: unknown } | undefined;
+  try {
+    await body();
+  } catch (error) {
+    failure = { error };
+  }
+  const left = await removeExact(t, s, written);
+  const unconfirmed = `canary cleanup unconfirmed for exact ids ${left.join(', ')}`;
+  if (failure && left.length) {
+    const message = failure.error instanceof Error ? failure.error.message : String(failure.error);
+    throw new Error(`${message}\n${unconfirmed}`, { cause: failure.error });
+  }
+  if (failure) throw failure.error;
+  assert.deepEqual(left, [], unconfirmed);
+}
+
 test('a live receiver accepts a signed canary delivery', { skip }, async (t) => {
   const s = settings();
   const input = canaryInput();
-  const written = new Set<string>();
+  const written: Written = new Map();
   t.diagnostic(`canary delivery id ${input.deliveryId}`);
-  try {
+  await withCleanup(t, s, written, async () => {
     let receipt: DeliveryReceipt;
     try {
       receipt = await createHttpsDeliveryProvider({ url: s.url }, s.secret).deliver(input);
     } catch (error) {
       // The receiver may have stored the bytes before the failure, so clean up by delivery id.
-      written.add(input.deliveryId);
+      record(written, input);
       throw error;
     }
-    written.add(receipt.remoteId);
+    record(written, input, receipt);
     t.diagnostic(`receiver id ${receipt.remoteId}, transformation ${receipt.transformation}`);
     // A canary channel has no reason to change inert text, so a different digest is a wire fault.
     assert.notEqual(receipt.transformation, 'provider-managed', 'the receiver reported different bytes from those sent');
-  } finally {
-    const left = await removeExact(s, written);
-    assert.deepEqual(left, [], `canary cleanup failed for exact ids ${left.join(', ')}`);
-  }
+  });
 });
 
 test('a live receiver refuses a foreign signature, a stale timestamp and a body that does not match its digest', { skip }, async (t) => {
@@ -122,9 +154,9 @@ test('a live receiver refuses a foreign signature, a stale timestamp and a body 
     { label: 'body that does not match the signed digest', input: mismatched,
       provider: createHttpsDeliveryProvider(target, s.secret) },
   ];
-  const written = new Set<string>();
+  const written: Written = new Map();
   const problems: string[] = [];
-  try {
+  await withCleanup(t, s, written, async () => {
     for (const probe of probes) {
       t.diagnostic(`${probe.label}: delivery id ${probe.input.deliveryId}`);
       let receipt: DeliveryReceipt;
@@ -134,17 +166,14 @@ test('a live receiver refuses a foreign signature, a stale timestamp and a body 
         // A rate limit or timeout says nothing about the request itself.
         const message = (error as Error).message;
         if (!/^https delivery receiver 4\d\d$/.test(message) || /\b(408|429)$/.test(message)) {
-          written.add(probe.input.deliveryId);
+          record(written, probe.input);
           problems.push(`${probe.label}: expected a 4xx refusal, got "${message}"`);
         }
         continue;
       }
-      written.add(receipt.remoteId);
+      record(written, probe.input, receipt);
       problems.push(`${probe.label}: the receiver accepted it as ${receipt.remoteId}`);
     }
-  } finally {
-    const left = await removeExact(s, written);
-    assert.deepEqual(left, [], `canary cleanup failed for exact ids ${left.join(', ')}`);
-  }
-  assert.deepEqual(problems, []);
+    assert.deepEqual(problems, []);
+  });
 });

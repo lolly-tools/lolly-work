@@ -216,8 +216,8 @@ Discovery and history routes are listed in the [API reference](api.md#outbound-d
 
 Three gated tests check each adapter against a real endpoint. Each one is skipped unless its
 switch is set to `1`, writes inert text under a random `canary-<uuid>` delivery id, and removes
-that exact object in `finally`. None of them lists or browses the remote side or prints a
-credential.
+that exact object afterwards, or fails and names each id whose removal it could not confirm.
+None of them lists or browses the remote side or prints a credential.
 
 | Test | Switch | Settings (each prefixed with the switch name) |
 |---|---|---|
@@ -229,10 +229,14 @@ Point the WebDAV canary at an existing collection set aside for the test. It del
 confirm that a retry overwrites the same resource, then reads the bytes back with its own
 request. The signed-HTTPS protocol has no delete contract, so that canary deletes through the
 receiver's own management API: `LW_HTTPS_CANARY_CLEANUP_URL` is an HTTPS URL with one `{id}`
-placeholder, filled with each exact id the receiver accepted, and a `GET` of the same URL must
-then answer 404 or 410. When the receipt carries a digest, it must match the bytes sent. A
-second HTTPS test sends three requests the receiver must refuse with a 4xx status: a signature
-from another secret, a timestamp a day old, and a body that does not match its signed digest.
+placeholder, filled with the `id` from each receipt, and a `GET` of the same URL must then answer
+404 or 410. When a receipt is missing, unusable or has no `id`, the canary uses the delivery id
+instead and counts the item as removed only when the `DELETE` succeeds. The management API
+should resolve delivery ids; if it cannot, the canary reports the cleanup as unconfirmed and the
+operator must check the receiver by hand. When the receipt carries a digest, it must match the
+bytes sent. A second HTTPS test sends three requests the receiver must refuse with a 4xx status:
+a signature from another secret, a timestamp a day old, and a body that does not match its
+signed digest.
 
 ## Current edge of the first slice
 
