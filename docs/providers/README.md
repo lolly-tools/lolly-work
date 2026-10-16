@@ -32,12 +32,14 @@ for, and the vendor platforms below it are mostly sources you are federating in 
 | `canto` | OAuth2 (BYOT); off-boarding source | [canto.md](canto.md) |
 | `acquia-dam` | bearer token (Widen v2); native availability | [acquia-dam.md](acquia-dam.md) |
 | `intelligencebank` | login handshake (v3 Graph API); native governance | [intelligencebank.md](intelligencebank.md) |
+| `cloudinary` | sealed API key/secret; original files by immutable asset ID | [cloudinary.md](cloudinary.md) |
+| `orange-logic` | client credentials or bearer; permitted renditions only | [orange-logic.md](orange-logic.md) |
 
 `mock` is a test/demo driver and has no onboarding guide.
 
 ## The live-verify runbooks
 
-Five drivers ship **fixture-verified**: their endpoint paths and field names come from public
+Seven drivers ship **fixture-verified**: their endpoint paths and field names come from public
 documentation and have not been confirmed against a real server, because this repo signs no
 vendor EULA to obtain a tenant and runs no reference installation. Each carries a `LIVE-VERIFY`
 checklist in its source header and a runbook beside its guide that discharges it in one ordered
@@ -52,8 +54,10 @@ the original rather than a rendition:
 | `imagerelay` | [imagerelay-live-verify.md](imagerelay-live-verify.md) |
 | `intelligencebank` | [intelligencebank-live-verify.md](intelligencebank-live-verify.md) |
 | `acquia-dam` | [acquia-dam-live-verify.md](acquia-dam-live-verify.md) |
+| `cloudinary` | [cloudinary-live-verify.md](cloudinary-live-verify.md) |
+| `orange-logic` | [orange-logic-live-verify.md](orange-logic-live-verify.md) |
 
-The four DAM runbooks are written for the platform team running the pass on a customer's tenant;
+The six DAM runbooks are written for the platform team running the pass on a customer's tenant;
 the `webdav` one is written for whoever administers the server, since with this kind that is
 usually the same organization. All of them name file paths and constants.
 

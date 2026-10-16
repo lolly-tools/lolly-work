@@ -25,11 +25,15 @@ const TOP_GROUPS = 200;
 
 export interface BrowseQuery {
   q?: string;
+  scope?: string;
   source?: string;
   section?: string;
   collection?: string;
   tag?: string;
   type?: string;
+  types?: string;
+  taxonomyKind?: string;
+  taxonomyId?: string;
   cursor?: [string, string];
   limit: number;
 }
@@ -46,6 +50,8 @@ export interface BrowsePage {
     collections: FacetCount[];
     tags: FacetCount[];
     types: FacetCount[];
+    taxonomy: Array<{ source: string; kind: string; id: string; name: string; count: number; parentId?: string }>;
+    truncated: { tags: boolean; sections: boolean; collections: boolean; taxonomy: boolean };
   };
   version: string;
 }
@@ -69,13 +75,17 @@ function decodeCursor(token: string): [string, string] | null {
 /** Read and bound the query string. Returns the parsed query or the reason it was refused. */
 export function parseBrowseQuery(params: URLSearchParams): BrowseQuery | { error: string } {
   const out: BrowseQuery = { limit: BROWSE_DEFAULT_LIMIT };
-  for (const key of ['q', 'source', 'section', 'collection', 'tag', 'type'] as const) {
+  if (params.has('mode') && params.get('mode') !== 'indexed') return { error: 'only indexed browse is supported on this route' };
+  for (const key of ['q', 'scope', 'source', 'section', 'collection', 'tag', 'type', 'types', 'taxonomyKind', 'taxonomyId'] as const) {
     const value = params.get(key);
     if (value === null) continue;
     if (value.length > MAX_PARAM) return { error: `${key} is longer than ${MAX_PARAM} characters` };
     const trimmed = value.trim();
     if (trimmed) out[key] = key === 'q' ? trimmed.toLowerCase() : trimmed;
   }
+  if (!!out.taxonomyKind !== !!out.taxonomyId || (out.taxonomyKind && !['section', 'collection', 'folder'].includes(out.taxonomyKind))) return { error: 'taxonomyKind and taxonomyId must name a supported taxonomy node' };
+  if (out.types && !/^[a-z0-9-]+(?:,[a-z0-9-]+){0,15}$/.test(out.types)) return { error: 'types must be a bounded comma-separated list' };
+  if (out.scope && out.scope !== 'shared') return { error: 'scope must be shared when supplied' };
   const limit = params.get('limit');
   if (limit !== null) {
     const n = Number(limit);
@@ -93,7 +103,7 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery | { error
 
 /** A stable string for the parsed query, for the response ETag. */
 export function normalisedQuery(q: BrowseQuery): string {
-  return JSON.stringify([q.q ?? '', q.source ?? '', q.section ?? '', q.collection ?? '', q.tag ?? '', q.type ?? '', q.cursor ?? null, q.limit]);
+  return JSON.stringify([q.q ?? '', q.scope ?? '', q.source ?? '', q.section ?? '', q.collection ?? '', q.tag ?? '', q.type ?? '', q.types ?? '', q.taxonomyKind ?? '', q.taxonomyId ?? '', q.cursor ?? null, q.limit]);
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
@@ -128,7 +138,7 @@ const MATCH_MEMO_SIZE = 16;
 export function browseAssets(
   served: ServedIndex, query: BrowseQuery, metaById: Map<string, AssetMetaRecord>,
 ): BrowsePage {
-  const filterKey = JSON.stringify([query.q ?? '', query.source ?? '', query.section ?? '', query.collection ?? '', query.tag ?? '', query.type ?? '']);
+  const filterKey = JSON.stringify([query.q ?? '', query.scope ?? '', query.source ?? '', query.section ?? '', query.collection ?? '', query.tag ?? '', query.type ?? '', query.types ?? '', query.taxonomyKind ?? '', query.taxonomyId ?? '']);
   let perFeed = matchMemo.get(served);
   if (!perFeed) matchMemo.set(served, (perFeed = new Map()));
   let found = perFeed.get(filterKey);
@@ -167,10 +177,13 @@ export function browseAssets(
 
 function matchAndCount(served: ServedIndex, query: BrowseQuery, metaById: Map<string, AssetMetaRecord>): Matched {
   const matches = (e: AssetIndexEntry): boolean => {
+    if (query.scope === 'shared' && entrySource(e) === 'pack') return false;
     if (query.source && entrySource(e) !== query.source) return false;
     if (query.type && e.type !== query.type) return false;
+    if (query.types && !query.types.split(',').includes(String(e.type))) return false;
     if (query.tag && !strings(e.tags).includes(query.tag)) return false;
     const meta = metaOf(e);
+    if (query.taxonomyKind && !taxonomyOf(e).some(node => node.kind === query.taxonomyKind && node.id === query.taxonomyId)) return false;
     if (query.section && !strings(meta.providerSections).includes(query.section)) return false;
     if (query.collection && !strings(meta.providerCollections).includes(query.collection)) return false;
     if (query.q) {
@@ -188,6 +201,7 @@ function matchAndCount(served: ServedIndex, query: BrowseQuery, metaById: Map<st
   const collections = new Map<string, number>();
   const tags = new Map<string, number>();
   const types = new Map<string, number>();
+  const taxonomy = new Map<string, { source: string; kind: string; id: string; name: string; count: number; parentId?: string }>();
   for (const e of matched) {
     count(sources, entrySource(e));
     if (typeof e.type === 'string') count(types, e.type);
@@ -195,6 +209,11 @@ function matchAndCount(served: ServedIndex, query: BrowseQuery, metaById: Map<st
     const meta = metaOf(e);
     for (const s of new Set(strings(meta.providerSections))) count(sections, s);
     for (const c of new Set(strings(meta.providerCollections))) count(collections, c);
+    for (const node of taxonomyOf(e)) {
+      const source = entrySource(e), key = JSON.stringify([source, node.kind, node.id]);
+      const existing = taxonomy.get(key);
+      taxonomy.set(key, { ...node, source, count: (existing?.count ?? 0) + 1 });
+    }
   }
   const labels = new Map(served.providers.map((p) => [p.id, p.label]));
   const sourceLabel = (id: string): string => labels.get(id) ?? (id === 'instance' ? 'Instance assets' : id === 'pack' ? 'Pack' : id);
@@ -208,6 +227,16 @@ function matchAndCount(served: ServedIndex, query: BrowseQuery, metaById: Map<st
       collections: top(collections, TOP_GROUPS),
       tags: top(tags, TOP_TAGS),
       types: top(types, Infinity),
+      taxonomy: [...taxonomy.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)).slice(0, TOP_GROUPS),
+      truncated: { tags: tags.size > TOP_TAGS, sections: sections.size > TOP_GROUPS, collections: collections.size > TOP_GROUPS, taxonomy: taxonomy.size > TOP_GROUPS },
     },
   };
+}
+
+/** Taxonomy identity follows the same native-or-legacy rule as the shell source tree. */
+function taxonomyOf(entry: AssetIndexEntry): Array<{ kind: string; id: string; name: string; parentId?: string }> {
+  const meta = metaOf(entry);
+  const native = Array.isArray(meta.providerTaxonomy) ? meta.providerTaxonomy.filter((node): node is { kind: string; id: string; name: string; parentId?: string } => !!node && typeof node === 'object' && typeof node.id === 'string' && typeof node.name === 'string' && ['section', 'collection', 'folder'].includes(node.kind)) : null;
+  const nodes = native ?? (['section', 'collection'] as const).flatMap(kind => strings(meta[kind === 'section' ? 'providerSections' : 'providerCollections']).map(name => ({ kind, id: `legacy:${name}`, name })));
+  return [...new Map(nodes.map(node => [JSON.stringify([node.kind, node.id]), node])).values()];
 }

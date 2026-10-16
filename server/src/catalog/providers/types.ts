@@ -17,7 +17,7 @@ import type { ProviderShapeReport } from './shape.ts';
 
 export type { ProviderShapeReport };
 
-export const PROVIDER_KINDS = ['webdav', 'brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'canto', 'acquia-dam', 'intelligencebank', 'penpot', 'mock'] as const;
+export const PROVIDER_KINDS = ['webdav', 'brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'canto', 'acquia-dam', 'intelligencebank', 'cloudinary', 'orange-logic', 'penpot', 'mock'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 /** Prefix every federated asset id carries; also the blob route mount. */
@@ -53,6 +53,8 @@ export interface ProviderCapabilities {
   thumbnails: boolean;
   /** Blob URLs are signed + short-lived - never persist them; resolve per request. */
   expiringUrls: boolean;
+  /** Explicit original-file support; absent means the older driver makes no declaration. */
+  originals?: boolean;
   /** Provider accepts lolly-generated exports pushed OUT to it (plans/27 §10 - 
    *  Optimizely CMP two-way). Off for every read-only source; the publish route
    *  refuses a provider that does not declare it. */
@@ -174,6 +176,8 @@ export interface ProviderRecord {
 
 export interface ProviderFormatRef {
   format: string;
+  /** Source file or a supplier rendition; never infer original fidelity from resolution. */
+  role?: 'original' | 'rendition';
   /** Opaque driver-internal ref resolved by resolveBlob - NEVER a caller-supplied URL. */
   remoteRef: string;
   size?: number;
@@ -209,6 +213,8 @@ export interface ProviderAssetRef {
   availableUntil?: string;
   formats: ProviderFormatRef[];
   hasThumbnail?: boolean;
+  /** Whether this connection can provide protected originals, independently of previews. */
+  originalsAvailable?: boolean;
 }
 
 export type ResolvedBlob =

@@ -109,9 +109,13 @@ matched shell, pack, worker and engine-pin artifacts for an existing instance.
   signing** when an identity is configured.
 - Links: mint/verify/expire/revoke, passwords, guest admission with TTL caps.
 - Approvals engine (any/quorum/all, nomination, separation of duties) with per-user inbox.
-- Catalog: pack serving with per-caller filtering, lifecycle (schedule/expire/revoke), thirteen
+- Catalog: pack serving with per-caller filtering, lifecycle (schedule/expire/revoke), fifteen
   provider kinds with sealed credentials, exposure governance and live search fan-out, plus the
   exit (materialize, drift, cutover) and publish-out to Optimizely CMP.
+- Cloudinary and Orange Logic shared sources: advanced console setup, scoped discovery,
+  redacted diagnostics and explicit file roles. Cloudinary streams original files by asset ID;
+  Orange Logic exposes public API renditions and refuses DAM cutover. Both are fixture-verified;
+  customer tenant qualification and Orange Logic protected-original API access remain open.
 - Catalog submit: members with `catalog.submit` add assets from a browser or the CLI, with a
   size cap, per-group quotas, checksum dedupe, an operator-pluggable pre-store scan hook, C2PA
   detection, and optional review through an approval chain.

@@ -20,6 +20,8 @@ import { createAcquiaDamProvider, type AcquiaDamOptions } from './acquia-dam.ts'
 import { createIntelligenceBankProvider, type IntelligenceBankOptions } from './intelligencebank.ts';
 import { createPenpotProvider, type PenpotOptions } from './penpot.ts';
 import { createWebdavProvider, type WebdavOptions } from './webdav.ts';
+import { createCloudinaryProvider, type CloudinaryOptions } from './cloudinary.ts';
+import { createOrangeLogicProvider, type OrangeLogicOptions } from './orange-logic.ts';
 
 export interface ProviderDeps {
   fetchImpl?: typeof fetch;
@@ -64,6 +66,10 @@ export function createProvider(rec: ProviderRecord, secret: string | undefined, 
       return createIntelligenceBankProvider(rec.id, rec.options as unknown as IntelligenceBankOptions, secret, deps.fetchImpl);
     case 'penpot':
       return createPenpotProvider(rec.id, rec.options as unknown as PenpotOptions, secret, deps.fetchImpl);
+    case 'cloudinary':
+      return createCloudinaryProvider(rec.id, rec.options as unknown as CloudinaryOptions, secret, deps.fetchImpl, rec.mapping?.availabilityFields, rec.exposure);
+    case 'orange-logic':
+      return createOrangeLogicProvider(rec.id, rec.options as unknown as OrangeLogicOptions, secret, deps.fetchImpl, rec.mapping?.availabilityFields, rec.exposure);
     default:
       throw new Error(`catalog provider kind not yet implemented: ${rec.kind}`);
   }

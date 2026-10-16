@@ -9,6 +9,14 @@ Start with the [deployment guide](../../docs/cloud-deployment.md). The existing
 [openSUSE VM kit](../vm/README.md) provisions the operating system and publishes a
 qualified application release after the server exists.
 
+For a fresh neutral instance, follow the
+[official package recipe](../../docs/install.md#10-official-neutral-package) after
+host preparation. It consumes public immutable images and the matched neutral
+shell, with its own PostgreSQL and installation secrets. Keep this target separate
+from existing deployments. Record actual install, identity, reboot, upgrade and
+independent restore evidence before calling a chosen image/plan qualified; neither
+the module tests nor another production instance supplies that evidence.
+
 ## Validate without a cloud account
 
 CI pins OpenTofu 1.13.1, Terraform 1.16.5 and UpCloud provider 5.45.0. Either CLI

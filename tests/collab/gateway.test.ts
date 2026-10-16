@@ -92,6 +92,7 @@ before(async () => {
   collab = createCollabGateway({ config, store, secrets: { session: 'sc', link: 'lc' } });
   const app = buildApp({
     config, store, secrets: { session: 'sc', link: 'lc' }, listCollabRooms: () => collab.snapshot(),
+    collabSocketTicket: (cookie, id) => collab.issueSocketTicket(cookie, id),
   });
   server = createServer((req, res) => void app(req, res));
   server.on('upgrade', (req, socket, head) => {
@@ -150,8 +151,10 @@ class Client {
   private closeWaiters: Array<(code: number) => void> = [];
   private readonly consumed = new Set<Frame>();
 
-  constructor(sessionId: string, cookie: string, socketBase = wsBase) {
-    this.ws = new WebSocket(`${socketBase}${COLLAB_WS_PREFIX}${sessionId}`, { headers: { cookie } });
+  constructor(sessionId: string, cookie: string, socketBase = wsBase, ticket?: string) {
+    this.ws = ticket
+      ? new WebSocket(`${socketBase}${COLLAB_WS_PREFIX}${sessionId}`, ['lolly-collab-v1', `lolly-ticket.${ticket}`], { headers: { origin: 'tauri://localhost' } })
+      : new WebSocket(`${socketBase}${COLLAB_WS_PREFIX}${sessionId}`, { headers: { cookie } });
     this.ready = new Promise<void>((resolve, reject) => {
       this.ws.once('open', () => resolve());
       this.ws.once('error', (err) => reject(err));
@@ -1276,6 +1279,39 @@ test('real Lolly provider receives durable receipts and preserves wrapped presen
     assert.notEqual(seen[0]!.frame.state.userId, 'spoofed-user');
     assert.notEqual(seen[0]!.frame.state.name, 'Fake');
   } finally { alice.close(); bob.close(); }
+
+  // The real native path has an HTTP session in app storage and no WebView
+  // cookie. HTTP exchanges it for a ticket; the browser socket sends only that.
+  const instance = await import(pathToFileURL(join(process.env.LOLLY_OSS_DIR ?? fileURLToPath(new URL('../../../lolly/', import.meta.url)), 'shells/web/src/lib/instance.ts')).href);
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: { origin: 'tauri://localhost', href: 'tauri://localhost/' } });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { __TAURI_INTERNALS__: {
+    invoke: async (_cmd: string, args: { request: { url: string; method: string; headers: Array<[string, string]>; body: number[] | null } }) => {
+      const request = args.request;
+      const response = await fetch(request.url, { method: request.method, headers: request.headers,
+        ...(request.body ? { body: Uint8Array.from(request.body) } : {}) });
+      return { status: response.status, statusText: response.statusText, url: response.url, headers: [...response.headers], body: [...new Uint8Array(await response.arrayBuffer())] };
+    },
+  } } });
+  instance._setBaseForTests(base);
+  await instance.setInstanceSession(await login('w1@test'));
+  const native = createWorkCollabProvider(seed, {
+    clientId: 'native-real', instanceBase: base, href: 'tauri://localhost/', reconnect: false,
+    socket: class extends WebSocket { constructor(url: string, protocols: string[]) { super(url, protocols, { headers: { origin: 'tauri://localhost' } }); } },
+    store: { load: async () => null, save: async () => {}, clear: async () => {} },
+  });
+  try {
+    await native.connect();
+    await until(() => native.state().status === 'live');
+    native.adapter.apply(param('title', 'saved from native app', 'native-real', 101));
+    await until(() => native.outbox().length === 0 && (native.adapter.state().params.get('title') === 'saved from native app'));
+    assert.equal((await store.getSession(seed))?.inputs.title, 'saved from native app');
+  } finally {
+    native.close(); await instance.setInstanceSession(null); instance._setBaseForTests('');
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow); else delete (globalThis as { window?: unknown }).window;
+    if (priorLocation) Object.defineProperty(globalThis, 'location', priorLocation); else delete (globalThis as { location?: unknown }).location;
+  }
 });
 
 test('demotion broadcasts the new role and durably resolves old and newly rejected delivery IDs', async () => {
@@ -1417,4 +1453,51 @@ test('deleting an object cancels its lease and a late claimed operation cannot r
     assert.deepEqual((await alice.next('receipt')).rejectedIds, ['after-delete-id']);
     assert.deepEqual((await store.getSession(id))!.inputs.slides, []);
   } finally { alice.close(); bob.close(); gateway.close(); }
+});
+
+
+test('native socket tickets join without browser cookies, are room-scoped and single-use', async () => {
+  const path = `/api/v1/collab/sessions/${sessionId}/socket-ticket`;
+  const ticketCookie = await login('w3@test');
+  assert.equal((await json('', 'POST', path)).status, 401);
+  assert.equal((await fetch(`${base}${path}`, { method: 'POST', headers: { cookie: ticketCookie, origin: 'https://foreign.example' } })).status, 403);
+  const issued = await json(ticketCookie, 'POST', path);
+  assert.equal(issued.status, 200);
+  assert.match(issued.headers.get('cache-control') ?? '', /no-store/);
+  const { ticket } = await issued.json() as { ticket: string };
+  assert.match(ticket, /^[a-f0-9]{64}$/);
+  assert.ok(!ticket.includes(ticketCookie));
+  const native = new Client(sessionId, '', wsBase, ticket);
+  const ack = await native.join();
+  assert.equal((ack.you as { role: string }).role, 'writer');
+  native.close();
+  const replay = new Client(sessionId, '', wsBase, ticket);
+  await assert.rejects(replay.open(), /401/);
+  replay.close();
+  const otherRoom = await makeSession(aliceCookie, projectId, { title: 'Other room' });
+  const next = await json(ticketCookie, 'POST', path);
+  const fresh = (await next.json() as { ticket: string }).ticket;
+  const wrongRoom = new Client(otherRoom, '', wsBase, fresh);
+  await assert.rejects(wrongRoom.open(), /401/);
+  wrongRoom.close();
+});
+
+test('native socket tickets cannot bypass a revoked session or project access', async () => {
+  const cookie = await login('alice@test');
+  const path = `/api/v1/collab/sessions/${sessionId}/socket-ticket`;
+  const issued = await json(cookie, 'POST', path);
+  assert.equal(issued.status, 200);
+  const { ticket } = await issued.json() as { ticket: string };
+  await json(cookie, 'POST', '/api/auth/logout');
+  const revoked = new Client(sessionId, '', wsBase, ticket);
+  await assert.rejects(revoked.open(), /401/);
+  revoked.close();
+  const bob = await login('bob@test');
+  const alice = await login('alice@test');
+  const privateProject = await json(alice, 'POST', '/api/v1/projects', { name: 'Private', visibility: { groups: [] } });
+  assert.equal(privateProject.status, 201);
+  const privateId = (await privateProject.json() as { id: string }).id;
+  const hidden = await makeSession(alice, privateId, { title: 'Private' });
+  assert.equal((await json(bob, 'POST', `/api/v1/collab/sessions/${hidden}/socket-ticket`)).status, 403);
+  assert.equal((await json(bob, 'POST', '/api/v1/collab/sessions/absent/socket-ticket')).status, 404);
 });
