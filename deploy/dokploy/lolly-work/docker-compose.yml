@@ -148,7 +148,8 @@ services:
       LW_DISTRIBUTION_START: "1"
       LW_CONFIG: /app/state/instance.json
       LW_SHELL_SHA256: bc78012aa407983ecc818e63be98ae1b45ed7db1dcad3f4c8d4ffe0c371116c1
-      LW_CATALOG_GENERATION: "1"
+      LW_CATALOG_GENERATION: "3"
+      LW_SOURCE_CATALOG_PUBLIC_KEY: '{"kty":"EC","crv":"P-256","x":"fHdyfof2ppicYg3eoDbeNxdnxjbt9KhBLsjVGso6eqo","y":"SWK6wsAVjRAad2w8MxmIkTGdgNMFHhhSNdeEqfH5cVg"}'
       LOLLY_DOMAIN: ${LOLLY_DOMAIN:?set LOLLY_DOMAIN}
       LOLLY_AUTH_MODE: ${LOLLY_AUTH_MODE:-password}
       LOLLY_OIDC_ISSUER: ${LOLLY_OIDC_ISSUER:-}
@@ -193,6 +194,9 @@ services:
           if (!/^[a-f0-9]{64}$$/.test(hash)) throw new Error('Invalid pinned shell checksum');
           const generation = Number(required('LW_CATALOG_GENERATION'));
           if (!Number.isSafeInteger(generation) || generation < 1) throw new Error('Invalid catalogue generation');
+          const publicKey = JSON.parse(required('LW_SOURCE_CATALOG_PUBLIC_KEY'));
+          if (publicKey?.kty !== 'EC' || publicKey.crv !== 'P-256' || !/^[A-Za-z0-9_-]{43}$$/.test(publicKey.x)
+              || !/^[A-Za-z0-9_-]{43}$$/.test(publicKey.y) || 'd' in publicKey) throw new Error('Pin the source catalogue public P-256 key');
           for (const name of ['LW_SESSION_SECRET', 'LW_LINK_SECRET', 'LW_CREDENTIAL_SECRET']) {
             if (required(name).length < 32) throw new Error(`$${name} must contain at least 32 characters`);
           }
@@ -202,7 +206,7 @@ services:
             instance: {
               name: 'Lolly Work', baseUrl: `https://$${domain}`,
               pack: `/app/content/$${hash}/pack`, shellDir: `/app/content/$${hash}/shell`,
-              catalogPublicationGeneration: generation,
+              catalogPublicationGeneration: generation, catalogPublicKey: publicKey,
             },
             idp: {
               issuer: issuerValue, clientId: mode === 'oidc' ? required('LOLLY_OIDC_CLIENT_ID') : '',
@@ -232,6 +236,7 @@ services:
             for (const [key, leaf] of [['pack', 'pack'], ['shellDir', 'shell']]) {
               if (new RegExp('^/app/content/[a-f0-9]{64}/' + leaf + '$$').test(configuration.instance[key])) {
                 configuration.instance[key] = initial.instance[key];
+                if (key === 'pack') configuration.instance.catalogPublicKey = initial.instance.catalogPublicKey;
               }
             }
             const previous = configuration.instance.catalogPublicationGeneration ?? 0;

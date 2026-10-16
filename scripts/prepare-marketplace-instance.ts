@@ -17,7 +17,7 @@ export function prepareInstance(directory: string, settings: Record<string, stri
     LW_SESSION_SECRET: randomBytes(32).toString('hex'), LW_LINK_SECRET: randomBytes(32).toString('hex'),
     LW_CREDENTIAL_SECRET: randomBytes(32).toString('hex'),
   };
-  instanceConfiguration({ ...env, DATABASE_URL: 'postgres://validation-only', LW_SHELL_SHA256: release.shell.sha256, LW_CATALOG_GENERATION: String(release.catalogGeneration) });
+  instanceConfiguration({ ...env, DATABASE_URL: 'postgres://validation-only', LW_SHELL_SHA256: release.shell.sha256, LW_CATALOG_GENERATION: String(release.catalogGeneration), LW_SOURCE_CATALOG_PUBLIC_KEY: JSON.stringify(release.sourceCatalogPublicKey) });
   if (Object.values(env).some(value => /[\r\n\0]/.test(value))) throw new Error('Settings must be single-line values');
   // Never reuse a destination: generating new keys over an installation breaks access.
   mkdirSync(directory, { mode: 0o700 });

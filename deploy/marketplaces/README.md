@@ -6,6 +6,12 @@ URL/checksum come from the maintained YunoHost release manifest. The neutral ico
 is copied from that checksum-verified web archive. Do not substitute an arbitrary
 shell build, a private brand pack or a mutable image tag.
 
+The source catalogue public key and sequence are pinned from the checksum-verified
+shell (its web-boot public JWK and signed catalogue envelope). They verify the
+mounted release. The separate per-installation private key signs caller-specific
+catalogue projections; it cannot verify the publisher's original envelope. Keep
+both identities when updating a cohort and test admitted catalogue access/export.
+
 Run `node scripts/marketplace-packages.ts` after reviewing a cohort or adapter
 change. This generates the VM Compose package and Dokploy blueprint from the same
 runtime scripts. `--check` refuses drift in CI. These files consume public images;

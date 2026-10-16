@@ -86,6 +86,11 @@ try {
   assert.equal(setup.status, 303, 'the owner can set a password');
   const ownerCookie = cookieOf(setup, 'lw_session');
   await assertOwner(ownerCookie);
+  assert.equal((await probe('/catalog/tools/index.json', 'GET', { cookie: ownerCookie })).status, 200, 'the signed source catalogue verifies for its admitted owner');
+  const rendered = await probe('/api/v1/render', 'POST', { cookie: ownerCookie, origin: 'https://work.example.test', 'content-type': 'application/json' },
+    JSON.stringify({ toolId: 'asset-export', format: 'svg', inputs: { background: '#205080', width: 240, height: 120 } }));
+  assert.equal(rendered.status, 200, 'the neutral no-hook tool exports without a Chromium worker');
+  assert.ok(rendered.body.includes('<svg') && rendered.body.includes('#205080'), 'the SVG contains the selected colour');
   assert.equal((await probe(url.pathname + url.search)).status, 410, 'the owner link is single-use');
   const keyHash = () => createHash('sha256').update(docker(['exec', '-T', 'server', 'node', '-e', 'process.stdout.write(require("node:fs").readFileSync("/app/keys/catalog.jwk"))'])).digest('hex');
   const key = keyHash();

@@ -14,7 +14,13 @@
     "archiveBytes": 724143600,
     "expandedBytes": 1480550877
   },
-  "catalogGeneration": 1,
+  "catalogGeneration": 3,
+  "sourceCatalogPublicKey": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "fHdyfof2ppicYg3eoDbeNxdnxjbt9KhBLsjVGso6eqo",
+    "y": "SWK6wsAVjRAad2w8MxmIkTGdgNMFHhhSNdeEqfH5cVg"
+  },
   "qualifiedArchitectures": ["amd64"],
   "modelOrigin": "https://lolli.li"
 }

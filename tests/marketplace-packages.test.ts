@@ -17,7 +17,7 @@ import { mergeIndex } from '../scripts/package-helm-chart.ts';
 import { findRelease, repositoryMetadata } from '../scripts/publish-helm-chart.ts';
 
 const settings = { LOLLY_DOMAIN: 'work.example.test', LOLLY_OIDC_ISSUER: 'https://idp.example.test/tenant', LOLLY_OIDC_CLIENT_ID: 'lolly-client', LOLLY_OWNER_EMAIL: 'owner@example.test' };
-const env = { ...settings, LOLLY_AUTH_MODE: 'oidc', LW_SHELL_SHA256: release.shell.sha256, LW_CATALOG_GENERATION: '1',
+const env = { ...settings, LOLLY_AUTH_MODE: 'oidc', LW_SHELL_SHA256: release.shell.sha256, LW_CATALOG_GENERATION: '1', LW_SOURCE_CATALOG_PUBLIC_KEY: JSON.stringify(release.sourceCatalogPublicKey),
   LW_SESSION_SECRET: 'session'.repeat(10), LW_LINK_SECRET: 'links'.repeat(10), LW_CREDENTIAL_SECRET: 'credential'.repeat(10), DATABASE_URL: 'postgres://operator:password@db/lollywork' };
 
 test('generated adapters retain exact shared runtime scripts after Compose interpolation', () => {
@@ -59,6 +59,7 @@ test('neutral production configuration admits the named owner and disables devel
   assert.equal(config.proxyAuth.enabled, false);
   assert.equal(config.policy.telemetry, 'off');
   assert.equal(config.render.worker.url, '');
+  assert.deepEqual(config.instance.catalogPublicKey, release.sourceCatalogPublicKey);
   const checks = startupChecks(config, { session: env.LW_SESSION_SECRET, link: env.LW_LINK_SECRET }, true);
   assert.deepEqual(checks.filter(c => ['fail', 'warning'].includes(c.status) && c.id !== 'web-shell'), []);
   for (const key of ['LOLLY_DOMAIN', 'LOLLY_OIDC_ISSUER', 'LOLLY_OIDC_CLIENT_ID', 'LOLLY_OWNER_EMAIL', 'LW_SESSION_SECRET', 'DATABASE_URL']) {
@@ -94,6 +95,7 @@ test('configuration survives operator changes and moves only managed content on 
     assert.equal(next.instance.pack, '/app/content/' + 'a'.repeat(64) + '/pack');
     assert.equal(next.instance.shellDir, '/app/content/' + 'a'.repeat(64) + '/shell');
     assert.equal(next.instance.catalogPublicationGeneration, 2);
+    assert.deepEqual(next.instance.catalogPublicKey, release.sourceCatalogPublicKey);
     assert.equal(statSync(path).mode & 0o777, 0o600);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

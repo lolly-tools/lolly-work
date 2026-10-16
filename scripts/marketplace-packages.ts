@@ -12,7 +12,7 @@ export function deploymentPackages() {
   for (const key of ['serverImage', 'workerImage', 'postgresImage', 'caddyImage']) {
     if (!/^\S+@sha256:[a-f0-9]{64}$/.test(release[key])) throw new Error(`Pin ${key} by digest`);
   }
-  const pins = { LW_SHELL_SHA256: release.shell.sha256, LW_CATALOG_GENERATION: String(release.catalogGeneration) };
+  const pins = { LW_SHELL_SHA256: release.shell.sha256, LW_CATALOG_GENERATION: String(release.catalogGeneration), LW_SOURCE_CATALOG_PUBLIC_KEY: JSON.stringify(release.sourceCatalogPublicKey) };
   const env = (name: string) => '${' + name + ':?set ' + name + '}';
   const safety = { read_only: true, cap_drop: ['ALL'], security_opt: ['no-new-privileges:true'] };
   const services = {

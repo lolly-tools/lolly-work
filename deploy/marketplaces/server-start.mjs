@@ -27,6 +27,9 @@ export function instanceConfiguration(env) {
   if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error('Invalid pinned shell checksum');
   const generation = Number(required('LW_CATALOG_GENERATION'));
   if (!Number.isSafeInteger(generation) || generation < 1) throw new Error('Invalid catalogue generation');
+  const publicKey = JSON.parse(required('LW_SOURCE_CATALOG_PUBLIC_KEY'));
+  if (publicKey?.kty !== 'EC' || publicKey.crv !== 'P-256' || !/^[A-Za-z0-9_-]{43}$/.test(publicKey.x)
+      || !/^[A-Za-z0-9_-]{43}$/.test(publicKey.y) || 'd' in publicKey) throw new Error('Pin the source catalogue public P-256 key');
   for (const name of ['LW_SESSION_SECRET', 'LW_LINK_SECRET', 'LW_CREDENTIAL_SECRET']) {
     if (required(name).length < 32) throw new Error(`${name} must contain at least 32 characters`);
   }
@@ -36,7 +39,7 @@ export function instanceConfiguration(env) {
     instance: {
       name: 'Lolly Work', baseUrl: `https://${domain}`,
       pack: `/app/content/${hash}/pack`, shellDir: `/app/content/${hash}/shell`,
-      catalogPublicationGeneration: generation,
+      catalogPublicationGeneration: generation, catalogPublicKey: publicKey,
     },
     idp: {
       issuer: issuerValue, clientId: mode === 'oidc' ? required('LOLLY_OIDC_CLIENT_ID') : '',
@@ -66,6 +69,7 @@ export function prepareConfiguration(env, path) {
     for (const [key, leaf] of [['pack', 'pack'], ['shellDir', 'shell']]) {
       if (new RegExp('^/app/content/[a-f0-9]{64}/' + leaf + '$').test(configuration.instance[key])) {
         configuration.instance[key] = initial.instance[key];
+        if (key === 'pack') configuration.instance.catalogPublicKey = initial.instance.catalogPublicKey;
       }
     }
     const previous = configuration.instance.catalogPublicationGeneration ?? 0;
