@@ -114,12 +114,14 @@ Retention, applied whenever a version is written:
   stopped) counts as one of those 200 on its own. A restore never removes the
   version it restores from;
 - named versions: up to 20 per person and 100 per document, kept until a project
-  manager deletes them;
+  manager deletes them. A version someone names or pins later is kept the same way
+  and counts against those limits for that person, until its name and pin are
+  removed; it then follows the rules for its kind again;
 - space: one document's versions may hold at most 100 MiB of distinct content and
   the instance's at most `policy.versions.maxBytes` (1 GiB by default). When a new
-  version would pass either cap the oldest automatic versions go first; if that is
-  not enough, a named save or a restore is refused (`409 VERSION_SPACE`) and an
-  automatic version is skipped.
+  version would pass either cap the oldest automatic versions that nobody named or
+  pinned go first; if that is not enough, a named save or a restore is refused
+  (`409 VERSION_SPACE`) and an automatic version is skipped.
 
 Content no version uses any more is deleted with the last version that used it.
 Deleting a document deletes all its versions and their content in the same
@@ -129,10 +131,11 @@ with the version's id and kind.
 
 Versions hold no email address: the API names people with their first and last
 name (or the part of their email before the `@`), agents with their label and
-guests as "Guest". Audit entries for saves, restores and deletions hold ids and
-counts only, never inputs or names.
+guests as "Guest". Audit entries for saves, name and pin changes, restores and
+deletions hold ids, counts and the pin, never inputs or names.
 
-Source anchors: `migrations/0053_session_versions.sql`, `server/src/versions/`,
+Source anchors: `migrations/0053_session_versions.sql`,
+`migrations/0072_session_version_annotations.sql`, `server/src/versions/`,
 `server/src/collab/rooms.ts` and the version blocks of `server/src/store/types.ts`.
 
 ## Activity and new audit data

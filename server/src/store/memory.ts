@@ -10,8 +10,9 @@ import type { CollabReceipt } from './types.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
 import {
-  newestVersionFirst, normalizeSessionVersionWrite, planSessionVersionPut, resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
-  type SessionVersion, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+  newestVersionFirst, normalizeSessionVersionAnnotation, normalizeSessionVersionWrite, planSessionVersionAnnotate, planSessionVersionPut,
+  resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
+  type SessionVersion, type SessionVersionAnnotate, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
 } from './types.ts';
 import type { ProjectUserStateRecord, ShareGroupRecord } from './types.ts';
 /**
@@ -1791,15 +1792,17 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   };
 }
 
-type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'annotateSessionVersion'
+  | 'deleteSessionVersion' | 'deleteSessionVersions';
 
 /**
  * Session versions (plan 76 M4 R2): the memory twin of migration 0053's two
- * tables. Writes run one at a time, as the Postgres driver's lock makes them, and
- * the rules are the shared `planSessionVersionPut`.
+ * tables and 0072's annotation columns. Writes run one at a time, as the Postgres
+ * driver's lock makes them, and the rules are the shared `planSessionVersionPut`
+ * and `planSessionVersionAnnotate`.
  */
 function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pick<Store, VersionMethods> {
-  type Stored = Omit<SessionVersion, 'inputs' | 'bytes'> & { digest: string; requestId?: string };
+  type Stored = Omit<SessionVersion, 'inputs' | 'bytes'> & { digest: string; requestId?: string; keptBy?: string };
   const versions = new Map<string, Stored>(); // by id
   const contents = new Map<string, { sessionId: string; digest: string; inputs: Record<string, unknown>; bytes: number }>(); // `${sessionId} ${digest}`
   const contentKey = (sessionId: string, digest: string): string => `${sessionId} ${digest}`;
@@ -1812,12 +1815,13 @@ function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pic
   };
   const rowOf = (v: Stored): SessionVersionRow => ({ id: v.id, sessionId: v.sessionId, kind: v.kind, digest: v.digest, at: v.at,
     ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}), ...(v.requestId !== undefined ? { requestId: v.requestId } : {}),
-    ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}) });
+    ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}), ...(v.label !== undefined ? { label: v.label } : {}),
+    ...(v.pinned ? { pinned: true } : {}), ...(v.keptBy !== undefined ? { keptBy: v.keptBy } : {}) });
   const summary = (v: Stored): SessionVersionSummary => ({
     id: v.id, sessionId: v.sessionId, rev: v.rev, kind: v.kind, ...(v.label !== undefined ? { label: v.label } : {}),
     contributors: structuredClone(v.contributors), ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}),
     ...(v.restoredFrom !== undefined ? { restoredFrom: v.restoredFrom } : {}), ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}),
-    bytes: contents.get(contentKey(v.sessionId, v.digest))?.bytes ?? 0, at: v.at,
+    bytes: contents.get(contentKey(v.sessionId, v.digest))?.bytes ?? 0, at: v.at, pinned: v.pinned, annotationRev: v.annotationRev,
   });
   const own = (sessionId: string): Stored[] => [...versions.values()].filter((v) => v.sessionId === sessionId);
   /** Delete versions as Postgres would: references to them become unset, then
@@ -1864,7 +1868,7 @@ function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pic
         }
         if (plan.contentIsNew) contents.set(contentKey(w.sessionId, content.digest), { sessionId: w.sessionId, digest: content.digest, inputs: structuredClone(w.inputs), bytes: content.bytes });
         const { inputs: _inputs, keep: _keep, ...fields } = w;
-        const stored: Stored = { ...structuredClone(fields), id, digest: content.digest };
+        const stored: Stored = { ...structuredClone(fields), id, digest: content.digest, pinned: false, annotationRev: 0 };
         versions.set(id, stored);
         drop(plan.drops);
         return { version: summary(stored), created: true };
@@ -1884,6 +1888,23 @@ function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pic
       if (!v || v.sessionId !== sessionId) return null;
       const inputs = contents.get(contentKey(sessionId, v.digest))?.inputs ?? {};
       return { ...summary(v), inputs: structuredClone(inputs), meta: structuredClone(v.meta) };
+    },
+    annotateSessionVersion(sessionId, id, input) {
+      return serial(async (): Promise<SessionVersionAnnotate> => {
+        const change = normalizeSessionVersionAnnotation(input);
+        const session = sessions.get(sessionId);
+        if (!session || session.deletedAt) throw new Error('session-gone');
+        const v = versions.get(id);
+        if (!v || v.sessionId !== sessionId) return 'not-found';
+        const plan = planSessionVersionAnnotate(own(sessionId).map(rowOf), rowOf(v), v.annotationRev, change);
+        if (plan.action === 'refuse') return plan.reason;
+        if (plan.action === 'same') return { version: summary(v), changed: false };
+        if (plan.label !== undefined) v.label = plan.label; else delete v.label;
+        if (plan.keptBy !== undefined) v.keptBy = plan.keptBy; else delete v.keptBy;
+        v.pinned = plan.pinned;
+        v.annotationRev += 1;
+        return { version: summary(v), changed: true };
+      });
     },
     deleteSessionVersion(sessionId, id) {
       return serial(async () => {
