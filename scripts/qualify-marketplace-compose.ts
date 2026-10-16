@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:https';
 import { checkServerIdentity } from 'node:tls';
+import { createHash } from 'node:crypto';
 import { parse, stringify } from 'yaml';
 import { prepareInstance } from './prepare-marketplace-instance.ts';
 import { release } from './marketplace-packages.ts';
@@ -17,6 +18,7 @@ const directory = mkdtempSync(join(tmpdir(), 'lolly-compose-qualification-'));
 const installation = join(directory, 'instance'), project = `lolly-marketplace-${process.pid}`;
 prepareInstance(installation, { LOLLY_DOMAIN: 'work.example.test', LOLLY_OIDC_ISSUER: 'https://identity.example.test', LOLLY_OIDC_CLIENT_ID: 'qualification-client', LOLLY_OWNER_EMAIL: 'owner@example.test' });
 const compose = parse(readFileSync(join(installation, 'compose.yaml'), 'utf8'));
+const packageComposeSha256 = createHash('sha256').update(readFileSync(join(installation, 'compose.yaml'))).digest('hex');
 compose.services.caddy.ports = ['127.0.0.1::443'];
 writeFileSync(join(installation, 'compose.yaml'), stringify(compose, { lineWidth: 0 }));
 writeFileSync(join(installation, 'Caddyfile'), 'work.example.test {\n  tls internal\n  reverse_proxy server:8787\n}\n');
@@ -49,16 +51,21 @@ try {
   assert.ok([401, 403].includes((await get('/catalog/tools/index.json')).status), 'private catalogue refuses anonymous access');
   assert.notEqual((await get('/api/auth/dev?email=owner@example.test')).status, 200, 'no development owner bypass');
   sql("INSERT INTO users (id,sub,email,groups,role) VALUES ('qualification-member','qualification-member','fixture@example.test','[]','member')");
-  const key = docker(['exec', '-T', 'server', 'node', '-e', 'process.stdout.write(require("node:fs").readFileSync("/app/keys/catalog.jwk"))']);
+  const keyHash = () => createHash('sha256').update(docker(['exec', '-T', 'server', 'node', '-e', 'process.stdout.write(require("node:fs").readFileSync("/app/keys/catalog.jwk"))'])).digest('hex');
+  const key = keyHash();
+  docker(['exec', '-T', 'server', 'node', '-e', 'const fs=require("node:fs"),path="/app/state/instance.json",config=JSON.parse(fs.readFileSync(path));config.instance.name="Persisted qualification";fs.writeFileSync(path,JSON.stringify(config));']);
   docker(['restart', 'server']); await ready();
   assert.equal(sql("SELECT email FROM users WHERE id='qualification-member'"), 'fixture@example.test');
-  assert.equal(docker(['exec', '-T', 'server', 'node', '-e', 'process.stdout.write(require("node:fs").readFileSync("/app/keys/catalog.jwk"))']), key);
+  assert.equal(keyHash(), key);
+  assert.equal(JSON.parse((await get('/healthz')).body).name, 'Persisted qualification');
   // The dump remains binary. Never route it through the UTF-8 command helper.
   const dump = execFileSync('docker', ['compose', '--project-name', project, 'exec', '-T', 'db', 'pg_dump', '-U', 'lolly', '-d', 'lollywork', '-Fc'], { cwd: installation, maxBuffer: 64 * 1024 * 1024 });
   docker(['exec', '-T', 'db', 'createdb', '-U', 'lolly', 'qualification_restore']);
   docker(['exec', '-T', 'db', 'pg_restore', '-U', 'lolly', '-d', 'qualification_restore', '--exit-on-error', '--single-transaction', '--no-owner', '--no-privileges'], dump);
   assert.equal(sql("SELECT email FROM users WHERE id='qualification-member'", 'qualification_restore'), 'fixture@example.test');
   const receipt = { status: 'CONTAINER_INSTALL_HTTPS_PRIVATE_ACCESS_RESTART_AND_DATABASE_RESTORE_VERIFIED', release,
+    packageSource: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), packageComposeSha256,
+    qualificationComposeSha256: createHash('sha256').update(readFileSync(join(installation, 'compose.yaml'))).digest('hex'),
     actualCustomerIdentity: 'NOT_TESTED', crossVersionUpgrade: 'NOT_TESTED', cloudProvider: 'NOT_TESTED', nativeArchitecture: 'amd64' };
   writeFileSync(process.env.LW_MARKETPLACE_RECEIPT, JSON.stringify(receipt, null, 2) + '\n');
   console.log(receipt.status);

@@ -47,7 +47,7 @@ export function main(): void {
         }
       }
     };
-    for (const directory of ['server', 'workers', 'cli', 'scripts']) copy(directory);
+    for (const directory of ['server', 'workers', 'cli', 'scripts', 'deploy/marketplaces']) copy(directory);
     const result = run(['scan', '--error', '--no-git-ignore', '--jobs', '2', '--max-memory', '2048', '--timeout', '60', '--config', rules, '--json', projection]);
     if (result.error || ![0, 1].includes(result.status ?? -1)) throw new Error('Code scanner did not complete');
     const report = JSON.parse(result.stdout) as { results: Array<{ check_id: string; path: string; start: { line: number } }>; errors: unknown[]; paths: { scanned: string[] } };

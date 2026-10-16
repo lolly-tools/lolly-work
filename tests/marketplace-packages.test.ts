@@ -42,6 +42,10 @@ test('generated adapters retain exact shared runtime scripts after Compose inter
   }
   assert.equal(dokploy.services.caddy, undefined);
   assert.deepEqual(vm.services.caddy.ports, ['80:80', '443:443', '443:443/udp']);
+  const profile = parse(readFileSync(new URL('../deploy/helm/values-official-release.yaml', import.meta.url), 'utf8'));
+  assert.equal(profile.image.repository + '@' + profile.image.digest, release.serverImage);
+  assert.equal(profile.renderWorker.image.repository + '@' + profile.renderWorker.image.digest, release.workerImage);
+  assert.equal(profile.renderWorker.enabled, false);
 });
 
 test('neutral production configuration admits the named owner and disables development and inherited roles', () => {
