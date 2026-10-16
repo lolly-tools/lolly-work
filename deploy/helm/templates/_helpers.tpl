@@ -227,6 +227,12 @@ secret (Mode A didn't set them, or Mode B's secret omits them).
       name: {{ include "lolly-work.secretName" . }}
       key: LW_CREDENTIAL_SECRET
       optional: true
+- name: LW_CATALOG_SIGNING_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "lolly-work.secretName" . }}
+      key: LW_CATALOG_SIGNING_KEY
+      optional: true
 - name: LW_METRICS_TOKEN
   valueFrom:
     secretKeyRef:
