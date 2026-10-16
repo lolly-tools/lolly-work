@@ -293,6 +293,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
   let auditMacKey: string | undefined;
   const { default: pg } = await import('pg');
   const pool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl)), 'store') as unknown as PgPool;
+  // A claim stays open during scanning and admission. Its transaction must not
+  // consume the record connections the admission needs in order to finish.
+  const submissionPool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl)), 'catalog submission') as unknown as PgPool;
 
   const appendAuditInTransaction = async (client: PgClient, body: AuditEventBody): Promise<AuditEvent> => {
     await client.query('select pg_advisory_xact_lock($1)', [AUDIT_LOCK_KEY]);
@@ -1910,7 +1913,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
 
     async claimCatalogSubmission(key) {
-      const client = await pool.connect();
+      const client = await submissionPool.connect();
       try {
         await client.query('begin');
         const { rows } = await client.query('select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired', [`catalog-submit:${key}`]);
@@ -2838,7 +2841,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return pendingAgainst(pool); // read-only; safe on a pending schema
     },
     async close() {
-      await pool.end();
+      await Promise.all([pool.end(), submissionPool.end()]);
     },
   };
 }
