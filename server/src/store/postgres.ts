@@ -262,7 +262,7 @@ interface PgClient {
   /** `rowCount` is how a conditional UPDATE reports whether it matched - the CAS
    *  in `casSession` has no other way to tell "wrote" from "the row moved". */
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
-  release(): void;
+  release(destroy?: boolean): void;
 }
 
 const AUDIT_LOCK_KEY = 0x1011_0001;
@@ -293,6 +293,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
   let auditMacKey: string | undefined;
   const { default: pg } = await import('pg');
   const pool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl)), 'store') as unknown as PgPool;
+  // A claim stays open during scanning and admission. Its transaction must not
+  // consume the record connections the admission needs in order to finish.
+  const submissionPool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl)), 'catalog submission') as unknown as PgPool;
 
   const appendAuditInTransaction = async (client: PgClient, body: AuditEventBody): Promise<AuditEvent> => {
     await client.query('select pg_advisory_xact_lock($1)', [AUDIT_LOCK_KEY]);
@@ -1909,6 +1912,21 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       await pool.query('delete from catalog_credentials where asset_id = $1', [assetId]);
     },
 
+    async claimCatalogSubmission(key) {
+      const client = await submissionPool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query('select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired', [`catalog-submit:${key}`]);
+        if (!rows[0]?.acquired) { await client.query('rollback'); client.release(); return null; }
+      } catch (error) { client.release(true); throw error; }
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        try { await client.query('rollback'); }
+        finally { client.release(true); }
+      };
+    },
     async putInstanceAsset(rec) {
       await pool.query(
         `insert into instance_assets (id, record) values ($1, $2::jsonb)
@@ -2823,7 +2841,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return pendingAgainst(pool); // read-only; safe on a pending schema
     },
     async close() {
-      await pool.end();
+      await Promise.all([pool.end(), submissionPool.end()]);
     },
   };
 }

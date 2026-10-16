@@ -148,6 +148,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const lifecycle = new Map<string, LifecycleRow>();
   const credentials = new Map<string, CredentialRow>();
   const instanceAssets = new Map<string, InstanceAssetRecord>();
+  const catalogSubmissions = new Set<string>();
   const aliases = new Map<string, string>();
   const submitQuota = new Map<string, SubmitQuotaRow>();
   const catalogFields = new Map<string, CatalogFieldDef>();
@@ -1152,6 +1153,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       credentials.delete(assetId);
     },
 
+    async claimCatalogSubmission(key) {
+      if (catalogSubmissions.has(key)) return null;
+      catalogSubmissions.add(key);
+      return async () => { catalogSubmissions.delete(key); };
+    },
     async putInstanceAsset(rec) {
       instanceAssets.set(rec.id, rec);
     },

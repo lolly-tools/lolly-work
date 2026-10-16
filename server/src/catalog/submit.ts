@@ -294,6 +294,9 @@ export interface SubmitDeps {
 }
 
 export interface SubmitInput {
+  projectSource?: import('./project-source.ts').ProjectSubmissionSource;
+  /** Recheck project access after the scanner, before storing a contribution. */
+  sourceStillReadable?(): Promise<boolean>;
   bytes: Buffer;
   /**
    * An existing instance asset these bytes REPLACE (plans/31 section 6). With
@@ -325,6 +328,8 @@ export interface SubmitInput {
 }
 
 export type SubmitRefusal =
+  | { ok: false; code: 'SUBMISSION_INCOMPLETE'; detail: string }
+  | { ok: false; code: 'SOURCE_CHANGED'; detail: string }
   | { ok: false; code: 'QUOTA_EXCEEDED'; detail: string }
   | { ok: false; code: 'SCAN_REJECTED'; detail: string }
   | { ok: false; code: 'SCAN_UNAVAILABLE'; detail: string }
@@ -385,6 +390,17 @@ export function findByChecksum(
 
 export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise<SubmitOutcome> {
   const { store, blobs, policy } = deps;
+  // Retry only this person's own admission of this verified source and audience.
+  if (input.projectSource) {
+    const source = input.projectSource;
+    const prior = (await store.listInstanceAssets()).find(r =>
+      r.submission?.by === `user:${input.submitter.id}` && r.submission.state !== 'returned' &&
+      r.submission.projectSource?.projectId === source.projectId &&
+      r.submission.projectSource.fileId === source.fileId && r.submission.projectSource.checksum === source.checksum &&
+      JSON.stringify([...(r.groups ?? [])].sort()) === JSON.stringify([...(input.groups ?? [])].sort()));
+    if (prior?.submission?.state === 'submitted' && !prior.submission.approvalId) return { ok: false, code: 'SUBMISSION_INCOMPLETE', detail: 'The earlier admission did not finish. Ask a workspace administrator to inspect the pending submission before retrying.' };
+    if (prior) return { ok: true, duplicate: true, record: prior, checksum: source.checksum, scan: 'skipped', credential: (await store.getCredential(prior.id))?.status ?? 'none' };
+  }
   const nowIso = new Date(deps.now?.() ?? Date.now()).toISOString();
   let size = input.bytes.length;
 
@@ -503,6 +519,10 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     }
   }
 
+  if (input.sourceStillReadable && !await input.sourceStillReadable()) {
+    return { ok: false, code: 'SOURCE_CHANGED', detail: 'Project file access changed. Open the project again before submitting.' };
+  }
+
   // 4a. Quota, half two: CHARGE, then verify what the charge landed on. This is
   //     what actually enforces the cap. The pre-check above is a read followed
   //     much later by a write, and everything in between - the duplicate
@@ -599,6 +619,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   }
   const submission: AssetSubmission = {
     state: 'submitted',
+    ...(input.projectSource ? { projectSource: input.projectSource } : {}),
     by: `user:${input.submitter.id}`,
     at: nowIso,
     checksum: stat.checksum,

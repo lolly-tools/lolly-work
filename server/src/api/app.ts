@@ -97,6 +97,7 @@ import type { VersionRoomBridge } from '../versions/restore.ts';
 import { recordSaveVersion } from '../versions/recorder.ts';
 import { registerVersionRoutes } from '../versions/routes.ts';
 import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader } from '../render/read-ticket.ts';
+import { projectSubmissionInput, ProjectSubmissionError } from '../catalog/project-source.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { effectiveAccessFor } from '../projects/effective-access.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
@@ -7042,9 +7043,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const declaredType = (ctx.url.searchParams.get('type') ?? '').trim();
     if (!name && !target && !isDataSubmissionType(declaredType)) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
     const maxBytes = config.policy.submit.maxBytes;
+    let projectInput: Awaited<ReturnType<typeof projectSubmissionInput>>;
+    try { projectInput = await projectSubmissionInput(ctx.url.searchParams, { config, store, blobs, user, currentUser: () => memberOf(req), access: projectAccessOf }); }
+    catch (error) {
+      if (error instanceof ProjectSubmissionError) return sendError(res, error.status, error.code, error.message);
+      throw error;
+    }
     let bytes: Buffer;
     try {
-      bytes = await readRaw(req, maxBytes);
+      if (projectInput) {
+        if ((await readRaw(req, 1)).length) return sendError(res, 400, 'INVALID_INPUT', 'a project source takes no uploaded body');
+        bytes = projectInput.bytes;
+      } else bytes = await readRaw(req, maxBytes);
     } catch {
       return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `submission exceeds the ${maxBytes} byte cap (policy.submit.maxBytes)`);
     }
@@ -7061,8 +7071,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const toolIdParam = (ctx.url.searchParams.get('toolId') ?? '').trim();
     const clientRef = (ctx.url.searchParams.get('clientRef') ?? '').trim();
 
-    const outcome = await submitAsset(submitDeps(), {
+    const release = projectInput ? await store.claimCatalogSubmission(`${user.id}:${projectInput.source.projectId}:${projectInput.source.fileId}:${projectInput.source.checksum}`) : undefined;
+    if (release === null) return sendError(res, 409, 'SUBMISSION_BUSY', 'this project file is already being submitted; retry shortly');
+    let outcome: Awaited<ReturnType<typeof submitAsset>>;
+    try { outcome = await submitAsset(submitDeps(), {
       bytes,
+      ...(projectInput ? { projectSource: projectInput.source, sourceStillReadable: projectInput.stillReadable } : {}),
       ...(target ? { target } : {}),
       ...(ctx.url.searchParams.get('note') ? { note: (ctx.url.searchParams.get('note') as string).slice(0, 500) } : {}),
       name: (name || String(target?.entry.name ?? targetId)).slice(0, 200),
@@ -7070,11 +7084,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       tags: list('tags').slice(0, 32),
       ...(type ? { type } : {}),
       ...(declaredGroups.length ? { groups: declaredGroups } : {}),
-      ...(req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
+      ...(projectInput ? { contentType: projectInput.contentType } : req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
       submitter: { id: user.id, groups: user.groups },
       ...(toolIdParam ? { toolId: toolIdParam } : {}),
       ...(clientRef ? { clientRef } : {}),
-    });
+    }); } finally { await release?.(); }
 
     if (!outcome.ok) {
       // The verdict is audited either way: a refusal is exactly the event an
@@ -7084,7 +7098,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       });
       // A misconfigured review chain is the instance's fault, not the
       // submitter's, so it reads as unavailable rather than as a bad request.
-      const status = outcome.code === 'QUOTA_EXCEEDED' ? 409
+      const status = outcome.code === 'SUBMISSION_INCOMPLETE' ? 503 : outcome.code === 'SOURCE_CHANGED' ? 403 : outcome.code === 'QUOTA_EXCEEDED' ? 409
         : outcome.code === 'SCAN_REJECTED' || outcome.code === 'INVALID_SUBMISSION' ? 422
           : outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 502;
       return sendError(res, status, outcome.code, outcome.detail);
@@ -7101,6 +7115,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await audit(`user:${user.id}`, target ? 'catalog.version' : 'catalog.submit', `catalog:${outcome.record.id}`, {
       outcome: outcome.duplicate ? 'duplicate' : state,
       checksum: outcome.checksum, size: bytes.length, scan: outcome.scan,
+      ...(projectInput ? { projectSource: projectInput.source } : {}),
       credential: outcome.credential,
       ...(outcome.version ? { version: outcome.version } : {}),
       ...(trimmed ? { trimmed } : {}),
