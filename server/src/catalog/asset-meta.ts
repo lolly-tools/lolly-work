@@ -22,6 +22,7 @@
  * haystack and the submit review queue all fold the same rules.
  */
 import type { AssetIndex, AssetIndexEntry } from './lifecycle.ts';
+import { textIndexCurrent, type TextIndexSource } from './text-index.ts';
 
 // -- definitions (policy) ----------------------------------------------------
 
@@ -118,6 +119,7 @@ export interface AssetMetaRecord {
    * page of OCR noise on each entry is bytes no shell asked for.
    */
   extractedText?: string;
+  extractedTextSource?: TextIndexSource;
   /** 'user:<id>' of the last editor. */
   updatedBy: string;
   updatedAt: string;
@@ -144,7 +146,8 @@ export function normalizeExtractedText(raw: unknown): string | null {
  *  when the overlay carries none - so the search route folds it in beside the
  *  field values with no special-casing. Keyed on the overlay RECORD, not the
  *  served entry, because the text is kept off the feed on purpose. */
-export function extractedHaystack(meta: AssetMetaRecord | null | undefined): string[] {
+export function extractedHaystack(meta: AssetMetaRecord | null | undefined, entry?: AssetIndexEntry): string[] {
+  if (meta?.extractedTextSource && (!entry || !textIndexCurrent(meta.extractedTextSource, entry))) return [];
   return meta?.extractedText ? [meta.extractedText] : [];
 }
 

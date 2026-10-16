@@ -118,9 +118,10 @@ in on the instance and export the pack, or connect from the desktop app.
 |---|---|---|
 | `GET /catalog/*` | per access mode | pack blobs, lifecycle-gated |
 | `GET /api/v1/catalog/assets` | per access mode | one page of the caller's feed: `q`, `source`, `section`, `collection`, `tag`, `type`, `cursor`, `limit`; returns `{ assets, total, nextCursor, facets, version }` ([large catalogs](catalog.md#large-catalogs)) |
-| `GET /api/v1/catalog/assets/*` | per access mode | asset feed / entries |
+| `GET /api/v1/catalog/assets/*` | member; visible asset | inspect source facts, organisation fields and text-index status without returning extracted words |
 | `GET /api/v1/catalog/search` | `catalog.read` | live fan-out to search-capable providers |
 | `PUT /api/v1/catalog/assets/<id>/meta` | `catalog.edit` | org-defined field values and `replacedBy` on any asset the caller sees; `name`/`description`/`tags` on `inst/*` only |
+| `PUT /api/v1/catalog/text-index/<id>` | `catalog.edit` | explicitly save reviewed text with `sourceRevision`, `fileId` and `method`; `text: null` clears; stale revisions return 409 ([reviewed text](catalog.md#reviewed-text-from-the-assets-inspector)) |
 | `GET /api/v1/catalog/assets/<id>/versions` | `catalog.read` | one instance asset's byte history, newest first, with the served version and the retention ceiling |
 | `PUT /api/v1/catalog/assets/<id>/head` | `catalog.edit` | roll back: `{ "version": N }` points the head at a version that already exists |
 | `DELETE /api/v1/catalog/assets/<id>/versions/<n>` | `catalog.edit` | `409 VERSION_IS_HEAD` for the served version, `409 ASSET_HELD` while a hold is set |
