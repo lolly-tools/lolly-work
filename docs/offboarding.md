@@ -72,7 +72,9 @@ tenant, which happens on a customer's own tenant under their own contract. Four 
 guess turns out wrong: [canto](providers/canto-live-verify.md),
 [imagerelay](providers/imagerelay-live-verify.md),
 [intelligencebank](providers/intelligencebank-live-verify.md),
-[acquia-dam](providers/acquia-dam-live-verify.md). Run one before committing an exit schedule.
+[acquia-dam](providers/acquia-dam-live-verify.md). The additional passes are
+[Cloudinary](providers/cloudinary-live-verify.md) and
+[Orange Logic](providers/orange-logic-live-verify.md). Run the relevant pass before committing an exit schedule.
 
 | Kind | Driver | What imports | Original bytes out | Exit verdict |
 |---|---|---|---|---|
@@ -82,6 +84,8 @@ guess turns out wrong: [canto](providers/canto-live-verify.md),
 | `acquia-dam` | Widen v2 API, bearer token | Native window (`release_date` → available from, `expiration_date` → available until); asset `status` → approved via `options.approvedStatuses` (default `["active"]`); categories → sections | Yes. The `embeds.original` URL (or the download link) re-fetched per request, host-pinned to `widencollective.com` / `widencdn.net` | **Exit target**, and the least mapping work of the set - governance arrives native, so no custom-field wiring. Live confirmation of the field names open |
 | `intelligencebank` | v3 Graph API only. Login handshake, single sealed credential | Native window (`publish_date` → available from, `expiry_date` or `review_date` → available until); workflow state → approved via `options.approvedStates` (absent leaves approval unfiltered); folder and category → sections | Yes. The resource `download_url` re-fetched per request, host-pinned to the `intelligencebank.com` family (a custom-domain tenant needs its host added) | **Exit target.** Governance-rich, so an exit keeps most of what the DAM knew. Live confirmation of the login response and field names open |
 | `optimizely-cmp` | CMP DAM API v3, OAuth2 (BYOT); the only kind with a publish-out arm, opt-in per provider (`options.publish`) | `expires_at` → available until (CMP models expiry, no release date); `is_public` and not `is_archived` → approved; folder and labels → sections | The signed `download_url` streams per request, so the exit path would run | **Not an exit target.** The CMS owns these assets: read-only federate-in plus publish-out of lolly-generated exports. Do not run `cutover` against it |
+| `cloudinary` | Search/Admin and signed asset-ID download; sealed API key/secret | Optional configured approval tag and metadata dates; dynamic asset folder | Original download by asset ID, with selected-version preflight and no transform | **Conditional exit target.** Prove original checksums and separately export required rights/proof/history data before scheduling migration |
+| `orange-logic` | Search v4; client credentials or bearer | Configured approval/dates, folders and tags; explicit rendition file roles | **Unsupported.** Public renditions only; protected original contract unavailable | **Cutover refused.** Materialised renditions do not establish an original-preserving exit |
 
 The non-DAM kinds (`webdav`, `s3`, `git`, `dropbox`, `gdrive`, `o365`, `penpot`) are storage and
 design sources, not brand libraries held under someone else's contract. They have no

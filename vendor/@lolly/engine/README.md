@@ -231,9 +231,9 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `design-draw-pdf.ts` | 512 | Drawing operations written as PDF (plan 295, phase 3, P3d). | no | `tests/design-draw-pdf.test.ts` | – |
 | `design-draw-penpot.ts` | 126 | Penpot's existing flat-primitive and gradient reading, separate from Design's CSS geometry. | no | `tests/design-draw-penpot.test.ts` | – |
 | `design-draw-pptx.ts` | 275 | The native deck's primitive, linear-gradient and single-path reading, distinct from Design's CSS geometry. | no | `tests/design-draw-pptx.test.ts` | – |
-| `design-draw-raster.ts` | 113 | Internal P3f admission. | no | `tests/design-draw-raster.test.ts` | – |
+| `design-draw-raster.ts` | 545 | Internal P3f admission. | no | `tests/design-draw-raster.test.ts` | – |
 | `design-draw-svg.ts` | 411 | Drawing operations written as SVG (plan 295, phase 3, P3a). | no | indirect | – |
-| `design-draw.ts` | 876 | Authored Design rows compiled into drawing operations (plan 295, phase 3, P3a). | no | `tests/design-draw.test.ts` | – |
+| `design-draw.ts` | 900 | Authored Design rows compiled into drawing operations (plan 295, phase 3, P3a). | no | `tests/design-draw.test.ts` | – |
 | `design-hierarchy.ts` | 256 | Document ownership is independent of geometry and the active editor canvas. | yes | `tests/design-hierarchy.test.ts` | – |
 | `design-house-rules.ts` | 493 | House rules for a Design document (plan 291 W1 and W3): brand rule records whose kind is one of `DESIGN_HOUSE_RULE_KINDS`, checked layer by layer against the boxes a Design document stores. | yes | `tests/design-house-rules.test.ts` | – |
 | `design-idml.ts` | 147 | Deterministic IDML for static Design text, rectangular/oval frames and still images. | no | indirect | – |
@@ -243,7 +243,7 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `design-lottie.ts` | 105 | Authored Design values into the shared sequence compiler, identical on every host. | no | `tests/design-lottie.test.ts` | – |
 | `design-map.ts` | 2174 | Design-file → Design boxes (pure mapper). | yes | `tests/design-map.test.ts` | – |
 | `design-page-svg.ts` | 228 | A Design page exported as SVG from drawing operations (plan 295, phase 3, P3d). | no | `tests/design-page-svg.test.ts` | – |
-| `design-path-author.ts` | 256 | Absolute path geometry to a stored Design path row (plan 291 W5). | yes | `tests/design-path-author.test.ts` | – |
+| `design-path-author.ts` | 257 | Absolute path geometry to a stored Design path row (plan 291 W5). | yes | `tests/design-path-author.test.ts` | – |
 | `design-premiere.ts` | 62 | Authored media clips into a Premiere XML package with original media bytes. | no | indirect | – |
 | `design-scene.ts` | 149 | The Design scene grammar - what a `kind:'3d'` box's `scene` field holds, and the only place that grammar lives (plan 265 milestone 3, decision Q17). | yes | indirect | – |
 | `design-system.ts` | 257 | design-system.ts - the identity and namespace rules for holding SEVERAL design systems on one device (plans/186 section 6). | yes | `tests/design-system.test.ts` | – |
@@ -321,7 +321,7 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `geom/authored-frame.ts` | 228 | The frame a path box is drawn in, fitted to its curve: one rule for the pen tool and for every caller that writes a path row from absolute geometry (plan 291 W5). | yes | indirect | – |
 | `geom/authored-url.ts` | 316 | The wire form of an `AuthoredPath` - what a pen shape looks like inside one `blocks` sub-field, and therefore inside a share link. | yes | indirect | – |
 | `geom/bezier.ts` | 484 | Cubic Bézier kernel - the geometric substrate for boolean operations, offsetting and stroke outlining. | yes | `tests/geom-bezier.test.ts` | – |
-| `geom/boolean.ts` | 1622 | Boolean operations on regions bounded by cubic Béziers - union, intersection, difference, exclusive-or - and the winding-number test they are all decided by. | yes | `tests/geom-boolean.test.ts` | – |
+| `geom/boolean.ts` | 1630 | Boolean operations on regions bounded by cubic Béziers - union, intersection, difference, exclusive-or - and the winding-number test they are all decided by. | yes | `tests/geom-boolean.test.ts` | – |
 | `geom/fit.ts` | 1262 | Fitting cubics to a curve that has no Bézier form - an exact offset, a stroke edge, a distorted path. | yes | `tests/geom-fit.test.ts` | – |
 | `geom/intersect.ts` | 2352 | Curve intersection. | yes | `tests/geom-intersect.test.ts` | – |
 | `geom/near-pieces.ts` | 57 | Ordered curve-proximity candidates from start, midpoint and end cells. | no | `tests/geom-near-pieces.test.ts` | – |
@@ -439,7 +439,7 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `rebrand-archetype.ts` | 472 | Which archetype a source slide should be poured into (plan 274 section 3.3). | yes | `tests/rebrand-archetype.test.ts` | – |
 | `rebrand-colors.ts` | 834 | Colour assignment by use, with feasibility (plan 274 section 3.3). | yes | `tests/rebrand-colors.test.ts` | – |
 | `rebrand-decisions.ts` | 364 | Carrying a person's decisions into the next revision of a deck, and applying one decision to a plan (plan 274 section 3.3, "persistence and carry-forward"). | yes | `tests/rebrand-decisions.test.ts` | – |
-| `rebrand-design-system.ts` | 1315 | One design system, resolved once for the whole renovation journey (plan 274 sections 3.3 and 3.5). | yes | `tests/rebrand-design-system.test.ts` | – |
+| `rebrand-design-system.ts` | 1317 | One design system, resolved once for the whole renovation journey (plan 274 sections 3.3 and 3.5). | yes | `tests/rebrand-design-system.test.ts` | – |
 | `rebrand-edit.ts` | 733 | Pure edits to a renovation plan (plan 274 section 4, "shopping"): the one set of operations the web view, the CLI and the MCP tool apply, so a group apply or a reorder means the same thing on every surface. | yes | `tests/rebrand-edit.test.ts` | – |
 | `rebrand-fonts.ts` | 162 | Which face a source deck's typefaces become (plan 274 section 3.3). | yes | `tests/rebrand-fonts.test.ts` | – |
 | `rebrand-layout-options.ts` | 198 | Bounded layout recommendations, checked against a real single-slide compile. | no | `tests/rebrand-layout-options.test.ts` | – |
@@ -464,7 +464,7 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `rondo-source.test.ts` | 100 | rondo-source.ts: song files, share links rondocode itself writes (made with pako, as upstream does), canonical bytes, and the ceilings on every untrusted path. | no | none | – |
 | `rondo-source.ts` | 206 | rondo-source.ts: a rondocode song as an asset's bytes. | yes | indirect | yes |
 | `rpm.ts` | 443 | RPM v4 package writer - the container half of a `.rpm`. | yes | `tests/rpm.test.ts` | – |
-| `runtime.ts` | 2820 |  | yes | indirect | – |
+| `runtime.ts` | 2838 |  | yes | indirect | – |
 | `scorm.ts` | 627 | SCORM packaging - the pure half (plans/180 section 6). | yes | `tests/scorm.test.ts` | – |
 | `seal.ts` | 756 | SEAL (hackerfactor.com) signature verifier - pure, DOM-free (globalThis.crypto only, like c2pa-verify.ts / x509.ts). | yes | `tests/seal.test.ts` | yes |
 | `semver-range.ts` | 112 | Minimal SemVer range satisfaction - enough to enforce a tool manifest's `engineVersion` against the running ENGINE_VERSION (loader.ts, P0-3). | yes | `tests/semver-range.test.ts` | – |

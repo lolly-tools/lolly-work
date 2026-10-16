@@ -1,0 +1,294 @@
+services:
+  content:
+    image: ghcr.io/lolly-tools/lolly-work-server@sha256:5fa8b86328bf453635791fc104f4cf6179fc3d3c02a1516da4dea07bd6ae1e55
+    user: 0:0
+    read_only: true
+    cap_drop: &a1
+      - ALL
+    security_opt: &a2
+      - no-new-privileges:true
+    cap_add:
+      - CHOWN
+    environment:
+      LW_DISTRIBUTION_INIT: "1"
+      LW_SHELL_URL: https://lolli.li/lolly-web-1.1.1-ynh1.tar.gz
+      LW_SHELL_SHA256: bc78012aa407983ecc818e63be98ae1b45ed7db1dcad3f4c8d4ffe0c371116c1
+    command:
+      - node
+      - --input-type=module
+      - --eval
+      - |
+        // SPDX-License-Identifier: MPL-2.0
+        import { createHash, generateKeyPairSync } from 'node:crypto';
+        import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+        import { open } from 'node:fs/promises';
+        import { join } from 'node:path';
+        import { execFileSync } from 'node:child_process';
+
+        export function archivePaths(listing) {
+          const names = listing.trim().split('\n').map((name) => name.replace(/^\.\//, ''));
+          if (names.some((name) => name.startsWith('/') || name.includes('\\') || name.split('/').includes('..'))) {
+            throw new Error('Shell archive contains an unsafe path');
+          }
+          for (const expected of ['index.html', 'catalog/tools/index.json']) {
+            if (!names.includes(expected)) throw new Error('Shell archive is incomplete');
+          }
+          return names;
+        }
+
+        function physicalTree(directory) {
+          for (const name of readdirSync(directory)) {
+            const entry = join(directory, name), info = lstatSync(entry);
+            if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error('Shell tree contains a special file');
+            if (info.isDirectory()) physicalTree(entry);
+          }
+        }
+
+        export async function prepareContent(release, contentRoot, keysRoot, download = fetch) {
+          if (!/^https:\/\//.test(release.url) || !/^[a-f0-9]{64}$$/.test(release.sha256)) throw new Error('Invalid shell release pin');
+          for (const root of [contentRoot, keysRoot]) {
+            mkdirSync(root, { recursive: true });
+            if (!lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink()) throw new Error('Release roots must be physical directories');
+          }
+          const keyFile = join(keysRoot, 'catalog.jwk');
+          if (!existsSync(keyFile)) {
+            const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+            writeFileSync(keyFile, JSON.stringify(privateKey.export({ format: 'jwk' })), { flag: 'wx', mode: 0o600 });
+          }
+          if (!lstatSync(keyFile).isFile() || lstatSync(keyFile).isSymbolicLink()) throw new Error('Signing key must be a regular file');
+          if (process.getuid?.() === 0) chownSync(keyFile, 1000, 1000);
+          const target = join(contentRoot, release.sha256);
+          if (existsSync(target)) {
+            if (lstatSync(target).isSymbolicLink() || readFileSync(join(target, 'release.sha256'), 'utf8').trim() !== release.sha256) {
+              throw new Error('Existing content differs; preserve it and inspect before retrying');
+            }
+            return target;
+          }
+          // The neutral archive is larger than the container's memory budget.
+          const temporary = mkdtempSync(join(contentRoot, '.download-'));
+          const staged = mkdtempSync(join(contentRoot, '.staging-'));
+          chmodSync(staged, 0o755);
+          try {
+            const response = await download(release.url, { signal: AbortSignal.timeout(900000), redirect: 'error' });
+            if (!response.ok || !response.body) throw new Error('Pinned shell download failed');
+            const archive = join(temporary, 'shell.tar.gz'), hash = createHash('sha256');
+            const file = await open(archive, 'wx', 0o600);
+            let bytes = 0;
+            try {
+              for await (const chunk of response.body) {
+                bytes += chunk.length;
+                if (bytes > 1024 * 1024 * 1024) throw new Error('Shell archive exceeds its download bound');
+                hash.update(chunk);
+                await file.write(chunk);
+              }
+            } finally { await file.close(); }
+            if (hash.digest('hex') !== release.sha256) throw new Error('Pinned shell checksum differs; content not installed');
+            const listing = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+            archivePaths(listing);
+            const types = execFileSync('tar', ['-tvzf', archive], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+            if (types.trim().split('\n').some((line) => !/^[-d]/.test(line))) throw new Error('Shell archive contains a link or special file');
+            const shell = join(staged, 'shell');
+            mkdirSync(shell);
+            execFileSync('tar', ['-xzf', archive, '--no-same-owner', '-C', shell], { stdio: 'pipe' });
+            physicalTree(shell);
+            const pack = join(staged, 'pack');
+            mkdirSync(pack);
+            for (const name of ['tools', 'catalog']) cpSync(join(shell, name), join(pack, name), { recursive: true });
+            writeFileSync(join(staged, 'release.sha256'), release.sha256 + '\n');
+            renameSync(staged, target);
+            return target;
+          } finally {
+            rmSync(temporary, { recursive: true, force: true });
+            rmSync(staged, { recursive: true, force: true });
+          }
+        }
+
+        if (process.env.LW_DISTRIBUTION_INIT === '1') {
+          await prepareContent({ url: process.env.LW_SHELL_URL, sha256: process.env.LW_SHELL_SHA256 }, '/content', '/keys');
+          mkdirSync('/state', { recursive: true });
+          const state = lstatSync('/state');
+          if (!state.isDirectory() || state.isSymbolicLink()) throw new Error('Configuration state must be a physical directory');
+          if (state.uid === 0) { chmodSync('/state', 0o700); chownSync('/state', 1000, 1000); }
+          else if (state.uid !== 1000 || (state.mode & 0o777) !== 0o700) throw new Error('Inspect configuration state ownership and permissions');
+        }
+    volumes:
+      - content:/content
+      - keys:/keys
+      - state:/state
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    mem_limit: 512m
+    cpus: 1
+    restart: no
+  db:
+    image: public.ecr.aws/docker/library/postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
+    environment:
+      POSTGRES_DB: lollywork
+      POSTGRES_USER: lolly
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -U lolly -d lollywork
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    stop_grace_period: 60s
+  server:
+    image: ghcr.io/lolly-tools/lolly-work-server@sha256:5fa8b86328bf453635791fc104f4cf6179fc3d3c02a1516da4dea07bd6ae1e55
+    read_only: true
+    cap_drop: *a1
+    security_opt: *a2
+    environment:
+      NODE_ENV: production
+      LW_DISTRIBUTION_START: "1"
+      LW_CONFIG: /app/state/instance.json
+      LW_SHELL_SHA256: bc78012aa407983ecc818e63be98ae1b45ed7db1dcad3f4c8d4ffe0c371116c1
+      LW_CATALOG_GENERATION: "3"
+      LW_SOURCE_CATALOG_PUBLIC_KEY: '{"kty":"EC","crv":"P-256","x":"fHdyfof2ppicYg3eoDbeNxdnxjbt9KhBLsjVGso6eqo","y":"SWK6wsAVjRAad2w8MxmIkTGdgNMFHhhSNdeEqfH5cVg"}'
+      LOLLY_DOMAIN: ${LOLLY_DOMAIN:?set LOLLY_DOMAIN}
+      LOLLY_AUTH_MODE: ${LOLLY_AUTH_MODE:-password}
+      LOLLY_OIDC_ISSUER: ${LOLLY_OIDC_ISSUER:-}
+      LOLLY_OIDC_CLIENT_ID: ${LOLLY_OIDC_CLIENT_ID:-}
+      LOLLY_OWNER_EMAIL: ${LOLLY_OWNER_EMAIL:?set LOLLY_OWNER_EMAIL}
+      LW_IDP_CLIENT_SECRET: ${LW_IDP_CLIENT_SECRET:-}
+      DATABASE_URL: postgres://lolly:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/lollywork
+      LW_SESSION_SECRET: ${LW_SESSION_SECRET:?set LW_SESSION_SECRET}
+      LW_LINK_SECRET: ${LW_LINK_SECRET:?set LW_LINK_SECRET}
+      LW_CREDENTIAL_SECRET: ${LW_CREDENTIAL_SECRET:?set LW_CREDENTIAL_SECRET}
+    command:
+      - node
+      - --input-type=module
+      - --eval
+      - |
+        // SPDX-License-Identifier: MPL-2.0
+        import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+        import { randomUUID } from 'node:crypto';
+
+        export function instanceConfiguration(env) {
+          const required = (name) => {
+            const value = env[name]?.trim();
+            if (!value || /[\r\n\0]/.test(value)) throw new Error(`Set $${name} before deployment`);
+            return value;
+          };
+          const domain = required('LOLLY_DOMAIN');
+          if (!/^(?=.{1,253}$$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$$/.test(domain)) {
+            throw new Error('LOLLY_DOMAIN must be a DNS name without scheme, port or path');
+          }
+          const mode = env.LOLLY_AUTH_MODE || 'password';
+          if (!['password', 'oidc'].includes(mode)) throw new Error('LOLLY_AUTH_MODE must be password or oidc');
+          const issuerValue = mode === 'oidc' ? required('LOLLY_OIDC_ISSUER') : '';
+          if (mode === 'oidc') {
+            const issuer = new URL(issuerValue);
+            if (issuer.protocol !== 'https:' || issuer.username || issuer.password || issuer.search || issuer.hash) {
+              throw new Error('LOLLY_OIDC_ISSUER must be an HTTPS issuer without credentials, query or fragment');
+            }
+          }
+          const owner = required('LOLLY_OWNER_EMAIL').toLowerCase();
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$$/.test(owner)) throw new Error('Set a valid LOLLY_OWNER_EMAIL');
+          const hash = required('LW_SHELL_SHA256');
+          if (!/^[a-f0-9]{64}$$/.test(hash)) throw new Error('Invalid pinned shell checksum');
+          const generation = Number(required('LW_CATALOG_GENERATION'));
+          if (!Number.isSafeInteger(generation) || generation < 1) throw new Error('Invalid catalogue generation');
+          const publicKey = JSON.parse(required('LW_SOURCE_CATALOG_PUBLIC_KEY'));
+          if (publicKey?.kty !== 'EC' || publicKey.crv !== 'P-256' || !/^[A-Za-z0-9_-]{43}$$/.test(publicKey.x)
+              || !/^[A-Za-z0-9_-]{43}$$/.test(publicKey.y) || 'd' in publicKey) throw new Error('Pin the source catalogue public P-256 key');
+          for (const name of ['LW_SESSION_SECRET', 'LW_LINK_SECRET', 'LW_CREDENTIAL_SECRET']) {
+            if (required(name).length < 32) throw new Error(`$${name} must contain at least 32 characters`);
+          }
+          if (!/^postgres(?:ql)?:\/\//.test(required('DATABASE_URL'))) throw new Error('A PostgreSQL DATABASE_URL is required');
+          return {
+            deployment: { mode: 'production', application: 'web', requireServerRendering: false },
+            instance: {
+              name: 'Lolly Work', baseUrl: `https://$${domain}`,
+              pack: `/app/content/$${hash}/pack`, shellDir: `/app/content/$${hash}/shell`,
+              catalogPublicationGeneration: generation, catalogPublicKey: publicKey,
+            },
+            idp: {
+              issuer: issuerValue, clientId: mode === 'oidc' ? required('LOLLY_OIDC_CLIENT_ID') : '',
+              additional: mode === 'password' ? [{ id: 'email', kind: 'password', label: 'Email and password' }] : [],
+              admission: { emails: [owner], invitations: true }, bootstrapOwners: [owner],
+              roleGroups: { owner: ['lolly-owner'], admin: [], approver: [], author: [] },
+            },
+            policy: {
+              defaultAccessMode: 'gated', telemetry: 'off', telemetryAttribution: 'opt-in',
+              guestLinks: { enabled: false }, nearby: { enabled: false },
+              activity: { mode: 'off', auditSessionUpdates: false }, sessionTtlHours: 12,
+            },
+            render: { allowHooksInFastPath: false },
+            rateLimit: { enabled: true, trustedProxyHops: 1 },
+            dev: { enabled: false, users: [] }, blobs: { driver: 'pg' }, catalogProviders: [],
+          };
+        }
+
+        export function prepareConfiguration(env, path) {
+          const initial = instanceConfiguration(env);
+          let configuration = initial;
+          if (existsSync(path)) {
+            if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) throw new Error('Instance configuration must be a regular file');
+            configuration = JSON.parse(readFileSync(path, 'utf8'));
+            if (!configuration.instance) throw new Error('Stored instance configuration is incomplete');
+            // Keep console/operator settings. Only installer-managed release paths move.
+            for (const [key, leaf] of [['pack', 'pack'], ['shellDir', 'shell']]) {
+              if (new RegExp('^/app/content/[a-f0-9]{64}/' + leaf + '$$').test(configuration.instance[key])) {
+                configuration.instance[key] = initial.instance[key];
+                if (key === 'pack') configuration.instance.catalogPublicKey = initial.instance.catalogPublicKey;
+              }
+            }
+            const previous = configuration.instance.catalogPublicationGeneration ?? 0;
+            configuration.instance.catalogPublicationGeneration = Math.max(previous, initial.instance.catalogPublicationGeneration);
+          }
+          const temporary = path + '.next-' + randomUUID();
+          writeFileSync(temporary, JSON.stringify(configuration, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+          renameSync(temporary, path);
+          return configuration;
+        }
+
+        if (process.env.LW_DISTRIBUTION_START === '1') {
+          process.env.LW_CATALOG_SIGNING_KEY = readFileSync('/app/keys/catalog.jwk', 'utf8');
+          process.env.LW_CONFIG = '/app/state/instance.json';
+          prepareConfiguration(process.env, process.env.LW_CONFIG);
+          await import('file:///app/server/src/main.ts');
+        }
+    volumes:
+      - content:/app/content:ro
+      - keys:/app/keys:ro
+      - state:/app/state
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    expose:
+      - "8787"
+    restart: unless-stopped
+    stop_grace_period: 60s
+    depends_on:
+      db:
+        condition: service_healthy
+      content:
+        condition: service_completed_successfully
+  caddy:
+    image: public.ecr.aws/docker/library/caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    environment:
+      LOLLY_DOMAIN: ${LOLLY_DOMAIN:?set LOLLY_DOMAIN}
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+volumes:
+  content: {}
+  keys: {}
+  state: {}
+  pgdata: {}
+  caddy_data: {}
+  caddy_config: {}

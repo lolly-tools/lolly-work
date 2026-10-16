@@ -134,9 +134,9 @@ Do not merge `values-eval.yaml` into that production release. Follow
 replica until room routing and operation ordering are qualified. Independent
 render workers can scale after capacity testing.
 
-GHCR is private today, so add `imagePullSecrets`, build and push your own image (see the
-production notes below), or side-load: `docker save` + `k3d image import` /
-`ctr images import` on the node.
+The official 1.1.1 GHCR images are public. An operator-owned private mirror needs
+`imagePullSecrets`; a disconnected cluster needs verified image transport, such as
+`docker save` with `k3d image import` or `ctr images import` on the node.
 
 ## Kubernetes (Helm) - the production path
 
@@ -159,12 +159,11 @@ Chromium render-worker tier, and a migrate Job that owns the schema.
 
 Things to know before you install:
 
-- **The published images are private.** Multi-arch images publish to
-  `ghcr.io/lolly-tools/lolly-work-server` and `...-render-worker` on every `v*` release, but
-  the packages are private today, so a stock install gets `ImagePullBackOff`. Add an
-  `imagePullSecrets` entry for GHCR, or build your own and point the chart at it (the better
-  air-gap posture): `docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:1.1.0 .`,
-  push, then `--set image.repository=<registry>/lolly-work-server --set image.tag=1.1.0`.
+- **Official release images are public.** The `lolly-tools` server and worker
+  packages need no GHCR credentials. Select qualified immutable digests from the
+  release record; use credentials only for an operator-owned private mirror.
+  See [official installation routes](official-installations.md) for publication
+  and architecture limits.
 - **`instance.baseUrl` must match the URL the deploy answers on.** It drives OIDC redirect
   URIs and the `Secure` cookie flag.
 - **Secrets are never auto-generated.** Every replica must sign and verify with the *same*

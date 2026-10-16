@@ -3,6 +3,8 @@
 #   render-worker — workers/render/Dockerfile (Chromium tier), its own context
 # Images are tagged with the version (tag minus the leading v) and latest.
 # CI (ci.yml) is the quality gate; this workflow only packages and publishes.
+# A manual dispatch can rebuild one image for an existing tag; a tag push
+# always builds both.
 name: Release
 
 on:
@@ -18,13 +20,17 @@ on:
         description: Full reviewed commit the existing tag must resolve to
         required: true
         type: string
+      images:
+        description: Images to build and publish (server or worker leaves the other image's tags alone)
+        required: false
+        type: choice
+        default: both
+        options: [both, server, worker]
 
+# Each job asks for what it uses: pushing jobs get packages: write, and only
+# the signing jobs get id-token: write.
 permissions:
   contents: read
-  packages: write
-  # cosign keyless signing exchanges the workflow's OIDC identity for a
-  # short-lived certificate - no key to store, nothing to leak (plans/36 §4).
-  id-token: write
 
 jobs:
   release-source:
@@ -35,6 +41,8 @@ jobs:
     outputs:
       source: ${{ steps.resolve.outputs.source }}
       version: ${{ steps.resolve.outputs.version }}
+      server: ${{ steps.images.outputs.server }}
+      worker: ${{ steps.images.outputs.worker }}
     steps:
       - name: Validate release selectors
         env:
@@ -48,6 +56,19 @@ jobs:
           if not re.fullmatch('[a-f0-9]{40}', os.environ['EXPECTED_SOURCE_SHA']):
               raise SystemExit('A full reviewed release source SHA is required')
           PY
+      # A tag push has no inputs and always builds both images.
+      - name: Select images
+        id: images
+        env:
+          RELEASE_IMAGES: ${{ github.event_name == 'push' && 'both' || inputs.images }}
+        run: |
+          case "$RELEASE_IMAGES" in
+            both) printf 'server=true\nworker=true\n' >> "$GITHUB_OUTPUT" ;;
+            server) printf 'server=true\nworker=false\n' >> "$GITHUB_OUTPUT" ;;
+            worker) printf 'server=false\nworker=true\n' >> "$GITHUB_OUTPUT" ;;
+            *) echo 'images must be both, server or worker' >&2; exit 1 ;;
+          esac
+          echo "Selected images: $RELEASE_IMAGES"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.expected_source_sha || github.sha }}
@@ -91,10 +112,34 @@ jobs:
           path: release-source.actual.json
           if-no-files-found: error
 
+  # Multi-arch (amd64 + arm64): the edge story is Rancher-managed k3s, and
+  # edge nodes are frequently ARM — an amd64-only manifest is an instant
+  # ImagePullBackOff snag there. All runtime deps ship linux-arm64 builds
+  # (resvg native binary; jsdom/pg are pure JS).
+  #
+  # Each platform builds on its own native runner and pushes by digest only;
+  # server-manifest then joins the two digests under the version tags and
+  # signs the result. The Dockerfile runs TypeScript during the build, and
+  # Node's type stripper failed under QEMU arm64 emulation (Work 1.1.1,
+  # run 38796350202), so this image no longer uses QEMU.
   server-image:
-    name: server image
+    name: server image (${{ matrix.arch }})
     needs: release-source
-    runs-on: ubuntu-latest
+    if: needs.release-source.outputs.server == 'true'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -115,33 +160,134 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-      # Multi-arch (amd64 + arm64): the edge story is Rancher-managed k3s, and
-      # edge nodes are frequently ARM — an amd64-only manifest is an instant
-      # ImagePullBackOff snag there. All runtime deps ship linux-arm64 builds
-      # (resvg native binary; jsdom/pg are pure JS).
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The push carries no tag. The pushed digest names a one-platform index
+      # that holds the image and its SBOM + provenance attestation manifest.
+      - name: Build and push by digest (with SBOM + provenance attestations)
+        env:
+          RELEASE_SOURCE: ${{ needs.release-source.outputs.source }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/lolly-work-server"
+          docker buildx build --platform "$PLATFORM" \
+            --provenance=mode=max --sbom=true \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$RELEASE_SOURCE" \
+            --metadata-file "$RUNNER_TEMP/build-metadata.json" \
+            --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true" \
+            -f deploy/compose/Dockerfile .
+          DIGEST=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/build-metadata.json")
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          mkdir -p "$RUNNER_TEMP/digests"
+          printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/digests/$ARCH"
+          echo "$PLATFORM pushed as $IMAGE@$DIGEST"
+
+      # overwrite lets a rerun of one platform replace its earlier digest.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/${{ matrix.arch }}
+          if-no-files-found: error
+          overwrite: true
+
+  server-manifest:
+    name: server image (merge and sign)
+    needs: [release-source, server-image]
+    if: needs.release-source.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # cosign keyless signing exchanges the workflow's OIDC identity for a
+      # short-lived certificate - no key to store, nothing to leak (plans/36 §4).
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.release-source.outputs.source }}
+          persist-credentials: false
+      - name: Verify exact build source
+        env:
+          RELEASE_SOURCE: ${{ needs.release-source.outputs.source }}
+          RELEASE_VERSION: ${{ needs.release-source.outputs.version }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
+          node -e 'if (JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version !== process.env.RELEASE_VERSION) process.exit(1)'
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: server-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      # Keep the same repository-scoped token as the build jobs.
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # deploy/helm/values.yaml image.repository matches this push target
       # (ghcr.io/lolly-tools/lolly-work-server) under the lolly-tools org, and
       # the chart's empty image.tag defaults to appVersion — kept in sync with
       # package.json "version", so `helm install` pulls exactly this build.
-      - name: Build and push (amd64 + arm64, with SBOM + provenance attestations)
+      #
+      # imagetools create copies every entry of both one-platform indexes into
+      # one new index, attestation manifests included. check-index.py stops
+      # the job unless the index has exactly linux/amd64 and linux/arm64, each
+      # with an attestation manifest that holds an SPDX SBOM and SLSA
+      # provenance. It checks the dry run before any tag moves, then the
+      # pushed index.
+      - name: Create the multi-platform index (amd64 + arm64)
         env:
-          RELEASE_SOURCE: ${{ needs.release-source.outputs.source }}
           RELEASE_VERSION: ${{ needs.release-source.outputs.version }}
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/lolly-work-server"
           VERSION="$RELEASE_VERSION"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          docker buildx build --platform linux/amd64,linux/arm64 \
-            --provenance=mode=max --sbom=true \
-            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.revision=$RELEASE_SOURCE" \
-            -f deploy/compose/Dockerfile -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push .
+          test "$(find "$RUNNER_TEMP/digests" -type f | wc -l)" -eq 2
+          AMD64_DIGEST=$(cat "$RUNNER_TEMP/digests/amd64")
+          ARM64_DIGEST=$(cat "$RUNNER_TEMP/digests/arm64")
+          [[ "$AMD64_DIGEST" =~ ^sha256:[a-f0-9]{64}$ && "$ARM64_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          cat > "$RUNNER_TEMP/check-index.py" <<'PY'
+          import json, subprocess, sys
+          image, index = sys.argv[1], json.load(sys.stdin)
+          platforms, attestations = {}, []
+          for entry in index.get('manifests', []):
+              notes = entry.get('annotations') or {}
+              if notes.get('vnd.docker.reference.type') == 'attestation-manifest':
+                  attestations.append((notes.get('vnd.docker.reference.digest'), entry['digest']))
+                  continue
+              platform = entry.get('platform') or {}
+              name = platform.get('os', '') + '/' + platform.get('architecture', '')
+              if name in platforms:
+                  raise SystemExit('Duplicate platform in the index: ' + name)
+              platforms[name] = entry['digest']
+          if sorted(platforms) != ['linux/amd64', 'linux/arm64']:
+              raise SystemExit('The index must hold exactly linux/amd64 and linux/arm64, found ' + ', '.join(sorted(platforms)))
+          subjects = dict(attestations)
+          if len(attestations) != 2 or sorted(subjects) != sorted(platforms.values()):
+              raise SystemExit('Each platform image needs exactly one attestation manifest')
+          for name, subject in sorted(platforms.items()):
+              raw = subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', '--raw', image + '@' + subjects[subject]], text=True)
+              kinds = {(layer.get('annotations') or {}).get('in-toto.io/predicate-type', '') for layer in json.loads(raw).get('layers', [])}
+              if 'https://spdx.dev/Document' not in kinds or not any(kind.startswith('https://slsa.dev/provenance/') for kind in kinds):
+                  raise SystemExit('The attestation manifest for ' + name + ' lacks an SPDX SBOM or SLSA provenance')
+              print(name, subject, 'attested by', subjects[subject])
+          PY
+          docker buildx imagetools create --dry-run -t "$IMAGE:$VERSION" -t "$IMAGE:latest" \
+            "$IMAGE@$AMD64_DIGEST" "$IMAGE@$ARM64_DIGEST" > "$RUNNER_TEMP/index.dry-run.json"
+          python3 "$RUNNER_TEMP/check-index.py" "$IMAGE" < "$RUNNER_TEMP/index.dry-run.json"
+          docker buildx imagetools create -t "$IMAGE:$VERSION" -t "$IMAGE:latest" \
+            "$IMAGE@$AMD64_DIGEST" "$IMAGE@$ARM64_DIGEST"
+          docker buildx imagetools inspect --raw "$IMAGE:$VERSION" > "$RUNNER_TEMP/index.pushed.json"
+          python3 "$RUNNER_TEMP/check-index.py" "$IMAGE" < "$RUNNER_TEMP/index.pushed.json"
 
-      # Keyless signature over the pushed manifest digest - verifiable against
+      # Keyless signature over the pushed index digest - verifiable against
       # this workflow's identity, no signing key anywhere:
       #   cosign verify "$IMAGE:<version>" \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -157,7 +303,13 @@ jobs:
   render-worker-image:
     name: render-worker image
     needs: release-source
+    if: needs.release-source.outputs.worker == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Same keyless cosign signing as server-manifest.
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

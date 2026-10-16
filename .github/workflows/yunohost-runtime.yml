@@ -55,7 +55,7 @@ jobs:
         run: |
           test "$(git -C .qualification/package rev-parse HEAD)" = "$PACKAGE_COMMIT"
           # The official upgrade test checks out this immutable old version.
-          git -C .qualification/package cat-file -e db60f651fbeb561e4b330a1dd44bd4aaf463e635^{tree}
+          git -C .qualification/package cat-file -e 583cdc4af5322e683991a548428859b79084db2d^{tree}
           python3 - <<'PY'
           import os, pathlib, tomllib
           manifest = tomllib.loads(pathlib.Path('.qualification/package/manifest.toml').read_text())
@@ -199,7 +199,7 @@ jobs:
           directory = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/results/planned-tests'
           rows = [json.loads(path.read_bytes()) for path in directory.glob('*.json')]
           expected = {('TEST_PACKAGE_LINTER', ''), ('TEST_INSTALL', 'root'), ('TEST_INSTALL', 'multi'),
-                      ('TEST_UPGRADE', ''), ('TEST_UPGRADE', 'db60f651fbeb561e4b330a1dd44bd4aaf463e635'),
+                      ('TEST_UPGRADE', ''), ('TEST_UPGRADE', '583cdc4af5322e683991a548428859b79084db2d'),
                       ('TEST_BACKUP_RESTORE', ''), ('TEST_CHANGE_URL', '')}
           if len(rows) != len(expected) or any(row['test_serie'] != 'default' for row in rows) or {(row['test_type'], row['test_arg']) for row in rows} != expected:
               raise SystemExit('Actual official parser did not select every required URL, upgrade and recovery test')
@@ -222,7 +222,7 @@ jobs:
           tests = result['tests']
           required = {('TEST_PACKAGE_LINTER', ''), ('TEST_INSTALL', 'root'),
                       ('TEST_INSTALL', 'multi'), ('TEST_UPGRADE', ''),
-                      ('TEST_UPGRADE', 'db60f651fbeb561e4b330a1dd44bd4aaf463e635'),
+                      ('TEST_UPGRADE', '583cdc4af5322e683991a548428859b79084db2d'),
                       ('TEST_BACKUP_RESTORE', ''), ('TEST_CHANGE_URL', '')}
           observed = {(test['test_type'], test['test_arg']) for test in tests if test['test_serie'] == 'default'}
           if not required.issubset(observed):

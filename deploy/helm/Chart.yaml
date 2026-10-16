@@ -9,16 +9,18 @@ description: >-
 type: application
 
 # Chart version — bump on any change to templates/values (SemVer for the chart).
-version: 0.3.0
+version: 0.3.2
 
 # The lolly-work server version this chart is designed against. Used as the
 # default image tag when image.tag is left empty. Keep in sync with the app's
 # package.json "version".
-appVersion: "1.1.0"
+appVersion: "1.1.1"
 
 home: https://lolly.work
 sources:
-  - https://lolly.work
+  - https://github.com/lolly-tools/lolly-work
+  - https://github.com/lolly-tools/lolly
+icon: https://raw.githubusercontent.com/lolly-tools/lolly-work/main/deploy/helm/icon.svg
 keywords:
   - lolly
   - control-plane
@@ -26,3 +28,15 @@ keywords:
   - catalog
 maintainers:
   - name: Lolly Work
+    url: https://github.com/lolly-tools
+annotations:
+  artifacthub.io/license: MPL-2.0
+  artifacthub.io/category: integration-delivery
+  artifacthub.io/links: |
+    - name: Official installation routes
+      url: https://github.com/lolly-tools/lolly-work/blob/main/docs/official-installations.md
+    - name: Source and support
+      url: https://github.com/lolly-tools/lolly-work
+  artifacthub.io/changes: |
+    - kind: added
+      description: Official chart distribution, package documentation and Rancher configuration questions.

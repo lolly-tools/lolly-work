@@ -9,5 +9,5 @@ test_format = 1.0
     # manifest: root install, multi-instance, backup/restore, upgrade, change_url.
     exclude = ["install.subdir"]
 
-    [default.test_upgrade_from."db60f651fbeb561e4b330a1dd44bd4aaf463e635"]
-    name = "0.2.0~ynh1"
+    [default.test_upgrade_from."583cdc4af5322e683991a548428859b79084db2d"]
+    name = "1.1.0~ynh3"

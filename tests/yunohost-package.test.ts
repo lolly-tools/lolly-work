@@ -289,11 +289,28 @@ test('nginx: the includes the scripts write, and a deliberate header set per loc
   assert.match(proxy, /proxy_pass http:\/\/127\.0\.0\.1:__PORT__;/);
 });
 
-test('nginx: the shell header set is the open-source package\'s, when that checkout is beside this one', (t) => {
-  const oss = join(ROOT, '..', 'lolly', 'deploy', 'yunohost', 'conf', 'security-headers.inc');
-  if (!existsSync(oss)) return t.skip('no ../lolly checkout beside this repo to compare against');
-  const lines = (s: string): string[] => s.split('\n').filter((l) => l.startsWith('more_set_headers'));
-  assert.deepEqual(lines(read('conf/shell-headers.inc')), lines(readFileSync(oss, 'utf8').replaceAll('__LOLLY_CSP_EXTRA_CONNECT_SRC__', '')));
+test('nginx: the shell header set is the open-source package\'s, directive by directive, when a Lolly checkout is at hand', (t) => {
+  // LOLLY_OSS_DIR names the checkout (the weekly engine-drift run clones one); otherwise a
+  // ../lolly beside this repository is used. Without either there is nothing to compare.
+  const oss = join(process.env.LOLLY_OSS_DIR ?? join(ROOT, '..', 'lolly'), 'deploy', 'yunohost', 'conf', 'security-headers.inc');
+  if (!existsSync(oss)) return t.skip('no Lolly checkout to compare against: set LOLLY_OSS_DIR or place ../lolly beside this repo');
+  const headers = (s: string) => new Map([...s.matchAll(/^more_set_headers "([^:]+): (.*)";$/gm)].map((m) => [m[1]!, m[2]!]));
+  const ours = headers(read('conf/shell-headers.inc')), theirs = headers(readFileSync(oss, 'utf8'));
+  assert.deepEqual([...ours.keys()], [...theirs.keys()], 'the same headers in the same order');
+  const directives = (csp: string) => new Map(csp.split(';').map((d) => d.trim()).filter(Boolean).map((d) => [d.split(' ')[0]!, d]));
+  for (const [name, value] of theirs) {
+    if (name !== 'Content-Security-Policy') { assert.equal(ours.get(name), value, name); continue; }
+    const mine = directives(ours.get(name)!), base = directives(value);
+    assert.deepEqual([...mine.keys()], [...base.keys()], 'the same CSP directives in the same order');
+    for (const [key, directive] of base) {
+      // connect-src is the one directive an install extends: the open-source template leaves
+      // a placeholder for storage origins, which this package lists after the shared base.
+      if (key === 'connect-src') {
+        const shared = directive.replace('__LOLLY_CSP_EXTRA_CONNECT_SRC__', '');
+        assert.ok(mine.get(key) === shared || mine.get(key)!.startsWith(shared + ' '), `connect-src starts with the open-source base: ${shared}`);
+      } else assert.equal(mine.get(key), directive, key);
+    }
+  }
 });
 
 test('systemd: runs the server as the app user on the resource-provided Node, hardened', () => {

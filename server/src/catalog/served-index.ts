@@ -85,7 +85,7 @@ export interface ServedIndexDeps {
 export interface ServedIndexer {
   /** The feed for one caller. `paged` leaves large providers out of `assets`
    *  and lists them under `pagedProviders`. */
-  forCaller(opts: { groups: string[]; paged?: boolean }): Promise<ServedIndex>;
+  forCaller(opts: { groups: string[]; paged?: boolean; background?: boolean }): Promise<ServedIndex>;
   /** Full compositions run since creation (tests read this to prove the memo). */
   compositions(): number;
 }
@@ -171,7 +171,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       f.rec.id, f.fragment.hash, f.stale ? 1 : 0, f.fragment.assets.length, f.rec.label, JSON.stringify(f.rec.exposure.groups ?? '*'),
     ].join(':')).join('|');
 
-  const full = async (groups: string[]): Promise<ServedIndex> => {
+  const full = async (groups: string[], background = false): Promise<ServedIndex> => {
     await deps.ready;
     const key = groups.join('\n');
     const packFile = join(deps.pack(), 'catalog', 'assets', 'index.json');
@@ -189,7 +189,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       try { const index = bytes && JSON.parse(bytes.toString()) as AssetIndex; if (index && Array.isArray(index.assets)) entries = index.assets; } catch { /* Raw compatibility is handled below. */ }
       input = { stamp: packStamp, bytes, entries }; packInputs.set(packFile, input);
     }
-    const frags = await deps.federation.fragments();
+    const frags = await deps.federation.fragments({ background });
     const [rows, creds, instAssets, metas, fieldDefs, collections, tagRuleRows, providerRecs] = await Promise.all([
       deps.store.listLifecycle(), deps.store.listCredentials(), deps.store.listInstanceAssets(),
       deps.store.listAssetMeta(), deps.store.listCatalogFields(), deps.store.listCollections(),
@@ -281,12 +281,13 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
   /** The paged feed, derived from the full one: large providers' entries
    *  leave `assets`, collections keep only ids still served, and the
    *  providers are named under `pagedProviders` with their visible count. */
-  const pagedFrom = (base: ServedIndex, key: string): ServedIndex => {
+  const pagedFrom = (base: ServedIndex, key: string, pending: string[] = []): ServedIndex => {
     if (base.status !== 'composed') return base;
     const large = new Map(base.providers.filter((p) => p.size > threshold).map((p) => [p.id, p]));
-    if (!large.size) return base;
+    if (!large.size && !pending.length) return base;
+    const basedOn = `${base.version}\n${JSON.stringify(pending)}`;
     const hit = paged.get(key);
-    if (hit && hit.basedOn === base.version) {
+    if (hit && hit.basedOn === basedOn) {
       remember(paged, key, hit);
       return hit.result;
     }
@@ -303,18 +304,25 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       index.collections = (base.index.collections as Array<{ members: string[] }>).map((c) => ({ ...c, members: c.members.filter((m) => served.has(m)) }));
     }
     index.pagedProviders = [...large.values()].map((p) => ({ id: p.id, label: p.label, count: counts.get(p.id) ?? 0 }));
+    if (pending.length) index.pendingProviders = pending;
     const bytes = Buffer.from(JSON.stringify(index));
     const version = sha256Hex(bytes).slice(0, 32);
-    const result = withSort({ status: 'composed', sourceFingerprint: base.sourceFingerprint, bytes, etag: quoted(version), version, index, providers: base.providers });
-    remember(paged, key, { basedOn: base.version, result });
+    const sourceFingerprint = pending.length ? sha256Hex(`${base.sourceFingerprint}\n${JSON.stringify(pending)}`) : base.sourceFingerprint;
+    const result = withSort({ status: 'composed', sourceFingerprint, bytes, etag: quoted(version), version, index, providers: base.providers });
+    remember(paged, key, { basedOn, result });
     return result;
   };
 
   return {
-    async forCaller({ groups, paged: wantPaged }) {
+    async forCaller({ groups, paged: wantPaged, background }) {
       const key = [...new Set(groups)].sort();
-      const base = await full(key);
-      return wantPaged ? pagedFrom(base, key.join('\n')) : base;
+      const base = await full(key, background);
+      if (!wantPaged) return base;
+      const represented = new Set(base.providers.map(provider => provider.id));
+      const pending = background ? (await deps.store.listProviders({ includeFragment: false }))
+        .filter(provider => provider.enabled && callerSeesProvider(provider, key) && !represented.has(provider.id))
+        .map(provider => provider.id).sort() : [];
+      return pagedFrom(base, key.join('\n'), pending);
     },
     compositions: () => compositions,
   };

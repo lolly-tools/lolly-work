@@ -124,6 +124,8 @@ test('request → confirm at /activate → poll collects a session that works', 
   const anon = await (await fetch(`${base}/activate`)).text();
   assert.ok(anon.includes('Sign in to continue'));
   assert.ok(!anon.includes('name="code"'), 'no form for the signed-out');
+  const prefilled = await (await fetch(`${base}/activate?code=${d.userCode}`)).text();
+  assert.ok(prefilled.includes(encodeURIComponent(`/activate?code=${d.userCode}`)), 'the code survives the browser sign-in round trip');
 
   // Signed in, the page shows the form; with ?code= it names the asking client.
   const cookie = await login(base, 'maker@test');

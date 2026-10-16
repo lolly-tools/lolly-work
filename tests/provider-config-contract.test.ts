@@ -40,7 +40,7 @@ const KINDS = PROVIDER_KINDS.filter((k) => k !== 'mock');
 // org runs itself (a Nextcloud, an Apache mod_dav mount), so there is no vendor
 // contract to leave - it is far more often where an exit LANDS than where one
 // starts.
-const DAM_KINDS = ['brandfolder', 'imagerelay', 'canto', 'acquia-dam', 'intelligencebank', 'optimizely-cmp'] as const;
+const DAM_KINDS = ['brandfolder', 'imagerelay', 'canto', 'acquia-dam', 'intelligencebank', 'optimizely-cmp', 'cloudinary', 'orange-logic'] as const;
 
 const REQUIRED_HEADINGS = ['## What you need', '## Credential shape', '## instance.json', '## Verify', '## Notes / limits'];
 
@@ -59,6 +59,8 @@ const OPTION_ALLOWLIST: Record<string, string[]> = {
   canto: ['tenant', 'domain', 'baseUrl', 'tokenUrl', 'albumId', 'approvedStates', 'minGapMs'],
   'acquia-dam': ['baseUrl', 'query', 'approvedStatuses'],
   intelligencebank: ['platformUrl', 'folderId', 'approvedStates'],
+  cloudinary: ['cloudName', 'region', 'assetFolder', 'pageSize', 'minGapMs', 'includeMetadata', 'approvedTag'],
+  'orange-logic': ['baseUrl', 'query', 'formats', 'pageSize', 'minGapMs', 'storageOrigins', 'approvalField', 'approvedValues'],
   penpot: ['baseUrl', 'teamId', 'projectId', 'fileIds', 'format', 'scale', 'exporterUrl'],
 };
 
@@ -68,6 +70,7 @@ const MIN_OPTIONS: Record<string, Record<string, unknown>> = {
   webdav: { baseUrl: 'https://cloud.example' },
   dropbox: {}, gdrive: { folderId: 'f' }, o365: { driveId: 'd' }, 'optimizely-cmp': { publish: true },
   imagerelay: {}, canto: { tenant: 'acme' }, 'acquia-dam': {}, intelligencebank: {}, penpot: { baseUrl: 'https://design.example' },
+  cloudinary: { cloudName: 'test' }, 'orange-logic': { baseUrl: 'https://dam.example' },
 };
 
 /** The driver's own capability declaration, constructed the way the registry does. */

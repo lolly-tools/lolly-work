@@ -40,6 +40,17 @@ test('the base keeps the properties the open-source policy is built on', () => {
 });
 
 
+test('script-src and style-src accept the blob URLs a signed catalog delivers verified tool files through', () => {
+  // With a signed catalog the shell verifies a tool's own library or stylesheet bytes, then
+  // hands them to the page as a blob: URL (the Lolly shell's catalog/tool-elements.ts), and
+  // the Rondocode AudioWorklet loads the same way. Without blob: here the browser refuses
+  // them and a tool such as SUSECON Background falls back to its still wash. The Lolly
+  // repository's copies carry blob: in both directives for the same reasons.
+  const csp = SHELL_SECURITY_HEADERS['content-security-policy']!;
+  const directive = (name: string) => csp.split(';').map((d) => d.trim()).find((d) => d.startsWith(name + ' ')) ?? '';
+  for (const name of ['script-src', 'style-src']) assert.match(directive(name), /(^|\s)blob:(\s|$)/, `${name} carries blob:`);
+});
+
 test('only the isolated any-site route carries the approved iframe policy', () => {
   for (const path of ['/', 'design', '/any-site-other', 'nested/any-site', '/assets/app.js']) assert.equal(shellSecurityHeaders(path), SHELL_SECURITY_HEADERS);
   for (const path of ['any-site', '/any-site/', 'any-site/path']) {
