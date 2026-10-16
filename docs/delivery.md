@@ -222,6 +222,14 @@ both stores; idempotency; exact-byte retry; provider receipts; and audit events.
 live-validated against the project's UpCloud host; WebDAV and HTTPS currently have injected-wire
 tests and still need tenant/receiver canaries before either is called live-verified.
 
+Future asset-system destinations must also declare create/new-version/replace and conflict
+policy before writing. Transfer acceptance, processing, original readiness, review and public
+activation need separate observations. Reconcile uncertain completion using the remote
+asset/version identity and committed effects before another write. Source approval must retain
+its purpose, activation target and human/automated origin; it cannot stand in for approval of
+the staged final digest. These are qualification requirements, not capabilities added to the
+current S3, WebDAV or HTTPS adapters.
+
 Still deliberately pending:
 
 - the versioned small-workflow document/runner above the shipped job-output publish command;
