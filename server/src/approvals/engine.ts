@@ -23,7 +23,7 @@
  *    no resume in v1.
  */
 
-export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery';
+export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review';
 
 export type ApprovalState = 'submitted' | 'in_review' | 'approved' | 'rejected' | 'withdrawn';
 
@@ -46,6 +46,7 @@ export interface Chain {
 }
 
 export interface ApprovalAction {
+  origin?: 'member-session' | 'agent-delegated';
   actor: string;
   step: number;
   action: 'approve' | 'reject';
@@ -54,6 +55,8 @@ export interface ApprovalAction {
 }
 
 export interface Approval {
+  /** Server-verified file membership; never an admission or delivery grant. */
+  sourceReview?: import('../catalog/source-review.ts').SourceReviewSubject;
   id: string;
   subjectType: SubjectType;
   subjectRef: string;

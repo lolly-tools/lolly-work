@@ -3474,7 +3474,7 @@ function approvalFooter(a) {
     clearNeed();
     err.textContent = '';
     try {
-      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined } });
+      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}) } });
       toast(action === 'approve' ? `Approved “${a.title}”` : `Rejected “${a.title}”`);
       route();
     } catch (e) { err.textContent = e.message; }
@@ -3500,6 +3500,11 @@ function renderApprovalCard(a, { actionable }) {
           el('span', { class: 'muted' }, a.chainName),
           el('span', { class: 'muted' }, a.mine ? 'raised by you' : ['raised by ', a.createdByName ?? a.createdBy], ' · ', relTime(a.createdAt)))),
       stateChip(a.state)),
+    a.sourceReview ? el('div', { class: 'appr-meta' },
+      el('p', {}, `${a.sourceReview.purpose} · ${a.sourceReview.target}`),
+      ...a.sourceReview.files.map(file => el('p', { class: 'mono' }, `${file.assetId} · version ${file.version} · ${file.format} · SHA-256 ${file.sha256} `,
+        el('a', { href: `/catalog/${file.assetId}/${encodeURIComponent(file.format)}?v=${file.version}`, download: `review-v${file.version}.${file.format}` }, 'Download reviewed original'))),
+      el('p', { class: 'muted' }, 'Review covers this frozen source set. Source access, historical attributes and final delivery approval remain separate.')) : null,
     // The actionable inbox stays fully expanded; a request you've only raised
     // collapses its stepper behind a one-line progress summary (it's reference,
     // not something you act on) so "Your requests" scans at a glance.

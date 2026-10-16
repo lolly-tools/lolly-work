@@ -64,6 +64,7 @@ import {
 } from '../iam/identities.ts';
 import { PACK_MAX_BYTES, type InstancePackMeta } from '../catalog/instance-pack.ts';
 import { readBlobBody } from '../blobs/types.ts';
+import { parseSourceReview, freezeSourceReview, sourceReviewFormat, type SourceReviewSubject } from '../catalog/source-review.ts';
 import { createNotifier } from '../notify/notify.ts';
 import { createPeopleNotifier } from '../notify/people.ts';
 import { invitePageUrl, mintInviteToken } from '../access/invite-token.ts';
@@ -226,7 +227,7 @@ const STATE_COOKIE = 'lw_state';
 /** The signed half of the password forms' double-submit token (`lw/form`). */
 const FORM_COOKIE = 'lw_form';
 const LINK_KINDS: LinkKind[] = ['share', 'embed', 'download', 'guest-edit'];
-const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link'];
+const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link', 'source-review'];
 
 /** The vendored engine version, read off engine-pin.json (the manifest the
  *  re-pin cadence maintains). Read once and cached; null when the file is not
@@ -4794,16 +4795,40 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { chainId, step: stepIndex, stepName: step.name, groups: step.approvers.groups, approvers });
   });
 
+  // Source subjects are checked as a whole. Omitting a hidden member, even from
+  // a count, would disclose the membership of a private proof.
+  const seesSourceReview = async (user: UserRecord, subject: SourceReviewSubject): Promise<boolean> => {
+    for (const file of subject.files) if (!await callerSeesAsset(user, file.assetId)) return false;
+    return true;
+  };
+  const sourceReviewAvailable = async (user: UserRecord, subject: SourceReviewSubject): Promise<boolean> => {
+    let total = 0;
+    for (const file of subject.files) {
+      if (!await callerSeesAsset(user, file.assetId) || (await catalogBytesGate(file.assetId, false)).blocked) return false;
+      const rec = await store.getInstanceAsset(file.assetId);
+      if (!rec || rec.origin || !submissionServable(rec) || !instanceAssetVisible(rec, user.groups)
+        || (rec.entry.formats ?? []).some(format => format.format === file.format && format.rendition)) return false;
+      const format = sourceReviewFormat(file, await assetVersionRows(rec));
+      if (!format || format.size > 64 * 1024 * 1024 || total + format.size > 128 * 1024 * 1024) return false;
+      const blob = await blobs.get(format.blobId);
+      if (!blob) return false;
+      const bytes = await readBlobBody(blob.body, Math.min(64 * 1024 * 1024, 128 * 1024 * 1024 - total));
+      total += bytes.length;
+      if (sha256Hex(bytes) !== file.sha256) return false;
+    }
+    return seesSourceReview(user, subject);
+  };
+
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
   router.add('POST', '/api/v1/approvals', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const body = (await readJson(req)) as {
-      subjectType?: string; subjectRef?: string; title?: string; chainId?: string; nominees?: unknown;
+      subjectType?: string; subjectRef?: string; title?: string; chainId?: string; nominees?: unknown; sourceReview?: unknown;
     } | null;
     if (!SUBJECT_TYPES.includes(body?.subjectType as never)) {
-      return sendError(res, 400, 'INVALID_INPUT', 'subjectType must be asset|tool-change|config|guest-link');
+      return sendError(res, 400, 'INVALID_INPUT', 'subjectType must be asset|tool-change|config|guest-link|source-review');
     }
     if (!body?.title || typeof body.title !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'title required');
     if (!body?.chainId || typeof body.chainId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'chainId required');
@@ -4816,7 +4841,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const check = validateNominees(chain, 0, nominees, await userGroupsMap());
     if (!check.ok) return sendError(res, 400, 'NOMINEE_NOT_ELIGIBLE', `not eligible for the first step: ${check.ineligible.join(', ')}`);
     const [users, grants] = await Promise.all([store.listUsers(), store.listGrants()]);
-    const subjectRef = typeof body.subjectRef === 'string' ? body.subjectRef.slice(0, 300) : '';
+    let sourceReview: SourceReviewSubject | undefined;
+    if (body.subjectType === 'source-review') {
+      const parsed = parseSourceReview(body.sourceReview);
+      if (!parsed) return sendError(res, 400, 'INVALID_INPUT', 'A source review needs a purpose, target and exact original file versions with SHA-256 digests.');
+      sourceReview = freezeSourceReview(parsed, new Date().toISOString(), agentRequests.principal(req) ? 'agent-delegated' : 'member-session');
+      if (!await sourceReviewAvailable(user, sourceReview)) return sendError(res, 409, 'SOURCE_UNAVAILABLE', 'The complete selected source subject is not available for review.');
+      for (const id of nominees) {
+        const nominee = users.find(candidate => candidate.id === id);
+        if (!nominee || !await seesSourceReview(nominee, sourceReview)) return sendError(res, 400, 'NOMINEE_NOT_ELIGIBLE', 'Every nominated reviewer must have current access to the complete subject.');
+      }
+    } else if (body.sourceReview !== undefined) return sendError(res, 400, 'INVALID_INPUT', 'Use the source-review subject type for source evidence.');
+    const subjectRef = sourceReview ? `source-review:${sourceReview.fingerprint}` : typeof body.subjectRef === 'string' ? body.subjectRef.slice(0, 300) : '';
     const canReview = (candidate: typeof user) => !candidate.disabledAt && candidate.id !== user.id
       && evaluate({ userId: candidate.id, groups: candidate.groups, role: candidate.role as Role }, 'approval.act', [`chain:${chain.id}`, subjectRef, '*'], grants);
     if (nominees.some(id => !users.some(candidate => candidate.id === id && canReview(candidate)))) {
@@ -4829,6 +4865,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       title: body.title.slice(0, 200),
       chain, nominees, createdBy: user.id, now: new Date().toISOString(),
     });
+    if (sourceReview) approval.sourceReview = sourceReview;
     await store.putApproval(approval);
     await audit(`user:${user.id}`, 'approval.submit', `approval:${approval.id}`, { chainId: chain.id, subjectType: approval.subjectType });
     if (nominees.length) {
@@ -4846,7 +4883,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // nominees, minus the requester - the same audience the inbox targets,
     // reached where they actually are.
     const step0 = currentStep(approval);
-    const reviewers = users.filter((u) => canReview(u) && (nominees.includes(u.id) || (step0 ? isEligible(step0, u.groups) : false)));
+    const reviewers = [];
+    for (const candidate of users) if (canReview(candidate) && (nominees.includes(candidate.id) || (step0 ? isEligible(step0, candidate.groups) : false))
+      && (!sourceReview || await seesSourceReview(candidate, sourceReview))) reviewers.push(candidate);
     notifier.email(reviewers.map((u) => u.email), `Approval requested: ${approval.title}`,
       `${user.email} asked for review on the “${step0?.name ?? 'first'}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
     notifier.event('approval.requested', { id: approval.id, title: approval.title, chainId: chain.id, by: user.email });
@@ -4864,11 +4903,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const actors = await actorsMap();
     const out = new Map<string, ReturnType<typeof serializeApproval>>();
     if (wantMine || both) {
-      for (const a of await store.listApprovals({ createdBy: user.id })) out.set(a.id, serializeApproval(a, user.id, 'mine', actors));
+      for (const a of await store.listApprovals({ createdBy: user.id })) {
+        if (a.sourceReview && !await seesSourceReview(user, a.sourceReview)) continue;
+        out.set(a.id, serializeApproval(a, user.id, 'mine', actors));
+      }
     }
     if (wantInbox || both) {
       const grants = await store.listGrants();
       for (const a of await store.listApprovals({ eligibleGroups: user.groups })) {
+        if (a.sourceReview && !await seesSourceReview(user, a.sourceReview)) continue;
         if (a.createdBy === user.id) continue; // separation of duties - never review your own
         if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'approval.act', [`approval:${a.id}`, `chain:${a.chainId}`, a.subjectRef, '*'], grants)) continue;
         out.set(a.id, serializeApproval(a, user.id, 'inbox', actors));
@@ -4884,14 +4927,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const approval = await store.getApproval(ctx.params.id as string);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
+    if (approval.sourceReview && !await sourceReviewAvailable(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no available source subject');
     if (approval.createdBy === user.id) return sendError(res, 403, 'SEPARATION_OF_DUTIES', 'A requester cannot act on their own approval.');
     if (!(await requireAction(req, res, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*']))) return;
-    const body = (await readJson(req)) as { action?: string; comment?: string } | null;
+    const body = (await readJson(req)) as { action?: string; comment?: string; sourceFingerprint?: string } | null;
+    if (approval.sourceReview && body?.sourceFingerprint !== approval.sourceReview.fingerprint) return sendError(res, 409, 'SOURCE_SUBJECT_CHANGED', 'Reopen this review and confirm its exact source subject.');
     if (body?.action !== 'approve' && body?.action !== 'reject') return sendError(res, 400, 'INVALID_INPUT', 'action must be approve or reject');
     const comment = typeof body.comment === 'string' && body.comment.trim() ? body.comment.slice(0, 2000) : undefined;
     let next: Approval;
     try {
       next = applyAction(approval, { id: user.id, groups: user.groups }, body.action, comment, new Date().toISOString());
+      if (approval.sourceReview) next.actions[next.actions.length - 1]!.origin = agentRequests.principal(req) ? 'agent-delegated' : 'member-session';
     } catch (err) {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
@@ -4932,6 +4978,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const approval = await store.getApproval(ctx.params.id as string);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
+    if (approval.sourceReview && !await seesSourceReview(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
     if (approval.createdBy !== user.id) return sendError(res, 403, 'FORBIDDEN', 'only the submitter can withdraw this request');
     let next: Approval;
     try {
@@ -6053,8 +6100,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       const head = headVersionOf(instAsset);
       const rows = await assetVersionRows(instAsset);
+      const sourceReviews = [];
+      const reviewGrants = await store.listGrants();
+      for (const approval of await store.listApprovals({})) if (approval.sourceReview?.files.some(file => file.assetId === id)
+        && (approval.createdBy === user.id || (approval.chain.steps.some(step => isEligible(step, user.groups))
+          && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*'], reviewGrants)))
+        && await seesSourceReview(user, approval.sourceReview)) sourceReviews.push(serializeApproval(approval, user.id));
       return sendJson(res, 200, {
         id, head,
+        metadataHistory: 'not-recorded', sourceReviews,
+        sourceReviewCapability: instAsset.origin ? null : { kind: 'frozen-instance-originals-v1', maxFiles: 32, maxFileBytes: 64 * 1024 * 1024, maxTotalBytes: 128 * 1024 * 1024 },
         keep: config.policy.catalog.versionKeep,
         versions: [...rows].sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
       }, { 'cache-control': 'private, no-store' });
@@ -10724,6 +10779,7 @@ function serializeApproval(
   return {
     id: a.id,
     subjectType: a.subjectType,
+    ...(a.sourceReview ? { sourceReview: a.sourceReview } : {}),
     subjectRef: a.subjectRef,
     title: a.title,
     chainId: a.chainId,

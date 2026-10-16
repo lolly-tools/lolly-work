@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { verifyChain } from '../server/src/audit/chain.ts';
 import { createApproval, type Chain } from '../server/src/approvals/engine.ts';
+import { freezeSourceReview } from '../server/src/catalog/source-review.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { Message } from '../server/src/inbox/target.ts';
 import { COMMENT_NOTICE_COUNT_MAX, commentNoticeId, type CommentNoticeWrite, type Store } from '../server/src/store/types.ts';
@@ -810,6 +811,11 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal((await store.listApprovals({ state: 'approved' })).length, 0);
   assert.equal((await store.listApprovals({ eligibleGroups: ['brand'] })).length, 1);
   assert.equal((await store.listApprovals({ eligibleGroups: ['legal'] })).length, 0);
+  const frozen = freezeSourceReview({ purpose: 'Creative review', target: 'launch:print',
+    files: [{ assetId: 'inst/hero', version: 1, format: 'png', sha256: 'a'.repeat(64), representation: 'original' }] }, '2026-10-16T12:00:00Z');
+  const sourceApproval = { ...approval, id: 'apr_source', subjectType: 'source-review' as const, subjectRef: `source-review:${frozen.fingerprint}`, sourceReview: frozen };
+  await store.putApproval(sourceApproval);
+  assert.deepEqual(await store.getApproval(sourceApproval.id), sourceApproval, 'frozen review subject survives the driver round trip');
 
   // catalog lifecycle: put/get/list round-trip, re-put updates in place
   assert.equal(await store.getLifecycle('acme/logo/primary'), null);
