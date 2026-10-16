@@ -53,12 +53,17 @@ export function createBrandfolderDeliveryProvider(options: BrandfolderDeliveryOp
         // Brandfolder documents no create idempotency key. A lost create response
         // must never automatically create a second asset on a later attempt.
         await input.checkpoint({ phase: 'creating' });
-        const created = damRecord(await http.json(`${base}/brandfolders/${options.brandfolderId}/assets`, {
+        let created: Record<string, unknown>;
+        try {
+          created = damRecord(await http.json(`${base}/brandfolders/${options.brandfolderId}/assets`, {
           method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
           body: JSON.stringify({ data: { attributes: [{ name: input.name,
             attachments: [{ url: objectUrl, filename: deliveryFilename(input.name, input.format) }],
           }] }, section_key: options.sectionId }),
-        }));
+          }));
+        } catch {
+          throw new Error('Brandfolder creation outcome is uncertain. Reconcile this delivery with the operator before creating another asset.');
+        }
         const rows = Array.isArray(created.data) ? created.data : [created.data];
         if (rows.length !== 1 || !id(damRecord(rows[0]).id)) throw new Error('Brandfolder returned no single created asset; reconcile before resending');
         remoteId = damString(damRecord(rows[0]).id)!;
