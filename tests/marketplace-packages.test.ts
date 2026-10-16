@@ -14,7 +14,7 @@ import { archivePaths, prepareContent } from '../deploy/marketplaces/content-ini
 import { parseConfig } from '../server/src/config/instance.ts';
 import { startupChecks } from '../server/src/setup/checks.ts';
 import { mergeIndex } from '../scripts/package-helm-chart.ts';
-import { repositoryMetadata } from '../scripts/publish-helm-chart.ts';
+import { findRelease, repositoryMetadata } from '../scripts/publish-helm-chart.ts';
 
 const settings = { LOLLY_DOMAIN: 'work.example.test', LOLLY_OIDC_ISSUER: 'https://idp.example.test/tenant', LOLLY_OIDC_CLIENT_ID: 'lolly-client', LOLLY_OWNER_EMAIL: 'owner@example.test' };
 const env = { ...settings, LOLLY_AUTH_MODE: 'oidc', LW_SHELL_SHA256: release.shell.sha256, LW_CATALOG_GENERATION: '1',
@@ -161,4 +161,12 @@ test('Artifact Hub ownership metadata contains actual configured identity or rem
   const metadata = parse(repositoryMetadata({ ARTIFACTHUB_REPOSITORY_ID: '12345678-1234-1234-1234-123456789abc', ARTIFACTHUB_OWNER_EMAIL: 'maintainer@example.test' })!);
   assert.equal(metadata.owners[0].email, 'maintainer@example.test');
   assert.equal(metadata.official, undefined);
+});
+
+test('publication retries recover only the matching draft after a missing published release', () => {
+  const missing = () => { throw { stderr: 'gh: Not Found (HTTP 404)' }; };
+  const draft = { tag_name: 'chart-v0.3.2', draft: true, target_commitish: 'reviewed-source' };
+  assert.equal(findRelease('chart-v0.3.2', missing, () => [{ ...draft, tag_name: 'another-chart' }, draft]), draft);
+  assert.equal(findRelease('chart-v0.3.2', missing, () => [{ ...draft, draft: false }]), null);
+  assert.throws(() => findRelease('chart-v0.3.2', () => { throw new Error('API unavailable'); }, () => [draft]), /API unavailable/);
 });

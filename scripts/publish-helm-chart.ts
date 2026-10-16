@@ -14,10 +14,15 @@ function gh(args: string[], input?: unknown) {
 function request(path: string, body?: unknown) {
   return JSON.parse(gh(['api', `${api}/${path}`, ...(body === undefined ? [] : ['--method', 'POST', '--input', '-'])], body));
 }
-function findRelease(tag: string) {
-  try { return request(`releases/tags/${tag}`); }
+export function findRelease(tag: string, fetchRelease = request,
+  listReleases = () => JSON.parse(gh(['api', '--paginate', '--slurp', `${api}/releases?per_page=100`])).flat()) {
+  try { return fetchRelease(`releases/tags/${tag}`); }
   catch (error) {
-    if (String((error as { stderr?: string }).stderr).includes('(HTTP 404)')) return null;
+    // The tag endpoint describes published releases. Recover our own incomplete
+    // draft by listing authenticated releases, even before its tag exists.
+    if (String((error as { stderr?: string }).stderr).includes('(HTTP 404)')) {
+      return listReleases().find((item: { tag_name: string; draft: boolean }) => item.tag_name === tag && item.draft) ?? null;
+    }
     throw error;
   }
 }
@@ -50,7 +55,15 @@ export function publishChart(directory: string) {
   const metadata = repositoryMetadata(process.env);
   const tag = `chart-v${release.version}`, temporary = mkdtempSync(join(tmpdir(), 'lolly-chart-publish-'));
   let remote = findRelease(tag);
-  if (remote && (remote.target_commitish !== release.source || request(`git/ref/tags/${tag}`).object.sha !== release.source)) throw new Error('Chart tag is already owned by a different source');
+  if (remote) {
+    if (remote.target_commitish !== release.source) throw new Error('Chart release is already owned by a different source');
+    let tagSource: string | undefined;
+    try { tagSource = request(`git/ref/tags/${tag}`).object.sha; }
+    catch (error) {
+      if (!remote.draft || !String((error as { stderr?: string }).stderr).includes('(HTTP 404)')) throw error;
+    }
+    if (tagSource !== undefined && tagSource !== release.source) throw new Error('Chart tag is already owned by a different source');
+  }
   if (remote?.assets.some((asset: { name: string }) => asset.name === 'chart-release.json')) {
     const previous = download(tag, 'chart-release.json', temporary);
     if (readFileSync(previous, 'utf8') !== readFileSync(join(directory, 'chart-release.json'), 'utf8')) throw new Error('Published release record differs; use a new chart version');
