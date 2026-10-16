@@ -147,9 +147,9 @@ lw grants add group:design catalog.submit '*' --effect allow
 ```
 
 It is deliberately the whole of the submitter's authority. **There is no separate action for
-deciding a submission**: when `policy.submit.chain` names a chain, the decision is an ordinary
+deciding a submission**: when `policy.submit.chain` identifies a chain, the decision is an ordinary
 approval - eligibility is membership of the step's approver groups plus separation of duties
-([approvals](approvals.md)), and the review queue is only an ergonomic door onto it. Whoever may act on the step may also correct a pending
+([approvals](approvals.md)), and the review queue is only an ergonomic door onto that review step. Whoever may act on the step may also correct a pending
 submission's declared metadata before publishing it - name, type, tags and description, never
 the bytes and never the exposure the submitter chose.
 
@@ -189,11 +189,11 @@ retry route cannot bypass them. Service tokens are refused on a human-review-bou
 The same action governs a completed automation render's publish command. It adds no ambient
 BlobStore authority: the caller must own the named job, it must be a settled `render`, its
 recorded format cannot be changed, and its retained bytes pass integrity and C2PA verification
-again. A delivery reference prevents deletion of that job output until retention releases it.
+again. A delivery reference prevents deletion of that job output until retention releases the output.
 
 Also `catalog.read`, which the `viewer` role already carries, gates the queue itself. The rows
 are the real gate: a caller sees their own submissions plus the ones open on a step their
-groups may act on, and nothing else.
+groups may act on.
 
 ### Editing what the catalog says: `catalog.edit`
 
@@ -226,6 +226,8 @@ is already in the catalog says or serves - and it is why a `policy.submit.chain`
 contributions and not versions: an approver already decided this asset belongs here. Audited as
 `catalog.version`, `catalog.rollback` and `catalog.version.delete`, each naming the version it
 moved.
+
+<a id="curating-a-shareable-set-catalogcollectionmanage"></a>
 
 ### Curating a shareable set: `catalog.collection.manage`
 
@@ -268,7 +270,7 @@ reasoning about why a tool is or is not visible.
 ## Guest write authority
 
 A guest is never evaluated by the grants engine **as a principal**: `server/src/collab/guests.ts`
-imports nothing from `rbac/`, on purpose. A guest's ability to write in a live collab room comes
+imports nothing from `rbac/`. A guest's ability to write in a live collab room comes
 from the **kind** of the link that admitted it - `guest-edit` mints a writer seat, every other
 link kind mints no guest principal - never from a grant row naming the guest.
 
@@ -294,7 +296,7 @@ Four levers, then - three that act on the guest, one that acts on the inviter:
 
 | Lever | Effect |
 |---|---|
-| An `inputAccess` rule ([governance](governance.md#per-input-access)) | Locks, hides or choice-restricts one input for every guest, in every room, without naming anyone. See the fallback below - it reaches a guest whether or not the rule names one. |
+| An `inputAccess` rule ([governance](governance.md#per-input-access)) | Locks, hides or choice-restricts one input for every guest, in every room, without naming anyone. See the fallback below - it reaches a guest whether or not the rule identifies one. |
 | Revoking the link (`POST /api/v1/links/:id/revoke`) | Kills that guest's write access on its very next gesture - the room re-reads the link per gesture and per keepalive, the same cadence a member's grant revocation takes effect on. |
 | `guestLinks.enabled: false` ([configuration](configuration.md)) | The instance-wide kill switch. Stops new links from minting *and* evicts every guest already connected - re-checked live, not only at mint time. |
 | Taking `link.create-guest` off the **inviter** - a deny grant, a role change, removing them from the group that carried it, or disabling the account | Evicts every guest **that inviter** admitted, on the guest's next op or keepalive. The one lever that covers links nobody can enumerate; it leaves guests invited by anyone else alone. |

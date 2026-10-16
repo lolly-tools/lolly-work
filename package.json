@@ -39,7 +39,7 @@
     "release:yunohost": "node scripts/yunohost-release.ts",
     "console:build": "node scripts/console-assets.ts",
     "console:check": "node scripts/console-assets.ts --check",
-    "pretest": "node scripts/verify-engine-pin.ts && node scripts/console-assets.ts --check",
+    "pretest": "node scripts/verify-docs-pin.ts && node scripts/verify-engine-pin.ts && node scripts/console-assets.ts --check",
     "test": "node --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "check:docs-vernacular": "node scripts/check-docs-vernacular.ts",
@@ -49,7 +49,9 @@
     "build:vercel": "node scripts/build-vercel-fn.mjs",
     "check:vercel": "node --no-experimental-require-module scripts/check-vercel-fn.mjs",
     "check:secrets": "node scripts/scan-secrets.ts",
-    "check:code-source": "node scripts/scan-code.ts"
+    "check:code-source": "node scripts/scan-code.ts",
+    "verify:docs-pin": "node scripts/verify-docs-pin.ts",
+    "sync:docs": "node scripts/sync-docs-bundle.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

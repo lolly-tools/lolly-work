@@ -2,7 +2,7 @@
 
 Submit a render or a batch, keep its status and output, and recover interrupted work
 after restarting the server. The request uses the existing Lolly tool inputs and
-renderer. Each resource belongs to the user or service token that submitted it.
+renderer. Each resource belongs to the user or service token that submitted the job.
 
 ## Submit and retrieve
 
@@ -222,7 +222,7 @@ Submit through `lw renders submit` or `lw render-batches submit` as usual.
 The `work/output-v1` profile checks the actual format, MIME type, readability
 and requested dimensions after watermarking, provenance and signing. SVG is
 parsed as XML without executing scripts or loading linked resources. PNG and
-JPEG are fully decoded with sharp. The receipt's `inspection` names each check,
+JPEG are fully decoded with sharp. The receipt's `inspection` identifies each check,
 its result, the measured dimensions, the final SHA-256 and the detector version.
 A completed decoder does not establish that the design looks correct.
 

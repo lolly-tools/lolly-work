@@ -59,7 +59,7 @@ existing fence and sequence history; deleting them would remove rollback protect
 
 Under a non-`open` access mode, a `shellDir` that is missing or predates the `org/`
 governance module **stops boot**. In evaluation, `LW_ALLOW_STALE_SHELL=1` downgrades
-the legacy shell guard to a warning; production validation still refuses it.
+the legacy shell guard to a warning; production validation still refuses that legacy shell.
 
 For generated deployment files and a staged owner cutover, use [Customer setup](customer-setup.md).
 
@@ -76,7 +76,7 @@ For generated deployment files and a staged owner cutover, use [Customer setup](
 | `additional` | `[]` | further IdPs beside the primary - each `{ id, kind?, issuer, clientId, displayName, groupsClaim?, claimMap?, clientSecretRef? }`. `kind` is `oidc` (default), `github` or `password`. A GitHub entry takes no `issuer`, needs `clientSecretRef`, refuses `scopes`, `authParams`, `hostedDomain` and `tenantId`, and accepts only `emailVerification: "claim"` (see the [GitHub recipe](identity.md#provider-recipes)). A `password` entry is described below. Unset claims inherit the primary's; the secret rides the env var `clientSecretRef` names; subs store namespaced `<id>:<sub>`. With several houses, plain `/api/auth/login` serves a chooser. Each entry may also set the per-IdP keys below (`hostedDomain`, `tenantId`, `emailVerification`, `scopes`, `authParams`); those are never inherited from the primary. See [identity](identity.md#more-than-one-idp) |
 | `admission` | absent | who may sign in, checked on every OIDC, GitHub, password and proxy sign-in before a user row is written: `{ emails?: string[], domains?: string[], invitations?: boolean (default true) }`. Absent = every verified sign-in is admitted (production setup warns). `{}` admits invitations only. Admission by email, domain or invitation needs a verified email (see `emailVerification`). See [who may sign in](identity.md#who-may-sign-in) |
 | `linkedStandingDays` | `30` | whole days, 1-365. How long one sign-in's IdP groups, and the account's own sign-in's standing under `admission`, carry over to the person's other linked sign-ins. See [one person, several sign-ins](identity.md#one-person-several-sign-ins) |
-| `bootstrapOwners` | `[]` | emails that get the owner group (first `roleGroups.owner` name, else `owner`) on first account creation once admitted with a verified email. The group remains in local membership until an owner removes it. Audited as `auth.bootstrap-owner`. Each must be admitted by `admission.emails` or `admission.domains`; refused when `roleGroups.owner` is `[]` |
+| `bootstrapOwners` | `[]` | emails that get the owner group (first `roleGroups.owner` name, else `owner`) on first account creation once admitted with a verified email. The group remains in local membership until an owner removes the group. Audited as `auth.bootstrap-owner`. Each must be admitted by `admission.emails` or `admission.domains`; refused when `roleGroups.owner` is `[]` |
 | `hostedDomain` | absent | per IdP. Google Workspace domain: the `hd` claim must equal it (a mismatch or missing claim refuses), and it is sent as the `hd` authorization parameter |
 | `tenantId` | absent | per IdP. Microsoft Entra directory id (GUID): the `tid` claim must equal it |
 | `emailVerification` | `claim` | per IdP. `claim`: email-based admission needs `email_verified: true`. `trusted`: every email this IdP sends counts as verified (tenant-pinned IdPs that omit the claim) |
@@ -128,7 +128,7 @@ organisation blocks unreviewed OAuth apps. Add one entry to `idp.additional`:
   needs the server's `LW_CONFIG`, `DATABASE_URL` and `LW_SESSION_SECRET`, and prints the
   link). The same command lets a locked-out bootstrap owner back in. During restricted
   evaluation (`dev.enabled` on), a dev-login admin can issue links instead, and the
-  console's sign-in screen offers the dev sign-in with the password form beside it.
+  console's sign-in screen offers the dev sign-in with the password form beside the dev sign-in.
 - **No self sign-up, and nothing is emailed.** An admin or owner issues a one-time link
   from the console (Copy sign-in link on an invitation, or Copy password link on a
   person) and passes it on. The link sets the password and signs the person in. It
@@ -143,7 +143,7 @@ organisation blocks unreviewed OAuth apps. Add one entry to `idp.additional`:
   disabled or loses the admin role, or the address has since come to need an owner.
   "Disable access" cancels the person's unused links.
 - An owner signs in with a password only when an owner (or the operator command)
-  issued the link that set it. A password set from an admin's link stops working for
+  issued the link that set the password. A password set from an admin's link stops working for
   an account that is later made an owner, until an owner issues a new link.
 - Every password sign-in runs the same admission, linking, invitation and "Disable
   access" checks as any other sign-in. Setting a new password from a link ends every
@@ -155,7 +155,7 @@ organisation blocks unreviewed OAuth apps. Add one entry to `idp.additional`:
 - Ten sign-in attempts in a row without a success lock that address for 15 minutes; a
   successful sign-in resets the count. Each attempt is counted before its password is
   checked, so parallel guesses get no more than ten checks, and attempts during a lock
-  are not counted, so guessing does not extend it. An admin can lift a lock from the
+  are not counted, so guessing does not extend the lock. An admin can lift a lock from the
   person (Unlock), without a new password. An unknown address, a wrong password and a
   locked address all get the same answer.
 - The sign-in and link routes use the `auth` rate-limit bucket below, per client IP, on
@@ -254,7 +254,7 @@ expired, each at its size plus 4096 bytes for its database rows, so many tiny fi
 too. One person's unfinished uploads may declare twice `maxFileBytes` in all, and one person may
 download twice `instanceBudgetBytes` a day (counted per server process). The defaults are sized for a small hosted Postgres that also holds the file bytes (the
 `pg` blob driver); Neon's free plan, for example, has 1 GB of storage in all and stops writes
-past it. Raise them only with the storage to match.
+past that storage limit. Raise them only with the storage to match.
 
 ```json
 "policy": {
@@ -283,7 +283,7 @@ next authenticated request. Token expiry does not replace the offboarding integr
 
 | Key | Default | What it does |
 |---|---|---|
-| `allowHooksInFastPath` | `false` | whether the in-process jsdom path may run a tool's `hooks.js`. Default refuses hooked tools with `501 HOOKED_TOOL_NEEDS_CHROMIUM`. When on, a tool whose manifest `requires` names a `host.*` API the in-process host lacks is refused with `501 TOOL_REQUIRES_UNMET` before any hook runs. Hooks run in a `node:vm` context with the DOM and host bridge but no `process`, `require` or `fetch` - contained, not isolated. Turn on only for a pack you curate end to end; the server warns at boot when it is on for any pack other than the bundled `packs/demo` |
+| `allowHooksInFastPath` | `false` | whether the in-process jsdom path may run a tool's `hooks.js`. Default refuses hooked tools with `501 HOOKED_TOOL_NEEDS_CHROMIUM`. When on, a tool whose manifest `requires` identifies a `host.*` API the in-process host lacks is refused with `501 TOOL_REQUIRES_UNMET` before any hook runs. Hooks run in a `node:vm` context with the DOM and host bridge but no `process`, `require` or `fetch` - contained, not isolated. Turn on only for a pack you curate end to end; the server warns at boot when it is on for any pack other than the bundled `packs/demo` |
 | `worker.url` | `""` | the Chromium render worker. Set (with `LW_RENDER_WORKER_SECRET`) ⇒ hooked/HTML-heavy tools dispatch there instead of `501`. **This pair is the render-topology switch** - the deployment's capability set is advertised to shells via org_config's `render` block either way ([deployment](deployment.md)) |
 | `worker.timeoutMs` | `20000` | per-job timeout |
 | `c2pa.certFile` | `""` | signing-cert chain PEM (leaf first), public |
@@ -610,13 +610,13 @@ instead ([hiding tags](catalog.md#hiding-tags)).
 | Var | When | What |
 |---|---|---|
 | `LW_SESSION_SECRET` | required in prod | member/guest/state token HMAC key; the audit log's MAC key is derived from it |
-| `LW_SESSION_SECRET_PREVIOUS` | during a rotation | verification accepts it beside the current key; minting never uses it. Drop after the longest session TTL. The audit MAC does not use it: run `lw audit retire-key` after a rotation, with or without the old value ([audit](audit.md#rotating-the-session-secret)) |
+| `LW_SESSION_SECRET_PREVIOUS` | during a rotation | verification accepts it beside the current key; minting never uses the previous key. Drop after the longest session TTL. The audit MAC does not use it: run `lw audit retire-key` after a rotation, with or without the old value ([audit](audit.md#rotating-the-session-secret)) |
 | `LW_LINK_SECRET` | required in prod | link signature key |
 | `LW_LINK_SECRET_PREVIOUS` | during a rotation | same window contract for outstanding signed links |
 | `LW_IDP_CLIENT_SECRET` | if your IdP issues one | OIDC confidential client secret |
 | `LW_LOG_FORMAT` | `text` | `json` writes one JSON object per log line (and turns the http access line on) for a log pipeline |
 | `LW_LOG_HTTP` | off | `1` writes an access line per request in text mode: request id, method, route label, status, ms |
-| `LW_PROXY_AUTH_SECRET` | with `proxyAuth.enabled` | the shared secret the reverse proxy injects as `x-lw-proxy-auth`. The name is `proxyAuth.secretRef`; `proxyAuth.directory.bindPasswordRef` names the LDAP bind password the same way |
+| `LW_PROXY_AUTH_SECRET` | with `proxyAuth.enabled` | the shared secret the reverse proxy injects as `x-lw-proxy-auth`. The name is `proxyAuth.secretRef`; `proxyAuth.directory.bindPasswordRef` identifies the LDAP bind password the same way |
 | `LW_CREDENTIAL_SECRET` | once a provider credential is stored | master key sealing credentials at rest (AES-256-GCM) |
 | `LW_METRICS_TOKEN` | to scrape remotely | bearer token for `/metrics`. Required in production and proxied deployments; unset permits loopback only in an unproxied evaluation instance |
 | `LW_SMTP_PASSWORD` | with `notify.smtp.user` | the relay password (AUTH PLAIN) |

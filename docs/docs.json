@@ -1,11 +1,12 @@
 {
   "version": 1,
-  "title": "Deployment documentation",
-  "note": "Source of truth for the docs surfaced in the console (#/docs) and listed in docs/README.md. Add a file here or it gets no page.",
+  "title": "Lolly Work documentation",
+  "canonical": "https://lolly.tools/info",
+  "note": "Generated from the canonical Lolly documentation. Edit the source at https://lolly.tools/info; docs-pin.json records this release-matched bundle.",
   "oss": {
-    "label": "Open-source docs",
+    "label": "All Lolly documentation",
     "path": "/info/",
-    "note": "Lolly OSS (engine, catalog, shells) documents itself at /info/ on any Lolly deployment. The console links there when this deploy serves or points at one."
+    "note": "The complete Lolly and Work documentation lives at https://lolly.tools/info."
   },
   "sections": [
     {
@@ -14,184 +15,121 @@
       "title": "Start here",
       "docs": [
         {
-          "slug": "self-host",
-          "title": "Run your own server",
-          "summary": "Release downloads and installation paths for YunoHost, Linux, macOS, Windows and Kubernetes."
-        },
-        {
-          "slug": "release-1-1-1",
-          "title": "Release 1.1.1",
-          "summary": "Work 1.1.1 paired with Lolly 1.1.1: matched components, changes since 1.1.0, migrations and qualification."
-        },
-        {
-          "slug": "release-1-1-0",
-          "title": "Release 1.1.0",
-          "summary": "Shared Lolly and Work release candidate, matched component versions, qualification, migration and rollback."
-        },
-        {
-          "slug": "overview",
-          "title": "What this deploy is",
-          "summary": "The control plane in one page: what it serves, the two-repo shape, and the trust model."
-        },
-        {
-          "slug": "install",
-          "title": "Installing",
-          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
-        },
-        {
-          "slug": "official-installations",
-          "title": "Official installation routes",
-          "summary": "Project-owned images, Helm/Rancher, European clouds, YunoHost and neutral VM/Dokploy packages, with publication and qualification status."
-        },
-        {
-          "slug": "enterprise-identity",
-          "title": "Enterprise identity deployment",
-          "summary": "Managed SSO registration, admission, optional MFA, SCIM offboarding, logout, upgrades and credential rotation."
-        },
-        {
-          "slug": "customer-setup",
-          "title": "Guided customer setup",
-          "summary": "An illustrated six-step journey through deployment, owner identity, SCIM, assets and a checked sample, with configuration apply and recovery."
-        },
-        {
-          "slug": "deployment",
-          "title": "Deployment shapes",
-          "summary": "Helm/Rancher, Compose, Vercel, air-gap: what each path carries and what it doesn't."
-        },
-        {
-          "slug": "cloud-deployment",
-          "title": "UpCloud, Evroc and fewer hosting services",
-          "summary": "Two cloud targets, OpenTofu/Terraform, private VM boundaries, database restore and public-host migration."
-        },
-        {
-          "slug": "platform-deployment",
-          "title": "Deploy with your platform team",
-          "summary": "Reader, operator and developer paths for SUSE hosts, K3s/RKE2, Ansible/Salt, OCI builds and cloud or on-premises deployment."
-        },
-        {
-          "slug": "wasm-deployment",
-          "title": "WebAssembly and Kubewarden choices",
-          "summary": "Optional policy and component hosting tracks, current WASI compatibility, runtime qualification and bounded worker canaries."
+          "slug": "status",
+          "path": "status.md",
+          "title": "Work status and roadmap",
+          "summary": "What is built, what is pending, and the honest gaps before go-live."
         }
       ]
     },
     {
-      "id": "security-platform",
-      "icon": "instance",
-      "title": "Security and platform",
+      "id": "build",
+      "icon": "docs",
+      "title": "Build & automate",
       "docs": [
         {
-          "slug": "security-platform",
-          "title": "Security and platform overview",
-          "summary": "Local work, connected services and the boundaries operators control."
+          "slug": "document-agents",
+          "path": "document-agents.md",
+          "title": "Invite an agent to a document",
+          "summary": "Invite MCP agents under your identity, with document access, expiry, live collaboration and revocation."
+        },
+        {
+          "slug": "api",
+          "path": "api.md",
+          "title": "Lolly Work API",
+          "summary": "Every route the console and CLI use, with the action each one requires."
+        },
+        {
+          "slug": "cli",
+          "path": "cli.md",
+          "title": "lw CLI: administer an instance",
+          "summary": "Command reference for the admin CLI."
         }
       ]
     },
     {
-      "id": "configure",
+      "id": "manage",
       "icon": "instance",
-      "title": "Configure",
+      "title": "Manage an organisation",
       "docs": [
-        {
-          "slug": "configuration",
-          "title": "Configuration reference",
-          "summary": "Every instance.json key and every LW_* environment variable, with defaults."
-        },
         {
           "slug": "identity",
+          "path": "identity.md",
           "title": "Identity and sessions",
           "summary": "OIDC SSO, group mapping, member and guest sessions, the dev provider."
         },
         {
           "slug": "account-lifecycle",
-          "title": "Account lifecycle data controls",
+          "path": "account-lifecycle.md",
+          "title": "Account data controls",
           "summary": "Owner metadata exports, scoped offboarding, documented limits and review of shared content."
         },
         {
-          "slug": "document-agents",
-          "title": "Document agent invitations",
-          "summary": "Invite MCP agents under your identity, with document access, expiry, live collaboration and revocation."
-        },
-        {
           "slug": "design-system-administration",
+          "path": "design-system-administration.md",
           "title": "Design-system administration",
           "summary": "Inspect sources, review replacements and retirement, and manage durable connect downloads."
-        }
-      ]
-    },
-    {
-      "id": "govern",
-      "icon": "grants",
-      "title": "Govern",
-      "docs": [
+        },
         {
           "slug": "permissions",
+          "path": "permissions.md",
           "title": "Roles and grants",
           "summary": "The seven roles, every action they carry, and deny-wins fine-grained grants."
         },
         {
           "slug": "governance",
+          "path": "governance.md",
           "title": "Policy and governance",
           "summary": "Tool overlays, input locking, profile policy, feature flags, policy-as-code."
         },
         {
           "slug": "catalog",
+          "path": "catalog.md",
           "title": "Catalog and content",
           "summary": "Brand packs, catalog providers, exposure slices, expiry and stop-sharing."
         },
         {
           "slug": "file-preview",
+          "path": "file-preview.md",
           "title": "Asset previews",
           "summary": "Supported formats, preview conversion and render-worker configuration."
         },
         {
           "slug": "offboarding",
+          "path": "offboarding.md",
           "title": "Off-boarding a DAM",
           "summary": "Leaving a DAM: pin early, the Canto/Image Relay fork, and per-vendor exit readiness."
         },
         {
           "slug": "approvals",
+          "path": "approvals.md",
           "title": "Approvals",
           "summary": "Chains, separation of duties, and what an approval can gate."
         },
         {
           "slug": "sharing",
+          "path": "sharing.md",
           "title": "Rendering and sharing",
           "summary": "Server renders, signed links, guest sessions, watermarks, provenance."
         },
         {
           "slug": "renders",
-          "title": "Recoverable renders",
+          "path": "renders.md",
+          "title": "Recover and inspect render jobs",
           "summary": "Persistent renders and batches, individual row recovery, output manifests, partial execution evidence, and API/CLI access."
         },
         {
           "slug": "delivery",
-          "title": "Outbound delivery",
+          "path": "delivery.md",
+          "title": "Organisation delivery destinations",
           "summary": "Fixed organization destinations, durable receipts, S3/WebDAV/signed-HTTPS adapters, automation output references, retries, and the personal/organization boundary."
         },
         {
-          "slug": "c2pa",
-          "title": "Signing exports (C2PA)",
-          "summary": "Give this deploy a signing identity so exports carry a verifiable credential."
-        },
-        {
           "slug": "ai-policy",
-          "title": "Managed AI",
+          "path": "ai-policy.md",
+          "title": "Manage organisation AI policy",
           "summary": "Approval ceiling, operator stop switch, execution enforcement and online policy leases."
         },
-        {
-          "slug": "data-lifecycle",
-          "title": "Data lifecycle",
-          "summary": "Store inventory, account-erasure preview, atomic removal and rights-workflow limits."
-        }
-      ]
-    },
-    {
-      "id": "sources",
-      "icon": "providers",
-      "note": "Per-platform onboarding, written for the owner of the source platform. These files live in docs/providers/, so each entry carries the `path` that finds it; the slug stays flat so links and routes keep working.",
-      "title": "Connect a source",
-      "docs": [
         {
           "slug": "provider-guides",
           "path": "providers/README.md",
@@ -265,18 +203,6 @@
           "summary": "Public Search v4 and permitted renditions, with protected originals explicitly unavailable."
         },
         {
-          "slug": "provider-cloudinary-live-verify",
-          "path": "providers/cloudinary-live-verify.md",
-          "title": "Cloudinary tenant verification",
-          "summary": "Qualify access, original fidelity, paging and costs on the organisation tenant."
-        },
-        {
-          "slug": "provider-orange-logic-live-verify",
-          "path": "providers/orange-logic-live-verify.md",
-          "title": "Orange Logic tenant verification",
-          "summary": "Qualify scoped discovery and permitted renditions without claiming original migration."
-        },
-        {
           "slug": "provider-penpot",
           "path": "providers/penpot.md",
           "title": "Penpot",
@@ -299,6 +225,115 @@
           "path": "providers/o365.md",
           "title": "Microsoft 365 / SharePoint",
           "summary": "A SharePoint library or OneDrive federated read-only through Microsoft Graph."
+        },
+        {
+          "slug": "project-portability",
+          "path": "project-portability.md",
+          "title": "Preview a project transfer",
+          "summary": "Read-only project inventory, access mapping, file and history coverage, and preparation for moving work between instances."
+        }
+      ]
+    },
+    {
+      "id": "operate",
+      "icon": "audit",
+      "title": "Deploy & operate",
+      "docs": [
+        {
+          "slug": "self-host",
+          "path": "self-host.md",
+          "title": "Run your own server",
+          "summary": "Release downloads and installation paths for YunoHost, Linux, macOS, Windows and Kubernetes."
+        },
+        {
+          "slug": "release-1-1-1",
+          "path": "release-1-1-1.md",
+          "title": "Release 1.1.1",
+          "summary": "Work 1.1.1 paired with Lolly 1.1.1: matched components, changes since 1.1.0, migrations and qualification."
+        },
+        {
+          "slug": "release-1-1-0",
+          "path": "release-1-1-0.md",
+          "title": "Release 1.1.0 (historical record)",
+          "summary": "Shared Lolly and Work release candidate, matched component versions, qualification, migration and rollback."
+        },
+        {
+          "slug": "overview",
+          "path": "overview.md",
+          "title": "Lolly Work architecture",
+          "summary": "The control plane in one page: what it serves, the two-repo shape, and the trust model."
+        },
+        {
+          "slug": "install",
+          "path": "install.md",
+          "title": "Install Lolly Work",
+          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
+        },
+        {
+          "slug": "official-installations",
+          "path": "official-installations.md",
+          "title": "Official installation routes",
+          "summary": "Project-owned images, Helm/Rancher, European clouds, YunoHost and neutral VM/Dokploy packages, with publication and qualification status."
+        },
+        {
+          "slug": "enterprise-identity",
+          "path": "enterprise-identity.md",
+          "title": "Set up enterprise identity",
+          "summary": "Managed SSO registration, admission, optional MFA, SCIM offboarding, logout, upgrades and credential rotation."
+        },
+        {
+          "slug": "customer-setup",
+          "path": "customer-setup.md",
+          "title": "Configure your first Work instance",
+          "summary": "An illustrated six-step journey through deployment, owner identity, SCIM, assets and a checked sample, with configuration apply and recovery."
+        },
+        {
+          "slug": "deployment",
+          "path": "deployment.md",
+          "title": "Lolly Work deployment options",
+          "summary": "Helm/Rancher, Compose, Vercel, air-gap: what each path carries and what it doesn't."
+        },
+        {
+          "slug": "cloud-deployment",
+          "path": "cloud-deployment.md",
+          "title": "UpCloud, Evroc and fewer hosting services",
+          "summary": "Two cloud targets, OpenTofu/Terraform, private VM boundaries, database restore and public-host migration."
+        },
+        {
+          "slug": "platform-deployment",
+          "path": "platform-deployment.md",
+          "title": "Deploy with your platform team",
+          "summary": "Reader, operator and developer paths for SUSE hosts, K3s/RKE2, Ansible/Salt, OCI builds and cloud or on-premises deployment."
+        },
+        {
+          "slug": "wasm-deployment",
+          "path": "wasm-deployment.md",
+          "title": "WebAssembly and Kubewarden choices",
+          "summary": "Optional policy and component hosting tracks, current WASI compatibility, runtime qualification and bounded worker canaries."
+        },
+        {
+          "slug": "configuration",
+          "path": "configuration.md",
+          "title": "Work instance configuration",
+          "summary": "Every instance.json key and every LW_* environment variable, with defaults."
+        },
+        {
+          "slug": "c2pa",
+          "path": "c2pa.md",
+          "title": "Configure Work export signing",
+          "summary": "Give this deploy a signing identity so exports carry a verifiable credential."
+        },
+        {
+          "slug": "provider-cloudinary-live-verify",
+          "path": "providers/cloudinary-live-verify.md",
+          "title": "Cloudinary tenant verification",
+          "summary": "Qualify access, original fidelity, paging and costs on the organisation tenant."
+        },
+        {
+          "slug": "provider-orange-logic-live-verify",
+          "path": "providers/orange-logic-live-verify.md",
+          "title": "Orange Logic tenant verification",
+          "summary": "Qualify scoped discovery and permitted renditions without claiming original migration."
         },
         {
           "slug": "provider-webdav-live-verify",
@@ -329,85 +364,79 @@
           "path": "providers/acquia-dam-live-verify.md",
           "title": "Acquia DAM live-verify runbook",
           "summary": "The tenant-day checklist for the Widen v2 driver's unconfirmed endpoints and fields."
-        }
-      ]
-    },
-    {
-      "id": "operate",
-      "icon": "audit",
-      "title": "Operate",
-      "docs": [
+        },
         {
           "slug": "operations",
+          "path": "operations.md",
           "title": "Operations runbook",
           "summary": "Migrations, collaboration drain, backup, rate limits, metrics, guarded upgrades and engine pin."
         },
         {
           "slug": "frontend-updates",
+          "path": "frontend-updates.md",
           "title": "Fast frontend updates",
           "summary": "Qualified source updates with reused runtimes, private shell publication, public root and validator maps, and accepted baselines."
         },
         {
           "slug": "public-model-proof-reuse",
+          "path": "public-model-proof-reuse.md",
           "title": "Public model verification reuse",
           "summary": "Bounded verification reuse for an unchanged serving process, invalidation rules, and measured release timings."
         },
         {
           "slug": "instance-pack-production",
+          "path": "instance-pack-production.md",
           "title": "Build a verified instance pack",
           "summary": "Derive raw Work packs from signed releases while preserving asset addresses, renditions and release custody."
         },
         {
           "slug": "production-readiness",
+          "path": "production-readiness.md",
           "title": "Production evidence",
           "summary": "Read-only configuration checks, staging probes and the evidence still needed before production."
         },
         {
           "slug": "application-release-classification",
+          "path": "application-release-classification.md",
           "title": "Application release classification",
           "summary": "Advisory Git comparison for web-shell changes, conservative shared-source boundaries and required release qualification."
         },
         {
           "slug": "shell-deployment-workflow",
+          "path": "shell-deployment-workflow.md",
           "title": "Shell deployment workflow",
           "summary": "Qualified main CI requests, reusable prepared artifacts and guarded publication with resumable successful phases."
         },
         {
           "slug": "telemetry",
+          "path": "telemetry.md",
           "title": "Telemetry and dashboards",
           "summary": "What is recorded, what never is, and how attribution consent works."
         },
         {
           "slug": "audit",
+          "path": "audit.md",
           "title": "Audit log",
           "summary": "The hash-chained record, verification, and anchoring the head off-box."
-        },
-        {
-          "slug": "project-portability",
-          "title": "Project transfer preview",
-          "summary": "Read-only project inventory, access mapping, file and history coverage, and preparation for moving work between instances."
         }
       ]
     },
     {
-      "id": "reference",
-      "icon": "docs",
-      "title": "Reference",
+      "id": "trust",
+      "icon": "instance",
+      "title": "Trust & security",
       "docs": [
         {
-          "slug": "api",
-          "title": "API surface",
-          "summary": "Every route the console and CLI use, with the action each one requires."
+          "slug": "security-platform",
+          "path": "security-platform.md",
+          "title": "Where work happens and what crosses the network",
+          "summary": "Local work, connected services and the boundaries operators control."
         },
         {
-          "slug": "cli",
-          "title": "lw CLI",
-          "summary": "Command reference for the admin CLI."
-        },
-        {
-          "slug": "status",
-          "title": "Status and roadmap",
-          "summary": "What is built, what is pending, and the honest gaps before go-live."
+          "slug": "data-lifecycle",
+          "path": "data-lifecycle.md",
+          "title": "Work storage and data lifecycle",
+          "summary": "Store inventory, account-erasure preview, atomic removal and rights-workflow limits."
         }
       ]
     }

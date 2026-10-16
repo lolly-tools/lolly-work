@@ -1,6 +1,6 @@
 # Approvals
 
-Chains, not graphs. An approval chain is an ordered list of steps; each step names an
+Chains, not graphs. An approval chain is an ordered list of steps; each step identifies an
 eligible team by group and a completion rule. There is no BPM engine, no DAG, no parallel
 branch - the shape that matches how a Marketing → Legal review actually runs.
 
@@ -33,7 +33,7 @@ PUT /api/v1/chains/:id        # policy.edit
 | `all` | every **nominee named at submit** has approved; with no nominees it behaves as `any` |
 
 Chains bind to work in two places today: catalog submissions go through the chain
-`policy.submit.chain` names ([catalog](catalog.md)), and any other approval names its
+`policy.submit.chain` names ([catalog](catalog.md)), and any other approval identifies its
 `chainId` when it is raised. The overlay key `enforce.escalation` is declared in the type
 but the overlay write paths do not accept it yet - see [status](status.md).
 

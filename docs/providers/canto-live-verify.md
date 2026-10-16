@@ -2,7 +2,7 @@
 
 The tenant-day checklist for the [`canto` driver](canto.md). Every endpoint path and field name
 in that driver comes from Canto's public documentation and none of it has been confirmed against
-a real tenant; this pass is what confirms it. Steps 1 and 2 store nothing; step 3 writes only
+a real tenant; this pass confirms the driver against your tenant. Steps 1 and 2 store nothing; step 3 writes only
 into your own store. About 30 minutes.
 
 ## Before you start
@@ -37,7 +37,7 @@ The credential prompt is hidden; paste the blob on one line. `health ok - canto`
 | `health FAILED: oauth token refresh failed (400)` | The token endpoint read the form and rejected the request SHAPE: a different grant, the client secret wanted in an `Authorization` header, a required scope or audience param. Re-capturing the credential cannot help | Row 2a: `getAccessToken` in `providers/oauth.ts` |
 | `health FAILED: oauth token refresh failed (401)` | The credential: App ID/Secret wrong, refresh token wrong, or the grant revoked | Re-capture the blob with `lw providers credential` |
 | `health FAILED: oauth token refresh failed (404)` or `(405)` | The token URL is wrong | Row 2: `options.tokenUrl` |
-| `health FAILED: canto api 401 for /image?limit=100&start=0` | The token minted and Canto refused it. `403` here usually means API access is not on this contract tier: settle that before spending the session | The grant or the contract, not the code |
+| `health FAILED: canto api 401 for /image?limit=100&start=0` | The token minted and Canto refused the token. `403` here usually means API access is not on this contract tier: settle that before spending the session | The grant or the contract, not the code |
 | `health FAILED: canto api 404 for /image?limit=100&start=0` | The REST base or the scheme list path is wrong | Rows 1 and 3 |
 | `health FAILED: canto url outside allowed hosts` | An `options.baseUrl` or `options.tokenUrl` override points off the `canto.com` / `.global` / `.de` family | The override, or `ALLOWED_HOSTS` |
 
@@ -65,7 +65,7 @@ canto  GET /api/v1/image?limit=100&start=0
 ```
 
 - **EXPECTED BY THIS DRIVER, ABSENT** is the answer. Each entry reads
-  `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen; `(none)` means every
+  `key|alternatives (CONSTANT_NAME)`, so it identifies the constant to widen; `(none)` means every
   guess matched.
 - **IN THE RESPONSE, NOT MAPPED** holds the replacement: an ABSENT `id (RECORD_ID_KEYS)` beside
   a NOT MAPPED `assetId` is one constant edit.
@@ -87,9 +87,9 @@ If a row and that header disagree, the header is right and this table is stale.
 | 1 | The REST base is `https://<tenant>.canto.<domain>/api/v1` | Not in the diff: the report's first line prints the path it called. A wrong base fails step 1 as `canto api 404` or a DNS error | `options.baseUrl`; the default is built in `createCantoProvider` |
 | 2 | The token endpoint is `https://oauth.canto.<domain>/oauth/api/oauth2/token` | Not in the report: a wrong one fails before any API call | `options.tokenUrl`; the host stays pinned to the canto family either way |
 | 2a | The token EXCHANGE is an RFC 6749 form POST: `grant_type=refresh_token` with `client_id`/`client_secret` in the body | Not in the report either. A different grant, or the secret wanted in a header, or an extra scope param, fails step 1 with `oauth token refresh failed (400)` | `getAccessToken` in `providers/oauth.ts`, shared with every OAuth kind; a Canto-only quirk goes in its `extraParams`, not in the shared body |
-| 3 | Canto lists by scheme (`image`, `video`, `audio`, `document`, `presentation`, `other`) with `limit`/`start` paging | The first line names the exact call; `envelope: results: object[] (N)` says how many came back. A scheme Canto does not have fails as an api error; a paging param it ignores shows as an N you did not ask for | `SCHEMES` and `PAGE_SIZE` |
-| 4 | Album scoping is `/album/<id>?limit&start`; search is `/search?keyword=` | Re-run step 2 with `--options '{"tenant":"acme","albumId":"AB12C"}'` and the report names the album path. Search is not exercised by preview | `listPath` for the album arm, `searchAssets` for the keyword param |
-| 5 | The record array rides `results`, then `assets`, `data` | The `record:` line names the key that held it, or says no record array was found and lists `results\|assets\|data (LIST_ENVELOPE_KEYS)` under ABSENT with the real key in NOT MAPPED | `LIST_ENVELOPE_KEYS` |
+| 3 | Canto lists by scheme (`image`, `video`, `audio`, `document`, `presentation`, `other`) with `limit`/`start` paging | The first line identifies the exact call; `envelope: results: object[] (N)` says how many came back. A scheme Canto does not have fails as an api error; a paging param it ignores shows as an N you did not ask for | `SCHEMES` and `PAGE_SIZE` |
+| 4 | Album scoping is `/album/<id>?limit&start`; search is `/search?keyword=` | Re-run step 2 with `--options '{"tenant":"acme","albumId":"AB12C"}'` and the report identifies the album path. Search is not exercised by preview | `listPath` for the album arm, `searchAssets` for the keyword param |
+| 5 | The record array rides `results`, then `assets`, `data` | The `record:` line identifies the key that held it, or says no record array was found and lists `results\|assets\|data (LIST_ENVELOPE_KEYS)` under ABSENT with the real key in NOT MAPPED | `LIST_ENVELOPE_KEYS` |
 | 6 | The id is `id`, and ids stay inside `[A-Za-z0-9._-]` | ABSENT `id (RECORD_ID_KEYS)` when the name is wrong. The charset is a value, so it never reaches the report: it shows in step 1 as `N record(s) SKIPPED` | `RECORD_ID_KEYS`; the charset lives in the `REMOTE_ID` regex |
 | 7 | Every record carries its own `scheme`, search hits and album records included | ABSENT `scheme (SCHEME_KEYS)`. Album records carrying no scheme are dropped rather than falling back on the walked one, so re-run step 1 with `albumId` set and watch `SKIPPED` | `SCHEME_KEYS`; the walked-scheme fallback is in `toAsset` |
 | 8 | The filename is `name` and the title is `displayName` | ABSENT `name\|displayName (FILENAME_KEYS / DISPLAY_NAME_KEYS)`, with the real names in NOT MAPPED | `FILENAME_KEYS` / `DISPLAY_NAME_KEYS` |
@@ -99,7 +99,7 @@ If a row and that header disagree, the header is right and this table is stale.
 | 12 | Tags fold `tag` and `keyword` | These fold rather than fall back, so ABSENT `tag\|keyword (TAG_KEYS)` appears only when neither is there | `TAG_KEYS` |
 | 13 | Sections fold `album` and `folder` | Same folding rule as row 12: ABSENT `album\|folder (SECTION_KEYS)` only when neither exists | `SECTION_KEYS` |
 | 14 | The approved states are `approved`, against `pending` / `restricted` | Not in the report: these are values. Step 1 prints the note `canto treated all N asset(s) on this page as not approved (live-verify: the approval-state VALUES …)` when nothing matched | `options.approvedStates`; `APPROVAL_STATE_KEYS` only if the key is wrong too |
-| 15 | Custom fields ride `additional`, then `customFields` | The report descends one level and names the bag and the fields inside it: `additional: { Expiry Date: string, … }`. ABSENT `additional\|customFields (CUSTOM_FIELD_BAG_KEYS)` when neither exists | `CUSTOM_FIELD_BAG_KEYS`; the field name inside the bag is `mapping.availabilityFields` on the entry |
+| 15 | Custom fields ride `additional`, then `customFields` | The report descends one level and identifies the bag and the fields inside it: `additional: { Expiry Date: string, … }`. ABSENT `additional\|customFields (CUSTOM_FIELD_BAG_KEYS)` when neither exists | `CUSTOM_FIELD_BAG_KEYS`; the field name inside the bag is `mapping.availabilityFields` on the entry |
 | 16 | Canto exposes no native scheduled-expiry field, so availability is mapped by hand | The `record:` block answers it: a native expiry or release date would show in NOT MAPPED. Report one if it is there | Report first. The pattern to copy is `AVAILABLE_UNTIL_KEYS` in `intelligencebank.ts` |
 | 17 | Original bytes stream from `/api_binary/v1/<scheme>/<id>`, and they are the true original for that scheme rather than a rendition | Not in the report, which lists and never fetches: it prints that path as a note. Step 3 answers it | `BINARY_PATH` |
 | 18 | Previews and downloads never ride a host outside the `canto.com` / `.global` / `.de` family | Not in the report. A CDN host outside it fails a blob fetch with `canto url outside allowed hosts` | `ALLOWED_HOSTS`: add the host explicitly, never as a wildcard |
@@ -123,7 +123,7 @@ lw providers materialize acme-canto --remote-id image:AB12C --json
 
 `--remote-id` filters the walk rather than skipping it, so `options.albumId` is what keeps the
 pass short. Every per-asset failure prints under the summary as `<remoteId>: <message>`, and
-each message names the assumption that broke, the constant to edit and this page.
+each message identifies the assumption that broke, the constant to edit and this page.
 
 **The fidelity check** (true original, or a recompressed rendition?):
 
@@ -135,7 +135,7 @@ file /tmp/canto-lolly.bin
 ```
 
 Download the same asset from the Canto UI as the original and checksum that too. A match means
-`api_binary` served the true original for that scheme: strike row 17 for it. A smaller file,
+`api_binary` served the true original for that scheme: strike row 17 for that scheme. A smaller file,
 different pixel dimensions or stripped EXIF/ICC means the path served a rendition, which is row
 17 and not a materialize bug: materialize checksums whatever it is given. The path is
 scheme-scoped, so repeat this per scheme you plan to exit. A driver failure on this route

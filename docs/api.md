@@ -27,7 +27,7 @@ means any signed-in member; *public* means no session needed.
 The manifest is what a downloaded app learns about this deployment before
 anyone signs in: `{ name, accessMode, provider, providerName, loginPath,
 engineVersion, capabilities, brand, connect? }`. `engineVersion` is the vendored
-engine pin this deploy serves tools against; `capabilities` names the surfaces
+engine pin this deploy serves tools against; `capabilities` identifies the surfaces
 the server ships (`catalog`, `collab`, `submit`, `scim`); `connect.packUrl`
 appears exactly while a pack is hosted. It carries no secrets and no user
 data, and shares the auth rate-limit bucket. Any origin may read it
@@ -60,7 +60,7 @@ what a client compares to ask "has the brand here changed since I copied it"
 without downloading anything; `locked` mirrors the tokens asset's `brandLock`,
 so a client knows the brand is authoritative and must not offer to customise it;
 `version` is the hosted pack's version when one is hosted; `packUrl` repeats
-`connect.packUrl` so one block answers both what is here and where to get it.
+`connect.packUrl` so one block answers both what is here and where to download the pack.
 The whole block is `null` when the pack ships no tokens asset, and it changes
 the moment an admin switches brand profile. It states no colours and no font
 files: those stay behind `GET /api/brand`.
@@ -148,7 +148,7 @@ The [design-system administration contract](design-system-administration.md#revi
 |---|---|---|
 | `POST /api/v1/catalog/submit?name=…` | `catalog.submit` | raw bytes in the body; `201` for a new asset, `200` with `duplicate: true` for identical bytes |
 | `POST /api/v1/catalog/submit?name=…&projectId=…&fileId=…&checksum=…` | `catalog.submit` and current project read access | empty body; admits the verified ready project original through the same scan, quota and review pipeline; project files must be enabled on a durable store; service tokens are refused |
-| `POST /api/v1/catalog/submit?type=template\|user-tool` | `catalog.submit` | a template or user tool as JSON; `toolId=` names the tool when the body does not; `422 INVALID_SUBMISSION` when the JSON or its tool is not one this pack can serve; `clientRef=` is echoed on the submission |
+| `POST /api/v1/catalog/submit?type=template\|user-tool` | `catalog.submit` | a template or user tool as JSON; `toolId=` identifies the tool when the body does not; `422 INVALID_SUBMISSION` when the JSON or its tool is not one this pack can serve; `clientRef=` is echoed on the submission |
 | `POST /api/v1/catalog/submit?assetId=inst/…&note=…` | `catalog.edit` | the same pipeline, landing as the next VERSION of an existing asset; `groups`/`type`/`tags`/`description` are refused here and belong to `…/meta` |
 | `GET /api/v1/catalog/submissions` | `catalog.read` | the caller's own submissions plus the ones open on a step their groups may act on |
 | `GET /api/v1/catalog/submissions/:id/bytes` | `catalog.read` | preview before publication - submitter and reviewer only |
@@ -204,7 +204,7 @@ distinct files, 2 MiB per XML/Drive metadata response, 32 MiB per original and 3
 preview and exclusive `shape: true` diagnostics retain their existing contracts.
 Creation and `PUT …/:id` accept `setupVersion: 1` to validate the guided subset; guided
 updates require a disabled source. `POST …/:id/setup-preview` tests a guided DB-managed
-Google Drive source using its sealed credential, without returning it. Its response adds
+Google Drive source using its sealed credential, without returning the credential. Its response adds
 `revision`, a digest of the configuration and credential identity. `POST …/:id/enable`
 accepts `{setupRevision}` and refuses `409 SETUP_CHANGED` if it no longer matches, including
 changes during the health check. This optional guard preserves advanced activation contracts;
@@ -302,7 +302,7 @@ An invitation reads:
 
 Absent dates are `null`. `projects` are the projects the person joins on acceptance (empty
 for an invitation that only admits and groups), each with the name of the person who added
-it. `createdVia` is `console` (this route), `project` (a project invite) or `request` (an
+that project. `createdVia` is `console` (this route), `project` (a project invite) or `request` (an
 approved [request](#invite-links-and-access-requests)). `inviter` and `acceptedUser` carry
 names for the console; `acceptedUser.email` is the address the account signed in with,
 which can differ from the invited one (a GitHub account with the invited address as a
@@ -448,7 +448,7 @@ See [identity](identity.md#service-tokens).
 
 ## SCIM provisioning
 
-Admin (cookie, owner-only) mints the bearer; the protocol half is what the IdP calls with it.
+Admin (cookie, owner-only) mints the bearer; the protocol half is what the IdP calls with the bearer.
 See [identity](identity.md#scim-provisioning).
 
 | Route | Auth |
@@ -478,12 +478,12 @@ Message targeting is groups × shell selectors × engine-version range. Besides 
 console's messages, the server writes `approval`, `expiry`, `collab` and `share`
 messages, `request` (someone asks for access and you may answer) and `notice` (an
 answer to your request, an accepted invitation, a welcome, an invitation entry that no
-longer works). `data.kind` names which, and `data.at` is when it happened; the kinds
+longer works). `data.kind` identifies which, and `data.at` is when it happened; the kinds
 are listed in [sharing](sharing.md#notices).
 
 The inbox hides a message whose subject the caller can no longer reach: a project share
 or a live-collab invite once they cannot see the project, an invite also once its session
-is deleted, and an access request for a project once they no longer manage it. Hidden is
+is deleted, and an access request for a project once they no longer manage the project. Hidden is
 not deleted: the message comes back if the access does.
 
 Comment notices (plan 76 milestone 4) appear in the same list. There is one per person
@@ -579,7 +579,7 @@ separate from the existing `/api/v1/batch` job/ZIP contract.
 | `POST /api/v1/projects/:id/invite` | manager - body `{ emails, role, passwordSetup? }`; `200 { results: [{ email, status: added \| invited \| already \| refused, reason?, invitationId?, link?, expiresAt? }], link, message }`. A result's `link` is that address's own invite link for this project; the top-level `link` is `<appUrl or baseUrl>/#/team/project/<id>`. `message: { workspace, inviter, providers, note? }` is what Lolly needs to compose an invite message. `passwordSetup` is honoured only for an admin or owner with `user.invite` while a `password` entry is configured. New addresses follow `policy.invites`. A caller without `user.invite` may send 100 addresses an hour (`429 RATE_LIMITED`). Reasons are listed in [sharing](sharing.md#inviting-people) |
 | `PATCH /api/v1/projects/:id/members/:userId` | manager - body `{ role }`; `409` for the owner |
 | `PUT /api/v1/projects/:id/members/:userId/expiry` | manager - body `{ expiresAt }`, an ISO time in the future or `null` to clear; within `policy.sharing.maxGrantDays`. A membership past its end date gives no access and stays listed so it can be extended; sharing with the person again, an accepted invitation or an approved request also restores it, with no end date. Editors who may share cannot set end dates: an end date a minute away is a removal, and removal is for managers. `409` for the owner |
-| `GET /api/v1/projects/:id/sharing` | viewer - `{ general: { audience: restricted \| instance, role }, grants: [{ principal: { kind: group, name } \| { kind: custom-group, id, name, memberCount }, role, expiresAt? }], expiries, settings: { viewersCanComment, viewersCanExport, editorsCanShare }, policy: { audiences, instanceMaxRole, roles, customGroups, maxGrantDays? }, canManage }`. `expiries` maps member ids to end dates, for managers only. `viewersCanComment: false` stops viewers creating comments and replies (`403`). `viewersCanExport` is advice to shells only: a viewer can render on their own device, so the server cannot enforce it. Read by `@lolly-tools/core/sharing-v1` `readShareState` |
+| `GET /api/v1/projects/:id/sharing` | viewer - `{ general: { audience: restricted \| instance, role }, grants: [{ principal: { kind: group, name } \| { kind: custom-group, id, name, memberCount }, role, expiresAt? }], expiries, settings: { viewersCanComment, viewersCanExport, editorsCanShare }, policy: { audiences, instanceMaxRole, roles, customGroups, maxGrantDays? }, canManage }`. `expiries` maps member ids to end dates, for managers only. `viewersCanComment: false` stops viewers creating comments and replies (`403`). `viewersCanExport` is advice to shells only: a viewer can render on their own device, so the server cannot enforce that restriction. Read by `@lolly-tools/core/sharing-v1` `readShareState` |
 | `PUT /api/v1/projects/:id/sharing` | manager, or an editor when `settings.editorsCanShare` is on - any of `{ general, grants, settings }`. `grants` replaces every group grant; a directory group leaves the project's visibility when it leaves `grants`. Only a manager gives or takes manager access or changes `editorsCanShare`. `403 AUDIENCE_NOT_ALLOWED` / `ROLE_NOT_ALLOWED` / `GROUPS_OFF` follow `policy.sharing` and `policy.invites.projectRoles`; audited `project.sharing` |
 | `GET /api/v1/share-groups` | member - the groups the caller owns, manages or belongs to: `{ groups: [{ id, name, description?, memberCount, myRole: owner \| manager \| member }], enabled }` |
 | `POST /api/v1/share-groups` | `group.create` - body `{ name, description?, add?: [userId \| email] }`; the caller becomes the owner. People must be ones the caller already shares a project or group with, or an exact address of an enabled member. At most 100 owned groups and 500 people a group |
@@ -603,7 +603,7 @@ someone who cannot see the project gets `403 FORBIDDEN`.
 
 **Session writes are compare-and-set, never last-writer-wins.** `PUT` requires the `rev`
 you read; a stale `rev` answers `409 CONFLICT` with the **full current server session** in
-`current`, so the client keeps its own edit locally and rebases - nothing is silently
+`current`, the client keeps the local edit and rebases - nothing is silently
 overwritten. `bulk` applies per-session CAS over a matched snapshot: a session someone
 edited between preview and apply is **skipped, not stomped**, and reported as
 `skipped: [{ sessionId, rev }]` in the response (re-run to retry). Every refused write is
@@ -667,7 +667,7 @@ plus 4096 bytes for its database rows.
 | `FILE_READY` | 409 | a part sent to a finished file |
 | `UPLOAD_INCOMPLETE` | 409 | finalize before every part arrived |
 | `UPLOAD_EXPIRED` | 410 | the upload passed its expiry (15 minutes without an accepted part, or `uploadTtlHours` after the begin) or was cancelled |
-| `FILE_IN_USE` | 409 | delete of a file that live sessions in the project use; `sessions: [{ id, title }]` names them. A manager may add `?force=1` |
+| `FILE_IN_USE` | 409 | delete of a file that live sessions in the project use; `sessions: [{ id, title }]` identifies them. A manager may add `?force=1` |
 | `RATE_LIMITED` | 429 | download: this person already downloaded twice `instanceBudgetBytes` today, as counted by this server process; `retry-after` gives the seconds to wait |
 
 Errors keep the usual `{ "error": { "code", "message" } }` shape. Finishing an upload is
@@ -700,7 +700,7 @@ unaffected:
 | `dsi` | the instance base that design system came from |
 
 A room hosted here runs under exactly one design system, the one this deployment
-governs (OSS `plans/186` section 3.10). When a client names one, `dsi` must be
+governs (OSS `plans/186` section 3.10). When a client identifies one, `dsi` must be
 this instance's `baseUrl` (a trailing slash and letter case are not a
 difference, and the comparison is on the origin) and, on a profile-aware pack,
 `ds` must be the **active** brand profile that `GET /api/v1/brand/profiles`
@@ -758,7 +758,7 @@ The listing's fields:
   long-lived server); a client then polls less often. It is false on a serverless deploy.
 
 Read state is private to each person: no route reads or changes anyone else's, and a
-thread from another session is `404` on every route that names one.
+thread from another session is `404` on every route that identifies one.
 
 **Mentions.** `mentions` is a list of at most 10 person ids (`400 INVALID_INPUT`
 otherwise). The server keeps only the people who can open the session and read its
@@ -795,7 +795,7 @@ false stores no mentions and refuses `comment-people`), `notices` (default true;
 writes no notices and hides the existing ones) and `emailTitles` (default false). Mention
 email is a seam that is off in this release. When it is switched on, a new mention is
 mailed as "Ana mentioned you on <workspace>" with a link to the thread, never the comment
-text, and names the document only with `emailTitles: true`. Replies are not mailed.
+text, and identifies the document only with `emailTitles: true`. Replies are not mailed.
 
 Viewers may comment when `comment.create` permits it, without gaining artwork
 editing rights. People may edit or delete their own messages with `comment.edit`.
@@ -914,11 +914,11 @@ Saves and restores share one limit per person: 10 a minute and 60 an hour
 | `DATA_BINDING_ERROR` | 400 | a live JSON/CSV provider binding could not resolve, parse, query or validate |
 | `ROW_VALIDATION_FAILED` | 422 | a batch row does not satisfy the selected tool contract |
 | `IDEMPOTENCY_KEY_REUSED` | 409 | the principal reused an idempotency key for different request bytes |
-| `UNSUPPORTED_FORMAT` | 400 | a format this deployment cannot produce (org_config's `render.formats` names what it can) |
+| `UNSUPPORTED_FORMAT` | 400 | a format this deployment cannot produce (org_config's `render.formats` identifies what it can) |
 | `FORMAT_NOT_ALLOWED` | 403 | the format exists here but this tool's overlay policy excludes it |
 | `RENDER_BUSY` | 503 | the render worker is at capacity - retry after `Retry-After` seconds |
 | `HOOKED_TOOL_NEEDS_CHROMIUM` | 501 | hooked tool, no worker configured (org_config's `render.hookedTools` is `false`) |
-| `TOOL_REQUIRES_UNMET` | 501 | the manifest's `requires` names a `host.*` API the in-process render host lacks (`text`, `compose`, `audio`, the device APIs); route the tool through the Chromium worker |
+| `TOOL_REQUIRES_UNMET` | 501 | the manifest's `requires` identifies a `host.*` API the in-process render host lacks (`text`, `compose`, `audio`, the device APIs); route the tool through the Chromium worker |
 
 ## Client identification
 

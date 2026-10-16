@@ -57,7 +57,7 @@ siblings and retained immutable content. The producer checks every file, rejects
 extra or missing entries, links, special files and inputs writable by others,
 and rechecks the tree while copying. Review binds this release to its clean
 source and profile; the manifest alone does not prove how the build was made.
-Keep the original build, CI and qualification evidence with it.
+Keep the original build, CI and qualification evidence with the pack.
 
 Release mode requires a modern signed catalogue with a sequence and tool
 directory hashes. It runs the source-pinned Lolly verifier, checks the complete
@@ -67,7 +67,7 @@ SHA-256. Invalid, orphaned, nested or partially consumed compressed files fail.
 
 The raw output copies exact identity files under `tools/` and `catalog/`, plus
 every path declared by `catalog/delivery-manifest.json`. This includes addressed
-documentation images under `info/shots/` when the inventory names them. Current
+documentation images under `info/shots/` when the inventory identifies them. Current
 and retained aliases, generated renditions and catalogue indexes remain byte
 for byte the same as the release. Web chunks and serving configuration remain
 in the shell.

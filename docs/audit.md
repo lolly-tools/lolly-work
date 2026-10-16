@@ -118,7 +118,7 @@ nothing else. Otherwise it refuses, writes nothing and exits `2`:
 - `no-witness`: no row after the old ones verifies under the key the command was given, so
   nothing shows the server runs that key. Sign in once and run again. This is what stops a
   run with the wrong `LW_SESSION_SECRET`, whose boundary the server would ignore.
-  `--no-witness` skips it.
+  `--no-witness` skips the witness check.
 - `previous-mismatch`: with `LW_SESSION_SECRET_PREVIOUS` set, a row verifies under neither
   value. If PREVIOUS holds an older value that this rotation did not replace, run without it
   (in a container: `docker compose exec -e LW_SESSION_SECRET_PREVIOUS= server …`).

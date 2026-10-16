@@ -30,14 +30,14 @@ project:
 - **A hold implies a pin, best-effort.** A hold on a federated asset materializes its bytes
   while the identity stays `ext/*`. If the provider is already disabled or the upstream is
   down the hold still applies and the lifecycle row reads `pinned: false`, so pin early
-  rather than relying on the hold to do it.
+  rather than relying on the hold to preserve originals.
 - **Re-run it on a cadence.** Materialize is idempotent per (provider, remoteId): the instance
   id is deterministic and blobs overwrite, so a re-run resumes rather than duplicates, and an
   asset that failed once (an upstream hiccup, a redirect-served format) is reported per asset
   without aborting the batch.
 - **`lw providers drift <id>` is the cadence signal.** It compares each copy's stored
-  `sourceUpdatedAt` against today's upstream `updatedAt`, and names the remedy without running
-  it. Drifted copies are worth a re-run; a provider whose assets have stopped drifting has
+  `sourceUpdatedAt` against today's upstream `updatedAt`, and identifies the remedy without running
+  that remedy. Drifted copies are worth a re-run; a provider whose assets have stopped drifting has
   gone quiet, and a quiet upstream is when cutover is safe. Weekly during an active exit.
 - **If `lw providers health` starts failing tenant-wide, materialize immediately** - that
   is the deadline arriving, not the moment to start planning.
@@ -79,7 +79,7 @@ guess turns out wrong: [canto](providers/canto-live-verify.md),
 | Kind | Driver | What imports | Original bytes out | Exit verdict |
 |---|---|---|---|---|
 | `brandfolder` | Public v4 API, bearer key | Native window (`availability_start` / `availability_end`) and a native `approved` boolean; Brandfolder sections → sections | Yes. The attachment's signed storage URL is re-fetched per request and streamed, host-pinned to `brandfolder.com` / `bfldr.com` | **Exit target**, one of the two priority off-boarding paths of record. Live confirmation of the availability field names open |
-| `imagerelay` | Public v2 API, OAuth2 (BYOT) | No native window: availability comes from `mapping.availabilityFields` naming custom-metadata keys. No approval signal at all, so approval stays a lolly-side decision. Folder → section; deletions are reported positively and dropped | Yes. `download_url` re-fetched signed per request, host-pinned to `imagerelay.com`; the driver self-caps at 5 req/s | **Exit target, the urgent one.** Canto owns the platform now - check the fork matrix above first, because your tenant may already be on the other side of it. Live confirmation of the endpoint paths and field names open |
+| `imagerelay` | Public v2 API, OAuth2 (BYOT) | No native window: availability comes from `mapping.availabilityFields` naming custom-metadata keys. No approval signal at all, so approval stays a lolly-side decision. Folder → section; deletions are reported positively and dropped | Yes. `download_url` re-fetched signed per request, host-pinned to `imagerelay.com`; the driver self-caps at 5 req/s | **Exit target, the urgent one.** Canto owns the platform now - check the fork matrix above first, because your tenant may already be on the other side of the migration. Live confirmation of the endpoint paths and field names open |
 | `canto` | REST v1, OAuth2 (BYOT, App ID + Secret issued by Canto to the tenant owner) | Availability from `mapping.availabilityFields` read off the record's custom-field bag; approval states → approved via `options.approvedStates` (default `["approved"]`); albums and folders → sections | Expected yes: `api_binary` streams the original per scheme, host-pinned to the canto family. Whether it returns the true original rather than a rendition is on the driver's `LIVE-VERIFY` checklist | **Exit target.** Nothing in this driver has been confirmed against a Canto tenant yet, so run the runbook before committing a schedule |
 | `acquia-dam` | Widen v2 API, bearer token | Native window (`release_date` → available from, `expiration_date` → available until); asset `status` → approved via `options.approvedStatuses` (default `["active"]`); categories → sections | Yes. The `embeds.original` URL (or the download link) re-fetched per request, host-pinned to `widencollective.com` / `widencdn.net` | **Exit target**, and the least mapping work of the set - governance arrives native, so no custom-field wiring. Live confirmation of the field names open |
 | `intelligencebank` | v3 Graph API only. Login handshake, single sealed credential | Native window (`publish_date` → available from, `expiry_date` or `review_date` → available until); workflow state → approved via `options.approvedStates` (absent leaves approval unfiltered); folder and category → sections | Yes. The resource `download_url` re-fetched per request, host-pinned to the `intelligencebank.com` family (a custom-domain tenant needs its host added) | **Exit target.** Governance-rich, so an exit keeps most of what the DAM knew. Live confirmation of the login response and field names open |
