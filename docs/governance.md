@@ -173,7 +173,7 @@ document hash. Two guards:
 
 Pruning a `catalogFields` entry removes the **definition** only. Values already filed under it
 survive, hidden from every served surface until the definition comes back, so a taxonomy change
-never destroys the data filed under it.
+never destroys the data filed under that field.
 
 ### Seeding at boot
 

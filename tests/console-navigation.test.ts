@@ -12,7 +12,7 @@ function page() {
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin#/users', runScripts: 'outside-only' });
   const w = dom.window;
   w.requestAnimationFrame = (fn: () => void) => setTimeout(fn, 0);
-  w.eval(`${source}\nwindow.helpers = { consoleNavigation, sectionTabs, el, setSession: s => { session = s; } };`);
+  w.eval(`${source}\nwindow.helpers = { consoleNavigation, sectionTabs, mdToNodes, viewDocs, el, setSession: s => { session = s; } };`);
   return { dom, w, helpers: w.helpers };
 }
 
@@ -68,5 +68,24 @@ test('task panels keep edited controls and selection; keyboard activation and co
     assert.equal(input.value, 'Changed draft');
     assert.equal(buttons[0].getAttribute('aria-controls'), 'accounts-directory');
     assert.equal(tabs.element.querySelector('#accounts-directory').getAttribute('aria-labelledby'), buttons[0].id);
+  } finally { p.dom.window.close(); }
+});
+
+
+test('packaged docs retain legacy section anchors without rendering arbitrary HTML', async () => {
+  const p = page();
+  try {
+    const markdown = '# Install\n\n<a id="before-you-expose-it"></a>\n\n## Before exposing the server\n\nConfigure identity.\n\n<a id="unsafe" onclick="window.bad=1"></a>';
+    p.w.fetch = async () => ({ ok: true, status: 200,
+      json: async () => ({ sections: [{ id: 'operate', title: 'Deploy & operate', docs: [{ slug: 'install', title: 'Install' }] }] }),
+      text: async () => markdown,
+    });
+    const main = p.w.document.getElementById('app');
+    await p.helpers.viewDocs(main, new URLSearchParams({ doc: 'install', anchor: 'before-you-expose-it' }));
+    assert.equal(main.querySelector('[data-doc-anchor]').textContent, 'Before exposing the server');
+    assert.ok(main.querySelector('#before-you-expose-it'));
+    assert.ok(!main.querySelector('a[onclick]'));
+    assert.ok(!main.querySelector('#unsafe'));
+    assert.ok(!main.textContent.includes('<a id="before-you-expose-it">'));
   } finally { p.dom.window.close(); }
 });

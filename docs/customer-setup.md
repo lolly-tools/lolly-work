@@ -92,7 +92,7 @@ Choose the intended guest-link and telemetry settings. Configure tool policy and
 
 Choose an inspected tool with a governed SVG, PNG or JPG format. Simple input controls use the engine's initial values, current overlay restrictions and managed brand choices for the selected format. Only edited values are sent as overrides. Locked values are left to the renderer; complex inputs use tool defaults and can be edited in the employee app. The server rechecks tool access, export permission, managed rules and input validity when executing.
 
-Confirm **Expected width (px)** and **Expected height (px)**. Declared pixel sizes are prefilled; enter the intended size for physical or input-dependent tools. These fields check the output and do not resize it. Both dimensions are required for a completed guided sample.
+Confirm **Expected width (px)** and **Expected height (px)**. Declared pixel sizes are prefilled; enter the intended size for physical or input-dependent tools. These fields check the output and do not resize the output. Both dimensions are required for a completed guided sample.
 
 Choose **Create checked sample**. It submits an ordinary durable render with `output-v1` verification. Successful output includes format, MIME, readability and dimension checks, a SHA-256 receipt, **Download sample** and **Download evidence**. A failed render remains a failure with its remedy. PDF is excluded from this checked setup sample because its current inspection cannot establish full readability.
 
@@ -133,7 +133,7 @@ helm upgrade --install lw ./deploy/helm \
   -f ./customer-values.yaml --set-file config=./instance.json
 ```
 
-Refresh Customer setup. **Generated settings are applied** means the running editable settings match the generated configuration. It does not mean all integration tests pass. Re-run identity and sample checks after relevant changes. If the browser has an unexported draft, navigation asks whether to retain or discard it.
+Refresh Customer setup. **Generated settings are applied** means the running editable settings match the generated configuration. It does not mean all integration tests pass. Re-run identity and sample checks after relevant changes. If the browser has an unexported draft, navigation asks whether to retain or discard the draft.
 
 For production cutover, use the real owner session, choose production and disable development login. Generate, apply and restart with Postgres and stable secrets configured. Run `pnpm check:setup` against the deployed configuration and check `/readyz`. Keep the backup until the new deployment passes; restore the source backup and redeploy if needed. A change from memory to Postgres does not migrate evaluation state.
 

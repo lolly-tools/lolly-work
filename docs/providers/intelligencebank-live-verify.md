@@ -58,7 +58,7 @@ from (rows 19 and 20). Both are key names and value types only: no values, no as
 credential, and the prompt goes to stderr. Read the three groups in this order:
 
 1. **EXPECTED BY THIS DRIVER, ABSENT** - the wrong guesses, and the answer this page exists for.
-   Each entry reads `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen.
+   Each entry reads `key|alternatives (CONSTANT_NAME)`, so it identifies the constant to widen.
    `(none)` means every guess matched.
 2. **IN THE RESPONSE, NOT MAPPED** - what your tenant sent that the driver ignores. The fix for an
    absent guess is usually sitting here: ABSENT `expiry_date|review_date (AVAILABLE_UNTIL_KEYS)`
@@ -67,7 +67,7 @@ credential, and the prompt goes to stderr. Read the three groups in this order:
 
 Read the `record:` block too. Keys are unioned across the page, so a key one resource omits does
 not read as absent, and this is the governance-rich kind: a second expiry, a review cycle or a
-rights window sitting in NOT MAPPED is worth reporting even though no row below asks for it.
+rights window sitting in NOT MAPPED is worth reporting even though no row below asks for that field.
 
 ## The assumption table
 
@@ -78,12 +78,12 @@ constant. If a row and that header disagree, the header is right and this table 
 | # | The assumption | How the report answers it | Fix it in `providers/intelligencebank.ts` |
 |---|---|---|---|
 | 1 | The login call is `POST <platformUrl>/webapp/1.0/api/authenticate` with body `{"apikey": "…"}` | Not in the report: a wrong path or body fails step 1 as `intelligencebank login 404` before there is anything to report | The `fetchImpl` call inside `session()` - path and body together |
-| 2 | The login response carries the session id as `sid`, then `session` | Not in the report - it is the handshake, not a list. A 200 the driver cannot read is step 1's third row, which names this constant | `SESSION_ID_KEYS` |
+| 2 | The login response carries the session id as `sid`, then `session` | Not in the report - it is the handshake, not a list. A 200 the driver cannot read is step 1's third row, which identifies this constant | `SESSION_ID_KEYS` |
 | 3 | The login response carries the v3 base as `apiV3url` | Same as row 2, same message | `API_BASE_KEYS` |
 | 4 | The login response carries `clientid` (a header on every v3 call) and `expires_in` (the session TTL) | Not in the report. A missing `clientid` omits the header, so it shows as a `401` on the first v3 call; a missing `expires_in` falls back to a 30 minute session | `CLIENT_ID_KEYS` / `SESSION_TTL_KEYS` |
-| 5 | Listing is `GET <apiV3url>/resources?per_page=100&page=<n>`, plus `folderid=<id>` when scoped | The first report line names the exact call; `envelope: resources: object[] (N)` says how many came back | `listPath` and `PAGE_SIZE` |
-| 6 | The resource array rides `resources`, then `response` | The `record:` line names the key that held it, or says no record array was found and lists `resources\|response (LIST_ENVELOPE_KEYS)` under ABSENT with the real key in NOT MAPPED | `LIST_ENVELOPE_KEYS` |
-| 7 | The next-page cursor is `meta.next_page` | `envelope: meta: { next_page: … }` shows both levels. ABSENT `meta (META_KEYS)` means the envelope names it something else; a `meta` with a differently named cursor inside stops paging after page 1, silently | `META_KEYS` / `NEXT_PAGE_KEYS` |
+| 5 | Listing is `GET <apiV3url>/resources?per_page=100&page=<n>`, plus `folderid=<id>` when scoped | The first report line identifies the exact call; `envelope: resources: object[] (N)` says how many came back | `listPath` and `PAGE_SIZE` |
+| 6 | The resource array rides `resources`, then `response` | The `record:` line identifies the key that held it, or says no record array was found and lists `resources\|response (LIST_ENVELOPE_KEYS)` under ABSENT with the real key in NOT MAPPED | `LIST_ENVELOPE_KEYS` |
+| 7 | The next-page cursor is `meta.next_page` | `envelope: meta: { next_page: … }` shows both levels. ABSENT `meta (META_KEYS)` means the envelope calls it something else; a `meta` with a differently named cursor inside stops paging after page 1, silently | `META_KEYS` / `NEXT_PAGE_KEYS` |
 | 8 | The resource id is `resourceid`, then `id` | ABSENT `resourceid\|id (RECORD_ID_KEYS)`. A resource with no readable id throws rather than federating silently | `RECORD_ID_KEYS` |
 | 9 | The filename is `filename` and the title is `name` | ABSENT `filename\|name (FILENAME_KEYS / DISPLAY_NAME_KEYS)`, with the real names in NOT MAPPED | `FILENAME_KEYS` / `DISPLAY_NAME_KEYS` |
 | 10 | The format is `extension` | ABSENT `extension (FORMAT_KEYS)`. Recoverable: the driver falls back to the filename extension | `FORMAT_KEYS` |
@@ -92,10 +92,10 @@ constant. If a row and that header disagree, the header is right and this table 
 | 13 | Approval is a workflow state under `workflow_state`, then `status` | ABSENT `workflow_state\|status (WORKFLOW_STATE_KEYS)` | `WORKFLOW_STATE_KEYS` |
 | 14 | The approved states are whatever `options.approvedStates` names; absent, approval is unfiltered | Not in the report - these are values. Set `approvedStates` and re-run step 1 (or `sync`): a page nothing matched prints `intelligencebank treated all N resource(s) on this page as not approved (live-verify: the workflow-state VALUES …)` | `options.approvedStates` on the provider entry, not a constant. Only your org can answer this row |
 | 15 | Availability starts at `publish_date` | ABSENT `publish_date (AVAILABLE_FROM_KEYS)`, with the real name in NOT MAPPED | `AVAILABLE_FROM_KEYS` |
-| 16 | Availability ends at `expiry_date`, then `review_date` | ABSENT `expiry_date\|review_date (AVAILABLE_UNTIL_KEYS)`. Check the order: the driver takes the first it finds, so say so if your tenant carries both and means different things by them | `AVAILABLE_UNTIL_KEYS` |
+| 16 | Availability ends at `expiry_date`, then `review_date` | ABSENT `expiry_date\|review_date (AVAILABLE_UNTIL_KEYS)`. Check the order: the driver takes the first it finds, report cases where your tenant carries both and means different things by them | `AVAILABLE_UNTIL_KEYS` |
 | 17 | The folder is `folder`, and its name is `folder.name` | `folder: { id: string, name: string }` in the `record:` block shows both levels. ABSENT `folder (FOLDER_KEYS)` means no folder section is ever read | `FOLDER_KEYS` / `FOLDER_NAME_KEYS` |
 | 18 | Categories ride `category`, and fold into sections beside the folder name | ABSENT `category (CATEGORY_KEYS)`. A string or an array of strings both work | `CATEGORY_KEYS` |
-| 19 | The single-resource call is `GET <apiV3url>/resource/<id>`, wrapping the record in `resource` (or nothing) | The detail report names the wrapper the tenant used, or says the record came back unwrapped. Left unfixed it fails in step 3 with `intelligencebank resource has no download url in the response to GET /resource/<id> (live-verify: …)` | `DETAIL_WRAPPER_KEYS`, and the `path` in `resolveBlob` |
+| 19 | The single-resource call is `GET <apiV3url>/resource/<id>`, wrapping the record in `resource` (or nothing) | The detail report identifies the wrapper the tenant used, or says the record came back unwrapped. Left unfixed it fails in step 3 with `intelligencebank resource has no download url in the response to GET /resource/<id> (live-verify: …)` | `DETAIL_WRAPPER_KEYS`, and the `path` in `resolveBlob` |
 | 20 | The signed link is `download_url`, and it serves the original bytes | The name is in the detail report: ABSENT `download_url (DOWNLOAD_URL_KEYS)` with the real name in NOT MAPPED. Whether it serves the original is a value question - step 3's checksum answers it | `DOWNLOAD_URL_KEYS` |
 | 21 | Every host - platform, discovered v3 base and CDN - is inside the `intelligencebank.com` family | Not in the report. Each guard has its own message: `platformUrl outside`, `apiV3url outside`, or `url outside allowed hosts` on the blob fetch | `ALLOWED_HOSTS` - add the custom domain explicitly, never as a wildcard |
 
@@ -115,7 +115,7 @@ lw providers materialize acme-ib --remote-id r1 --json
 ```
 
 `--remote-id` filters the walk rather than skipping it, so keep `options.folderId` narrow. Every
-per-asset failure prints under the summary as `<remoteId>: <message>`, and each message names the
+per-asset failure prints under the summary as `<remoteId>: <message>`, and each message identifies the
 assumption, the constant and this page. A materialize that fails partway through and then works on
 a re-run is the session TTL (row 4).
 

@@ -190,7 +190,7 @@ if (existsSync(join(ROOT, 'node_modules', '@img'))) {
 }
 
 // 4. Data dirs the handler reads at runtime, as siblings of index.mjs (FN_ROOT base).
-for (const d of ['migrations', 'console', 'docs', join('packs', 'demo')]) {
+for (const d of ['migrations', 'console', 'docs', 'docs-pin.json', join('packs', 'demo')]) {
   console.log('▶ copy data', d);
   cpSync(join(ROOT, d), join(FUNC, d), { recursive: true });
 }

@@ -280,10 +280,12 @@ validation still refuses a stale local shell.
 
 Full key reference: [configuration](configuration.md).
 
-### Before you expose it
+<a id="before-you-expose-it"></a>
+
+### Before exposing the server
 
 Setting `idp.issuer` does **not** turn the dev provider off. `/api/auth/dev` stays a live
-passwordless bypass until you say so. Before any instance is reachable by anyone else:
+passwordless bypass until explicitly configured. Before any instance is reachable by anyone else:
 
 1. `"dev": { "enabled": false }` in `instance.json`. The server warns at boot if a real
    issuer and the dev provider are both configured.
@@ -294,7 +296,7 @@ passwordless bypass until you say so. Before any instance is reachable by anyone
 4. Behind a reverse proxy or ingress, `rateLimit.trustedProxyHops: 1`, or per-IP limits
    only ever see the proxy.
 5. A database password you chose. The Compose file defaults it to the literal `lolly`,
-   so any instance that started without one is still using it. Set `PG_PASSWORD` in
+   so any instance that started without one is still using that password. Set `PG_PASSWORD` in
    `.env` ([section 5](#5-container-compose)); after first boot the `pgdata` volume keeps
    the old one, so changing it also needs `alter role`.
 
@@ -786,7 +788,7 @@ helm show chart lolly-work/lolly-work --version 0.3.2
 In the production recipe above, replace the local `deploy/helm` chart argument
 with `lolly-work/lolly-work --version 0.3.2`; keep your reviewed values, configuration
 and stable Secret references. Verify the chart's Sigstore bundle and source record
-as described in the installation directory before applying it.
+as described in the installation directory before applying the package.
 
 In Rancher, add the same HTTP URL under **Apps > Repositories**. Choose Lolly Work
 and the reviewed version. The form collects connection settings; review the full
@@ -804,7 +806,7 @@ pnpm run cli whoami --base http://localhost:8787
 ```
 
 `login` first: everything else needs a session, stored at
-`~/.config/lolly-work/session`. `--base` (or `LW_BASE`) names the instance; it defaults to
+`~/.config/lolly-work/session`. `--base` (or `LW_BASE`) identifies the instance; it defaults to
 `http://localhost:8787`. On an OIDC instance plain `lw login` runs a device-code flow:
 open the printed URL in any signed-in browser and confirm the short code there.
 `lw login --cookie 'lw_session=...'` is the manual fallback.

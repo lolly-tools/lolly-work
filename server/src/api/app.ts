@@ -9989,6 +9989,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const DOC_PATH_RE = /^(?:[a-z0-9][a-z0-9-]*\/)?[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
   interface DocsManifest {
     title?: string;
+    canonical?: string;
     oss?: { label?: string; path?: string; note?: string };
     sections?: Array<{ id?: string; title?: string; docs?: Array<{ slug?: string; title?: string; summary?: string; path?: string }> }>;
   }
@@ -10033,14 +10034,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!(await docsReadable(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const m = await loadDocsManifest();
     if (!m) return sendError(res, 404, 'NO_DOCS', 'this deployment ships no docs directory');
-    // `appUrl` (split deploy) or a served shellDir means a Lolly deployment is
-    // reachable from here, so its open-source /info/ docs are linkable.
+    // Canonical documentation is available even on a Work-only installation.
+    // Older bundles retain their local-shell link when one is configured.
     const lolly = config.instance.appUrl ?? (config.instance.shellDir ? '' : null);
+    const canonical = m.canonical === 'https://lolly.tools/info' ? m.canonical : null;
     sendJson(res, 200, {
       title: m.title ?? 'Documentation',
       sections: m.sections ?? [],
-      ...(m.oss && lolly !== null
-        ? { oss: { label: m.oss.label ?? 'Open-source docs', url: `${lolly}${m.oss.path ?? '/info/'}`, note: m.oss.note ?? '' } }
+      ...(m.oss && (canonical !== null || lolly !== null)
+        ? { oss: { label: m.oss.label ?? 'Open-source docs', url: canonical ?? `${lolly}${m.oss.path ?? '/info/'}`, note: m.oss.note ?? '' } }
         : {}),
     }, { 'cache-control': 'no-cache' });
   });

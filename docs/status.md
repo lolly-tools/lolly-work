@@ -126,7 +126,7 @@ matched shell, pack, worker and engine-pin artifacts for an existing instance.
   the same retained bytes, scoped to the job principal and protected from deletion while in
   use. No target is configured by default, and personal device targets remain outside the
   control plane.
-- Org-defined asset metadata: an org names its own fields (text/select/date/url, required or
+- Org-defined asset metadata: an org identifies its own fields (text/select/date/url, required or
   not) in the governance document and fills them in on pack, federated and instance-owned
   assets alike through `catalog.edit`; the values ride the feed and the search haystack.
 - Collections: named, ordered, group-visible sets of catalog assets, curated behind

@@ -50,7 +50,7 @@ it will show as **trusted** only after you add `c2pa-root-cert.pem` to that
 verifier's C2PA trust list (a self-generated root isn't trusted by anyone until
 you distribute it - that's what the root file is for).
 
-Keep `c2pa-signing-key.pem` secret (it's written `0600`); never commit it.
+Keep `c2pa-signing-key.pem` secret (it's written `0600`); never commit the key.
 
 ---
 

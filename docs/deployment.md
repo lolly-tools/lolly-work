@@ -115,7 +115,7 @@ operational, not functional:
 ### Evaluation in one command (no Postgres, no IdP, no pack mount)
 
 **The command lives in [install section 7a](install.md#7a-evaluate-on-a-cluster)**, with the
-verification ladder and the persona addresses beside it - one copy, there. This page
+verification ladder and the persona addresses alongside that ladder. This page
 describes what that install *is*.
 
 What you get: in-memory store (a restart is a factory reset - a feature for demos),
@@ -138,6 +138,8 @@ The official 1.1.1 GHCR images are public. An operator-owned private mirror need
 `imagePullSecrets`; a disconnected cluster needs verified image transport, such as
 `docker save` with `k3d image import` or `ctr images import` on the node.
 
+<a id="kubernetes-helm---the-production-path"></a>
+
 ## Kubernetes (Helm) - the production path
 
 `deploy/helm/values.yaml` is the one file you edit; it is heavily commented and is the
@@ -150,7 +152,7 @@ and collect evidence from staging before production promotion.
 
 **The install commands live in [install section 7b](install.md#7b-production)** - secret creation,
 `helm install` with the image override, and the verification. One copy, there. This page is
-the values reference and the list of things to know before you run it.
+the values reference and the list of things to know before you run the chart.
 
 What the chart gives you: one application replica by default, non-root/read-only-rootfs/dropped-caps
 pod defaults, `/healthz` liveness and `/readyz` readiness, an Ingress template, an optional
@@ -176,7 +178,7 @@ Things to know before you install:
   competing writable collaboration owners during rollout.
 - **`pack.type` defaults to `none`** - `config.instance.pack` points at `/app/packs/demo`,
   the small demo pack baked into the server image, so an unmounted install still serves a
-  catalog. Mount your own pack and point `config.instance.pack` at it. Simplest
+  catalog. Mount your own pack and point `config.instance.pack` at that pack. Simplest
   delivery: bake the pack into an image (`COPY packs/ /pack/` on a busybox base), set
   `pack.image` to its ref and `pack.type: emptyDir` - an initContainer copies it into the
   pack volume before the server starts. The same `pack.image` also works with
@@ -260,7 +262,7 @@ you can:
 | PostgreSQL 16/17 | **yes** | the only hard external service |
 | Ingress (nginx) | practically | chart ships the Ingress template |
 | cert-manager | practically | TLS; annotation example is in `values.yaml` |
-| Keycloak or any OIDC IdP | yes for SSO | fully IdP-agnostic; `idp.displayName` names it in the UI |
+| Keycloak or any OIDC IdP | yes for SSO | fully IdP-agnostic; `idp.displayName` identifies it in the UI |
 | kube-prometheus-stack | optional | ServiceMonitor template included; `/metrics` is token-gated |
 | Node.js base image | yes | default Node 26 Alpine; SUSE BCI `bci/nodejs:24-base` is the separately qualified alternative |
 | S3-compatible object store | optional | only for the S3 catalog provider |
@@ -289,7 +291,7 @@ because its migration step connects once with no retry.
 
 The shell is not mounted by default (console + API only). A commented-out mount in
 `docker-compose.yml` shows how: bind a built `shells/web/dist` and point
-`instance.shellDir` at it. The same boot guard as Helm applies - under a non-`open`
+`instance.shellDir` at that build. The same boot guard as Helm applies - under a non-`open`
 access mode, `instance.shellDir` with a missing or stale dist stops boot
 (`LW_ALLOW_STALE_SHELL=1` to override).
 
@@ -353,7 +355,7 @@ Auth, org-config, RBAC, overlays, links, telemetry, inbox, audit, fleet, console
 bundled into the function, so Tier-A (SVG + resvg PNG) renders in-process. What's still
 absent: no large real pack mount, no Chromium (Tier-B jpg/pdf), the 1.9 GB Lolly
 web shell is not served (the demo landing at `/` stands in), and **no real WebSocket collab**
-(the Rooms panel shows mock rooms; live editing is the sovereign Helm deploy's ws gateway - 
+(the Rooms panel shows mock rooms; live editing is the sovereign Helm deploy's ws gateway -
 see `deploy/vercel/WS-SPIKE.md`). This adapter is optional; the hosted **lolly.work**
 evaluation now uses the isolated UpCloud/K3s workload described above. Adapter
 runbook: `deploy/vercel/README.md`.

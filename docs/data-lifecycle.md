@@ -121,7 +121,7 @@ Retention, applied whenever a version is written:
   not enough, a named save or a restore is refused (`409 VERSION_SPACE`) and an
   automatic version is skipped.
 
-Content no version uses any more is deleted with the last version that used it.
+Content no version uses any more is deleted with the last version that used that content.
 Deleting a document deletes all its versions and their content in the same
 request, because a deleted document cannot be restored. A project manager can
 delete one version (and its restore pair) at any time; the deletion is audited

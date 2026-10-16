@@ -218,7 +218,7 @@ Webhook events POST to `notify.webhook.url` as JSON with `x-lolly-signature:
 sha256=<hmac(timestamp.body)>` under `LW_WEBHOOK_SECRET` and an `x-lolly-timestamp` header -
 verify both, refuse stale timestamps, and forgeries and replays are dead on arrival. One
 retry, then the failure is counted (`lw_notify_total{outcome="failed"}`) and logged;
-delivery never blocks or fails the request that triggered it. Neither channel is
+delivery never blocks or fails the request that triggered the delivery. Neither channel is
 phone-home: both targets are the org's own, named in its config, reached only when its
 members act.
 
@@ -287,7 +287,7 @@ works) - the route and the interval run the same code.
 first: it reports retained references and affected telemetry without changing data.
 `lw users erase <id>` atomically removes the account's identity row and de-attributes
 telemetry, or leaves both unchanged if a retained reference or database error blocks
-it. Archiving a project retains its foreign key; ownership transfer or an approved
+erasure. Archiving a project retains its foreign key; ownership transfer or an approved
 lifecycle action is needed. Sessions, approvals, links and message acknowledgements
 can also block removal. The memory store now matches PostgreSQL on these conditions.
 
@@ -360,7 +360,7 @@ apply, review the diff (including the bridge-contract version label) and commit.
 If you serve the web shell (`instance.shellDir`), its freshness is part of the upgrade. Under
 a non-`open` access mode the server refuses to boot on a missing or pre-governance dist,
 because a stale shell would serve employees without the session gate and locked-input UX
-while the deploy looks governed. `LW_ALLOW_STALE_SHELL=1` downgrades it to a loud warning - 
+while the deploy looks governed. `LW_ALLOW_STALE_SHELL=1` downgrades it to a loud warning -
 use it knowingly, briefly.
 
 ## Changing the deployment design system
@@ -404,7 +404,7 @@ Two realities shape the setup:
   cross-origin instance works out of the box. A **browser** pointed at a
   remote instance is a different story - the OSS shell refuses instance
   switching in browsers, so browser users are served same-origin (the shell
-  at `/`, this API beside it), and no CORS opening is needed or offered.
+  at `/`, this API alongside the app), and no CORS opening is needed or offered.
 - **`X-Lolly-Client` is the only signal a connected client sends.** Shell
   kind, shell version, engine version, platform - on requests the person's
   own use already makes. There is no heartbeat and no phone-home; a device

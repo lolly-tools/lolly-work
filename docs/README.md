@@ -1,111 +1,88 @@
-# Documentation - Lolly control plane
+# Lolly Work packaged documentation
 
-Start with the [security and platform overview](security-platform.md) to understand local work, connected services and operator responsibilities.
+The complete documentation lives at <https://lolly.tools/info>. These generated guides are bundled for the console at `/admin#/docs` and offline installations. Existing console slugs and relative guide links remain available.
 
-
-Operator and administrator documentation for a **deploy** of the Lolly control plane. These
-pages describe what is *built*.
-
-**Read them in the console:** every page this index links to is served at `/admin#/docs` on
-a running deploy, so whoever is operating it does not need the repository. `docs.json` is
-the source of truth for that surface (this index itself stays repo-side - the console has
-its own navigation) - a page added here without an entry there gets no console page.
-
-The open-source half of Lolly (engine, catalog, shells) documents itself at **`/info/`** on
-any Lolly deployment. The console links there when this deploy serves or points at one.
+Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/work), then follow the [bundle update instructions](https://github.com/lolly-tools/lolly/blob/main/docs/work/README.md). Do not edit this generated copy. The repository's `docs-pin.json` records the selected canonical commit and all file hashes; run `pnpm run verify:docs-pin` to verify the bundle. Keep the selected documentation appropriate for the Work release.
 
 ## Start here
 
-| Doc | What it covers |
-|---|---|
-| [release 1.1.1](release-1-1-1.md) | Lolly 1.1.1 pairing, changes since 1.1.0, migrations, qualification and YunoHost packaging |
-| [release 1.1.0](release-1-1-0.md) | Shared product versions, exact engine source, qualification, migration and rollback |
-| [overview](overview.md) | The control plane in one page: what it serves, the two-repo shape, the trust model |
-| [run your own server](self-host.md) | Release downloads and platform choices; Lolly Work for YunoHost |
-| [install](install.md) | The whole first deploy: local demo, first config, sign-in and the first owner, Postgres, secrets, Compose / systemd / Helm |
-| [official installations](official-installations.md) | Upstream packages, signatures, online distribution and platform qualification status |
-| [customer setup](customer-setup.md) | Six steps from deployment settings and real owner sign-in to a checked, downloadable sample |
-| [deployment](deployment.md) | Helm/Rancher, Compose, Vercel, air-gap - what each path carries |
-| [UpCloud and Evroc](cloud-deployment.md) | OpenTofu/Terraform, database restore and reducing separate hosting services |
-| [platform deployment](platform-deployment.md) | SUSE hosts, Ansible/Salt readiness, K3s/RKE2, OCI builds and cloud/on-premises boundaries |
-| [WebAssembly and Kubewarden choices](wasm-deployment.md) | Optional policy/component tracks and runtime qualification |
+- [Work status and roadmap](status.md)
 
-## Configure
+## Build & automate
 
-| Doc | What it covers |
-|---|---|
-| [design-system administration](design-system-administration.md) | Source inventory, reviewed changes, retirement, connect downloads and rollback |
-| [configuration](configuration.md) | Every `instance.json` key and `LW_*` variable, with defaults |
-| [enterprise identity](enterprise-identity.md) | Managed SSO installation, provider registration, MFA policy, SCIM/offboarding, logout, upgrades and rotation |
-| [identity](identity.md) | OIDC SSO, group→role mapping, member and guest sessions, offboarding |
-| [account lifecycle](account-lifecycle.md) | Bounded account metadata exports, scoped offboarding and review responsibilities |
+- [Invite an agent to a document](document-agents.md)
+- [Lolly Work API](api.md)
+- [lw CLI: administer an instance](cli.md)
 
-## Govern
+## Manage an organisation
 
-| Doc | What it covers |
-|---|---|
-| [permissions](permissions.md) | Seven roles, every action, deny-wins grants, the owner guard |
-| [governance](governance.md) | Tool overlays, input locking, profile policy, feature flags, policy-as-code |
-| [ai-policy](ai-policy.md) | Managed AI approval ceiling, operator switch, execution guards and lease expiry |
-| [data-lifecycle](data-lifecycle.md) | Data inventory, account-erasure preview, retained references and rights-workflow limits |
-| [project transfer preview](project-portability.md) | Read-only inventory, file/history coverage, access mapping and future transfer boundaries |
-| [catalog](catalog.md) | Brand packs, providers, exposure slices, expiry and stop-sharing |
-| [offboarding](offboarding.md) | Leaving a DAM: pin early, the Canto/Image Relay fork, exit readiness per vendor |
-| [approvals](approvals.md) | Chains, rules, separation of duties |
-| [sharing](sharing.md) | Server renders, signed links, watermarks, provenance |
-| [renders](renders.md) | Recoverable renders and batches, row retries, output manifests, execution evidence and API/CLI |
-| [c2pa](c2pa.md) | Giving this deploy a signing identity for verifiable exports |
+- [Identity and sessions](identity.md)
+- [Account data controls](account-lifecycle.md)
+- [Design-system administration](design-system-administration.md)
+- [Roles and grants](permissions.md)
+- [Policy and governance](governance.md)
+- [Catalog and content](catalog.md)
+- [Asset previews](file-preview.md)
+- [Off-boarding a DAM](offboarding.md)
+- [Approvals](approvals.md)
+- [Rendering and sharing](sharing.md)
+- [Recover and inspect render jobs](renders.md)
+- [Organisation delivery destinations](delivery.md)
+- [Manage organisation AI policy](ai-policy.md)
+- [Provider guides](providers/README.md)
+- [WebDAV / Nextcloud](providers/webdav.md)
+- [S3 / S3-compatible](providers/s3.md)
+- [Git raw manifest](providers/git.md)
+- [Brandfolder](providers/brandfolder.md)
+- [Optimizely CMP](providers/optimizely-cmp.md)
+- [Image Relay](providers/imagerelay.md)
+- [Canto](providers/canto.md)
+- [Acquia DAM / Widen](providers/acquia-dam.md)
+- [IntelligenceBank](providers/intelligencebank.md)
+- [Cloudinary](providers/cloudinary.md)
+- [Orange Logic](providers/orange-logic.md)
+- [Penpot](providers/penpot.md)
+- [Dropbox](providers/dropbox.md)
+- [Google Drive](providers/gdrive.md)
+- [Microsoft 365 / SharePoint](providers/o365.md)
+- [Preview a project transfer](project-portability.md)
 
-## Connect a source
+## Deploy & operate
 
-One guide per catalog provider kind, written for the owner of the source platform: what you
-need from the platform, the `--options` that kind takes, where its credential comes from, and
-how to verify. All of them are served in the console too.
+- [Run your own server](self-host.md)
+- [Release 1.1.1](release-1-1-1.md)
+- [Release 1.1.0 (historical record)](release-1-1-0.md)
+- [Lolly Work architecture](overview.md)
+- [Install Lolly Work](install.md)
+- [Official installation routes](official-installations.md)
+- [Set up enterprise identity](enterprise-identity.md)
+- [Configure your first Work instance](customer-setup.md)
+- [Lolly Work deployment options](deployment.md)
+- [UpCloud, Evroc and fewer hosting services](cloud-deployment.md)
+- [Deploy with your platform team](platform-deployment.md)
+- [WebAssembly and Kubewarden choices](wasm-deployment.md)
+- [Work instance configuration](configuration.md)
+- [Configure Work export signing](c2pa.md)
+- [Cloudinary tenant verification](providers/cloudinary-live-verify.md)
+- [Orange Logic tenant verification](providers/orange-logic-live-verify.md)
+- [WebDAV live-verify runbook](providers/webdav-live-verify.md)
+- [Canto live-verify runbook](providers/canto-live-verify.md)
+- [Image Relay live-verify runbook](providers/imagerelay-live-verify.md)
+- [IntelligenceBank live-verify runbook](providers/intelligencebank-live-verify.md)
+- [Acquia DAM live-verify runbook](providers/acquia-dam-live-verify.md)
+- [Operations runbook](operations.md)
+- [Fast frontend updates](frontend-updates.md)
+- [Public model verification reuse](public-model-proof-reuse.md)
+- [Build a verified instance pack](instance-pack-production.md)
+- [Production evidence](production-readiness.md)
+- [Application release classification](application-release-classification.md)
+- [Shell deployment workflow](shell-deployment-workflow.md)
+- [Telemetry and dashboards](telemetry.md)
+- [Audit log](audit.md)
 
-For the first external source, open **Providers** at `/admin#/providers`. WebDAV / Nextcloud and Google Drive have guided forms with exact group names, original-file checks and sync before activation. Google Drive also captures registered browser consent. The other kinds use their documented advanced forms and CLI consent where available. Configuration and local examples still need verification against the customer's actual source.
+## Trust & security
 
-| Doc | What it covers |
-|---|---|
-| [provider guides](providers/README.md) | The shared skeleton, OAuth onboarding, which drivers are fixture-verified only |
-| [webdav](providers/webdav.md) | Guided configuration, original checksum, credential sealing and activation for Nextcloud or generic WebDAV |
-| [s3](providers/s3.md) · [git](providers/git.md) | A private bucket (AWS / MinIO / Ceph), and a manifest under version control |
-| [brandfolder](providers/brandfolder.md) · [optimizely-cmp](providers/optimizely-cmp.md) | Brandfolder read-only; Optimizely CMP in, and optionally exports back out |
-| [imagerelay](providers/imagerelay.md) · [canto](providers/canto.md) | The two halves of the Canto/Image Relay fork |
-| [acquia-dam](providers/acquia-dam.md) · [intelligencebank](providers/intelligencebank.md) | The governance-rich enterprise DAMs |
-| [cloudinary](providers/cloudinary.md) · [orange-logic](providers/orange-logic.md) | Shared media originals and explicitly labelled enterprise DAM renditions; both need tenant qualification |
-| [penpot](providers/penpot.md) | An open, self-hostable design-system source |
-| [gdrive](providers/gdrive.md) | Guided folder/group settings, web-client registration, browser consent and reviewed activation |
-| [dropbox](providers/dropbox.md) · [o365](providers/o365.md) | Registered CLI PKCE consent for Dropbox and Microsoft 365 |
-| live-verify runbooks | [webdav](providers/webdav-live-verify.md) · [canto](providers/canto-live-verify.md) · [imagerelay](providers/imagerelay-live-verify.md) · [intelligencebank](providers/intelligencebank-live-verify.md) · [acquia-dam](providers/acquia-dam-live-verify.md) |
-| Additional tenant passes | [cloudinary](providers/cloudinary-live-verify.md) · [orange-logic](providers/orange-logic-live-verify.md) |
+- [Where work happens and what crosses the network](security-platform.md)
+- [Work storage and data lifecycle](data-lifecycle.md)
 
-Connecting your first one end to end, with commands:
-[install section 9](install.md#9-connect-a-source).
-
-## Operate
-
-| Doc | What it covers |
-|---|---|
-| [operations](operations.md) | Migrations, collaboration drain, secret rotation, backup, limits, monitoring, application updates |
-| [fast frontend updates](frontend-updates.md) | Qualified source updates, reused runtimes, private shells, public root and validator maps, and accepted baselines |
-| [verified instance packs](instance-pack-production.md) | Raw Work packs from signed releases, immutable assets, renditions and release custody |
-| [telemetry](telemetry.md) | What is recorded, what never is, attribution consent, dashboards |
-| [audit](audit.md) | The hash-chained record, verification, anchoring the head off-box |
-| [production evidence](production-readiness.md) | Read-only configuration checks, staging probes and unresolved review evidence |
-
-## Reference
-
-| Doc | What it covers |
-|---|---|
-| [api](api.md) | Every route with the action it requires, and the common error codes |
-| [cli](cli.md) | `lw` command reference |
-| [status](status.md) | What is built, the open gaps in priority order, roadmap shape |
-
-## Conventions
-
-- **"This deploy" / "deployment"** is the unit of installation - one organization's control
-  plane, its config, its pack, its governance.
-- Code paths are cited where they are the authority; where a doc and the code disagree, the
-  code wins and the doc is a bug.
-- Nothing here contains a secret, and nothing here is organization-specific: the deploy's name,
-  brand and IdP all live in `instance.json`.
+Work prose and screenshot credentials retain MPL-2.0 and any third-party notices. See [LICENSE](LICENSE).

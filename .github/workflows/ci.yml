@@ -31,6 +31,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs-source:
+    name: canonical documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.11.1'
+      - name: Verify bundle and read canonical source
+        id: docs-source
+        run: |
+          node scripts/verify-docs-pin.ts
+          node --input-type=module - <<'JS' >> "$GITHUB_OUTPUT"
+          import { readFileSync } from 'node:fs';
+          const pin = JSON.parse(readFileSync('docs-pin.json', 'utf8'));
+          if (!/^[a-f0-9]{40}$/.test(pin.commit)) throw new Error('Invalid documentation source');
+          console.log('commit=' + pin.commit);
+          JS
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lolly-tools/lolly
+          ref: ${{ steps.docs-source.outputs.commit }}
+          path: qualification-docs
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /docs/
+            /README.md
+            /engine/text-composition.md
+            /scripts/export-work-docs.ts
+      - name: Reproduce the committed offline bundle
+        run: node scripts/sync-docs-bundle.ts --source=qualification-docs --commit="${{ steps.docs-source.outputs.commit }}" --check
+
   test:
     name: test
     runs-on: ubuntu-latest
