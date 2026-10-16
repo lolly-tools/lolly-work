@@ -39,8 +39,10 @@ This package therefore needs network access; disconnected installation requires
 separately prepared and verified mirrors/content.
 
 Work stores accounts, projects, uploaded content and its audit history in the
-operator's PostgreSQL database. The configured identity provider handles sign-in;
-the operator controls backups and any later enabled connectors. Initial package
+operator's PostgreSQL database. The neutral package defaults to built-in
+email/password sign-in with a private, host-issued first-owner link; an external
+OIDC provider is optional. Native password hashes also stay in PostgreSQL. The
+operator controls backups and any later enabled connectors. Initial package
 telemetry is off. Loading a model contacts `lolli.li`; it does not make that origin
 the storage location for Work projects.
 
