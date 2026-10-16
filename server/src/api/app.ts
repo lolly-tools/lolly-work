@@ -33,7 +33,7 @@ import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConf
 import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
+import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx, type RouteDescription } from './router.ts';
 import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
 import { cachePolicy, publicStaticDeliveryClass, type DeliveryClass } from '@lolly-tools/core/delivery-v1';
 import { shellDirectories } from '../lib/shell-release.ts';
@@ -308,7 +308,17 @@ export interface AppDeps {
   backgroundPollMs?: number;
 }
 
-export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+const appRoutes = new WeakMap<App, () => RouteDescription[]>();
+/** The method, pattern and delivery class of every route an app registered.
+ *  For the route conformance test; serving never reads it. */
+export function appRouteDescriptions(app: App): RouteDescription[] {
+  const describe = appRoutes.get(app);
+  if (!describe) throw new TypeError('not an app built by buildApp');
+  return describe();
+}
+
+export function buildApp(deps: AppDeps): App {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
   configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
@@ -10604,7 +10614,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }, secrets.session, secure, renewal.ttlSec);
   };
 
-  return async (req, res) => {
+  const app: App = async (req, res) => {
     guardDelivery(req, res);
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
@@ -10704,6 +10714,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!res.headersSent) sendError(res, status, err instanceof BrandError ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
     }
   };
+  appRoutes.set(app, () => router.descriptions());
+  return app;
 }
 
 /** A live collaboration room holds the session's lease (`Store.collabLeaseActive`,
