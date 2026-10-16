@@ -76,7 +76,10 @@ export function signS3Request(
   const day = amzDate.slice(0, 8);
   const scope = `${day}/${region}/s3/aws4_request`;
   const headers: Record<string, string> = {
-    ...Object.fromEntries(Object.entries(opts.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value.trim()])),
+    // SigV4 canonical form: trimmed, inner whitespace runs collapsed. The
+    // same value is sent, so the signed and sent headers always match.
+    ...Object.fromEntries(Object.entries(opts.headers ?? {})
+      .map(([name, value]) => [name.toLowerCase(), value.trim().replace(/\s+/g, ' ')])),
     host: url.host,
     'x-amz-content-sha256': payloadHash,
     'x-amz-date': amzDate,

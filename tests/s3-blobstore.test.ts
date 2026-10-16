@@ -153,6 +153,11 @@ test('signS3Request signs extra headers by lowercase name and leaves the default
   assert.equal(extra.headers['content-type'], 'image/png');
   assert.equal(extra.headers['x-amz-meta-sha256'], 'abc');
   assert.notEqual(extra.headers.authorization, plain.headers.authorization);
+  // Inner whitespace runs collapse to one space in the signed and sent value.
+  const spaced = signS3Request({ ...base, headers: { 'Content-Type': 'text/plain;  charset=utf-8' } });
+  const single = signS3Request({ ...base, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+  assert.equal(spaced.headers['content-type'], 'text/plain; charset=utf-8');
+  assert.equal(spaced.headers.authorization, single.headers.authorization);
 });
 
 test('get streams the object back with its stat', async () => {
