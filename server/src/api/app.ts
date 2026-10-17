@@ -308,7 +308,18 @@ export interface AppDeps {
   backgroundPollMs?: number;
 }
 
-export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+type DescribeRoutes = ReturnType<typeof createRouter>['descriptions'];
+const appRoutes = new WeakMap<App, DescribeRoutes>();
+/** The method, pattern and delivery class of every route an app registered.
+ *  For the route conformance test; serving never reads it. */
+export function appRouteDescriptions(app: App): ReturnType<DescribeRoutes> {
+  const describe = appRoutes.get(app);
+  if (!describe) throw new TypeError('not an app built by buildApp');
+  return describe();
+}
+
+export function buildApp(deps: AppDeps): App {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
   configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
@@ -10604,7 +10615,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }, secrets.session, secure, renewal.ttlSec);
   };
 
-  return async (req, res) => {
+  const app: App = async (req, res) => {
     guardDelivery(req, res);
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
@@ -10704,6 +10715,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!res.headersSent) sendError(res, status, err instanceof BrandError ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
     }
   };
+  appRoutes.set(app, router.descriptions);
+  return app;
 }
 
 /** A live collaboration room holds the session's lease (`Store.collabLeaseActive`,
