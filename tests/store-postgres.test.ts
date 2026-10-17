@@ -242,3 +242,65 @@ test('a commit whose revision, version or audit row fails leaves no head: one tr
     } finally { await admin.end(); }
   });
 });
+
+test('a later page of the history across documents starts at its position, not at the newest version (plan 221)', { skip: !url && 'set LW_TEST_DATABASE_URL to run' }, async () => {
+  // Migration 0076's index only helps when the query bounds `at` by the
+  // position. The check runs the store's own statement under EXPLAIN ANALYZE,
+  // caught on its way to the pool, and counts the version rows it read.
+  await withFreshPostgres(url!, async (store) => {
+    const { default: pg } = await import('pg');
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    const poolQuery = pg.Pool.prototype.query;
+    try {
+      const owner = await store.upsertUserBySub({ sub: 'history-paging', email: 'history-paging@example.invalid', groups: [], role: 'member' });
+      const at = new Date().toISOString();
+      const PROJECTS = 100, PER_DOCUMENT = 200, IN_SCOPE = 10, DEEP = 50, LIMIT = 50;
+      for (let p = 0; p < PROJECTS; p++) {
+        await store.putProject({ id: `prj_hp${p}`, name: `History ${p}`, visibility: 'private', ownerId: owner.id, createdAt: at });
+        await store.putSession({ id: `ses_hp${p}`, projectId: `prj_hp${p}`, toolId: 'poster', toolVersion: '1.0.0', inputs: {}, meta: {},
+          createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: at });
+      }
+      // One version a second, the documents taking turns, so every page of the
+      // ten documents in scope has the other ninety's versions between its rows.
+      await admin.query(`insert into session_version_contents (session_id, digest, inputs, bytes)
+        select 'ses_hp' || p, 'd', '{}'::jsonb, 2 from generate_series(0, $1::int - 1) p`, [PROJECTS]);
+      await admin.query(`insert into session_versions (id, session_id, rev, kind, digest, meta, at)
+        select format('ver_hp%s_%s', p, i), 'ses_hp' || p, 1, 'auto', 'd', '{}'::jsonb,
+          timestamptz '2026-01-01T00:00:00Z' + (i * $1::int + p) * interval '1 second'
+        from generate_series(0, $1::int - 1) p, generate_series(0, $2::int - 1) i`, [PROJECTS, PER_DOCUMENT]);
+      await admin.query('analyze');
+
+      const projectIds = Array.from({ length: IN_SCOPE }, (_, p) => `prj_hp${p}`);
+      const after = { at: new Date(Date.parse('2026-01-01T00:00:00Z') + DEEP * PROJECTS * 1000).toISOString(), id: `ver_hp0_${DEEP}` };
+      const caught: Array<{ text: string; values: unknown[] }> = [];
+      pg.Pool.prototype.query = function (this: unknown, ...args: unknown[]) {
+        if (typeof args[0] === 'string' && args[0].includes('join sessions s on s.id = v.session_id')) caught.push({ text: args[0], values: args[1] as unknown[] });
+        return (poolQuery as (...a: unknown[]) => unknown).apply(this, args);
+      } as unknown as typeof poolQuery;
+      const page = await store.listVersionHistory({ projectIds, after, limit: LIMIT });
+      pg.Pool.prototype.query = poolQuery;
+
+      assert.equal(page.length, LIMIT);
+      assert.ok(page.every((e) => projectIds.includes(e.projectId) && e.at < after.at), 'the page is in scope and older than its position');
+      assert.equal(caught.length, 1, 'the history statement went through the pool');
+      const { rows } = await admin.query(`explain (analyze, format json) ${caught[0]!.text}`, caught[0]!.values);
+      type PlanNode = { 'Relation Name'?: string; 'Index Cond'?: string; 'Actual Rows': number; 'Actual Loops': number; 'Rows Removed by Filter'?: number; Plans?: PlanNode[] };
+      const scans = (node: PlanNode): PlanNode[] => [...(node['Relation Name'] === 'session_versions' ? [node] : []), ...(node.Plans ?? []).flatMap(scans)];
+      const versionScans = scans((rows[0]['QUERY PLAN'] as Array<{ Plan: PlanNode }>)[0]!.Plan);
+      assert.ok(versionScans.length && versionScans.every((n) => /\bat <= /.test(n['Index Cond'] ?? '')),
+        `the versions are read from an index starting at the position: ${JSON.stringify(versionScans.map((n) => n['Index Cond'] ?? null))}`);
+      const versionsRead = versionScans.reduce((sum, n) => sum + (n['Actual Rows'] + (n['Rows Removed by Filter'] ?? 0)) * n['Actual Loops'], 0);
+      const newer = (PER_DOCUMENT - DEEP) * PROJECTS;
+      // From the position, a page reads its own rows and the other documents'
+      // rows between them (about LIMIT * PROJECTS / IN_SCOPE), or every older
+      // version of the documents in scope (IN_SCOPE * DEEP), whichever plan
+      // Postgres picks. Reading from the newest version would pass `newer` rows first.
+      assert.ok(versionsRead <= 2 * Math.max(LIMIT * PROJECTS / IN_SCOPE, IN_SCOPE * DEEP),
+        `a deep page read ${versionsRead} version rows; ${newer} versions are newer than its position`);
+    } finally {
+      pg.Pool.prototype.query = poolQuery;
+      await admin.end();
+    }
+  });
+});

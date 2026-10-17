@@ -11,7 +11,7 @@ import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
 import {
   newestVersionFirst, normalizeSessionVersionAnnotation, normalizeSessionVersionWrite, planSessionVersionAnnotate, planSessionVersionPut,
-  resolveVersionLimits, sessionRevisionCommitVersion, sessionVersionContent, sessionVersionId, versionListLimit,
+  resolveVersionLimits, sessionRevisionCommitVersion, sessionVersionContent, sessionVersionId, versionHistoryEntry, versionKept, versionListLimit,
   type SessionVersion, type SessionVersionAnnotate, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
   type SessionVersionWrite,
 } from './types.ts';
@@ -1872,8 +1872,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   };
 }
 
-type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'annotateSessionVersion'
-  | 'deleteSessionVersion' | 'deleteSessionVersions';
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'listVersionHistory' | 'getSessionVersion'
+  | 'annotateSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
 /** A planned version write: the answer when nothing is to be stored, or the
  *  synchronous step that stores it. */
 type StagedVersion = { answer: SessionVersionPut } | { apply(): SessionVersionPut };
@@ -1983,6 +1983,21 @@ function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pic
         if (start === 0) return [];
       }
       return rows.slice(start, start + versionListLimit(opts.limit)).map(summary);
+    },
+    async listVersionHistory(q) {
+      const projects = new Set(q.projectIds), except = new Set(q.exceptSessionIds ?? []), kinds = q.kinds ? new Set(q.kinds) : null;
+      const found: Array<{ v: Stored; s: SessionRecord }> = [];
+      for (const v of versions.values()) {
+        const s = sessions.get(v.sessionId);
+        if (!s || s.deletedAt || !projects.has(s.projectId) || except.has(s.id)) continue;
+        if ((q.toolId !== undefined && s.toolId !== q.toolId) || (kinds && !kinds.has(v.kind)) || (q.kept && !versionKept(v))) continue;
+        if ((q.from !== undefined && v.at < q.from) || (q.to !== undefined && v.at > q.to)) continue;
+        // Older than the cursor: later in newest-first order.
+        if (q.after && newestVersionFirst(v, q.after) <= 0) continue;
+        found.push({ v, s });
+      }
+      return found.sort((a, b) => newestVersionFirst(a.v, b.v)).slice(0, versionListLimit(q.limit))
+        .map(({ v, s }) => versionHistoryEntry(summary(v), s));
     },
     async getSessionVersion(sessionId, id) {
       const v = versions.get(id);

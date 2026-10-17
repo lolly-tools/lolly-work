@@ -149,13 +149,18 @@ request, because a deleted document cannot be restored. A project manager can
 delete one version (and its restore pair) at any time; the deletion is audited
 with the version's id and kind.
 
+[History across documents](api.md#history-across-documents) lists one person's
+readable versions from many documents at once, without their content. It stores
+nothing new: an index on the version time (migration 0076) serves its order.
+
 Versions hold no email address: the API names people with their first and last
 name (or the part of their email before the `@`), agents with their label and
 guests as "Guest". Audit entries for saves, name and pin changes, restores and
 deletions hold ids, counts and the pin, never inputs or names.
 
 Source anchors: `migrations/0053_session_versions.sql`,
-`migrations/0072_session_version_annotations.sql`, `server/src/versions/`,
+`migrations/0072_session_version_annotations.sql`,
+`migrations/0076_session_version_history.sql`, `server/src/versions/`,
 `server/src/collab/rooms.ts` and the version blocks of `server/src/store/types.ts`.
 
 ## Activity and new audit data

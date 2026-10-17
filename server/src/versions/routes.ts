@@ -95,6 +95,33 @@ const FAILURES: Record<RestoreFailure, [number, string]> = {
 /** Errors the room raises when it closed or lost its lease under a restore. */
 const ROOM_GONE = new Set(['collab-storage-unavailable', 'collab-owner-lost', 'collab-seat-missing', 'collab-owner-conflict', 'collab-room-owned']);
 
+/** Names for the creators and contributors of these versions, read once, as a
+ *  function that adds them to a version. Built at read time and never an email:
+ *  people by `nameWithoutEmail`, agents by their label, guests as "Guest". */
+export async function versionNamer(store: Store, versions: SessionVersionSummary[]) {
+  const userIds = new Set<string>();
+  const agentIds = new Set<string>();
+  for (const v of versions) {
+    if (v.createdBy) userIds.add(v.createdBy);
+    for (const c of v.contributors) {
+      if (c.kind === 'user') userIds.add(c.id);
+      else if (c.kind === 'agent') agentIds.add(c.id);
+    }
+  }
+  const users = new Map((await store.getUsersByIds([...userIds])).map((u) => [u.id, nameWithoutEmail(u)]));
+  const agents = new Map<string, string>();
+  for (const id of agentIds) {
+    const agent = await store.getDocumentAgent(id) ?? await store.getProjectAgent(id);
+    agents.set(id, agent?.label?.trim() || 'Agent');
+  }
+  return <T extends SessionVersionSummary>(v: T) => ({
+    ...v,
+    ...(v.createdBy ? { createdByName: users.get(v.createdBy) ?? 'Member' } : {}),
+    contributors: v.contributors.map((c) => ({ ...c,
+      name: c.kind === 'guest' ? 'Guest' : c.kind === 'agent' ? agents.get(c.id) ?? 'Agent' : users.get(c.id) ?? 'Member' })),
+  });
+}
+
 export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d: Dependencies): void {
   // The instance cap on version content (policy.versions.maxBytes), set once at boot.
   d.store.configureVersionLimits({ instanceMaxBytes: d.config.policy.versions?.maxBytes });
@@ -134,30 +161,7 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
     return true;
   };
 
-  /** Names for creators and contributors, built at read time and never an email. */
-  const namer = async (versions: SessionVersionSummary[]) => {
-    const userIds = new Set<string>();
-    const agentIds = new Set<string>();
-    for (const v of versions) {
-      if (v.createdBy) userIds.add(v.createdBy);
-      for (const c of v.contributors) {
-        if (c.kind === 'user') userIds.add(c.id);
-        else if (c.kind === 'agent') agentIds.add(c.id);
-      }
-    }
-    const users = new Map((await d.store.getUsersByIds([...userIds])).map((u) => [u.id, nameWithoutEmail(u)]));
-    const agents = new Map<string, string>();
-    for (const id of agentIds) {
-      const agent = await d.store.getDocumentAgent(id) ?? await d.store.getProjectAgent(id);
-      agents.set(id, agent?.label?.trim() || 'Agent');
-    }
-    return <T extends SessionVersionSummary>(v: T) => ({
-      ...v,
-      ...(v.createdBy ? { createdByName: users.get(v.createdBy) ?? 'Member' } : {}),
-      contributors: v.contributors.map((c) => ({ ...c,
-        name: c.kind === 'guest' ? 'Guest' : c.kind === 'agent' ? agents.get(c.id) ?? 'Agent' : users.get(c.id) ?? 'Member' })),
-    });
-  };
+  const namer = (versions: SessionVersionSummary[]) => versionNamer(d.store, versions);
 
   router.add('GET', '/api/v1/sessions/:id/versions', async (req, res, ctx) => {
     const g = await gate(req, res, ctx.params.id as string);
