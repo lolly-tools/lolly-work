@@ -11,8 +11,9 @@ import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
 import {
   newestVersionFirst, normalizeSessionVersionAnnotation, normalizeSessionVersionWrite, planSessionVersionAnnotate, planSessionVersionPut,
-  resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
+  resolveVersionLimits, sessionRevisionCommitVersion, sessionVersionContent, sessionVersionId, versionListLimit,
   type SessionVersion, type SessionVersionAnnotate, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+  type SessionVersionWrite,
 } from './types.ts';
 import type { ProjectUserStateRecord, ShareGroupRecord } from './types.ts';
 /**
@@ -48,7 +49,7 @@ import {
   type CommentNotice,
   type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
-  type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
+  type SessionRecord, type SessionRevision, type SessionRevisionCommitResult, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
 // Grants have no exposed id - they're identified by their full tuple.
@@ -187,6 +188,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const sessions = new Map<string, SessionRecord>();
   const sessionRevisions = new Map<string, SessionRevision[]>(); // sessionId -> ascending by rev
   const collabOwners = new Map<string, { owner: string; until: number }>();
+  const { serial: serialVersions, stage: stageVersion, ...versionMethods } = createMemoryVersions(sessions);
   const collabCheckpoints = new Map<string, { revision: number; headRevision: number; checkpoint: CanvasCheckpoint }>();
   const collabJournal = new Map<string, { revision: number; ops: CanvasOp[] }[]>();
   const collabReceipts = new Map<string, CollabReceipt>();
@@ -1626,6 +1628,32 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       sessions.set(next.id, { ...next, ...(cur.deletedAt ? { deletedAt: cur.deletedAt } : {}) });
       return true;
     },
+    async commitSessionRevision(commit) {
+      const write = sessionRevisionCommitVersion(commit);
+      const { next, expectedRev } = commit;
+      const current = (): boolean => {
+        const cur = sessions.get(next.id);
+        return !!cur && cur.rev === expectedRev && !cur.deletedAt && (collabOwners.get(next.id)?.until ?? 0) <= Date.now();
+      };
+      // Under the version lock, as Postgres takes it, so the version is planned
+      // against rows no other write can change before it is stored.
+      return serialVersions(async (): Promise<SessionRevisionCommitResult> => {
+        if (!current()) return { committed: false };
+        const staged = write ? await stageVersion(write) : undefined;
+        // Every check and every step that can throw runs before the first change,
+        // and nothing below awaits, so no other writer can move the row in between.
+        if (!current()) return { committed: false };
+        const event = commit.audit ? nextEvent(audit[audit.length - 1] ?? null, commit.audit, auditMacKey) : undefined;
+        const { deletedAt: _deletedAt, ...head } = next;
+        const revision: SessionRevision = { sessionId: next.id, rev: next.rev, inputs: next.inputs, meta: next.meta, actor: commit.actor, at: next.updatedAt };
+        const kept = [...(sessionRevisions.get(next.id) ?? []).filter((r) => r.rev !== next.rev), revision].sort((a, b) => a.rev - b.rev);
+        sessions.set(next.id, head);
+        sessionRevisions.set(next.id, kept.slice(-SESSION_REVISION_LIMIT));
+        const version = staged ? ('answer' in staged ? staged.answer : staged.apply()) : undefined;
+        if (event) audit.push(event);
+        return { committed: true, session: { ...head }, ...(version !== undefined ? { version } : {}) };
+      });
+    },
     async getSession(id) {
       return sessions.get(id) ?? null;
     },
@@ -1790,20 +1818,29 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       projectUserState.set(key, next);
       return { ...next };
     },
-    ...createMemoryVersions(sessions),
+    ...versionMethods,
   };
 }
 
 type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'annotateSessionVersion'
   | 'deleteSessionVersion' | 'deleteSessionVersions';
+/** A planned version write: the answer when nothing is to be stored, or the
+ *  synchronous step that stores it. */
+type StagedVersion = { answer: SessionVersionPut } | { apply(): SessionVersionPut };
 
 /**
  * Session versions (plan 76 M4 R2): the memory twin of migration 0053's two
  * tables and 0072's annotation columns. Writes run one at a time, as the Postgres
  * driver's lock makes them, and the rules are the shared `planSessionVersionPut`
- * and `planSessionVersionAnnotate`.
+ * and `planSessionVersionAnnotate`. A session commit plans its version in the
+ * same queue (`serial` and `stage`), as the Postgres commit takes the same lock.
  */
-function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pick<Store, VersionMethods> {
+function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pick<Store, VersionMethods> & {
+  /** Run `work` with no other version write or delete in progress. */
+  serial<T>(work: () => Promise<T>): Promise<T>;
+  /** Plan one normalized write against the stored rows; call inside `serial`. */
+  stage(w: SessionVersionWrite & { at: string }): Promise<StagedVersion>;
+} {
   type Stored = Omit<SessionVersion, 'inputs' | 'bytes'> & { digest: string; requestId?: string; keptBy?: string };
   const versions = new Map<string, Stored>(); // by id
   const contents = new Map<string, { sessionId: string; digest: string; inputs: Record<string, unknown>; bytes: number }>(); // `${sessionId} ${digest}`
@@ -1845,35 +1882,47 @@ function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pic
     return count;
   };
 
-  return {
-    configureVersionLimits(next) { limits = resolveVersionLimits(next); },
-    putSessionVersion(input) {
-      return serial(async (): Promise<SessionVersionPut> => {
-        const w = normalizeSessionVersionWrite(input);
-        const session = sessions.get(w.sessionId);
-        if (!session || session.deletedAt) throw new Error('session-gone');
-        for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && versions.get(ref)?.sessionId !== w.sessionId) throw new Error('version-reference');
-        const content = sessionVersionContent(w.inputs);
-        const id = sessionVersionId();
-        const mine = own(w.sessionId);
-        const plan = await planSessionVersionPut(w, id, content, {
-          rows: mine.map(rowOf),
-          contents: new Map([...contents.values()].filter((c) => c.sessionId === w.sessionId).map((c) => [c.digest, c.bytes])),
-          instanceBytes: async () => [...contents.values()].reduce((sum, c) => sum + c.bytes, 0),
-          instanceRows: async () => ({ rows: [...versions.values()].map(rowOf), contents: new Map([...contents].map(([key, c]) => [key, c.bytes])) }),
-        }, limits);
-        if (plan.action === 'refuse') return plan.reason;
-        if (plan.action === 'return') return { version: summary(versions.get(plan.id)!), created: false };
-        if (plan.action === 'skip') {
-          const latest = mine.sort(newestVersionFirst)[0];
-          return latest ? { version: summary(latest), created: false } : 'version-space';
-        }
-        if (plan.contentIsNew) contents.set(contentKey(w.sessionId, content.digest), { sessionId: w.sessionId, digest: content.digest, inputs: structuredClone(w.inputs), bytes: content.bytes });
-        const { inputs: _inputs, keep: _keep, ...fields } = w;
-        const stored: Stored = { ...structuredClone(fields), id, digest: content.digest, pinned: false, annotationRev: 0 };
+  const stage = async (w: SessionVersionWrite & { at: string }): Promise<StagedVersion> => {
+    const session = sessions.get(w.sessionId);
+    if (!session || session.deletedAt) throw new Error('session-gone');
+    for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && versions.get(ref)?.sessionId !== w.sessionId) throw new Error('version-reference');
+    const content = sessionVersionContent(w.inputs);
+    const id = sessionVersionId();
+    const mine = own(w.sessionId);
+    const plan = await planSessionVersionPut(w, id, content, {
+      rows: mine.map(rowOf),
+      contents: new Map([...contents.values()].filter((c) => c.sessionId === w.sessionId).map((c) => [c.digest, c.bytes])),
+      instanceBytes: async () => [...contents.values()].reduce((sum, c) => sum + c.bytes, 0),
+      instanceRows: async () => ({ rows: [...versions.values()].map(rowOf), contents: new Map([...contents].map(([key, c]) => [key, c.bytes])) }),
+    }, limits);
+    if (plan.action === 'refuse') return { answer: plan.reason };
+    if (plan.action === 'return') return { answer: { version: summary(versions.get(plan.id)!), created: false } };
+    if (plan.action === 'skip') {
+      const latest = mine.sort(newestVersionFirst)[0];
+      return { answer: latest ? { version: summary(latest), created: false } : 'version-space' };
+    }
+    // Cloned now, so the step that stores them cannot fail half way.
+    const { inputs: _inputs, keep: _keep, ...fields } = w;
+    const stored: Stored = { ...structuredClone(fields), id, digest: content.digest, pinned: false, annotationRev: 0 };
+    const newContent = plan.contentIsNew ? { sessionId: w.sessionId, digest: content.digest, inputs: structuredClone(w.inputs), bytes: content.bytes } : undefined;
+    return {
+      apply: () => {
+        if (newContent) contents.set(contentKey(w.sessionId, content.digest), newContent);
         versions.set(id, stored);
         drop(plan.drops);
         return { version: summary(stored), created: true };
+      },
+    };
+  };
+
+  return {
+    serial,
+    stage,
+    configureVersionLimits(next) { limits = resolveVersionLimits(next); },
+    putSessionVersion(input) {
+      return serial(async (): Promise<SessionVersionPut> => {
+        const staged = await stage(normalizeSessionVersionWrite(input));
+        return 'answer' in staged ? staged.answer : staged.apply();
       });
     },
     async listSessionVersions(sessionId, opts) {

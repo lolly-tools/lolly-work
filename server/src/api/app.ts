@@ -95,7 +95,6 @@ import { registerAgentRoutes } from '../agents/routes.ts';
 import { createProjectRequests } from '../agents/project-requests.ts';
 import type { AgentRoomBridge } from '../agents/types.ts';
 import type { VersionRoomBridge } from '../versions/restore.ts';
-import { recordSaveVersion } from '../versions/recorder.ts';
 import { registerVersionRoutes } from '../versions/routes.ts';
 import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader } from '../render/read-ticket.ts';
 import { projectSubmissionInput, ProjectSubmissionError } from '../catalog/project-source.ts';
@@ -107,7 +106,7 @@ import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWitho
 import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
 import type { ProjectRequestWire } from '../access/types.ts';
 import { inviteDomainAllowed, mayInviteNewPeople, resolveInvitePolicy } from '../policy/invites.ts';
-import { PROJECT_MEMBER_ROLES, type InvitationProject } from '../store/types.ts';
+import { PROJECT_MEMBER_ROLES, type InvitationProject, type SessionRevisionCommit, type SessionVersionContributor } from '../store/types.ts';
 import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
@@ -207,7 +206,7 @@ import { sanitizeEvent, summarize, type RawEvent } from '../telemetry/ingest.ts'
 import { targetedMessages, type Message } from '../inbox/target.ts';
 import { accessibleNotices, listAccessibleNotices } from '../inbox/comment-notices.ts';
 import { parseClientHeader } from '../fleet/client-header.ts';
-import { verifyChain, deriveAuditMacKey } from '../audit/chain.ts';
+import { verifyChain, deriveAuditMacKey, type AuditEventBody } from '../audit/chain.ts';
 import { createLogger, requestId } from '../observability/log.ts';
 import { safeReturnTo } from '../iam/return-to.ts';
 import { registerPasskeyRoutes, passkeysEnabled } from '../iam/passkeys/routes.ts';
@@ -449,17 +448,23 @@ export function buildApp(deps: AppDeps): App {
     return user && !user.disabledAt ? user : null;
   };
 
-  const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => {
+  /** An audit event as `audit` appends it; `commitSessionRevision` writes one with its commit. */
+  const auditBody = (actor: string, action: string, subject: string, payload?: Record<string, unknown>): AuditEventBody => {
     const agent = agentRequests.attribution();
     const delegated = agent && actor === `user:${agent.createdBy}`;
-    return store.appendAudit({ at: new Date().toISOString(), actor: delegated ? agentActor(agent) : actor, action, subject,
-      ...(payload || delegated ? { payload: { ...payload, ...(delegated ? agentAttribution(agent) : {}) } } : {}) });
+    return { at: new Date().toISOString(), actor: delegated ? agentActor(agent) : actor, action, subject,
+      ...(payload || delegated ? { payload: { ...payload, ...(delegated ? agentAttribution(agent) : {}) } } : {}) };
   };
+  const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
+    store.appendAudit(auditBody(actor, action, subject, payload));
 
   const revisionActor = (req: IncomingMessage, user: UserRecord): string => {
     const agent = agentRequests.principal(req)?.agent;
     return agent ? agentActor(agent) : user.id;
   };
+  /** The one contributor of a save by `revisionActor`'s principal. */
+  const saveContributor = (actor: string, user: UserRecord): SessionVersionContributor =>
+    actor.startsWith('agent:') ? { id: actor.slice('agent:'.length), kind: 'agent', edits: 1 } : { id: user.id, kind: 'user', edits: 1 };
   registerPasskeyRoutes(router, { store, baseUrl: config.instance.baseUrl, instanceName: config.instance.name, secret: secrets.session, verifySecrets: sessionVerify, sessionTtlSec, memberOf, audit });
 
   // Notification egress (plans/35 wave 1). Refused at boot, not discovered at
@@ -8720,7 +8725,18 @@ export function buildApp(deps: AppDeps): App {
     // If the room let go between the CAS and the re-read, the caller's base is
     // still current, so the save is tried once more. Without that, the answer
     // would be "session is at rev 5, you sent 5".
-    for (let attempt = 1; !(await store.casSession(next, body.rev)); attempt++) {
+    //
+    // The CAS is `commitSessionRevision` (plan 221): the head, its revision, a
+    // save version (plan 76 M4, including the save a shell retries after merging
+    // a 409; the store skips one that changed nothing) and the configured audit
+    // event are written together or not at all.
+    const saver = revisionActor(req, user);
+    const commit: SessionRevisionCommit = {
+      next, expectedRev: body.rev, actor: saver, version: { kind: 'save', contributors: [saveContributor(saver, user)], createdBy: user.id },
+      ...(config.policy.activity.auditSessionUpdates
+        ? { audit: auditBody(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId }) } : {}),
+    };
+    for (let attempt = 1; !(await store.commitSessionRevision(commit)).committed; attempt++) {
       const fresh = await store.getSession(next.id);
       if (!fresh) return sendError(res, 404, 'NOT_FOUND', 'no such session');
       if (fresh.deletedAt) return sendError(res, 410, 'SESSION_DELETED', 'this session was deleted');
@@ -8730,12 +8746,6 @@ export function buildApp(deps: AppDeps): App {
       await audit(`user:${user.id}`, 'session.conflict', `session:${fresh.id}`, { rev: fresh.rev, sentRev: body.rev, toolId: fresh.toolId });
       return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${fresh.rev}, you sent ${body.rev}` }, current: await conflictCurrent(fresh, user.id) });
     }
-    const saver = revisionActor(req, user);
-    await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta, actor: saver, at: now });
-    // A REST save is a version too (plan 76 M4), including the save a shell
-    // retries after merging a 409; the store skips one that changed nothing.
-    await recordSaveVersion(store, next, user.id, saver.startsWith('agent:') ? { id: saver.slice('agent:'.length), kind: 'agent' } : { id: user.id, kind: 'user' });
-    if (config.policy.activity.auditSessionUpdates) await audit(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId });
     sendJson(res, 200, sessionFull(next));
   });
 
@@ -9294,9 +9304,9 @@ export function buildApp(deps: AppDeps): App {
   // project.manage. dryRun previews a per-field diff; apply writes each session
   // via per-session CAS (`matched` is a snapshot, so a session someone edited
   // in between is exactly the one a sweep must not stomp - plans/23 §3.B),
-  // reporting losers in `skipped` rather than retrying; appends a revision per
-  // applied session, busts affected render keys, and audits ONE event (keys
-  // only - never input VALUES).
+  // reporting losers in `skipped` rather than retrying; commits a revision and
+  // a save version with each applied session (`commitSessionRevision`), busts
+  // affected render keys, and audits ONE event (keys only - never input VALUES).
   router.add('POST', '/api/v1/sessions/bulk', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
@@ -9337,12 +9347,14 @@ export function buildApp(deps: AppDeps): App {
     }
 
     const now = new Date().toISOString();
+    const saver = revisionActor(req, user);
     const applied: SessionRecord[] = [];
     const skipped: Array<{ sessionId: string; rev: number; reason?: 'collab-active' }> = [];
     for (const s of matched) {
       const inputs = { ...s.inputs, ...set }; // merge by EXACT input id
       const next: SessionRecord = { ...s, inputs, rev: s.rev + 1, updatedBy: user.id, updatedAt: now };
-      if (!(await store.casSession(next, s.rev))) {
+      const version = { kind: 'save' as const, contributors: [saveContributor(saver, user)], createdBy: user.id };
+      if (!(await store.commitSessionRevision({ next, expectedRev: s.rev, actor: saver, version })).committed) {
         // A session in a live room is skipped too, but it is not a conflict.
         // A refusal at the snapshot's own rev on a live session was the room's
         // lease even if the room has let go since (the PUT route's rule).
@@ -9352,7 +9364,6 @@ export function buildApp(deps: AppDeps): App {
         continue;
       }
       applied.push(next);
-      await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta: next.meta, actor: revisionActor(req, user), at: now });
     }
     // Bust affected render caches (reachable invalidation entry point, plans §6b).
     // The per-session rev bump also changes any future render key that folds in
@@ -9423,7 +9434,7 @@ export function buildApp(deps: AppDeps): App {
   });
 
   registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, people, roomEvents: deps.roomEvents });
-  registerVersionRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, rooms: deps.versionRooms,
+  registerVersionRoutes(router, { config, store, memberOf, audit, auditBody, sessionFor: collabSessionFor, rooms: deps.versionRooms,
     toolInputs: toolId => readToolInputs(config.instance.pack, toolId) });
 
   // Invite autocomplete. Read-access only - an OBSERVER may look up who else

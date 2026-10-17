@@ -192,3 +192,53 @@ test('the instance total of version content is one row that always equals the su
     } finally { await admin.end(); }
   });
 });
+
+test('a commit whose revision, version or audit row fails leaves no head: one transaction (plan 221)', { skip: !url && 'set LW_TEST_DATABASE_URL to run' }, async () => {
+  // The fault is injected in the database itself: a trigger refuses one table's
+  // insert after the head's update already ran in the same transaction.
+  const { SESSION_REVISION_LIMIT } = await import('../server/src/store/types.ts');
+  await withFreshPostgres(url!, async (store) => {
+    const { default: pg } = await import('pg');
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    try {
+      const owner = await store.upsertUserBySub({ sub: 'commit-fault', email: 'commit-fault@example.invalid', groups: [], role: 'member' });
+      const at = new Date().toISOString();
+      await store.putProject({ id: 'prj_fault', name: 'Faults', visibility: 'private', ownerId: owner.id, createdAt: at });
+      await store.putSession({ id: 'ses_fault', projectId: 'prj_fault', toolId: 'poster', toolVersion: '1.0.0', inputs: { title: 'Kept' }, meta: {},
+        createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: at });
+      await admin.query(`create function refuse_insert() returns trigger language plpgsql as $$
+        begin raise exception 'synthetic % failure', tg_table_name; end $$`);
+      const rows = async () => {
+        const { rows: [r] } = await admin.query(`select (select rev from sessions where id = 'ses_fault') as rev,
+          (select inputs->>'title' from sessions where id = 'ses_fault') as title,
+          (select count(*)::int from session_revisions where session_id = 'ses_fault') as revisions,
+          (select count(*)::int from session_versions where session_id = 'ses_fault') as versions,
+          (select count(*)::int from audit_log where action = 'session.update') as audits`);
+        return r;
+      };
+      const commit = (title: string, rev: number) => store.commitSessionRevision({
+        next: { id: 'ses_fault', projectId: 'prj_fault', toolId: 'poster', toolVersion: '1.0.0', inputs: { title }, meta: {}, createdBy: owner.id,
+          updatedBy: owner.id, rev: rev + 1, updatedAt: new Date().toISOString() },
+        expectedRev: rev, actor: owner.id,
+        version: { kind: 'save', contributors: [{ id: owner.id, kind: 'user', edits: 1 }], createdBy: owner.id },
+        audit: { at: new Date().toISOString(), actor: `user:${owner.id}`, action: 'session.update', subject: 'session:ses_fault', payload: { rev: rev + 1 } },
+      });
+      const untouched = { rev: 1, title: 'Kept', revisions: 0, versions: 0, audits: 0 };
+      assert.deepEqual(await rows(), untouched);
+      for (const table of ['session_revisions', 'session_versions', 'audit_log']) {
+        await admin.query(`create trigger refuse_commit before insert on ${table} for each row execute function refuse_insert()`);
+        await assert.rejects(commit(`Lost to ${table}`, 1), new RegExp(`synthetic ${table} failure`));
+        assert.deepEqual(await rows(), untouched, `${table}: no head, revision, version or audit row`);
+        await admin.query(`drop trigger refuse_commit on ${table}`);
+      }
+      const done = await commit('Saved', 1);
+      assert.ok(done.committed, 'the same commit goes through once nothing refuses it');
+      assert.deepEqual(await rows(), { rev: 2, title: 'Saved', revisions: 1, versions: 1, audits: 1 });
+
+      // Commits keep the revision bound on disk, as appendSessionRevision does.
+      for (let rev = 2; rev < SESSION_REVISION_LIMIT + 5; rev++) assert.ok((await commit(`Save ${rev}`, rev)).committed);
+      assert.equal((await rows()).revisions, SESSION_REVISION_LIMIT);
+    } finally { await admin.end(); }
+  });
+});
