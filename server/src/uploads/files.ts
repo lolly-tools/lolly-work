@@ -18,7 +18,12 @@
  * `tool.use` and loads the record again (file-routes.ts and the verb readers
  * in api/app.ts), so deleting a reference, revoking a service token, disabling
  * a person, ending their sessions or denying them `tool.use` refuses the next
- * read.
+ * request. Queued work is checked against the account when it runs, so all of
+ * these but ending sessions fail it.
+ *
+ * A reference's `derivedFrom` and report count toward the budgets at their
+ * size as JSON (scoped.ts `uploadCharge`), and a report is at most
+ * FILE_REPORT_MAX_BYTES.
  */
 import { assertFileOperationReport } from '@lolly-tools/core/file-operation-v1';
 import type { BlobStore } from '../blobs/types.ts';
@@ -34,6 +39,8 @@ import {
 export const FILE_INLINE_MAX_BYTES = 4 * 1024 * 1024;
 /** The largest operation report a reference keeps, as JSON. */
 export const FILE_REPORT_MAX_BYTES = 64 * 1024;
+/** A report's size as JSON, the measure FILE_REPORT_MAX_BYTES caps. */
+export const reportBytes = (report: unknown): number => Buffer.byteLength(JSON.stringify(report));
 /** The most references one page of the list holds. */
 export const FILE_LIST_LIMIT = 50;
 export const FILE_ID = /^fil_[A-Za-z0-9_-]{1,64}$/;
@@ -61,7 +68,7 @@ export function fileMetadata(body: Record<string, unknown>): FileMetadata | stri
   }
   if (body.report !== undefined) {
     try { assertFileOperationReport(body.report); } catch (error) { return (error as Error).message; }
-    if (Buffer.byteLength(JSON.stringify(body.report)) > FILE_REPORT_MAX_BYTES) return `a report is at most ${FILE_REPORT_MAX_BYTES} bytes of JSON`;
+    if (reportBytes(body.report) > FILE_REPORT_MAX_BYTES) return `a report is at most ${FILE_REPORT_MAX_BYTES} bytes of JSON`;
     metadata.report = body.report as unknown as Record<string, unknown>;
   }
   return metadata;
@@ -136,6 +143,9 @@ export async function createFileReference(
   d: { store: UploadStore; blobs: BlobStore; policy: UploadPolicy }, owner: string, bytes: Uint8Array,
   meta: { name: string; contentType: string; role: FileRole; derivedFrom?: UploadRecord['derivedFrom']; report?: UploadRecord['report'] },
 ): Promise<FileCreation> {
+  // Both callers bound the report already (fileMetadata, optimizeReport); this
+  // keeps an unbounded one out of the row whatever a later caller passes.
+  if (meta.report && reportBytes(meta.report.report) > FILE_REPORT_MAX_BYTES) throw new Error(`a report is at most ${FILE_REPORT_MAX_BYTES} bytes of JSON`);
   const now = Date.now(), createdAt = new Date(now).toISOString();
   const file: UploadRecord = {
     id: `fil_${randomId(16)}`, scope: 'file', owner, name: meta.name, contentType: meta.contentType, ...manifestOf(bytes),
@@ -171,26 +181,29 @@ export function creationRefusal(refusal: Exclude<FileCreation, { ok: true }>['re
   return [409, 'CONFLICT', 'make the file again'];
 }
 
-const OPTION_KEY = /^(?!__proto__$|constructor$|prototype$)[a-zA-Z][a-zA-Z0-9_.-]{0,79}$/;
 /** A FileOperationReportV1 format name for a media type. */
 const formatOf = (contentType: string): string => OPTIMIZE_FORMATS[contentType.toLowerCase()] ?? (contentType.split('/')[1] ?? 'binary').slice(0, 80);
 
 /**
  * The FileOperationReportV1 this instance writes for an optimize whose output
  * it keeps as a reference. Names and media types are the declared ones; the
- * sizes and digests are of the exact bytes. Only the plain option values go
- * in, so nothing a client sent beyond them is repeated back.
+ * sizes and digests are of the exact bytes. Only the options the engine's
+ * optimize takes go in (`format` and `strip`), so nothing else a client sent is
+ * repeated back, and every field is cut short enough that the report stays
+ * well inside FILE_REPORT_MAX_BYTES.
  */
 export function optimizeReport(
   input: { name: string; contentType: string; bytes: Uint8Array }, output: { name: string; contentType: string; bytes: Uint8Array },
   opts: Record<string, unknown> | undefined, stages: string[],
 ): Record<string, unknown> {
-  const facts = (f: typeof input) => ({ name: f.name.slice(0, 4096), format: formatOf(f.contentType), formatSource: 'declared', mime: f.contentType, size: f.bytes.byteLength, sha256: sha256(f.bytes) });
-  const options = Object.fromEntries(Object.entries(opts ?? {}).filter(([key, value]) => OPTION_KEY.test(key)
-    && (typeof value === 'number' ? Number.isFinite(value) : typeof value === 'boolean' || (typeof value === 'string' && value.length <= 4096))).slice(0, 64));
+  const facts = (f: typeof input) => ({ name: f.name.slice(0, 200), format: formatOf(f.contentType), formatSource: 'declared', mime: f.contentType.slice(0, 100), size: f.bytes.byteLength, sha256: sha256(f.bytes) });
+  const options = {
+    ...(typeof opts?.format === 'string' && opts.format.length <= 16 ? { format: opts.format } : {}),
+    ...(typeof opts?.strip === 'boolean' ? { strip: opts.strip } : {}),
+  };
   const report: unknown = {
     version: 1, operation: 'optimize', state: 'succeeded', inputs: [facts(input)], outputs: [facts(output)], options,
-    changes: [...stages.slice(0, 399).map((stage) => String(stage).slice(0, 4096)), `${input.bytes.byteLength} → ${output.bytes.byteLength} bytes`],
+    changes: [...stages.slice(0, 32).map((stage) => String(stage).slice(0, 200)), `${input.bytes.byteLength} → ${output.bytes.byteLength} bytes`],
     findings: [], metadata: stages.includes('strip-metadata') ? 'removed' : 'not-checked', execution: 'instance',
   };
   assertFileOperationReport(report);

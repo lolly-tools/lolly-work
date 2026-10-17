@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
-/** Scoped uploads in Postgres (migration 0075). SQL owns the clock: an upload
- *  counts while `expires_at > now()`, the same rule as the memory store. */
-import { UPLOAD_OVERHEAD_BYTES, type UploadRecord, type UploadStore } from './scoped.ts';
+/** Scoped uploads in Postgres (migrations 0075 and 0076). SQL owns the clock:
+ *  an upload counts while `expires_at > now()`, the same rule as the memory
+ *  store, and at the same charge (`uploadCharge`): `metadata_bytes` holds what a
+ *  file reference's metadata adds, worked out once when the row is written. */
+import { uploadCharge, uploadMetadataBytes, UPLOAD_OVERHEAD_BYTES, type UploadRecord, type UploadStore } from './scoped.ts';
 
 interface DatabaseClient { query(sql: string, args?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>; release(): void }
 interface Database { query: DatabaseClient['query']; connect(): Promise<DatabaseClient> }
@@ -29,21 +31,21 @@ export function createPostgresUploadStore(pool: Database): UploadStore {
         await client.query('begin');
         await client.query('select pg_advisory_xact_lock($1)', [UPLOADS_LOCK_KEY]);
         const { rows } = await client.query(
-          `select coalesce(sum(size + $2) filter (where owner = $1), 0) as owner_used, coalesce(sum(size + $2), 0) as instance_used,
+          `select coalesce(sum(size + $2 + metadata_bytes) filter (where owner = $1), 0) as owner_used, coalesce(sum(size + $2 + metadata_bytes), 0) as instance_used,
              count(*) filter (where owner = $1 and not ready) as pending
            from uploads where expires_at > now()`, [upload.owner, UPLOAD_OVERHEAD_BYTES]);
         const row = rows[0]!;
-        const charge = upload.size + UPLOAD_OVERHEAD_BYTES;
+        const charge = uploadCharge(upload);
         const refusal = Number(row.pending) >= limits.maxPending ? 'pending'
           : Number(row.owner_used) + charge > limits.ownerBudgetBytes ? 'owner-budget'
           : Number(row.instance_used) + charge > limits.instanceBudgetBytes ? 'instance-budget' : null;
         if (refusal) { await client.query('rollback'); return refusal; }
         const inserted = await client.query(
-          `insert into uploads (id, scope, owner, name, size, checksum, content_type, parts, created_at, expires_at, ready, role, derived_from, report)
-           values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,false,$11,$12::jsonb,$13::jsonb) on conflict (id) do nothing returning id`,
+          `insert into uploads (id, scope, owner, name, size, checksum, content_type, parts, created_at, expires_at, ready, role, derived_from, report, metadata_bytes)
+           values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,false,$11,$12::jsonb,$13::jsonb,$14) on conflict (id) do nothing returning id`,
           [upload.id, upload.scope, upload.owner, upload.name, upload.size, upload.checksum, upload.contentType,
            JSON.stringify(upload.parts), upload.createdAt, upload.expiresAt, upload.role ?? null,
-           upload.derivedFrom ? JSON.stringify(upload.derivedFrom) : null, upload.report ? JSON.stringify(upload.report) : null]);
+           upload.derivedFrom ? JSON.stringify(upload.derivedFrom) : null, upload.report ? JSON.stringify(upload.report) : null, uploadMetadataBytes(upload)]);
         await client.query('commit');
         return inserted.rows.length === 1 ? 'reserved' : 'refused';
       } catch (error) { await client.query('rollback'); throw error; }
@@ -70,7 +72,7 @@ export function createPostgresUploadStore(pool: Database): UploadStore {
     },
     async uploadUsage(owner) {
       const { rows } = await pool.query(
-        `select coalesce(sum(size + $2) filter (where owner = $1), 0) as owner_used, coalesce(sum(size + $2), 0) as instance_used
+        `select coalesce(sum(size + $2 + metadata_bytes) filter (where owner = $1), 0) as owner_used, coalesce(sum(size + $2 + metadata_bytes), 0) as instance_used
            from uploads where expires_at > now()`, [owner, UPLOAD_OVERHEAD_BYTES]);
       return { ownerBytes: Number(rows[0]?.owner_used ?? 0), instanceBytes: Number(rows[0]?.instance_used ?? 0) };
     },

@@ -3,10 +3,12 @@
  * File references (docs/api.md "File references", server/src/uploads/files.ts)
  * over real HTTP: small bytes kept in one request and larger ones through the
  * parts protocol in scope `file`, each with a digest, an expiry and the
- * operations its owner may run; an account's references read back from a new
- * session and a restarted server; nobody but the owner learns that one exists;
- * revoking access in any of the ways Work has refuses the very next read; and
- * the document verbs read a reference and keep an optimize output as another.
+ * operations its owner may run, and a report counted toward the budgets; an
+ * account's references read back from a new session and a restarted server;
+ * nobody but the owner learns that one exists; revoking access in any of the
+ * ways Work has refuses the very next read, and all but signing out everywhere
+ * fail a queued request when it runs; and the document verbs read a reference
+ * and keep an optimize output as another.
  */
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,8 +21,8 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import type { BlobStore } from '../server/src/blobs/types.ts';
 import type { Store } from '../server/src/store/types.ts';
 import { sha256, TRANSFER_PART_BYTES as P } from '../server/src/uploads/parts.ts';
-import { uploadPartId, type UploadPolicy } from '../server/src/uploads/scoped.ts';
-import { FILE_INLINE_MAX_BYTES, manifestOf } from '../server/src/uploads/files.ts';
+import { uploadCharge, uploadPartId, type UploadPolicy } from '../server/src/uploads/scoped.ts';
+import { FILE_INLINE_MAX_BYTES, FILE_REPORT_MAX_BYTES, manifestOf } from '../server/src/uploads/files.ts';
 import { withFreshPostgres } from './pg-test-schema.ts';
 
 const pgUrl = process.env.LW_TEST_DATABASE_URL;
@@ -42,13 +44,14 @@ async function listen(handler: ReturnType<typeof buildApp>): Promise<string> {
   return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
 
-interface BootOptions { uploads?: Partial<UploadPolicy>; store?: Store; blobs?: BlobStore }
+interface BootOptions { uploads?: Partial<UploadPolicy>; store?: Store; blobs?: BlobStore; backgroundPollMs?: number }
 async function boot(opts: BootOptions = {}) {
   const store = opts.store ?? createMemoryStore(), blobs = opts.blobs ?? createMemoryBlobStore();
   const config = parseConfig(JSON.stringify({ rateLimit: { enabled: false },
     policy: { uploads: { enabled: true, ...opts.uploads } },
     dev: { enabled: true, users: Object.entries(PEOPLE).map(([name, groups]) => ({ email: `${name}@test`, name, groups })) } }));
-  const app = () => buildApp({ config, store, blobs, secrets: { session: 'file-session', link: 'file-link' } });
+  const app = () => buildApp({ config, store, blobs, secrets: { session: 'file-session', link: 'file-link' },
+    ...(opts.backgroundPollMs !== undefined ? { backgroundPollMs: opts.backgroundPollMs } : {}) });
   let base = await listen(app());
   const cookies = new Map<string, string>();
   const signIn = async (name: string): Promise<string> => {
@@ -170,6 +173,44 @@ test('references count toward the upload budgets and caps', async () => {
   await keep(b, 'alice', Buffer.alloc(600, 2));
   assert.deepEqual(await codeOf(await b.call('alice', 'POST', '/api/v1/files', { name: 'x', contentType: 'text/plain', bytesBase64: Buffer.alloc(600, 3).toString('base64') })), [413, 'UPLOAD_BUDGET']);
   await keep(b, 'bob', Buffer.alloc(600, 3));
+});
+
+test('a report counts toward the budgets, and an optimize repeats only the options the engine takes', async () => {
+  const b = await boot();
+  const used = async (who: string) => ((await (await b.call(who, 'GET', '/api/v1/uploads')).json()) as { limits: { ownerUsedBytes: number } }).limits.ownerUsedBytes;
+  const source = await keep(b, 'alice', PNG);
+  const webp = Buffer.from('RIFF....WEBP');
+
+  // An owner's report: the reference costs its bytes, its rows and the report as JSON.
+  const report = { ...clientReport(PNG, webp), changes: Array.from({ length: 12 }, (_, n) => `${n} ${'x'.repeat(4000)}`) };
+  const before = await used('alice');
+  const output = await keep(b, 'alice', webp, { name: 'pic.webp', contentType: 'image/webp', role: 'output', derivedFrom: ref(source), report });
+  const grew = await used('alice') - before;
+  assert.ok(grew >= webp.length + 4096 + Buffer.byteLength(JSON.stringify(report)), `the report is charged like bytes (grew ${grew})`);
+  assert.equal(grew, uploadCharge((await b.store.getUpload(output.id))!));
+  const tooBig = { ...clientReport(PNG, webp), changes: Array.from({ length: 17 }, (_, n) => `${n} ${'x'.repeat(4000)}`) };
+  assert.deepEqual(await codeOf(await b.call('alice', 'POST', '/api/v1/files', { name: 'pic.webp', contentType: 'image/webp', bytesBase64: webp.toString('base64'), role: 'output', report: tooBig })),
+    [400, 'INVALID_INPUT'], `a report is at most ${FILE_REPORT_MAX_BYTES} bytes of JSON`);
+
+  // An instance report: 63 padded options the engine ignores stay out of it.
+  const padded = Object.fromEntries(Array.from({ length: 63 }, (_, n) => [`k${n}`, 'x'.repeat(4096)]));
+  const mid = await used('alice');
+  const optimized = await b.call('alice', 'POST', '/api/v1/optimize', { bytesBase64: PNG.toString('base64'), opts: { format: 'png', strip: true, ...padded }, output: 'file' });
+  assert.equal(optimized.status, 200, await optimized.clone().text());
+  const kept = (await optimized.json() as { file: FileView }).file;
+  const described = await (await b.call('alice', 'GET', `/api/v1/files/${kept.id}`)).json() as { report: { options: unknown } };
+  assert.deepEqual(described.report.options, { format: 'png', strip: true }, 'only what the engine takes');
+  const stored = (await b.store.getUpload(kept.id))!;
+  assert.ok(Buffer.byteLength(JSON.stringify(stored.report)) < 8 * 1024, 'well inside the cap');
+  assert.equal(await used('alice') - mid, uploadCharge(stored));
+  assert.ok(uploadCharge(stored) >= kept.size + 4096 + Buffer.byteLength(JSON.stringify(stored.report)));
+
+  // A format the instance does not know names nothing: neither the output nor the report repeats it.
+  const odd = await b.call('alice', 'POST', '/api/v1/optimize', { bytesBase64: PNG.toString('base64'), opts: { format: 'x'.repeat(100_000) }, output: 'file' });
+  assert.equal(odd.status, 200, await odd.clone().text());
+  const oddFile = (await odd.json() as { file: FileView }).file;
+  assert.deepEqual([oddFile.name, oddFile.contentType], ['optimized.bin', 'application/octet-stream']);
+  assert.deepEqual((await (await b.call('alice', 'GET', `/api/v1/files/${oddFile.id}`)).json() as { report: { options: unknown } }).report.options, {});
 });
 
 test('a larger reference arrives in parts, and an output names its source and the report that made it', async () => {
@@ -316,6 +357,64 @@ test('revoking access in any way Work has refuses the very next read', async () 
   const alices = await keep(b, 'alice', PNG);
   assert.equal((await b.call('root', 'DELETE', `/api/v1/users/${await b.userId('alice')}`)).status, 200);
   assert.equal(await b.store.getUpload(alices.id), null);
+});
+
+test('a queued request is checked when it runs: every revocation but signing out everywhere fails it unread', async () => {
+  // The runner claims nothing while held, so each revocation happens after queueing and before running.
+  const inner = createMemoryStore(), gate = { held: true };
+  const store = new Proxy(inner, { get: (target, key, receiver) => key === 'claimAutomationJob'
+    ? (...args: Parameters<Store['claimAutomationJob']>) => gate.held ? Promise.resolve(null) : target.claimAutomationJob(...args)
+    : Reflect.get(target, key, receiver) });
+  // Every part read, to show a refused job reads nothing.
+  const blobStore = createMemoryBlobStore(), reads: string[] = [];
+  const blobs = new Proxy(blobStore, { get: (target, key, receiver) => key === 'get'
+    ? (...args: Parameters<BlobStore['get']>) => { reads.push(args[0]); return target.get(...args); }
+    : Reflect.get(target, key, receiver) });
+  const b = await boot({ store, blobs, backgroundPollMs: 0 });
+  const queue = async (who: string, f: FileView) => {
+    const owner = (await b.store.getUpload(f.id))!.owner;
+    const r = await b.call(who, 'POST', '/api/v1/inspect?async=1', { file: ref(f) });
+    assert.equal(r.status, 202, await r.clone().text());
+    return { id: (await r.json() as { jobId: string }).jobId, owner, part: uploadPartId(f, 0) };
+  };
+  const settled = async (job: { id: string; owner: string }) => {
+    for (let n = 0; n < 400; n++) {
+      const record = await b.store.getAutomationJob(job.id, job.owner);
+      if (record?.state === 'done' || record?.state === 'failed') return [record.state, record.error ?? null];
+      await new Promise(r => setTimeout(r, 25));
+    }
+    throw new Error(`job ${job.id} did not settle`);
+  };
+
+  const minted = await b.token();
+  const tokenJob = await queue(minted.token, await keep(b, minted.token, PNG));
+  assert.equal((await b.call('root', 'DELETE', `/api/v1/tokens/${minted.id}`)).status, 200);
+
+  const alices = await keep(b, 'alice', PNG);
+  const deletedJob = await queue('alice', alices);
+  assert.equal((await b.call('alice', 'DELETE', `/api/v1/files/${alices.id}`)).status, 204);
+
+  const deniedJob = await queue('carol', await keep(b, 'carol', PNG));
+  assert.equal((await b.call('root', 'POST', '/api/v1/grants', { principal: `user:${await b.userId('carol')}`, action: 'tool.use', resource: '*', effect: 'deny' })).status, 201);
+
+  const disabledJob = await queue('bob', await keep(b, 'bob', PNG));
+  assert.equal((await b.call('root', 'POST', `/api/v1/users/${await b.userId('bob')}/disabled`, { disabled: true })).status, 200);
+
+  const signedOutJob = await queue('dave', await keep(b, 'dave', PNG));
+  assert.equal((await b.call('root', 'POST', `/api/v1/users/${await b.userId('dave')}/revoke-sessions`, {})).status, 200);
+
+  // Release the runner, and wake it with one more submission (no poll timer runs).
+  reads.length = 0;
+  gate.held = false;
+  assert.equal((await b.call('root', 'POST', '/api/v1/inspect?async=1', { bytesBase64: PNG.toString('base64') })).status, 202);
+
+  assert.deepEqual(await settled(tokenJob), ['failed', 'The job principal is no longer authorized.']);
+  assert.deepEqual(await settled(deletedJob), ['failed', 'no such file reference']);
+  assert.deepEqual(await settled(deniedJob), ['failed', 'tool.use required']);
+  assert.deepEqual(await settled(disabledJob), ['failed', 'The job principal is no longer authorized.']);
+  assert.deepEqual(await settled(signedOutJob), ['done', null], 'signing out ends sessions, not work queued for the account');
+  assert.deepEqual(reads.filter(id => [tokenJob, deletedJob, deniedJob, disabledJob].some(job => job.part === id)), [], 'a refused job reads nothing');
+  assert.ok(reads.includes(signedOutJob.part));
 });
 
 test('the document verbs read a reference, and an optimize keeps its output as another', async () => {

@@ -6,8 +6,8 @@
  * the pending limit count only uploads that have not expired, an id is
  * reserved once, a touch never shortens an expiry or revives an expired
  * upload, completing is idempotent, and the removal lists filter as declared.
- * A file reference's own fields read back unchanged, and the list narrows by
- * scope and state and pages from a position.
+ * A file reference's own fields read back unchanged and count toward the
+ * budgets, and the list narrows by scope and state and pages from a position.
  */
 import assert from 'node:assert/strict';
 import { UPLOAD_OVERHEAD_BYTES, type UploadRecord, type UploadStore } from '../server/src/uploads/scoped.ts';
@@ -89,6 +89,9 @@ export async function uploadStoreConformance(store: UploadStore): Promise<void> 
   assert.equal(await store.reserveUpload(uploadRecord('upl_input', 'user:f1', 6, { createdAt: t - 50 }), roomy), 'reserved');
   assert.deepEqual(await store.getUpload('fil_out'), output);
   assert.deepEqual(await store.getUpload('fil_src'), source);
+  // The source and the report count toward the budgets at their size as JSON.
+  const metadata = Buffer.byteLength(JSON.stringify(output.derivedFrom)) + Buffer.byteLength(JSON.stringify(report));
+  assert.equal((await store.uploadUsage('user:f1')).ownerBytes, 3 + 4 + 5 + 6 + 4 * R + metadata);
   for (const id of ['fil_src', 'fil_out']) assert.equal(await store.completeUpload(id, kept), true);
   const files = (filter: Parameters<UploadStore['listUploads']>[2], limit = 10) => store.listUploads('user:f1', limit, filter).then((us) => us.map((u) => u.id));
   assert.deepEqual(await files({}), ['upl_input', 'fil_pending', 'fil_out', 'fil_src'], 'no filter: every scope, newest first, then by id');

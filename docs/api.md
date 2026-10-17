@@ -827,7 +827,7 @@ requests read the reference when they run.
 
 Nothing about a reference or its caller is cached. Every request resolves the caller, checks
 `tool.use` against the current grants and loads the reference again, so each of these refuses
-the very next read, including one a queued request makes:
+the very next request:
 
 - the owner deletes the reference: `404`;
 - an owner revokes the service token: `401`;
@@ -835,6 +835,16 @@ the very next read, including one a queued request makes:
 - a grant denies the caller `tool.use`: `403`, and the reference reads again once the grant
   goes;
 - the reference expires, or the account is erased: `404`.
+
+A queued (`?async=1`) request is checked again when it runs, against the account that queued
+it rather than the session. Deleting the reference, revoking the token, disabling the person,
+denying `tool.use`, expiry and erasure each make it a failed job that reads nothing, with the
+reason in its `error`; these status codes do not apply to it. Signing out everywhere ends
+sessions only, so work already queued for the account still runs. To stop that work too,
+disable the person or revoke the token before it runs.
+
+A reference counts toward the budgets at its size plus 4096 bytes for its database rows, plus
+the size of its `derivedFrom` and report as JSON, so a report takes room like the bytes do.
 
 Document agents, which act for a person inside one document, cannot use the person's file
 references. Making a reference is audited as `file.create` and deleting one through these

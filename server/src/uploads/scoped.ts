@@ -121,8 +121,12 @@ export interface UploadStore {
 export const uploadPartId = (upload: Pick<UploadRecord, 'id'>, n: number): string => `upload/${upload.id}/${n}`;
 /** An upload's parts as one transfer, for the shared primitive. */
 export const uploadParts = (blobs: BlobStore, upload: UploadRecord): TransferParts => ({ blobs, partId: (n) => uploadPartId(upload, n), manifest: upload });
-/** What one upload counts toward the budgets. */
-export const uploadCharge = (u: Pick<UploadRecord, 'size'>): number => u.size + UPLOAD_OVERHEAD_BYTES;
+/** What a file reference's `derivedFrom` and report add to its charge: their
+ *  size as JSON, stored beside the row (`metadata_bytes`, migration 0076). */
+export const uploadMetadataBytes = (u: Pick<UploadRecord, 'derivedFrom' | 'report'>): number =>
+  (u.derivedFrom ? Buffer.byteLength(JSON.stringify(u.derivedFrom)) : 0) + (u.report ? Buffer.byteLength(JSON.stringify(u.report)) : 0);
+/** What one upload counts toward the budgets: its bytes, its rows and any file reference metadata. */
+export const uploadCharge = (u: Pick<UploadRecord, 'size' | 'derivedFrom' | 'report'>): number => u.size + UPLOAD_OVERHEAD_BYTES + uploadMetadataBytes(u);
 export const liveUpload = (u: Pick<UploadRecord, 'expiresAt'>, now = Date.now()): boolean => Date.parse(u.expiresAt) > now;
 
 /** The owner an upload records for a caller: the automation principal form. */

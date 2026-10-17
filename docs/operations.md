@@ -395,9 +395,11 @@ them on adds a second instance budget on the same blob store; see
 
 ### Migration 0076 and file references
 
-Migration 0076 adds the `file` scope and three nullable columns (`role`, `derived_from`,
-`report`) to the `uploads` table, and checks that only a file reference uses them. Existing
-rows keep their values and no budget changes. [File references](api.md#file-references) share
+Migration 0076 adds the `file` scope, three nullable columns (`role`, `derived_from`,
+`report`) and `metadata_bytes` to the `uploads` table, and checks that only a file reference
+uses them. `metadata_bytes` is the size of a reference's `derived_from` and report as JSON,
+which the budgets charge on top of its bytes; it is 0 on every existing row, so existing rows
+keep their values and no budget changes. [File references](api.md#file-references) share
 the scoped uploads' switch and budgets, so they stay off until `policy.uploads.enabled` is
 set; once it is, every member or service token with `tool.use` can keep and read back its own
 references for `policy.uploads.fileTtlHours` (a week by default).

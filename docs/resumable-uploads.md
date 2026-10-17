@@ -127,7 +127,8 @@ more scope on the `uploads` table over the same primitive.
   (64 MiB). A catalog original is also capped at `policy.submit.maxBytes`.
 - **Reserved at the begin.** The whole declared size counts toward the budgets the
   moment an upload begins: the project and instance budgets for project files, the
-  owner and instance budgets for scoped uploads. Nobody holds more than 16 unfinished
+  owner and instance budgets for scoped uploads. A file reference's `derivedFrom` and
+  report count too, at their size as JSON. Nobody holds more than 16 unfinished
   uploads at once. A stalled upload therefore never holds more than it declared, and
   an expired one counts for nothing.
 - **Resume window.** An unfinished upload stays resumable until 15 minutes after its

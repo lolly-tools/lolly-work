@@ -9737,8 +9737,11 @@ export function buildApp(deps: AppDeps): App {
         if (!caller.user || caller.user.role === 'guest') throw new UploadReferenceError(403, 'FORBIDDEN', 'keeping a file reference needs a member or a service token');
         if (!await toolUse()) throw new UploadReferenceError(403, 'FORBIDDEN', 'tool.use required');
         if (output.byteLength > policy.maxFileBytes) throw new UploadReferenceError(413, 'UPLOAD_TOO_LARGE', `a file reference can be at most ${policy.maxFileBytes} bytes`);
-        const format = typeof made.opts?.format === 'string' ? made.opts.format.toLowerCase() : undefined;
-        const contentType = made.source?.contentType ?? (format ? FORMAT_TYPES[format] : undefined) ?? 'application/octet-stream';
+        // Only a format this instance knows names an output with no source, so
+        // no client text of any length becomes the reference's name.
+        const asked = typeof made.opts?.format === 'string' ? made.opts.format.toLowerCase() : undefined;
+        const format = asked !== undefined && Object.hasOwn(FORMAT_TYPES, asked) ? asked : undefined;
+        const contentType = made.source?.contentType ?? (format ? FORMAT_TYPES[format]! : 'application/octet-stream');
         const name = made.source?.name ?? `optimized.${format ?? 'bin'}`;
         const report = optimizeReport({ name, contentType, bytes: made.input }, { name, contentType, bytes: output }, made.opts, made.stages);
         const created = await createFileReference({ store, blobs, policy }, caller.principal, output, {

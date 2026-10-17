@@ -272,7 +272,8 @@ past it. Raise them only with the storage to match.
 `policy.uploads` follows the same rules: whole numbers above zero, with `maxFileBytes` no
 larger than `ownerBudgetBytes` and `ownerBudgetBytes` no larger than `instanceBudgetBytes`.
 Budgets count every upload that has not expired, finished or not, at its size plus 4096
-bytes, and one owner may hold 16 unfinished uploads at once.
+bytes, and a file reference also at the size of its `derivedFrom` and report as JSON. One owner
+may hold 16 unfinished uploads at once.
 
 Scoped uploads are off until `policy.uploads.enabled` is `true`, and an upgrade does not turn
 them on. Their bytes live in the same blob store as project files, under a separate instance
