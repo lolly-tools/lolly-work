@@ -16,6 +16,10 @@ signatures identify the upstream packages.
 | YunoHost | [Project package](https://github.com/lolly-tools/lolly-work_ynh/tree/v1.1.1-ynh1) | 1.1.1~ynh1 beta. All seven package checks passed on amd64 Bookworm, but absence from the catalogue makes the overall workflow fail. Catalogue registration and arm64 acceptance remain pending |
 | Dokploy | [Upstream blueprint](https://github.com/lolly-tools/lolly-work/tree/main/deploy/dokploy) | Prepared for online import/submission; runtime target acceptance and public catalogue admission remain pending |
 
+The [channel record](https://github.com/lolly-tools/lolly-work/blob/main/deploy/marketplaces/CHANNELS.md)
+shows which release each channel carries and the result of its latest publication
+attempt. A failed or pending attempt never replaces a channel's last published version.
+
 The intended HTTP chart repository is
 `https://github.com/lolly-tools/lolly-work/releases/download/helm-index`.
 Its immutable packages use separate `chart-v*` releases and Sigstore bundles.

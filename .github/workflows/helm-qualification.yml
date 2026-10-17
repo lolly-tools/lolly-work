@@ -59,7 +59,7 @@ jobs:
         run: |
           helm version --short
           kubeconform -v
-          node --test tests/helm-chart.test.ts tests/helm-profile-schema.test.ts tests/marketplace-packages.test.ts
+          node --test tests/helm-chart.test.ts tests/helm-profile-schema.test.ts tests/marketplace-packages.test.ts tests/marketplace-channels.test.ts
 
   neutral-compose:
     name: Neutral Compose installation and recovery

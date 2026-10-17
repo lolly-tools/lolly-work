@@ -88,16 +88,12 @@ Prepared PR description:
 > identity, initial/second-version upgrade and independent restore receipts here
 > after those checks pass.
 
-## Channel handoff at this slice
+## Channel handoff
 
-| Channel | Project-controlled route | Outstanding external/target evidence |
-|---|---|---|
-| GHCR | Existing public `lolly-tools` image packages; signed 1.1.1 release record | Confirm administrator/recovery custody; native arm64 runtime remains open |
-| Helm | New upstream publication workflow and immutable chart assets/index layout | First merged-source publication, anonymous download/signature result and Rancher install/upgrade |
-| Artifact Hub | Prepared organization/repository identity and ownership metadata support | Account/name availability, real UUID/email, Verified publisher, then Official review |
-| UpCloud | Existing infrastructure module plus new neutral package recipe and [reference result](QUALIFICATION.md) | Cross-version upgrade, separate-host recovery and organisation OIDC; the current native-password reference passed fresh installation, output, reboot and independent application restore |
-| YunoHost | Existing project package/mirror/tag | Catalogue registration and remaining platform acceptance; preserve beta status |
-| Dokploy | Generated upstream blueprint with PR/update route | Isolated Dokploy acceptance, second-version installed upgrade, maintainer submission and catalogue review |
+[`CHANNELS.md`](CHANNELS.md) lists each channel's route, carried version, latest
+attempt, state and the evidence still open. Record each submission there as
+`submitted`, then its result as `published`, `failed` or `rejected`. Account
+custody and listing IDs go in the private maintainer record, not in that file.
 
 Container rehearsal evidence must retain its limits: local-CA HTTPS, anonymous
 private-access refusal, native first-owner sign-in, restart/persistence and database
