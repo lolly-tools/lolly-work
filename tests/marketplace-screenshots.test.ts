@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
-import { LISTING_SHOTS, LISTING_VIEWPORT, MANIFEST_FILE, pngDimensions } from '../scripts/capture-marketplace-screenshots.ts';
+import { CATALOGUE_REFUSED, LISTING_SHOTS, LISTING_VIEWPORT, MANIFEST_FILE, pngDimensions } from '../scripts/capture-marketplace-screenshots.ts';
 
 const assets = new URL('../deploy/marketplaces/assets/', import.meta.url);
 
@@ -16,15 +16,24 @@ test('listing screenshots are the recorded captures from the neutral CI fixture'
   assert.match(manifest.release.serverImage, /^ghcr\.io\/lolly-tools\/lolly-work-server@sha256:[a-f0-9]{64}$/);
   assert.match(manifest.release.shellSha256, /^[a-f0-9]{64}$/);
   assert.deepEqual(manifest.viewport, { ...LISTING_VIEWPORT, deviceScaleFactor: 1, colorScheme: 'light' });
-  assert.deepEqual(manifest.shots.map(({ file, title, path, ready }: Record<string, string>) => ({ file, title, path, ready })), LISTING_SHOTS);
-  for (const shot of manifest.shots) {
-    const bytes = readFileSync(new URL(shot.file, assets));
-    assert.equal(createHash('sha256').update(bytes).digest('hex'), shot.sha256, `${shot.file} matches its recorded capture`);
-    assert.deepEqual(pngDimensions(bytes), LISTING_VIEWPORT, `${shot.file} is a ${LISTING_VIEWPORT.width} x ${LISTING_VIEWPORT.height} PNG`);
-    assert.ok(bytes.length < 1024 * 1024, `${shot.file} stays under 1 MiB for listing uploads`);
+  type Entry = { file: string; title: string; path: string; ready: string; catalogue: boolean; status: string; sha256?: string; reason?: string };
+  const entries: Entry[] = manifest.shots;
+  assert.deepEqual(entries.map(({ file, title, path, ready, catalogue }) => ({ file, title, path, ready, catalogue })), LISTING_SHOTS, 'every recipe is recorded once, in order');
+  const captured = entries.filter(entry => entry.status === 'captured');
+  for (const entry of entries.filter(entry => entry.status !== 'captured')) {
+    assert.equal(entry.status, 'withheld');
+    assert.ok(entry.catalogue, `${entry.file} may be withheld only when the shell refuses the catalogue`);
+    assert.equal(entry.reason, CATALOGUE_REFUSED);
   }
-  const expected = [...manifest.shots.map((shot: { file: string }) => shot.file), MANIFEST_FILE, 'README.md'].sort();
-  assert.deepEqual(readdirSync(assets).sort(), expected, 'the directory holds only recorded captures and their notes');
+  assert.ok(captured.length >= 1);
+  for (const entry of captured) {
+    const bytes = readFileSync(new URL(entry.file, assets));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.sha256, `${entry.file} matches its recorded capture`);
+    assert.deepEqual(pngDimensions(bytes), LISTING_VIEWPORT, `${entry.file} is a ${LISTING_VIEWPORT.width} x ${LISTING_VIEWPORT.height} PNG`);
+    assert.ok(bytes.length < 1024 * 1024, `${entry.file} stays under 1 MiB for listing uploads`);
+  }
+  const expected = [...captured.map(entry => entry.file), MANIFEST_FILE, 'README.md'].sort();
+  assert.deepEqual(readdirSync(assets).sort(), expected, 'the directory holds only captured files and their notes');
 });
 
 test('PNG dimensions come from the IHDR chunk', () => {
