@@ -42,6 +42,12 @@ export interface NotifierDeps {
   smtpConnect?: SmtpConnect;
 }
 
+/** The addresses server-raised operational alerts go to, such as the blob
+ *  offload trigger: every enabled account with the admin or owner role. */
+export function administratorAddresses(users: ReadonlyArray<{ email: string; role: string; disabledAt?: string }>): string[] {
+  return users.filter((u) => (u.role === 'admin' || u.role === 'owner') && !u.disabledAt).map((u) => u.email);
+}
+
 export function createNotifier(deps: NotifierDeps): Notifier {
   const { config, secrets, onResult } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;

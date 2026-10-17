@@ -33,7 +33,7 @@ import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConf
 import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
+import { createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
 import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
 import { cachePolicy, publicStaticDeliveryClass, type DeliveryClass } from '@lolly-tools/core/delivery-v1';
 import { shellDirectories } from '../lib/shell-release.ts';
@@ -211,7 +211,8 @@ import { safeReturnTo } from '../iam/return-to.ts';
 import { registerPasskeyRoutes, passkeysEnabled } from '../iam/passkeys/routes.ts';
 import { csrfVerdict } from '../iam/csrf.ts';
 import { auditHead } from '../audit/head.ts';
-import { createMetrics, statusClass, metricsGate, type Metrics, type GaugeLine } from '../observability/metrics.ts';
+import { blobUsageLines, countResponseBytes, createMetrics, statusClass, metricsGate, type Metrics, type GaugeLine } from '../observability/metrics.ts';
+import { currentOffloadAlerts } from '../observability/offload-trigger.ts';
 import { createRateLimiter, clientIp, rateLimitSurface } from '../observability/rate-limit.ts';
 import { agentDashboard } from '../agents/dashboard.ts';
 import { buildActivity } from '../activity/feed.ts';
@@ -713,6 +714,10 @@ export function buildApp(deps: AppDeps): App {
       const [head, cursor] = await Promise.all([auditHead(store, auditMacKey), store.getSiemCursor()]);
       gauges.push({ name: 'lw_siem_lag', help: 'Audit events not yet confirmed by the SIEM receiver.', type: 'gauge', value: Math.max(0, head.seq - cursor) });
     }
+    // Blob reads and stored bytes (plan 80 section 10): the offload trigger's
+    // figures. A failed usage query leaves the lines out rather than the scrape.
+    const usage = await blobs.usage?.().catch((err: Error) => { log('warn', 'blob usage unavailable', { error: err.message }); return undefined; });
+    if (usage) gauges.push(...blobUsageLines(usage));
     for (const p of await store.listProviders({ includeFragment: false })) {
       gauges.push({ name: 'lw_provider_enabled', help: 'Catalog provider enabled (1) or disabled (0).', type: 'gauge', labels: { provider: p.id, kind: p.kind }, value: p.enabled ? 1 : 0 });
       gauges.push({ name: 'lw_provider_assets', help: 'Assets last synced from a catalog provider.', type: 'gauge', labels: { provider: p.id }, value: p.state?.assetCount ?? 0 });
@@ -6730,6 +6735,16 @@ export function buildApp(deps: AppDeps): App {
     sendJson(res, 200, credRow);
   });
 
+  // Alerts the server raises for administrators (plan 80 section 10), shown
+  // as the console banner. The blob offload trigger is the first; the daily
+  // check in main.ts emails the same alerts. A failed usage query is logged
+  // and shows no banner rather than breaking every console page.
+  router.add('GET', '/api/v1/alerts', async (req, res) => {
+    if (!(await requireAction(req, res, 'telemetry.view'))) return;
+    const alerts = await currentOffloadAlerts(blobs).catch((err: Error) => { log('warn', 'blob usage unavailable', { error: err.message }); return []; });
+    sendJson(res, 200, { alerts });
+  });
+
   // Store-derived dashboard stats the telemetry fold can't answer: catalog
   // inventory (count + lifecycle state breakdown) and project size (sessions
   // per project). Popularity/usage counts (top assets, export destinations)
@@ -10639,8 +10654,19 @@ export function buildApp(deps: AppDeps): App {
     const reqId = requestId(req.headers['x-request-id']);
     res.setHeader('x-request-id', reqId);
     const startedAt = Date.now();
+    // Origin bytes are counted once: when the response finishes, or when the
+    // client goes away part way through a download.
+    const bodyBytes = countResponseBytes(req, res);
+    let originCounted = false;
+    const countOrigin = (): void => {
+      if (originCounted) return;
+      originCounted = true;
+      metrics.originBytes(deliveryClassOf(res), bodyBytes());
+    };
+    res.on('close', countOrigin);
     res.on('finish', () => {
       metrics.httpRequest(routeClass, statusClass(res.statusCode));
+      countOrigin();
       if (log.accessLog) log('info', 'http', { reqId, method: req.method, route: routeClass, status: res.statusCode, ms: Date.now() - startedAt });
     });
     // Cookie-authenticated mutations from another site are refused before any

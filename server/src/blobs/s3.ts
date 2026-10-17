@@ -18,9 +18,13 @@
  * and for a streamed multipart body when the caller declares it (checked before
  * the upload completes). `head`/`get` report it as the checksum. An object
  * without it reports its ETag, which is not a content digest.
+ *
+ * Usage (plan 80 section 10): reads are counted as the bytes stream through,
+ * in this process only. Stored bytes are not reported: totalling them means
+ * listing the whole bucket, and the store's own metrics already show its size.
  */
 import { createHash } from 'node:crypto';
-import { blobChunks, BlobMismatchError, checkDeclared, type BlobBody, type BlobStat, type BlobStore } from './types.ts';
+import { blobChunks, BlobMismatchError, checkDeclared, createReadTally, usageMonth, type BlobBody, type BlobStat, type BlobStore } from './types.ts';
 import { signS3Request, sha256hex, type S3Options } from '../catalog/providers/s3.ts';
 
 export interface S3BlobConfig {
@@ -149,7 +153,13 @@ export function createS3BlobStore(
     if (!res.ok || /<Error>/.test(text)) throw new Error(`s3 blob multipart complete ${res.status}`);
   };
 
+  const reads = createReadTally();
+  const counted = (body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> => body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) { reads.add(chunk.byteLength); controller.enqueue(chunk); },
+  }));
+
   return {
+    driver: 's3',
     async put(blobId, body, contentType, declared) {
       creds(); // fail closed before reading anything
       const key = keyOf(blobId);
@@ -197,12 +207,19 @@ export function createS3BlobStore(
       const res = await send('GET', keyOf(blobId));
       if (res.status === 404) return null;
       if (!res.ok || !res.body) throw new Error(`s3 blob get ${res.status}`);
-      return { body: res.body as ReadableStream<Uint8Array>, stat: statOf(blobId, res.headers) };
+      return { body: counted(res.body as ReadableStream<Uint8Array>), stat: statOf(blobId, res.headers) };
     },
     async delete(blobId) {
       const res = await send('DELETE', keyOf(blobId));
       // S3 DELETE is idempotent (204 whether or not the key existed); 404 is fine too.
       if (!res.ok && res.status !== 404) throw new Error(`s3 blob delete ${res.status}`);
+    },
+    async usage() {
+      const month = usageMonth();
+      return { driver: 's3', storedBytes: null, readBytesTotal: reads.total(), month, monthReadBytes: reads.month(month) };
+    },
+    async claimUsageNotice(month, kind) {
+      return reads.claim(month, kind);
     },
   };
 }

@@ -20,7 +20,8 @@ import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
 import { runRetention } from './audit/retention.ts';
 import { scheduleProjectFileSweep } from './projects/files.ts';
-import { createNotifier } from './notify/notify.ts';
+import { administratorAddresses, createNotifier } from './notify/notify.ts';
+import { notifyOffloadAlerts } from './observability/offload-trigger.ts';
 import { expiringCredentials } from './catalog/credential-expiry.ts';
 import { auditHead } from './audit/head.ts';
 import { deriveAuditMacKey, retiredKeyNote } from './audit/chain.ts';
@@ -222,8 +223,15 @@ scheduleProjectFileSweep(store, blobs);
 // surfaces (provider rows, console chip, the expiry-days gauge). Threshold-
 // crossing only, so each stated expiry is mentioned a handful of times, never
 // nagged daily; silent without notify egress, like everything notify-shaped.
+// The blob offload trigger (plan 80 section 10) rides the same daily tick, so
+// it wakes the database no more often: one email per alert per month, claimed
+// in the database so replicas and restarts do not repeat it.
 {
   const expiryNotifier = createNotifier({ config, secrets });
+  const checkOffload = async (): Promise<void> => {
+    await notifyOffloadAlerts({ blobs, notifier: expiryNotifier, baseUrl: config.instance.baseUrl,
+      recipients: async () => administratorAddresses(await store.listUsers()) });
+  };
   const checkExpiry = async (): Promise<void> => {
     const expiring = expiringCredentials(await store.listProviders());
     if (!expiring.length) return;
@@ -237,8 +245,11 @@ scheduleProjectFileSweep(store, blobs);
       expiryNotifier.event('provider.credential.expiring', { id: e.id, kind: e.kind, daysLeft: e.daysLeft, expiresAt: e.expiresAt });
     }
   };
+  const offloadFailed = (e: Error): void => console.error(`[lolly-work] blob offload check failed: ${e.message}`);
   await checkExpiry();
-  setInterval(() => void checkExpiry().catch((e: Error) => console.error(`[lolly-work] credential expiry check failed: ${e.message}`)), 24 * 60 * 60 * 1000).unref();
+  await checkOffload().catch(offloadFailed);
+  setInterval(() => void checkExpiry().catch((e: Error) => console.error(`[lolly-work] credential expiry check failed: ${e.message}`))
+    .then(() => checkOffload().catch(offloadFailed)), 24 * 60 * 60 * 1000).unref();
 }
 
 // SIEM forwarding (plans/35 wave 2): audit events pushed to the org's receiver
@@ -291,6 +302,8 @@ const shutdown = async (signal: string): Promise<void> => {
     }
   })()]);
   console.log('[lolly-work] drained');
+  // Write the buffered blob read tally, so a routine deploy keeps the month's figure.
+  await blobs.flushUsage?.().catch((err: Error) => console.error(`[lolly-work] blob read tally not written: ${err.message}`));
   process.exit(0);
 };
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {

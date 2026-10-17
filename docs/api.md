@@ -13,6 +13,7 @@ means any signed-in member; *public* means no session needed.
 | `GET /healthz` | public | `{ ok, name, accessMode, appUrl? }` - liveness |
 | `GET /readyz` | public | `{ ok, store }`, 503 while the store cannot answer - readiness |
 | `GET /metrics` | token | Prometheus; loopback-only unless `LW_METRICS_TOKEN` is set |
+| `GET /api/v1/alerts` | `telemetry.view` | `{ alerts: [{ id, kind, level, month, value, threshold, title, detail, href }] }`: alerts the server raises for administrators, shown as the console banner. Today only the [blob offload trigger](operations.md#blob-offload-trigger) |
 
 ## Instance manifest and the connect surface
 

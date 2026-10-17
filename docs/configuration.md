@@ -404,6 +404,10 @@ credential is a secret, `LW_BLOBS_S3_CREDENTIAL`, formatted `<accessKeyId>:<secr
 This is the exit route for media-sized estates and the air-gap story: see
 [off-boarding](offboarding.md).
 
+With `pg`, the server compares the bytes stored and read each month against the offload
+thresholds and alerts administrators when one is reached: see
+[blob offload trigger](operations.md#blob-offload-trigger).
+
 ### Blob limits and integrity
 
 | Driver | How a blob is written and read | Limits |
