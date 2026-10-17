@@ -70,7 +70,7 @@ air-gap](deployment.md#air-gap).
 
 | Source | Used for | When it is contacted | Your own copy |
 |---|---|---|---|
-| `ghcr.io/lolly-tools` | Work server image on every route; optional render worker image | Image pull at installation and update. Kubernetes also pulls on any node that does not have the image yet | Copy each multi-platform image by digest into your registry |
+| `ghcr.io/lolly-tools` | Work server image for the neutral VM package (including UpCloud), Dokploy and Helm; optional render worker image. YunoHost uses the `lolli.li` Work archive instead | Image pull at installation and update. Kubernetes also pulls on any node that does not have the image yet | Copy each multi-platform image by digest into your registry |
 | `public.ecr.aws/docker/library` | PostgreSQL 17 and Caddy images in the neutral VM package; PostgreSQL in the Dokploy blueprint | Image pull at installation and update | Copy by digest. The same digests are also published at `docker.io/library/postgres` and `docker.io/library/caddy` |
 | `lolli.li`, release archives | Matched neutral web shell archive (VM, Dokploy, YunoHost); the YunoHost Work archive | First start of each release. Restarts reuse the extracted content | Serve the checksum-verified archive from your own HTTPS server and set `LW_SHELL_URL` |
 | `lolli.li`, model files | On-device model files that the shell fetches in the browser | In each person's browser, on first use of a model feature | No mirror setting: the location is built into the 1.1.1 shell archive. See [model files](#model-files) |
