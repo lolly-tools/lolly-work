@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "fixture": "Helm qualification, Neutral Compose installation and recovery",
-  "source": "eda3992075b95f978ff9d58cc52a81d2133d3af9",
-  "run": "https://github.com/lolly-tools/lolly-work/actions/runs/38991953943",
-  "capturedAt": "2026-10-17T01:45:56.820Z",
+  "source": "71367ba112ef33a826e0786c97d48d575ccb859b",
+  "run": "https://github.com/lolly-tools/lolly-work/actions/runs/38993326630",
+  "capturedAt": "2026-10-17T02:05:41.694Z",
   "release": {
     "version": "1.1.1",
     "serverImage": "ghcr.io/lolly-tools/lolly-work-server@sha256:5fa8b86328bf453635791fc104f4cf6179fc3d3c02a1516da4dea07bd6ae1e55",
@@ -24,7 +24,7 @@
       "ready": "#pw-email",
       "catalogue": false,
       "status": "captured",
-      "sha256": "cfa929acd756b326f6cf9512ad967ecfa1c6761a5173c3a72e0a2f9a6ca6d7d2",
+      "sha256": "4af5e9b85a0ea6e8f7dddfdbb7d50e6a792ddec1e6e534eca551078d71249811",
       "width": 1280,
       "height": 720
     },
@@ -35,7 +35,7 @@
       "ready": "[data-shots-settled]",
       "catalogue": true,
       "status": "withheld",
-      "reason": "The shell refused the installation catalogue: signature does not verify against the pinned key"
+      "reason": "Catalog refused: signature does not verify against the pinned key"
     },
     {
       "file": "tool-editor.png",
@@ -44,7 +44,7 @@
       "ready": "#tool-canvas",
       "catalogue": true,
       "status": "withheld",
-      "reason": "The shell refused the installation catalogue: signature does not verify against the pinned key"
+      "reason": "Catalog refused: signature does not verify against the pinned key"
     },
     {
       "file": "console-overview.png",
@@ -53,7 +53,7 @@
       "ready": "#main",
       "catalogue": false,
       "status": "captured",
-      "sha256": "6e3a53d0695f46db009be12bfbc8d2efb6bd74a36989a206353b2c5c58b1ef38",
+      "sha256": "86f7f8eb3c6a91c1711f1ef86fc28b1f3127e9301d4bee085a656a445107c60c",
       "width": 1280,
       "height": 720
     },
@@ -64,7 +64,7 @@
       "ready": "#inst-panel",
       "catalogue": false,
       "status": "captured",
-      "sha256": "673bae5b6a8f620795eec5f1cf30d650d726ae40e81050909b3f03bb01153af6",
+      "sha256": "d68a82ec14c3568889acc81c2f104db5a72f404eb147ba64cfe2b27f8cbe70cd",
       "width": 1280,
       "height": 720
     }
