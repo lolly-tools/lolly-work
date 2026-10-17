@@ -38,8 +38,9 @@ import type { ProjectAccess } from '../rbac/project-access.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
 import {
-  newestVersionFirst, normalizeSessionVersionWrite, planSessionVersionPut, resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
-  type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+  newestVersionFirst, normalizeSessionVersionAnnotation, normalizeSessionVersionWrite, planSessionVersionAnnotate, planSessionVersionPut,
+  resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
+  type SessionVersionAnnotate, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
 } from './types.ts';
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
@@ -2847,9 +2848,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
 }
 
 const iso = (value: unknown): string => new Date(value as string).toISOString();
-const VERSION_SUMMARY_COLUMNS = 'v.id, v.session_id, v.rev, v.kind, v.label, v.contributors, v.created_by, v.restored_from, v.before_id, v.at, c.bytes';
+const VERSION_SUMMARY_COLUMNS = `v.id, v.session_id, v.rev, v.kind, v.label, v.contributors, v.created_by, v.restored_from, v.before_id, v.at, c.bytes,
+  v.pinned, v.annotation_rev`;
 const VERSIONS_WITH_CONTENT = 'session_versions v join session_version_contents c on c.session_id = v.session_id and c.digest = v.digest';
-const VERSION_ROW_COLUMNS = 'id, session_id, kind, digest, at, created_by, request_id, before_id';
+const VERSION_ROW_COLUMNS = 'id, session_id, kind, digest, at, created_by, request_id, before_id, label, pinned, kept_by';
 
 function versionSummaryFromRow(r: Record<string, unknown>): SessionVersionSummary {
   return {
@@ -2859,7 +2861,7 @@ function versionSummaryFromRow(r: Record<string, unknown>): SessionVersionSummar
     ...(r.created_by ? { createdBy: r.created_by as string } : {}),
     ...(r.restored_from ? { restoredFrom: r.restored_from as string } : {}),
     ...(r.before_id ? { beforeId: r.before_id as string } : {}),
-    bytes: Number(r.bytes), at: iso(r.at),
+    bytes: Number(r.bytes), at: iso(r.at), pinned: r.pinned === true, annotationRev: Number(r.annotation_rev),
   };
 }
 
@@ -2869,16 +2871,21 @@ function versionRowFromRow(r: Record<string, unknown>): SessionVersionRow {
     ...(r.created_by !== null && r.created_by !== undefined ? { createdBy: r.created_by as string } : {}),
     ...(r.request_id !== null && r.request_id !== undefined ? { requestId: r.request_id as string } : {}),
     ...(r.before_id ? { beforeId: r.before_id as string } : {}),
+    ...(r.label !== null && r.label !== undefined ? { label: r.label as string } : {}),
+    ...(r.pinned === true ? { pinned: true } : {}),
+    ...(r.kept_by !== null && r.kept_by !== undefined ? { keptBy: r.kept_by as string } : {}),
   };
 }
 
-type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'annotateSessionVersion'
+  | 'deleteSessionVersion' | 'deleteSessionVersions';
 
 /**
- * Session versions (plan 76 M4 R2, migration 0053). Every write and delete holds
- * SESSION_VERSIONS_LOCK_KEY for its transaction, reads the document's rows, and
- * applies the shared `planSessionVersionPut`, so the memory driver keeps the same
- * rules. Contents no version uses any more are deleted in the same transaction.
+ * Session versions (plan 76 M4 R2, migrations 0053 and 0072). Every write,
+ * annotation and delete holds SESSION_VERSIONS_LOCK_KEY for its transaction,
+ * reads the document's rows, and applies the shared `planSessionVersionPut` or
+ * `planSessionVersionAnnotate`, so the memory driver keeps the same rules.
+ * Contents no version uses any more are deleted in the same transaction.
  */
 function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> {
   let limits: SessionVersionLimits = resolveVersionLimits({});
@@ -2975,6 +2982,22 @@ function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> {
         where v.session_id = $1 and v.id = $2`, [sessionId, id]);
       const r = rows[0];
       return r ? { ...versionSummaryFromRow(r), inputs: (r.inputs as Record<string, unknown>) ?? {}, meta: (r.meta as Record<string, unknown>) ?? {} } : null;
+    },
+    async annotateSessionVersion(sessionId, id, input) {
+      const change = normalizeSessionVersionAnnotation(input);
+      return locked(async (client): Promise<SessionVersionAnnotate> => {
+        const session = await client.query('select deleted_at from sessions where id = $1', [sessionId]);
+        if (!session.rows[0] || session.rows[0].deleted_at) throw new Error('session-gone');
+        const { rows } = await client.query(`select ${VERSION_ROW_COLUMNS}, annotation_rev from session_versions where session_id = $1`, [sessionId]);
+        const target = rows.find((r) => r.id === id);
+        if (!target) return 'not-found';
+        const plan = planSessionVersionAnnotate(rows.map(versionRowFromRow), versionRowFromRow(target), Number(target.annotation_rev), change);
+        if (plan.action === 'refuse') return plan.reason;
+        if (plan.action === 'same') return { version: await summaryById(client, id), changed: false };
+        await client.query(`update session_versions set label = $2, pinned = $3, kept_by = $4, annotation_rev = annotation_rev + 1
+          where id = $1`, [id, plan.label ?? null, plan.pinned, plan.keptBy ?? null]);
+        return { version: await summaryById(client, id), changed: true };
+      });
     },
     async deleteSessionVersion(sessionId, id) {
       return locked(async (client) => {

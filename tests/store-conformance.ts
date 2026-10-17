@@ -16,14 +16,15 @@ import { runErasureConformance } from './erasure-conformance.ts';
 
 import { ReferenceCanvasDoc } from '@lolly-tools/core/canvas-op-v1';
 import { VERSION_LABEL_MAX, VERSION_NAMED_PER_PERSON, VERSION_NAMED_PER_SESSION, VERSION_RESTORE_KEEP,
-  type SessionVersionPut, type SessionVersionSummary, type SessionVersionWrite } from '../server/src/store/types.ts';
+  type SessionVersionAnnotate, type SessionVersionAnnotation, type SessionVersionPut, type SessionVersionSummary, type SessionVersionWrite } from '../server/src/store/types.ts';
 
 /**
  * Session versions (plan 76 M4 R2, migration 0053): space caps (per document and
  * per instance, shared contents counted once), dedupe, idempotency with the kind
  * in the key, the named limits (S-21 store part), restore and 'before' pairs,
- * retention of automatic and restore rows, paging, session deletion, and
- * commitCollab writing no revision. Runs on a store with no versions yet.
+ * retention of automatic and restore rows, paging, names and pins added later
+ * (plan 221, migration 0072), session deletion, and commitCollab writing no
+ * revision. Runs on a store with no versions yet.
  */
 async function runSessionVersionsConformance(store: Store): Promise<void> {
   const user = (sub: string) => store.upsertUserBySub({ sub, email: `${sub}@example.invalid`, groups: [], role: 'member' });
@@ -33,7 +34,8 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   const session = (id: string) => store.putSession({ id, projectId: 'prj_ver', toolId: 'versions-tool', toolVersion: '1.0.0',
     inputs: { title: id }, meta: {}, createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: now });
   const sessions = ['ses_v_inst1', 'ses_v_inst2', 'ses_v_space', 'ses_v_evict', 'ses_v_main', 'ses_v_named', 'ses_v_pair',
-    'ses_v_keep', 'ses_v_old', 'ses_v_restore', 'ses_v_collab', 'ses_v_protect', 'ses_v_protect2'];
+    'ses_v_keep', 'ses_v_old', 'ses_v_restore', 'ses_v_collab', 'ses_v_protect', 'ses_v_protect2', 'ses_v_annot', 'ses_v_annot_limit',
+    'ses_v_annot_space'];
   for (const id of sessions) await session(id);
   /** Inputs whose canonical JSON is exactly `bytes` long ('{"p":""}' is 8). */
   const sized = (bytes: number, tag: string): Record<string, unknown> => ({ p: tag + 'x'.repeat(bytes - 8 - tag.length) });
@@ -105,7 +107,7 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   })), 'first');
   assert.match(first.id, /^ver_[0-9a-hjkmnp-tv-z]{16}$/);
   assert.deepEqual({ ...first, id: '', at: '' }, {
-    id: '', sessionId: 'ses_v_main', rev: 4, kind: 'auto', bytes: Buffer.byteLength('{"a":1,"b":2}'), at: '',
+    id: '', sessionId: 'ses_v_main', rev: 4, kind: 'auto', bytes: Buffer.byteLength('{"a":1,"b":2}'), at: '', pinned: false, annotationRev: 0,
     contributors: [{ id: owner.id, kind: 'user', edits: 3 }, { id: 'guest', kind: 'guest', edits: 2 }, { id: 'agt_1', kind: 'agent', edits: 0 }],
   }, 'a guest is stored without its link id; unknown kinds and empty ids are dropped');
   const full = await store.getSessionVersion('ses_v_main', first.id);
@@ -146,6 +148,7 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   await assert.rejects(put(write('ses_v_main', 'restore', { a: 7 }, { restoredFrom: a.id })), /version-reference/, 'a version of another document');
   await assert.rejects(put(write('ses_v_main', 'restore', { a: 7 }, { beforeId: 'ver_unknown' })), /version-reference/);
   await assert.rejects(put(write('ses_v_main', 'auto', { a: 7 }, { keep: [''] })), TypeError);
+  await assert.rejects(put(write('ses_v_main', 'auto', { a: 7 }, { label: 'Later' })), /version-label/, 'only a named version is written with a name');
 
   // Paging.
   const all = await ids('ses_v_main');
@@ -224,6 +227,84 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   }
   assert.equal(rows.length, 2 * VERSION_RESTORE_KEEP);
   assert.deepEqual(rows.slice(-2).map((v) => v.at), [day(0, 3), day(0, 2)], 'the oldest pair went together');
+
+  // Names and pins added later (plan 221, migration 0072): only the name, the pin
+  // and their own revision change, and a kept version is never removed.
+  const annotate = (sessionId: string, id: string, change: Partial<SessionVersionAnnotation>): Promise<SessionVersionAnnotate> =>
+    store.annotateSessionVersion(sessionId, id, { annotationRev: 0, by: owner.id, ...change });
+  const annotated = (result: SessionVersionAnnotate, why: string): SessionVersionSummary => {
+    assert.ok(typeof result === 'object' && result.changed, `${why}: changed`);
+    return result.version;
+  };
+  const old = made(await put(write('ses_v_annot', 'auto', { n: 1 }, { at: day(-500, 0) })), 'an old automatic version');
+  assert.deepEqual([old.pinned, old.annotationRev], [false, 0]);
+  const launch = annotated(await annotate('ses_v_annot', old.id, { label: 'Launch' }), 'named');
+  assert.deepEqual([launch.label, launch.pinned, launch.annotationRev, launch.kind, launch.rev, launch.bytes, launch.at],
+    ['Launch', false, 1, 'auto', old.rev, old.bytes, old.at]);
+  assert.deepEqual((await store.getSessionVersion('ses_v_annot', old.id))?.inputs, { n: 1 }, 'the content stays as written');
+  assert.equal(await annotate('ses_v_annot', old.id, { label: 'Stale' }), 'version-changed', 'a change made against an older revision');
+  const already = await annotate('ses_v_annot', old.id, { label: 'Launch' });
+  assert.ok(typeof already === 'object' && !already.changed && already.version.annotationRev === 1, 'the asked-for name already: nothing is written');
+  const pinned = annotated(await annotate('ses_v_annot', old.id, { pinned: true, annotationRev: 1 }), 'pinned');
+  assert.deepEqual([pinned.label, pinned.pinned, pinned.annotationRev], ['Launch', true, 2], 'a field left out keeps its value');
+  const racers2 = await Promise.all(['First', 'Second'].map((label) => annotate('ses_v_annot', old.id, { label, annotationRev: 2 })));
+  assert.deepEqual(racers2.map((r) => typeof r === 'object' ? 'changed' : r).sort(), ['changed', 'version-changed'], 'two changes made against one revision: one applies');
+  const raceWinner = (await store.getSessionVersion('ses_v_annot', old.id))!;
+  assert.equal(raceWinner.annotationRev, 3);
+  const unnamed = annotated(await annotate('ses_v_annot', old.id, { label: null, annotationRev: 3 }), 'unnamed');
+  assert.deepEqual(['label' in unnamed, unnamed.pinned, unnamed.annotationRev], [false, true, 4], 'null removes the name');
+  made(await put(write('ses_v_annot', 'auto', { n: 2 }, { at: day(-134, 0) })), 'a write a year later');
+  assert.ok((await ids('ses_v_annot')).includes(old.id), 'retention never removes a pinned version');
+  annotated(await annotate('ses_v_annot', old.id, { pinned: false, annotationRev: 4 }), 'unpinned');
+  made(await put(write('ses_v_annot', 'auto', { n: 3 }, { at: day(-134, 1) })), 'the next write');
+  assert.equal((await ids('ses_v_annot')).includes(old.id), false, 'once it is not kept, retention removes it in its turn');
+  const savedByName = made(await put(write('ses_v_annot', 'named', { n: 4 }, { label: 'Saved', createdBy: editor.id })), 'named');
+  assert.equal(annotated(await annotate('ses_v_annot', savedByName.id, { label: 'Renamed' }), 'renamed').label, 'Renamed');
+  await assert.rejects(annotate('ses_v_annot', savedByName.id, { label: null, annotationRev: 1 }), /version-label/, 'a version saved with a name keeps a name');
+  assert.equal(await annotate('ses_v_main', savedByName.id, { pinned: true }), 'not-found', 'a version of another document');
+  assert.equal(await annotate('ses_v_annot', 'ver_unknown', { pinned: true }), 'not-found');
+  for (const bad of [{ label: '' }, { label: 'x'.repeat(VERSION_LABEL_MAX + 1) }, { pinned: 'yes' as never }, {}, { pinned: true, annotationRev: -1 },
+    { pinned: true, annotationRev: 1.5 }, { pinned: true, by: '' }]) {
+    await assert.rejects(annotate('ses_v_annot', savedByName.id, bad), TypeError, JSON.stringify(bad));
+  }
+  await assert.rejects(annotate('ses_v_nope', savedByName.id, { pinned: true }), /session-gone/);
+
+  // A version named or pinned later counts against the named limits, for the
+  // person who did it, and only while it is kept.
+  for (let i = 1; i < VERSION_NAMED_PER_PERSON; i++) made(await put(write('ses_v_annot_limit', 'named', { i }, { label: `L${i}`, createdBy: owner.id })), `named ${i}`);
+  const autoA = made(await put(write('ses_v_annot_limit', 'auto', { a: 1 })), 'automatic A');
+  const autoB = made(await put(write('ses_v_annot_limit', 'auto', { b: 1 })), 'automatic B');
+  annotated(await annotate('ses_v_annot_limit', autoA.id, { pinned: true }), 'the 20th kept by one person');
+  assert.equal(await annotate('ses_v_annot_limit', autoB.id, { label: 'One more' }), 'version-limit');
+  assert.equal(await put(write('ses_v_annot_limit', 'named', { over: 1 }, { label: 'Over', createdBy: owner.id })), 'version-limit',
+    'a named save counts a pinned version too');
+  annotated(await annotate('ses_v_annot_limit', autoB.id, { pinned: true, by: editor.id }), 'another person still may');
+  const firstNamed = (await store.listSessionVersions('ses_v_annot_limit', { limit: 100 })).find((v) => v.label === 'L1')!;
+  annotated(await annotate('ses_v_annot_limit', firstNamed.id, { label: 'L1 renamed' }), 'a rename keeps nothing more');
+  annotated(await annotate('ses_v_annot_limit', autoA.id, { pinned: false, annotationRev: 1 }), 'unpinned');
+  made(await put(write('ses_v_annot_limit', 'named', { again: 1 }, { label: 'Again', createdBy: owner.id })), 'the place is free again');
+  // A kept version stays with whoever first named or pinned it: the owner, at the
+  // limit, renames the editor's pinned version, and it still counts for the editor.
+  for (let i = 1; i < VERSION_NAMED_PER_PERSON; i++) made(await put(write('ses_v_annot_limit', 'named', { e: i }, { label: `E${i}`, createdBy: editor.id })), `editor named ${i}`);
+  annotated(await annotate('ses_v_annot_limit', autoB.id, { label: 'Editor pin', annotationRev: 1 }), 'renamed by a person at the limit');
+  assert.equal(await put(write('ses_v_annot_limit', 'named', { e: 0 }, { label: 'E over', createdBy: editor.id })), 'version-limit',
+    'the renamed version still counts for the person who pinned it');
+  assert.equal(await store.deleteSessionVersion('ses_v_annot_limit', firstNamed.id), true);
+  annotated(await annotate('ses_v_annot_limit', autoA.id, { pinned: true, annotationRev: 2 }), 'and not for the person who renamed it');
+  const namedAuto = (await store.listSessionVersions('ses_v_named', { limit: 1 }))[0]!;
+  assert.equal(namedAuto.kind, 'auto');
+  assert.equal(await annotate('ses_v_named', namedAuto.id, { pinned: true, by: 'usr_named_new' }), 'version-limit',
+    `${VERSION_NAMED_PER_SESSION} kept versions in one document`);
+
+  // Space eviction never chooses a kept version either.
+  store.configureVersionLimits({ sessionMaxBytes: 100 });
+  const p1 = made(await put(write('ses_v_annot_space', 'auto', sized(40, 'p1'))), 'p1');
+  annotated(await annotate('ses_v_annot_space', p1.id, { pinned: true }), 'p1 pinned');
+  const p2 = made(await put(write('ses_v_annot_space', 'auto', sized(40, 'p2'))), 'p2');
+  const p3 = made(await put(write('ses_v_annot_space', 'auto', sized(40, 'p3'))), 'p3');
+  assert.deepEqual(await ids('ses_v_annot_space'), [p3.id, p1.id], 'the oldest version that is not kept made room');
+  assert.equal(await store.getSessionVersion('ses_v_annot_space', p2.id), null);
+  store.configureVersionLimits({});
 
   // A live room's commit writes no revision row; quiesce owns that.
   const live = (await store.getSession('ses_v_collab'))!;

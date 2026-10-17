@@ -819,8 +819,8 @@ timestamps come from the server; audit records contain identifiers, not message 
 Saved versions of a document (plan 76 milestone 4). What is kept, and for how long, is
 in [data lifecycle](data-lifecycle.md#session-versions). Every route needs a signed-in
 person (a service token gets `401`), current session read access (`404`, `403`, `410`
-as for the session) and `session.view`. Saving and restoring also need editor access
-and `session.edit` (`403 READ_ONLY`) and a project that is not archived
+as for the session) and `session.view`. Saving, naming, pinning and restoring also need
+editor access and `session.edit` (`403 READ_ONLY`) and a project that is not archived
 (`409 PROJECT_ARCHIVED`). Deleting needs a manager of the project (`403 FORBIDDEN`).
 
 | Route | Result |
@@ -828,15 +828,28 @@ and `session.edit` (`403 READ_ONLY`) and a project that is not archived
 | `GET /api/v1/sessions/:id/versions?limit=&before=` | `200 { versions, before? }`, newest first. `limit` is 1 to 100 (30 by default); `before` is a version id to page on from, and the answer carries one when a full page came back. `cache-control: private, no-store` |
 | `GET /api/v1/sessions/:id/versions/:versionId` | `200 { version }` with its `inputs` and `meta` |
 | `POST /api/v1/sessions/:id/versions` | Save the document as it is stored now, with a name: `{ label, requestId }`, a label of 1 to 120 characters. `201 { version }`; the same `requestId` again answers `200` with the first version. Audited `session.version.save` |
+| `PATCH /api/v1/sessions/:id/versions/:versionId` | Name, rename or pin a version: `{ annotationRev, label?, pinned? }`, below. `200 { version }`. Audited `session.version.annotate` |
 | `POST /api/v1/sessions/:id/versions/:versionId/restore` | Restore it: `{ requestId }`. `200 { revision, live, restored, before, skipped, vetoed }`, below |
 | `DELETE /api/v1/sessions/:id/versions/:versionId` | Delete it, with its restore pair. `200 { deleted: true }`. Audited `session.version.delete` |
 
 A version is `{ id, sessionId, rev, kind, label?, contributors, createdBy?, createdByName?,
-restoredFrom?, beforeId?, bytes, at }`. `kind` is `auto`, `close`, `save`, `named`,
-`restore` or `before` (the document a restore replaced). `contributors` are
-`{ id, kind, edits, name }` for the people and agents who edited since the version
+restoredFrom?, beforeId?, bytes, at, pinned, annotationRev }`. `kind` is `auto`, `close`,
+`save`, `named`, `restore` or `before` (the document a restore replaced). `contributors`
+are `{ id, kind, edits, name }` for the people and agents who edited since the version
 before it; guests are counted together as one entry named "Guest". Names never carry
 an email address.
+
+**Name and pin.** `PATCH` changes only a version's `label` and `pinned`; its content and
+everything else stay as they were saved. Send the `annotationRev` you read with the
+version, and `label` (1 to 120 characters, or `null` to remove the name), `pinned`
+(`true` or `false`), or both; a field you leave out keeps its value. Each change adds
+one to `annotationRev`. When someone else changed the name or pin since you read it,
+the answer is `409 VERSION_CHANGED` with the current `version` in the error, so you can
+show it and try again. A request that asks for the name and pin the version already
+has answers `200` and changes nothing, so a repeated request is safe. A version saved
+with a name can be renamed but keeps a name (`400`). A named or pinned version is kept:
+history never removes it for age or space, and it counts against the named limits of
+the person who first named or pinned it, until neither name nor pin is left.
 
 **Restore.** On the long-lived server a restore goes through the document's live room,
 which it opens when none is open, as one batch that everyone in the room receives, and
@@ -851,17 +864,18 @@ no room for it), `revision` is the session's revision after it and `live` says w
 anyone else was in the room. The same `requestId` again answers with the first result.
 Comments are never changed. The audit entry `session.restore` holds ids and counts.
 
-Saves and restores share one limit per person: 10 a minute and 60 an hour
-(`429 RATE_LIMITED`, `retry-after` in seconds).
+Saves, name and pin changes and restores share one limit per person: 10 a minute and
+60 an hour (`429 RATE_LIMITED`, `retry-after` in seconds).
 
 | Code | Status | When |
 |---|---|---|
-| `VERSION_LIMIT` | 409 | a named save past 20 per person or 100 per document |
+| `VERSION_LIMIT` | 409 | a named save, or naming or pinning a version, past 20 kept versions per person or 100 per document |
+| `VERSION_CHANGED` | 409 | the version's name or pin changed after the `annotationRev` you sent; the error carries the current `version` |
 | `VERSION_SPACE` | 409 | a named save, or the `before` version of a restore, does not fit the space caps (100 MiB per document; `policy.versions.maxBytes` for the instance) |
 | `RESTORE_INCOMPLETE` | 409 | the document cannot take every change of the version (a ceiling such as the number of objects); nothing was changed |
 | `SESSION_CHANGED` | 409 | the document kept changing while restoring, or it is open on another server; try again |
 | `NOT_FOUND` | 404 | the version is not one of this session's |
-| `INVALID_INPUT` | 400 | a missing or malformed `label`, `requestId`, `limit` or `before` |
+| `INVALID_INPUT` | 400 | a missing or malformed `label`, `pinned`, `annotationRev`, `requestId`, `limit` or `before`, or removing the name of a version saved with one |
 
 ## Telemetry, activity, audit, fleet, system
 

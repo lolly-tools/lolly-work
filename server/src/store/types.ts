@@ -667,9 +667,16 @@ export interface SessionVersionSummary {
   /** Size of the version's content (canonical inputs JSON), shared with any
    *  other version of the same document that has the same content. */
   bytes: number; at: string;
+  /** Pinned by a person (migration 0072): kept without a name. */
+  pinned: boolean;
+  /** The revision of the name and pin: 0 when the version is written, one more
+   *  on each change (`annotateSessionVersion`). The content never changes. */
+  annotationRev: number;
 }
 export interface SessionVersion extends SessionVersionSummary { inputs: Record<string, unknown>; meta: Record<string, unknown> }
-export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at'> & {
+/** A new version. Only a named version carries a label when it is written; a
+ *  later name or pin is an annotation (`annotateSessionVersion`). */
+export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at' | 'pinned' | 'annotationRev'> & {
   at?: string; requestId?: string;
   /** Versions of the same session this write's retention and space eviction
    *  must leave in place (a restore keeps the version it restores from). Not
@@ -680,6 +687,13 @@ export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at'> & 
  *  the write: the same request id, the same content as the latest version, or an
  *  automatic version skipped for space (the latest version is returned). */
 export type SessionVersionPut = { version: SessionVersionSummary; created: boolean } | 'version-limit' | 'version-space';
+/** A change to a version's name or pin. `label: null` removes the name; a field
+ *  left out keeps its value. `annotationRev` is the revision the caller read, and
+ *  `by` the person making the change. */
+export interface SessionVersionAnnotation { label?: string | null; pinned?: boolean; annotationRev: number; by: string }
+/** What `annotateSessionVersion` did. `changed: false` means the version already
+ *  had the asked-for name and pin, so nothing was written. */
+export type SessionVersionAnnotate = { version: SessionVersionSummary; changed: boolean } | 'not-found' | 'version-changed' | 'version-limit';
 /** Space caps on version content, counted over distinct contents. */
 export interface SessionVersionLimits { sessionMaxBytes: number; instanceMaxBytes: number }
 
@@ -688,7 +702,7 @@ export const VERSION_SESSION_MAX_BYTES = 100 * 1024 * 1024;
 /** The most content the whole instance's versions may hold, unless
  *  `configureVersionLimits` sets another (`policy.versions.maxBytes`). */
 export const VERSION_INSTANCE_MAX_BYTES = 1024 * 1024 * 1024;
-/** Named versions: per person per document, and per document. */
+/** Kept versions (`versionKept`): per person per document, and per document. */
 export const VERSION_NAMED_PER_PERSON = 20;
 export const VERSION_NAMED_PER_SESSION = 100;
 /** Restore rows kept per document (each with its paired 'before' row). */
@@ -758,6 +772,9 @@ export function sessionVersionContent(inputs: Record<string, unknown>): { digest
 
 const plainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+/** 1 to VERSION_LABEL_MAX characters, counted as code points. */
+const versionLabel = (value: unknown): value is string =>
+  typeof value === 'string' && [...value].length >= 1 && [...value].length <= VERSION_LABEL_MAX;
 
 /** A version write in the shape both drivers store, or a thrown error for a
  *  write the database would refuse. Contributors keep only their known fields,
@@ -766,7 +783,7 @@ export function normalizeSessionVersionWrite(v: SessionVersionWrite, now = new D
   if (typeof v.sessionId !== 'string' || !v.sessionId) throw new TypeError('version-session');
   if (!SESSION_VERSION_KINDS.includes(v.kind)) throw new TypeError('version-kind');
   if (!Number.isSafeInteger(v.rev) || v.rev < 0) throw new TypeError('version-rev');
-  if (v.label !== undefined && (typeof v.label !== 'string' || [...v.label].length < 1 || [...v.label].length > VERSION_LABEL_MAX)) throw new TypeError('version-label');
+  if (v.label !== undefined && (v.kind !== 'named' || !versionLabel(v.label))) throw new TypeError('version-label');
   if (!plainObject(v.inputs) || !plainObject(v.meta) || !Array.isArray(v.contributors)) throw new TypeError('version-shape');
   for (const ref of [v.createdBy, v.restoredFrom, v.beforeId, v.requestId]) if (ref !== undefined && (typeof ref !== 'string' || !ref)) throw new TypeError('version-reference');
   if (v.keep !== undefined && (!Array.isArray(v.keep) || v.keep.some((id) => typeof id !== 'string' || !id))) throw new TypeError('version-keep');
@@ -789,14 +806,25 @@ export function normalizeSessionVersionWrite(v: SessionVersionWrite, now = new D
   };
 }
 
-/** The facts the version rules read about one stored row. */
+/** The facts the version rules read about one stored row. `keptBy` is the person
+ *  who first named or pinned a version that was not saved with a name. */
 export interface SessionVersionRow {
   id: string; sessionId: string; kind: SessionVersionKind; digest: string; at: string;
   createdBy?: string; requestId?: string; beforeId?: string;
+  label?: string; pinned?: boolean; keptBy?: string;
 }
 /** Newest first: by `at`, then by id. */
 export const newestVersionFirst = (a: Pick<SessionVersionRow, 'id' | 'at'>, b: Pick<SessionVersionRow, 'id' | 'at'>): number =>
   a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+
+/** Whether a person keeps this version: it was saved with a name, or was named
+ *  or pinned later. Retention and space eviction never remove a kept version,
+ *  and kept versions count against the named limits. */
+export const versionKept = (r: Pick<SessionVersionRow, 'kind' | 'label' | 'pinned'>): boolean =>
+  r.kind === 'named' || r.label !== undefined || r.pinned === true;
+/** The person a kept version counts against: who saved it with a name, or who
+ *  first named or pinned it. */
+const keeperOf = (r: SessionVersionRow): string | undefined => r.kind === 'named' ? r.createdBy : r.keptBy;
 
 /**
  * The rows the retention rules remove from one document's versions, judged at
@@ -805,8 +833,9 @@ export const newestVersionFirst = (a: Pick<SessionVersionRow, 'id' | 'at'>, b: P
  * VERSION_RECENT_KEEP or are the newest of their UTC day within VERSION_DAILY_DAYS.
  * Restore rows beyond the newest VERSION_RESTORE_KEEP go with their 'before' rows;
  * a 'before' row no restore row points at (its restore never wrote one) counts
- * as a restore of its own, so it goes in its turn too. Named rows are never
- * chosen by these rules, nor is any id in `keep`.
+ * as a restore of its own, so it goes in its turn too. Kept rows (`versionKept`)
+ * are never chosen by these rules and take no place in their counts, nor is any
+ * id in `keep` chosen.
  */
 export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string, keep: ReadonlySet<string> = new Set()): string[] {
   const ref = Date.parse(refIso);
@@ -814,18 +843,21 @@ export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string,
   const dayFloor = new Date(ref - VERSION_DAILY_DAYS * DAY_MS).toISOString().slice(0, 10);
   const drops = new Set<string>();
   const days = new Set<string>();
-  rows.filter((r) => RECYCLABLE_KINDS.has(r.kind)).sort(newestVersionFirst).forEach((r, i) => {
+  const open = rows.filter((r) => !versionKept(r));
+  open.filter((r) => RECYCLABLE_KINDS.has(r.kind)).sort(newestVersionFirst).forEach((r, i) => {
     const day = r.at.slice(0, 10);
     const dailyKeep = !days.has(day) && day >= dayFloor;
     days.add(day);
     if (r.at < oldest || (i >= VERSION_RECENT_KEEP && !dailyKeep)) drops.add(r.id);
   });
   const paired = new Set(rows.flatMap((r) => (r.kind === 'restore' && r.beforeId ? [r.beforeId] : [])));
-  rows.filter((r) => r.kind === 'restore' || (r.kind === 'before' && !paired.has(r.id))).sort(newestVersionFirst)
+  open.filter((r) => r.kind === 'restore' || (r.kind === 'before' && !paired.has(r.id))).sort(newestVersionFirst)
     .slice(VERSION_RESTORE_KEEP).forEach((r) => {
       drops.add(r.id);
       if (r.beforeId) drops.add(r.beforeId);
     });
+  // A kept 'before' row stays when its restore row goes.
+  for (const r of rows) if (versionKept(r)) drops.delete(r.id);
   for (const id of keep) drops.delete(id);
   return [...drops];
 }
@@ -834,8 +866,9 @@ export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string,
  * The oldest auto, close and save rows to remove so that at least `need` bytes of
  * content are freed. Content is shared, so a content's bytes count as freed only
  * when no remaining row uses it. `rows` are every row whose content is counted
- * (any kind); rows in `exclude` are treated as already gone, and rows in `keep`
- * are never chosen. Null when even removing every such row would not free enough.
+ * (any kind); rows in `exclude` are treated as already gone, and kept rows and
+ * rows in `keep` are never chosen. Null when even removing every such row would
+ * not free enough.
  */
 export function versionEvictionPlan(rows: SessionVersionRow[], bytesOf: (sessionId: string, digest: string) => number,
   need: number, exclude: ReadonlySet<string>, keep: ReadonlySet<string> = new Set()): string[] | null {
@@ -845,7 +878,8 @@ export function versionEvictionPlan(rows: SessionVersionRow[], bytesOf: (session
   for (const r of rows) if (!exclude.has(r.id)) users.set(key(r), (users.get(key(r)) ?? 0) + 1);
   const drops: string[] = [];
   let freed = 0;
-  for (const r of rows.filter((x) => RECYCLABLE_KINDS.has(x.kind) && !exclude.has(x.id) && !keep.has(x.id)).sort(newestVersionFirst).reverse()) {
+  for (const r of rows.filter((x) => RECYCLABLE_KINDS.has(x.kind) && !versionKept(x) && !exclude.has(x.id) && !keep.has(x.id))
+    .sort(newestVersionFirst).reverse()) {
     drops.push(r.id);
     const left = (users.get(key(r)) ?? 1) - 1;
     users.set(key(r), left);
@@ -881,10 +915,10 @@ export interface SessionVersionPutState {
  * rows read under their write lock and then apply the plan in the same
  * transaction. In order: a repeated request id answers with its row; an auto,
  * close or save write whose content equals the latest version's answers with that
- * version; the named limits; then retention, and for new content the space caps,
- * which first remove the oldest auto, close and save rows (of this document, then
- * of the instance) and otherwise refuse a named, restore or before write and skip
- * an automatic one.
+ * version; the named limits, which count every kept version; then retention, and
+ * for new content the space caps, which first remove the oldest auto, close and
+ * save rows that are not kept (of this document, then of the instance) and
+ * otherwise refuse a named, restore or before write and skip an automatic one.
  */
 export async function planSessionVersionPut(w: SessionVersionWrite & { at: string }, newId: string,
   content: { digest: string; bytes: number }, state: SessionVersionPutState, limits: SessionVersionLimits): Promise<SessionVersionPutPlan> {
@@ -895,11 +929,7 @@ export async function planSessionVersionPut(w: SessionVersionWrite & { at: strin
   const recyclable = RECYCLABLE_KINDS.has(w.kind);
   const latest = [...state.rows].sort(newestVersionFirst)[0];
   if (recyclable && latest?.digest === content.digest) return { action: 'return', id: latest.id };
-  if (w.kind === 'named') {
-    const named = state.rows.filter((r) => r.kind === 'named');
-    if (named.length >= VERSION_NAMED_PER_SESSION || named.filter((r) => r.createdBy === w.createdBy).length >= VERSION_NAMED_PER_PERSON)
-      return { action: 'refuse', reason: 'version-limit' };
-  }
+  if (w.kind === 'named' && keptLimitReached(state.rows, w.createdBy)) return { action: 'refuse', reason: 'version-limit' };
   const row: SessionVersionRow = { id: newId, sessionId: w.sessionId, kind: w.kind, digest: content.digest, at: w.at,
     ...(w.createdBy !== undefined ? { createdBy: w.createdBy } : {}), ...(w.requestId !== undefined ? { requestId: w.requestId } : {}),
     ...(w.beforeId !== undefined ? { beforeId: w.beforeId } : {}) };
@@ -931,6 +961,59 @@ export async function planSessionVersionPut(w: SessionVersionWrite & { at: strin
     for (const id of plan) drops.add(id);
   }
   return { action: 'insert', contentIsNew, drops: [...drops] };
+}
+
+/** Whether one more kept version for `person` would pass VERSION_NAMED_PER_SESSION
+ *  or VERSION_NAMED_PER_PERSON, given one document's rows. */
+function keptLimitReached(rows: SessionVersionRow[], person: string | undefined): boolean {
+  const kept = rows.filter(versionKept);
+  return kept.length >= VERSION_NAMED_PER_SESSION || kept.filter((r) => keeperOf(r) === person).length >= VERSION_NAMED_PER_PERSON;
+}
+
+/** An annotation in the shape both drivers apply, or a thrown TypeError: a label
+ *  of 1 to VERSION_LABEL_MAX characters or null, a true or false pin, at least one
+ *  of the two, a whole `annotationRev` from 0, and a person. */
+export function normalizeSessionVersionAnnotation(a: SessionVersionAnnotation): SessionVersionAnnotation {
+  if (!plainObject(a)) throw new TypeError('version-annotation');
+  if (a.label !== undefined && a.label !== null && !versionLabel(a.label)) throw new TypeError('version-label');
+  if (a.pinned !== undefined && typeof a.pinned !== 'boolean') throw new TypeError('version-pin');
+  if (a.label === undefined && a.pinned === undefined) throw new TypeError('version-annotation');
+  if (!Number.isSafeInteger(a.annotationRev) || a.annotationRev < 0) throw new TypeError('version-annotation-rev');
+  if (typeof a.by !== 'string' || !a.by) throw new TypeError('version-reference');
+  return { ...(a.label !== undefined ? { label: a.label } : {}), ...(a.pinned !== undefined ? { pinned: a.pinned } : {}),
+    annotationRev: a.annotationRev, by: a.by };
+}
+
+/** What a driver does with one annotation, decided by `planSessionVersionAnnotate`.
+ *  `same`: the version already has this name and pin, so nothing is written.
+ *  `update`: store `label` (none when absent), `pinned` and `keptBy`, and raise
+ *  the annotation revision by one. */
+export type SessionVersionAnnotatePlan =
+  | { action: 'same' }
+  | { action: 'refuse'; reason: 'version-changed' | 'version-limit' }
+  | { action: 'update'; label?: string; pinned: boolean; keptBy?: string };
+
+/**
+ * The annotation rules, shared by both drivers, which call it with the
+ * document's rows read under their write lock (`target` among them) and the
+ * target's current annotation revision. In order: a change that leaves the name
+ * and pin as they are is `same`, whatever revision it was made against; a change
+ * made against an older revision is refused; a version that becomes kept must fit
+ * the named limits for `change.by`, and counts against that person until it is
+ * no longer kept. A version saved with a name keeps a name: removing it throws
+ * `version-label`.
+ */
+export function planSessionVersionAnnotate(rows: SessionVersionRow[], target: SessionVersionRow, annotationRev: number,
+  change: SessionVersionAnnotation): SessionVersionAnnotatePlan {
+  const label = change.label === undefined ? target.label : change.label ?? undefined;
+  const pinned = change.pinned ?? target.pinned === true;
+  if (target.kind === 'named' && label === undefined) throw new TypeError('version-label');
+  if (label === target.label && pinned === (target.pinned === true)) return { action: 'same' };
+  if (change.annotationRev !== annotationRev) return { action: 'refuse', reason: 'version-changed' };
+  const was = versionKept(target), now = versionKept({ kind: target.kind, label, pinned });
+  if (!was && now && keptLimitReached(rows, change.by)) return { action: 'refuse', reason: 'version-limit' };
+  const keptBy = target.kind === 'named' || !now ? undefined : was ? target.keptBy : change.by;
+  return { action: 'update', ...(label !== undefined ? { label } : {}), pinned, ...(keptBy !== undefined ? { keptBy } : {}) };
 }
 
 /**
@@ -1672,12 +1755,14 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
    * Write a version, applying every rule of `planSessionVersionPut` in one
    * transaction. Idempotent on (session, createdBy, kind, requestId). Returns
    * 'version-limit' for a named version past VERSION_NAMED_PER_PERSON or
-   * VERSION_NAMED_PER_SESSION, and 'version-space' for a named, restore or before
-   * version that does not fit; an automatic one that does not fit answers with the
-   * latest version (`created: false`), or 'version-space' when there is none.
+   * VERSION_NAMED_PER_SESSION kept versions, and 'version-space' for a named,
+   * restore or before version that does not fit; an automatic one that does not
+   * fit answers with the latest version (`created: false`), or 'version-space'
+   * when there is none.
    * Throws `session-gone` for an unknown or deleted session, `version-reference`
    * when `restoredFrom` or `beforeId` is not a version of the same session, and a
-   * TypeError for a write the schema refuses (kind, label, rev, shape).
+   * TypeError for a write the schema refuses (kind, label, rev, shape), including
+   * a label on a version that is not named.
    */
   putSessionVersion(v: SessionVersionWrite): Promise<SessionVersionPut>;
   /** Newest first (by `at`, then id), at most `limit` (1 to VERSION_LIST_MAX).
@@ -1686,6 +1771,20 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
   listSessionVersions(sessionId: string, opts: { before?: string; limit: number }): Promise<SessionVersionSummary[]>;
   /** With its inputs and meta; null when the id is not a version of this session. */
   getSessionVersion(sessionId: string, id: string): Promise<SessionVersion | null>;
+  /**
+   * Name, rename, unname, pin or unpin a version (plan 221, migration 0072),
+   * applying `planSessionVersionAnnotate` in one transaction under the version
+   * write lock. Only the name, the pin and `annotationRev` change; the content,
+   * kind and the rest stay as written. 'version-changed' when `annotationRev` is
+   * not the version's current one, unless the version already has the asked-for
+   * name and pin (`changed: false`); 'version-limit' when a version that becomes
+   * kept would pass VERSION_NAMED_PER_PERSON or VERSION_NAMED_PER_SESSION;
+   * 'not-found' when the id is not a version of this session. Throws
+   * `session-gone` for an unknown or deleted session, and a TypeError for a
+   * change the rules refuse (a malformed label, pin or revision, or removing the
+   * name of a version saved with one).
+   */
+  annotateSessionVersion(sessionId: string, id: string, change: SessionVersionAnnotation): Promise<SessionVersionAnnotate>;
   /** Delete one version, and its pair: a restore row's 'before' row, or the
    *  restore rows of a 'before' row. False when it is not a version of this session. */
   deleteSessionVersion(sessionId: string, id: string): Promise<boolean>;

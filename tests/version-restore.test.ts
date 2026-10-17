@@ -510,6 +510,26 @@ test('retention: a before row with no restore row counts as a restore, and kept 
   assert.deepEqual(versionRetentionDrops([...rows, orphan], at(1000), new Set(['b_orphan'])), [], 'a kept id stays');
 });
 
+test('retention: a named or pinned row takes no place in the counts, and stays when its pair goes (plan 221)', () => {
+  const at = (minute: number): string => new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString();
+  const autos: SessionVersionRow[] = Array.from({ length: 51 }, (_, i) => ({ id: `a${i}`, sessionId: 's', kind: 'auto', digest: `a${i}`, at: at(i) }));
+  assert.deepEqual(versionRetentionDrops(autos, at(100)), ['a0'], 'the 51st automatic version of one day goes');
+  assert.deepEqual(versionRetentionDrops(autos.map((r) => (r.id === 'a50' ? { ...r, pinned: true } : r)), at(100)), [],
+    'a pinned one is not among the newest 50');
+  assert.deepEqual(versionRetentionDrops(autos.map((r) => (r.id === 'a0' ? { ...r, label: 'Kept' } : r)), at(100)), [], 'a named one stays');
+
+  const pairs: SessionVersionRow[] = [];
+  for (let i = 0; i <= VERSION_RESTORE_KEEP; i++) {
+    pairs.push({ id: `b${i}`, sessionId: 's', kind: 'before', digest: `b${i}`, at: at(10 + i * 2) });
+    pairs.push({ id: `r${i}`, sessionId: 's', kind: 'restore', digest: `r${i}`, at: at(11 + i * 2), beforeId: `b${i}` });
+  }
+  assert.deepEqual(versionRetentionDrops(pairs, at(1000)).sort(), ['b0', 'r0'], '201 restores: the oldest pair goes');
+  assert.deepEqual(versionRetentionDrops(pairs.map((r) => (r.id === 'b0' ? { ...r, pinned: true } : r)), at(1000)), ['r0'],
+    'a pinned before row stays when its restore row goes');
+  assert.deepEqual(versionRetentionDrops(pairs.map((r) => (r.id === 'r0' ? { ...r, label: 'Kept restore' } : r)), at(1000)), [],
+    'a named restore row is not among the newest 200, and keeps its before row');
+});
+
 test('a REST save writes a save version; one that changed nothing adds no row; GET /revisions still answers', async () => {
   const h = cas;
   const s = await sessionIn(h, 'ses_rest', { title: 'Draft' });
@@ -543,5 +563,96 @@ test('input validation: labels, request ids, limits and cursors', async () => {
   assert.deepEqual([rest.versions.length, rest.before], [1, undefined]);
 });
 
+test('naming and pinning a version: editors only, against the revision read, within the limits, audited without the name (plan 221)', async () => {
+  // A harness of its own, so these changes do not spend the shared one's rate limit.
+  const h = await harness(false);
+  try {
+    type Annotated = VersionRow & { pinned: boolean; annotationRev: number; rev: number; at: string };
+    const s = await sessionIn(h, 'ses_annotate', { title: 'Draft' });
+    const other = await sessionIn(h, 'ses_annotate_other', { title: 'Other' });
+    const auto = await h.store.putSessionVersion({ sessionId: s.id, rev: 1, kind: 'auto', inputs: { title: 'Auto' }, meta: {}, contributors: [] });
+    assert.ok(typeof auto === 'object');
+    const path = `/api/v1/sessions/${s.id}/versions/${auto.version.id}`;
+    const patch = (who: Person | null, body: unknown, at = path) => call(h, who, 'PATCH', at, body);
+    const failed = async (res: Response) => [res.status, (await res.json() as { error: { code: string } }).error.code];
+    const ok = async (res: Response) => {
+      assert.equal(res.status, 200, await res.clone().text());
+      assert.match(res.headers.get('cache-control') ?? '', /^private, no-store\b/);
+      return (await res.json() as { version: Annotated }).version;
+    };
+
+    assert.equal((await patch(null, { pinned: true, annotationRev: 0 })).status, 401);
+    assert.deepEqual(await failed(await patch('vic', { pinned: true, annotationRev: 0 })), [403, 'READ_ONLY'], 'a viewer');
+    for (const body of [{ label: 'No revision' }, { annotationRev: 0 }, { label: '', annotationRev: 0 }, { label: '   ', annotationRev: 0 },
+      { label: 'x'.repeat(121), annotationRev: 0 }, { label: 5, annotationRev: 0 }, { pinned: 'yes', annotationRev: 0 }, { pinned: true, annotationRev: -1 },
+      { pinned: true, annotationRev: 1.5 }, { pinned: true, annotationRev: '0' }]) {
+      assert.deepEqual(await failed(await patch('bob', body)), [400, 'INVALID_INPUT'], JSON.stringify(body).slice(0, 60));
+    }
+    assert.equal((await patch('bob', { pinned: true, annotationRev: 0 }, `/api/v1/sessions/${s.id}/versions/ver_unknown`)).status, 404);
+    assert.equal((await patch('bob', { pinned: true, annotationRev: 0 }, `/api/v1/sessions/${other.id}/versions/${auto.version.id}`)).status, 404,
+      'another session\'s version id');
+
+    // Name it: the name is trimmed, and nothing but the name and its revision changes.
+    const named = await ok(await patch('bob', { label: '  Launch  ', annotationRev: 0 }));
+    assert.deepEqual([named.label, named.pinned, named.annotationRev, named.kind, named.rev, named.at], ['Launch', false, 1, 'auto', 1, auto.version.at]);
+    assert.deepEqual((await h.store.getSessionVersion(s.id, auto.version.id))?.inputs, { title: 'Auto' });
+    const listed = await (await call(h, 'vic', 'GET', `/api/v1/sessions/${s.id}/versions`)).json() as { versions: Annotated[] };
+    assert.deepEqual(listed.versions.map((v) => [v.label, v.pinned, v.annotationRev]), [['Launch', false, 1]], 'the listing carries the name, pin and revision');
+
+    // A change made against an older revision is refused with the current name and pin.
+    const stale = await patch('alice', { pinned: true, annotationRev: 0 });
+    assert.equal(stale.status, 409);
+    const staleBody = await stale.json() as { error: { code: string; version: Annotated & { inputs?: unknown } } };
+    assert.deepEqual([staleBody.error.code, staleBody.error.version.label, staleBody.error.version.pinned, staleBody.error.version.annotationRev],
+      ['VERSION_CHANGED', 'Launch', false, 1]);
+    assert.equal('inputs' in staleBody.error.version, false, 'the version without its content');
+    // A repeat of a change already made answers with the version and writes nothing.
+    assert.equal((await ok(await patch('bob', { label: 'Launch', annotationRev: 0 }))).annotationRev, 1);
+
+    const pinned = await ok(await patch('alice', { pinned: true, annotationRev: 1 }));
+    assert.deepEqual([pinned.label, pinned.pinned, pinned.annotationRev], ['Launch', true, 2]);
+    const unnamed = await ok(await patch('alice', { label: null, annotationRev: 2 }));
+    assert.deepEqual([unnamed.label, unnamed.pinned, unnamed.annotationRev], [undefined, true, 3]);
+
+    // A version saved with a name can be renamed, never left without one.
+    const savedVersion = await savedId(h, s.id, 'Saved by name');
+    const savedPath = `/api/v1/sessions/${s.id}/versions/${savedVersion}`;
+    assert.deepEqual(await failed(await patch('bob', { label: null, annotationRev: 0 }, savedPath)), [400, 'INVALID_INPUT']);
+    assert.equal((await ok(await patch('bob', { label: 'Renamed', annotationRev: 0 }, savedPath))).label, 'Renamed');
+
+    // Naming or pinning counts against the named limits of the person doing it.
+    const bob = h.users.get('bob')!;
+    for (let i = 0; i < 20; i++) {
+      const put = await h.store.putSessionVersion({ sessionId: other.id, rev: 1, kind: 'named', label: `n${i}`, inputs: { title: `n${i}` }, meta: {}, contributors: [], createdBy: bob.id });
+      assert.ok(typeof put === 'object' && put.created);
+    }
+    const otherAuto = await h.store.putSessionVersion({ sessionId: other.id, rev: 1, kind: 'auto', inputs: { title: 'Other auto' }, meta: {}, contributors: [] });
+    assert.ok(typeof otherAuto === 'object');
+    const otherPath = `/api/v1/sessions/${other.id}/versions/${otherAuto.version.id}`;
+    assert.deepEqual(await failed(await patch('bob', { pinned: true, annotationRev: 0 }, otherPath)), [409, 'VERSION_LIMIT'], 'a 21st kept version by one person');
+    assert.equal((await ok(await patch('mona', { pinned: true, annotationRev: 0 }, otherPath))).pinned, true, 'another editor still may');
+
+    // Editing rules: an archived project and a deleted session.
+    const project = (await h.store.getProject('prj_v'))!;
+    await h.store.putProject({ ...project, archivedAt: new Date().toISOString() });
+    try {
+      assert.deepEqual(await failed(await patch('alice', { pinned: false, annotationRev: 3 })), [409, 'PROJECT_ARCHIVED']);
+    } finally { await h.store.putProject(project); }
+
+    // The audit holds ids, counts and the pin, never the name.
+    const audit = (await h.store.listAudit()).filter((e) => e.action === 'session.version.annotate');
+    assert.deepEqual(audit.map((e) => [e.actor, e.subject, e.payload]), [
+      [`user:${bob.id}`, `session:${s.id}`, { versionId: auto.version.id, kind: 'auto', annotationRev: 1, pinned: false, labelLength: 6 }],
+      [`user:${h.users.get('alice')!.id}`, `session:${s.id}`, { versionId: auto.version.id, kind: 'auto', annotationRev: 2, pinned: true, labelLength: 6 }],
+      [`user:${h.users.get('alice')!.id}`, `session:${s.id}`, { versionId: auto.version.id, kind: 'auto', annotationRev: 3, pinned: true, labelLength: 0 }],
+      [`user:${bob.id}`, `session:${s.id}`, { versionId: savedVersion, kind: 'named', annotationRev: 1, pinned: false, labelLength: 7 }],
+      [`user:${h.users.get('mona')!.id}`, `session:${other.id}`, { versionId: otherAuto.version.id, kind: 'auto', annotationRev: 1, pinned: true, labelLength: 0 }],
+    ], 'one entry per change; the refused, repeated and stale requests wrote none');
+
+    await h.store.putSession({ ...(await h.store.getSession(s.id))!, deletedAt: new Date().toISOString() });
+    assert.equal((await patch('alice', { pinned: false, annotationRev: 3 })).status, 410);
+  } finally { await closeHarness(h); }
+});
+
 /** Keep the type checker honest about the store shape this file relies on. */
-export type _StoreUsed = Pick<Store, 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion'>;
+export type _StoreUsed = Pick<Store, 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'annotateSessionVersion'>;
