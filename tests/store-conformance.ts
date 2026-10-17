@@ -16,7 +16,9 @@ import { runErasureConformance } from './erasure-conformance.ts';
 
 import { ReferenceCanvasDoc } from '@lolly-tools/core/canvas-op-v1';
 import { VERSION_LABEL_MAX, VERSION_NAMED_PER_PERSON, VERSION_NAMED_PER_SESSION, VERSION_RESTORE_KEEP,
+  type SessionRecord, type SessionRevisionCommitResult,
   type SessionVersionAnnotate, type SessionVersionAnnotation, type SessionVersionPut, type SessionVersionSummary, type SessionVersionWrite } from '../server/src/store/types.ts';
+import type { AuditEventBody } from '../server/src/audit/chain.ts';
 
 /**
  * Session versions (plan 76 M4 R2, migration 0053): space caps (per document and
@@ -329,6 +331,129 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   store.configureVersionLimits({});
   await store.putSession({ ...live, rev: rev, inputs: { title: 'live' }, deletedAt: now });
   await assert.rejects(put(write('ses_v_collab', 'auto', { gone: true })), /session-gone/, 'a deleted document takes no versions');
+}
+
+/**
+ * The commit service (plan 221, `commitSessionRevision`): the head, its revision,
+ * its version and its audit event are written together, a refused or failed
+ * commit writes none of them, and two commits on one rev give one winner. The
+ * faults are a version naming a version that does not exist (after the head and
+ * revision in a Postgres transaction) and an audit event that cannot be written
+ * (the last step). Runs after the versions suite, and removes what it wrote.
+ */
+async function runSessionCommitConformance(store: Store): Promise<void> {
+  const owner = await store.upsertUserBySub({ sub: 'commit-owner', email: 'commit-owner@example.invalid', groups: [], role: 'member' });
+  const at = new Date().toISOString();
+  await store.putProject({ id: 'prj_commit', name: 'Commits', visibility: 'private', ownerId: owner.id, createdAt: at });
+  const ids = ['ses_c_main', 'ses_c_gone', 'ses_c_lease', 'ses_c_race', 'ses_c_space'];
+  for (const id of ids) {
+    await store.putSession({ id, projectId: 'prj_commit', toolId: 'commit-tool', toolVersion: '1.0.0', inputs: { title: id }, meta: { label: id },
+      createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: at });
+  }
+  const read = async (id: string) => (await store.getSession(id))!;
+  const event = (action: string): AuditEventBody => ({ at: new Date().toISOString(), actor: `user:${owner.id}`, action, subject: 'session:ses_c_main', payload: { n: 1 } });
+  const saveVersion = { kind: 'save' as const, contributors: [{ id: owner.id, kind: 'user' as const, edits: 1 }], createdBy: owner.id };
+  const step = (base: SessionRecord, inputs: Record<string, unknown>): SessionRecord =>
+    ({ ...base, inputs, rev: base.rev + 1, updatedAt: new Date().toISOString() });
+  /** Everything a commit may write for one session, to compare before and after. */
+  const state = async (id: string) => ({ head: await read(id), revisions: await store.listSessionRevisions(id),
+    versions: await store.listSessionVersions(id, { limit: 100 }), audit: (await store.listAudit()).length });
+
+  // One commit writes all four.
+  const base = await read('ses_c_main');
+  const next = step(base, { title: 'Saved' });
+  const auditBefore = (await store.listAudit()).length;
+  const out = await store.commitSessionRevision({ next, expectedRev: base.rev, actor: owner.id, version: saveVersion, audit: event('session.update') });
+  assert.ok(out.committed, 'committed');
+  assert.deepEqual([out.session.rev, out.session.inputs, out.session.deletedAt], [2, { title: 'Saved' }, undefined]);
+  assert.deepEqual(await read('ses_c_main'), out.session, 'the stored head is the answer');
+  const [revision] = await store.listSessionRevisions('ses_c_main');
+  assert.deepEqual(revision, { sessionId: 'ses_c_main', rev: 2, inputs: { title: 'Saved' }, meta: { label: 'ses_c_main' }, actor: owner.id, at: next.updatedAt },
+    'the revision records the head');
+  assert.ok(typeof out.version === 'object' && out.version.created, 'a version was written');
+  const saved = await store.getSessionVersion('ses_c_main', out.version.version.id);
+  assert.deepEqual([saved?.kind, saved?.rev, saved?.inputs, saved?.createdBy], ['save', 2, { title: 'Saved' }, owner.id], 'of the new head');
+  const audit = await store.listAudit();
+  assert.equal(audit.length, auditBefore + 1);
+  assert.deepEqual([audit.at(-1)?.action, audit.at(-1)?.payload], ['session.update', { n: 1 }]);
+  assert.deepEqual(verifyChain(audit, await store.getAuditAnchor()), { ok: true }, 'the event joined the chain');
+
+  // A commit that changed nothing since the latest version writes no second version.
+  const same = await store.commitSessionRevision({ next: step(out.session, { title: 'Saved' }), expectedRev: 2, actor: owner.id, version: saveVersion });
+  assert.ok(same.committed && typeof same.version === 'object' && !same.version.created && same.version.version.id === saved?.id);
+  assert.equal((await store.listSessionRevisions('ses_c_main'))[0]?.rev, 3, 'the revision is still written');
+
+  // Refusals write nothing: a stale rev, a deleted session, a live room, an unknown id.
+  const before = await state('ses_c_main');
+  assert.equal(before.head.rev, 3);
+  assert.equal((await store.commitSessionRevision({ next: { ...before.head, inputs: { title: 'Stale' }, rev: 3 }, expectedRev: 2, actor: owner.id,
+    version: saveVersion, audit: event('stale') })).committed, false, 'a stale rev');
+  assert.deepEqual(await state('ses_c_main'), before, 'and nothing changed');
+  const gone = await read('ses_c_gone');
+  await store.putSession({ ...gone, deletedAt: at });
+  assert.equal((await store.commitSessionRevision({ next: step(gone, { title: 'Back' }), expectedRev: 1, actor: owner.id, version: saveVersion })).committed, false,
+    'a deleted session');
+  assert.equal((await read('ses_c_gone')).deletedAt, at, 'stays deleted');
+  assert.deepEqual(await store.listSessionRevisions('ses_c_gone'), []);
+  assert.equal((await store.commitSessionRevision({ next: { ...gone, id: 'ses_c_unknown', rev: 2 }, expectedRev: 1, actor: owner.id })).committed, false,
+    'an unknown id');
+  const leased = await read('ses_c_lease');
+  assert.equal(await store.claimCollab('ses_c_lease', 'commit-room', 30_000), true);
+  assert.equal((await store.commitSessionRevision({ next: step(leased, { title: 'REST' }), expectedRev: 1, actor: owner.id })).committed, false,
+    'a live room');
+  assert.deepEqual(await store.listSessionRevisions('ses_c_lease'), []);
+  await store.releaseCollab('ses_c_lease', 'commit-room');
+  assert.equal((await store.commitSessionRevision({ next: step(leased, { title: 'REST' }), expectedRev: 1, actor: owner.id })).committed, true,
+    'and once it lets go');
+
+  // A commit both drivers refuse before writing.
+  await assert.rejects(store.commitSessionRevision({ next: { ...before.head, rev: before.head.rev + 2 }, expectedRev: before.head.rev, actor: owner.id }),
+    /commit-rev/);
+  await assert.rejects(store.commitSessionRevision({ next: step(before.head, {}), expectedRev: before.head.rev, actor: '' }), /commit-actor/);
+  assert.deepEqual(await state('ses_c_main'), before);
+
+  // Faults: a failure after the head was written leaves no head, no revision,
+  // no version and no audit event.
+  await assert.rejects(store.commitSessionRevision({ next: step(before.head, { title: 'Faulted' }), expectedRev: before.head.rev, actor: owner.id,
+    version: { ...saveVersion, kind: 'restore', restoredFrom: 'ver_does_not_exist' }, audit: event('faulted') }), /version-reference/);
+  assert.deepEqual(await state('ses_c_main'), before, 'a failed version write takes the head and revision with it');
+  await assert.rejects(store.commitSessionRevision({ next: step(before.head, { title: 'Faulted again' }), expectedRev: before.head.rev, actor: owner.id,
+    version: saveVersion, audit: { ...event('faulted'), at: 0 as unknown as string } }));
+  assert.deepEqual(await state('ses_c_main'), before, 'a failed audit write takes the head, revision and version with it');
+  const recovered = await store.commitSessionRevision({ next: step(before.head, { title: 'After the faults' }), expectedRev: before.head.rev, actor: owner.id,
+    version: saveVersion });
+  assert.ok(recovered.committed, 'the next commit at the same rev goes through');
+
+  // A revision row left at the new rev is replaced, so history agrees with the head.
+  const head = await read('ses_c_main');
+  await store.appendSessionRevision({ sessionId: 'ses_c_main', rev: head.rev + 1, inputs: { title: 'left over' }, meta: {}, actor: 'someone', at });
+  assert.ok((await store.commitSessionRevision({ next: step(head, { title: 'Current' }), expectedRev: head.rev, actor: owner.id })).committed);
+  assert.deepEqual([(await store.listSessionRevisions('ses_c_main'))[0]?.inputs, (await store.listSessionRevisions('ses_c_main'))[0]?.actor],
+    [{ title: 'Current' }, owner.id]);
+
+  // A version that does not fit leaves the rest committed.
+  store.configureVersionLimits({ sessionMaxBytes: 10 });
+  try {
+    const roomless = await read('ses_c_space');
+    const tight = await store.commitSessionRevision({ next: step(roomless, { title: 'x'.repeat(40) }), expectedRev: 1, actor: owner.id,
+      version: { ...saveVersion, kind: 'named', label: 'Too big' } });
+    assert.ok(tight.committed && tight.version === 'version-space', 'the version is refused');
+    assert.deepEqual([(await read('ses_c_space')).rev, (await store.listSessionRevisions('ses_c_space')).map((r) => r.rev)], [2, [2]], 'the head and revision are not');
+  } finally { store.configureVersionLimits({}); }
+
+  // Two commits at one rev: one wins, and its revision and version are the ones kept.
+  const race = await read('ses_c_race');
+  const results = await Promise.all(['A', 'B'].map((title) => store.commitSessionRevision({ next: step(race, { title }), expectedRev: 1, actor: owner.id,
+    version: saveVersion })));
+  assert.deepEqual(results.map((r) => r.committed).sort(), [false, true], 'one winner');
+  const winner = results.find((r) => r.committed) as Extract<SessionRevisionCommitResult, { committed: true }>;
+  assert.deepEqual((await store.listSessionRevisions('ses_c_race')).map((r) => [r.rev, r.inputs]), [[2, winner.session.inputs]]);
+  const raceVersions = await store.listSessionVersions('ses_c_race', { limit: 10 });
+  assert.equal(raceVersions.length, 1);
+  assert.deepEqual((await store.getSessionVersion('ses_c_race', raceVersions[0]!.id))?.inputs, winner.session.inputs);
+
+  for (const id of ids) await store.deleteSessionVersions(id);
+  for (const id of ids) await store.putSession({ ...(await read(id)), deletedAt: at });
 }
 
 export async function runStoreConformance(store: Store): Promise<void> {
@@ -1473,6 +1598,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(revs[0]?.inputs, { title: 'Hi3' });
 
   await runSessionVersionsConformance(store);
+  await runSessionCommitConformance(store);
 
   // collab room snapshots (plans/14 §6): at most one per session, put REPLACES
   // (there is no update log), delete is idempotent, and `inputs` round-trips

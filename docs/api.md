@@ -614,6 +614,13 @@ edited between preview and apply is **skipped, not stomped**, and reported as
 audited as `session.conflict` (ids and revs only - never input values) and folded into
 `GET /api/v1/stats/overview`'s `sessions.conflicts30d`.
 
+Each accepted write is stored as one commit: the new document, its entry in
+`GET /api/v1/sessions/:id/revisions`, a `save` version (for `PUT` and each session a `bulk`
+apply changes) and, when `policy.activity.auditSessionUpdates` is on, its `session.update`
+audit entry. A write that fails stores none of them, so the revisions and versions always
+match the document. A live room's write-back and a restore on a serverless deploy are
+stored the same way.
+
 While a live collab room holds a session, no `rev` can be written: `PUT` and `DELETE`
 answer `409 COLLAB_ACTIVE` (no `current`, and not audited as a conflict), and `bulk` skips
 the session with `reason: "collab-active"` in its `skipped` entry. Save again once the room

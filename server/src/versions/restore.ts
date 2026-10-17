@@ -17,11 +17,14 @@
  * gateway.ts and injected as `AppDeps.versionRooms`, so this module and app.ts
  * never import the socket server). Without one (the Vercel function) no room can
  * be open on this host, so `restoreByCas` writes the session row with
- * `casSession`, which also refuses while another host's room holds the lease.
+ * `commitSessionRevision`, whose compare-and-set also refuses while another
+ * host's room holds the lease, and which writes the revision, the 'restore'
+ * version and the audit event in the same commit (plan 221).
  */
 import { isDeepStrictEqual } from 'node:util';
+import type { AuditEventBody } from '../audit/chain.ts';
 import { inputIsGoverned, resolveInputAccess, type ResolvedAccess, type ToolOverlay } from '../policy/overlay.ts';
-import type { SessionVersion, Store, UserRecord } from '../store/types.ts';
+import type { SessionRecord, SessionVersion, Store, UserRecord } from '../store/types.ts';
 
 /** The rows a write is judged against, read fresh for each write. */
 export interface InputWritePolicy {
@@ -92,6 +95,10 @@ export interface VersionRestoreArgs {
   target: SessionVersion;
   /** Writes the 'before' version and returns its id; throws a RestoreError. */
   beforeCommit(before: RestoreBefore): Promise<string>;
+  /** What a compare-and-swap restore commits with the document: its 'restore'
+   *  version, under this request id, and this audit event. The live room does not
+   *  read it; the route writes both after the room's commit. */
+  record?: { requestId: string; audit(result: VersionRestoreResult): AuditEventBody };
 }
 
 export interface VersionRestoreResult {
@@ -105,6 +112,9 @@ export interface VersionRestoreResult {
   /** The stored row after the restore: what the 'restore' version records. */
   inputs: Record<string, unknown>;
   meta: Record<string, unknown>;
+  /** Set when the document was committed with `record`: the 'restore' version's
+   *  id, or null when history had no room for it. The audit event went with it. */
+  recorded?: { restored: string | null };
 }
 
 /** The live-room half, built by the collab gateway (`collab.versions`). */
@@ -137,9 +147,9 @@ export const RESTORE_CAS_ATTEMPTS = 3;
 /**
  * Restore without a live room (plan 76 M4 2.8 step 5): read the row, apply the
  * same write rule per input (a vetoed input keeps its current value), write the
- * 'before' version from THIS row, then `casSession` at its rev. A lost race
- * deletes that attempt's 'before' row (no restore row points at it yet) and tries
- * again. The new revision is attributed to the restoring person.
+ * 'before' version from THIS row, then commit at its rev (`commitRestore`). A lost
+ * race deletes that attempt's 'before' row (no restore row points at it yet) and
+ * tries again. The new revision is attributed to the restoring person.
  */
 export async function restoreByCas(
   d: { store: Store; policy(user: UserRecord, sessionId: string): Promise<RestorePolicy | null> }, args: VersionRestoreArgs,
@@ -157,11 +167,41 @@ export async function restoreByCas(
     }
     const at = new Date().toISOString();
     const next = { ...session, inputs: out.inputs, rev: session.rev + 1, updatedBy: args.user.id, updatedAt: at };
-    if (await d.store.casSession(next, session.rev)) {
-      await d.store.appendSessionRevision({ sessionId: session.id, rev: next.rev, inputs: next.inputs, meta: next.meta, actor: args.user.id, at });
-      return { revision: next.rev, live: false, skipped: out.skipped, vetoed: out.vetoed, beforeId, inputs: next.inputs, meta: next.meta };
-    }
+    const committed = await commitRestore(d.store, next, session.rev, args,
+      { revision: next.rev, live: false, skipped: out.skipped, vetoed: out.vetoed, beforeId, inputs: next.inputs, meta: next.meta });
+    if (committed) return committed;
     await d.store.deleteSessionVersion(session.id, beforeId);
   }
   throw new RestoreError('SESSION_CHANGED', 'The document changed while restoring.');
+}
+
+/**
+ * Commit a restored document and its revision, with its 'restore' version and
+ * audit event when `args.record` asks for them, in one `commitSessionRevision`.
+ * A version restored from, or the 'before' row, that a manager deleted meanwhile
+ * is left out of the version's references, as the route leaves it out of a room
+ * restore's row. Null when the compare-and-set lost.
+ */
+async function commitRestore(store: Store, next: SessionRecord, expectedRev: number, args: VersionRestoreArgs,
+  result: VersionRestoreResult): Promise<VersionRestoreResult | null> {
+  const { record, user, target } = args;
+  const commit = (refs: { restoredFrom?: string; beforeId?: string }) => store.commitSessionRevision({
+    next, expectedRev, actor: user.id,
+    ...(record ? {
+      version: { kind: 'restore' as const, contributors: [{ id: user.id, kind: 'user' as const, edits: 1 }], createdBy: user.id,
+        requestId: record.requestId, keep: [target.id], ...refs },
+      audit: record.audit(result),
+    } : {}),
+  });
+  let out;
+  try {
+    out = await commit({ restoredFrom: target.id, beforeId: result.beforeId });
+  } catch (error) {
+    if (!record || (error as Error)?.message !== 'version-reference') throw error;
+    const [from, before] = await Promise.all([store.getSessionVersion(next.id, target.id), store.getSessionVersion(next.id, result.beforeId)]);
+    out = await commit({ ...(from ? { restoredFrom: target.id } : {}), ...(before ? { beforeId: result.beforeId } : {}) });
+  }
+  if (!out.committed) return null;
+  if (!record) return result;
+  return { ...result, recorded: { restored: typeof out.version === 'object' ? out.version.version.id : null } };
 }

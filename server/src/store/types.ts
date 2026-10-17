@@ -566,6 +566,44 @@ export interface SessionRevision {
  *  bytes-small; this bounds unbounded history growth (plans/08 §2). */
 export const SESSION_REVISION_LIMIT = 20;
 
+/** The version a commit writes of its new head: every field of a version write
+ *  but the ones the head supplies (session, rev, inputs, meta) and the time. */
+export type SessionRevisionCommitVersion = Omit<SessionVersionWrite, 'sessionId' | 'rev' | 'inputs' | 'meta' | 'at'>;
+
+/**
+ * One write of a session's document by `commitSessionRevision` (plan 221): the
+ * new head, the revision row that records it, and, when given, a version of it
+ * and the audit event that reports it.
+ */
+export interface SessionRevisionCommit {
+  /** The new head. `rev` is `expectedRev + 1`; `deletedAt` is ignored, as `casSession` ignores it. */
+  next: SessionRecord;
+  expectedRev: number;
+  /** The revision row's `actor`; its time is `next.updatedAt`. */
+  actor: string;
+  version?: SessionRevisionCommitVersion;
+  audit?: AuditEventBody;
+}
+
+/** What `commitSessionRevision` did. `committed: false` is `casSession`'s false:
+ *  the row was not at `expectedRev`, was deleted, or a live room held it, and
+ *  nothing was written. `version` answers the version write as
+ *  `putSessionVersion` would; a version refused for space or the named limits
+ *  leaves the rest committed. */
+export type SessionRevisionCommitResult =
+  | { committed: true; session: SessionRecord; version?: SessionVersionPut }
+  | { committed: false };
+
+/** The version write of a commit, or undefined when it asks for none. Throws a
+ *  TypeError for a commit both drivers refuse before writing: a `next.rev` that
+ *  is not `expectedRev + 1`, no actor, or a version the schema refuses. */
+export function sessionRevisionCommitVersion(c: SessionRevisionCommit): (SessionVersionWrite & { at: string }) | undefined {
+  if (!Number.isSafeInteger(c.expectedRev) || c.expectedRev < 0 || c.next.rev !== c.expectedRev + 1) throw new TypeError('commit-rev');
+  if (typeof c.actor !== 'string' || !c.actor) throw new TypeError('commit-actor');
+  if (!c.version) return undefined;
+  return normalizeSessionVersionWrite({ ...c.version, sessionId: c.next.id, rev: c.next.rev, inputs: c.next.inputs, meta: c.next.meta });
+}
+
 /** A session as a listing shows it: every field but the document itself. */
 export type SessionSummary = Omit<SessionRecord, 'inputs'>;
 
@@ -1704,6 +1742,20 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
    * the rev. `collabLeaseActive` tells that refusal from a revision conflict.
    */
   casSession(next: SessionRecord, expectedRev: number): Promise<boolean>;
+  /**
+   * Write a session's next document as one unit (plan 221): `casSession`'s
+   * compare-and-set on the head, the revision row of the new rev (replacing any
+   * row already at that rev, and pruned to SESSION_REVISION_LIMIT), the version
+   * when `version` is given (under `putSessionVersion`'s rules and lock) and the
+   * audit event when `audit` is given. Postgres runs them in one transaction on
+   * one connection; memory checks everything, then applies them together. A
+   * failure in any part writes none of them, so there is never a head without
+   * its revision. Every editor of a stored session writes through this: PUT,
+   * bulk edits, a room's write-back and crash recovery, and a restore without a
+   * room. Throws what `sessionRevisionCommitVersion` refuses, `version-reference`
+   * as `putSessionVersion` does, and any storage error.
+   */
+  commitSessionRevision(commit: SessionRevisionCommit): Promise<SessionRevisionCommitResult>;
   /** Returns the record even when tombstoned (deletedAt set) so callers choose
    *  the response (404 vs 410); null only when the id is unknown. */
   getSession(id: string): Promise<SessionRecord | null>;

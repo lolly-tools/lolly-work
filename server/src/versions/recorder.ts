@@ -11,7 +11,8 @@
  *     changes keep arriving, whichever comes first;
  *   - `close`: written when the room quiesces or drains with changes not yet in a
  *     version;
- *   - `save`: written by a REST save (`recordSaveVersion`), outside any room.
+ *   - `save`: written by a REST save or a bulk edit, outside any room, in the
+ *     same commit as the document (store `commitSessionRevision`).
  *
  * Each version's content is read from the durable session row, never from the
  * room's memory, so a version always matches something the database holds. The
@@ -26,7 +27,7 @@
  * and cleared on `close` and `dispose`.
  */
 import type { RoomWriter } from '../collab/persistence.ts';
-import type { SessionRecord, SessionVersionContributor, SessionVersionKind, Store } from '../store/types.ts';
+import type { SessionVersionContributor, SessionVersionKind, Store } from '../store/types.ts';
 
 /** Quiet time after the last change before an automatic version. */
 export const VERSION_IDLE_MS = 120_000;
@@ -160,21 +161,4 @@ export function createVersionRecorder(options: VersionRecorderOptions): VersionR
     flush: () => writes,
     get pending() { return pending; },
   };
-}
-
-/**
- * The `save` version a REST save writes (plan 76 M4): the stored row just
- * written, attributed to the saver. Best effort: a failure is logged and never
- * fails the save itself, and the store's dedupe skips a save that changed
- * nothing since the latest version.
- */
-export async function recordSaveVersion(
-  store: Pick<Store, 'putSessionVersion'>, session: SessionRecord, createdBy: string, contributor: Pick<SessionVersionContributor, 'id' | 'kind'>,
-): Promise<void> {
-  try {
-    await store.putSessionVersion({ sessionId: session.id, rev: session.rev, kind: 'save', inputs: session.inputs, meta: session.meta,
-      contributors: [{ ...contributor, edits: 1 }], createdBy });
-  } catch (error) {
-    console.error(`[lolly-work] save version failed for ${session.id}:`, (error as Error)?.message ?? error);
-  }
 }

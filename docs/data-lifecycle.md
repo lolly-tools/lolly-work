@@ -98,8 +98,9 @@ A document's history keeps two things. `session_revisions` holds the newest 20
 whole-document revisions that older shells read. `session_versions` holds the
 versions people see in History: written 2 minutes after live editing pauses (or
 every 10 minutes while it continues), when a live document closes, on every save
-over the API, when someone saves a named version, and twice for each restore (the
-state it replaced, which Undo restores, and the state it produced). A version's
+over the API (each session a bulk edit changes included), when someone saves a
+named version, and twice for each restore (the state it replaced, which Undo
+restores, and the state it produced). A version's
 content is stored once per document and content (`session_version_contents`), so
 repeated states cost no extra bytes, and an automatic version whose content equals
 the newest version is not written at all. `session_version_totals` is one row with

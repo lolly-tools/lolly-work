@@ -26,6 +26,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createRouter, readJson, sendError, sendJson } from '../api/router.ts';
+import type { AuditEventBody } from '../audit/chain.ts';
 import type { InstanceConfig } from '../config/instance.ts';
 import { createWindowQuota, nameWithoutEmail } from '../projects/sharing.ts';
 import { evaluate, mayJoinCollab, type Role } from '../rbac/evaluate.ts';
@@ -41,6 +42,8 @@ interface Dependencies {
   store: Store;
   memberOf(req: IncomingMessage): Promise<UserRecord | null>;
   audit(actor: string, action: string, subject: string, payload?: Record<string, unknown>): Promise<unknown>;
+  /** The event `audit` appends, for a restore that commits it with the document. */
+  auditBody(actor: string, action: string, subject: string, payload?: Record<string, unknown>): AuditEventBody;
   sessionFor(res: ServerResponse, user: UserRecord, id: string | null): Promise<{ session: SessionRecord; project: ProjectRecord; access: ProjectAccess } | null>;
   /** The live-room restore (AppDeps.versionRooms). Undefined where no room runs. */
   rooms?: VersionRoomBridge;
@@ -296,7 +299,8 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
       try {
         result = d.rooms
           ? await d.rooms.restore({ sessionId, user: g.user, target, beforeCommit })
-          : await restoreByCas({ store: d.store, policy: restorePolicy }, { sessionId, user: g.user, target, beforeCommit });
+          : await restoreByCas({ store: d.store, policy: restorePolicy }, { sessionId, user: g.user, target, beforeCommit,
+            record: { requestId, audit: (r) => d.auditBody(`user:${g.user.id}`, 'session.restore', `session:${sessionId}`, restoreAudit(target.id, r)) } });
       } catch (error) {
         // A 'before' row this attempt wrote goes when the document is still at
         // its revision, which proves nothing was committed. Otherwise a commit
@@ -331,16 +335,17 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
         }
         return failure(error);
       }
-      let restored: string | null = null;
-      try {
-        restored = await restoreRow(sessionId, g.user.id, requestId, target.id, result);
-      } catch (error) {
-        console.error(`[lolly-work] restore version row failed for ${sessionId}:`, (error as Error)?.message ?? error);
+      // A compare-and-swap restore committed its restore row and audit event with
+      // the document; a room's restore, or one that changed nothing, writes them now.
+      let restored: string | null = result.recorded?.restored ?? null;
+      if (!result.recorded) {
+        try {
+          restored = await restoreRow(sessionId, g.user.id, requestId, target.id, result);
+        } catch (error) {
+          console.error(`[lolly-work] restore version row failed for ${sessionId}:`, (error as Error)?.message ?? error);
+        }
+        await d.audit(`user:${g.user.id}`, 'session.restore', `session:${sessionId}`, restoreAudit(target.id, result));
       }
-      await d.audit(`user:${g.user.id}`, 'session.restore', `session:${sessionId}`, {
-        versionId: target.id, beforeVersionId: result.beforeId, revision: result.revision, live: result.live,
-        skipped: result.skipped.length, vetoed: result.vetoed.length,
-      });
       const body = answer(result.revision, result.live, restored, result.beforeId, result.skipped, result.vetoed);
       remember(replayKey, body);
       return { body };
@@ -349,6 +354,12 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
 
   const answer = (revision: number, live: boolean, restored: string | null, before: string, skipped: string[], vetoed: string[]) =>
     ({ revision, live, restored, before, skipped, vetoed });
+
+  /** The `session.restore` audit payload: ids and counts, never an input value. */
+  const restoreAudit = (versionId: string, result: VersionRestoreResult) => ({
+    versionId, beforeVersionId: result.beforeId, revision: result.revision, live: result.live,
+    skipped: result.skipped.length, vetoed: result.vetoed.length,
+  });
 
   const remember = (replayKey: string, body: Record<string, unknown>): void => {
     replays.set(replayKey, { at: Date.now(), body });

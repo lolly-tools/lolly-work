@@ -27,7 +27,7 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { createCollabGateway, type CollabGateway } from '../server/src/collab/gateway.ts';
 import { hashServiceSecret } from '../server/src/iam/service-tokens.ts';
-import { VERSION_RESTORE_KEEP, versionRetentionDrops, type SessionRecord, type SessionVersionRow, type SessionVersionWrite, type Store, type UserRecord } from '../server/src/store/types.ts';
+import { VERSION_RESTORE_KEEP, versionRetentionDrops, type SessionRecord, type SessionRevisionCommit, type SessionRevisionCommitResult, type SessionVersionRow, type SessionVersionWrite, type Store, type UserRecord } from '../server/src/store/types.ts';
 
 const SECRETS = { session: 'versions-route-session', link: 'versions-route-link' };
 const PEOPLE = ['alice', 'bob', 'vic', 'mona', 'noname'] as const;
@@ -387,12 +387,21 @@ test('request ids: a named save and a restore with one id are independent; concu
 });
 
 /** A store whose 'restore' row writes answer 'version-space' while `failRestoreRows`
- *  is set, and which deletes `deleteAfterBefore` (a manager deleting the version
- *  being restored) right after a 'before' row is written. */
+ *  is set, whether the route writes the row or a compare-and-swap restore commits
+ *  it with the document, and which deletes `deleteAfterBefore` (a manager deleting
+ *  the version being restored) right after a 'before' row is written. */
 function flakyVersions() {
   const knobs = { failRestoreRows: false, deleteAfterBefore: undefined as { sessionId: string; id: string } | undefined };
   const wrap = (raw: ReturnType<typeof createMemoryStore>) => new Proxy(raw, {
     get(target, key, receiver) {
+      if (key === 'commitSessionRevision') {
+        return async (c: SessionRevisionCommit): Promise<SessionRevisionCommitResult> => {
+          if (c.version?.kind !== 'restore' || !knobs.failRestoreRows) return target.commitSessionRevision(c);
+          const { version: _version, ...rest } = c;
+          const out = await target.commitSessionRevision(rest);
+          return out.committed ? { ...out, version: 'version-space' } : out;
+        };
+      }
       if (key !== 'putSessionVersion') return Reflect.get(target, key, receiver);
       return async (v: SessionVersionWrite) => {
         if (v.kind === 'restore' && knobs.failRestoreRows) return 'version-space';
@@ -492,6 +501,26 @@ test('the version being restored survives the restore\'s own retention; one dele
     assert.equal(await h.store.getSessionVersion(t.id, target), null);
     const racedRow = await h.store.getSessionVersion(t.id, racedBody.restored!);
     assert.deepEqual([racedRow?.kind, racedRow?.restoredFrom, racedRow?.beforeId], ['restore', undefined, racedBody.before], 'paired with its before row');
+  } finally { await closeHarness(h); }
+});
+
+test('a restore without a room commits its restore row with the document, even when the version it restores went meanwhile (plan 221)', async () => {
+  const { knobs, wrap } = flakyVersions();
+  const h = await harness(false, {}, wrap);
+  try {
+    const t = await sessionIn(h, 'ses_cas_target_deleted', { title: 'Now', slides: [] });
+    const target = await savedId(h, t.id, 'Going');
+    await h.store.putSession({ ...(await h.store.getSession(t.id))!, inputs: { title: 'Later', slides: [] }, rev: 2 });
+    knobs.deleteAfterBefore = { sessionId: t.id, id: target };
+    const raced = await restore(h, 'bob', t.id, target);
+    assert.equal(raced.status, 200, await raced.clone().text());
+    const body = await raced.json() as RestoreBody;
+    assert.equal(await h.store.getSessionVersion(t.id, target), null);
+    const row = await h.store.getSessionVersion(t.id, body.restored!);
+    assert.deepEqual([row?.kind, row?.rev, row?.restoredFrom, row?.beforeId], ['restore', 3, undefined, body.before], 'paired with its before row');
+    assert.deepEqual([(await h.store.getSession(t.id))!.inputs.title, (await h.store.listSessionRevisions(t.id))[0]?.rev], ['Now', 3]);
+    const audited = (await h.store.listAudit()).filter((e) => e.action === 'session.restore' && e.subject === `session:${t.id}`);
+    assert.equal(audited.length, 1);
   } finally { await closeHarness(h); }
 });
 
