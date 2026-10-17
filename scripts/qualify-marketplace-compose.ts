@@ -11,6 +11,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { parse, stringify } from 'yaml';
 import { prepareInstance } from './prepare-marketplace-instance.ts';
 import { release } from './marketplace-packages.ts';
+import { captureListingScreenshots } from './capture-marketplace-screenshots.ts';
 
 if (!process.env.LW_MARKETPLACE_RECEIPT) throw new Error('Set LW_MARKETPLACE_RECEIPT to retain the qualification result');
 const architecture = execFileSync('docker', ['info', '--format', '{{.Architecture}}'], { encoding: 'utf8' }).trim();
@@ -92,6 +93,16 @@ try {
   assert.equal(rendered.status, 200, 'the neutral no-hook tool exports without a Chromium worker');
   assert.ok(rendered.body.includes('<svg') && rendered.body.includes('#205080'), 'the SVG contains the selected colour');
   assert.equal((await probe(url.pathname + url.search)).status, 410, 'the owner link is single-use');
+  // Optional listing captures, taken before the restart renames the instance. A capture
+  // failure is reported after the qualification checks finish, never instead of them.
+  let captureError: unknown;
+  if (process.env.LW_MARKETPLACE_SCREENSHOTS) {
+    try {
+      const files = await captureListingScreenshots({ port, domain: 'work.example.test', caPem: ca, email: 'owner@example.test', password,
+        outDir: process.env.LW_MARKETPLACE_SCREENSHOTS, release, source: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() });
+      console.log(`Captured ${files.length} listing screenshots`);
+    } catch (error) { captureError = error; }
+  }
   const keyHash = () => createHash('sha256').update(docker(['exec', '-T', 'server', 'node', '-e', 'process.stdout.write(require("node:fs").readFileSync("/app/keys/catalog.jwk"))'])).digest('hex');
   const key = keyHash();
   docker(['exec', '-T', 'server', 'node', '-e', 'const fs=require("node:fs"),path="/app/state/instance.json",config=JSON.parse(fs.readFileSync(path));config.instance.name="Persisted qualification";fs.writeFileSync(path,JSON.stringify(config));']);
@@ -114,6 +125,7 @@ try {
     actualCustomerIdentity: 'NOT_TESTED', crossVersionUpgrade: 'NOT_TESTED', cloudProvider: 'NOT_TESTED', nativeArchitecture: 'amd64' };
   writeFileSync(process.env.LW_MARKETPLACE_RECEIPT, JSON.stringify(receipt, null, 2) + '\n');
   console.log(receipt.status);
+  if (captureError) throw captureError;
 } finally {
   // This project name and all its volumes were created above for this one run.
   docker(['down', '--volumes', '--remove-orphans']);
