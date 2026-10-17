@@ -48,6 +48,22 @@ test('generated adapters retain exact shared runtime scripts after Compose inter
   assert.equal(profile.renderWorker.enabled, false);
 });
 
+test('every qualified architecture keeps a required native Compose qualification leg', () => {
+  const workflow = parse(readFileSync(new URL('../.github/workflows/helm-qualification.yml', import.meta.url), 'utf8'));
+  const job = workflow.jobs['neutral-compose'];
+  const native: Record<string, string[]> = { amd64: ['ubuntu-latest', 'ubuntu-24.04'], arm64: ['ubuntu-24.04-arm'] };
+  const legs: { arch: string; runner: string; required: boolean }[] = job.strategy.matrix.include;
+  assert.equal(job['runs-on'], '${{ matrix.runner }}');
+  assert.equal(job['continue-on-error'], '${{ !matrix.required }}');
+  const boot = job.steps.find((step: { run?: string }) => step.run === 'node scripts/qualify-marketplace-compose.ts');
+  assert.equal(boot.env.LW_MARKETPLACE_ARCHITECTURE, '${{ matrix.arch }}', 'the driver refuses a runner of another architecture');
+  for (const leg of legs) assert.ok(native[leg.arch]?.includes(leg.runner), `${leg.arch} runs on a native runner, never under emulation`);
+  assert.ok(release.qualifiedArchitectures.includes('amd64'));
+  for (const arch of release.qualifiedArchitectures) {
+    assert.equal(legs.find(leg => leg.arch === arch)?.required, true, `${arch} stays a required leg while release.json lists it as qualified`);
+  }
+});
+
 test('neutral production configuration admits the named owner and disables development and inherited roles', () => {
   const config = parseConfig(JSON.stringify(instanceConfiguration(env)));
   assert.equal(config.instance.baseUrl, 'https://work.example.test');
