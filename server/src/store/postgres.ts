@@ -3114,10 +3114,14 @@ function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> & {
       if (q.from !== undefined) where.push(`v.at >= ${param(q.from)}::timestamptz`);
       if (q.to !== undefined) where.push(`v.at <= ${param(q.to)}::timestamptz`);
       if (q.after) {
+        // `v.at <= at` says again what the or says, as a bound the index can start
+        // from. With the or alone, every later page read the index from the newest
+        // version in the instance down to its position.
         const at = `${param(q.after.at)}::timestamptz`, id = param(q.after.id);
-        where.push(`(v.at < ${at} or (v.at = ${at} and v.id collate "C" < ${id} collate "C"))`);
+        where.push(`v.at <= ${at}`, `(v.at < ${at} or (v.at = ${at} and v.id collate "C" < ${id} collate "C"))`);
       }
-      // Migration 0076's index serves this order, so a page stops after `limit` rows match.
+      // Migration 0076's index serves this order, so a page starts at its position
+      // and stops after `limit` rows match.
       const { rows } = await pool.query(`select ${VERSION_SUMMARY_COLUMNS}, s.project_id, s.tool_id, s.tool_version, s.meta -> 'label' as session_label
           from ${VERSIONS_WITH_CONTENT} join sessions s on s.id = v.session_id
          where ${where.join(' and ')}

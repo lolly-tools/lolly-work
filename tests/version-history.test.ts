@@ -4,7 +4,8 @@
  * versions of every document the caller may read, newest first, paged by an
  * opaque keyset position. The tests keep to what must never show (documents in
  * projects the caller cannot see, deleted documents, documents a grant denies,
- * hidden, archived and expired projects), the default "own projects" scope,
+ * hidden, archived and expired projects, and projects the caller pinned or
+ * opened and then lost access to), the default "own projects" scope,
  * the filters, paging over equal times, and the input checks. The store's half
  * of the query is the store conformance suite's subject.
  */
@@ -217,6 +218,44 @@ test('hidden, archived and shared-with-everyone projects follow the Projects lis
     assert.deepEqual(docs(await page('bob')), ['ses_a1', 'ses_a2', 'ses_b1', 'ses_e1'], 'pinned');
   } finally { await store.putProjectUserState(bob, 'prj_everyone', { listed: null, lastOpenedAt: new Date(START).toISOString() }); }
   assert.deepEqual(docs(await page('bob')), ['ses_a1', 'ses_a2', 'ses_b1'], 'opened long ago');
+});
+
+test('a project the person pinned or opened, then lost access to, never shows', async () => {
+  // A pin or a recent open keeps a project in the person's own list whatever
+  // their access, so only the access check keeps these out: a membership that
+  // expired, a membership removed, a group taken away and sharing with everyone
+  // turned off.
+  const bob = users.get('bob')!.id;
+  await project('prj_removed', 'alice'); await member('prj_removed', 'bob');
+  await project('prj_regrouped', 'alice', { visibility: { groups: ['team'] } });
+  await project('prj_unshared', 'alice', { sharing: { general: { audience: 'instance', role: 'viewer' } } });
+  await documentWith('ses_m1', 'prj_removed', 'design', 1);
+  await documentWith('ses_g1', 'prj_regrouped', 'design', 1);
+  await documentWith('ses_u1', 'prj_unshared', 'design', 1);
+  const lost = { prj_expired: 'ses_x1', prj_removed: 'ses_m1', prj_regrouped: 'ses_g1', prj_unshared: 'ses_u1' };
+  const states: Array<[string, { listed?: 'pinned' | null; lastOpenedAt?: string }]> = [
+    ['pinned', { listed: 'pinned' }],
+    ['opened just now', { listed: null, lastOpenedAt: new Date().toISOString() }],
+  ];
+  try {
+    for (const [why, state] of states) {
+      for (const id of Object.keys(lost)) await store.putProjectUserState(bob, id, state);
+      assert.deepEqual(docs(await page('bob')), ['ses_a1', 'ses_a2', 'ses_b1', 'ses_g1', 'ses_m1', 'ses_u1'], `${why}: what bob can still see shows, and the expired membership does not`);
+    }
+    await store.deleteProjectMember('prj_removed', bob);
+    await project('prj_regrouped', 'alice');
+    await project('prj_unshared', 'alice');
+    for (const [why, state] of states) {
+      for (const id of Object.keys(lost)) await store.putProjectUserState(bob, id, state);
+      for (const query of ['', '?archived=1', '?limit=100', '?tool=design']) {
+        const shown = docs(await page('bob', query));
+        assert.deepEqual(shown.filter((id) => Object.values(lost).includes(id)), [], `${why}, ${query || 'the default page'}`);
+      }
+    }
+    for (const id of Object.keys(lost)) assert.equal((await call('bob', `/api/v1/history?project=${id}`)).status, 403, id);
+  } finally {
+    for (const id of Object.keys(lost)) await store.putProjectUserState(bob, id, { listed: null, lastOpenedAt: new Date(START).toISOString() });
+  }
 });
 
 test('an admin sees every project by name, but only their own by default', async () => {
