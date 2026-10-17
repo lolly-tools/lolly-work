@@ -1750,10 +1750,12 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
    * audit event when `audit` is given. Postgres runs them in one transaction on
    * one connection; memory checks everything, then applies them together. A
    * failure in any part writes none of them, so there is never a head without
-   * its revision. Every editor of a stored session writes through this: PUT,
-   * bulk edits, a room's write-back and crash recovery, and a restore without a
-   * room. Throws what `sessionRevisionCommitVersion` refuses, `version-reference`
-   * as `putSessionVersion` does, and any storage error.
+   * its revision. PUT, bulk edits, a restore without a room (`restoreByCas`) and
+   * `RoomPersistence` (its write-back, and the crash recovery `Room.open` runs)
+   * write through this. A store-backed live room does not: `commitCollab` moves
+   * the head per batch and its quiesce appends the revision separately. Throws
+   * what `sessionRevisionCommitVersion` refuses, `version-reference` as
+   * `putSessionVersion` does, and any storage error.
    */
   commitSessionRevision(commit: SessionRevisionCommit): Promise<SessionRevisionCommitResult>;
   /** Returns the record even when tombstoned (deletedAt set) so callers choose

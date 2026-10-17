@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Every writer of a stored session goes through the commit service (plan 221,
- * store `commitSessionRevision`): PUT, bulk edits, a restore without a live
- * room, and a room's write-back and crash recovery. The store here refuses the
- * separate `casSession` and `appendSessionRevision` calls those writers used to
- * make, so a writer that bypassed the service would fail. A commit that fails
- * leaves no head, revision or version behind. The store's own rules are the
- * conformance suite's (tests/store-conformance.ts).
+ * PUT, bulk edits, a restore without a live room, and `RoomPersistence`'s
+ * write-back and crash recovery go through the commit service (plan 221, store
+ * `commitSessionRevision`). The store here refuses the separate `casSession`
+ * and `appendSessionRevision` calls those writers used to make, so a writer
+ * that bypassed the service would fail. A store-backed live room (rooms.ts
+ * `commitCollab` and its quiesce revision) still writes outside the service and
+ * is not run here. A commit that fails leaves no head, revision or version
+ * behind. The store's own rules are the conformance suite's
+ * (tests/store-conformance.ts).
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';

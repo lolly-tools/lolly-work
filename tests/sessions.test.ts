@@ -697,7 +697,7 @@ test('a room that lets go between a refused CAS and the re-read is never reporte
   const make = async (toolId: string) => await (await json(alice, 'POST', `/api/v1/projects/${teamProjectId}/sessions`, {
     toolId, inputs: { title: 'Before the room', date: '2026-01-01' }, meta: {},
   })).json() as { id: string; rev: number };
-  // Every session write is a `commitSessionRevision`, whose compare-and-set the room refuses.
+  // A PUT or bulk write is a `commitSessionRevision`, whose compare-and-set the room refuses.
   const real = store.commitSessionRevision.bind(store);
   let calls = 0;
   try {
