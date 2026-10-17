@@ -21,6 +21,7 @@ import { compareValues } from './table-sort.js';
 import { createTagPanel } from './catalog-tags.js';
 import { createSubmitPanel } from './catalog-submit.js';
 import { buildThemeMaps, themeFromTokens, resolveCssColor } from './brand-theme.js';
+import { dayBound, localDateValue, zoneName } from './lifecycle-dates.js';
 
 const $app = document.getElementById('app');
 const $tip = document.getElementById('tip');
@@ -2138,22 +2139,29 @@ function catalogThumb(entry, size, onOpen) {
   return box;
 }
 
-/** The Set-expiry / Revoke lifecycle controls for one asset, shared by the
+/** The dates / Revoke lifecycle controls for one asset, shared by the
  *  catalog row and the inspect panel so the two surfaces can never drift — both
  *  PUT the same endpoint and re-render the whole view (route()) on success.
+ *  Dates are whole days in the admin's own time zone (lifecycle-dates.js): an end
+ *  date closes at the end of that day, not at the start of it in UTC. The inspect
+ *  panel also offers a start date (`withStart`); the table row keeps one input.
  *  Returns { node, err } for the caller to place. */
-function lifecycleControls(entry) {
+function lifecycleControls(entry, { withStart = false } = {}) {
   const err = errSpan();
-  const dateInput = el('input', { type: 'date', 'aria-label': `Expiry date for ${entry.id}`, value: entry.validUntil ? entry.validUntil.slice(0, 10) : '' });
+  const fromInput = withStart ? el('input', { type: 'date', 'aria-label': `Start date for ${entry.id}`, value: localDateValue(entry.validFrom) }) : null;
+  const dateInput = el('input', { type: 'date', 'aria-label': `End date for ${entry.id}`, value: localDateValue(entry.validUntil) });
   const setBtn = el('button', { onclick: async () => {
-    if (!dateInput.value) { err.textContent = 'Pick a date first.'; return; }
+    const validFrom = fromInput ? dayBound(fromInput.value, 'start') : null;
+    const validUntil = dayBound(dateInput.value, 'end');
+    if (!validFrom && !validUntil) { err.textContent = withStart ? 'Pick a start or an end date first.' : 'Pick a date first.'; return; }
+    if (validFrom && validUntil && validFrom > validUntil) { err.textContent = 'The end date is before the start date.'; return; }
     err.textContent = '';
     setBtn.disabled = true;
     try {
-      await api(`/api/v1/catalog/lifecycle/${entry.id}`, { method: 'PUT', body: { validUntil: new Date(dateInput.value).toISOString() } });
+      await api(`/api/v1/catalog/lifecycle/${entry.id}`, { method: 'PUT', body: { ...(validFrom ? { validFrom } : {}), ...(validUntil ? { validUntil } : {}) } });
       route();
     } catch (e) { err.textContent = e.message; setBtn.disabled = false; }
-  } }, 'Set expiry');
+  } }, withStart ? 'Set dates' : 'Set end date');
   const revokeBtn = armConfirmButton({ class: 'danger' }, 'Revoke', 'Really revoke?', async (disarm) => {
     err.textContent = '';
     revokeBtn.disabled = true;
@@ -2162,7 +2170,15 @@ function lifecycleControls(entry) {
       route();
     } catch (e) { err.textContent = e.message; revokeBtn.disabled = false; disarm(); }
   });
-  return { node: el('div', { class: 'lc-actions' }, dateInput, setBtn, revokeBtn), err };
+  const zone = zoneName();
+  if (!withStart) return { node: el('div', { class: 'lc-actions' }, dateInput, setBtn, revokeBtn), err };
+  return {
+    node: el('div', { class: 'stack' },
+      el('div', { class: 'lc-actions lc-actions--dates' },
+        el('label', {}, 'Starts ', fromInput), el('label', {}, 'Ends ', dateInput), setBtn, revokeBtn),
+      zone ? el('p', { class: 'muted flush' }, `Whole days, ${zone} time.`) : null),
+    err,
+  };
 }
 
 /**
@@ -2634,7 +2650,7 @@ function renderCatalogDetail(detail, entry, host, opener, history) {
       }))
     : null;
 
-  const { node: lcNode, err: lcErr } = lifecycleControls(entry);
+  const { node: lcNode, err: lcErr } = lifecycleControls({ ...entry, validFrom: lc?.validFrom ?? entry.validFrom, validUntil: lc?.validUntil ?? entry.validUntil }, { withStart: true });
   const metaSection = catalogMetaEditor(detail, entry, host);
   const versionsSection = catalogVersionsPanel(detail, entry, host, history);
 
