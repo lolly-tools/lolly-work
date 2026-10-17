@@ -164,7 +164,7 @@ export function createOrangeLogicProvider(id: string, options: OrangeLogicOption
     recordExpected: [...SEARCH_FIELDS, ...formats.map(code => `Path_${code}`), ...custom].map(key => ({ keys: [key], constant: 'SEARCH_FIELDS and configured fields' })),
     notes: ['Structure only. Protected originals are unsupported; public rendition paths are never persisted.'], depth: 1 });
   return {
-    id, kind: 'orange-logic', capabilities: { authKind: 'credential', search: true, thumbnails: formats.some(code => code.toLowerCase() === 'tr1'), expiringUrls: true, originals: false },
+    id, kind: 'orange-logic', capabilities: { authKind: 'credential', search: true, thumbnails: formats.some(code => code.toLowerCase() === 'tr1'), expiringUrls: true, originals: false, ranges: true },
     async listAssets(cursor) {
       if (cursor !== undefined && !/^[1-9][0-9]{0,6}$/.test(cursor)) throw new Error('orange-logic invalid page cursor');
       const page = cursor ? Number(cursor) : 1;
@@ -181,7 +181,7 @@ export function createOrangeLogicProvider(id: string, options: OrangeLogicOption
       if (!validId(remoteId)) throw new Error('orange-logic invalid asset id');
       return report(await searchDoc(combined(`SystemIdentifier:${literal(remoteId)}`), 1, 2, true), 'detail');
     },
-    async resolveBlob(remoteId, formatRef) {
+    async resolveBlob(remoteId, formatRef, options) {
       if (formatRef === 'original') throw new Error('orange-logic protected originals require the Extract Original Document API; this connection provides renditions only');
       const a = await detail(remoteId);
       if (!a) throw new Error('orange-logic asset unavailable in this source');
@@ -192,7 +192,8 @@ export function createOrangeLogicProvider(id: string, options: OrangeLogicOption
       else code = formats.find(code => selected.formats.some(format => format.remoteRef === formatRef && format.remoteRef === `rendition-${code}-${revision(a, code)}`));
       const url = code && fileUrl(a, code);
       if (!url) throw new Error('orange-logic selected rendition is unavailable, substituted or changed; refresh the source');
-      return http.stream(url);
+      // Rendition files are plain GETs, so a viewer's byte range goes upstream after the fresh exposure check above.
+      return http.stream(url, undefined, options?.range);
     },
     async healthCheck() {
       try { mapPage(await searchDoc(combined(), 1, 1), 1, 1); return { ok: true, detail: 'Orange Logic search checked; protected originals are unavailable through this connection.' }; }

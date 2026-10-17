@@ -27,7 +27,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Readable } from 'node:stream';
+import { pipeline, Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
@@ -121,6 +121,7 @@ import { buildFragment, callerSeesProvider, createFederation, credentialContext,
 import { createServedIndex } from '../catalog/served-index.ts';
 import { createCatalogDelivery, retainedToolBytes, type CatalogSnapshotKind } from '../catalog/delivery.ts';
 import { createExtCache, extCacheKey } from '../catalog/ext-cache.ts';
+import { contentRangeValue, parseByteRange, RangeNotSatisfiableError, satisfyByteRange, sliceStream } from '../catalog/byte-range.ts';
 import { browseAssets, normalisedQuery, parseBrowseQuery } from '../catalog/asset-browse.ts';
 import { providerDrift } from '../catalog/drift.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
@@ -5559,6 +5560,21 @@ export function buildApp(deps: AppDeps): App {
       const filePreview = ctx.url.searchParams.get('preview') === '1';
       const convertedPreview = ctx.url.searchParams.get('view') === '1';
       if (convertedPreview && filePreview) return sendError(res, 400, 'INVALID_INPUT', 'choose one preview representation');
+      // One byte range of the file itself, for viewers that read a large PDF in
+      // parts (plan 294). Each part is its own request, so every gate below runs
+      // again for it and an upstream part resolves the asset afresh. HTTP defines
+      // ranges for GET only, and a stale If-Range validator means the whole file.
+      const wantedRange = req.method !== 'GET' || filePreview || convertedPreview ? null : parseByteRange(req.headers.range);
+      const rangeFor = (validator: string) => wantedRange === null
+        || (req.headers['if-range'] !== undefined && req.headers['if-range'] !== validator) ? null : wantedRange;
+      const unsatisfiable = (size?: number): void => {
+        res.writeHead(416, { ...(size !== undefined ? { 'content-range': `bytes */${size}` } : {}), 'cache-control': 'private, no-store' });
+        res.end();
+      };
+      const sendPart = (headers: Record<string, string>, part: { start: number; end: number; size: number }, body: ReadableStream<Uint8Array>): void => {
+        res.writeHead(206, { ...headers, ...INERT_BYTES, 'accept-ranges': 'bytes', 'content-range': contentRangeValue(part), 'content-length': String(part.end - part.start + 1) });
+        pipeline(Readable.fromWeb(body as import('node:stream/web').ReadableStream<Uint8Array>), res, () => {});
+      };
 
       // The local row combined with any upstream availability window imported
       // from the DAM (plans/27 §2), read off the in-process fragment beside the
@@ -5585,9 +5601,16 @@ export function buildApp(deps: AppDeps): App {
           }
           const local = await blobs.get(localId as string);
           if (local) {
+            const range = rangeFor(etag);
+            const part = range ? satisfyByteRange(range, local.stat.size) : null;
+            if (range === false || part === false) {
+              await local.body.cancel().catch(() => {});
+              return unsatisfiable(local.stat.size);
+            }
+            if (part) return sendPart({ 'content-type': local.stat.contentType, 'cache-control': 'private, max-age=300', etag }, part, sliceStream(local.body, part.start, part.end));
             res.writeHead(200, {
               'content-type': local.stat.contentType, ...INERT_BYTES,
-              'cache-control': 'private, max-age=300', etag, 'content-length': String(local.stat.size),
+              'cache-control': 'private, max-age=300', etag, 'accept-ranges': 'bytes', 'content-length': String(local.stat.size),
             });
             Readable.fromWeb(local.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
             return;
@@ -5616,9 +5639,18 @@ export function buildApp(deps: AppDeps): App {
       }
       const cached = cacheKey ? extCache.get(cacheKey) : undefined;
       if (cached) {
+        const range = rangeFor(etag);
+        const part = range ? satisfyByteRange(range, cached.bytes.length) : null;
+        if (range === false || part === false) return unsatisfiable(cached.bytes.length);
+        if (part) {
+          res.writeHead(206, { 'content-type': cached.contentType, ...INERT_BYTES, 'cache-control': bytesCache, etag,
+            'accept-ranges': 'bytes', 'content-range': contentRangeValue(part), 'content-length': String(part.end - part.start + 1) });
+          res.end(cached.bytes.subarray(part.start, part.end + 1));
+          return;
+        }
         res.writeHead(200, {
           'content-type': cached.contentType, ...INERT_BYTES,
-          'cache-control': bytesCache, etag, 'content-length': String(cached.bytes.length),
+          'cache-control': bytesCache, etag, ...(filePreview ? {} : { 'accept-ranges': 'bytes' }), 'content-length': String(cached.bytes.length),
         });
         res.end(cached.bytes);
         return;
@@ -5626,7 +5658,12 @@ export function buildApp(deps: AppDeps): App {
       try {
         const driver = federation.instantiate(rec);
         if (filePreview && !driver.resolveFilePreview) return sendError(res, 404, 'NOT_FOUND', 'this provider has no file preview');
-        const blob = filePreview ? await driver.resolveFilePreview!(remoteId, formatRef) : await driver.resolveBlob(remoteId, formatRef);
+        // Only a driver that declares ranges is asked for part of a file. Any
+        // other answers with the whole file, which HTTP allows.
+        const rangeable = !filePreview && !convertedPreview && driver.capabilities.ranges === true;
+        const range = rangeable ? rangeFor(etag) : null;
+        if (range === false) return unsatisfiable();
+        const blob = filePreview ? await driver.resolveFilePreview!(remoteId, formatRef) : await driver.resolveBlob(remoteId, formatRef, range ? { range } : undefined);
         if (convertedPreview) {
           if (blob.kind !== 'stream') return sendError(res, 422, 'PREVIEW_UNAVAILABLE', 'This source does not support conversion previews.');
           const controller = new AbortController(); const disconnected = () => { if (!res.writableFinished) controller.abort(); }; res.once('close', disconnected);
@@ -5650,17 +5687,24 @@ export function buildApp(deps: AppDeps): App {
         // what the fragment says lets an <img> draw the SVG; INERT_BYTES keeps
         // the bytes script-free and sandboxed when opened directly.
         const servedType = declaredSvg ? 'image/svg+xml' : blob.contentType;
+        // A part is never kept in the byte cache, which holds whole files only.
+        if (blob.range) {
+          if (!range) throw new Error('the provider returned a part nobody asked for');
+          return sendPart({ 'content-type': servedType, 'cache-control': bytesCache, ...(etag ? { etag } : {}) }, blob.range, blob.body);
+        }
         res.writeHead(200, {
           'content-type': servedType,
           ...INERT_BYTES,
           'cache-control': bytesCache,
           ...(etag ? { etag } : {}),
+          ...(rangeable ? { 'accept-ranges': 'bytes' } : {}),
           ...(blob.size !== undefined ? { 'content-length': String(blob.size) } : {}),
         });
         const body = Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>);
         if (cacheKey) body.pipe(extCache.tee(cacheKey, servedType)).pipe(res);
         else body.pipe(res);
-      } catch {
+      } catch (error) {
+        if (error instanceof RangeNotSatisfiableError) return unsatisfiable(error.size);
         return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
       }
       return;
