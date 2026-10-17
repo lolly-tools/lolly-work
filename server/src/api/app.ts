@@ -100,6 +100,8 @@ import { registerVersionRoutes } from '../versions/routes.ts';
 import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader } from '../render/read-ticket.ts';
 import { projectSubmissionInput, ProjectSubmissionError } from '../catalog/project-source.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
+import { registerUploadRoutes } from '../uploads/routes.ts';
+import { readUploadReference, removeUpload, removeUploadsOwnedBy, uploadOwner, uploadPolicy, UploadReferenceError, type UploadRecord } from '../uploads/scoped.ts';
 import { effectiveAccessFor } from '../projects/effective-access.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
 import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
@@ -3722,7 +3724,7 @@ export function buildApp(deps: AppDeps): App {
     const actor = await requireAction(req, res, 'instance.config');
     if (!actor) return;
     const result = await runRetention({ config, store, blobs });
-    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept) {
+    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept) {
       await audit(`user:${actor.id}`, 'retention.run', 'instance', { ...result });
     }
     sendJson(res, 200, result);
@@ -3768,6 +3770,7 @@ export function buildApp(deps: AppDeps): App {
     // Unfinished uploads are nobody's shared work: they go (parts, then rows)
     // so their users FK does not block the erasure. Ready files block above.
     await removeUploadsBy(store, blobs, target.id);
+    await removeUploadsOwnedBy(store, blobs, `user:${target.id}`);
     const result = await store.eraseUserAccount(target.id);
     if (result.status === 'referenced') return refused();
     if (result.status === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no such user');
@@ -7124,17 +7127,35 @@ export function buildApp(deps: AppDeps): App {
     const declaredType = (ctx.url.searchParams.get('type') ?? '').trim();
     if (!name && !target && !isDataSubmissionType(declaredType)) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
     const maxBytes = config.policy.submit.maxBytes;
-    let projectInput: Awaited<ReturnType<typeof projectSubmissionInput>>;
-    try { projectInput = await projectSubmissionInput(ctx.url.searchParams, { config, store, blobs, user, currentUser: () => memberOf(req), access: projectAccessOf }); }
-    catch (error) {
-      if (error instanceof ProjectSubmissionError) return sendError(res, error.status, error.code, error.message);
-      throw error;
+    let projectInput: Awaited<ReturnType<typeof projectSubmissionInput>> = null;
+    // `?uploadId=…&checksum=…` names a finished catalog-submission upload
+    // (uploads/scoped.ts) in place of the request body: the resumable route for
+    // an original too large for one request.
+    let uploaded: { upload: UploadRecord; bytes: Buffer } | null = null;
+    if (ctx.url.searchParams.has('uploadId')) {
+      if (ctx.url.searchParams.has('projectId') || ctx.url.searchParams.has('fileId')) return sendError(res, 400, 'INVALID_INPUT', 'name a project file or an upload, not both');
+      try {
+        uploaded = await readUploadReference({ store, blobs, policy: uploadPolicy(config) },
+          { id: ctx.url.searchParams.get('uploadId'), checksum: ctx.url.searchParams.get('checksum') }, uploadOwner(user), 'catalog-submission', maxBytes);
+      } catch (error) {
+        if (error instanceof UploadReferenceError) return sendError(res, error.status, error.code, error.message);
+        throw error;
+      }
+    } else {
+      try { projectInput = await projectSubmissionInput(ctx.url.searchParams, { config, store, blobs, user, currentUser: () => memberOf(req), access: projectAccessOf }); }
+      catch (error) {
+        if (error instanceof ProjectSubmissionError) return sendError(res, error.status, error.code, error.message);
+        throw error;
+      }
     }
     let bytes: Buffer;
     try {
       if (projectInput) {
         if ((await readRaw(req, 1)).length) return sendError(res, 400, 'INVALID_INPUT', 'a project source takes no uploaded body');
         bytes = projectInput.bytes;
+      } else if (uploaded) {
+        if ((await readRaw(req, 1)).length) return sendError(res, 400, 'INVALID_INPUT', 'an upload reference takes no request body');
+        bytes = uploaded.bytes;
       } else bytes = await readRaw(req, maxBytes);
     } catch {
       return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `submission exceeds the ${maxBytes} byte cap (policy.submit.maxBytes)`);
@@ -7152,8 +7173,11 @@ export function buildApp(deps: AppDeps): App {
     const toolIdParam = (ctx.url.searchParams.get('toolId') ?? '').trim();
     const clientRef = (ctx.url.searchParams.get('clientRef') ?? '').trim();
 
-    const release = projectInput ? await store.claimCatalogSubmission(`${user.id}:${projectInput.source.projectId}:${projectInput.source.fileId}:${projectInput.source.checksum}`) : undefined;
-    if (release === null) return sendError(res, 409, 'SUBMISSION_BUSY', 'this project file is already being submitted; retry shortly');
+    const release = projectInput ? await store.claimCatalogSubmission(`${user.id}:${projectInput.source.projectId}:${projectInput.source.fileId}:${projectInput.source.checksum}`)
+      : uploaded ? await store.claimCatalogSubmission(`${user.id}:upload:${uploaded.upload.id}`) : undefined;
+    if (release === null) return sendError(res, 409, 'SUBMISSION_BUSY', projectInput ? 'this project file is already being submitted; retry shortly' : 'this upload is already being submitted; retry shortly');
+    // A submission that finished while this one read the bytes has used the upload.
+    if (uploaded && !await store.getUpload(uploaded.upload.id)) { await release?.(); return sendError(res, 404, 'NOT_FOUND', 'no such finished upload'); }
     let outcome: Awaited<ReturnType<typeof submitAsset>>;
     try { outcome = await submitAsset(submitDeps(), {
       bytes,
@@ -7165,11 +7189,15 @@ export function buildApp(deps: AppDeps): App {
       tags: list('tags').slice(0, 32),
       ...(type ? { type } : {}),
       ...(declaredGroups.length ? { groups: declaredGroups } : {}),
-      ...(projectInput ? { contentType: projectInput.contentType } : req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
+      ...(projectInput ? { contentType: projectInput.contentType } : uploaded ? { contentType: uploaded.upload.contentType }
+        : req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
       submitter: { id: user.id, groups: user.groups },
       ...(toolIdParam ? { toolId: toolIdParam } : {}),
       ...(clientRef ? { clientRef } : {}),
     }); } finally { await release?.(); }
+    // A submission used its upload, whatever the review decides next. A removal
+    // that fails leaves the upload to expire.
+    if (outcome.ok && uploaded) await removeUpload(store, blobs, uploaded.upload).catch(() => false);
 
     if (!outcome.ok) {
       // The verdict is audited either way: a refusal is exactly the event an
@@ -7197,6 +7225,7 @@ export function buildApp(deps: AppDeps): App {
       outcome: outcome.duplicate ? 'duplicate' : state,
       checksum: outcome.checksum, size: bytes.length, scan: outcome.scan,
       ...(projectInput ? { projectSource: projectInput.source } : {}),
+      ...(uploaded ? { uploadId: uploaded.upload.id } : {}),
       credential: outcome.credential,
       ...(outcome.version ? { version: outcome.version } : {}),
       ...(trimmed ? { trimmed } : {}),
@@ -8435,6 +8464,7 @@ export function buildApp(deps: AppDeps): App {
   });
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit, renderFileReader: createRenderFileReader({ secret: linkVerify, store, projectAccessOf }) });
+  registerUploadRoutes(router, { config, store, blobs, memberOf, serviceAccountOf, audit });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
   registerProjectTransferInventoryRoutes(router, { store, memberOf, requireAction, projectAccessOf, delegated: req => !!agentRequests.principal(req) });
   registerShareRoutes(router, { config, store, memberOf, requireAction, projectAccessOf, audit });
@@ -9540,6 +9570,10 @@ export function buildApp(deps: AppDeps): App {
       groups: user?.groups ?? [],
     };
   };
+  /** Reads the caller's own finished automation-input uploads for the document
+   *  verbs; an anonymous principal owns none, so its references all fail. */
+  const automationUploadReader = (principal: string) => async (ref: unknown): Promise<Uint8Array> =>
+    new Uint8Array((await readUploadReference({ store, blobs, policy: uploadPolicy(config) }, ref, principal, 'automation-input')).bytes);
   const automationBody = async (req: IncomingMessage, res: ServerResponse): Promise<Record<string, unknown> | null> => {
     const body = await readJson(req);
     if (!body || typeof body !== 'object' || Array.isArray(body)) { sendError(res, 400, 'INVALID_INPUT', 'JSON object body required'); return null; }
@@ -9685,7 +9719,7 @@ export function buildApp(deps: AppDeps): App {
       const id = value && typeof value === 'object' ? (value as { toolId?: unknown }).toolId : undefined;
       if (typeof id === 'string' && !await automationMayUse(caller, id)) throw new Error('tool.use is no longer granted.');
     }
-    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) };
+    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal) };
     if (job.verb === 'batch') {
       if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const record = job;
@@ -9787,7 +9821,7 @@ export function buildApp(deps: AppDeps): App {
       const body = await automationBody(req, res); if (!body) return;
       if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
       const hostedResolver = hostedAssetResolverFor(caller.groups);
-      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver };
+      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal) };
       const execute = async (): Promise<unknown> => {
         let result: unknown;
         if (verb === 'compile') result = await compileVerb(automationContext, body as unknown as Parameters<typeof compileVerb>[1]);
@@ -9807,7 +9841,10 @@ export function buildApp(deps: AppDeps): App {
         return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
       }
       try { return sendJson(res, 200, await execute()); }
-      catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+      catch (e) {
+        if (e instanceof UploadReferenceError) return sendError(res, e.status, e.code, e.message);
+        return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message);
+      }
     });
   }
 

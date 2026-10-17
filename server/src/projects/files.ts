@@ -8,15 +8,20 @@
  * after `policy.projectFiles.uploadTtlHours`; from then on it counts toward
  * no budget and the sweep below removes it.
  */
-import { createHash } from 'node:crypto';
 import type { BlobStore } from '../blobs/types.ts';
 import type { InstanceConfig } from '../config/instance.ts';
 import type { Store } from '../store/types.ts';
+import {
+  parseTransferManifest, removeTransferParts, sha256, TRANSFER_MAX_BYTES, TRANSFER_PART_BYTES, type TransferPart, type TransferParts,
+} from '../uploads/parts.ts';
 
-export const PROJECT_FILE_PART_BYTES = 1024 * 1024;
-/** The hard ceiling: migration 0041's size CHECK. The configured per-file cap
- *  (`policy.projectFiles.maxFileBytes`) can only be lower. */
-export const PROJECT_FILE_MAX_BYTES = 256 * 1024 * 1024;
+/** Bytes travel as transfer parts (uploads/parts.ts), the protocol every
+ *  resumable upload into this instance shares. */
+export const PROJECT_FILE_PART_BYTES = TRANSFER_PART_BYTES;
+/** The hard ceiling: migration 0075's size CHECK, which replaced 0041's 256
+ *  MiB one. The configured per-file cap (`policy.projectFiles.maxFileBytes`)
+ *  can only be lower. */
+export const PROJECT_FILE_MAX_BYTES = TRANSFER_MAX_BYTES;
 /** Unfinished uploads one person may hold at once, across the instance. */
 export const PROJECT_FILE_PENDING_LIMIT = 16;
 /** The bytes one person's unfinished uploads may reserve at once, in largest
@@ -51,7 +56,7 @@ export const PROJECT_FILE_DEFAULTS: Readonly<ProjectFilePolicy> = {
   enabled: true, maxFileBytes: 25 * MIB, projectBudgetBytes: 128 * MIB, instanceBudgetBytes: 256 * MIB, uploadTtlHours: 24,
 };
 
-export interface ProjectFilePart { size: number; checksum: string }
+export type ProjectFilePart = TransferPart;
 export interface ProjectFileRecord {
   id: string;
   projectId: string;
@@ -74,7 +79,9 @@ export interface ProjectFileLimits { projectBudgetBytes: number; instanceBudgetB
 export type ProjectFileReservation = 'reserved' | 'project-budget' | 'instance-budget' | 'pending' | 'refused';
 
 export const filePartBlobId = (file: Pick<ProjectFileRecord, 'id'>, part: number): string => `project-file/${file.id}/${part}`;
-export const fileChecksum = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+export const fileChecksum = sha256;
+/** A file's parts as one transfer, for the shared primitive. */
+export const projectFileParts = (blobs: BlobStore, file: ProjectFileRecord): TransferParts => ({ blobs, partId: (n) => filePartBlobId(file, n), manifest: file });
 /** The asset id a session uses for a project file (the shell's org/team-files.ts). */
 export const projectFileAssetId = (fileId: string): string => `user/team/${fileId}`;
 /** What one file counts toward the budgets (see PROJECT_FILE_OVERHEAD_BYTES). */
@@ -123,26 +130,17 @@ function projectFileAsset(value: unknown): Record<string, unknown> {
 }
 
 /** Metadata is fixed before bytes arrive. Each part can only be retried with
- * the declared bytes, so finalization and a repeated PUT cannot race a change. */
+ * the declared bytes, so finalization and a repeated PUT cannot race a change.
+ * The size, digests and parts follow the transfer manifest rules
+ * (uploads/parts.ts `parseTransferManifest`). */
 export function projectFileInput(value: unknown): Pick<ProjectFileRecord, 'name' | 'size' | 'checksum' | 'contentType' | 'parts' | 'asset'> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
-  const digest = (s: unknown): s is string => typeof s === 'string' && /^[a-f0-9]{64}$/.test(s);
   if (!validProjectFileName(v.name)) return null;
-  if (!Number.isSafeInteger(v.size) || (v.size as number) < 1 || (v.size as number) > PROJECT_FILE_MAX_BYTES || !digest(v.checksum)) return null;
   if (typeof v.contentType !== 'string' || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(v.contentType) || v.contentType.length > 100) return null;
-  if (!Array.isArray(v.parts) || v.parts.length !== Math.ceil((v.size as number) / PROJECT_FILE_PART_BYTES)) return null;
-  const parts: ProjectFilePart[] = [];
-  for (let n = 0; n < v.parts.length; n++) {
-    const p = v.parts[n];
-    const size = Math.min(PROJECT_FILE_PART_BYTES, (v.size as number) - n * PROJECT_FILE_PART_BYTES);
-    if (!p || typeof p !== 'object' || p.size !== size || !digest(p.checksum)) return null;
-    parts.push({ size, checksum: p.checksum });
-  }
-  // One part is the whole file, so the two digests must agree; finalize then
-  // has nothing left to prove for the common small image.
-  if (parts.length === 1 && parts[0]!.checksum !== v.checksum) return null;
-  return { name: v.name.trim(), size: v.size as number, checksum: v.checksum, contentType: v.contentType, parts, asset: projectFileAsset(v.asset) };
+  const manifest = parseTransferManifest(v, PROJECT_FILE_MAX_BYTES);
+  if (!manifest) return null;
+  return { name: v.name.trim(), ...manifest, contentType: v.contentType, asset: projectFileAsset(v.asset) };
 }
 
 export const activeProjectFile = (f: ProjectFileRecord, now = Date.now()): boolean => f.ready || Date.parse(f.expiresAt) > now;
@@ -162,9 +160,10 @@ export function projectFileWire(f: ProjectFileRecord, names: ReadonlyMap<string,
  *  pass: that PUT checked for the row before the row went, so it kept its
  *  part, and a PUT that checks after the row went deletes its own. */
 export async function removeProjectFile(store: Store, blobs: BlobStore, file: ProjectFileRecord): Promise<boolean> {
-  for (let n = 0; n < file.parts.length; n++) await blobs.delete(filePartBlobId(file, n));
+  const parts = projectFileParts(blobs, file);
+  await removeTransferParts(parts, file.parts.length);
   const removed = await store.deleteProjectFile(file.id);
-  for (let n = 0; n < file.parts.length; n++) await blobs.delete(filePartBlobId(file, n));
+  await removeTransferParts(parts, file.parts.length);
   return removed;
 }
 

@@ -41,6 +41,7 @@ import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryPasskeys } from '../iam/passkeys/memory.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
+import { createMemoryUploadStore } from '../uploads/memory.ts';
 import {
   COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
   type ProjectTransferMetadata,
@@ -239,6 +240,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
     storageKind: 'memory',
     ...createMemoryRenderStore(),
+    ...createMemoryUploadStore(),
     ...createMemoryOidcLogout(),
     ...passkeys.store,
     brandPersistence: 'ephemeral',

@@ -20,6 +20,7 @@ import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
 import { runRetention } from './audit/retention.ts';
 import { scheduleProjectFileSweep } from './projects/files.ts';
+import { scheduleUploadSweep } from './uploads/scoped.ts';
 import { administratorAddresses, createNotifier } from './notify/notify.ts';
 import { notifyOffloadAlerts } from './observability/offload-trigger.ts';
 import { expiringCredentials } from './catalog/credential-expiry.ts';
@@ -218,6 +219,8 @@ if (config.policy.retention.telemetryDays > 0 || config.policy.retention.auditDa
 // POST /api/v1/retention/run still sweeps whenever it is called. The boot pass
 // is not awaited: a large backlog must not hold up listening.
 scheduleProjectFileSweep(store, blobs);
+// Expired scoped uploads (uploads/scoped.ts) on the same schedule.
+scheduleUploadSweep(store, blobs);
 
 // Credential expiry (plans/36 §2): the daily nudge beside the always-on
 // surfaces (provider rows, console chip, the expiry-days gauge). Threshold-

@@ -6,7 +6,12 @@ import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts
 import { withRenderHost } from '../render/host.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 
-export interface AutomationContext { pack: string; profile: Profile; hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null> }
+export interface AutomationContext {
+  pack: string; profile: Profile; hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>;
+  /** The bytes of a finished automation-input upload the caller owns, named
+   *  `{ id, checksum }` (uploads/scoped.ts `readUploadReference`). */
+  readUpload?: (ref: unknown) => Promise<Uint8Array>;
+}
 export interface ToolRequest { toolId: string; inputs?: Record<string, unknown>; designVersion?: string }
 
 async function load(pack: string, toolId: string): Promise<{ engine: Awaited<ReturnType<typeof loadEngine>>; tool: LoadedTool }> {
@@ -38,10 +43,15 @@ export async function validateVerb(ctx: AutomationContext, body: Record<string, 
   return { ok: false, errors: [{ path: '/', message: 'toolId, document, or manifest is required' }], warnings: [] };
 }
 
-export async function documentVerb(ctx: AutomationContext, verb: 'inspect' | 'measure' | 'optimize', req: ToolRequest & { document?: unknown; bytesBase64?: string; source?: string; opts?: Record<string, unknown> }): Promise<unknown> {
+export async function documentVerb(ctx: AutomationContext, verb: 'inspect' | 'measure' | 'optimize', req: ToolRequest & { document?: unknown; bytesBase64?: string; source?: string; upload?: unknown; opts?: Record<string, unknown> }): Promise<unknown> {
   const engine = await loadEngine();
   let bytes: Uint8Array | undefined;
-  if (typeof req.bytesBase64 === 'string') bytes = new Uint8Array(Buffer.from(req.bytesBase64, 'base64'));
+  if (req.upload !== undefined) {
+    // An upload stands in for inline bytes, never beside them.
+    if (req.bytesBase64 !== undefined || req.source !== undefined) throw new Error('give one of bytesBase64, source or upload');
+    if (!ctx.readUpload) throw new Error('upload references are not available here');
+    bytes = await ctx.readUpload(req.upload);
+  } else if (typeof req.bytesBase64 === 'string') bytes = new Uint8Array(Buffer.from(req.bytesBase64, 'base64'));
   else if (typeof req.source === 'string') {
     const ref = parseHostedProviderRef(req.source);
     if (!ref || !ctx.hostedResolver) throw new Error('source must be a configured provider ref');

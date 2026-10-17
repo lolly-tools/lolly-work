@@ -405,6 +405,11 @@
           "summary": "Command reference for the admin CLI."
         },
         {
+          "slug": "resumable-uploads",
+          "title": "Resumable uploads",
+          "summary": "Decision record: the parts protocol over tus, its resume report, and the scopes that share it."
+        },
+        {
           "slug": "status",
           "title": "Status and roadmap",
           "summary": "What is built, what is pending, and the honest gaps before go-live."

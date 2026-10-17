@@ -99,6 +99,7 @@ Connecting your first one end to end, with commands:
 |---|---|
 | [api](api.md) | Every route with the action it requires, and the common error codes |
 | [cli](cli.md) | `lw` command reference |
+| [resumable uploads](resumable-uploads.md) | Decision record: the parts protocol over tus, resuming, and the scopes that share it |
 | [status](status.md) | What is built, the open gaps in priority order, roadmap shape |
 
 ## Conventions

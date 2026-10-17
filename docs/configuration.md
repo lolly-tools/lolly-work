@@ -212,10 +212,16 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `retention.telemetryDays` | `0` | delete telemetry events older than this; `0` keeps everything |
 | `retention.auditDays` | `0` | trim audit rows older than this. The chain stays verifiable (the boundary's seq + hash are anchored before anything is deleted, and the head row is never trimmed), and a trim never passes the SIEM delivery cursor - an unreachable receiver pauses audit retention rather than losing events. See [operations](operations.md#retention-and-erasure) |
 | `projectFiles.enabled` | `true` | shared files inside team projects. They also need a durable store: on the memory store they are off whatever this says. See [sharing](sharing.md#shared-files) |
-| `projectFiles.maxFileBytes` | `26214400` | largest single file (25 MiB); at most `268435456` (256 MiB). Over it: `413 PROJECT_FILE_TOO_LARGE` |
+| `projectFiles.maxFileBytes` | `26214400` | largest single file (25 MiB); at most `4294967296` (4 GiB, migration 0075). Over it: `413 PROJECT_FILE_TOO_LARGE` |
 | `projectFiles.projectBudgetBytes` | `134217728` | bytes of files one project may hold (128 MiB). Over it: `413 PROJECT_FILE_BUDGET` |
 | `projectFiles.instanceBudgetBytes` | `268435456` | bytes of files all projects together may hold (256 MiB). Over it: `413 INSTANCE_FILE_BUDGET` |
 | `projectFiles.uploadTtlHours` | `24` | the longest an unfinished upload stays open; at most 720. It expires sooner, 15 minutes after its begin or its last accepted part. An expired upload counts toward no budget; once it is an hour past expiry it is removed at the next upload or retention run |
+| `uploads.enabled` | `true` | scoped uploads: private, resumable uploads a person or a service token names by reference as a catalog submission original or an automation input. See [resumable uploads](resumable-uploads.md) |
+| `uploads.maxFileBytes` | `67108864` | largest single upload (64 MiB); at most `4294967296` (4 GiB). A catalog original is also capped at `submit.maxBytes`. Over it: `413 UPLOAD_TOO_LARGE` |
+| `uploads.ownerBudgetBytes` | `134217728` | bytes one person or service token may hold in uploads that have not expired (128 MiB). Over it: `413 UPLOAD_BUDGET` |
+| `uploads.instanceBudgetBytes` | `268435456` | bytes all owners together may hold (256 MiB). Over it: `413 INSTANCE_UPLOAD_BUDGET` |
+| `uploads.uploadTtlHours` | `24` | the longest an unfinished upload stays open; at most 720. It expires sooner, 15 minutes after its begin or its last accepted part |
+| `uploads.readyTtlHours` | `24` | how long a finished upload can be named after it finished; at most 720. A catalog submission removes its upload sooner |
 
 `policy.invites` is optional; leaving it out keeps the defaults above. Unknown keys and
 values outside the lists are refused at startup. The tier and the domain list govern
@@ -259,6 +265,19 @@ past it. Raise them only with the storage to match.
 ```json
 "policy": {
   "projectFiles": { "maxFileBytes": 10485760, "projectBudgetBytes": 67108864, "instanceBudgetBytes": 268435456 }
+}
+```
+
+`policy.uploads` follows the same rules: whole numbers above zero, with `maxFileBytes` no
+larger than `ownerBudgetBytes` and `ownerBudgetBytes` no larger than `instanceBudgetBytes`.
+Budgets count every upload that has not expired, finished or not, at its size plus 4096
+bytes, and one owner may hold 16 unfinished uploads at once. The bytes live in the same blob
+store as project files, so the two instance budgets add up. To take a 500 MiB recording into
+a project, for example, lift the project file cap and its budgets together:
+
+```json
+"policy": {
+  "projectFiles": { "maxFileBytes": 629145600, "projectBudgetBytes": 1073741824, "instanceBudgetBytes": 2147483648 }
 }
 ```
 
