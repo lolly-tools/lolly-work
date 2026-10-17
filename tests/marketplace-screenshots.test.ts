@@ -3,18 +3,21 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
-import { CATALOGUE_REFUSED, LISTING_SHOTS, LISTING_VIEWPORT, MANIFEST_FILE, pngDimensions } from '../scripts/capture-marketplace-screenshots.ts';
+import { LISTING_SHOTS, LISTING_VIEWPORT, MANIFEST_FILE, PINNED_KEY_REFUSAL, pngDimensions } from '../scripts/capture-marketplace-screenshots.ts';
+import { release } from '../scripts/marketplace-packages.ts';
 
 const assets = new URL('../deploy/marketplaces/assets/', import.meta.url);
+// The assets README, SUBMISSIONS.md and QUALIFICATION.md name this release as the one
+// whose shell views are withheld.
+const WITHHELD_RELEASE = '1.1.1';
 
 test('listing screenshots are the recorded captures from the neutral CI fixture', () => {
   const manifest = JSON.parse(readFileSync(new URL(MANIFEST_FILE, assets), 'utf8'));
   assert.equal(manifest.schemaVersion, 1);
   assert.match(manifest.source, /^[a-f0-9]{40}$/, 'captures name the Work source that ran the fixture');
   assert.match(manifest.run, /^https:\/\/github\.com\/lolly-tools\/lolly-work\/actions\/runs\/\d+$/, 'captures come from an upstream CI run');
-  assert.match(manifest.release.version, /^\d+\.\d+\.\d+$/);
-  assert.match(manifest.release.serverImage, /^ghcr\.io\/lolly-tools\/lolly-work-server@sha256:[a-f0-9]{64}$/);
-  assert.match(manifest.release.shellSha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(manifest.release, { version: release.version, serverImage: release.serverImage, shellSha256: release.shell.sha256 },
+    'captures show the release named in release.json; refresh them when the release changes');
   assert.deepEqual(manifest.viewport, { ...LISTING_VIEWPORT, deviceScaleFactor: 1, colorScheme: 'light' });
   type Entry = { file: string; title: string; path: string; ready: string; catalogue: boolean; status: string; sha256?: string; reason?: string };
   const entries: Entry[] = manifest.shots;
@@ -23,9 +26,9 @@ test('listing screenshots are the recorded captures from the neutral CI fixture'
   for (const entry of entries.filter(entry => entry.status !== 'captured')) {
     assert.equal(entry.status, 'withheld');
     assert.ok(entry.catalogue, `${entry.file} may be withheld only when the shell refuses the catalogue`);
-    assert.equal(entry.reason, CATALOGUE_REFUSED);
+    assert.equal(entry.reason, PINNED_KEY_REFUSAL);
+    assert.equal(manifest.release.version, WITHHELD_RELEASE, `${entry.file} is documented as withheld for ${WITHHELD_RELEASE} only; update the docs with this check`);
   }
-  assert.ok(captured.length >= 1);
   for (const entry of captured) {
     const bytes = readFileSync(new URL(entry.file, assets));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.sha256, `${entry.file} matches its recorded capture`);

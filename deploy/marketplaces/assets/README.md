@@ -19,7 +19,8 @@ Each file is 1280 x 720, the size Azure Marketplace listings take, and light the
 [`screenshots.json`](screenshots.json) records the Work source that ran the fixture,
 the CI run, the release version, server image digest, shell checksum, browser and the
 SHA-256 of every captured file. `tests/marketplace-screenshots.test.ts` checks the
-files against that record.
+files against that record, and the record against `release.json`: a release change
+fails the test until the captures are refreshed.
 
 ## Shell views withheld for 1.1.1
 
@@ -30,10 +31,12 @@ shell has the publisher's key built in. Signed in, the gallery says it couldn't 
 the tools and a tool view shows only the refusal. The fixture's API checks still pass
 because they never verify that signature in a browser.
 
-`screenshots.json` records the two shell views as withheld, with that reason, and the
-capture run uploads what the browser showed under `diagnostics/`. The same recipes
-save both views once a release's shell accepts the installation's catalogue. A
-listing needs that release: these views are what an operator opens first.
+`screenshots.json` records the two shell views as withheld, with the shell's own
+refusal message as the reason, and the capture run uploads what the browser showed
+under `diagnostics/`. A shell view is never captured while the shell shows a refusal,
+and a refusal for any other reason fails the capture run. The same recipes save both
+views once a release's shell accepts the installation's catalogue. A listing needs
+that release: these views are what an operator opens first.
 
 ## Refresh the captures
 

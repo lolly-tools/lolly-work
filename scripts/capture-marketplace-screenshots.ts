@@ -34,8 +34,11 @@ export const LISTING_SHOTS: readonly ListingShot[] = Object.freeze([
   { file: 'console-tool-policy.png', title: 'Tool policy in the Work console', path: '/admin#/instance?tab=tools', ready: '#inst-panel', catalogue: false },
 ]);
 
-/** Why a catalogue view is recorded without a file when the shell refuses the catalogue. */
-export const CATALOGUE_REFUSED = 'The shell refused the installation catalogue: signature does not verify against the pinned key';
+/**
+ * The 1.1.1 shell's refusal of the installation's catalogue (Lolly catalog/trust-store.ts).
+ * A catalogue view is withheld only for this refusal; any other refusal fails the capture.
+ */
+export const PINNED_KEY_REFUSAL = 'Catalog refused: signature does not verify against the pinned key';
 
 /** Width and height from a PNG's IHDR chunk, or null when the bytes are not a PNG. */
 export function pngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
@@ -82,7 +85,6 @@ interface Page {
   goto(url: string, options: { waitUntil: 'load'; timeout: number }): Promise<unknown>;
   locator(selector: string): Locator;
   waitForURL(predicate: (url: URL) => boolean, options: { timeout: number }): Promise<void>;
-  waitForFunction(expression: string, arg: undefined, options: { timeout: number; polling: number }): Promise<unknown>;
   waitForTimeout(ms: number): Promise<void>;
   screenshot(options: { type: 'png'; animations: 'disabled'; caret: 'hide' }): Promise<Uint8Array>;
   evaluate(expression: string): Promise<unknown>;
@@ -112,13 +114,16 @@ const INIT_SCRIPT = "try{for(const k of ['lolly-welcome-dismissed','lolly-tips-d
 // What a view that never became ready was showing, for the CI log.
 const DESCRIBE = "JSON.stringify({href:location.href,view:document.querySelector('#view')?.className??null,text:document.body.innerText.replace(/\\s+/g,' ').slice(0,500)})";
 
-// Lolly's shell marks a refused catalogue on the root element (catalog/integrity.ts).
-const REFUSED = "document.documentElement.dataset.catalogTrust==='refused'";
+// Lolly's shell marks a refused catalogue on the root element and shows its reason in a
+// badge (catalog/integrity.ts). Null while the shell has not refused the catalogue.
+const REFUSAL = "document.documentElement.dataset.catalogTrust==='refused'?(document.getElementById('lolly-catalog-refused')?.textContent??''):null";
 // One-time prompts that would cover a view. The profile nudge is remembered in the
 // profile, not in localStorage, so it is dismissed through its own button.
 const DISMISS = ['.personalize-nudge-dismiss'];
 
 // Settled when the element count stops changing across three samples and the fonts are in.
+// Node polls it through page.evaluate, which DevTools runs outside the page's CSP. Work's
+// sign-in and console CSPs refuse the eval behind waitForFunction's repeated polls.
 const STABLE_DOM = "(()=>{const n=document.querySelectorAll('*').length,w=globalThis;w.__lwStable=n===w.__lwCount?(w.__lwStable||0)+1:0;w.__lwCount=n;return w.__lwStable>=3&&document.fonts.status==='loaded'})()";
 
 export interface CaptureOptions {
@@ -160,14 +165,24 @@ export async function captureListingScreenshots(options: CaptureOptions): Promis
       colorScheme: 'light', reducedMotion: 'no-preference', forcedColors: 'none',
     });
     await context.addInitScript({ content: INIT_SCRIPT });
+    // Only the 30 s limit lets a capture go ahead unsettled. Any other error is raised.
+    const settle = async (page: Page, shot: ListingShot) => {
+      const deadline = Date.now() + 30000;
+      while (await page.evaluate(STABLE_DOM) !== true) {
+        if (Date.now() >= deadline) return console.log(`${shot.file}: the page kept changing for 30 s; captured anyway`);
+        await page.waitForTimeout(500);
+      }
+    };
     const capture = async (page: Page, shot: ListingShot) => {
       for (const selector of DISMISS) {
         const button = page.locator(selector).first();
         if (await button.isVisible()) await button.click();
       }
-      await page.waitForFunction(STABLE_DOM, undefined, { timeout: 30000, polling: 500 }).catch(() => console.log(`${shot.file}: the page kept changing; captured anyway`));
+      await settle(page, shot);
       await page.waitForTimeout(1500);
       const bytes = await page.screenshot({ type: 'png', animations: 'disabled', caret: 'hide' });
+      // A catalogue view never ships with the shell's refusal on screen.
+      if (shot.catalogue && await withhold(page, shot)) return;
       const size = pngDimensions(bytes);
       if (size?.width !== LISTING_VIEWPORT.width || size.height !== LISTING_VIEWPORT.height) throw new Error(`${shot.file} is not ${LISTING_VIEWPORT.width} x ${LISTING_VIEWPORT.height}`);
       writeFileSync(join(options.outDir, shot.file), bytes);
@@ -196,6 +211,18 @@ export async function captureListingScreenshots(options: CaptureOptions): Promis
         console.log(`${shot.file}: ${String(await page.evaluate(DESCRIBE))}`);
       } catch (error) { console.log(`${shot.file}: no diagnostics: ${(error as Error).message.split('\n')[0]}`); }
     };
+    // A release whose shell refuses the installation's catalogue has no catalogue view to
+    // show. The known pinned-key refusal is recorded with the shell's own message instead
+    // of publishing an error screen; any other refusal is a capture failure.
+    const withhold = async (page: Page, shot: ListingShot) => {
+      const refusal = await page.evaluate(REFUSAL);
+      if (refusal === null) return false;
+      if (refusal !== PINNED_KEY_REFUSAL) throw new Error(`the shell refused the catalogue: ${String(refusal) || 'no reason shown'}`);
+      shots.push({ ...shot, status: 'withheld', reason: refusal });
+      console.log(`${shot.file}: withheld. ${refusal}`);
+      await diagnose(page, shot);
+      return true;
+    };
     const [signIn, ...signedIn] = LISTING_SHOTS;
     // The sign-in capture doubles as the real browser sign-in for the later views.
     const page = await open(signIn!);
@@ -213,14 +240,7 @@ export async function captureListingScreenshots(options: CaptureOptions): Promis
         if (shot.catalogue) {
           await view.locator(`${shot.ready}, html[data-catalog-trust="refused"]`).first().waitFor({ state: 'attached', timeout: 120000 });
           await view.waitForTimeout(5000);
-          // A release whose shell cannot verify the installation's catalogue has no view
-          // to show. Record that instead of publishing an error screen.
-          if (await view.evaluate(`${REFUSED}&&!document.querySelector(${JSON.stringify(shot.ready)})`) === true) {
-            shots.push({ ...shot, status: 'withheld', reason: CATALOGUE_REFUSED });
-            console.log(`${shot.file}: withheld. ${CATALOGUE_REFUSED}`);
-            await diagnose(view, shot);
-            continue;
-          }
+          if (await withhold(view, shot)) continue;
         }
         await view.locator(shot.ready).first().waitFor({ state: 'attached', timeout: 120000 });
         await capture(view, shot);
