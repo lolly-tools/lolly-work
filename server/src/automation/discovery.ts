@@ -66,7 +66,9 @@ export interface DiscoveryDeps {
   tokens(): boolean;
   designRevision(): string;
   catalogVersion(): Promise<string>;
-  managedRules(toolId: string, format: string): Promise<ManagedRuleContext | undefined>;
+  /** The design-system rules for a format, or with none the rules every format
+   *  shares (brand/rules.ts requestRuleContext), as compile and validate apply them. */
+  managedRules(toolId: string, format?: string): Promise<ManagedRuleContext | undefined>;
   caps: RenderCapabilities;
   allowHooksInFastPath: boolean;
   /** A C2PA signer resolves, so server renders carry Content Credentials. */
@@ -118,12 +120,13 @@ function sendWithEtag(req: IncomingMessage, res: ServerResponse, body: Record<st
   sendJson(res, 200, { ...body, etag }, { etag });
 }
 
-/** The caller's effective contract for one described tool. */
-async function contractFor(deps: DiscoveryDeps, described: ToolDescription, overlays: Map<string, ToolOverlay>, groups: string[], requested?: string) {
+/** The caller's effective contract for one described tool. Without a requested
+ *  format it carries only the design-system rules every format shares, the same
+ *  rules a compile, validate or package that names no format is checked against. */
+async function contractFor(deps: DiscoveryDeps, described: ToolDescription, overlays: Map<string, ToolOverlay>, groups: string[], format?: string) {
   const original = overlays.get(described.toolId);
   const allowed = policyFormats(described.server.formats, original);
-  const format = requested ?? allowed.formats[0] ?? described.server.formats[0];
-  const rules = format ? await deps.managedRules(described.toolId, format) : undefined;
+  const rules = await deps.managedRules(described.toolId, format);
   const overlay = rules ? projectRuleOverlay(original, rules, groups) : original;
   const input = effectiveInputSchema(described.raw, overlay, groups);
   const effects: PolicyEffect[] = [...input.effects, ...allowed.effects];

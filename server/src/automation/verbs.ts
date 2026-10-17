@@ -9,9 +9,11 @@ import { toolServerFormats, type RenderCapabilities, type ToolServerFormats } fr
 import type { ToolOverlay } from '../policy/overlay.ts';
 import { applyInputPolicy, effectiveValidation } from './effective-contract.ts';
 
-/** `policy` is the caller's tool policy. With it, compile and validate check
- *  inputs against the same effective contract the schema route describes and
- *  the render route enforces; without it they see the raw tool contract. */
+/** `policy` is the caller's tool policy, with the design-system choice rules for
+ *  the request's tool and format already in its overlay (brand/rules.ts). With
+ *  it, compile and validate check inputs against the same effective contract the
+ *  schema route describes for that format and the render route enforces; without
+ *  it they see the raw tool contract. */
 export interface AutomationContext {
   pack: string; profile: Profile; hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>;
   /** The bytes of a finished automation-input upload the caller owns, named
@@ -19,7 +21,15 @@ export interface AutomationContext {
   readUpload?: (ref: unknown) => Promise<Uint8Array>;
   policy?: { overlays: Map<string, ToolOverlay>; groups: string[] };
 }
-export interface ToolRequest { toolId: string; inputs?: Record<string, unknown>; designVersion?: string }
+/** `format` names the output the document is for, so that format's design-system
+ *  rules apply. It must be one the tool declares. */
+export interface ToolRequest { toolId: string; inputs?: Record<string, unknown>; designVersion?: string; format?: string }
+
+const formatKey = (format: string) => format.toLowerCase() === 'jpeg' ? 'jpg' : format.toLowerCase();
+function requireDeclaredFormat(tool: LoadedTool, format: unknown): void {
+  if (format === undefined) return;
+  if (typeof format !== 'string' || !tool.manifest.render.formats.map(formatKey).includes(formatKey(format))) throw new Error('format is not one this tool declares');
+}
 
 async function load(pack: string, toolId: string): Promise<{ engine: Awaited<ReturnType<typeof loadEngine>>; tool: LoadedTool }> {
   const engine = await loadEngine();
@@ -52,6 +62,7 @@ export async function describeTool(ctx: AutomationContext, toolId: string, deplo
 
 export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Promise<unknown> {
   const { engine, tool } = await load(ctx.pack, req.toolId);
+  requireDeclaredFormat(tool, req.format);
   const inputs = ctx.policy ? applyInputPolicy(req.inputs ?? {}, ctx.policy.overlays.get(req.toolId), ctx.policy.groups) : req.inputs ?? {};
   return withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
 }
@@ -59,6 +70,7 @@ export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Pro
 export async function validateVerb(ctx: AutomationContext, body: Record<string, unknown>): Promise<unknown> {
   if (typeof body.toolId === 'string') {
     const { engine, tool } = await load(ctx.pack, body.toolId);
+    requireDeclaredFormat(tool, body.format);
     const governed = (result: { ok: boolean; errors: unknown[]; warnings: unknown[] }, values: () => Record<string, unknown>) =>
       ctx.policy ? effectiveValidation(result, values(), ctx.policy.overlays.get(body.toolId as string), ctx.policy.groups) : result;
     if (typeof body.recipe === 'string') {

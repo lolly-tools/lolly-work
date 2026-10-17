@@ -2,9 +2,13 @@
 /**
  * The effective contract for one caller and one tool (Work plan 42): the raw
  * input schema narrowed by the caller's tool policy, the formats the policy
- * allows, and the tool permission checks. Schema, compile, validate, batch and
- * render read policy through the same overlay functions (policy/overlay.ts), so
- * what discovery describes is what execution accepts.
+ * allows, and the tool permission checks. Design-system choice rules join the
+ * overlay first, projected for one output format (brand/rules.ts). Schema,
+ * compile, validate, batch rows and render read that overlay through the same
+ * functions (policy/overlay.ts), so the policy the schema for a format shows is
+ * the policy execution for that format enforces. With no format named, schema,
+ * compile and validate carry only the rules every format shares. Rules that are
+ * not choices, such as a text length, are not in the schema: render checks them.
  *
  * Nothing here returns a value the caller could not already learn by using the
  * tool: a hidden input is absent with no trace, a locked value is the one this

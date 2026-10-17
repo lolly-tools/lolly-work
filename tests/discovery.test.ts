@@ -3,10 +3,11 @@
  * Work plan 42: effective schemas and capability discovery over real HTTP.
  *
  * The effective schema is built from the tool, the caller's policy and the
- * deployment's render probe, and compile, validate, batch and render accept
- * exactly what it describes. Discovery is paginated and gives a code and a
- * reason for anything unavailable. No answer names a hidden tool, a hidden
- * input, another group's locked value, a group, a provider id or a person.
+ * deployment's render probe, and compile, validate, batch and render enforce
+ * the policy it describes (tests/brand-rules.test.ts covers design-system
+ * rules). Discovery is paginated and gives a code and a reason for anything
+ * unavailable. No answer names a hidden tool, a hidden input, another group's
+ * locked value, a group, a provider id or a person.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -185,7 +186,7 @@ test('the schema route answers the caller effective contract with versions, reas
   assert.equal(body.versions.tool, '2.1.0');
   assert.equal(body.versions.policy, 3);
   assert.ok(body.versions.engine && body.versions.design && body.versions.catalog);
-  assert.deepEqual(body.render, { renderer: 'work-jsdom', formats: ['svg'], format: 'svg' });
+  assert.deepEqual(body.render, { renderer: 'work-jsdom', formats: ['svg'] }, 'with no format asked for, the contract is for none');
   // The engine also offers formats derived from SVG (svgz, bmp and others) that only the web app exports.
   assert.deepEqual(body.unavailable.filter(notDerived).map((entry: any) => [entry.format ?? entry.action, entry.code]),
     [['pdf', 'WORKER_NOT_CONFIGURED'], ['png', 'FORMAT_NOT_ALLOWED'], ['render', 'FORBIDDEN']]);
@@ -197,6 +198,7 @@ test('the schema route answers the caller effective contract with versions, reas
 
   const again = await fetch(`${main.base}/api/v1/schema/governed-card`, { headers: { ...ops, 'if-none-match': body.etag } });
   assert.equal(again.status, 304);
+  assert.equal((await json(await fetch(`${main.base}/api/v1/schema/governed-card?format=svg`, { headers: ops }))).render.format, 'svg');
 
   // The administrator meets a different rule: a different contract, so a different validator.
   const adminBody = await json(await fetch(`${main.base}/api/v1/schema/governed-card`, { headers: admin }));
@@ -231,7 +233,7 @@ test('the raw schema is for policy authors, and hidden or unknown tools stay hid
   assert.ok(hooked.unavailable.filter((entry: any) => entry.format).every((entry: any) => entry.code === 'HOOKED_TOOL_NEEDS_CHROMIUM'));
 });
 
-test('compile, validate, batch and render accept exactly what the effective schema describes', async () => {
+test('compile, validate, batch and render enforce the policy the effective schema describes', async () => {
   const { schema } = await json(await fetch(`${main.base}/api/v1/schema/governed-card`, { headers: ops }));
   // Every writable property compiles with a value the schema allows; every read-only one is refused.
   for (const [id, property] of Object.entries(schema.properties as Record<string, any>)) {

@@ -192,6 +192,45 @@ test('the effective schema carries reviewed design-system choices for the format
   assert.equal(svg.schema.properties.ink.enum, undefined, 'a rule scoped to png does not narrow the svg contract');
   assert.notEqual(svg.etag, png.etag);
 });
+test('compile, validate, batch rows and render refuse a value outside the design-system choices the schema shows', async () => {
+  const f = await fixture(); await f.configure();
+  const schema = await (await fetch(f.base + '/api/v1/schema/campaign', { headers: { cookie: f.cookie } })).json() as any;
+  assert.deepEqual(schema.schema.properties.ink.enum, ['#ffcc00'], 'a rule for every format is in the default schema');
+  const outside = { ink: '#000000' };
+  const compiled = await f.post('/api/v1/compile', { toolId: 'campaign', inputs: outside });
+  assert.deepEqual([compiled.status, compiled.data.error?.code, compiled.data.error?.reason], [422, 'INPUT_NOT_ALLOWED', 'Design-system rule: color-choices']);
+  const validated = await f.post('/api/v1/validate', { toolId: 'campaign', inputs: outside });
+  assert.equal(validated.data.ok, false);
+  assert.deepEqual(validated.data.errors.map((e: any) => [e.path, e.code]), [['/ink', 'INPUT_NOT_ALLOWED']]);
+  const batch = await f.post('/api/v1/batch', { toolId: 'campaign', format: 'svg', rows: [{ ink: '#ffcc00' }, outside] });
+  assert.deepEqual([batch.status, batch.data.error?.code, batch.data.error?.row], [422, 'ROW_VALIDATION_FAILED', 1]);
+  assert.equal(batch.data.error.errors[0].code, 'INPUT_NOT_ALLOWED');
+  const rendered = await f.post('/api/v1/render', { toolId: 'campaign', format: 'svg', inputs: outside });
+  assert.deepEqual([rendered.status, rendered.data.error?.code], [422, 'INPUT_NOT_ALLOWED']);
+  // The value the schema offers passes each check.
+  assert.equal((await f.post('/api/v1/compile', { toolId: 'campaign', inputs: { ink: '#ffcc00' } })).status, 200);
+  assert.equal((await f.post('/api/v1/validate', { toolId: 'campaign', inputs: { ink: '#ffcc00' } })).data.ok, true);
+});
+test('a format-scoped choice applies to compile, validate and batch rows for that format, as its schema shows', async () => {
+  const system = brand(); system.rules = [ { ...system.rules[0]!, scope: { outputs: ['png'] } } ];
+  const f = await fixture(system); await f.configure();
+  const inkChoices = async (query: string) => (await (await fetch(f.base + `/api/v1/schema/campaign${query}`, { headers: { cookie: f.cookie } })).json() as any).schema.properties.ink.enum;
+  assert.deepEqual(await inkChoices('?format=png'), ['#ffcc00']);
+  assert.equal(await inkChoices('?format=svg'), undefined);
+  assert.equal(await inkChoices(''), undefined, 'with no format the schema carries only rules every format shares');
+  const outside = { ink: '#000000' };
+  for (const format of ['png', 'PNG', 'svg', undefined]) {
+    const refused = format?.toLowerCase() === 'png', named = format ? { format } : {};
+    const compiled = await f.post('/api/v1/compile', { toolId: 'campaign', inputs: outside, ...named });
+    assert.equal(compiled.status, refused ? 422 : 200, `compile for ${format}: ${JSON.stringify(compiled.data.error)}`);
+    const validated = await f.post('/api/v1/validate', { toolId: 'campaign', inputs: outside, ...named });
+    assert.equal(validated.data.ok, !refused, `validate for ${format}`);
+  }
+  const batch = await f.post('/api/v1/batch', { toolId: 'campaign', format: 'png', rows: [outside] });
+  assert.deepEqual([batch.status, batch.data.error?.code], [422, 'ROW_VALIDATION_FAILED']);
+  const undeclared = await f.post('/api/v1/compile', { toolId: 'campaign', inputs: outside, format: 'webp' });
+  assert.deepEqual([undeclared.status, undeclared.data.error?.message], [400, 'format is not one this tool declares']);
+});
 test('Postgres mappings and their audit survive a fresh replica', { skip: !process.env.LW_TEST_DATABASE_URL && 'set LW_TEST_DATABASE_URL to run' }, async () => {
   await withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, async store => {
     const start = runners.length;

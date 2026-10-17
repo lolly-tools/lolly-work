@@ -152,7 +152,7 @@ import {
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { createBrandService, BrandError } from '../brand/service.ts';
 import { createBrandRuleService } from '../brand/rule-service.ts';
-import { managedRuleContext, projectRuleOverlay, sourceRules, hash as brandPolicyHash } from '../brand/rules.ts';
+import { managedRuleContext, projectRuleOverlay, requestRuleContext, sourceRules, hash as brandPolicyHash } from '../brand/rules.ts';
 import { registerBrandRoutes } from '../brand/routes.ts';
 import { createBrandChrome } from '../brand/chrome.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
@@ -9601,8 +9601,19 @@ export function buildApp(deps: AppDeps): App {
     mayRenderTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
   const automationMayUse = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
     mayUseTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
-  // The caller's tool policy, which compile and validate check inputs against.
-  const automationPolicy = async (caller: { groups: string[] }) => ({ overlays: await store.listOverlays(), groups: caller.groups });
+  // The caller's tool policy, which compile, validate and batch rows check inputs
+  // against. For a named tool, design-system choice rules narrow its overlay as
+  // the render pipeline does: the named format's rules, or with no format only
+  // the rules every format shares, which is what the default schema shows.
+  const automationPolicy = async (caller: { groups: string[] }, toolId?: unknown, format?: unknown) => {
+    const overlays = new Map(await store.listOverlays());
+    if (typeof toolId === 'string') {
+      const rules = await requestRuleContext(brand.current() ?? await brand.snapshot(), toolId, typeof format === 'string' ? format.toLowerCase() : undefined);
+      const projected = rules && projectRuleOverlay(overlays.get(toolId), rules, caller.groups);
+      if (projected) overlays.set(toolId, projected);
+    }
+    return { overlays, groups: caller.groups };
+  };
   router.add('GET', '/api/v1/system/setup/tools/:id', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'instance.config'); if (!user) return;
     const toolId = ctx.params.id!;
@@ -9728,7 +9739,10 @@ export function buildApp(deps: AppDeps): App {
       const id = value && typeof value === 'object' ? (value as { toolId?: unknown }).toolId : undefined;
       if (typeof id === 'string' && !await automationMayUse(caller, id)) throw new Error('tool.use is no longer granted.');
     }
-    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), policy: await automationPolicy(caller) };
+    // Compile, validate and package read this policy. Batch rows render through the
+    // pipeline, which applies the rules for the batch format itself.
+    const governed = ['compile', 'validate', 'package'].includes(job.verb) ? body.toolId : undefined;
+    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), policy: await automationPolicy(caller, governed, body.format) };
     if (job.verb === 'batch') {
       if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const record = job;
@@ -9820,7 +9834,7 @@ export function buildApp(deps: AppDeps): App {
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
     designRevision: () => brand.current()!.revision, catalogVersion: instanceCatalogVersion,
-    managedRules: (toolId, format) => managedRuleContext(brand.current()!, toolId, format),
+    managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
@@ -9838,7 +9852,8 @@ export function buildApp(deps: AppDeps): App {
       const body = await automationBody(req, res); if (!body) return;
       if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
       const hostedResolver = hostedAssetResolverFor(caller.groups);
-      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal), policy: await automationPolicy(caller) };
+      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal),
+        policy: await automationPolicy(caller, verb === 'compile' || verb === 'validate' ? body.toolId : undefined, body.format) };
       const execute = async (): Promise<unknown> => {
         let result: unknown;
         if (verb === 'compile') result = await compileVerb(automationContext, body as unknown as Parameters<typeof compileVerb>[1]);
@@ -9874,7 +9889,7 @@ export function buildApp(deps: AppDeps): App {
     if (!(await requireAutomationTools(res, caller, body, body.document))) return;
     const execute = async () => {
       const document = body.document ?? (await compileVerb(
-        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller) },
+        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format) },
         body as unknown as Parameters<typeof compileVerb>[1],
       ) as { document: unknown }).document;
       return packageVerb(document);
@@ -9946,7 +9961,7 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 400, 'DATA_BINDING_ERROR', (e as Error).message);
     }
     if (!rows.length || rows.length > BATCH_LIMITS.rows || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return sendError(res, 400, 'INVALID_INPUT', 'batch rows must be a non-empty array of objects');
-    const rowPolicy = await automationPolicy(caller);
+    const rowPolicy = await automationPolicy(caller, body.toolId, body.format);
     for (let index = 0; index < rows.length; index++) {
       const check = await validateVerb(
         { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: rowPolicy },
