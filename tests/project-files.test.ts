@@ -10,7 +10,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import type { BlobStore } from '../server/src/blobs/types.ts';
 import type { Store } from '../server/src/store/types.ts';
 import {
-  fileChecksum, filePartBlobId, PROJECT_FILE_IDLE_MS, PROJECT_FILE_OVERHEAD_BYTES, PROJECT_FILE_PART_BYTES, PROJECT_FILE_SWEEP_GRACE_MS, projectFileInput,
+  fileChecksum, filePartBlobId, PROJECT_FILE_IDLE_MS, PROJECT_FILE_MAX_BYTES, PROJECT_FILE_OVERHEAD_BYTES, PROJECT_FILE_PART_BYTES, PROJECT_FILE_SWEEP_GRACE_MS, projectFileInput,
   scheduleProjectFileSweep, type ProjectFilePolicy, type ProjectFileRecord,
 } from '../server/src/projects/files.ts';
 import { withFreshPostgres } from './pg-test-schema.ts';
@@ -151,7 +151,7 @@ test('shared files survive a new HTTP app, and every route checks project member
 test('metadata rejects oversized files, invalid parts and unsafe response headers', () => {
   const good = metadata(new Uint8Array([1, 2, 3]));
   assert.ok(projectFileInput(good));
-  for (const bad of [{ ...good, size: 257 * 1024 * 1024 }, { ...good, name: 'x\r\ny' }, { ...good, contentType: 'image/png\r\nX: y' },
+  for (const bad of [{ ...good, size: PROJECT_FILE_MAX_BYTES + 1 }, { ...good, name: 'x\r\ny' }, { ...good, contentType: 'image/png\r\nX: y' },
     { ...good, parts: [] }, { ...good, parts: [{ size: 2, checksum: good.checksum }] }, { ...good, checksum: 'oops' },
     // one part is the whole file, so its digest must be the file's
     { ...good, checksum: 'd'.repeat(64) }]) assert.equal(projectFileInput(bad), null);
@@ -164,12 +164,13 @@ test('policy.projectFiles: defaults sized for a small Postgres, validated at sta
     { enabled: true, maxFileBytes: 25 * MIB, projectBudgetBytes: 128 * MIB, instanceBudgetBytes: 256 * MIB, uploadTtlHours: 24 });
   assert.deepEqual(files({ enabled: false, uploadTtlHours: 2 }),
     { enabled: false, maxFileBytes: 25 * MIB, projectBudgetBytes: 128 * MIB, instanceBudgetBytes: 256 * MIB, uploadTtlHours: 2 }, 'a partial block keeps the other defaults');
-  assert.equal(files({ maxFileBytes: 256 * MIB, projectBudgetBytes: 256 * MIB }).maxFileBytes, 256 * MIB, 'the migration ceiling itself is allowed');
+  assert.equal(files({ maxFileBytes: 4096 * MIB, projectBudgetBytes: 4096 * MIB, instanceBudgetBytes: 4096 * MIB }).maxFileBytes, 4096 * MIB, 'the migration ceiling itself is allowed');
+  assert.equal(files({ maxFileBytes: 600 * MIB, projectBudgetBytes: 1024 * MIB, instanceBudgetBytes: 1024 * MIB }).maxFileBytes, 600 * MIB, 'past the old 256 MiB ceiling');
   for (const [bad, message] of [
     [false, /must be an object/], [{ enabled: 'yes' }, /enabled must be true or false/],
     [{ maxFileBytes: 0 }, /maxFileBytes/], [{ maxFileBytes: 1.5 }, /maxFileBytes/], [{ maxFileBytes: '10' }, /maxFileBytes/],
     [{ uploadTtlHours: -1 }, /uploadTtlHours/], [{ uploadTtlHours: 721 }, /uploadTtlHours/],
-    [{ maxFileBytes: 256 * MIB + 1, projectBudgetBytes: 512 * MIB, instanceBudgetBytes: 512 * MIB }, /cannot exceed/],
+    [{ maxFileBytes: 4096 * MIB + 1, projectBudgetBytes: 8192 * MIB, instanceBudgetBytes: 8192 * MIB }, /cannot exceed/],
     [{ maxFileBytes: 200 * MIB }, /maxFileBytes <= projectBudgetBytes <= instanceBudgetBytes/],
     [{ projectBudgetBytes: 300 * MIB }, /maxFileBytes <= projectBudgetBytes <= instanceBudgetBytes/],
   ] as const) assert.throws(() => files(bad), message, JSON.stringify(bad));
@@ -324,13 +325,13 @@ test('expired uploads are swept, parts first, before a new upload and by the ret
   // upload, which expires PROJECT_FILE_IDLE_MS after its begin, is not yet
   // past its own grace.
   const later = await runRetention({ config, store, blobs, now: () => new Date(Date.now() + PROJECT_FILE_SWEEP_GRACE_MS + 5 * 60_000) });
-  assert.deepEqual(later, { telemetryTrimmed: 0, auditTrimmed: 0, projectFilesSwept: 1 });
+  assert.deepEqual(later, { telemetryTrimmed: 0, auditTrimmed: 0, projectFilesSwept: 1, uploadsSwept: 0 });
   assert.equal(await store.getProjectFile(recent.id), null);
   assert.equal(await blobs.head(filePartBlobId(recent, 0)), null);
   assert.equal((await store.listUnfinishedProjectFiles({}, 10)).length, 1, 'the live upload stays');
   const run = await call('root', 'POST', '/api/v1/retention/run');
   assert.equal(run.status, 200);
-  assert.deepEqual(await run.json(), { telemetryTrimmed: 0, auditTrimmed: 0, projectFilesSwept: 0 });
+  assert.deepEqual(await run.json(), { telemetryTrimmed: 0, auditTrimmed: 0, projectFilesSwept: 0, uploadsSwept: 0 });
 });
 
 test('a file keeps only the asset fields the shell sends, and tiny files still fill the budgets', async () => {

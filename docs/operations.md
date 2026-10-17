@@ -339,6 +339,9 @@ telemetry, or leaves both unchanged if a retained reference or database error bl
 it. Archiving a project retains its foreign key; ownership transfer or an approved
 lifecycle action is needed. Sessions, approvals, links and message acknowledgements
 can also block removal. The memory store now matches PostgreSQL on these conditions.
+The account's unfinished project-file uploads and its scoped uploads are removed
+first; if a scoped upload remains, for example because the person is still uploading,
+the erasure answers `409 ERASE_UPLOADS_REMAIN` with nothing else changed. Run it again.
 
 Audit actor IDs and other retained references can remain linkable. Neither the account
 operation nor turning analytics off deletes all personal content, historical copies,
@@ -381,6 +384,14 @@ liveness, not database or deployment readiness. Check `lw audit head` and the
 chain gauge. A failed or ambiguous update needs current-resource inspection and
 a fresh reviewed forward fix or application rollback; do not replay a stale
 plan or restore an older database over new writes.
+
+### Migration 0075 and scoped uploads
+
+Migration 0075 adds the `uploads` table for scoped uploads and lifts the project file
+size check to 4 GiB. It changes no budget: the configured project file caps stay as
+they are, and scoped uploads stay off until `policy.uploads.enabled` is set. Turning
+them on adds a second instance budget on the same blob store; see
+[configuration](configuration.md#policy) before you do.
 
 ### The engine pin
 

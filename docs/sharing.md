@@ -519,7 +519,7 @@ its parts, when someone next starts an upload or when retention runs.
 
 The limits come from `policy.projectFiles` (see [configuration](configuration.md#policy)):
 
-- one file: 25 MiB by default (`maxFileBytes`), never more than 256 MiB;
+- one file: 25 MiB by default (`maxFileBytes`), never more than 4 GiB;
 - one project: 128 MiB of files (`projectBudgetBytes`);
 - the whole instance: 256 MiB of files (`instanceBudgetBytes`);
 - one person: 16 unfinished uploads at a time, declaring twice the largest file in all;

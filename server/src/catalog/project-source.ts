@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Read an immutable project file for catalog admission, checking every stored part. */
-import { readBlobBody, type BlobStore } from '../blobs/types.ts';
-import { fileChecksum, filePartBlobId, PROJECT_FILE_MAX_BYTES, type ProjectFileRecord } from '../projects/files.ts';
+import type { BlobStore } from '../blobs/types.ts';
+import { projectFileParts, PROJECT_FILE_MAX_BYTES, type ProjectFileRecord } from '../projects/files.ts';
 import { projectFilesEnabled } from '../projects/files.ts';
+import { readTransfer } from '../uploads/parts.ts';
 import type { InstanceConfig } from '../config/instance.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import { accessAtLeast, type ProjectAccess } from '../rbac/project-access.ts';
@@ -44,18 +45,6 @@ export async function projectSubmissionInput(query: URLSearchParams, d: {
 
 export async function readProjectSubmission(file: ProjectFileRecord, blobs: BlobStore, maxBytes: number): Promise<Buffer> {
   if (!file.ready || file.size < 1 || file.size > Math.min(maxBytes, PROJECT_FILE_MAX_BYTES)) throw new Error('Project file exceeds the submission limit');
-  const parts: Buffer[] = [];
-  let size = 0;
-  for (let n = 0; n < file.parts.length; n++) {
-    const expected = file.parts[n]!;
-    if (expected.size < 1 || size + expected.size > file.size) throw new Error('Invalid project file parts');
-    const part = await blobs.get(filePartBlobId(file, n));
-    if (!part) throw new Error('Project file part is unavailable');
-    const bytes = await readBlobBody(part.body, expected.size);
-    if (bytes.length !== expected.size || fileChecksum(bytes) !== expected.checksum) throw new Error('Project file part failed verification');
-    parts.push(bytes); size += bytes.length;
-  }
-  const bytes = Buffer.concat(parts, size);
-  if (size !== file.size || fileChecksum(bytes) !== file.checksum) throw new Error('Project file failed verification');
-  return bytes;
+  // The shared verified read: every part against its digest, then the whole file.
+  return readTransfer(projectFileParts(blobs, file), Math.min(maxBytes, PROJECT_FILE_MAX_BYTES));
 }

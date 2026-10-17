@@ -20,6 +20,8 @@ import { randomId } from '../lib/crypto.ts';
 import { validateAiConfig } from '../policy/ai.ts';
 import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites.ts';
 import { PROJECT_FILE_DEFAULTS, PROJECT_FILE_MAX_BYTES, type ProjectFilePolicy } from '../projects/files.ts';
+import { UPLOAD_DEFAULTS, type UploadPolicy } from '../uploads/scoped.ts';
+import { TRANSFER_MAX_BYTES } from '../uploads/parts.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../delivery/types.ts';
 import { AUTH_PARAM_ALLOWLIST, oidcUrl, type OidcPolicy, type ClaimMap } from '../iam/oidc.ts';
@@ -258,6 +260,14 @@ export interface InstanceConfig {
      *  budgets are bytes; unfinished uploads expire after `uploadTtlHours`.
      *  The defaults fit a small hosted Postgres that also holds the blobs. */
     projectFiles: ProjectFilePolicy;
+    /** Scoped uploads (docs/resumable-uploads.md, uploads/scoped.ts): private,
+     *  resumable uploads a person or a service token names by reference as a
+     *  catalog submission original or an automation input. Off by default:
+     *  its instance budget adds to the project files' one on the same blob
+     *  store. The per-file cap and the owner and instance budgets are bytes;
+     *  an unfinished upload expires after `uploadTtlHours`, a finished one
+     *  `readyTtlHours` after it finished. */
+    uploads: UploadPolicy;
     /** Access requests (plans/75 G13): who may ask for what, and for how
      *  long a request stays open. See `RequestPolicy`. */
     requests: RequestPolicy;
@@ -594,6 +604,7 @@ const DEFAULTS: InstanceConfig = {
     retention: { telemetryDays: 0, auditDays: 0 },
     activity: { mode: 'delegated', auditSessionUpdates: true },
     projectFiles: { ...PROJECT_FILE_DEFAULTS },
+    uploads: { ...UPLOAD_DEFAULTS },
     requests: { join: false, project: true, ttlDays: 14, joinOpenMax: 50 },
   },
   render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
@@ -957,11 +968,24 @@ export function parseConfig(json: string): InstanceConfig {
   for (const k of ['maxFileBytes', 'projectBudgetBytes', 'instanceBudgetBytes', 'uploadTtlHours'] as const) {
     if (!Number.isSafeInteger(files[k]) || files[k] <= 0) throw new Error(`invalid policy.projectFiles.${k}: ${files[k]} (a whole number above 0)`);
   }
-  if (files.maxFileBytes > PROJECT_FILE_MAX_BYTES) throw new Error(`policy.projectFiles.maxFileBytes cannot exceed ${PROJECT_FILE_MAX_BYTES} (256 MiB)`);
+  if (files.maxFileBytes > PROJECT_FILE_MAX_BYTES) throw new Error(`policy.projectFiles.maxFileBytes cannot exceed ${PROJECT_FILE_MAX_BYTES} (4 GiB)`);
   if (files.maxFileBytes > files.projectBudgetBytes || files.projectBudgetBytes > files.instanceBudgetBytes) {
     throw new Error('policy.projectFiles needs maxFileBytes <= projectBudgetBytes <= instanceBudgetBytes');
   }
   if (files.uploadTtlHours > 720) throw new Error(`invalid policy.projectFiles.uploadTtlHours: ${files.uploadTtlHours} (at most 720)`);
+  const uploads = cfg.policy.uploads;
+  if (!uploads || typeof uploads !== 'object' || Array.isArray(uploads)) throw new Error('policy.uploads must be an object');
+  if (typeof uploads.enabled !== 'boolean') throw new Error('policy.uploads.enabled must be true or false');
+  for (const k of ['maxFileBytes', 'ownerBudgetBytes', 'instanceBudgetBytes', 'uploadTtlHours', 'readyTtlHours'] as const) {
+    if (!Number.isSafeInteger(uploads[k]) || uploads[k] <= 0) throw new Error(`invalid policy.uploads.${k}: ${uploads[k]} (a whole number above 0)`);
+  }
+  if (uploads.maxFileBytes > TRANSFER_MAX_BYTES) throw new Error(`policy.uploads.maxFileBytes cannot exceed ${TRANSFER_MAX_BYTES} (4 GiB)`);
+  if (uploads.maxFileBytes > uploads.ownerBudgetBytes || uploads.ownerBudgetBytes > uploads.instanceBudgetBytes) {
+    throw new Error('policy.uploads needs maxFileBytes <= ownerBudgetBytes <= instanceBudgetBytes');
+  }
+  for (const k of ['uploadTtlHours', 'readyTtlHours'] as const) {
+    if (uploads[k] > 720) throw new Error(`invalid policy.uploads.${k}: ${uploads[k]} (at most 720)`);
+  }
   validateRequestPolicy(cfg.policy.requests);
   validateSharingPolicy(cfg.policy.sharing);
   // Additional IdPs (plans/36 §3): defaults applied, then validated hard - a

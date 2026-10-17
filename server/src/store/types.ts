@@ -32,6 +32,7 @@ import type { ProviderRecord, ProviderState } from '../catalog/providers/types.t
 import type { DeliveryRecord } from '../delivery/types.ts';
 import type { PasskeyStore } from '../iam/passkeys/types.ts';
 import type { RenderStore } from '../renders/types.ts';
+import type { UploadStore } from '../uploads/scoped.ts';
 import type { ProjectFileLimits, ProjectFileRecord, ProjectFileReservation } from '../projects/files.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
 import { sha256Hex } from '../lib/crypto.ts';
@@ -1076,7 +1077,7 @@ export interface CatalogDeliverySnapshot {
   bytes: Buffer; until: number; toolIds: string[]; assetIds: string[];
 }
 
-export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, SubjectStore {
+export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, SubjectStore, UploadStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
   createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;

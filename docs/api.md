@@ -149,6 +149,7 @@ The [design-system administration contract](design-system-administration.md#revi
 |---|---|---|
 | `POST /api/v1/catalog/submit?name=…` | `catalog.submit` | raw bytes in the body; `201` for a new asset, `200` with `duplicate: true` for identical bytes |
 | `POST /api/v1/catalog/submit?name=…&projectId=…&fileId=…&checksum=…` | `catalog.submit` and current project read access | empty body; admits the verified ready project original through the same scan, quota and review pipeline; project files must be enabled on a durable store; service tokens are refused |
+| `POST /api/v1/catalog/submit?name=…&uploadId=…&checksum=…` | `catalog.submit` (`catalog.edit` with `assetId`) | empty body; submits the caller's own finished [`catalog-submission` upload](#uploads) through the same scan, quota and review pipeline, then removes the upload. `404` for any upload the caller cannot name; `413` when it is larger than `policy.submit.maxBytes` |
 | `POST /api/v1/catalog/submit?type=template\|user-tool` | `catalog.submit` | a template or user tool as JSON; `toolId=` names the tool when the body does not; `422 INVALID_SUBMISSION` when the JSON or its tool is not one this pack can serve; `clientRef=` is echoed on the submission |
 | `POST /api/v1/catalog/submit?assetId=inst/…&note=…` | `catalog.edit` | the same pipeline, landing as the next VERSION of an existing asset; `groups`/`type`/`tags`/`description` are refused here and belong to `…/meta` |
 | `GET /api/v1/catalog/submissions` | `catalog.read` | the caller's own submissions plus the ones open on a step their groups may act on |
@@ -262,8 +263,8 @@ C2PA export assertion. See
 |---|---|
 | `GET /api/v1/users`, `GET /api/v1/users/:id` | admin/owner role |
 | `POST /api/v1/users/:id/revoke-sessions` | `grant.edit` - sign-out-everywhere: bumps the user's session epoch, every prior cookie and token fails its next request |
-| `DELETE /api/v1/users/:id` | `instance.config` (**owner**) - erasure: deletes the row + de-attributes telemetry; `409` while they own unarchived projects |
-| `POST /api/v1/retention/run` | `instance.config` (**owner**) - apply the stated retention policy now, and remove expired unfinished project-file uploads (`projectFilesSwept`) |
+| `DELETE /api/v1/users/:id` | `instance.config` (**owner**) - erasure: deletes the row + de-attributes telemetry; `409` while they own unarchived projects, and `409 ERASE_UPLOADS_REMAIN` when some of their [uploads](#uploads) could not be removed first (run it again) |
+| `POST /api/v1/retention/run` | `instance.config` (**owner**) - apply the stated retention policy now, and remove expired unfinished project-file uploads (`projectFilesSwept`) and expired [scoped uploads](#uploads) (`uploadsSwept`) |
 | `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/:name` | `grant.edit` |
 | `PUT /api/v1/users/:id/local-groups` | `grant.edit` |
 | `POST /api/v1/users/:id/disabled` | `grant.edit` |
@@ -639,6 +640,7 @@ route here answers `404 NOT_FOUND` with the message `project files are off`.
 | `GET /api/v1/projects/:id/files` | viewer | `200 { files, limits }` |
 | `POST /api/v1/projects/:id/files` | editor and `session.create`, project not archived; a person, so a service token gets `403` | `201 { file, partBytes }`: the upload is reserved |
 | `PUT /api/v1/projects/:id/files/:fileId/parts/:n` | the uploader | `204`; the body is part `n`'s bytes |
+| `GET /api/v1/projects/:id/files/:fileId/parts` | the uploader | `200`: which parts are stored, so an interrupted upload sends only the rest (see below). Asking does not move `expiresAt` |
 | `POST /api/v1/projects/:id/files/:fileId/finalize` | the uploader | `200 { file }` with `ready: true`; repeating it is harmless |
 | `GET /api/v1/projects/:id/files/:fileId` | viewer | the bytes, as an attachment, `private, no-store` |
 | `PATCH /api/v1/projects/:id/files/:fileId` | editor and `session.edit`, project not archived; a person, so a service token gets `403` | `200 { name }`; the body is `{ name }`, 1 to 200 characters with no control characters. The bytes, id and checksum do not change, so sessions that use the file keep working. `400 INVALID_INPUT` for a bad name, `403` without editor access, `404` for an unknown or unfinished file or a file in another project |
@@ -652,6 +654,14 @@ The instance keeps only `type` and `format` (up to 64 characters each), `width` 
 else, a credential included. `file` in the begin answer also carries `parts` and `expiresAt`.
 `expiresAt` is 15 minutes after the begin; each accepted part moves it to 15 minutes after
 that part, but never past `policy.projectFiles.uploadTtlHours` after the begin.
+
+The parts report is `{ id, ready, size, checksum, expiresAt, partBytes, parts, missing,
+receivedParts, receivedBytes, offset }`. `missing` lists the part numbers not yet stored, in
+order; a stored part whose bytes no longer match its digest is listed too. `offset` is the
+bytes in the run of stored parts from the start. A finished file reports `ready: true`, no
+`expiresAt` and nothing missing, so a client whose finalize answer was lost learns the file is
+complete. An expired upload answers `410 UPLOAD_EXPIRED`. [Resumable uploads](resumable-uploads.md)
+explains the protocol and the choice of it over tus.
 
 Each `files` row is `{ id, projectId, name, size, checksum, contentType, ready: true, asset,
 createdAt, createdBy, createdByName? }`, newest first. Only finished files are listed.
@@ -683,6 +693,55 @@ than an hour past its expiry is removed, parts first, when someone next begins a
 `projectFilesSwept`. The long-lived server also sweeps them at boot and daily, whatever the
 retention policy says. A serverless deploy has no timer, so there their parts stay in storage
 until one of those runs; they count toward no budget meanwhile.
+
+### Uploads
+
+Private, resumable uploads that a person or a service token names by reference
+([resumable uploads](resumable-uploads.md)). They use the same parts protocol as project
+files. A `catalog-submission` upload is the original for
+`POST /api/v1/catalog/submit?uploadId=…&checksum=…`, which removes it once the submission is
+stored. An `automation-input` upload is read by `upload: { id, checksum }` in `/api/v1/inspect`
+and `/api/v1/optimize`, as often as its owner likes until it expires. Nobody downloads an
+upload. `policy.uploads.enabled` is `false` by default, and while it is, every route here
+answers `404 NOT_FOUND` with the message `uploads are off`.
+
+| Route | Who | Answer |
+|---|---|---|
+| `GET /api/v1/uploads` | a member or a service token | `200 { uploads, limits }`: the caller's own uploads that have not expired, newest first, at most 50 |
+| `POST /api/v1/uploads` | `catalog.submit` for scope `catalog-submission`, `tool.use` for `automation-input`; a member or a service token, never a guest | `201 { upload, partBytes }`: the upload is reserved |
+| `GET /api/v1/uploads/:id` | the owner | `200 { upload }` |
+| `GET /api/v1/uploads/:id/parts` | the owner | `200`: the parts report, as for project files |
+| `PUT /api/v1/uploads/:id/parts/:n` | the owner | `204`; the body is part `n`'s bytes |
+| `POST /api/v1/uploads/:id/finalize` | the owner | `200 { upload }` with `ready: true`; repeating it is harmless |
+| `DELETE /api/v1/uploads/:id` | the owner | `204`; parts first, then the record |
+
+The begin body is `{ scope, name, size, checksum, contentType, parts: [{ size, checksum }] }`
+with the same digest and part rules as a project file. An `upload` is `{ id, scope, name, size,
+checksum, contentType, ready, createdAt, expiresAt }`; the begin answer adds `parts`. An
+unfinished upload expires like a project file, at most `policy.uploads.uploadTtlHours` after
+its begin; a finished one expires `policy.uploads.readyTtlHours` after it finished. Every route
+but the list and the begin answers `404 NOT_FOUND` for an upload the caller does not own, so an
+id reveals nothing. `limits` is `{ partBytes, maxBytes, ownerBudgetBytes, ownerUsedBytes,
+instanceRemainingBytes }`.
+
+| Code | Status | When |
+|---|---|---|
+| `UPLOAD_TOO_LARGE` | 413 | begin: `size` is over `policy.uploads.maxFileBytes`, or over `policy.submit.maxBytes` for a catalog original; `maxBytes` gives the cap |
+| `UPLOAD_BUDGET` | 413 | begin: the owner's uploads would pass `ownerBudgetBytes` |
+| `INSTANCE_UPLOAD_BUDGET` | 413 | begin: all owners' uploads would pass `instanceBudgetBytes` |
+| `UPLOAD_PENDING` | 413 | begin: the owner already has 16 unfinished uploads |
+| `INVALID_INPUT` / `INVALID_PART` | 400 | an unknown scope, malformed metadata, or no such part |
+| `CHECKSUM_MISMATCH` | 422 | a part, or the finished upload, does not match its declared digest |
+| `UPLOAD_READY` | 409 | a part sent to a finished upload |
+| `UPLOAD_INCOMPLETE` | 409 | finalize before every part arrived |
+| `UPLOAD_EXPIRED` | 410 | the upload passed its expiry |
+
+A consumer given a reference it cannot use answers `400 INVALID_INPUT` for a malformed one and
+`404 NOT_FOUND` for one the caller does not own, in the wrong scope, unfinished, expired or
+with another checksum. Finishing an upload is audited as `upload.finish` and a cancel as
+`upload.delete`, with the scope, size and checksum but not the name. Expired uploads are swept
+like project files. Erasing an account removes every upload the person owns, or answers
+`409 ERASE_UPLOADS_REMAIN` and changes nothing else while any remain.
 
 ### The collab socket
 
@@ -991,8 +1050,9 @@ Local `image://brand`, `catalog://`, and `library://` refs stay offline-first.
 credential, exposure and lifecycle; `net://<operator-allowed-origin>/<path>` is
 restricted to origins present in provider configuration. Both are timeout- and
 byte-bounded, content-addressed, and use immutable resize, format-conversion and
-metadata-strip stages. `/inspect` and `/optimize` also accept `bytesBase64` or a
-provider `source`; `/package` accepts either a compiled `document` or
+metadata-strip stages. `/inspect` and `/optimize` also accept `bytesBase64`, a
+provider `source`, or `upload: { id, checksum }` naming the caller's own finished
+`automation-input` [upload](#uploads), for a file too large for one request; `/package` accepts either a compiled `document` or
 `{toolId,inputs}` and can run asynchronously.
 
 These routes use the configurable `rateLimit.automation` bucket. It is technical

@@ -44,6 +44,7 @@ import {
 } from './types.ts';
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
+import { createPostgresUploadStore } from '../uploads/postgres.ts';
 import {
   COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
   type ProjectTransferMetadata,
@@ -594,6 +595,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return { scope, kind, hash: row.hash as string, bytes: row.bytes as Buffer, until: Number(row.until_ms), toolIds: row.tool_ids as string[], assetIds: row.asset_ids as string[] };
     },
     ...createPostgresRenderStore(pool),
+    ...createPostgresUploadStore(pool),
     ...createPostgresOidcLogout(pool),
     ...createPostgresPasskeys(pool),
     ...createPostgresSubjects(pool, () => roleGroups),
