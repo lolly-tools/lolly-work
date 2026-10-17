@@ -30,8 +30,12 @@ architecture, network and acceptance limits.
 - Installation/status: `https://github.com/lolly-tools/lolly-work/blob/main/docs/official-installations.md`
 - Licence: `https://github.com/lolly-tools/lolly-work/blob/main/LICENSE`
 - Icon: `deploy/helm/icon.svg` or the identical Dokploy blueprint icon
-- Screenshots: capture a qualified neutral test instance; exclude production
-  branding, accounts and data. These still need actual target captures.
+- Screenshots: the 1280 x 720 PNG files in [`assets/`](assets/README.md),
+  captured from the neutral CI fixture with their source run recorded in
+  `assets/screenshots.json`. They show fixture data only; never substitute
+  captures of a production instance. The shell gallery and tool views are
+  withheld for 1.1.1 because its shell refuses the installation's catalogue
+  signature in a browser; submit a listing only with a release that passes.
 
 ## Helm and Artifact Hub
 
