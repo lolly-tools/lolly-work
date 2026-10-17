@@ -13,8 +13,10 @@ import { b64u, b64uDecode, hmac, macEquals } from '../lib/crypto.ts';
  *  `lw/ask` carries the identity a sign-in just verified to the "ask to join"
  *  and "use this account instead" forms, in a hidden field only, so a person
  *  who is not admitted can file a request without typing an address
- *  (access/types.ts `AskTokenPayload`). */
-export type TokenDomain = 'lw/logout' | 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/job' | 'lw/api-key' | 'lw/form' | 'lw/ask' | 'lw/render-read' | 'lw/passkey';
+ *  (access/types.ts `AskTokenPayload`). `lw/link-access` is the cookie a
+ *  password link sets once its password is known, scoped to that link's path,
+ *  so the password never has to ride in the link's URL. */
+export type TokenDomain = 'lw/logout' | 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/job' | 'lw/api-key' | 'lw/form' | 'lw/ask' | 'lw/render-read' | 'lw/passkey' | 'lw/link-access';
 
 export interface TokenBox<T> {
   typ: TokenDomain;

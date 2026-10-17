@@ -19,6 +19,9 @@ export interface AutomationQueueOptions {
   callbackAllowed?: (url: string) => boolean;
   /** Mint an authenticated, expiring result URL for an out-of-band callback. */
   resultUrl?: (job: AutomationJob) => string;
+  /** Mint the token a callback receiver sends as `x-lw-job-token`, so the
+   *  credential need not ride in the result URL. */
+  resultToken?: (job: AutomationJob) => string;
   /** Process-local drain width. The durable lease/replica runner is plan 40;
    * this bound prevents one process from stampeding its render worker. */
   maxConcurrent?: number;
@@ -181,7 +184,8 @@ export class AutomationQueue {
     if (!job.callbackUrl) return;
     if (!this.options.callbackAllowed?.(job.callbackUrl) || !this.options.callbackSecret) { job.callbackFailed = true; await this.save(job); return; }
     const fetchImpl = this.options.fetchImpl ?? fetch;
-    const body = JSON.stringify({ jobId: job.id, state: job.state, resultUrl: job.state === 'done' ? (this.options.resultUrl?.(job) ?? `/api/v1/jobs/${job.id}/result`) : null });
+    const done = job.state === 'done';
+    const body = JSON.stringify({ jobId: job.id, state: job.state, resultUrl: done ? (this.options.resultUrl?.(job) ?? `/api/v1/jobs/${job.id}/result`) : null, resultToken: done ? (this.options.resultToken?.(job) ?? null) : null });
     const timestamp = String(Date.now());
     const signature = createHmac('sha256', this.options.callbackSecret).update(`${timestamp}.${body}`).digest('hex');
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -196,6 +200,6 @@ export class AutomationQueue {
   }
 }
 
-export function jobWire(job: AutomationJob, resultUrl = `/api/v1/jobs/${job.id}/result`): Record<string, unknown> {
-  return { jobId: job.id, verb: job.verb, state: job.state, statusUrl: `/api/v1/jobs/${job.id}`, resultUrl: job.state === 'done' ? resultUrl : null, resultSha256: job.resultSha256 ?? null, error: job.error ?? null, callbackFailed: job.callbackFailed ?? false, progress: job.progress ?? null, priority: job.priority, attempt: job.attempt, createdAt: job.createdAt, finishedAt: job.finishedAt ?? null };
+export function jobWire(job: AutomationJob, resultUrl = `/api/v1/jobs/${job.id}/result`, resultToken?: string): Record<string, unknown> {
+  return { jobId: job.id, verb: job.verb, state: job.state, statusUrl: `/api/v1/jobs/${job.id}`, resultUrl: job.state === 'done' ? resultUrl : null, resultToken: job.state === 'done' ? (resultToken ?? null) : null, resultSha256: job.resultSha256 ?? null, error: job.error ?? null, callbackFailed: job.callbackFailed ?? false, progress: job.progress ?? null, priority: job.priority, attempt: job.attempt, createdAt: job.createdAt, finishedAt: job.finishedAt ?? null };
 }

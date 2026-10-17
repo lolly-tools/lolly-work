@@ -33,6 +33,23 @@ test('callbacks fail closed unless their exact URL is instance-approved', async 
   assert.equal((await queue.get(job.id, 'service:ci'))?.callbackFailed, true);
 });
 
+test('an approved callback carries the result token as a field beside the result URL', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const queue = new AutomationQueue({
+    store: createMemoryStore(), blobs: createMemoryBlobStore(), callbackSecret: 'secret', callbackAllowed: () => true,
+    resultUrl: (job) => `https://work.test/api/v1/jobs/${job.id}/result?token=t-${job.id}`, resultToken: (job) => `t-${job.id}`,
+    fetchImpl: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return new Response(null, { status: 204 }); },
+  });
+  const { job } = await queue.create('service:ci', 'render', { callbackUrl: 'https://hooks.test/lolly' }, async () => ({ mime: 'image/svg+xml', bytes: new Uint8Array() }));
+  const failed = await queue.create('service:ci', 'render', { callbackUrl: 'https://hooks.test/lolly' }, async () => { throw new Error('boom'); });
+  await settle();
+  assert.deepEqual(bodies.find(body => body.jobId === job.id), { jobId: job.id, state: 'done', resultUrl: `https://work.test/api/v1/jobs/${job.id}/result?token=t-${job.id}`, resultToken: `t-${job.id}` });
+  assert.deepEqual(bodies.find(body => body.jobId === failed.job.id), { jobId: failed.job.id, state: 'failed', resultUrl: null, resultToken: null });
+  const wire = jobWire((await queue.get(job.id, 'service:ci'))!, 'https://work.test/r', 't');
+  assert.equal(wire.resultToken, 't');
+  assert.equal(jobWire({ ...job, state: 'queued' }, 'https://work.test/r', 't').resultToken, null, 'no token before there is a result');
+});
+
 test('idempotency returns one durable job and conflicts on changed requests', async () => {
   const queue = new AutomationQueue({ store: createMemoryStore(), blobs: createMemoryBlobStore() });
   const run = async () => ({ mime: 'text/plain', bytes: new TextEncoder().encode('ok') });
