@@ -6743,7 +6743,7 @@ export function buildApp(deps: AppDeps): App {
     if (!(await requireAction(req, res, 'telemetry.view'))) return;
     const alerts = await currentOffloadAlerts(blobs).catch((err: Error) => { log('warn', 'blob usage unavailable', { error: err.message }); return []; });
     sendJson(res, 200, { alerts });
-  });
+  }, { delivery: 'person-private' });
 
   // Store-derived dashboard stats the telemetry fold can't answer: catalog
   // inventory (count + lifecycle state breakdown) and project size (sessions
