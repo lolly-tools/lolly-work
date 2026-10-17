@@ -43,8 +43,9 @@ test('an approved callback carries the result token as a field beside the result
   const { job } = await queue.create('service:ci', 'render', { callbackUrl: 'https://hooks.test/lolly' }, async () => ({ mime: 'image/svg+xml', bytes: new Uint8Array() }));
   const failed = await queue.create('service:ci', 'render', { callbackUrl: 'https://hooks.test/lolly' }, async () => { throw new Error('boom'); });
   await settle();
-  assert.deepEqual(bodies.find(body => body.jobId === job.id), { jobId: job.id, state: 'done', resultUrl: `https://work.test/api/v1/jobs/${job.id}/result?token=t-${job.id}`, resultToken: `t-${job.id}` });
-  assert.deepEqual(bodies.find(body => body.jobId === failed.job.id), { jobId: failed.job.id, state: 'failed', resultUrl: null, resultToken: null });
+  const deliveryId = async (id: string) => (await queue.get(id, 'service:ci'))?.callback?.id;
+  assert.deepEqual(bodies.find(body => body.jobId === job.id), { jobId: job.id, state: 'done', resultUrl: `https://work.test/api/v1/jobs/${job.id}/result?token=t-${job.id}`, resultToken: `t-${job.id}`, deliveryId: await deliveryId(job.id) });
+  assert.deepEqual(bodies.find(body => body.jobId === failed.job.id), { jobId: failed.job.id, state: 'failed', resultUrl: null, resultToken: null, deliveryId: await deliveryId(failed.job.id) });
   const wire = jobWire((await queue.get(job.id, 'service:ci'))!, 'https://work.test/r', 't');
   assert.equal(wire.resultToken, 't');
   assert.equal(jobWire({ ...job, state: 'queued' }, 'https://work.test/r', 't').resultToken, null, 'no token before there is a result');

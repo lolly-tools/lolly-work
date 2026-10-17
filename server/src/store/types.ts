@@ -355,7 +355,11 @@ export interface AutomationJobRecord {
   resultSha256?: string;
   error?: string;
   callbackUrl?: string;
+  /** True until the receiver acknowledges the callback. Read from the callback
+   *  outbox when the job has an entry there; older jobs keep their stored flag. */
   callbackFailed?: boolean;
+  /** Read-only summary of the job's callback outbox entry. Saves ignore it. */
+  callback?: AutomationCallbackSummary;
   progress?: { done: number; total: number };
   idempotencyKey?: string;
   /** Higher values drain first within this process; bounded to 0..9. */
@@ -364,6 +368,65 @@ export interface AutomationJobRecord {
   leaseOwner?: string;
   leaseUntil?: string;
   leaseToken?: number;
+}
+
+/** `acknowledged` means the receiver answered 2xx. It is not proof that the
+ *  receiver acted on the callback, so nothing here says "delivered". */
+export type AutomationCallbackState = 'pending' | 'acknowledged' | 'failed';
+/** What one send attempt learned. `uncertain`: the request may have reached the
+ *  receiver (a timeout, a dropped connection, or a sender that stopped before it
+ *  recorded the answer), so the next attempt reuses the same id. `not-sent`: no
+ *  request left this instance. */
+export type AutomationCallbackOutcome = 'acknowledged' | 'refused' | 'uncertain' | 'not-sent';
+export interface AutomationCallbackSummary {
+  /** The idempotency key every attempt sends, as `x-lolly-delivery-id` and in the signed body. */
+  id: string;
+  state: AutomationCallbackState;
+  attempts: number;
+  lastOutcome?: AutomationCallbackOutcome;
+  lastStatus?: number;
+  nextAttemptAt?: string;
+}
+/** Durable callback outbox entry. A job that settles (done or failed) with a
+ *  callback URL gets one in the same write; a dispatcher claims due entries with
+ *  a lease, so an entry no process finished is sent again after a restart. */
+export interface AutomationCallbackRecord {
+  id: string;
+  jobId: string;
+  principal: string;
+  url: string;
+  state: AutomationCallbackState;
+  attempt: number;
+  nextAttemptAt: string;
+  leaseOwner?: string;
+  leaseUntil?: string;
+  leaseToken: number;
+  lastOutcome?: AutomationCallbackOutcome;
+  lastStatus?: number;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  settledAt?: string;
+}
+/** Recorded on an entry claimed after its previous holder's lease expired. */
+export const UNRECORDED_CALLBACK_ATTEMPT = 'The previous attempt stopped before it recorded an answer; the receiver may have received it.';
+export function automationCallbackSummary(callback: AutomationCallbackRecord): AutomationCallbackSummary {
+  return {
+    id: callback.id, state: callback.state, attempts: callback.attempt,
+    ...(callback.lastOutcome ? { lastOutcome: callback.lastOutcome } : {}),
+    ...(callback.lastStatus !== undefined ? { lastStatus: callback.lastStatus } : {}),
+    ...(callback.state === 'pending' ? { nextAttemptAt: callback.nextAttemptAt } : {}),
+  };
+}
+/** The recorded result of one claimed attempt. `pending` schedules another
+ *  attempt `retryAfterMs` from now on the store's own clock; the other states
+ *  are final. */
+export interface AutomationCallbackResult {
+  state: AutomationCallbackState;
+  outcome: AutomationCallbackOutcome;
+  status?: number;
+  error?: string;
+  retryAfterMs?: number;
 }
 
 /** The upsert input carries the IdP-authoritative groups as `groups`; the store
@@ -1373,6 +1436,14 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
   claimAutomationJob(owner: string, verbs: string[], leaseMs: number): Promise<AutomationJobRecord | null>;
   renewAutomationJob(job: AutomationJobRecord, leaseMs: number): Promise<boolean>;
   saveClaimedAutomationJob(job: AutomationJobRecord): Promise<boolean>;
+  // Callback outbox. putAutomationJob and saveClaimedAutomationJob append the
+  // entry when a job with a callback URL settles; deleting the job removes it.
+  // A claim of an entry whose last lease expired records that attempt as uncertain.
+  claimAutomationCallback(owner: string, leaseMs: number): Promise<AutomationCallbackRecord | null>;
+  /** Fenced by the claim's lease token: refused once another claim took the entry. */
+  settleAutomationCallback(callback: AutomationCallbackRecord, result: AutomationCallbackResult): Promise<boolean>;
+  /** When the earliest pending entry falls due, or null when none is pending. */
+  nextAutomationCallbackAt(): Promise<string | null>;
 
   // Organization delivery history. Reads and idempotency lookup are scoped to
   // the requesting principal; destination credentials never enter this store.

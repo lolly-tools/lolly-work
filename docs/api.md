@@ -1053,7 +1053,7 @@ key for different request bytes returns `409 IDEMPOTENCY_KEY_REUSED`. A
 `callbackUrl` is used only when it exactly matches the instance-configured
 webhook endpoint; callback requests carry `x-lolly-timestamp` and a signed
 `x-lolly-signature` header. The callback body is
-`{jobId, state, resultUrl, resultToken}`. `resultToken` is a 24-hour token for
+`{jobId, state, resultUrl, resultToken, deliveryId}`. `resultToken` is a 24-hour token for
 that one job's result: send it as the `x-lw-job-token` header on
 `GET /api/v1/jobs/:id/result`, and the receiver needs no session of its own.
 A completed job resource carries the same `resultToken`, and `null` before then.
@@ -1065,6 +1065,23 @@ it, answering with a `Deprecation` header
 ([RFC 9745](https://www.rfc-editor.org/rfc/rfc9745)). After that release
 `resultUrl` loses its query and a query token is refused, so move receivers to
 the header now.
+
+Callbacks go through a durable outbox. The write that settles a job also stores
+its callback, and any Work process sends callbacks that are due, so a callback
+left unanswered by a restart is sent again afterwards. Every attempt for one job
+carries the same id, in `x-lolly-delivery-id` and as `deliveryId` in the signed
+JSON body. This is the idempotency key
+contract of a signed-HTTPS delivery: the receiver should act on each id once.
+Each attempt has a fresh timestamp, signature, result URL and result token. A refusal, a
+timeout or a dropped connection is retried after 5 s, 30 s, 2 min, 10 min and
+30 min, six attempts in all. The job resource reports `callback: {id, state,
+attempts, lastOutcome, lastStatus, nextAttemptAt}`. `state` is `pending`,
+`acknowledged` (the receiver answered 2xx) or `failed`. Work never reports a
+callback as delivered, because a 2xx answer does not show what the receiver did
+next. `lastOutcome` is `acknowledged`, `refused`, `uncertain` (the request may
+have reached the receiver) or `not-sent` (the URL is not approved, or no signing
+secret is configured). `callbackFailed` stays `true` until the receiver
+acknowledges.
 
 `POST /api/v1/batch {toolId,format,rows,keepGoing?,retries?,concurrency?,priority?}`
 always creates a job and produces one ZIP. Requested concurrency is capped at

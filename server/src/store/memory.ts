@@ -44,11 +44,11 @@ import { createMemoryPasskeys } from '../iam/passkeys/memory.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import { createMemoryUploadStore } from '../uploads/memory.ts';
 import {
-  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, UNRECORDED_CALLBACK_ATTEMPT, automationCallbackSummary, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
   type ProjectTransferMetadata,
   type CommentNotice,
   type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationCallbackRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type SessionRevisionCommitResult, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -126,6 +126,26 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     for (const [k, r] of accessRequests) if (gone(r)) accessRequests.delete(k);
   };
   const automationJobs = new Map<string, AutomationJobRecord>();
+  const automationCallbacks = new Map<string, AutomationCallbackRecord>(); // by job id, as Postgres keeps one per job
+  /** Match Postgres: a job that settles with a callback URL gets its outbox entry in the same write. */
+  const storeAutomationJob = (job: AutomationJobRecord, extra: Partial<AutomationJobRecord> = {}): void => {
+    const stored: AutomationJobRecord = { ...structuredClone(job), ...extra };
+    delete stored.callback;
+    automationJobs.set(job.id, stored);
+    if (!stored.callbackUrl || (stored.state !== 'done' && stored.state !== 'failed') || automationCallbacks.has(job.id)) return;
+    const at = new Date().toISOString();
+    automationCallbacks.set(job.id, { id: `cbk_${randomId(16)}`, jobId: job.id, principal: stored.principal, url: stored.callbackUrl, state: 'pending', attempt: 0, nextAttemptAt: at, leaseToken: 0, createdAt: at, updatedAt: at });
+  };
+  /** A job as a reader sees it: the callback summary and flag come from the outbox entry. */
+  const readAutomationJob = (job: AutomationJobRecord): AutomationJobRecord => {
+    const copy = structuredClone(job);
+    const callback = automationCallbacks.get(job.id);
+    if (callback) {
+      copy.callbackFailed = callback.state !== 'acknowledged';
+      copy.callback = automationCallbackSummary(callback);
+    }
+    return copy;
+  };
   const deliveries = new Map<string, DeliveryRecord>();
   let siemCursor = 0; // highest audit seq confirmed delivered to the SIEM receiver
   let auditAnchor: AuditAnchor | null = null; // retention trim boundary (plans/35 wave 3)
@@ -726,27 +746,57 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const live = automationJobs.get(job.id);
       if (!live || live.leaseOwner !== job.leaseOwner || live.leaseToken !== job.leaseToken) return false;
       if (!(live.state === 'running' && Date.parse(live.leaseUntil ?? '') > Date.now() || live.state === job.state && ['done', 'failed'].includes(live.state))) return false;
-      automationJobs.set(job.id, { ...structuredClone(job), leaseUntil: live.leaseUntil }); return true;
+      storeAutomationJob(job, { leaseUntil: live.leaseUntil }); return true;
     },
     async putAutomationJob(job) {
       if (job.idempotencyKey && [...automationJobs.values()].some(existing => existing.id !== job.id && existing.principal === job.principal && existing.idempotencyKey === job.idempotencyKey)) throw new Error('IDEMPOTENCY_KEY_REUSED');
-      automationJobs.set(job.id, structuredClone(job));
+      storeAutomationJob(job);
     },
     async getAutomationJob(id, principal) {
       const job = automationJobs.get(id);
-      return job?.principal === principal ? structuredClone(job) : null;
+      return job?.principal === principal ? readAutomationJob(job) : null;
     },
     async listAutomationJobs(principal) {
-      return [...automationJobs.values()].filter((job) => job.principal === principal).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((job) => structuredClone(job));
+      return [...automationJobs.values()].filter((job) => job.principal === principal).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(readAutomationJob);
     },
     async findAutomationJobByIdempotency(principal, key) {
       const job = [...automationJobs.values()].find((candidate) => candidate.principal === principal && candidate.idempotencyKey === key);
-      return job ? structuredClone(job) : null;
+      return job ? readAutomationJob(job) : null;
     },
     async deleteAutomationJob(id, principal) {
       const job = automationJobs.get(id);
       if ([...deliveries.values()].some((delivery) => delivery.sourceJobId === id)) return false;
-      return Boolean(job?.principal === principal && automationJobs.delete(id));
+      if (!(job?.principal === principal && automationJobs.delete(id))) return false;
+      automationCallbacks.delete(id); // Postgres cascades the outbox entry
+      return true;
+    },
+    async claimAutomationCallback(owner, leaseMs) {
+      const now = Date.now();
+      const due = [...automationCallbacks.values()]
+        .filter(c => c.state === 'pending' && Date.parse(c.nextAttemptAt) <= now && (!c.leaseUntil || Date.parse(c.leaseUntil) < now))
+        .sort((a, b) => a.nextAttemptAt.localeCompare(b.nextAttemptAt))[0];
+      if (!due) return null;
+      // A lease still set here expired with its attempt unrecorded: the sender
+      // stopped after it may have sent the request.
+      if (due.leaseUntil) { Object.assign(due, { lastOutcome: 'uncertain', lastError: UNRECORDED_CALLBACK_ATTEMPT }); delete due.lastStatus; }
+      Object.assign(due, { leaseOwner: owner, leaseUntil: new Date(now + leaseMs).toISOString(), leaseToken: due.leaseToken + 1, attempt: due.attempt + 1, updatedAt: new Date(now).toISOString() });
+      return structuredClone(due);
+    },
+    async settleAutomationCallback(callback, result) {
+      const live = automationCallbacks.get(callback.jobId);
+      if (!live || live.id !== callback.id || live.state !== 'pending' || live.leaseOwner !== callback.leaseOwner || live.leaseToken !== callback.leaseToken) return false;
+      const at = new Date().toISOString();
+      Object.assign(live, { state: result.state, lastOutcome: result.outcome, nextAttemptAt: result.retryAfterMs !== undefined ? new Date(Date.now() + result.retryAfterMs).toISOString() : live.nextAttemptAt, updatedAt: at });
+      if (result.status !== undefined) live.lastStatus = result.status; else delete live.lastStatus;
+      if (result.error !== undefined) live.lastError = result.error; else delete live.lastError;
+      if (result.state !== 'pending') live.settledAt = at;
+      delete live.leaseOwner; delete live.leaseUntil;
+      return true;
+    },
+    async nextAutomationCallbackAt() {
+      const times = [...automationCallbacks.values()].filter(c => c.state === 'pending')
+        .map(c => c.leaseUntil && c.leaseUntil > c.nextAttemptAt ? c.leaseUntil : c.nextAttemptAt).sort();
+      return times[0] ?? null;
     },
 
     async putDelivery(delivery) {
