@@ -39,7 +39,7 @@ import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
 import {
   newestVersionFirst, normalizeSessionVersionAnnotation, normalizeSessionVersionWrite, planSessionVersionAnnotate, planSessionVersionPut,
-  resolveVersionLimits, sessionRevisionCommitVersion, sessionVersionContent, sessionVersionId, versionListLimit,
+  resolveVersionLimits, sessionRevisionCommitVersion, sessionVersionContent, sessionVersionId, versionHistoryEntry, versionListLimit,
   type SessionVersionAnnotate, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
   type SessionVersionWrite,
 } from './types.ts';
@@ -2989,8 +2989,8 @@ function versionRowFromRow(r: Record<string, unknown>): SessionVersionRow {
   };
 }
 
-type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'annotateSessionVersion'
-  | 'deleteSessionVersion' | 'deleteSessionVersions';
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'listVersionHistory' | 'getSessionVersion'
+  | 'annotateSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
 
 /**
  * Session versions (plan 76 M4 R2, migrations 0053 and 0072). Every write,
@@ -3101,6 +3101,30 @@ function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> & {
          where v.session_id = $1 and (v.at < b.at or (v.at = b.at and v.id collate "C" < b.id collate "C"))
          order by v.at desc, v.id collate "C" desc limit $3`, [sessionId, opts.before, limit]);
       return rows.map(versionSummaryFromRow);
+    },
+    async listVersionHistory(q) {
+      if (!q.projectIds.length) return [];
+      const values: unknown[] = [[...q.projectIds], [...(q.exceptSessionIds ?? [])]];
+      const where = ['s.deleted_at is null', 's.project_id = any($1::text[])', 'not (v.session_id = any($2::text[]))'];
+      const param = (value: unknown): string => `$${values.push(value)}`;
+      if (q.toolId !== undefined) where.push(`s.tool_id = ${param(q.toolId)}`);
+      if (q.kinds) where.push(`v.kind = any(${param([...q.kinds])}::text[])`);
+      // versionKept, in SQL.
+      if (q.kept) where.push(`(v.kind = 'named' or v.label is not null or v.pinned)`);
+      if (q.from !== undefined) where.push(`v.at >= ${param(q.from)}::timestamptz`);
+      if (q.to !== undefined) where.push(`v.at <= ${param(q.to)}::timestamptz`);
+      if (q.after) {
+        const at = `${param(q.after.at)}::timestamptz`, id = param(q.after.id);
+        where.push(`(v.at < ${at} or (v.at = ${at} and v.id collate "C" < ${id} collate "C"))`);
+      }
+      // Migration 0076's index serves this order, so a page stops after `limit` rows match.
+      const { rows } = await pool.query(`select ${VERSION_SUMMARY_COLUMNS}, s.project_id, s.tool_id, s.tool_version, s.meta -> 'label' as session_label
+          from ${VERSIONS_WITH_CONTENT} join sessions s on s.id = v.session_id
+         where ${where.join(' and ')}
+         order by v.at desc, v.id collate "C" desc limit ${param(versionListLimit(q.limit))}`, values);
+      return rows.map((r) => versionHistoryEntry(versionSummaryFromRow(r), {
+        projectId: r.project_id as string, toolId: r.tool_id as string, toolVersion: r.tool_version as string, meta: { label: r.session_label },
+      }));
     },
     async getSessionVersion(sessionId, id) {
       const { rows } = await pool.query(`select ${VERSION_SUMMARY_COLUMNS}, v.meta, c.inputs from ${VERSIONS_WITH_CONTENT}

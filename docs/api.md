@@ -962,6 +962,45 @@ Saves, name and pin changes and restores share one limit per person: 10 a minute
 | `NOT_FOUND` | 404 | the version is not one of this session's |
 | `INVALID_INPUT` | 400 | a missing or malformed `label`, `pinned`, `annotationRev`, `requestId`, `limit` or `before`, or removing the name of a version saved with one |
 
+### History across documents
+
+`GET /api/v1/history` lists the versions of every document you can read, newest first,
+in one request (plan 221). It needs a signed-in person: a service token gets `401`, and
+a request an agent makes for a person gets `403`, because an agent's access is one
+project or one document. The answer is `200 { entries, before? }`, private to you
+(`cache-control: private, no-store`).
+
+What can appear is decided on the server before anything is read, with the same rules
+as reading one document's versions: access to the project (membership, its end date,
+groups and sharing) and `session.view` on the document. A document in a project you
+cannot see, a deleted document, and a document a grant denies you never appear, and
+nothing in the answer says they exist.
+
+Without `project`, the page covers your own projects, as your Projects list shows them:
+projects you own or were added to (directly or through a group), projects you pinned,
+and projects you opened in the last 30 days. A project you hid never appears, and an
+archived project appears only with `archived=1`. A project shared with everyone, or one
+an administrator can see only as an administrator, appears once you pin it, or for
+30 days after you open it.
+
+| Parameter | Meaning |
+|---|---|
+| `limit` | 1 to 100 entries, 50 by default |
+| `before` | the `before` of the page you read last, to read the next one. It names the last entry of that page and is otherwise opaque. A page that came back full carries one |
+| `project` | one project you can see, including one you hid or archived: `404` when there is none, `403` when you cannot see it |
+| `tool` | one tool id |
+| `kind` | one or more of `auto`, `close`, `save`, `named`, `restore` and `before`, separated by commas |
+| `kept=1` | only versions kept by a name or a pin |
+| `from`, `to` | a date and time; both ends are included |
+| `archived=1` | include your archived projects |
+
+An entry is a version as `GET /api/v1/sessions/:id/versions` lists it (above), with
+`projectId`, `projectName`, `projectArchived` (only when it is), `toolId`, `toolVersion`
+and `sessionLabel` (the document's current name, or `null`). It never carries the
+document's content or an email address. Read a version's content with
+`GET /api/v1/sessions/:id/versions/:versionId`. A malformed parameter answers
+`400 INVALID_INPUT`.
+
 ## Telemetry, activity, audit, fleet, system
 
 | Route | Action |

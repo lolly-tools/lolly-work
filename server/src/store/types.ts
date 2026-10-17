@@ -819,6 +819,43 @@ export const VERSION_LABEL_MAX = 120;
 /** `listSessionVersions` page size: the default and the most allowed. */
 export const VERSION_LIST_DEFAULT = 30;
 export const VERSION_LIST_MAX = 100;
+/** `listVersionHistory` page size by default; the most allowed is VERSION_LIST_MAX. */
+export const VERSION_HISTORY_DEFAULT = 50;
+
+/** A version as the history across documents lists it (plan 221): its summary
+ *  and the facts of its document that a list row shows. Never its content. */
+export interface VersionHistoryEntry extends SessionVersionSummary {
+  projectId: string; toolId: string; toolVersion: string;
+  /** The document's current name (`meta.label`), or null when it has none. */
+  sessionLabel: string | null;
+}
+
+/**
+ * What `listVersionHistory` reads. `projectIds` is the whole scope: only
+ * versions of live documents in these projects, less the documents in
+ * `exceptSessionIds`. The caller works the scope out from the reader's access
+ * (versions/history.ts); the store applies it with the filters and knows
+ * nothing of people.
+ */
+export interface VersionHistoryQuery {
+  projectIds: readonly string[];
+  exceptSessionIds?: readonly string[];
+  toolId?: string;
+  kinds?: readonly SessionVersionKind[];
+  /** Only kept versions (`versionKept`). */
+  kept?: boolean;
+  /** ISO times (`toISOString`), both inclusive. */
+  from?: string; to?: string;
+  /** The page starts after this version, newest first (by `at`, then id). */
+  after?: { at: string; id: string };
+  limit: number;
+}
+
+/** A history entry from a version summary and the document it belongs to. */
+export function versionHistoryEntry(v: SessionVersionSummary, s: Pick<SessionRecord, 'projectId' | 'toolId' | 'toolVersion' | 'meta'>): VersionHistoryEntry {
+  return { ...v, projectId: s.projectId, toolId: s.toolId, toolVersion: s.toolVersion,
+    sessionLabel: typeof s.meta?.label === 'string' ? s.meta.label : null };
+}
 
 const VERSION_ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
 const RECYCLABLE_KINDS: ReadonlySet<SessionVersionKind> = new Set(['auto', 'close', 'save']);
@@ -1895,6 +1932,11 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
    *  `before` is a version id: the page starts after it. An id that is not a
    *  version of this session gives an empty page. */
   listSessionVersions(sessionId: string, opts: { before?: string; limit: number }): Promise<SessionVersionSummary[]>;
+  /** Versions across documents (plan 221), newest first (by `at`, then id), at
+   *  most `limit` (1 to VERSION_LIST_MAX): those of live documents in
+   *  `projectIds`, less `exceptSessionIds`, that pass every filter given. An
+   *  empty `projectIds` gives an empty page. No content is read. */
+  listVersionHistory(query: VersionHistoryQuery): Promise<VersionHistoryEntry[]>;
   /** With its inputs and meta; null when the id is not a version of this session. */
   getSessionVersion(sessionId: string, id: string): Promise<SessionVersion | null>;
   /**

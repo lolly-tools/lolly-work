@@ -17,7 +17,8 @@ import { runErasureConformance } from './erasure-conformance.ts';
 import { ReferenceCanvasDoc } from '@lolly-tools/core/canvas-op-v1';
 import { VERSION_LABEL_MAX, VERSION_NAMED_PER_PERSON, VERSION_NAMED_PER_SESSION, VERSION_RESTORE_KEEP,
   type SessionRecord, type SessionRevisionCommitResult,
-  type SessionVersionAnnotate, type SessionVersionAnnotation, type SessionVersionPut, type SessionVersionSummary, type SessionVersionWrite } from '../server/src/store/types.ts';
+  type SessionVersionAnnotate, type SessionVersionAnnotation, type SessionVersionPut, type SessionVersionSummary, type SessionVersionWrite,
+  type VersionHistoryQuery } from '../server/src/store/types.ts';
 import type { AuditEventBody } from '../server/src/audit/chain.ts';
 
 /**
@@ -454,6 +455,85 @@ async function runSessionCommitConformance(store: Store): Promise<void> {
 
   for (const id of ids) await store.deleteSessionVersions(id);
   for (const id of ids) await store.putSession({ ...(await read(id)), deletedAt: at });
+}
+
+/**
+ * History across documents (plan 221, `listVersionHistory`): only versions of
+ * live documents in the given projects, less the excepted documents; the tool,
+ * kind, kept and time filters; newest first with ids breaking ties, so paging
+ * by position continues over equal times without a gap or a repeat. No content
+ * comes back. Uses its own projects, so versions other suites left stay out.
+ */
+async function runVersionHistoryConformance(store: Store): Promise<void> {
+  const owner = await store.upsertUserBySub({ sub: 'hist-owner', email: 'hist-owner@example.invalid', groups: [], role: 'member' });
+  const created = new Date().toISOString();
+  for (const id of ['prj_hist_a', 'prj_hist_b', 'prj_hist_out']) await store.putProject({ id, name: id, visibility: 'private', ownerId: owner.id, createdAt: created });
+  const docs: Array<[string, string, string, Record<string, unknown>]> = [
+    ['ses_hist_a1', 'prj_hist_a', 'design', { label: 'Poster' }], ['ses_hist_a2', 'prj_hist_a', 'chart', { label: 7 }],
+    ['ses_hist_b1', 'prj_hist_b', 'design', {}], ['ses_hist_out', 'prj_hist_out', 'design', { label: 'Out' }], ['ses_hist_gone', 'prj_hist_a', 'design', {}],
+  ];
+  for (const [id, projectId, toolId, meta] of docs) {
+    await store.putSession({ id, projectId, toolId, toolVersion: '2.0.0', inputs: { body: `content of ${id}` }, meta,
+      createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: created });
+  }
+  const base = Date.parse('2026-08-01T12:00:00.000Z');
+  const at = (minute: number) => new Date(base + minute * 60_000).toISOString();
+  let n = 0;
+  const put = async (sessionId: string, minute: number, extra: Partial<SessionVersionWrite> = {}): Promise<SessionVersionSummary> => {
+    const out = await store.putSessionVersion({ sessionId, rev: 1, kind: 'save', inputs: { body: `content ${++n}` }, meta: {}, contributors: [], at: at(minute), ...extra });
+    assert.ok(typeof out === 'object' && out.created, `version ${n} written`);
+    return out.version;
+  };
+  const inScope = [await put('ses_hist_a1', 1), await put('ses_hist_a1', 2), await put('ses_hist_a2', 3), await put('ses_hist_b1', 4, { kind: 'auto' }),
+    await put('ses_hist_a2', 5), await put('ses_hist_a2', 5), await put('ses_hist_a1', 5, { kind: 'named', label: 'Kept', createdBy: owner.id }),
+    await put('ses_hist_b1', 6)];
+  await put('ses_hist_out', 7);
+  await put('ses_hist_gone', 8);
+  await store.putSession({ ...(await store.getSession('ses_hist_gone'))!, deletedAt: created });
+  const pinned = await store.annotateSessionVersion('ses_hist_b1', inScope[3]!.id, { pinned: true, annotationRev: 0, by: owner.id });
+  assert.ok(typeof pinned === 'object' && pinned.changed);
+
+  const scope = { projectIds: ['prj_hist_a', 'prj_hist_b'] };
+  const expected = [...inScope].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0)).map((v) => v.id);
+  const ids = async (q: Partial<VersionHistoryQuery>) => (await store.listVersionHistory({ ...scope, limit: 100, ...q })).map((e) => e.id);
+  assert.deepEqual(await store.listVersionHistory({ projectIds: [], limit: 100 }), [], 'no project, no page');
+  assert.deepEqual(await ids({}), expected, 'newest first, ids breaking ties; no other project and no deleted document');
+  const all = await store.listVersionHistory({ ...scope, limit: 100 });
+  const named = all.find((e) => e.kind === 'named')!;
+  assert.deepEqual([named.projectId, named.toolId, named.toolVersion, named.sessionLabel, named.label], ['prj_hist_a', 'design', '2.0.0', 'Poster', 'Kept']);
+  assert.equal(all.find((e) => e.sessionId === 'ses_hist_a2')!.sessionLabel, null, 'a label that is not text is no label');
+  assert.equal(all.find((e) => e.sessionId === 'ses_hist_b1')!.sessionLabel, null);
+  assert.ok(all.every((e) => e.bytes > 0 && !('inputs' in e) && !('meta' in e)), 'sizes, never content');
+  assert.equal(all.find((e) => e.id === inScope[3]!.id)!.pinned, true);
+
+  assert.deepEqual(await ids({ exceptSessionIds: ['ses_hist_a2'] }), expected.filter((id) => !inScope.slice(2, 3).concat(inScope.slice(4, 6)).some((v) => v.id === id)));
+  assert.deepEqual(await ids({ toolId: 'chart' }), expected.filter((id) => [inScope[2], inScope[4], inScope[5]].some((v) => v!.id === id)));
+  assert.deepEqual(await ids({ kinds: ['named'] }), [inScope[6]!.id]);
+  assert.deepEqual(await ids({ kinds: [] }), [], 'no kind, no version');
+  assert.deepEqual((await ids({ kept: true })).sort(), [inScope[3]!.id, inScope[6]!.id].sort(), 'named, and pinned later');
+  assert.deepEqual((await ids({ from: at(3), to: at(5) })).sort(), inScope.slice(2, 7).map((v) => v.id).sort(), 'both ends included');
+  assert.deepEqual(await ids({ from: at(9) }), []);
+
+  // Pages of two, each after the last entry of the one before.
+  const paged: string[] = [];
+  let after: { at: string; id: string } | undefined;
+  for (let page = 0; page < 10; page++) {
+    const rows = await store.listVersionHistory({ ...scope, limit: 2, ...(after ? { after } : {}) });
+    paged.push(...rows.map((e) => e.id));
+    if (rows.length < 2) break;
+    after = { at: rows[1]!.at, id: rows[1]!.id };
+  }
+  assert.deepEqual(paged, expected, 'no gap and no repeat across three versions at one time');
+  // A position need not be a stored version: the page starts after it.
+  assert.deepEqual(await ids({ after: { at: at(5), id: 'ver_zzzzzzzzzzzzzzzz' } }), expected.slice(1));
+  assert.deepEqual(await ids({ after: { at: at(5), id: 'ver_0' } }), expected.slice(4));
+  assert.equal((await store.listVersionHistory({ ...scope, limit: 0 })).length, 1, 'the limit is at least one');
+
+  for (const [id] of docs) {
+    await store.deleteSessionVersions(id);
+    const s = (await store.getSession(id))!;
+    if (!s.deletedAt) await store.putSession({ ...s, deletedAt: created });
+  }
 }
 
 export async function runStoreConformance(store: Store): Promise<void> {
@@ -1653,6 +1733,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(revs[0]?.inputs, { title: 'Hi3' });
 
   await runSessionVersionsConformance(store);
+  await runVersionHistoryConformance(store);
   await runSessionCommitConformance(store);
 
   // collab room snapshots (plans/14 §6): at most one per session, put REPLACES

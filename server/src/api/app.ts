@@ -97,6 +97,7 @@ import { createProjectRequests } from '../agents/project-requests.ts';
 import type { AgentRoomBridge } from '../agents/types.ts';
 import type { VersionRoomBridge } from '../versions/restore.ts';
 import { registerVersionRoutes } from '../versions/routes.ts';
+import { registerHistoryRoutes } from '../versions/history.ts';
 import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader } from '../render/read-ticket.ts';
 import { projectSubmissionInput, ProjectSubmissionError } from '../catalog/project-source.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
@@ -9561,6 +9562,7 @@ export function buildApp(deps: AppDeps): App {
   registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, people, roomEvents: deps.roomEvents });
   registerVersionRoutes(router, { config, store, memberOf, audit, auditBody, sessionFor: collabSessionFor, rooms: deps.versionRooms,
     toolInputs: toolId => readToolInputs(config.instance.pack, toolId) });
+  registerHistoryRoutes(router, { store, memberOf, delegated: req => !!agentRequests.principal(req) });
 
   // Invite autocomplete. Read-access only - an OBSERVER may look up who else
   // could watch, which is the same disclosure they already get from the room's
