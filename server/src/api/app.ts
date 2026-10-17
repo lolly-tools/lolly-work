@@ -318,7 +318,10 @@ export interface AppDeps {
    *  (main.ts reads LW_BACKGROUND_POLL_MS). Unset keeps their 1 s default; 0
    *  sets no timer, so work is picked up at boot, on submission and after each
    *  finished item only. A long-lived host on a database that scales to zero
-   *  needs that: a query every second keeps the database awake all month. */
+   *  needs that: a query every second keeps the database awake all month.
+   *  A pending job callback still sets a single timer for its next attempt, so
+   *  the database may be woken for up to about 45 minutes after a job with a
+   *  callback settles. */
   backgroundPollMs?: number;
 }
 

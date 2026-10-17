@@ -6,6 +6,8 @@ import type { BlobStore } from '../blobs/types.ts';
 import type { JobOutput } from './jobs.ts';
 
 export type DurableExecutor = (job: AutomationJobRecord, signal: AbortSignal) => Promise<JobOutput>;
+/** Where the attempt holding lease `token` stores its result. Each attempt owns its path. */
+export const attemptResultRef = (jobId: string, token: number): string => `automation/${jobId}/attempt-${token}/result`;
 export class DurableAutomationRunner {
   private readonly owner = randomUUID();
   private readonly store: Pick<Store, 'claimAutomationJob' | 'renewAutomationJob' | 'saveClaimedAutomationJob'>;
@@ -50,7 +52,7 @@ export class DurableAutomationRunner {
     heartbeat.unref();
     // A losing worker owns only its attempt path. It can never overwrite or delete
     // the winning worker's bytes, even when a renderer ignores cancellation.
-    const ref = `automation/${job.id}/attempt-${job.leaseToken}/result`;
+    const ref = attemptResultRef(job.id, job.leaseToken ?? 0);
     let wrote = false;
     try {
       const retries = Math.max(0, Math.min(3, Math.trunc(Number(job.request.jobRetries ?? 0) || 0)));
@@ -63,10 +65,9 @@ export class DurableAutomationRunner {
       await this.blobs.put(ref, output.bytes, output.mime); wrote = true;
       controller.signal.throwIfAborted();
       Object.assign(job, { state: 'done', resultRef: ref, resultMime: output.mime, resultSha256: createHash('sha256').update(output.bytes).digest('hex'), finishedAt: new Date().toISOString() });
-      // Callback outbox/replay is separate: never claim a callback was delivered.
-      if (job.callbackUrl) job.callbackFailed = true;
+      // The store appends the callback outbox entry in this same save.
       if (!await this.store.saveClaimedAutomationJob(job)) { await this.blobs.delete(ref); wrote = false; }
-      else { wrote = false; await this.onComplete?.(job).catch(() => {}); }
+      else { wrote = false; await this.sweepEarlierAttempts(job, ref); await this.onComplete?.(job).catch(() => {}); }
     } catch (error) {
       if (wrote) await this.blobs.delete(ref).catch(() => {});
       if (!controller.signal.aborted) {
@@ -74,9 +75,22 @@ export class DurableAutomationRunner {
         delete job.resultRef; delete job.resultMime; delete job.resultSha256;
         const retries = Math.max(0, Math.min(3, Math.trunc(Number(job.request.jobRetries ?? 0) || 0)));
         if (job.attempt <= retries) { job.state = 'queued'; delete job.finishedAt; }
-        if (job.callbackUrl && job.state === 'failed') job.callbackFailed = true;
-        if (await this.store.saveClaimedAutomationJob(job) && job.state === 'failed') await this.onComplete?.(job).catch(() => {});
+        if (await this.store.saveClaimedAutomationJob(job) && job.state === 'failed') {
+          await this.sweepEarlierAttempts(job);
+          await this.onComplete?.(job).catch(() => {});
+        }
       }
     } finally { clearInterval(heartbeat); }
+  }
+  /** Per-attempt cleanup. An attempt that crashed after storing its bytes, or
+   *  lost its lease, may have left them at its own path. Once this attempt's
+   *  fenced save has settled the job, no earlier lease can publish, so their
+   *  paths go. A stale attempt still running deletes its own bytes when its
+   *  save is refused. */
+  private async sweepEarlierAttempts(job: AutomationJobRecord, keep?: string): Promise<void> {
+    for (let token = 1; token < (job.leaseToken ?? 0); token++) {
+      const ref = attemptResultRef(job.id, token);
+      if (ref !== keep) await this.blobs.delete(ref).catch(() => {});
+    }
   }
 }

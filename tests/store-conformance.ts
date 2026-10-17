@@ -10,7 +10,7 @@ import { createApproval, type Chain } from '../server/src/approvals/engine.ts';
 import { freezeSourceReview } from '../server/src/catalog/source-review.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { Message } from '../server/src/inbox/target.ts';
-import { COMMENT_NOTICE_COUNT_MAX, commentNoticeId, type CommentNoticeWrite, type Store } from '../server/src/store/types.ts';
+import { COMMENT_NOTICE_COUNT_MAX, UNRECORDED_CALLBACK_ATTEMPT, commentNoticeId, type AutomationJobRecord, type CommentNoticeWrite, type Store } from '../server/src/store/types.ts';
 import { PROJECT_FILE_OVERHEAD_BYTES, type ProjectFileRecord } from '../server/src/projects/files.ts';
 import { runErasureConformance } from './erasure-conformance.ts';
 
@@ -912,6 +912,61 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(await store.deleteAutomationJob('job_1', 'user:a'), true);
   assert.equal(await store.getAutomationJob('job_1', 'user:a'), null);
   assert.ok((await store.findApiTokenByHash('hash-a'))?.revokedAt, 'revoked rows are returned, callers refuse them');
+
+  // callback outbox: a job that settles with a callback URL gets one entry in the
+  // same write; claims are leased and fenced by token; a retry and a replay keep
+  // the entry's id; deleting the job removes the entry.
+  assert.equal(await store.claimAutomationCallback('outbox-a', 60_000), null, 'nothing is pending yet');
+  assert.equal(await store.nextAutomationCallbackAt(), null);
+  const hooked: AutomationJobRecord = { id: 'job_cb', principal: 'user:a', verb: 'render', request: {}, state: 'running', createdAt: jobAt, updatedAt: jobAt, callbackUrl: 'https://hooks.example/lolly', priority: 0, attempt: 1 };
+  await store.putAutomationJob(hooked);
+  assert.equal(await store.claimAutomationCallback('outbox-a', 60_000), null, 'an unsettled job has no callback entry');
+  assert.equal((await store.getAutomationJob('job_cb', 'user:a'))?.callback, undefined);
+  await store.putAutomationJob({ ...hooked, state: 'done', finishedAt: jobAt });
+  await store.putAutomationJob({ ...hooked, state: 'done', finishedAt: jobAt, callbackFailed: false });
+  const pending = await store.getAutomationJob('job_cb', 'user:a');
+  assert.match(pending?.callback?.id ?? '', /^cbk_[A-Za-z0-9_-]+$/);
+  assert.equal(pending?.callback?.state, 'pending');
+  assert.equal(pending?.callback?.attempts, 0);
+  assert.equal(pending?.callbackFailed, true, 'not acknowledged, so never reported as delivered, whatever a save said');
+  assert.equal((await store.listAutomationJobs('user:a')).find(job => job.id === 'job_cb')?.callback?.id, pending!.callback!.id);
+  assert.ok(await store.nextAutomationCallbackAt());
+  const firstCallback = await store.claimAutomationCallback('outbox-a', 60_000);
+  assert.deepEqual([firstCallback?.id, firstCallback?.jobId, firstCallback?.principal, firstCallback?.url, firstCallback?.attempt, firstCallback?.leaseToken],
+    [pending!.callback!.id, 'job_cb', 'user:a', 'https://hooks.example/lolly', 1, 1], 'saving the settled job twice appended one entry');
+  assert.equal(await store.claimAutomationCallback('outbox-b', 60_000), null, 'a leased entry is not claimed twice');
+  assert.equal(await store.settleAutomationCallback({ ...firstCallback!, leaseToken: 99 }, { state: 'acknowledged', outcome: 'acknowledged', status: 204 }), false, 'a wrong token cannot record');
+  assert.equal(await store.settleAutomationCallback(firstCallback!, { state: 'pending', outcome: 'refused', status: 503, error: 'busy', retryAfterMs: 0 }), true);
+  assert.equal(await store.settleAutomationCallback(firstCallback!, { state: 'acknowledged', outcome: 'acknowledged', status: 204 }), false, 'a claim records once');
+  const retry = await store.claimAutomationCallback('outbox-b', 60_000);
+  assert.deepEqual([retry?.id, retry?.attempt, retry?.leaseToken, retry?.lastOutcome, retry?.lastStatus], [firstCallback!.id, 2, 2, 'refused', 503], 'the retry keeps the id and sees the last answer');
+  assert.equal(await store.settleAutomationCallback(retry!, { state: 'acknowledged', outcome: 'acknowledged', status: 204 }), true);
+  const acknowledged = await store.getAutomationJob('job_cb', 'user:a');
+  assert.deepEqual(acknowledged?.callback, { id: firstCallback!.id, state: 'acknowledged', attempts: 2, lastOutcome: 'acknowledged', lastStatus: 204 });
+  assert.equal(acknowledged?.callbackFailed, false);
+  assert.equal(await store.claimAutomationCallback('outbox-a', 60_000), null, 'an acknowledged entry is final');
+  assert.equal(await store.nextAutomationCallbackAt(), null);
+  assert.equal(await store.deleteAutomationJob('job_cb', 'user:a'), true);
+  // The fenced save of a claimed job appends too. A sender that stops with its
+  // lease held is replayed with the same id once the lease expires, and the
+  // replay records the lost attempt as uncertain.
+  await store.putAutomationJob({ ...hooked, id: 'job_cb2', verb: 'callback-conformance', state: 'queued', attempt: 0 });
+  const claimedJob = await store.claimAutomationJob('runner', ['callback-conformance'], 60_000);
+  assert.ok(claimedJob);
+  assert.equal(await store.saveClaimedAutomationJob({ ...claimedJob, state: 'queued' }), true);
+  assert.equal(await store.claimAutomationCallback('outbox-a', 60_000), null, 'a job requeued for a retry has not settled');
+  const reclaimedJob = await store.claimAutomationJob('runner', ['callback-conformance'], 60_000);
+  assert.equal(await store.saveClaimedAutomationJob({ ...reclaimedJob!, state: 'failed', error: 'no', finishedAt: jobAt }), true);
+  const lost = await store.claimAutomationCallback('outbox-a', 1);
+  assert.equal(lost?.jobId, 'job_cb2');
+  assert.ok(await store.nextAutomationCallbackAt(), 'an entry held by a lease is still pending');
+  await new Promise(resolve => setTimeout(resolve, 25));
+  const replay = await store.claimAutomationCallback('outbox-b', 60_000);
+  assert.deepEqual([replay?.id, replay?.attempt, replay?.leaseToken, replay?.lastOutcome, replay?.lastError], [lost!.id, 2, 2, 'uncertain', UNRECORDED_CALLBACK_ATTEMPT]);
+  assert.equal(await store.settleAutomationCallback(lost!, { state: 'acknowledged', outcome: 'acknowledged', status: 200 }), false, 'the lost attempt cannot record over the replay');
+  assert.equal(await store.deleteAutomationJob('job_cb2', 'user:a'), true);
+  assert.equal(await store.settleAutomationCallback(replay!, { state: 'acknowledged', outcome: 'acknowledged', status: 200 }), false, 'deleting the job removed its entry');
+  assert.equal(await store.nextAutomationCallbackAt(), null);
 
   // organization deliveries: principal isolation, idempotency, lifecycle
   // updates, and immutable output/target facts across those updates.

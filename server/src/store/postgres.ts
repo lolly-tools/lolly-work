@@ -47,11 +47,11 @@ import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import { createPostgresUploadStore } from '../uploads/postgres.ts';
 import {
-  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, UNRECORDED_CALLBACK_ATTEMPT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
   type ProjectTransferMetadata,
   type CommentNotice, type CommentNoticeWrite,
   type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationCallbackOutcome, type AutomationCallbackRecord, type AutomationCallbackState, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -180,8 +180,45 @@ function automationJobFromRow(r: Record<string, unknown>): AutomationJobRecord {
     ...(r.error ? { error: r.error as string } : {}), ...(r.callback_url ? { callbackUrl: r.callback_url as string } : {}),
     ...(r.callback_failed ? { callbackFailed: true } : {}), ...(r.progress ? { progress: r.progress as { done: number; total: number } } : {}),
     ...(r.idempotency_key ? { idempotencyKey: r.idempotency_key as string } : {}), priority: Number(r.priority ?? 0), attempt: Number(r.attempt ?? 0),
+    // The outbox entry, when there is one, decides the flag: true until acknowledged.
+    ...(r.cb_id ? {
+      callbackFailed: r.cb_state !== 'acknowledged',
+      callback: {
+        id: r.cb_id as string, state: r.cb_state as AutomationCallbackState, attempts: Number(r.cb_attempt ?? 0),
+        ...(r.cb_last_outcome ? { lastOutcome: r.cb_last_outcome as AutomationCallbackOutcome } : {}),
+        ...(r.cb_last_status !== null && r.cb_last_status !== undefined ? { lastStatus: Number(r.cb_last_status) } : {}),
+        ...(r.cb_state === 'pending' ? { nextAttemptAt: new Date(r.cb_next_attempt_at as string).toISOString() } : {}),
+      },
+    } : {}),
   };
 }
+
+/** Job reads join the callback outbox entry: it decides the flag and the summary. */
+const AUTOMATION_JOB_SELECT = `select j.*, c.id as cb_id, c.state as cb_state, c.attempt as cb_attempt, c.next_attempt_at as cb_next_attempt_at,
+  c.last_outcome as cb_last_outcome, c.last_status as cb_last_status
+  from automation_jobs j left join automation_callbacks c on c.job_id = j.id`;
+
+function callbackFromRow(r: Record<string, unknown>): AutomationCallbackRecord {
+  const iso = (v: unknown): string => new Date(v as string).toISOString();
+  return {
+    id: r.id as string, jobId: r.job_id as string, principal: r.principal as string, url: r.url as string,
+    state: r.state as AutomationCallbackRecord['state'], attempt: Number(r.attempt ?? 0), nextAttemptAt: iso(r.next_attempt_at),
+    ...(r.lease_owner ? { leaseOwner: r.lease_owner as string } : {}), ...(r.lease_until ? { leaseUntil: iso(r.lease_until) } : {}),
+    leaseToken: Number(r.lease_token ?? 0),
+    ...(r.last_outcome ? { lastOutcome: r.last_outcome as AutomationCallbackRecord['lastOutcome'] } : {}),
+    ...(r.last_status !== null && r.last_status !== undefined ? { lastStatus: Number(r.last_status) } : {}),
+    ...(r.last_error ? { lastError: r.last_error as string } : {}),
+    createdAt: iso(r.created_at), updatedAt: iso(r.updated_at), ...(r.settled_at ? { settledAt: iso(r.settled_at) } : {}),
+  };
+}
+
+/** Appended to a statement whose `saved` CTE returns the written job row: a job
+ *  that settled with a callback URL gets its outbox entry in the same statement. */
+const appendAutomationCallback = (idParam: string): string => `, outbox as (
+  insert into automation_callbacks (id, job_id, principal, url, state, next_attempt_at, created_at, updated_at)
+  select ${idParam}, id, principal, callback_url, 'pending', now(), now(), now() from saved
+  where callback_url is not null and state in ('done','failed')
+  on conflict (job_id) do nothing)`;
 
 function deliveryFromRow(r: Record<string, unknown>): DeliveryRecord {
   return {
@@ -1273,30 +1310,36 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return (rowCount ?? 0) > 0;
     },
     async saveClaimedAutomationJob(job) {
-      const { rowCount } = await pool.query(
-        `update automation_jobs set state=$4, updated_at=now(), finished_at=$5, result_ref=$6, result_mime=$7, result_sha256=$8, error=$9, progress=$10::jsonb, callback_failed=$11
-         where id=$1 and lease_owner=$2 and lease_token=$3 and ((state='running' and lease_until > now()) or (state=$4 and state in ('done','failed')))`,
-        [job.id, job.leaseOwner, job.leaseToken, job.state, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.progress ? JSON.stringify(job.progress) : null, job.callbackFailed ?? false]);
-      return (rowCount ?? 0) > 0;
+      const { rows } = await pool.query(
+        `with saved as (
+           update automation_jobs set state=$4, updated_at=now(), finished_at=$5, result_ref=$6, result_mime=$7, result_sha256=$8, error=$9, progress=$10::jsonb, callback_failed=$11
+           where id=$1 and lease_owner=$2 and lease_token=$3 and ((state='running' and lease_until > now()) or (state=$4 and state in ('done','failed')))
+           returning id, principal, state, callback_url)${appendAutomationCallback('$12')}
+         select count(*)::int as saved from saved`,
+        [job.id, job.leaseOwner, job.leaseToken, job.state, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.progress ? JSON.stringify(job.progress) : null, job.callbackFailed ?? false, `cbk_${randomId(16)}`]);
+      return Number(rows[0]?.saved ?? 0) > 0;
     },
     async putAutomationJob(job) {
       await pool.query(
-        `insert into automation_jobs (id, principal, verb, request, state, created_at, updated_at, finished_at, result_ref, result_mime, result_sha256, error, callback_url, callback_failed, progress, idempotency_key, priority, attempt)
-         values ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
-         on conflict (id) do update set state=excluded.state, updated_at=excluded.updated_at, finished_at=excluded.finished_at, result_ref=excluded.result_ref, result_mime=excluded.result_mime, result_sha256=excluded.result_sha256, error=excluded.error, callback_failed=excluded.callback_failed, progress=excluded.progress, priority=excluded.priority, attempt=excluded.attempt`,
-        [job.id, job.principal, job.verb, JSON.stringify(job.request), job.state, job.createdAt, job.updatedAt, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.callbackUrl ?? null, job.callbackFailed ?? false, job.progress ? JSON.stringify(job.progress) : null, job.idempotencyKey ?? null, job.priority, job.attempt],
+        `with saved as (
+           insert into automation_jobs (id, principal, verb, request, state, created_at, updated_at, finished_at, result_ref, result_mime, result_sha256, error, callback_url, callback_failed, progress, idempotency_key, priority, attempt)
+           values ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
+           on conflict (id) do update set state=excluded.state, updated_at=excluded.updated_at, finished_at=excluded.finished_at, result_ref=excluded.result_ref, result_mime=excluded.result_mime, result_sha256=excluded.result_sha256, error=excluded.error, callback_failed=excluded.callback_failed, progress=excluded.progress, priority=excluded.priority, attempt=excluded.attempt
+           returning id, principal, state, callback_url)${appendAutomationCallback('$19')}
+         select 1`,
+        [job.id, job.principal, job.verb, JSON.stringify(job.request), job.state, job.createdAt, job.updatedAt, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.callbackUrl ?? null, job.callbackFailed ?? false, job.progress ? JSON.stringify(job.progress) : null, job.idempotencyKey ?? null, job.priority, job.attempt, `cbk_${randomId(16)}`],
       );
     },
     async getAutomationJob(id, principal) {
-      const { rows } = await pool.query('select * from automation_jobs where id=$1 and principal=$2', [id, principal]);
+      const { rows } = await pool.query(`${AUTOMATION_JOB_SELECT} where j.id=$1 and j.principal=$2`, [id, principal]);
       return rows[0] ? automationJobFromRow(rows[0]) : null;
     },
     async listAutomationJobs(principal) {
-      const { rows } = await pool.query('select * from automation_jobs where principal=$1 order by created_at desc', [principal]);
+      const { rows } = await pool.query(`${AUTOMATION_JOB_SELECT} where j.principal=$1 order by j.created_at desc`, [principal]);
       return rows.map(automationJobFromRow);
     },
     async findAutomationJobByIdempotency(principal, key) {
-      const { rows } = await pool.query('select * from automation_jobs where principal=$1 and idempotency_key=$2', [principal, key]);
+      const { rows } = await pool.query(`${AUTOMATION_JOB_SELECT} where j.principal=$1 and j.idempotency_key=$2`, [principal, key]);
       return rows[0] ? automationJobFromRow(rows[0]) : null;
     },
     async deleteAutomationJob(id, principal) {
@@ -1307,6 +1350,32 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         [id, principal],
       );
       return (rowCount ?? 0) > 0;
+    },
+    async claimAutomationCallback(owner, leaseMs) {
+      // A lease still set here expired with its attempt unrecorded: the sender
+      // stopped after it may have sent the request.
+      const { rows } = await pool.query(
+        `update automation_callbacks c set lease_owner=$1, lease_until=now()+($2 * interval '1 millisecond'), lease_token=c.lease_token+1, attempt=c.attempt+1, updated_at=now(),
+           last_outcome=case when c.lease_until is null then c.last_outcome else 'uncertain' end,
+           last_status=case when c.lease_until is null then c.last_status else null end,
+           last_error=case when c.lease_until is null then c.last_error else $3 end
+         from (select id from automation_callbacks where state='pending' and next_attempt_at <= now() and (lease_until is null or lease_until < now())
+           order by next_attempt_at for update skip locked limit 1) candidate
+         where c.id=candidate.id returning c.*`, [owner, leaseMs, UNRECORDED_CALLBACK_ATTEMPT]);
+      return rows[0] ? callbackFromRow(rows[0]) : null;
+    },
+    async settleAutomationCallback(callback, result) {
+      const { rowCount } = await pool.query(
+        `update automation_callbacks set state=$4::text, last_outcome=$5, last_status=$6, last_error=$7,
+           next_attempt_at=case when $8::double precision is null then next_attempt_at else now()+($8::double precision * interval '1 millisecond') end,
+           lease_owner=null, lease_until=null, updated_at=now(), settled_at=case when $4::text='pending' then null else now() end
+         where id=$1 and lease_owner=$2 and lease_token=$3 and state='pending'`,
+        [callback.id, callback.leaseOwner ?? null, callback.leaseToken, result.state, result.outcome, result.status ?? null, result.error ?? null, result.retryAfterMs ?? null]);
+      return (rowCount ?? 0) > 0;
+    },
+    async nextAutomationCallbackAt() {
+      const { rows } = await pool.query(`select min(greatest(next_attempt_at, coalesce(lease_until, next_attempt_at))) as at from automation_callbacks where state='pending'`);
+      return rows[0]?.at ? new Date(rows[0].at as string).toISOString() : null;
     },
 
     async putDelivery(delivery) {

@@ -132,6 +132,9 @@ The server should still avoid queries on a clock:
 - `LW_BACKGROUND_POLL_MS=0` (the compose default): the render and automation runners look for
   queued work at boot, on submission and after each finished item, never on a timer. A value
   shorter than Neon's 5-minute suspend delay, such as 300000, would keep the compute awake.
+  With `0`, a pending job callback still sets a single timer for its next attempt, so the
+  database may be woken for up to about 45 minutes after a job with a callback settles.
+  Nothing runs on a clock while no callback is pending and the database answers.
 - The server's container health check is a TCP connect. The image's own check fetches
   `/healthz`, and every request to the server reads the design-system state from the database.
 - `audit.headLog.intervalMinutes` is `0` in `instance.json`: the audit head is logged at boot
