@@ -216,7 +216,7 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `projectFiles.projectBudgetBytes` | `134217728` | bytes of files one project may hold (128 MiB). Over it: `413 PROJECT_FILE_BUDGET` |
 | `projectFiles.instanceBudgetBytes` | `268435456` | bytes of files all projects together may hold (256 MiB). Over it: `413 INSTANCE_FILE_BUDGET` |
 | `projectFiles.uploadTtlHours` | `24` | the longest an unfinished upload stays open; at most 720. It expires sooner, 15 minutes after its begin or its last accepted part. An expired upload counts toward no budget; once it is an hour past expiry it is removed at the next upload or retention run |
-| `uploads.enabled` | `true` | scoped uploads: private, resumable uploads a person or a service token names by reference as a catalog submission original or an automation input. See [resumable uploads](resumable-uploads.md) |
+| `uploads.enabled` | `false` | scoped uploads: private, resumable uploads a person or a service token names by reference as a catalog submission original or an automation input. Off by default, and upgrading leaves them off; turning them on adds `uploads.instanceBudgetBytes` to what the blob store may hold (see below). See [resumable uploads](resumable-uploads.md) |
 | `uploads.maxFileBytes` | `67108864` | largest single upload (64 MiB); at most `4294967296` (4 GiB). A catalog original is also capped at `submit.maxBytes`. Over it: `413 UPLOAD_TOO_LARGE` |
 | `uploads.ownerBudgetBytes` | `134217728` | bytes one person or service token may hold in uploads that have not expired (128 MiB). Over it: `413 UPLOAD_BUDGET` |
 | `uploads.instanceBudgetBytes` | `268435456` | bytes all owners together may hold (256 MiB). Over it: `413 INSTANCE_UPLOAD_BUDGET` |
@@ -271,9 +271,24 @@ past it. Raise them only with the storage to match.
 `policy.uploads` follows the same rules: whole numbers above zero, with `maxFileBytes` no
 larger than `ownerBudgetBytes` and `ownerBudgetBytes` no larger than `instanceBudgetBytes`.
 Budgets count every upload that has not expired, finished or not, at its size plus 4096
-bytes, and one owner may hold 16 unfinished uploads at once. The bytes live in the same blob
-store as project files, so the two instance budgets add up. To take a 500 MiB recording into
-a project, for example, lift the project file cap and its budgets together:
+bytes, and one owner may hold 16 unfinished uploads at once.
+
+Scoped uploads are off until `policy.uploads.enabled` is `true`, and an upgrade does not turn
+them on. Their bytes live in the same blob store as project files, under a separate instance
+budget, so the two instance budgets add up: with both defaults the blob store may hold 512 MiB
+of uploads instead of 256 MiB. A begin needs `tool.use` or `catalog.submit`, and members hold
+`tool.use` by default, so most members and service tokens can use that room. Size both
+budgets against the storage before turning uploads on. To keep the total at 256 MiB, split it:
+
+```json
+"policy": {
+  "projectFiles": { "instanceBudgetBytes": 134217728 },
+  "uploads": { "enabled": true, "ownerBudgetBytes": 67108864, "instanceBudgetBytes": 134217728 }
+}
+```
+
+To take a 500 MiB recording into a project, for example, lift the project file cap and its
+budgets together:
 
 ```json
 "policy": {

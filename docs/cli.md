@@ -343,7 +343,8 @@ stops, run the same command again: it asks which parts arrived and sends only th
 upload left for more than 15 minutes expires, and the next run starts it again. A scoped
 upload prints the id and checksum to name it by, for example
 `POST /api/v1/catalog/submit?name=…&uploadId=…&checksum=…`. A service token (`LW_TOKEN`) may
-use `--scope`; a project file needs a signed-in person.
+use `--scope`; a project file needs a signed-in person. `--scope` needs an instance that turns
+on `policy.uploads.enabled`; until then it answers `uploads are off`.
 
 ## Org-defined metadata
 

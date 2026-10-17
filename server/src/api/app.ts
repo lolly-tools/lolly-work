@@ -3769,8 +3769,12 @@ export function buildApp(deps: AppDeps): App {
     if (Object.values((await store.previewUserErasure(target.id)).references).some((count) => count > 0)) return refused();
     // Unfinished uploads are nobody's shared work: they go (parts, then rows)
     // so their users FK does not block the erasure. Ready files block above.
+    // Scoped uploads have no FK to block on, so any left behind refuse here.
     await removeUploadsBy(store, blobs, target.id);
-    await removeUploadsOwnedBy(store, blobs, `user:${target.id}`);
+    if (!(await removeUploadsOwnedBy(store, blobs, `user:${target.id}`)).complete) {
+      return sendError(res, 409, 'ERASE_UPLOADS_REMAIN',
+        'some of their uploads are still there, probably because they are still uploading; run the erasure again. No identity or telemetry was changed.');
+    }
     const result = await store.eraseUserAccount(target.id);
     if (result.status === 'referenced') return refused();
     if (result.status === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no such user');

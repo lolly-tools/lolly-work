@@ -50,10 +50,13 @@ export interface UploadPolicy {
   readyTtlHours: number;
 }
 const MIB = 1024 * 1024;
-/** Sized like project files, for a small Postgres that also holds the blobs;
- *  the per-file cap matches the default `policy.submit.maxBytes`. */
+/** Off until the operator turns it on: its instance budget is separate from
+ *  `policy.projectFiles` but fills the same blob store, so an upgrade must not
+ *  add room nobody sized. The sizes match project files, for a small Postgres
+ *  that also holds the blobs; the per-file cap matches the default
+ *  `policy.submit.maxBytes`. */
 export const UPLOAD_DEFAULTS: Readonly<UploadPolicy> = {
-  enabled: true, maxFileBytes: 64 * MIB, ownerBudgetBytes: 128 * MIB, instanceBudgetBytes: 256 * MIB, uploadTtlHours: 24, readyTtlHours: 24,
+  enabled: false, maxFileBytes: 64 * MIB, ownerBudgetBytes: 128 * MIB, instanceBudgetBytes: 256 * MIB, uploadTtlHours: 24, readyTtlHours: 24,
 };
 /** Unfinished uploads one owner may hold at once. */
 export const UPLOAD_PENDING_LIMIT = 16;
@@ -148,16 +151,25 @@ export async function removeUpload(store: UploadStore, blobs: BlobStore, upload:
   return removed;
 }
 
-/** Remove every upload one owner holds (account erasure). Bounded, so an owner
- *  still uploading cannot keep it running. */
-export async function removeUploadsOwnedBy(store: UploadStore, blobs: BlobStore, owner: string): Promise<number> {
+/** Remove every upload one owner holds (account erasure), a batch at a time
+ *  until none is left. Nothing else stops an erasure that leaves uploads
+ *  behind (the table has no foreign key to users), so `complete` says whether
+ *  any remain and the caller refuses when one does. It is false only when a
+ *  batch removes nothing or `maxRounds` run out, as when the owner is still
+ *  uploading during the erasure. */
+export async function removeUploadsOwnedBy(
+  store: UploadStore, blobs: BlobStore, owner: string, { batch = 100, maxRounds = 1000 }: { batch?: number; maxRounds?: number } = {},
+): Promise<{ removed: number; complete: boolean }> {
   let removed = 0;
-  for (let round = 0; round < 20; round++) {
-    const batch = await store.listUploadsToRemove({ owner }, 100);
-    if (!batch.length) break;
-    for (const upload of batch) if (await removeUpload(store, blobs, upload)) removed++;
+  for (let round = 0; round < maxRounds; round++) {
+    const uploads = await store.listUploadsToRemove({ owner }, batch);
+    if (!uploads.length) return { removed, complete: true };
+    let progress = 0;
+    for (const upload of uploads) if (await removeUpload(store, blobs, upload)) progress++;
+    removed += progress;
+    if (!progress) break;
   }
-  return removed;
+  return { removed, complete: !(await store.listUploadsToRemove({ owner }, 1)).length };
 }
 
 /** Remove uploads that expired more than the grace period ago, at most

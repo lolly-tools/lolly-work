@@ -262,10 +262,11 @@ export interface InstanceConfig {
     projectFiles: ProjectFilePolicy;
     /** Scoped uploads (docs/resumable-uploads.md, uploads/scoped.ts): private,
      *  resumable uploads a person or a service token names by reference as a
-     *  catalog submission original or an automation input. The per-file cap
-     *  and the owner and instance budgets are bytes; an unfinished upload
-     *  expires after `uploadTtlHours`, a finished one `readyTtlHours` after it
-     *  finished. */
+     *  catalog submission original or an automation input. Off by default:
+     *  its instance budget adds to the project files' one on the same blob
+     *  store. The per-file cap and the owner and instance budgets are bytes;
+     *  an unfinished upload expires after `uploadTtlHours`, a finished one
+     *  `readyTtlHours` after it finished. */
     uploads: UploadPolicy;
     /** Access requests (plans/75 G13): who may ask for what, and for how
      *  long a request stays open. See `RequestPolicy`. */

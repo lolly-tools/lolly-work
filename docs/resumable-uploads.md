@@ -110,6 +110,13 @@ third scope on the `uploads` table over the same primitive.
 
 ## Limits, budgets and expiry
 
+- **Off until turned on.** Scoped uploads need `policy.uploads.enabled`, which is
+  `false` by default, and upgrading leaves it off. Their instance budget is separate
+  from the project files' one but fills the same blob store, so turning them on raises
+  what the store may hold by `policy.uploads.instanceBudgetBytes` (256 MiB by default).
+  [Configuration](configuration.md#policy) shows how to split one total between the
+  two instead. Project files keep their own setting, on by default where the store is
+  durable.
 - **Ceiling.** Migration 0075 replaces 0041's 256 MiB size check with 4 GiB for both
   tables: 4096 parts, whose declared digests still fit the 512 KiB begin body. The
   configured caps can only be lower and keep their small defaults:
@@ -126,7 +133,10 @@ third scope on the `uploads` table over the same primitive.
   expiry the sweep removes the parts, then the row: before each new begin, in
   `POST /api/v1/retention/run`, and daily on the long-lived server.
 - **Erasure.** Erasing an account removes the person's unfinished project uploads and
-  every scoped upload they own. A revoked service token can no longer name its
+  every scoped upload they own, however many there are. The `uploads` table has no
+  foreign key to the account, so if any upload remains, for example because the person
+  is still uploading, the erasure answers `409 ERASE_UPLOADS_REMAIN` before it changes
+  the account and can be run again. A revoked service token can no longer name its
   uploads, which expire on schedule.
 
 ## Resuming from a client
@@ -160,7 +170,8 @@ under `~/.config/lolly-work/uploads/`; running the same command again carries on
 - `tests/upload-parts.test.ts`: the primitive on its own, including a store that
   reports an ETag in place of a sha256.
 - `tests/resumable-uploads.test.ts`: the resume report on project files, the scoped
-  routes and their access rules, budgets, both consumers, erasure and the sweeps, the
+  routes and their access rules, budgets, the default that leaves them off, both
+  consumers, erasure past one batch and its refusal while uploads remain, the sweeps, the
   `lw upload` client carrying on after a dropped connection, and an interrupted
   500 MiB upload that finishes after the per-file cap is lifted, through a restarted
   server that reads every part back. With `LW_TEST_DATABASE_URL` it also runs the

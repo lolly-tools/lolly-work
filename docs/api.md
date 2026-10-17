@@ -263,7 +263,7 @@ C2PA export assertion. See
 |---|---|
 | `GET /api/v1/users`, `GET /api/v1/users/:id` | admin/owner role |
 | `POST /api/v1/users/:id/revoke-sessions` | `grant.edit` - sign-out-everywhere: bumps the user's session epoch, every prior cookie and token fails its next request |
-| `DELETE /api/v1/users/:id` | `instance.config` (**owner**) - erasure: deletes the row + de-attributes telemetry; `409` while they own unarchived projects |
+| `DELETE /api/v1/users/:id` | `instance.config` (**owner**) - erasure: deletes the row + de-attributes telemetry; `409` while they own unarchived projects, and `409 ERASE_UPLOADS_REMAIN` when some of their [uploads](#uploads) could not be removed first (run it again) |
 | `POST /api/v1/retention/run` | `instance.config` (**owner**) - apply the stated retention policy now, and remove expired unfinished project-file uploads (`projectFilesSwept`) and expired [scoped uploads](#uploads) (`uploadsSwept`) |
 | `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/:name` | `grant.edit` |
 | `PUT /api/v1/users/:id/local-groups` | `grant.edit` |
@@ -702,8 +702,8 @@ files. A `catalog-submission` upload is the original for
 `POST /api/v1/catalog/submit?uploadId=…&checksum=…`, which removes it once the submission is
 stored. An `automation-input` upload is read by `upload: { id, checksum }` in `/api/v1/inspect`
 and `/api/v1/optimize`, as often as its owner likes until it expires. Nobody downloads an
-upload. While `policy.uploads.enabled` is `false` every route here answers
-`404 NOT_FOUND` with the message `uploads are off`.
+upload. `policy.uploads.enabled` is `false` by default, and while it is, every route here
+answers `404 NOT_FOUND` with the message `uploads are off`.
 
 | Route | Who | Answer |
 |---|---|---|
@@ -740,7 +740,8 @@ A consumer given a reference it cannot use answers `400 INVALID_INPUT` for a mal
 `404 NOT_FOUND` for one the caller does not own, in the wrong scope, unfinished, expired or
 with another checksum. Finishing an upload is audited as `upload.finish` and a cancel as
 `upload.delete`, with the scope, size and checksum but not the name. Expired uploads are swept
-like project files, and erasing an account removes every upload the person owns.
+like project files. Erasing an account removes every upload the person owns, or answers
+`409 ERASE_UPLOADS_REMAIN` and changes nothing else while any remain.
 
 ### The collab socket
 

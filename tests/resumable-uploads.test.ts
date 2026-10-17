@@ -25,7 +25,7 @@ import { bufferToStream, readPutBody, type BlobStat, type BlobStore } from '../s
 import type { Store } from '../server/src/store/types.ts';
 import { filePartBlobId, PROJECT_FILE_PART_BYTES, type ProjectFilePolicy, type ProjectFileRecord } from '../server/src/projects/files.ts';
 import { sha256 } from '../server/src/uploads/parts.ts';
-import { scheduleUploadSweep, UPLOAD_OVERHEAD_BYTES, UPLOAD_SWEEP_GRACE_MS, uploadPartId, type UploadPolicy, type UploadRecord } from '../server/src/uploads/scoped.ts';
+import { removeUploadsOwnedBy, scheduleUploadSweep, UPLOAD_OVERHEAD_BYTES, UPLOAD_SWEEP_GRACE_MS, uploadPartId, type UploadPolicy, type UploadRecord } from '../server/src/uploads/scoped.ts';
 import { resumableUpload, UploadClientError, type SavedUpload, type UploadSource, type UploadStateStore, type UploadTarget } from '../cli/upload-client.ts';
 import { uploadRecord, uploadStoreConformance } from './upload-store-conformance.ts';
 import { withFreshPostgres } from './pg-test-schema.ts';
@@ -60,7 +60,8 @@ interface BootOptions { projectFiles?: Partial<ProjectFilePolicy>; uploads?: Par
 async function boot(opts: BootOptions = {}) {
   const store = opts.store ?? durable(createMemoryStore()), blobs = opts.blobs ?? createMemoryBlobStore();
   const config = parseConfig(JSON.stringify({ rateLimit: { enabled: false },
-    policy: { projectFiles: opts.projectFiles ?? {}, uploads: opts.uploads ?? {}, ...(opts.submit ? { submit: opts.submit } : {}) },
+    // Scoped uploads are off by default; these tests turn them on unless told otherwise.
+    policy: { projectFiles: opts.projectFiles ?? {}, uploads: { enabled: true, ...opts.uploads }, ...(opts.submit ? { submit: opts.submit } : {}) },
     dev: { enabled: true, users: Object.entries(PEOPLE).map(([name, groups]) => ({ email: `${name}@test`, name, groups })) } }));
   const app = () => buildApp({ config, store, blobs, secrets: { session: 'upload-session', link: 'upload-link' } });
   const base = await listen(app());
@@ -433,6 +434,7 @@ test('scoped uploads: caps and budgets refuse at the begin, and expired uploads 
     const r = await off.call('alice', method, path, method === 'POST' ? {} : undefined);
     assert.deepEqual([r.status, await errorOf(r)], [404, { code: 'NOT_FOUND', message: 'uploads are off' }], `${method} ${path}`);
   }
+  assert.equal(parseConfig(JSON.stringify({ dev: { enabled: true } })).policy.uploads.enabled, false, 'an instance that never set policy.uploads gains no second budget');
 });
 
 test('a finished catalog-submission upload is submitted by reference, once, by its owner', async () => {
@@ -513,6 +515,37 @@ test('account erasure removes the person\'s uploads, and the sweeps remove expir
   const timer = scheduleUploadSweep(b.store, b.blobs, { log: { log: (m: string) => logs.push(m), error: (m: string) => logs.push(m) } });
   await timer.first; timer.stop();
   assert.deepEqual(logs, ['[lolly-work] swept 1 expired upload(s)']);
+});
+
+test('account erasure removes every upload however many batches it takes, and refuses while any remain', async () => {
+  const store = createMemoryStore(), blobs = createMemoryBlobStore();
+  const owner = 'user:many', roomy = { ownerBudgetBytes: 1e12, instanceBudgetBytes: 1e12, maxPending: 99 };
+  const put = async (u: UploadRecord) => {
+    assert.equal(await store.reserveUpload(u, roomy), 'reserved');
+    await blobs.put(uploadPartId(u, 0), new Uint8Array([1]), 'application/octet-stream');
+  };
+  for (let n = 0; n < 45; n++) await put(uploadRecord(`upl_many${n}`, owner, 1, { ready: true }));
+  await put(uploadRecord('upl_someone', 'user:else', 1));
+  // 20 batches of 2 would stop at 40, as a fixed bound of 20 batches of 100 stopped at 2,000.
+  assert.deepEqual(await removeUploadsOwnedBy(store, blobs, owner, { batch: 2 }), { removed: 45, complete: true });
+  assert.deepEqual(await store.listUploadsToRemove({ owner }, 99), []);
+  assert.equal(await blobs.head(uploadPartId({ id: 'upl_many44' }, 0)), null);
+  assert.ok(await store.getUpload('upl_someone'), 'only that owner\'s uploads go');
+  for (let n = 0; n < 5; n++) await put(uploadRecord(`upl_more${n}`, owner, 1));
+  assert.deepEqual(await removeUploadsOwnedBy(store, blobs, owner, { batch: 2, maxRounds: 2 }), { removed: 4, complete: false }, 'what remains is reported');
+
+  // The route refuses before it changes the account, and finishes when run again.
+  const b = await boot();
+  const held = await scopedUpload(b, 'editor', new Uint8Array([5]));
+  const editor = await b.userId('editor');
+  const deleteUpload = b.store.deleteUpload.bind(b.store);
+  b.store.deleteUpload = async (id) => id === held.id ? false : deleteUpload(id);
+  assert.deepEqual(await codeOf(await b.call('root', 'DELETE', `/api/v1/users/${editor}`)), [409, 'ERASE_UPLOADS_REMAIN']);
+  assert.ok(await b.store.getUser(editor), 'the account is untouched');
+  b.store.deleteUpload = deleteUpload;
+  assert.equal((await b.call('root', 'DELETE', `/api/v1/users/${editor}`)).status, 200);
+  assert.equal(await b.store.getUpload(held.id), null);
+  assert.equal(await b.store.getUser(editor), null);
 });
 
 test('upload records keep one set of rules on the memory store', async () => {
