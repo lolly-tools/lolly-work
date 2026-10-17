@@ -546,6 +546,9 @@ New durable outputs expose a partial execution receipt at
 `GET /api/v1/renders/:id/evidence`. It records loaded source hashes, prepared
 context, observed asset byte digests and the output digest under the same lease.
 The receipt describes its coverage gaps; it is not a complete dependency lock.
+The same download includes the output's [render identity](renders.md#render-identity),
+which binds the typed request to the resolved tool source, engine version,
+sources and effective policy.
 
 Render and batch requests accept `verification: "output-v1"`, or
 `verification: { profile: "output-v1", widthPx: 1200, heightPx: 630 }`.

@@ -2,7 +2,7 @@ import { parseProductionRequest, verifyProductionReport, ProductionError } from 
 import type { BlobStore } from '../blobs/types.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 import { RenderResourceError, type RenderRecord, type RenderStore } from './types.ts';
-import { evidenceHash, type RenderEvidence } from '../render/evidence.ts';
+import { evidenceHash, renderIdentity, type RenderEvidence, type RenderIdentity } from '../render/evidence.ts';
 import { outputVerificationProblems, OutputVerificationError, verificationTarget, parseOutputVerification } from '../render/output-inspection.ts';
 
 export interface RenderExecution { bytes: Uint8Array; mime: string; cacheKey: string; evidence?: RenderEvidence }
@@ -177,11 +177,14 @@ export class RenderRunner {
         throw new RenderResourceError('OUTPUT_TOO_LARGE', 413, 'render output exceeds the retained-byte limit');
       }
       const sha256 = sha256Hex(output.bytes);
+      let identity: RenderIdentity | null = null;
       if (output.evidence) {
         const { id, ...body } = output.evidence;
         if (body.outputSha256 !== sha256 || id !== evidenceHash(body)) {
           throw new RenderResourceError('RENDER_EVIDENCE_MISMATCH', 500, 'execution evidence does not identify these output bytes');
         }
+        try { identity = renderIdentity(record.request, output.evidence); }
+        catch { throw new RenderResourceError('RENDER_EVIDENCE_MISMATCH', 500, 'execution evidence describes a different tool or format'); }
       }
       if (record.request.verification) {
         let verification;
@@ -212,6 +215,7 @@ export class RenderRunner {
           name: 'default', ref, mime: output.mime, size: output.bytes.byteLength,
           sha256, cacheKey: output.cacheKey,
           ...(output.evidence ? { evidence: output.evidence } : {}),
+          ...(identity ? { identity } : {}),
         } });
       } finally {
         // Runs even when a timed-out put eventually finishes. A failed cleanup

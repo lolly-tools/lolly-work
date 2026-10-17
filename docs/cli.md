@@ -112,7 +112,8 @@ The [render resource guide](renders.md) explains the request JSON, persisted
 status, restart recovery and retained output. Retrying creates a new resource
 linked to the original. Output and evidence downloads require an explicit file
 path. [Execution evidence](renders.md#execution-evidence) records observed source,
-context and asset digests with explicit coverage limits.
+context and asset digests with explicit coverage limits. For new outputs the
+evidence file also holds the [render identity](renders.md#render-identity).
 
 For multiple rows with individual recovery and output receipts:
 

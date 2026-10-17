@@ -2,11 +2,11 @@ import { INERT_BYTE_HEADERS } from '../api/file-delivery.ts';
 import type { IncomingMessage } from 'node:http';
 import { readBlobBody, type BlobStore } from '../blobs/types.ts';
 import { readJson, sendError, sendJson, type createRouter, type Handler } from '../api/router.ts';
-import { sha256Hex } from '../lib/crypto.ts';
+import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { newRender, parseRenderSpec, renderWire } from './request.ts';
 import { RenderResourceError, type RenderRecord, type RenderSpec, type RenderStore } from './types.ts';
 import { registerRenderBatchRoutes } from './batch-routes.ts';
-import { evidenceHash } from '../render/evidence.ts';
+import { evidenceHash, renderIdentity } from '../render/evidence.ts';
 
 export interface RoutesDeps {
   store: RenderStore;
@@ -112,7 +112,16 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     if (body.outputSha256 !== r.output!.sha256 || id !== evidenceHash(body)) {
       throw new RenderResourceError('EVIDENCE_INTEGRITY', 409, 'retained evidence no longer matches its receipt');
     }
-    sendJson(res, 200, { renderId: r.id, evidence }, {
+    // The identity is derived, so the retained request and receipt must still produce it.
+    const identity = r.output!.identity;
+    if (identity) {
+      let expected: ReturnType<typeof renderIdentity> = null;
+      try { expected = renderIdentity(r.request, evidence); } catch { /* reported below */ }
+      if (!expected || canonicalJson(expected) !== canonicalJson(identity)) {
+        throw new RenderResourceError('EVIDENCE_INTEGRITY', 409, 'retained identity no longer matches its request and receipt');
+      }
+    }
+    sendJson(res, 200, { renderId: r.id, evidence, ...(identity ? { identity } : {}) }, {
       'content-disposition': `attachment; filename="${r.id}.evidence.json"`, 'cache-control': 'private, no-store',
     });
   });

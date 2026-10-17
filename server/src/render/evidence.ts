@@ -42,6 +42,16 @@ export interface RenderEvidence {
   production?: ProductionReport;
   productionAttempts?: ProductionReport[];
   worker?: WorkerEvidence;
+  /** Resolved facts that the context does not name; absent on older receipts. */
+  resolved?: ResolvedRenderFacts;
+}
+
+export interface ResolvedRenderFacts {
+  /** The design-system revision the attempt rendered against, or null without one. */
+  designRevision: string | null;
+  /** The policy this render obeyed: the tool's projected overlay, the caller's
+   *  groups and any managed design-system rules. Other tools' overlays are not part of it. */
+  effectivePolicySha256: string;
 }
 
 export const evidenceHash = (value: unknown): string => sha256Hex(canonicalJson(value));
@@ -84,5 +94,63 @@ export function createAssetObserver() {
 
 export function finishRenderEvidence(value: Omit<RenderEvidence, 'id' | 'apiVersion' | 'coverage' | 'outputSha256'>, bytes: Uint8Array): RenderEvidence {
   const body = { apiVersion: '1.0.0' as const, coverage: 'partial' as const, ...value, outputSha256: sha256Hex(bytes) };
+  return { ...body, id: evidenceHash(body) };
+}
+
+/** The output-affecting half of a durable request. Priority and attempts only schedule it. */
+export interface IdentityRequest {
+  toolId: string;
+  format: string;
+  inputs: Record<string, unknown>;
+  verification?: unknown;
+  production?: unknown;
+}
+
+/** What a render resolved to: the typed request, the loaded tool source, the
+ *  engine, the sources it read and the effective policy. Output bytes and
+ *  runtime measurements are left out, so attempts that resolved the same
+ *  facts share one identity. Coverage follows the receipt it comes from. */
+export interface RenderIdentity {
+  apiVersion: 'work/render-identity-v1';
+  id: string;
+  coverage: 'partial';
+  request: { toolId: string; format: string; sha256: string };
+  tool: { id: string; version: string; sourceHash: string };
+  engine: { version: string; documentApiVersion: string };
+  sources: { catalogVersion: string; designRevision: string | null; assets: ObservedAsset[] };
+  policy: { effectiveSha256: string; groupsHash: string; watermark: boolean };
+  context: Pick<RenderEvidence['context'], 'paramsHash' | 'profileHash' | 'widthPx' | 'heightPx' | 'renderer' | 'rasterizer' | 'signerCertificateHash'>;
+  limitations: string[];
+}
+
+/** Bind a request to the facts its receipt resolved. Null when the receipt
+ *  predates resolved facts; throws when it describes another tool or format. */
+export function renderIdentity(request: IdentityRequest, evidence: RenderEvidence): RenderIdentity | null {
+  if (evidence.tool.id !== request.toolId || evidence.context.format !== request.format) {
+    throw new Error('execution evidence describes a different tool or format');
+  }
+  if (!evidence.resolved) return null;
+  const { context, resolved } = evidence;
+  // Worker network budgets and timeouts vary between attempts. They describe
+  // the worker's observation, which the identity does not bind.
+  const limitations = new Set(evidence.limitations.filter(item => !item.startsWith('worker-resource-')));
+  if (context.renderer === 'chromium-worker') limitations.add('worker-resources-outside-identity');
+  const body: Omit<RenderIdentity, 'id'> = {
+    apiVersion: 'work/render-identity-v1',
+    coverage: 'partial',
+    request: { toolId: request.toolId, format: request.format, sha256: evidenceHash({
+      toolId: request.toolId, format: request.format, inputs: request.inputs,
+      verification: request.verification ?? null, production: request.production ?? null,
+    }) },
+    tool: { id: evidence.tool.id, version: evidence.tool.version, sourceHash: evidence.tool.sourceHash },
+    engine: { version: evidence.engine.version, documentApiVersion: evidence.engine.documentApiVersion },
+    sources: { catalogVersion: context.catalogVersion, designRevision: resolved.designRevision, assets: structuredClone(evidence.assets) },
+    policy: { effectiveSha256: resolved.effectivePolicySha256, groupsHash: context.groupsHash, watermark: context.watermark },
+    context: {
+      paramsHash: context.paramsHash, profileHash: context.profileHash, widthPx: context.widthPx, heightPx: context.heightPx,
+      renderer: context.renderer, rasterizer: context.rasterizer, signerCertificateHash: context.signerCertificateHash,
+    },
+    limitations: [...limitations].sort(),
+  };
   return { ...body, id: evidenceHash(body) };
 }
