@@ -180,6 +180,18 @@ test('format scope is checked per render and never projected as a global restric
   assert.equal(png.status, 422, await png.clone().text());
 });
 
+test('the effective schema carries reviewed design-system choices for the format it was read for', async () => {
+  const system = brand(); system.rules = [ { ...system.rules[0]!, scope: { outputs: ['png'] } } ];
+  const f = await fixture(system); await f.configure();
+  const png = await (await fetch(f.base + '/api/v1/schema/campaign?format=png', { headers: { cookie: f.cookie } })).json() as any;
+  assert.deepEqual(png.schema.properties.ink.enum, ['#ffcc00']);
+  assert.deepEqual(png.policy, [{ effect: 'choice', input: 'ink', reason: 'Design-system rule: color-choices' }]);
+  assert.equal(png.render.format, 'png');
+  assert.ok(png.versions.rules);
+  const svg = await (await fetch(f.base + '/api/v1/schema/campaign?format=svg', { headers: { cookie: f.cookie } })).json() as any;
+  assert.equal(svg.schema.properties.ink.enum, undefined, 'a rule scoped to png does not narrow the svg contract');
+  assert.notEqual(svg.etag, png.etag);
+});
 test('Postgres mappings and their audit survive a fresh replica', { skip: !process.env.LW_TEST_DATABASE_URL && 'set LW_TEST_DATABASE_URL to run' }, async () => {
   await withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, async store => {
     const start = runners.length;

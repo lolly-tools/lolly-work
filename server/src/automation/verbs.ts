@@ -5,12 +5,19 @@ import { join } from 'node:path';
 import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts';
 import { withRenderHost } from '../render/host.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
+import { toolServerFormats, type RenderCapabilities, type ToolServerFormats } from '../render/capabilities.ts';
+import type { ToolOverlay } from '../policy/overlay.ts';
+import { applyInputPolicy, effectiveValidation } from './effective-contract.ts';
 
+/** `policy` is the caller's tool policy. With it, compile and validate check
+ *  inputs against the same effective contract the schema route describes and
+ *  the render route enforces; without it they see the raw tool contract. */
 export interface AutomationContext {
   pack: string; profile: Profile; hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>;
   /** The bytes of a finished automation-input upload the caller owns, named
    *  `{ id, checksum }` (uploads/scoped.ts `readUploadReference`). */
   readUpload?: (ref: unknown) => Promise<Uint8Array>;
+  policy?: { overlays: Map<string, ToolOverlay>; groups: string[] };
 }
 export interface ToolRequest { toolId: string; inputs?: Record<string, unknown>; designVersion?: string }
 
@@ -25,17 +32,42 @@ export async function schemaVerb(ctx: AutomationContext, toolId: string): Promis
   return { apiVersion: engine.DOCUMENT_API_VERSION, schema: engine.documentSchema(tool) };
 }
 
+/** A tool's raw contract and where it can render on this deployment, read from
+ *  the loaded tool. The caller's policy is applied on top by the discovery
+ *  routes (automation/discovery.ts). */
+export interface ToolDescription {
+  toolId: string; name: string; version: string; apiVersion: string; engineVersion: string;
+  raw: Record<string, unknown>; server: ToolServerFormats;
+}
+export async function describeTool(ctx: AutomationContext, toolId: string, deployment: { caps: RenderCapabilities; allowHooksInFastPath: boolean; tokens: boolean }): Promise<ToolDescription> {
+  const { engine, tool } = await load(ctx.pack, toolId);
+  const template = tool.template;
+  return {
+    toolId, name: typeof tool.manifest.name === 'string' ? tool.manifest.name : toolId, version: tool.manifest.version,
+    apiVersion: engine.DOCUMENT_API_VERSION, engineVersion: engine.ENGINE_VERSION, raw: engine.documentSchema(tool),
+    server: toolServerFormats({ formats: tool.manifest.render.formats, hooks: !!tool.hooksSource,
+      svgTemplate: typeof template === 'string' && /<svg\b/i.test(template), requires: tool.manifest.requires ?? [] }, deployment),
+  };
+}
+
 export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Promise<unknown> {
   const { engine, tool } = await load(ctx.pack, req.toolId);
-  return withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, req.inputs ?? {}, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
+  const inputs = ctx.policy ? applyInputPolicy(req.inputs ?? {}, ctx.policy.overlays.get(req.toolId), ctx.policy.groups) : req.inputs ?? {};
+  return withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
 }
 
 export async function validateVerb(ctx: AutomationContext, body: Record<string, unknown>): Promise<unknown> {
   if (typeof body.toolId === 'string') {
     const { engine, tool } = await load(ctx.pack, body.toolId);
-    if (typeof body.recipe === 'string') return engine.validateDocument({ kind: 'recipe', manifest: tool.manifest, value: body.recipe });
+    const governed = (result: { ok: boolean; errors: unknown[]; warnings: unknown[] }, values: () => Record<string, unknown>) =>
+      ctx.policy ? effectiveValidation(result, values(), ctx.policy.overlays.get(body.toolId as string), ctx.policy.groups) : result;
+    if (typeof body.recipe === 'string') {
+      const recipe = body.recipe;
+      const result = engine.validateDocument({ kind: 'recipe', manifest: tool.manifest, value: recipe });
+      return result.ok ? governed(result, () => engine.parseUrlState(recipe, tool.manifest).values) : result;
+    }
     const value = (body.inputs && typeof body.inputs === 'object' ? body.inputs : {}) as Record<string, unknown>;
-    return engine.validateDocument({ kind: 'inputs', manifest: tool.manifest, value });
+    return governed(engine.validateDocument({ kind: 'inputs', manifest: tool.manifest, value }), () => value);
   }
   const engine = await loadEngine();
   if (body.document !== undefined) return engine.validateDocument({ kind: 'document', value: body.document });

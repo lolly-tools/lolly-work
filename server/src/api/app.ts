@@ -187,7 +187,9 @@ import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkK
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
-import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, schemaVerb, validateVerb } from '../automation/verbs.ts';
+import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
+import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes } from '../automation/discovery.ts';
+import { mayRenderTool, mayUseTool, PolicyRefusal } from '../automation/effective-contract.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
 import { registerRenderRoutes } from '../renders/routes.ts';
@@ -9594,21 +9596,13 @@ export function buildApp(deps: AppDeps): App {
     if (!body || typeof body !== 'object' || Array.isArray(body)) { sendError(res, 400, 'INVALID_INPUT', 'JSON object body required'); return null; }
     return body as Record<string, unknown>;
   };
-  const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> => {
-    if (!(await automationMayUse(caller, toolId))) return false;
-    if (!caller.user) return config.policy.defaultAccessMode === 'open';
-    return evaluate({ userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role }, 'export.server', [`tool:${toolId}`, '*'], await store.listGrants());
-  };
-  const automationMayUse = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> => {
-    if (!caller.user) return config.policy.defaultAccessMode === 'open' && toolVisibleTo((await store.listOverlays()).get(toolId), []);
-    const principal = { userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role };
-    const grants = await store.listGrants();
-    const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
-    if (decision === 'deny') return false;
-    const overlay = (await store.listOverlays()).get(toolId);
-    if (!toolVisibleTo(overlay, caller.groups) && decision !== 'allow') return false;
-    return evaluate(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
-  };
+  // One rule for every automation route and for discovery (automation/effective-contract.ts).
+  const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
+    mayRenderTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
+  const automationMayUse = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
+    mayUseTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
+  // The caller's tool policy, which compile and validate check inputs against.
+  const automationPolicy = async (caller: { groups: string[] }) => ({ overlays: await store.listOverlays(), groups: caller.groups });
   router.add('GET', '/api/v1/system/setup/tools/:id', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'instance.config'); if (!user) return;
     const toolId = ctx.params.id!;
@@ -9734,16 +9728,16 @@ export function buildApp(deps: AppDeps): App {
       const id = value && typeof value === 'object' ? (value as { toolId?: unknown }).toolId : undefined;
       if (typeof id === 'string' && !await automationMayUse(caller, id)) throw new Error('tool.use is no longer granted.');
     }
-    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal) };
+    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), policy: await automationPolicy(caller) };
     if (job.verb === 'batch') {
       if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const record = job;
       const rows = body.rows as Array<Record<string, unknown>>;
-      if (!Array.isArray(rows) || !rows.length || rows.length > 200) throw new Error('Durable batches need 1–200 snapshotted rows.');
+      if (!Array.isArray(rows) || !rows.length || rows.length > BATCH_LIMITS.rows) throw new Error('Durable batches need 1–200 snapshotted rows.');
       const zip = new ZipBuilder(); const used = new Set<string>(); const chunks: Buffer[] = [];
       const manifest: { toolId: string; format: string; total: number; succeeded: number; failed: number; rows: Array<{ index: number; name?: string; error?: string }> } = { toolId: body.toolId as string, format: body.format as string, total: rows.length, succeeded: 0, failed: 0, rows: [] };
-      const retries = Math.max(0, Math.min(3, Number(body.retries ?? 0) || 0));
-      const concurrency = Math.max(1, Math.min(4, Math.trunc(Number(body.concurrency ?? 1) || 1)));
+      const retries = Math.max(0, Math.min(BATCH_LIMITS.retries, Number(body.retries ?? 0) || 0));
+      const concurrency = Math.max(1, Math.min(BATCH_LIMITS.concurrency, Math.trunc(Number(body.concurrency ?? 1) || 1)));
       const overlays = await store.listOverlays();
       const outcomes: Array<{ result?: Awaited<ReturnType<typeof renderTool>>; error?: unknown }> = new Array(rows.length);
       let retainedBytes = 0;
@@ -9821,12 +9815,20 @@ export function buildApp(deps: AppDeps): App {
     }
   };
 
-  router.add('GET', '/api/v1/schema/:toolId', async (req, res, ctx) => {
-    const caller = await automationCaller(req);
-    if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
-    if (!(await requireAutomationTools(res, caller, { toolId: ctx.params.toolId! }))) return;
-    try { return sendJson(res, 200, await schemaVerb({ pack: config.instance.pack, profile: caller.profile }, ctx.params.toolId!)); }
-    catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+  registerDiscoveryRoutes(router, {
+    caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
+    accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
+    toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
+    designRevision: () => brand.current()!.revision, catalogVersion: instanceCatalogVersion,
+    managedRules: (toolId, format) => managedRuleContext(brand.current()!, toolId, format),
+    caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
+    contentCredentials: async () => !!(await getC2paSigner()),
+    ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
+    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms,
+    providerRefs: async (groups) => {
+      await providersReady;
+      return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
+    },
   });
 
   for (const verb of ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize'] as const) {
@@ -9836,7 +9838,7 @@ export function buildApp(deps: AppDeps): App {
       const body = await automationBody(req, res); if (!body) return;
       if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
       const hostedResolver = hostedAssetResolverFor(caller.groups);
-      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal) };
+      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal), policy: await automationPolicy(caller) };
       const execute = async (): Promise<unknown> => {
         let result: unknown;
         if (verb === 'compile') result = await compileVerb(automationContext, body as unknown as Parameters<typeof compileVerb>[1]);
@@ -9858,6 +9860,7 @@ export function buildApp(deps: AppDeps): App {
       try { return sendJson(res, 200, await execute()); }
       catch (e) {
         if (e instanceof UploadReferenceError) return sendError(res, e.status, e.code, e.message);
+        if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
         return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message);
       }
     });
@@ -9871,7 +9874,7 @@ export function buildApp(deps: AppDeps): App {
     if (!(await requireAutomationTools(res, caller, body, body.document))) return;
     const execute = async () => {
       const document = body.document ?? (await compileVerb(
-        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) },
+        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller) },
         body as unknown as Parameters<typeof compileVerb>[1],
       ) as { document: unknown }).document;
       return packageVerb(document);
@@ -9890,7 +9893,10 @@ export function buildApp(deps: AppDeps): App {
       const packed = await execute();
       res.writeHead(200, { 'content-type': 'application/vnd.lolly+zip', 'content-length': String(packed.bytes.byteLength), 'content-disposition': 'attachment; filename="document.lolly"' });
       res.end(Buffer.from(packed.bytes));
-    } catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+    } catch (e) {
+      if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
+      return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message);
+    }
   });
 
   router.add('POST', '/api/v1/render', async (req, res, ctx) => {
@@ -9939,10 +9945,11 @@ export function buildApp(deps: AppDeps): App {
     } catch (e) {
       return sendError(res, 400, 'DATA_BINDING_ERROR', (e as Error).message);
     }
-    if (!rows.length || rows.length > 200 || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return sendError(res, 400, 'INVALID_INPUT', 'batch rows must be a non-empty array of objects');
+    if (!rows.length || rows.length > BATCH_LIMITS.rows || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return sendError(res, 400, 'INVALID_INPUT', 'batch rows must be a non-empty array of objects');
+    const rowPolicy = await automationPolicy(caller);
     for (let index = 0; index < rows.length; index++) {
       const check = await validateVerb(
-        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) },
+        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: rowPolicy },
         { toolId: body.toolId, inputs: rows[index] },
       ) as { ok: boolean; errors?: unknown[] };
       if (!check.ok) return sendError(res, 422, 'ROW_VALIDATION_FAILED', `batch row ${index} does not satisfy the tool input schema`, { row: index, errors: check.errors ?? [] });
@@ -10830,6 +10837,13 @@ function sendReadPreflight(res: ServerResponse): void {
     'access-control-max-age': '86400',
   });
   res.end();
+}
+
+/** A compile or package that tool policy refuses answers like a refused render:
+ *  the first violation's code, the input it names and the overlay that decided. */
+function sendPolicyRefusal(res: ServerResponse, e: PolicyRefusal): void {
+  const v = e.violations[0]!;
+  sendError(res, e.status, e.code, e.message, { input: v.param, ...(v.by ? { by: v.by } : {}), ...(v.reason ? { reason: v.reason } : {}) });
 }
 
 /** Does an `If-None-Match` header cover this entity tag (RFC 9110 section 13.1.2)?
