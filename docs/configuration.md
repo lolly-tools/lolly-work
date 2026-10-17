@@ -685,6 +685,7 @@ sessions die on restart. In production (`NODE_ENV=production`) their absence thr
 | `PORT` | `8787` | listen port |
 | `NODE_ENV` | - | `production` makes secret checks fail-closed |
 | `LW_TEST_DATABASE_URL` | - | enables the Postgres conformance leg in `pnpm test` |
+| `LW_TEST_S3_ENDPOINT`, `LW_TEST_S3_CREDENTIAL` | - | with `LW_TEST_DATABASE_URL`, run the process-level automation lease acceptance (`tests/automation-leases-process.test.ts`) against a disposable S3-compatible store. The credential is `<accessKeyId>:<secretAccessKey>`; the bucket is `LW_TEST_S3_BUCKET` (default `lolly-work-test`) and is created when missing |
 | `LOLLY_OSS_DIR` | `../lolly` | where `pnpm run demo` finds the built OSS web shell |
 | `LW_DEMO_MOCK_ASSETS` | - | `pnpm run demo` only: also seeds a mock provider, `demo-dam-large`, with this many synthetic assets (half SVG, half PNG, up to 200000) for checking the shell against a large catalog |
 
