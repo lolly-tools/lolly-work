@@ -83,25 +83,3 @@ export function exactLength(body: ReadableStream<Uint8Array>, length: number): R
     },
   }));
 }
-
-/** Bytes `start` to `end` (inclusive) of a whole-file stream; the source is cancelled once `end` has passed. */
-export function sliceStream(body: ReadableStream<Uint8Array>, start: number, end: number): ReadableStream<Uint8Array> {
-  const reader = body.getReader();
-  let offset = 0;
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) { controller.error(new Error('the file ended before the requested range')); return; }
-        const from = offset;
-        offset += value.length;
-        if (offset <= start) continue;
-        const piece = value.subarray(Math.max(0, start - from), Math.min(value.length, end + 1 - from));
-        if (piece.length) controller.enqueue(piece);
-        if (offset > end) { controller.close(); await reader.cancel().catch(() => {}); }
-        return;
-      }
-    },
-    cancel(reason) { return reader.cancel(reason); },
-  });
-}

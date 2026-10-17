@@ -121,7 +121,7 @@ import { buildFragment, callerSeesProvider, createFederation, credentialContext,
 import { createServedIndex } from '../catalog/served-index.ts';
 import { createCatalogDelivery, retainedToolBytes, type CatalogSnapshotKind } from '../catalog/delivery.ts';
 import { createExtCache, extCacheKey } from '../catalog/ext-cache.ts';
-import { contentRangeValue, parseByteRange, RangeNotSatisfiableError, satisfyByteRange, sliceStream } from '../catalog/byte-range.ts';
+import { contentRangeValue, parseByteRange, RangeNotSatisfiableError, satisfyByteRange } from '../catalog/byte-range.ts';
 import { browseAssets, normalisedQuery, parseBrowseQuery } from '../catalog/asset-browse.ts';
 import { providerDrift } from '../catalog/drift.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
@@ -5601,16 +5601,12 @@ export function buildApp(deps: AppDeps): App {
           }
           const local = await blobs.get(localId as string);
           if (local) {
-            const range = rangeFor(etag);
-            const part = range ? satisfyByteRange(range, local.stat.size) : null;
-            if (range === false || part === false) {
-              await local.body.cancel().catch(() => {});
-              return unsatisfiable(local.stat.size);
-            }
-            if (part) return sendPart({ 'content-type': local.stat.contentType, 'cache-control': 'private, max-age=300', etag }, part, sliceStream(local.body, part.start, part.end));
+            // Always the whole file, even when a range was asked for. The blob
+            // store reads a file from its first byte, so each part would cost a
+            // whole read of the file, and parallel parts would multiply it.
             res.writeHead(200, {
               'content-type': local.stat.contentType, ...INERT_BYTES,
-              'cache-control': 'private, max-age=300', etag, 'accept-ranges': 'bytes', 'content-length': String(local.stat.size),
+              'cache-control': 'private, max-age=300', etag, 'content-length': String(local.stat.size),
             });
             Readable.fromWeb(local.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
             return;

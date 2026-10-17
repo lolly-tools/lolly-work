@@ -772,11 +772,14 @@ A viewer can read a large federated file in parts with an HTTP `Range` header, a
 `206 Partial Content` with one range. Each part is a separate request that passes every
 visibility, source and lifecycle check again, so revoking access, disabling the source or expiring
 the asset stops the next part. A whole response says `Accept-Ranges: bytes` when parts are
-available: from a pinned local copy, from a small file in the memory cache, or from a source whose
-driver forwards ranges and checks the partial reply (currently Orange Logic renditions). Such a
-driver resolves the asset again for every part, so the source's own scope is checked as well. A
-part never enters the memory cache. A stale `If-Range` validator returns the whole current file,
-and a range outside the file returns `416`. Previews and other sources return the whole file.
+available: from a small file in the memory cache, or from a source whose driver forwards ranges
+and checks the partial reply (currently Orange Logic renditions). Such a driver resolves the asset
+again for every part it forwards, so the source's own scope is checked as well. A part served from
+the memory cache relies on Work's own visibility, source and lifecycle checks, as a whole cached
+read does. A part never enters the memory cache. A stale `If-Range` validator returns the whole
+current file, and a range outside the file returns `416`. Pinned local copies, previews and other
+sources return the whole file. A pinned copy is read from the store from its first byte, so serving
+it in parts would read the whole file again for every part.
 
 ### The exit - materialize a source into your own store
 

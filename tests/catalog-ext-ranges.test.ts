@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { checkPartialReply, exactLength, parseByteRange, RangeNotSatisfiableError, satisfyByteRange, sliceStream } from '../server/src/catalog/byte-range.ts';
+import { checkPartialReply, exactLength, parseByteRange, RangeNotSatisfiableError, satisfyByteRange } from '../server/src/catalog/byte-range.ts';
 import { createDamHttp, DamHttpError } from '../server/src/catalog/providers/dam-http.ts';
 import { createOrangeLogicProvider } from '../server/src/catalog/providers/orange-logic.ts';
 
@@ -52,12 +52,8 @@ test('a partial reply must match the request and its own length', () => {
   assert.equal(checkPartialReply({ start: 0, end: 9 }, null, '10'), null, 'no Content-Range');
 });
 
-test('stream helpers slice whole files and refuse bodies of the wrong length', async () => {
+test('the length guard refuses bodies of the wrong length', async () => {
   const chunks = [Buffer.from('abcd'), Buffer.from('efgh'), Buffer.from('ijkl')];
-  assert.equal((await readAll(sliceStream(streamOf(...chunks), 3, 9))).toString(), 'defghij');
-  assert.equal((await readAll(sliceStream(streamOf(...chunks), 0, 0))).toString(), 'a');
-  assert.equal((await readAll(sliceStream(streamOf(...chunks), 8, 11))).toString(), 'ijkl');
-  await assert.rejects(readAll(sliceStream(streamOf(...chunks), 10, 20)), /ended before/);
   assert.equal((await readAll(exactLength(streamOf(...chunks), 12))).toString(), 'abcdefghijkl');
   await assert.rejects(readAll(exactLength(streamOf(...chunks), 11)), /longer/);
   await assert.rejects(readAll(exactLength(streamOf(...chunks), 13)), /shorter/);
@@ -367,7 +363,7 @@ test('every ranged read re-checks access and revocation', async () => {
   assert.equal((await ranged(designer, big, 'bytes=400-499')).status, 206);
 });
 
-test('a pinned local copy serves parts under the same gates, whatever the driver supports', async () => {
+test('a pinned local copy returns the whole file for a range, under the same gates', async () => {
   const admin = await login('admin@test');
   const designer = await login('designer@test');
   const url = await fileUrl(designer, 'ext/pin/p1');
@@ -375,21 +371,23 @@ test('a pinned local copy serves parts under the same gates, whatever the driver
   assert.equal(pinned.status, 200);
   assert.equal((await pinned.json() as { materialized: number }).materialized, 1);
 
+  // The store reads a file from its first byte, so the pinned copy offers no parts.
   const whole = await fetch(`${base}${url}`, { headers: { cookie: designer } });
   assert.equal(whole.status, 200);
-  assert.equal(whole.headers.get('accept-ranges'), 'bytes');
+  assert.equal(whole.headers.get('accept-ranges'), null);
   assert.equal(await whole.text(), PIN_TEXT);
-  const part = await ranged(designer, url, 'bytes=7-11');
-  assert.equal(part.status, 206);
-  assert.equal(part.headers.get('content-range'), `bytes 7-11/${PIN_TEXT.length}`);
-  assert.equal(part.headers.get('etag'), whole.headers.get('etag'));
-  assert.equal(await part.text(), 'local');
-  const outside = await ranged(designer, url, 'bytes=999-');
-  assert.equal(outside.status, 416);
-  assert.equal(outside.headers.get('content-range'), `bytes */${PIN_TEXT.length}`);
+  for (const range of ['bytes=7-11', 'bytes=-5', 'bytes=999-']) {
+    const asked = await ranged(designer, url, range);
+    assert.equal(asked.status, 200, `${range} gets the whole file`);
+    assert.equal(asked.headers.get('content-range'), null);
+    assert.equal(asked.headers.get('accept-ranges'), null);
+    assert.equal(asked.headers.get('content-length'), String(PIN_TEXT.length));
+    assert.equal(asked.headers.get('etag'), whole.headers.get('etag'));
+    assert.equal(await asked.text(), PIN_TEXT);
+  }
 
   assert.equal((await ranged(await login('seller@test'), url, 'bytes=7-11')).status, 403);
   await setLifecycle('ext/pin/p1', '2020-01-01T00:00:00.000Z');
-  assert.equal((await ranged(designer, url, 'bytes=7-11')).status, 410, 'an expired pin serves no part');
+  assert.equal((await ranged(designer, url, 'bytes=7-11')).status, 410, 'an expired pin serves nothing');
   await setLifecycle('ext/pin/p1', '2099-01-01T00:00:00.000Z');
 });
