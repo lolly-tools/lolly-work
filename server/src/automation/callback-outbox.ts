@@ -47,6 +47,8 @@ export class CallbackOutbox {
   private readonly leaseMs: number;
   private readonly delays: readonly number[];
   private readonly width: number;
+  /** The wait before looking again after a store error: the first retry delay, from 1 s to 30 s. */
+  private readonly errorWakeMs: number;
   private readonly running = new Set<Promise<void>>();
   private polling = false;
   private pollAgain = false;
@@ -62,6 +64,7 @@ export class CallbackOutbox {
     this.leaseMs = Math.max(this.timeoutMs * 3, options.leaseMs ?? 60_000);
     this.delays = options.retryDelaysMs ?? CALLBACK_RETRY_DELAYS_MS;
     this.width = Math.max(1, Math.min(16, options.concurrency ?? 4));
+    this.errorWakeMs = Math.min(30_000, Math.max(1000, this.delays[0] ?? 30_000));
   }
 
   /** A timer elsewhere calls poll() on a clock, so the outbox stops waking itself. */
@@ -71,6 +74,7 @@ export class CallbackOutbox {
     if (this.stopped) return;
     if (this.polling) { this.pollAgain = true; return; }
     this.polling = true;
+    let storeFailed = false;
     try {
       do {
         this.pollAgain = false;
@@ -83,19 +87,34 @@ export class CallbackOutbox {
           this.running.add(attempt);
         }
       } while (this.pollAgain && !this.stopped);
-    } finally { this.polling = false; }
-    if (this.selfScheduled && !this.running.size) await this.scheduleWake();
+    } catch (error) {
+      storeFailed = true;
+      throw error;
+    } finally {
+      this.polling = false;
+      // Re-arm after a store error too: while the outbox wakes itself, nothing
+      // else would look again until another job settles.
+      if (this.selfScheduled && !this.running.size) await this.scheduleWake(storeFailed);
+    }
   }
 
   stop(): void { this.stopped = true; clearTimeout(this.wake); }
 
-  private async scheduleWake(): Promise<void> {
-    const next = await this.store.nextAutomationCallbackAt().catch(() => null);
+  private async scheduleWake(storeFailed: boolean): Promise<void> {
+    // After a store error (a database still starting, say) nothing says what is
+    // pending, so look again after a bounded wait rather than never.
+    let wait = this.errorWakeMs;
+    if (!storeFailed) {
+      try {
+        const next = await this.store.nextAutomationCallbackAt();
+        if (!next) { clearTimeout(this.wake); return; }
+        // At least a second: the store's clock decides what is due, and a small
+        // skew must not turn this into a tight loop.
+        wait = Math.min(Math.max(Date.parse(next) - Date.now(), 1000), 2 ** 31 - 1);
+      } catch { /* the bounded wait above */ }
+    }
     clearTimeout(this.wake);
-    if (!next || this.stopped) return;
-    // At least a second: the store's clock decides what is due, and a small
-    // skew must not turn this into a tight loop.
-    const wait = Math.min(Math.max(Date.parse(next) - Date.now(), 1000), 2 ** 31 - 1);
+    if (this.stopped) return;
     this.wake = setTimeout(() => { void this.poll().catch(() => {}); }, wait);
     this.wake.unref();
   }

@@ -168,7 +168,9 @@ const blobs = config.blobs.driver === 's3'
 // LW_BACKGROUND_POLL_MS: how often the durable render and automation runners
 // look for queued work. Unset keeps 1 s; 0 sets no timer (work is still picked
 // up at boot and on submission), which lets a database that scales to zero
-// sleep while nobody uses the instance (deploy/vm/README.md).
+// sleep while nobody uses the instance (deploy/vm/README.md). A pending job
+// callback still sets a single timer for its next attempt, so the database may
+// be woken for up to about 45 minutes after a job with a callback settles.
 const backgroundPollMs = parseBackgroundPollMs(process.env.LW_BACKGROUND_POLL_MS);
 if (backgroundPollMs !== undefined) console.log(`[lolly-work] background poll ${backgroundPollMs === 0 ? 'off (work runs on submission)' : `every ${backgroundPollMs} ms`}`);
 let renderRunner: RenderRunner | undefined;

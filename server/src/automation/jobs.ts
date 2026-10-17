@@ -34,7 +34,9 @@ export interface AutomationQueueOptions {
    * never queries its database on a clock. A job left behind by a crashed
    * process, or by a lease this one lost, waits for the next of those.
    * The callback outbox shares this timer. Without one it looks when enabled
-   * and after each settled job, and sets a timer for its next due entry. */
+   * and after each settled job, and sets a single timer for its next due entry
+   * (up to about 45 minutes after a job settles), or for a bounded retry after
+   * a store error. */
   pollMs?: number;
 }
 

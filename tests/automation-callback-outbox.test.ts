@@ -12,7 +12,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { AutomationQueue, jobWire } from '../server/src/automation/jobs.ts';
-import { CallbackOutbox } from '../server/src/automation/callback-outbox.ts';
+import { CallbackOutbox, type CallbackOutboxStore } from '../server/src/automation/callback-outbox.ts';
 import { DurableAutomationRunner, attemptResultRef } from '../server/src/automation/durable-runner.ts';
 import { UNRECORDED_CALLBACK_ATTEMPT, type AutomationJobRecord, type Store } from '../server/src/store/types.ts';
 import { withFreshPostgres } from './pg-test-schema.ts';
@@ -56,7 +56,7 @@ const settledJob = (overrides: Partial<AutomationJobRecord> = {}): AutomationJob
   const at = new Date().toISOString();
   return { id: randomUUID(), principal: 'service:hooks', verb: 'render', request: {}, state: 'done', createdAt: at, updatedAt: at, finishedAt: at, callbackUrl: HOOK, priority: 0, attempt: 1, ...overrides };
 };
-const outboxFor = (store: Store, fetchImpl: typeof fetch, options: ConstructorParameters<typeof CallbackOutbox>[1] = {}) =>
+const outboxFor = (store: CallbackOutboxStore, fetchImpl: typeof fetch, options: ConstructorParameters<typeof CallbackOutbox>[1] = {}) =>
   new CallbackOutbox(store, { fetchImpl, secret: SECRET, allowed: candidate => candidate === HOOK, retryDelaysMs: [0, 0], ...options });
 const callbackOf = async (store: Store, job: AutomationJobRecord) => (await store.getAutomationJob(job.id, job.principal))?.callback;
 
@@ -114,6 +114,46 @@ for (const { name, skip, withStore } of drivers) {
       assert.deepEqual(callback, { id: callback!.id, state: 'acknowledged', attempts: 3, lastOutcome: 'acknowledged', lastStatus: 200 });
     } finally { outbox.stop(); }
   }));
+
+  // With no poll timer the outbox wakes itself. One store error, at the moment it
+  // looks for a retry, must not leave the retry waiting for another job to settle.
+  for (const failing of ['claimAutomationCallback', 'nextAutomationCallbackAt'] as const) {
+    test(`${name}: a store error in ${failing} does not stop the outbox waking for a retry`, { skip }, () => withStore(async store => {
+      const job = settledJob(); await store.putAutomationJob(job);
+      const { sent, fetchImpl } = receiver([503, 204]);
+      // Fail once after the refusal is recorded: the claim once the retry is
+      // due, or the lookup that would set the retry's timer.
+      let failed = false;
+      const failNow = async (method: typeof failing): Promise<boolean> => {
+        if (failed || method !== failing) return false;
+        const callback = await callbackOf(store, job);
+        if (callback?.state !== 'pending' || callback.lastOutcome !== 'refused') return false;
+        if (method === 'claimAutomationCallback' && Date.parse(callback.nextAttemptAt!) > Date.now()) return false;
+        return (failed = true);
+      };
+      const flaky: CallbackOutboxStore = {
+        claimAutomationCallback: async (owner, leaseMs) => {
+          if (await failNow('claimAutomationCallback')) throw new Error('the database is starting');
+          return store.claimAutomationCallback(owner, leaseMs);
+        },
+        nextAutomationCallbackAt: async () => {
+          if (await failNow('nextAutomationCallbackAt')) throw new Error('the database is starting');
+          return store.nextAutomationCallbackAt();
+        },
+        settleAutomationCallback: (callback, result) => store.settleAutomationCallback(callback, result),
+        getAutomationJob: (id, principal) => store.getAutomationJob(id, principal),
+      };
+      const outbox = outboxFor(flaky, fetchImpl, { retryDelaysMs: [1000] });
+      try {
+        await outbox.poll();
+        const callback = await until(() => callbackOf(store, job), current => current?.state === 'acknowledged', 8000);
+        assert.ok(failed, 'the store error happened');
+        assert.equal(sent.length, 2);
+        assert.deepEqual(new Set(sent.map(request => request.headers['x-lolly-delivery-id'])), new Set([callback!.id]));
+        assert.deepEqual(callback, { id: callback!.id, state: 'acknowledged', attempts: 2, lastOutcome: 'acknowledged', lastStatus: 204 });
+      } finally { outbox.stop(); }
+    }));
+  }
 
   test(`${name}: a callback still unanswered when its sender stops is replayed after a restart`, { skip }, () => withStore(async store => {
     const job = settledJob(); await store.putAutomationJob(job);
