@@ -48,6 +48,14 @@ sign-in alone had passed. The corrected package was freshly installed and CI now
 checks admitted catalogue access and a real export. The reboot test also exposed
 an ephemeral fixture path; customer installations must use durable host storage.
 
+A browser capture of the same package's CI fixture on 2026-10-17 found that the
+neutral 1.1.1 shell refuses the installation's per-caller catalogue: "signature does
+not verify against the pinned key". Work signs each caller's tool index with the
+installation key, and the checksum-pinned public shell has the publisher key built in,
+so a signed-in browser shows no tools. The checks above call the API and never load
+the shell in a browser. Browser use of the shell is not qualified; see
+[the listing screenshots](assets/README.md#shell-views-withheld-for-111).
+
 Still unqualified: an installed-instance **cross-version upgrade**, recovery on a
 second host, external organisation OIDC, native arm64 runtime, Dokploy UI/import/
 update behaviour and live Rancher installation. The infrastructure module's mocked

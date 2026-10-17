@@ -96,5 +96,6 @@ ownership in other catalogues must still be checked.
 Listings describe free MPL-2.0 software, best-effort community support and the
 operator's own hosting/identity costs. Do not enable charges, referrals, earned
 credits, commissions or payout onboarding. Keep support, privacy and release
-limits aligned with the official installation page. Use the neutral icon and
-neutral-instance captures for screenshots; never use production member data.
+limits aligned with the official installation page. Use the neutral icon and the
+[neutral fixture captures](assets/README.md) for screenshots; never use production
+member data.
