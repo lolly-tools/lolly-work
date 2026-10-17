@@ -30,7 +30,7 @@ import { renderViaWorker, rasteriseViaWorker, WorkerError, type WorkerConfig } f
 import type { LoadedSigner } from './c2pa-signer.ts';
 import { renderCacheKey } from './cache-key.ts';
 import { sha256Hex } from '../lib/crypto.ts';
-import { createAssetObserver, evidenceHash, finishRenderEvidence, type RenderEvidence } from './evidence.ts';
+import { createAssetObserver, effectivePolicySha256, evidenceHash, finishRenderEvidence, type RenderEvidence } from './evidence.ts';
 import { inspectOutput, outputVerificationProblems, OutputVerificationError, parseOutputVerification, verificationTarget, type OutputVerification } from './output-inspection.ts';
 import { applyPreviewWatermark } from './watermark.ts';
 import { withRenderHost } from './host.ts';
@@ -314,6 +314,8 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     rasterizer: format === 'svg' ? 'none' : deps.worker && !LEGACY_RESVG ? 'chromium-worker' : 'resvg',
     signerCertificateHash: deps.signer ? sha256Hex(deps.signer.certDer) : null,
   };
+  const resolved: RenderEvidence['resolved'] = { designRevision: deps.brandRevision ?? null,
+    effectivePolicySha256: effectivePolicySha256(overlay, groups, [...(tool.manifest.inputs as { id: string }[]).map(i => i.id), ...Object.keys(st.values)], deps.managedRules) };
   const cacheKey = renderCacheKey({
     toolId: req.toolId,
     toolVersion: tool.manifest.version,
@@ -528,7 +530,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const evidence = observation ? finishRenderEvidence({
     engine: { version: engine.ENGINE_VERSION, documentApiVersion: engine.DOCUMENT_API_VERSION, scope: 'control-plane' },
     tool: { id: req.toolId, version: tool.manifest.version, sourceHash, files, scope: hooked ? 'control-plane-validation' : 'local-runtime' },
-    context, ...(runtimeEvidence ? { runtime: runtimeEvidence } : {}), assets: observation.assets,
+    context, resolved, ...(runtimeEvidence ? { runtime: runtimeEvidence } : {}), assets: observation.assets,
     ...(inspection ? { inspection } : {}),
     ...(productionReport ? { production: productionReport } : {}),
     ...(brandReport ? { brandRules: brandReport } : {}),

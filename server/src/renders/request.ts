@@ -69,6 +69,7 @@ export function renderWire(record: RenderRecord): Record<string, unknown> {
     ...rest,
     statusUrl: `/api/v1/renders/${record.id}`,
     ...(output ? { output: { name: output.name, mime: output.mime, size: output.size, sha256: output.sha256, cacheKey: output.cacheKey,
+      ...(output.identity ? { identity: { id: output.identity.id, coverage: output.identity.coverage } } : {}),
       ...(output.evidence ? { evidence: { id: output.evidence.id, coverage: output.evidence.coverage, url: `/api/v1/renders/${record.id}/evidence` }, ...(output.evidence.brandRules ? { brandRules: { disposition: output.evidence.brandRules.disposition, scope: output.evidence.brandRules.scope, revision: output.evidence.brandRules.revision } } : {}) } : {}),
       url: `/api/v1/renders/${record.id}/output/default` } } : {}),
   };

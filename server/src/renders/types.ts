@@ -1,5 +1,5 @@
 import type { ProductionRequest, ProductionReport } from '../render/production.ts';
-import type { RenderEvidence } from '../render/evidence.ts';
+import type { RenderEvidence, RenderIdentity } from '../render/evidence.ts';
 import type { OutputInspection, OutputVerification } from '../render/output-inspection.ts';
 
 /** Recoverable single-tool requests. Full dependency locking is plan 40's next slice. */
@@ -23,6 +23,8 @@ export interface RenderResult {
   cacheKey: string;
   /** Partial execution evidence, committed under the same lease as these bytes. */
   evidence?: RenderEvidence;
+  /** The request bound to what this attempt resolved, derived from the receipt above. */
+  identity?: RenderIdentity;
 }
 
 export interface RenderFailure { code: string; message: string; inspection?: OutputInspection; production?: ProductionReport; productionAttempts?: ProductionReport[] }
