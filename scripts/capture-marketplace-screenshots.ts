@@ -4,6 +4,7 @@
 // release, the neutral shell and fixture-only accounts. Never point it at a real instance.
 import { createHash, X509Certificate } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { checkServerIdentity, connect } from 'node:tls';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -41,9 +42,31 @@ export function pngDimensions(bytes: Uint8Array): { width: number; height: numbe
 }
 
 /** Base64 SHA-256 of a certificate's public key, the form Chromium's SPKI pin list takes. */
-export function spkiPin(certificatePem: string): string {
-  const der = new X509Certificate(certificatePem).publicKey.export({ type: 'spki', format: 'der' });
-  return createHash('sha256').update(der).digest('base64');
+export function spkiPin(certificate: X509Certificate): string {
+  return createHash('sha256').update(certificate.publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+}
+
+/**
+ * Pins for the chain the fixture proxy presents, after Node has verified that chain
+ * against the proxy's local root and the domain. Chromium matches pins only against
+ * presented certificates, and Caddy does not send its root.
+ */
+export function verifiedChainPins(port: number, domain: string, caPem: string): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: '127.0.0.1', port, servername: domain, ca: caPem, timeout: 10000,
+      checkServerIdentity: (_, certificate) => checkServerIdentity(domain, certificate) }, () => {
+      const pins = new Set([spkiPin(new X509Certificate(caPem))]);
+      const seen = new Set<string>();
+      for (let certificate = socket.getPeerCertificate(true); certificate?.raw && !seen.has(certificate.fingerprint256); certificate = certificate.issuerCertificate) {
+        seen.add(certificate.fingerprint256);
+        pins.add(spkiPin(new X509Certificate(certificate.raw)));
+      }
+      socket.end();
+      resolve([...pins]);
+    });
+    socket.on('error', reject);
+    socket.on('timeout', () => socket.destroy(new Error('The fixture TLS check timed out')));
+  });
 }
 
 // Minimal Playwright surface. Playwright stays out of the root dependency tree; the
@@ -87,7 +110,7 @@ export interface CaptureOptions {
   port: number;
   /** Fixture domain, for example work.example.test. */
   domain: string;
-  /** The fixture proxy's local root certificate (PEM). Chromium trusts only this key. */
+  /** The fixture proxy's local root certificate (PEM). Chromium trusts only keys in its verified chain. */
   caPem: string;
   email: string;
   password: string;
@@ -99,12 +122,13 @@ export interface CaptureOptions {
 export async function captureListingScreenshots(options: CaptureOptions): Promise<string[]> {
   const origin = `https://${options.domain}`;
   mkdirSync(options.outDir, { recursive: true });
+  const pins = await verifiedChainPins(options.port, options.domain, options.caPem);
   const chromium = await loadChromium();
   const browser = await chromium.launch({
     channel: process.env.LOLLY_BROWSER_CHANNEL || 'chromium',
     args: [
       `--host-resolver-rules=MAP ${options.domain} 127.0.0.1:${options.port}`,
-      `--ignore-certificate-errors-spki-list=${spkiPin(options.caPem)}`,
+      `--ignore-certificate-errors-spki-list=${pins.join(',')}`,
       '--disable-quic',
       // The shell needs a WebGPU adapter; SwiftShader is the one a runner has.
       '--enable-unsafe-webgpu', '--use-webgpu-adapter=swiftshader',
