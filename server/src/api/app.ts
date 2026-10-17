@@ -3,6 +3,7 @@ import { registerSubjectRoutes } from '../privacy/routes.ts';
 import { registerOidcLogout } from '../iam/oidc-logout-routes.ts';
 import { localSessionKey, revokeBrowserSessions } from '../iam/local-logout.ts';
 import { createLinkPasswordAttempts } from '../links/password-attempts.ts';
+import { linkPasswordHtml } from '../links/password-page.ts';
 import { createProviderFetch, providerDestination, type ProviderResolver } from '../catalog/providers/egress.ts';
 import { credentialActive, credentialExpiry } from '../iam/credential-expiry.ts';
 import { safeMessageUrl } from '../inbox/message-url.ts';
@@ -229,6 +230,15 @@ const STATE_COOKIE = 'lw_state';
 /** The signed half of the password forms' double-submit token (`lw/form`). */
 const FORM_COOKIE = 'lw_form';
 const LINK_KINDS: LinkKind[] = ['share', 'embed', 'download', 'guest-edit'];
+/** The RFC 9745 `Deprecation` date (2026-10-17) sent when a credential arrives
+ *  in a query string: `?token=` on a job result and `?pw=` on a link (plan 80
+ *  E0b). A URL reaches access logs, proxies and CDN logs. Both still work for
+ *  one more release. */
+const QUERY_CREDENTIAL_DEPRECATION = '@1792195200';
+/** The header a job result token rides in instead of `?token=`. */
+const JOB_TOKEN_HEADER = 'x-lw-job-token';
+/** Longest a link's password cookie lasts; never past the link's own expiry. */
+const LINK_ACCESS_MAX_SEC = 12 * 3600;
 const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link', 'source-review'];
 
 /** The vendored engine version, read off engine-pin.json (the manifest the
@@ -365,9 +375,16 @@ export function buildApp(deps: AppDeps): App {
   const agentRequests = createProjectRequests(router);
   const metrics = deps.metrics ?? createMetrics();
   const limiter = createRateLimiter(config.rateLimit);
-  const automationResultUrl = (job: AutomationJob): string => {
-    const token = mintToken('lw/job', { jobId: job.id, principal: job.principal }, secrets.link, 24 * 3600);
-    return `${config.instance.baseUrl}/api/v1/jobs/${job.id}/result?token=${encodeURIComponent(token)}`;
+  // A result token lets a receiver without the caller's session read one
+  // job's result. It belongs in the x-lw-job-token header; the `?token=` URL
+  // is kept for one more release (plan 80 E0b), then the URL loses its query.
+  const automationResultToken = (job: AutomationJob): string =>
+    mintToken('lw/job', { jobId: job.id, principal: job.principal }, secrets.link, 24 * 3600);
+  const automationResultUrl = (job: AutomationJob, token = automationResultToken(job)): string =>
+    `${config.instance.baseUrl}/api/v1/jobs/${job.id}/result?token=${encodeURIComponent(token)}`;
+  const automationWire = (job: AutomationJob): Record<string, unknown> => {
+    const token = automationResultToken(job);
+    return jobWire(job, automationResultUrl(job, token), job.state === 'done' ? token : undefined);
   };
   const automationJobs = new AutomationQueue({
     store,
@@ -378,6 +395,7 @@ export function buildApp(deps: AppDeps): App {
     // URL. Reuse the configured webhook endpoint as the initial allowlist.
     callbackAllowed: (url) => url === config.notify.webhook?.url,
     resultUrl: automationResultUrl,
+    resultToken: automationResultToken,
     ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
   });
   // The Chromium render worker is active only when both the URL and the shared
@@ -2713,6 +2731,90 @@ export function buildApp(deps: AppDeps): App {
     sendJson(res, 200, { ok: true });
   });
 
+  // Link passwords (plan 80 E0b). The password arrives once, in the body of
+  // POST /l/:id, and the answer is an HttpOnly cookie scoped to the link's own
+  // path, so later requests (a collection's items and zip included) carry no
+  // password in their URLs. The cookie only stands in for the password: the
+  // signature, expiry and revocation are still checked on every request, and
+  // it dies with the link's password hash.
+  const linkAccessName = (link: LinkRecord): string => `lw_link_${link.id}`;
+  const linkAccessBinding = (link: LinkRecord): string => sha256Hex(`${link.id}.${link.pwHash ?? ''}`).slice(0, 32);
+  const linkAccessCookie = (link: LinkRecord): string => {
+    const ttl = Math.max(1, Math.min(LINK_ACCESS_MAX_SEC, link.exp - Math.floor(Date.now() / 1000)));
+    const token = mintToken('lw/link-access', { l: link.id, h: linkAccessBinding(link) }, secrets.link, ttl);
+    return [`${linkAccessName(link)}=${token}`, `Path=/l/${link.id}`, 'HttpOnly', 'SameSite=Lax', `Max-Age=${ttl}`, ...(secure ? ['Secure'] : [])].join('; ');
+  };
+  const linkAccessOk = (req: IncomingMessage, link: LinkRecord): boolean => {
+    const raw = parseCookies(req.headers.cookie)[linkAccessName(link)];
+    const box = raw ? verifyToken<{ l?: unknown; h?: unknown }>('lw/link-access', raw, linkVerify) : null;
+    return !!box && box.l === link.id && box.h === linkAccessBinding(link);
+  };
+  /** Adds a cookie without dropping one already set, such as a renewed session. */
+  const appendSetCookie = (res: ServerResponse, cookie: string): void => {
+    const prior = res.getHeader('set-cookie');
+    res.setHeader('set-cookie', [...(prior === undefined ? [] : Array.isArray(prior) ? prior : [String(prior)]), cookie]);
+  };
+  /** The address a password form posts to and returns to: the signature, and a
+   *  guest-edit link's chosen name, and nothing else. */
+  const linkFormPath = (link: LinkRecord, url: URL): string => {
+    const name = url.searchParams.get('name');
+    return `/l/${link.id}?s=${encodeURIComponent(url.searchParams.get('s') ?? '')}${name === null ? '' : `&name=${encodeURIComponent(name)}`}`;
+  };
+  const sendLinkPasswordPage = (res: ServerResponse, status: number, link: LinkRecord, url: URL, error?: string): void => {
+    res.writeHead(status, passwordPageHeaders);
+    res.end(linkPasswordHtml(config.instance.name, { action: linkFormPath(link, url), ...(error ? { error } : {}) }));
+  };
+  // `?pw=` still opens a link for one more release (plan 80 E0b; refusing it
+  // waits on decision D11). Each link is reported once per process.
+  const passwordQueryWarned = new Set<string>();
+  const warnPasswordQuery = (linkId: string): void => {
+    if (passwordQueryWarned.has(linkId)) return;
+    if (passwordQueryWarned.size >= 1000) passwordQueryWarned.clear();
+    passwordQueryWarned.add(linkId);
+    console.warn(`[lolly-work] WARNING - link ${linkId} was opened with ?pw=, which puts its password in the URL. That still works until the next release. Open the link without ?pw= and enter the password on its page, or POST it to the link (docs/sharing.md).`);
+  };
+
+  router.add('POST', '/l/:id', async (req, res, ctx) => {
+    const link = await store.getLink(ctx.params.id as string);
+    if (!link || link.kind === 'project-invite') return sendError(res, 404, 'NOT_FOUND', 'no such link');
+    const status = checkLink(link, ctx.url.searchParams.get('s') ?? '', linkVerify, { passwordOk: true });
+    if (status === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
+    if (status === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
+    if (status === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
+    let body: Awaited<ReturnType<typeof readSignInBody>>;
+    try { body = await readSignInBody(req); }
+    catch (e) {
+      return (e as { status?: number }).status === 413
+        ? sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'the password form is too large')
+        : sendError(res, 400, 'INVALID_INPUT', 'the request body could not be read');
+    }
+    if (!body) return sendError(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'send the password as a form or as JSON');
+    const json = body.json;
+    // A form gets the page again with the reason; an API caller gets JSON.
+    const fail = (code: number, errorCode: string, message: string, sentence: string): void =>
+      json ? sendError(res, code, errorCode, message) : sendLinkPasswordPage(res, code, link, ctx.url, sentence);
+    if (link.pwHash) {
+      const client = clientIp(req, config.rateLimit.trustedProxyHops);
+      const retryAfter = linkPasswordAttempts.retryAfter(link.id, client);
+      if (retryAfter) {
+        res.setHeader('retry-after', String(retryAfter));
+        return fail(429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later',
+          'Too many wrong passwords were tried from your network. Wait 15 minutes, then try again.');
+      }
+      const password = body.get('password');
+      if (!password) return fail(400, 'INVALID_INPUT', 'password is required', 'Enter the password.');
+      if (!(await verifyPassword(password, link.pwHash))) {
+        linkPasswordAttempts.miss(link.id, client);
+        return fail(401, 'PASSWORD_INCORRECT', 'that password does not open this link', 'That password does not open this link.');
+      }
+      linkPasswordAttempts.clear(link.id, client);
+      appendSetCookie(res, linkAccessCookie(link));
+    }
+    if (json) return sendJson(res, 200, { ok: true });
+    res.writeHead(303, { location: linkFormPath(link, ctx.url) });
+    res.end();
+  });
+
   // Link resolver. Guest-edit admits a guest principal; other kinds return
   // target info (the render plane will stream bytes here once it lands).
   router.add('GET', '/l/:id', async (req, res, ctx) => {
@@ -2726,25 +2828,41 @@ export function buildApp(deps: AppDeps): App {
     if (initialStatus === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
     if (initialStatus === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
     let passwordOk = true;
+    let grantAccess = false;
     if (link.pwHash) {
-      const client = clientIp(req, config.rateLimit.trustedProxyHops);
-      const retryAfter = linkPasswordAttempts.retryAfter(link.id, client);
-      if (retryAfter) {
-        res.setHeader('retry-after', String(retryAfter));
-        return sendError(res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later');
+      if (pw !== null) {
+        res.setHeader('deprecation', QUERY_CREDENTIAL_DEPRECATION);
+        warnPasswordQuery(link.id);
       }
-      passwordOk = pw !== null && (await verifyPassword(pw, link.pwHash));
-      if (pw !== null && !passwordOk) {
-        linkPasswordAttempts.miss(link.id, client);
-      } else if (passwordOk) {
-        linkPasswordAttempts.clear(link.id, client);
+      passwordOk = linkAccessOk(req, link);
+      if (!passwordOk) {
+        const client = clientIp(req, config.rateLimit.trustedProxyHops);
+        const retryAfter = linkPasswordAttempts.retryAfter(link.id, client);
+        if (retryAfter) {
+          res.setHeader('retry-after', String(retryAfter));
+          return sendError(res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later');
+        }
+        passwordOk = pw !== null && (await verifyPassword(pw, link.pwHash));
+        if (pw !== null && !passwordOk) {
+          linkPasswordAttempts.miss(link.id, client);
+        } else if (passwordOk) {
+          linkPasswordAttempts.clear(link.id, client);
+          // The old query form swaps itself for the cookie, so the page's own
+          // links work without the password in them.
+          grantAccess = true;
+        }
       }
     }
     const status = checkLink(link, sig, linkVerify, { passwordOk });
     if (status === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
     if (status === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
     if (status === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
-    if (status === 'password-required') return sendError(res, 401, 'PASSWORD_REQUIRED', 'this link needs its password');
+    if (status === 'password-required') {
+      if (/\btext\/html\b/.test(String(req.headers.accept ?? ''))) {
+        return sendLinkPasswordPage(res, 401, link, ctx.url, pw === null ? undefined : 'That password does not open this link.');
+      }
+      return sendError(res, 401, 'PASSWORD_REQUIRED', 'this link needs its password');
+    }
     if (link.kind === 'guest-edit') {
       const name = (ctx.url.searchParams.get('name') ?? 'Guest').slice(0, 60);
       const ttlSec = Math.max(60, link.exp - Math.floor(Date.now() / 1000));
@@ -2760,7 +2878,10 @@ export function buildApp(deps: AppDeps): App {
       res.end(JSON.stringify({ kind: 'guest-edit', toolId: link.target.toolId, sessionRef: link.target.sessionId ?? null, guest: name }));
       return;
     }
-    setDeliveryClass(res, 'link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) });
+    if (grantAccess) appendSetCookie(res, linkAccessCookie(link));
+    // A password link stays person-private: the cookie, not the URL, opens it,
+    // so no cache may answer that URL for someone else.
+    if (!link.pwHash) setDeliveryClass(res, 'link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) });
     // A collection target is a LIST of assets (plans/31 §5) - its own listing
     // page, one member's bytes, or the zip-all, all through this one signature.
     if (link.target.collectionId) return serveLinkedCollection(req, res, link, ctx.url);
@@ -6015,28 +6136,27 @@ export function buildApp(deps: AppDeps): App {
 
     const items: CollectionPageItem[] = members.map((m) => {
       const source = m.source;
+      // No password rides in these addresses: a password link's cookie,
+      // scoped to this link's path, opens each item and the zip.
       const base = `/l/${link.id}?s=${encodeURIComponent(url.searchParams.get('s') ?? '')}`;
-      const pw = url.searchParams.get('pw');
-      const carry = pw === null ? '' : `&pw=${encodeURIComponent(pw)}`;
       const asset = `&asset=${encodeURIComponent(m.assetId)}`;
       return {
         assetId: m.assetId,
         name: source.filename,
         format: source.format,
         ...(sizeText(m.size) ? { sizeText: sizeText(m.size) as string } : {}),
-        ...(isPreviewableFormat(source.format) ? { previewHref: `${base}${carry}${asset}` } : {}),
-        downloadHref: `${base}${carry}${asset}&dl=1`,
+        ...(isPreviewableFormat(source.format) ? { previewHref: `${base}${asset}` } : {}),
+        downloadHref: `${base}${asset}&dl=1`,
       };
     });
     const s = encodeURIComponent(url.searchParams.get('s') ?? '');
-    const pw = url.searchParams.get('pw');
     const html = collectionPageHtml({
       instanceName: config.instance.name,
       name: rec.name,
       ...(rec.description ? { description: rec.description } : {}),
       items,
       withheld,
-      zipHref: `/l/${link.id}?s=${s}${pw === null ? '' : `&pw=${encodeURIComponent(pw)}`}&zip=1`,
+      zipHref: `/l/${link.id}?s=${s}&zip=1`,
       expiresAt: new Date(link.exp * 1000).toISOString().slice(0, 10),
       brand: await bearerBrand(),
     });
@@ -9853,7 +9973,7 @@ export function buildApp(deps: AppDeps): App {
         }, String(req.headers['idempotency-key'] ?? '') || undefined);
         if (!queued) return;
         const { job, reused } = queued;
-        return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+        return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
       }
       try { return sendJson(res, 200, await execute()); }
       catch (e) {
@@ -9884,7 +10004,7 @@ export function buildApp(deps: AppDeps): App {
       }, String(req.headers['idempotency-key'] ?? '') || undefined);
       if (!queued) return;
       const { job, reused } = queued;
-      return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+      return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
     }
     try {
       const packed = await execute();
@@ -9916,7 +10036,7 @@ export function buildApp(deps: AppDeps): App {
       }, String(req.headers['idempotency-key'] ?? '') || undefined);
       if (!queued) return;
       const { job, reused } = queued;
-      return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+      return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
     }
     try {
       const result = await execute();
@@ -9952,22 +10072,25 @@ export function buildApp(deps: AppDeps): App {
     }, String(req.headers['idempotency-key'] ?? '') || undefined);
     if (!queued) return;
     const { job, reused } = queued;
-    return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+    return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
   });
 
   router.add('GET', '/api/v1/jobs', async (req, res) => {
     const caller = await automationCaller(req);
     if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
-    return sendJson(res, 200, { jobs: (await automationJobs.list(caller.principal)).map((job) => jobWire(job, automationResultUrl(job))) });
+    return sendJson(res, 200, { jobs: (await automationJobs.list(caller.principal)).map((job) => automationWire(job)) });
   });
   router.add('GET', '/api/v1/jobs/:id', async (req, res, ctx) => {
     const caller = await automationCaller(req);
     if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     const job = await automationJobs.get(ctx.params.id!, caller.principal);
-    return job ? sendJson(res, 200, jobWire(job, automationResultUrl(job))) : sendError(res, 404, 'NOT_FOUND', 'job not found');
+    return job ? sendJson(res, 200, automationWire(job)) : sendError(res, 404, 'NOT_FOUND', 'job not found');
   });
   router.add('GET', '/api/v1/jobs/:id/result', async (req, res, ctx) => {
-    const token = ctx.url.searchParams.get('token');
+    const header = req.headers[JOB_TOKEN_HEADER];
+    const queryToken = ctx.url.searchParams.get('token');
+    if (queryToken !== null) res.setHeader('deprecation', QUERY_CREDENTIAL_DEPRECATION);
+    const token = (typeof header === 'string' && header) || queryToken;
     const signed = token ? verifyToken<{ jobId: string; principal: string }>('lw/job', token, linkVerify) : null;
     const caller = signed ? null : await automationCaller(req);
     if (!signed && !caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');

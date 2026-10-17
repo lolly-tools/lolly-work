@@ -524,9 +524,23 @@ are never emailed today; see `policy.comments` under [Canvas comments](#canvas-c
 | `POST /api/v1/links` | `link.create` (`link.create-guest` for `guest-edit`) |
 | `GET /api/v1/links[?all=1]` | member (own links; `all=1` needs the admin view) |
 | `POST /api/v1/links/:id/revoke` | own link, or `link.revoke` |
-| `GET /l/:id?s=…[&pw=…][&name=…]` | public (the signature *is* the authorization) |
+| `GET /l/:id?s=…[&name=…]` | public (the signature *is* the authorization); a password link also needs its cookie |
+| `POST /l/:id?s=…[&name=…]` | public: checks a password link's password and sets its cookie |
 | `GET /l/:id?s=…&zip=1`, `…&asset=<id>[&dl=1]` | public - a collection link's zip-all, and one member of that set (an id it does not name is `404 NOT_IN_COLLECTION`) |
 | `GET /render/<toolId>.<format>` | `export.server`, or a guest scoped to that tool |
+
+A password link's password goes in the body of `POST /l/:id?s=…`, as the form
+field `password` or as JSON `{"password": "…"}`. The answer sets an HttpOnly
+cookie, `lw_link_<id>`, with `Path=/l/<id>`, lasting 12 hours at most and never
+past the link's expiry. A form gets a `303` back to the link and JSON gets
+`200 {"ok": true}`. A wrong password is `401 PASSWORD_INCORRECT`; ten wrong
+passwords from one address within 15 minutes lock the link for that address
+(`429 PASSWORD_LOCKED` with `Retry-After`). A browser that opens a password link
+without the cookie gets a page with that form. Password links answer
+`private, no-store`, because the cookie, not the URL, decides who reads them.
+`&pw=…` on the `GET` is deprecated and still works for one more release: the
+answer carries a `Deprecation` header and sets the same cookie, and the server
+logs one warning per link. See [Password links](sharing.md#password-links).
 
 For worker-backed renders, asset inputs use the same URL encoding as the Lolly
 shell. A `user/team/<fileId>` reference is resolved to that project's file endpoint
@@ -1038,8 +1052,19 @@ request with the same `Idempotency-Key` returns its existing job; reusing that
 key for different request bytes returns `409 IDEMPOTENCY_KEY_REUSED`. A
 `callbackUrl` is used only when it exactly matches the instance-configured
 webhook endpoint; callback requests carry `x-lolly-timestamp` and a signed
-`x-lolly-signature` header. Their absolute result URL carries its own 24-hour
-signature, so the receiver does not need the caller's session cookie.
+`x-lolly-signature` header. The callback body is
+`{jobId, state, resultUrl, resultToken}`. `resultToken` is a 24-hour token for
+that one job's result: send it as the `x-lw-job-token` header on
+`GET /api/v1/jobs/:id/result`, and the receiver needs no session of its own.
+A completed job resource carries the same `resultToken`, and `null` before then.
+
+The token used to travel in the URL, as `resultUrl?token=…`. A URL ends up in
+access logs, proxy logs and CDN logs, so that form is deprecated. For one more
+release `resultUrl` still carries `?token=` and the result route still accepts
+it, answering with a `Deprecation` header
+([RFC 9745](https://www.rfc-editor.org/rfc/rfc9745)). After that release
+`resultUrl` loses its query and a query token is refused, so move receivers to
+the header now.
 
 `POST /api/v1/batch {toolId,format,rows,keepGoing?,retries?,concurrency?,priority?}`
 always creates a job and produces one ZIP. Requested concurrency is capped at
