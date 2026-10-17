@@ -19,8 +19,16 @@ export interface AutomationContext {
   /** The bytes of a finished automation-input upload the caller owns, named
    *  `{ id, checksum }` (uploads/scoped.ts `readUploadReference`). */
   readUpload?: (ref: unknown) => Promise<Uint8Array>;
+  /** The bytes of a file reference the caller owns, named `{ id, checksum }`
+   *  (uploads/files.ts), with what it declares about them. */
+  readFile?: (ref: unknown) => Promise<{ bytes: Uint8Array; file: VerbFile }>;
+  /** Keep an optimize output as a file reference of the caller, made from
+   *  `source` when the input was one, and answer what the files routes show. */
+  saveFile?: (output: Uint8Array, made: { source?: VerbFile; input: Uint8Array; opts?: Record<string, unknown>; stages: string[] }) => Promise<unknown>;
   policy?: { overlays: Map<string, ToolOverlay>; groups: string[] };
 }
+/** What a verb knows of a file reference it read. */
+export interface VerbFile { id: string; checksum: string; name: string; contentType: string }
 /** `format` names the output the document is for, so that format's design-system
  *  rules apply. It must be one the tool declares. */
 export interface ToolRequest { toolId: string; inputs?: Record<string, unknown>; designVersion?: string; format?: string }
@@ -87,10 +95,18 @@ export async function validateVerb(ctx: AutomationContext, body: Record<string, 
   return { ok: false, errors: [{ path: '/', message: 'toolId, document, or manifest is required' }], warnings: [] };
 }
 
-export async function documentVerb(ctx: AutomationContext, verb: 'inspect' | 'measure' | 'optimize', req: ToolRequest & { document?: unknown; bytesBase64?: string; source?: string; upload?: unknown; opts?: Record<string, unknown> }): Promise<unknown> {
+export async function documentVerb(ctx: AutomationContext, verb: 'inspect' | 'measure' | 'optimize', req: ToolRequest & { document?: unknown; bytesBase64?: string; source?: string; upload?: unknown; file?: unknown; output?: unknown; opts?: Record<string, unknown> }): Promise<unknown> {
   const engine = await loadEngine();
   let bytes: Uint8Array | undefined;
-  if (req.upload !== undefined) {
+  let source: VerbFile | undefined;
+  if (req.output !== undefined && req.output !== 'inline' && req.output !== 'file') throw new Error('output is inline or file');
+  if (req.output === 'file' && verb !== 'optimize') throw new Error('only optimize keeps its output as a file reference');
+  if (req.file !== undefined) {
+    // A file reference stands in for inline bytes, never beside them.
+    if (req.bytesBase64 !== undefined || req.source !== undefined || req.upload !== undefined) throw new Error('give one of bytesBase64, source, upload or file');
+    if (!ctx.readFile) throw new Error('file references are not available here');
+    ({ bytes, file: source } = await ctx.readFile(req.file));
+  } else if (req.upload !== undefined) {
     // An upload stands in for inline bytes, never beside them.
     if (req.bytesBase64 !== undefined || req.source !== undefined) throw new Error('give one of bytesBase64, source or upload');
     if (!ctx.readUpload) throw new Error('upload references are not available here');
@@ -109,8 +125,15 @@ export async function documentVerb(ctx: AutomationContext, verb: 'inspect' | 'me
     if (verb === 'inspect') return engine.inspectDocument(bytes);
     const optimized = await engine.optimizeDocument(bytes, req.opts);
     const value = optimized.value as Uint8Array;
+    if (req.output === 'file') {
+      // The output stays on this instance as a reference; no bytes come back.
+      if (!ctx.saveFile) throw new Error('file references are not available here');
+      const file = await ctx.saveFile(value, { ...(source ? { source } : {}), input: bytes, ...(req.opts ? { opts: req.opts } : {}), stages: optimized.stages });
+      return { file, bytes: value.byteLength, savedBytes: optimized.savedBytes, stages: optimized.stages };
+    }
     return { bytesBase64: Buffer.from(value).toString('base64'), bytes: value.byteLength, savedBytes: optimized.savedBytes, stages: optimized.stages };
   }
+  if (req.output === 'file') throw new Error('only an optimize of file bytes keeps its output as a file reference');
   let document = req.document;
   if (!document) document = (await compileVerb(ctx, req) as { document: unknown }).document;
   if (verb === 'inspect') return engine.inspectDocument(document);

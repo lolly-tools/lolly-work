@@ -262,11 +262,12 @@ export interface InstanceConfig {
     projectFiles: ProjectFilePolicy;
     /** Scoped uploads (docs/resumable-uploads.md, uploads/scoped.ts): private,
      *  resumable uploads a person or a service token names by reference as a
-     *  catalog submission original or an automation input. Off by default:
-     *  its instance budget adds to the project files' one on the same blob
-     *  store. The per-file cap and the owner and instance budgets are bytes;
-     *  an unfinished upload expires after `uploadTtlHours`, a finished one
-     *  `readyTtlHours` after it finished. */
+     *  catalog submission original, an automation input or a file reference
+     *  (uploads/files.ts). Off by default: its instance budget adds to the
+     *  project files' one on the same blob store. The per-file cap and the
+     *  owner and instance budgets are bytes; an unfinished upload expires
+     *  after `uploadTtlHours`, a finished one `readyTtlHours` after it
+     *  finished, and a file reference `fileTtlHours` after it finished. */
     uploads: UploadPolicy;
     /** Access requests (plans/75 G13): who may ask for what, and for how
      *  long a request stays open. See `RequestPolicy`. */
@@ -976,14 +977,14 @@ export function parseConfig(json: string): InstanceConfig {
   const uploads = cfg.policy.uploads;
   if (!uploads || typeof uploads !== 'object' || Array.isArray(uploads)) throw new Error('policy.uploads must be an object');
   if (typeof uploads.enabled !== 'boolean') throw new Error('policy.uploads.enabled must be true or false');
-  for (const k of ['maxFileBytes', 'ownerBudgetBytes', 'instanceBudgetBytes', 'uploadTtlHours', 'readyTtlHours'] as const) {
+  for (const k of ['maxFileBytes', 'ownerBudgetBytes', 'instanceBudgetBytes', 'uploadTtlHours', 'readyTtlHours', 'fileTtlHours'] as const) {
     if (!Number.isSafeInteger(uploads[k]) || uploads[k] <= 0) throw new Error(`invalid policy.uploads.${k}: ${uploads[k]} (a whole number above 0)`);
   }
   if (uploads.maxFileBytes > TRANSFER_MAX_BYTES) throw new Error(`policy.uploads.maxFileBytes cannot exceed ${TRANSFER_MAX_BYTES} (4 GiB)`);
   if (uploads.maxFileBytes > uploads.ownerBudgetBytes || uploads.ownerBudgetBytes > uploads.instanceBudgetBytes) {
     throw new Error('policy.uploads needs maxFileBytes <= ownerBudgetBytes <= instanceBudgetBytes');
   }
-  for (const k of ['uploadTtlHours', 'readyTtlHours'] as const) {
+  for (const k of ['uploadTtlHours', 'readyTtlHours', 'fileTtlHours'] as const) {
     if (uploads[k] > 720) throw new Error(`invalid policy.uploads.${k}: ${uploads[k]} (at most 720)`);
   }
   validateRequestPolicy(cfg.policy.requests);
