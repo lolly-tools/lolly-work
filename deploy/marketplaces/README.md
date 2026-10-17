@@ -50,7 +50,8 @@ The [reference qualification](QUALIFICATION.md) records the tested UpCloud targe
 package hashes, reboot/restore outcomes and remaining acceptance limits.
 The [installation directory](../../docs/official-installations.md) records what
 is published and qualified. A prepared blueprint is not an accepted marketplace
-listing. Native arm64 runtime, other cloud/edge targets, organisation identity and
+listing. Native arm64 has passed the CI container qualification only. Provider
+targets on arm64, other cloud/edge targets, organisation identity and
 installed-version upgrades still need their own acceptance.
 
 ## Chart publication
