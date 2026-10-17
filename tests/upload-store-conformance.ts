@@ -6,6 +6,8 @@
  * the pending limit count only uploads that have not expired, an id is
  * reserved once, a touch never shortens an expiry or revives an expired
  * upload, completing is idempotent, and the removal lists filter as declared.
+ * A file reference's own fields read back unchanged and count toward the
+ * budgets, and the list narrows by scope and state and pages from a position.
  */
 import assert from 'node:assert/strict';
 import { UPLOAD_OVERHEAD_BYTES, type UploadRecord, type UploadStore } from '../server/src/uploads/scoped.ts';
@@ -77,4 +79,26 @@ export async function uploadStoreConformance(store: UploadStore): Promise<void> 
   assert.equal(await store.deleteUpload('upl_old'), true);
   assert.equal(await store.deleteUpload('upl_old'), false);
   assert.equal(await store.getUpload('upl_old'), null);
+
+  // File references (migration 0076): the role, the source and the report read back unchanged.
+  const report = { by: 'instance' as const, report: { version: 1, operation: 'optimize', changes: ['strip-metadata'] } };
+  const source = { ...uploadRecord('fil_src', 'user:f1', 3, { createdAt: t - 500, scope: 'file' }), role: 'original' as const };
+  const output = { ...uploadRecord('fil_out', 'user:f1', 4, { createdAt: t - 500, scope: 'file' }), role: 'output' as const, derivedFrom: { id: 'fil_src', checksum: 'c'.repeat(64) }, report };
+  const pending = { ...uploadRecord('fil_pending', 'user:f1', 5, { createdAt: t - 100, scope: 'file' }), role: 'original' as const };
+  for (const u of [source, output, pending]) assert.equal(await store.reserveUpload(u, roomy), 'reserved');
+  assert.equal(await store.reserveUpload(uploadRecord('upl_input', 'user:f1', 6, { createdAt: t - 50 }), roomy), 'reserved');
+  assert.deepEqual(await store.getUpload('fil_out'), output);
+  assert.deepEqual(await store.getUpload('fil_src'), source);
+  // The source and the report count toward the budgets at their size as JSON.
+  const metadata = Buffer.byteLength(JSON.stringify(output.derivedFrom)) + Buffer.byteLength(JSON.stringify(report));
+  assert.equal((await store.uploadUsage('user:f1')).ownerBytes, 3 + 4 + 5 + 6 + 4 * R + metadata);
+  for (const id of ['fil_src', 'fil_out']) assert.equal(await store.completeUpload(id, kept), true);
+  const files = (filter: Parameters<UploadStore['listUploads']>[2], limit = 10) => store.listUploads('user:f1', limit, filter).then((us) => us.map((u) => u.id));
+  assert.deepEqual(await files({}), ['upl_input', 'fil_pending', 'fil_out', 'fil_src'], 'no filter: every scope, newest first, then by id');
+  assert.deepEqual(await files({ scope: 'file' }), ['fil_pending', 'fil_out', 'fil_src']);
+  assert.deepEqual(await files({ scope: 'file', ready: true }), ['fil_out', 'fil_src']);
+  assert.deepEqual(await files({ scope: 'file', ready: true }, 1), ['fil_out']);
+  assert.deepEqual(await files({ scope: 'file', ready: true, before: { createdAt: source.createdAt, id: 'fil_out' } }), ['fil_src'], 'after a position: as old with a later id');
+  assert.deepEqual(await files({ scope: 'file', before: { createdAt: pending.createdAt, id: 'fil_pending' } }), ['fil_out', 'fil_src'], 'after a position: older');
+  assert.deepEqual(await files({ scope: 'file', ready: true, before: { createdAt: source.createdAt, id: 'fil_src' } }), []);
 }

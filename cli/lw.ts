@@ -1093,10 +1093,10 @@ switch (cmd) {
   // beside the session until the upload finishes, so running the same
   // command again after an interruption sends only the missing parts.
   case 'upload': {
-    const file = positionals[1] ?? fail('usage: lw upload <file> (--project <id> | --scope catalog-submission|automation-input) [--name "…"] [--content-type <type>]');
+    const file = positionals[1] ?? fail('usage: lw upload <file> (--project <id> | --scope catalog-submission|automation-input|file) [--name "…"] [--content-type <type>]');
     const target: UploadTarget = values.project ? { kind: 'project', projectId: values.project }
-      : values.scope === 'catalog-submission' || values.scope === 'automation-input' ? { kind: 'upload', scope: values.scope }
-      : fail('lw upload needs --project <id> or --scope catalog-submission|automation-input');
+      : values.scope === 'catalog-submission' || values.scope === 'automation-input' || values.scope === 'file' ? { kind: 'upload', scope: values.scope }
+      : fail('lw upload needs --project <id> or --scope catalog-submission|automation-input|file');
     const cookie = savedCookie(), bearer = values.token ?? process.env.LW_TOKEN;
     const source = await fileSource(file).catch((error: Error) => fail(`cannot read ${file}: ${error.message}`));
     try {
@@ -1112,6 +1112,7 @@ switch (cmd) {
         console.log(`${result.resumed ? 'resumed and finished' : 'finished'} ${result.id} (${result.size} bytes, sha256 ${result.checksum}, ${result.sentParts} part(s) sent)`);
         if (target.kind === 'upload' && target.scope === 'catalog-submission') console.log(`submit it: POST /api/v1/catalog/submit?name=…&uploadId=${result.id}&checksum=${result.checksum}`);
         if (target.kind === 'upload' && target.scope === 'automation-input') console.log(`use it: "upload": { "id": "${result.id}", "checksum": "${result.checksum}" } in /api/v1/inspect or /api/v1/optimize`);
+        if (target.kind === 'upload' && target.scope === 'file') console.log(`use it: "file": { "id": "${result.id}", "checksum": "${result.checksum}" } in /api/v1/inspect or /api/v1/optimize; read it at /api/v1/files/${result.id}/content`);
       }
     } catch (error) {
       if (!values.json) process.stderr.write('\n');
@@ -1604,7 +1605,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   providers preview --kind <kind> --shape [--remote-id <id>]   instead of the sample: the tenant's record structure, key names and types only
   providers credential <id> (prompts) · auth <id> (OAuth consent) · enable|disable|sync|health|rm <id>
   providers drift <id>       materialized copies whose upstream updatedAt has moved on
-  upload <file> --project <id> | --scope catalog-submission|automation-input [--name "…"] [--content-type <t>]   resumable upload; run it again to resume
+  upload <file> --project <id> | --scope catalog-submission|automation-input|file [--name "…"] [--content-type <t>]   resumable upload; run it again to resume
   catalog submit <file> [--name "…"] [--tags a,b] [--groups a,b]   put a file into this instance's catalog
   catalog queue [--all] · catalog edit <assetId> [--name --tags --type --label]   the review queue, and a fix before publishing
   catalog approve|return <assetId> [--body "comment"]   decide one submission

@@ -334,6 +334,7 @@ Send a large file in 1 MiB parts that survive a dropped connection or a restart
 lw upload ./keynote.mp4 --project prj_ab12        # a shared file in a project (signed in as a person)
 lw upload ./master.tif --scope catalog-submission  # an original to submit to the catalog
 lw upload ./brochure.pdf --scope automation-input  # bytes for /api/v1/inspect or /api/v1/optimize
+lw upload ./photo.jpg --scope file                 # a file reference you can also read back
 ```
 
 `--name` sets the file name (the file's own by default) and `--content-type` its media type,

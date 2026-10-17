@@ -101,6 +101,8 @@ import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader }
 import { projectSubmissionInput, ProjectSubmissionError } from '../catalog/project-source.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
+import { registerFileRoutes } from '../uploads/file-routes.ts';
+import { createFileReference, creationRefusal, fileWire, FORMAT_TYPES, optimizeReport } from '../uploads/files.ts';
 import { readUploadReference, removeUpload, removeUploadsOwnedBy, uploadOwner, uploadPolicy, UploadReferenceError, type UploadRecord } from '../uploads/scoped.ts';
 import { effectiveAccessFor } from '../projects/effective-access.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
@@ -8599,6 +8601,7 @@ export function buildApp(deps: AppDeps): App {
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit, renderFileReader: createRenderFileReader({ secret: linkVerify, store, projectAccessOf }) });
   registerUploadRoutes(router, { config, store, blobs, memberOf, serviceAccountOf, audit });
+  registerFileRoutes(router, { config, store, blobs, memberOf, serviceAccountOf, delegated: (req) => !!agentRequests.principal(req), audit });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
   registerProjectTransferInventoryRoutes(router, { store, memberOf, requireAction, projectAccessOf, delegated: req => !!agentRequests.principal(req) });
   registerShareRoutes(router, { config, store, memberOf, requireAction, projectAccessOf, audit });
@@ -9714,6 +9717,42 @@ export function buildApp(deps: AppDeps): App {
    *  verbs; an anonymous principal owns none, so its references all fail. */
   const automationUploadReader = (principal: string) => async (ref: unknown): Promise<Uint8Array> =>
     new Uint8Array((await readUploadReference({ store, blobs, policy: uploadPolicy(config) }, ref, principal, 'automation-input')).bytes);
+  /** The caller's own file references for the document verbs (uploads/files.ts).
+   *  Each use loads the reference again and checks `tool.use` against the
+   *  current grants, so a reference deleted, or a right withdrawn, since the
+   *  last call is refused; queued work is checked when it runs. An anonymous
+   *  caller holds none, so its references all fail like anyone else's. */
+  const automationFiles = (caller: { user: UserRecord | null; principal: string }) => {
+    const toolUse = async (): Promise<boolean> => !caller.user
+      || evaluate({ userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role }, 'tool.use', ['*'], await store.listGrants());
+    return {
+      readFile: async (ref: unknown) => {
+        if (!await toolUse()) throw new UploadReferenceError(403, 'FORBIDDEN', 'tool.use required');
+        const { upload, bytes } = await readUploadReference({ store, blobs, policy: uploadPolicy(config) }, ref, caller.principal, 'file');
+        return { bytes: new Uint8Array(bytes), file: { id: upload.id, checksum: upload.checksum, name: upload.name, contentType: upload.contentType } };
+      },
+      saveFile: async (output: Uint8Array, made: { source?: { id: string; checksum: string; name: string; contentType: string }; input: Uint8Array; opts?: Record<string, unknown>; stages: string[] }) => {
+        const policy = uploadPolicy(config);
+        if (!policy.enabled) throw new UploadReferenceError(404, 'NOT_FOUND', 'uploads are off');
+        if (!caller.user || caller.user.role === 'guest') throw new UploadReferenceError(403, 'FORBIDDEN', 'keeping a file reference needs a member or a service token');
+        if (!await toolUse()) throw new UploadReferenceError(403, 'FORBIDDEN', 'tool.use required');
+        if (output.byteLength > policy.maxFileBytes) throw new UploadReferenceError(413, 'UPLOAD_TOO_LARGE', `a file reference can be at most ${policy.maxFileBytes} bytes`);
+        // Only a format this instance knows names an output with no source, so
+        // no client text of any length becomes the reference's name.
+        const asked = typeof made.opts?.format === 'string' ? made.opts.format.toLowerCase() : undefined;
+        const format = asked !== undefined && Object.hasOwn(FORMAT_TYPES, asked) ? asked : undefined;
+        const contentType = made.source?.contentType ?? (format ? FORMAT_TYPES[format]! : 'application/octet-stream');
+        const name = made.source?.name ?? `optimized.${format ?? 'bin'}`;
+        const report = optimizeReport({ name, contentType, bytes: made.input }, { name, contentType, bytes: output }, made.opts, made.stages);
+        const created = await createFileReference({ store, blobs, policy }, caller.principal, output, {
+          name, contentType, role: 'output', ...(made.source ? { derivedFrom: { id: made.source.id, checksum: made.source.checksum } } : {}), report: { by: 'instance', report },
+        });
+        if (!created.ok) { const [status, code, message] = creationRefusal(created.refusal); throw new UploadReferenceError(status, code, message); }
+        await audit(`user:${caller.user.id}`, 'file.create', `file:${created.file.id}`, { size: created.file.size, checksum: created.file.checksum, role: 'output' });
+        return fileWire(created.file);
+      },
+    };
+  };
   const automationBody = async (req: IncomingMessage, res: ServerResponse): Promise<Record<string, unknown> | null> => {
     const body = await readJson(req);
     if (!body || typeof body !== 'object' || Array.isArray(body)) { sendError(res, 400, 'INVALID_INPUT', 'JSON object body required'); return null; }
@@ -9865,7 +9904,7 @@ export function buildApp(deps: AppDeps): App {
     // Compile, validate and package read this policy. Batch rows render through the
     // pipeline, which applies the rules for the batch format itself.
     const governed = ['compile', 'validate', 'package'].includes(job.verb) ? body.toolId : undefined;
-    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), policy: await automationPolicy(caller, governed, body.format) };
+    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format) };
     if (job.verb === 'batch') {
       if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const record = job;
@@ -9961,7 +10000,7 @@ export function buildApp(deps: AppDeps): App {
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
-    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms,
+    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, fileReferences: uploadPolicy(config).enabled,
     providerRefs: async (groups) => {
       await providersReady;
       return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
@@ -9975,7 +10014,7 @@ export function buildApp(deps: AppDeps): App {
       const body = await automationBody(req, res); if (!body) return;
       if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
       const hostedResolver = hostedAssetResolverFor(caller.groups);
-      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal),
+      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal), ...automationFiles(caller),
         policy: await automationPolicy(caller, verb === 'compile' || verb === 'validate' ? body.toolId : undefined, body.format) };
       const execute = async (): Promise<unknown> => {
         let result: unknown;

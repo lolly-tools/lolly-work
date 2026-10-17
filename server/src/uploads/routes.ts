@@ -6,7 +6,8 @@
  * the bytes are then named by reference, never downloaded. The list shows the
  * caller's own uploads, and every route on one upload is its owner's alone and
  * answers 404 to anyone else. Every route answers 404 while
- * `policy.uploads.enabled` is false.
+ * `policy.uploads.enabled` is false. A finished upload in scope `file` is a
+ * file reference, which its owner also reads back (file-routes.ts).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createRouter, readJson, readRaw, sendError, sendJson } from '../api/router.ts';
@@ -17,9 +18,10 @@ import { evaluate, type Role } from '../rbac/evaluate.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import { parsePartIndex, RunningDigests, storeTransferPart, TRANSFER_PART_BYTES, transferProgress, verifyTransfer } from './parts.ts';
 import {
-  finishedUploadExpiry, liveUpload, removeUpload, sweepExpiredUploads, unfinishedUploadExpiry, uploadInput, uploadOwner, uploadParts, uploadPolicy,
-  uploadWire, UPLOAD_LIST_LIMIT, UPLOAD_PENDING_LIMIT, type UploadRecord, type UploadScope,
+  finishedUploadExpiry, finishedUploadTtlHours, isUploadScope, liveUpload, removeUpload, sweepExpiredUploads, unfinishedUploadExpiry, uploadIdPrefix, uploadInput,
+  uploadOwner, uploadParts, uploadPolicy, uploadWire, UPLOAD_LIST_LIMIT, UPLOAD_PENDING_LIMIT, type UploadRecord, type UploadScope,
 } from './scoped.ts';
+import { fileMetadata, fileWire, ownsFileReference, type FileMetadata } from './files.ts';
 
 interface Dependencies {
   config: InstanceConfig;
@@ -31,8 +33,9 @@ interface Dependencies {
 }
 
 /** The action each scope's begin needs: the right to submit to the catalog,
- *  or to use tools, which the document verbs an automation input feeds need. */
-const SCOPE_ACTION: Record<UploadScope, string> = { 'catalog-submission': 'catalog.submit', 'automation-input': 'tool.use' };
+ *  or to use tools, which the document verbs an automation input or a file
+ *  reference feeds need. */
+const SCOPE_ACTION: Record<UploadScope, string> = { 'catalog-submission': 'catalog.submit', 'automation-input': 'tool.use', file: 'tool.use' };
 
 export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d: Dependencies): void {
   /** A signed-in person or a service token; never a guest seat or an anonymous caller. */
@@ -50,6 +53,8 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
     return upload;
   };
   const running = new RunningDigests();
+  /** A finished upload, and for a file reference what the files routes show of it. */
+  const finishedWire = (u: UploadRecord) => ({ upload: uploadWire(u), ...(u.scope === 'file' ? { file: fileWire(u) } : {}) });
 
   router.add('GET', '/api/v1/uploads', async (req, res) => {
     const user = await caller(req, res);
@@ -71,7 +76,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
     const policy = uploadPolicy(d.config);
     const body = await readJson(req, 512 * 1024) as Record<string, unknown> | null;
     const scope = body && typeof body === 'object' ? body.scope : undefined;
-    if (scope !== 'catalog-submission' && scope !== 'automation-input') return sendError(res, 400, 'INVALID_INPUT', 'scope is catalog-submission or automation-input');
+    if (!isUploadScope(scope)) return sendError(res, 400, 'INVALID_INPUT', 'scope is catalog-submission, automation-input or file');
     const action = SCOPE_ACTION[scope];
     if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], await d.store.listGrants())) {
       return sendError(res, 403, 'FORBIDDEN', `${action} required`);
@@ -83,11 +88,21 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
     }
     const input = uploadInput(body, maxBytes);
     if (!input) return sendError(res, 400, 'INVALID_INPUT', 'invalid upload metadata or part checksums');
+    // A file reference also says whether it is an output, and of which of the
+    // caller's own references; naming any other is the same 404.
+    let file: FileMetadata | undefined;
+    if (scope === 'file') {
+      const metadata = fileMetadata(body!);
+      if (typeof metadata === 'string') return sendError(res, 400, 'INVALID_INPUT', metadata);
+      if (metadata.derivedFrom && !await ownsFileReference(d.store, uploadOwner(user), metadata.derivedFrom)) return sendError(res, 404, 'NOT_FOUND', 'no such file reference');
+      file = metadata;
+    }
     // Best effort: the retention run and the timer sweep as well.
     await sweepExpiredUploads(d.store, d.blobs).catch(() => 0);
     const now = Date.now(), createdAt = new Date(now).toISOString();
-    const upload: UploadRecord = { ...input, id: `upl_${randomId(16)}`, owner: uploadOwner(user), createdAt,
-      expiresAt: unfinishedUploadExpiry(createdAt, policy.uploadTtlHours, now), ready: false };
+    const upload: UploadRecord = { ...input, id: `${uploadIdPrefix(scope)}${randomId(16)}`, owner: uploadOwner(user), createdAt,
+      expiresAt: unfinishedUploadExpiry(createdAt, policy.uploadTtlHours, now), ready: false,
+      ...(file ? { role: file.role, ...(file.derivedFrom ? { derivedFrom: file.derivedFrom } : {}), ...(file.report ? { report: { by: 'owner' as const, report: file.report } } : {}) } : {}) };
     const outcome = await d.store.reserveUpload(upload, {
       ownerBudgetBytes: policy.ownerBudgetBytes, instanceBudgetBytes: policy.instanceBudgetBytes, maxPending: UPLOAD_PENDING_LIMIT,
     });
@@ -149,15 +164,16 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
     const upload = await owned(res, user, ctx.params.id!);
     if (!upload) return;
     if (!liveUpload(upload)) return sendError(res, 410, 'UPLOAD_EXPIRED', 'start a new upload');
-    if (upload.ready) return sendJson(res, 200, { upload: uploadWire(upload) }, { 'cache-control': 'no-store' });
+    if (upload.ready) return sendJson(res, 200, finishedWire(upload), { 'cache-control': 'no-store' });
     const check = await verifyTransfer(uploadParts(d.blobs, upload), running.digest(upload.id, upload.parts.length));
     if (!check.ok) return sendError(res, check.code === 'UPLOAD_INCOMPLETE' ? 409 : 422, check.code, check.message);
-    const expiresAt = finishedUploadExpiry(uploadPolicy(d.config).readyTtlHours);
+    const expiresAt = finishedUploadExpiry(finishedUploadTtlHours(uploadPolicy(d.config), upload.scope));
     if (!await d.store.completeUpload(upload.id, expiresAt)) return sendError(res, 410, 'UPLOAD_EXPIRED', 'start a new upload');
     running.forget(upload.id);
     const finished = (await d.store.getUpload(upload.id)) ?? { ...upload, ready: true, expiresAt };
-    await d.audit(`user:${user.id}`, 'upload.finish', `upload:${upload.id}`, { scope: upload.scope, size: upload.size, checksum: upload.checksum });
-    sendJson(res, 200, { upload: uploadWire(finished) }, { 'cache-control': 'no-store' });
+    if (upload.scope === 'file') await d.audit(`user:${user.id}`, 'file.create', `file:${upload.id}`, { size: upload.size, checksum: upload.checksum, role: upload.role ?? 'original' });
+    else await d.audit(`user:${user.id}`, 'upload.finish', `upload:${upload.id}`, { scope: upload.scope, size: upload.size, checksum: upload.checksum });
+    sendJson(res, 200, finishedWire(finished), { 'cache-control': 'no-store' });
   });
 
   router.add('DELETE', '/api/v1/uploads/:id', async (req, res, ctx) => {

@@ -28,9 +28,13 @@ export function createMemoryUploadStore(): UploadStore {
       const u = uploads.get(id);
       return u ? structuredClone(u) : null;
     },
-    async listUploads(owner, limit) {
-      const now = Date.now();
-      return [...uploads.values()].filter((u) => u.owner === owner && liveUpload(u, now)).sort(newestFirst).slice(0, limit).map((u) => structuredClone(u));
+    async listUploads(owner, limit, filter = {}) {
+      const now = Date.now(), { scope, ready, before } = filter;
+      // After `before` in newest-first order: older, or as old with a later id.
+      const after = (u: UploadRecord): boolean => !before || u.createdAt < before.createdAt || (u.createdAt === before.createdAt && u.id > before.id);
+      return [...uploads.values()]
+        .filter((u) => u.owner === owner && liveUpload(u, now) && (scope === undefined || u.scope === scope) && (ready === undefined || u.ready === ready) && after(u))
+        .sort(newestFirst).slice(0, limit).map((u) => structuredClone(u));
     },
     async listUploadsToRemove(filter, limit) {
       const cutoff = filter.expiredBy === undefined ? undefined : Date.parse(filter.expiredBy);

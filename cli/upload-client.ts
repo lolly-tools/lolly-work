@@ -15,7 +15,7 @@ import { join } from 'node:path';
 export interface UploadSource { size: number; read(offset: number, length: number): Promise<Uint8Array> }
 
 /** A project file (a signed-in person), or a scoped upload (a person or a service token). */
-export type UploadTarget = { kind: 'project'; projectId: string } | { kind: 'upload'; scope: 'catalog-submission' | 'automation-input' };
+export type UploadTarget = { kind: 'project'; projectId: string } | { kind: 'upload'; scope: 'catalog-submission' | 'automation-input' | 'file' };
 
 /** What the client keeps between runs, per base address, target and file digest. */
 export interface SavedUpload { id: string; checksum: string; size: number }
