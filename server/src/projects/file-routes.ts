@@ -178,8 +178,9 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
     if (!activeProjectFile(file)) return sendError(res, 410, 'UPLOAD_EXPIRED', 'start a new upload');
     if (file.ready) return sendJson(res, 200, { file }, { 'cache-control': 'no-store' });
     // Each part's stored size and sha256 come from its stat, so nothing is
-    // read back where the driver reports a sha256 (memory, pg). S3 reports an
-    // ETag instead, so those parts are read and hashed.
+    // read back where the driver reports a sha256 (memory, pg, and S3 objects
+    // that record one). An older S3 object reports an ETag instead, so those
+    // parts are read and hashed.
     let readBack = false;
     for (let n = 0; n < file.parts.length; n++) {
       const part = file.parts[n]!;

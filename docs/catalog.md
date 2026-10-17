@@ -825,8 +825,8 @@ Instance-owned catalog bytes (materialized assets, and later collab staging) liv
 
 | Driver | When |
 |---|---|
-| `pg` (default) | zero moving parts - PG works everywhere the plane runs, including a single node |
-| `s3` | any S3-compatible store (AWS, MinIO, Ceph RGW) for media-sized estates and the air-gap story - a config flip, not an architecture change |
+| `pg` (default) | zero moving parts - PG works everywhere the plane runs, including a single node. Each blob is held whole in memory and is at most 500 MiB |
+| `s3` | any S3-compatible store (AWS, MinIO, Ceph RGW) for media-sized estates and the air-gap story - a config flip, not an architecture change. Blobs go up in 8 MiB parts |
 
 ```jsonc
 // instance.json
@@ -834,8 +834,10 @@ Instance-owned catalog bytes (materialized assets, and later collab staging) liv
 ```
 
 The S3 credential is env-only: `LW_BLOBS_S3_CREDENTIAL="<accessKeyId>:<secretAccessKey>"`.
-S3 access is hand-rolled SigV4 (signed GET/PUT/DELETE) - no AWS SDK. `inst/*` bytes stream
-from `/catalog/inst/<id>/<format>` with an ETag, gated by lifecycle like any asset.
+S3 access is hand-rolled SigV4 (signed GET/PUT/DELETE and multipart uploads) - no AWS SDK.
+`inst/*` bytes stream from `/catalog/inst/<id>/<format>` with an ETag, gated by lifecycle like
+any asset. [Blob limits and integrity](configuration.md#blob-limits-and-integrity) covers each
+driver's size limits, memory use, checksums and the S3 permissions and lifecycle rule.
 
 ### Third-party terms
 
