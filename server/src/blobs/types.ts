@@ -48,6 +48,67 @@ export interface BlobStore {
   get(blobId: string): Promise<{ body: ReadableStream<Uint8Array>; stat: BlobStat } | null>;
   /** Idempotent - deleting an unknown blob is a no-op. */
   delete(blobId: string): Promise<void>;
+  /** The driver holding the bytes, used as the metric label. The three real
+   *  drivers set it; test doubles may leave the accounting below out. */
+  readonly driver?: BlobDriver;
+  /** Usage figures for `/metrics` and the offload trigger (plan 80 section 10). */
+  usage?(): Promise<BlobUsage>;
+  /** Claim the one administrator email for `kind` in `month`. True for the
+   *  first caller only; on pg the claim is a row, so it holds across replicas
+   *  and restarts. */
+  claimUsageNotice?(month: string, kind: UsageNoticeKind): Promise<boolean>;
+  /** Write any buffered read tally now (shutdown). */
+  flushUsage?(): Promise<void>;
+}
+
+export type BlobDriver = 'pg' | 's3' | 'memory';
+export type UsageNoticeKind = 'stored' | 'read';
+
+export interface BlobUsage {
+  driver: BlobDriver;
+  /** Bytes held by this driver, or null where totalling them would mean
+   *  listing the whole bucket (s3). */
+  storedBytes: number | null;
+  /** Bytes read out of this driver since the process started: the
+   *  `lw_blob_read_bytes_total` counter. */
+  readBytesTotal: number;
+  /** The UTC calendar month the read figure below covers, as YYYY-MM. */
+  month: string;
+  /** Bytes read in `month`. The pg driver keeps this in the database, so it
+   *  survives restarts and sums replicas; the others count this process only. */
+  monthReadBytes: number;
+}
+
+/** The UTC calendar month of `at`, as YYYY-MM. */
+export const usageMonth = (at: Date = new Date()): string => at.toISOString().slice(0, 7);
+
+/** Read accounting kept in memory: the process total and a tally per month,
+ *  plus the notice claims. The memory and s3 drivers use it as is; the pg
+ *  driver keeps its month tally and claims in the database instead. */
+export function createReadTally(): {
+  add(bytes: number): void;
+  total(): number;
+  month(month: string): number;
+  claim(month: string, kind: UsageNoticeKind): boolean;
+} {
+  let total = 0;
+  const months = new Map<string, number>();
+  const claimed = new Set<string>();
+  return {
+    add(bytes) {
+      total += bytes;
+      const month = usageMonth();
+      months.set(month, (months.get(month) ?? 0) + bytes);
+    },
+    total: () => total,
+    month: (month) => months.get(month) ?? 0,
+    claim(month, kind) {
+      const key = `${month}:${kind}`;
+      if (claimed.has(key)) return false;
+      claimed.add(key);
+      return true;
+    },
+  };
 }
 
 export type BlobBody = AsyncIterable<Uint8Array> | ReadableStream<Uint8Array> | Uint8Array;

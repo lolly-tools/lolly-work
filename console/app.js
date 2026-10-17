@@ -6354,6 +6354,32 @@ async function signInGate() {
   ]);
 }
 
+// Alerts the server raises for administrators (GET /api/v1/alerts): today the
+// blob offload trigger. Shown as a banner above every view for anyone who can
+// read the overview; asked for at most once a minute, and never by a person
+// without that permission. The same alerts reach administrators by email.
+let alertCache = { at: 0, alerts: [] };
+async function deploymentAlerts() {
+  if (!session?.console || !canAction('telemetry.view')) return [];
+  if (Date.now() - alertCache.at < 60_000) return alertCache.alerts;
+  const answer = await api('/api/v1/alerts').catch(() => null);
+  alertCache = { at: Date.now(), alerts: Array.isArray(answer?.alerts) ? answer.alerts : [] };
+  return alertCache.alerts;
+}
+
+// Views replace their own children as they load and refresh, so the banner is
+// put back whenever a view's re-render removes it.
+function showAlertBanner(main, alerts) {
+  if (!alerts.length || !main.isConnected) return;
+  const banner = el('section', { class: 'card alert-banner', 'aria-label': 'Deployment alerts' },
+    el('ul', { class: 'alert-list' }, ...alerts.map((alert) => el('li', { class: 'alert-item' },
+      el('strong', {}, alert.title), ' ', alert.detail, ' ',
+      alert.href ? el('a', { href: alert.href }, 'What to do next') : null))));
+  main.prepend(banner);
+  new MutationObserver(() => { if (!banner.isConnected && main.isConnected) main.prepend(banner); })
+    .observe(main, { childList: true });
+}
+
 let disposeAgentView = null;
 async function route() {
   if (activeAccountInspector) {
@@ -6419,6 +6445,7 @@ async function route() {
   // replaced by the view's own empty/error state / the catch below).
   const loading = loadingCard(view.title);
   main.append(loading);
+  const alerts = publicMode ? Promise.resolve([]) : deploymentAlerts();
   try {
     await view.render(main, params);
   } catch (err) {
@@ -6437,6 +6464,7 @@ async function route() {
     }
   }
   loading.remove();
+  showAlertBanner(main, await alerts);
   // Focus the view heading and announce it, so keyboard/SR users re-orient after
   // a navigation (or a mutation-triggered re-render) instead of losing focus.
   const focusHeading = main.querySelector('[data-doc-anchor]') ?? main.querySelector('h1');

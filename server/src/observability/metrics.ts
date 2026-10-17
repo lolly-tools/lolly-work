@@ -6,11 +6,14 @@
  * with zero config and the endpoint never leaks publicly; set LW_METRICS_TOKEN to
  * require a bearer token from anywhere.
  */
-import type { IncomingMessage } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import type { BlobUsage } from '../blobs/types.ts';
 
 export type Labels = Record<string, string>;
-export interface GaugeLine { name: string; help: string; type: 'gauge'; value: number; labels?: Labels }
+/** A line collected at scrape time. Usually a gauge; a `counter` here is a
+ *  running total some other component keeps, such as a blob driver's reads. */
+export interface GaugeLine { name: string; help: string; type: 'gauge' | 'counter'; value: number; labels?: Labels }
 export interface Metrics {
   httpRequest(routeClass: string, statusClass: string): void;
   orgConfigPoll(): void;
@@ -18,6 +21,9 @@ export interface Metrics {
   rateLimited(surface: string): void;
   /** Notification egress outcomes (plans/35 wave 1): channel smtp|webhook. */
   notify(channel: string, outcome: 'sent' | 'failed'): void;
+  /** Response body bytes the origin wrote, by the route's delivery class
+   *  (plan 80 section 10): what a CDN in front could take off this server. */
+  originBytes(deliveryClass: string, bytes: number): void;
   renderText(gauges: GaugeLine[]): string;
 }
 
@@ -51,6 +57,7 @@ export function createMetrics(): Metrics {
     orgConfigError: () => inc('lw_org_config_poll_errors_total', 'org-config polls that failed to assemble.', {}),
     rateLimited: (surface) => inc('lw_rate_limited_total', 'Requests rejected by the per-IP rate limiter.', { surface }),
     notify: (channel, outcome) => inc('lw_notify_total', 'Notification deliveries by channel and outcome.', { channel, outcome }),
+    originBytes: (cls, bytes) => inc('lw_origin_bytes_total', 'Response body bytes written by the origin, by delivery class.', { class: cls }, bytes),
     renderText(gauges) {
       const out: string[] = [];
       for (const [name, s] of counters) {
@@ -64,12 +71,47 @@ export function createMetrics(): Metrics {
         byName.set(g.name, a);
       }
       for (const [name, lines] of byName) {
-        out.push(`# HELP ${name} ${lines[0]!.help}`, `# TYPE ${name} gauge`);
+        out.push(`# HELP ${name} ${lines[0]!.help}`, `# TYPE ${name} ${lines[0]!.type}`);
         for (const g of lines) out.push(`${name}${fmtLabels(g.labels)} ${fmtNum(g.value)}`);
       }
       return out.join('\n') + '\n';
     },
   };
+}
+
+/** The blob lines for one scrape (plan 80 section 10). Stored bytes are left
+ *  out where the driver cannot total them (s3). */
+export function blobUsageLines(usage: BlobUsage): GaugeLine[] {
+  const labels = { driver: usage.driver };
+  const lines: GaugeLine[] = [
+    { name: 'lw_blob_read_bytes_total', help: 'Bytes read out of the blob store since the process started, by driver.', type: 'counter', labels, value: usage.readBytesTotal },
+  ];
+  if (usage.storedBytes !== null) {
+    lines.push({ name: 'lw_blob_stored_bytes', help: 'Bytes held in the blob store, by driver.', type: 'gauge', labels, value: usage.storedBytes });
+  }
+  return lines;
+}
+
+/** Count the body bytes a response writes, after any compression and without
+ *  headers. Call before the handler runs; read the result once the response
+ *  has finished. HEAD, 204 and 304 responses send no body, so they count 0. */
+export function countResponseBytes(req: IncomingMessage, res: ServerResponse): () => number {
+  let bytes = 0;
+  const add = (chunk: unknown, encoding: unknown): void => {
+    if (typeof chunk === 'string') bytes += Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding as BufferEncoding : 'utf8');
+    else if (chunk instanceof Uint8Array) bytes += chunk.byteLength;
+  };
+  const write = res.write;
+  const end = res.end;
+  res.write = function (this: ServerResponse, chunk: unknown, ...rest: unknown[]) {
+    add(chunk, rest[0]);
+    return Reflect.apply(write, this, [chunk, ...rest]) as boolean;
+  } as ServerResponse['write'];
+  res.end = function (this: ServerResponse, chunk?: unknown, ...rest: unknown[]) {
+    add(chunk, rest[0]);
+    return Reflect.apply(end, this, [chunk, ...rest]) as ServerResponse;
+  } as ServerResponse['end'];
+  return () => (req.method === 'HEAD' || res.statusCode === 204 || res.statusCode === 304 ? 0 : bytes);
 }
 
 function timingSafeEq(a: string, b: string): boolean {
