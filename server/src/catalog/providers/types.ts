@@ -55,6 +55,9 @@ export interface ProviderCapabilities {
   expiringUrls: boolean;
   /** Explicit original-file support; absent means the older driver makes no declaration. */
   originals?: boolean;
+  /** resolveBlob forwards a requested byte range and checks the partial reply.
+   *  Absent: the driver always returns the whole file. */
+  ranges?: boolean;
   /** Provider accepts lolly-generated exports pushed OUT to it (plans/27 §10 - 
    *  Optimizely CMP two-way). Off for every read-only source; the publish route
    *  refuses a provider that does not declare it. */
@@ -217,9 +220,22 @@ export interface ProviderAssetRef {
   originalsAvailable?: boolean;
 }
 
+/** One byte range a caller asked for, before the file size is known. */
+export type ByteRangeRequest = { start: number; end?: number } | { suffix: number };
+
+/** Bytes `start` to `end` (inclusive) of a file whose complete length is `size`. */
+export interface ServedByteRange { start: number; end: number; size: number }
+
+export interface ResolveBlobOptions {
+  /** Ask for these bytes only. A driver without `capabilities.ranges` ignores it. */
+  range?: ByteRangeRequest;
+}
+
 export type ResolvedBlob =
   | { kind: 'redirect'; url: string; expiresAt?: string }
-  | { kind: 'stream'; body: ReadableStream<Uint8Array>; contentType: string; size?: number };
+  /** `size` counts the bytes in `body`. `range` is set only when `body` is part
+   *  of the file, already checked against the requested range. */
+  | { kind: 'stream'; body: ReadableStream<Uint8Array>; contentType: string; size?: number; range?: ServedByteRange };
 
 /**
  * One page of a provider's listing. `skipped` and `notes` are the visibility
@@ -262,7 +278,7 @@ export interface CatalogProvider {
    *  falls back to a listAssets scan); returns null when the id is unknown. */
   getAsset?(remoteId: string): Promise<ProviderAssetRef | null>;
   /** `formatRef` is a remoteRef from this driver's own ProviderFormatRef (or 'thumb'). */
-  resolveBlob(remoteId: string, formatRef: string): Promise<ResolvedBlob>;
+  resolveBlob(remoteId: string, formatRef: string, options?: ResolveBlobOptions): Promise<ResolvedBlob>;
   /** A lightweight preview of a particular file, when the DAM provides one. */
   resolveFilePreview?(remoteId: string, formatRef: string): Promise<ResolvedBlob>;
   /** Push a lolly-generated export INTO the destination (plans/27 §10). Only
