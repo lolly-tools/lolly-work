@@ -372,6 +372,16 @@ test('a durable render identity binds the resolved request to its tool policy an
   const corrupt = await h.request(`/api/v1/renders/${first.id}/evidence`);
   assert.equal(corrupt.status, 409);
   assert.equal((await corrupt.json() as { error: { code: string } }).error.code, 'EVIDENCE_INTEGRITY');
+
+  // A version this server cannot recompute is reported as such, not as tampering.
+  h.store.getRender = async (id, owner) => {
+    const record = await get(id, owner);
+    if (record?.id === governed.id && record.output?.identity) Object.assign(record.output.identity, { apiVersion: 'work/render-identity-v2' });
+    return record;
+  };
+  const newer = await h.request(`/api/v1/renders/${governed.id}/evidence`);
+  assert.equal(newer.status, 409);
+  assert.equal((await newer.json() as { error: { code: string } }).error.code, 'IDENTITY_VERSION_UNSUPPORTED');
 });
 
 test('CLI submits, inspects, downloads, cancels and retries over the real API', async (t) => {

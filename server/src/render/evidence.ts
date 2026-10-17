@@ -3,6 +3,7 @@ import type { ProductionReport } from './production.ts';
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import type { AssetRef } from './contract.ts';
 import type { OutputInspection } from './output-inspection.ts';
+import { resolveInputAccess, type ResolvedAccess, type ToolOverlay } from '../policy/overlay.ts';
 
 export interface ObservedAsset {
   source: 'catalog' | 'provider';
@@ -49,12 +50,29 @@ export interface RenderEvidence {
 export interface ResolvedRenderFacts {
   /** The design-system revision the attempt rendered against, or null without one. */
   designRevision: string | null;
-  /** The policy this render obeyed: the tool's projected overlay, the caller's
-   *  groups and any managed design-system rules. Other tools' overlays are not part of it. */
+  /** The policy this render obeyed, from {@link effectivePolicySha256}. */
   effectivePolicySha256: string;
 }
 
 export const evidenceHash = (value: unknown): string => sha256Hex(canonicalJson(value));
+
+/** The policy one caller rendered under: this tool's enforcement settings, the
+ *  access each named input resolves to for the caller's groups, and any managed
+ *  design-system rules. Editable inputs, rules for other groups, attribution
+ *  text and the overlay's version counter are left out, so an overlay edit that
+ *  does not change what this caller may do keeps the digest. Pass the overlay
+ *  after design-system rules are projected into it. */
+export function effectivePolicySha256(overlay: ToolOverlay | undefined, groups: string[], inputIds: Iterable<string>, rules: unknown): string {
+  const ids = new Set(inputIds);
+  for (const id of Object.keys(overlay?.inputAccess ?? {})) if (id !== '*') ids.add(id);
+  const access: Record<string, Pick<ResolvedAccess, 'level' | 'value' | 'allow'>> = {};
+  for (const id of [...ids].sort()) {
+    const resolved = resolveInputAccess(overlay, id, groups);
+    if (resolved.level === 'editable') continue;
+    access[id] = { level: resolved.level, ...('value' in resolved ? { value: resolved.value ?? null } : {}), ...(resolved.allow ? { allow: resolved.allow } : {}) };
+  }
+  return evidenceHash({ enforce: overlay?.enforce ?? null, access, rules: rules ?? null });
+}
 
 /** Observe actual host reads, never infer dependencies by inspecting a template. */
 export function createAssetObserver() {
@@ -124,7 +142,10 @@ export interface RenderIdentity {
 }
 
 /** Bind a request to the facts its receipt resolved. Null when the receipt
- *  predates resolved facts; throws when it describes another tool or format. */
+ *  predates resolved facts; throws when it describes another tool or format.
+ *  The v1 inputs are frozen: the evidence download recomputes stored v1
+ *  identities, so hashing a field more or less, or changing which limitations
+ *  are kept, needs a new apiVersion. tests/render-identity.test.ts pins one id. */
 export function renderIdentity(request: IdentityRequest, evidence: RenderEvidence): RenderIdentity | null {
   if (evidence.tool.id !== request.toolId || evidence.context.format !== request.format) {
     throw new Error('execution evidence describes a different tool or format');

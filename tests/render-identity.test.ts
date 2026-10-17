@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { renderTool, type RenderDeps, type RenderRequest } from '../server/src/render/pipeline.ts';
-import { evidenceHash, finishRenderEvidence, renderIdentity, type RenderEvidence, type RenderIdentity } from '../server/src/render/evidence.ts';
+import { effectivePolicySha256, evidenceHash, finishRenderEvidence, renderIdentity, type RenderEvidence, type RenderIdentity } from '../server/src/render/evidence.ts';
 import { queryFromInputs } from '../server/src/automation/verbs.ts';
 import { sha256Hex } from '../server/src/lib/crypto.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
@@ -13,6 +13,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { newRender, parseRenderSpec, renderWire } from '../server/src/renders/request.ts';
 import { RenderRunner } from '../server/src/renders/runner.ts';
 import type { RenderSpec } from '../server/src/renders/types.ts';
+import type { ToolOverlay } from '../server/src/policy/overlay.ts';
 
 const bytes = Buffer.from('<svg/>');
 type Body = Omit<RenderEvidence, 'id' | 'apiVersion' | 'coverage' | 'outputSha256'>;
@@ -25,7 +26,7 @@ const baseBody = (): Body => ({
     policyVersion: 'all-overlays-1', catalogVersion: '1/inst-1', format: 'svg', widthPx: null, heightPx: null,
     watermark: false, renderer: 'work-jsdom', rasterizer: 'none', signerCertificateHash: null,
   },
-  resolved: { designRevision: '3:source-7', effectivePolicySha256: evidenceHash({ overlay: null, groups: ['design'], rules: null }) },
+  resolved: { designRevision: '3:source-7', effectivePolicySha256: '941ea7a5a0a23c7677cf388c0e2f5bbc5c9348ad4cdf7e66841be579d832c14a' },
   assets: [{ source: 'catalog', id: 'inst/logo', format: 'svg', version: '2', sha256: 'b'.repeat(64), size: 42 }],
   limitations: ['dependencies-not-locked', 'engine-dependency-graph-unavailable'],
 });
@@ -71,6 +72,31 @@ test('render identity ignores object key order and scheduling but binds every re
     assert.ok(!seen.has(changed), `${name} changes the identity`);
     seen.add(changed);
   }
+});
+
+test('the v1 identity derivation is frozen', () => {
+  // The evidence download recomputes stored v1 identities. If this value moves,
+  // keep the v1 derivation and add a new apiVersion instead of updating it.
+  assert.equal(renderIdentity(spec, receipt())!.id, '72225596c4f7329a6466f9b5aeae4bf9fad19807bceb163ebde6990a7850514f');
+  assert.equal(effectivePolicySha256(undefined, ['design'], ['title'], null), '941ea7a5a0a23c7677cf388c0e2f5bbc5c9348ad4cdf7e66841be579d832c14a');
+});
+
+test('the effective policy is what the caller\'s groups resolve, not the whole overlay', () => {
+  const overlay = (rules: NonNullable<ToolOverlay['inputAccess']>, version = 1, name?: string): ToolOverlay => ({ toolId: 'card', version, ...(name ? { name } : {}), inputAccess: rules });
+  const design = (o: ToolOverlay | undefined) => effectivePolicySha256(o, ['design'], ['title', 'size'], null);
+  const base = overlay({ title: [{ groups: ['design'], level: 'choice', allow: ['Hello', 'Bye'] }] });
+  const legalOnly = overlay({
+    title: [{ groups: ['design'], level: 'choice', allow: ['Hello', 'Bye'] }],
+    size: [{ groups: ['legal'], level: 'locked', value: 'A4', reason: 'Legal sets the size' }],
+    footer: [{ groups: ['legal'], level: 'hidden' }],
+  }, 7, 'Legal guardrails');
+  assert.equal(design(legalOnly), design(base), 'rules for another group, attribution and the version counter are left out');
+  assert.equal(design(overlay({})), design(undefined), 'an overlay that governs nothing for this caller');
+  assert.notEqual(design(overlay({ title: [{ groups: ['design'], level: 'choice', allow: ['Hello'] }] })), design(base));
+  assert.notEqual(design(overlay({ ...base.inputAccess, size: [{ groups: ['*'], level: 'locked', value: 'A4' }] })), design(base));
+  assert.notEqual(design(overlay({ '*': [{ groups: ['design'], level: 'hidden' }] })), design(undefined), 'the input default applies to named inputs');
+  assert.notEqual(design({ ...base, enforce: { formats: ['svg'] } }), design(base));
+  assert.notEqual(effectivePolicySha256(base, ['design'], ['title'], { revision: '1', results: [] }), effectivePolicySha256(base, ['design'], ['title'], null));
 });
 
 test('render identity leaves out output bytes, runtime measurements and other tools\' policy', () => {
@@ -139,7 +165,11 @@ test('a real render binds its loaded tool source, read asset bytes, design revis
 
   const unrelated = await identify({ overlays: new Map([['other-tool', { toolId: 'other-tool', version: 4, enforce: { watermark: 'always' as const } }]]) });
   assert.equal(unrelated.id, first.id, 'another tool\'s policy is not this render\'s effective policy');
-  const governed = await identify({ overlays: new Map([['identity-card', { toolId: 'identity-card', version: 2, defaults: { title: 'Unused' } }]]) });
+  const legal = await identify({ overlays: new Map([['identity-card', { toolId: 'identity-card', version: 2, defaults: { title: 'Unused' },
+    inputAccess: { title: [{ groups: ['legal'], level: 'locked' as const, value: 'Legal' }] } }]]) });
+  assert.equal(legal.id, first.id, 'a rule for another group and an unused default do not change this caller\'s policy');
+  const governed = await identify({ overlays: new Map([['identity-card', { toolId: 'identity-card', version: 2,
+    inputAccess: { title: [{ groups: ['design'], level: 'choice' as const, allow: ['Launch', 'Pause'] }] } }]]) });
   assert.notEqual(governed.policy.effectiveSha256, first.policy.effectiveSha256);
   assert.notEqual(governed.id, first.id);
   const regrouped = await identify({ principal: { groups: ['legal'] } });

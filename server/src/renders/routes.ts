@@ -113,8 +113,13 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
       throw new RenderResourceError('EVIDENCE_INTEGRITY', 409, 'retained evidence no longer matches its receipt');
     }
     // The identity is derived, so the retained request and receipt must still produce it.
+    // Only the frozen v1 derivation is recomputed; another version is not tampering.
     const identity = r.output!.identity;
     if (identity) {
+      const version: string = identity.apiVersion;
+      if (version !== 'work/render-identity-v1') {
+        throw new RenderResourceError('IDENTITY_VERSION_UNSUPPORTED', 409, `this server cannot check render identity version ${JSON.stringify(version)}`);
+      }
       let expected: ReturnType<typeof renderIdentity> = null;
       try { expected = renderIdentity(r.request, evidence); } catch { /* reported below */ }
       if (!expected || canonicalJson(expected) !== canonicalJson(identity)) {

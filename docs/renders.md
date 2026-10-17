@@ -53,7 +53,7 @@ attempt from publishing its result.
 | `GET /api/v1/renders?limit=50&offset=0` | Caller-owned, currently permitted resources; `nextOffset` for pagination; limit 1–100 |
 | `GET /api/v1/renders/:id` | Request, state, attempts and output receipt |
 | `GET /api/v1/renders/:id/output/default` | Retained bytes; `409` before success or on integrity failure, `410` if missing |
-| `GET /api/v1/renders/:id/evidence` | Retained execution receipt; `409` before success or on receipt integrity failure, `404 EVIDENCE_UNAVAILABLE` for older outputs without evidence |
+| `GET /api/v1/renders/:id/evidence` | Retained execution receipt and render identity; `409` before success, on receipt or identity integrity failure, or for an identity version this server cannot check; `404 EVIDENCE_UNAVAILABLE` for older outputs without evidence |
 | `DELETE /api/v1/renders/:id` | Cancel queued/running work; completed history is retained and returns `409` |
 | `POST /api/v1/renders/:id/retry` | New resource from a failed/cancelled predecessor; accepts `Idempotency-Key` |
 
@@ -159,8 +159,9 @@ The receipt records:
   signing-certificate digest. Profile values and provider credentials are not
   copied into the receipt.
 - The design-system revision the attempt rendered against, and a digest of the
-  effective policy: this tool's overlay as projected for the caller's groups,
-  plus any managed design-system rules.
+  effective policy: this tool's enforcement settings, the access each input
+  resolves to for the caller's groups after design-system rules are applied,
+  and any managed design-system rules.
 - For the local runtime, hashes of the engine's initialized input values and
   hydrated markup, plus initialization hook-error and dropped-asset counts.
 - Catalog/provider asset reads observed through Work's bridges: logical id,
@@ -215,9 +216,14 @@ full identity next to the receipt. The identity hashes:
 - The resolved sources: the catalog version, the design-system revision and
   each catalog or provider asset read during the attempt, by id, format,
   declared version and actual byte digest.
-- The effective policy: this tool's overlay as projected for the caller's
-  groups, any managed design-system rules, the group set and the watermark
-  setting. An overlay on another tool does not change this render's identity.
+- The effective policy: this tool's enforcement settings, the access each
+  input resolves to for the caller's groups after design-system rules are
+  applied, any managed design-system rules, the group set and the watermark
+  setting. An edit to this tool's overlay gives a new identity when it changes
+  one of those settings or what this caller may do with an input. Rules for
+  other groups, rule names and reasons, and the overlay's version counter are
+  left out, so an edit that only changes them, or an overlay on another tool,
+  keeps the identity.
 - The resolved input values, profile digest, pixel dimensions, renderer,
   rasterizer and signing certificate.
 
@@ -239,7 +245,10 @@ is not a source review either: it names the bytes a render read, not whether
 anyone approved them.
 
 The evidence download recomputes the identity from the stored request and
-receipt and reports `409 EVIDENCE_INTEGRITY` when they disagree. A receipt that
+receipt and reports `409 EVIDENCE_INTEGRITY` when they disagree. What the
+`work/render-identity-v1` identity hashes is fixed, so a later release that
+hashes something else uses a new `apiVersion`. A server that meets an identity
+version it cannot check reports `409 IDENTITY_VERSION_UNSUPPORTED` instead. A receipt that
 names a different tool or format fails the attempt with
 `RENDER_EVIDENCE_MISMATCH` before any output is stored. Outputs made before this
 release, and outputs without a receipt, have no identity.
