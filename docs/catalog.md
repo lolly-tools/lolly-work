@@ -472,6 +472,11 @@ The console's Catalog view lists every asset the deploy serves with a thumbnail,
 revocation state; a revoked or hidden-on-expiry asset stays listed there - without its
 catalog metadata - so it can still be managed.
 
+The console sets these dates as whole days in the admin's own time zone. Each row has an end
+date, and an asset's Inspect panel has a start date and an end date. A start date opens at
+the first moment of that day and an end date closes at the last, so an asset set to end on
+31 December is still live all of 31 December where the admin is. The API takes any instant.
+
 ### Holds
 
 A **hold** is the one governance verb that only ever *preserves* availability - a

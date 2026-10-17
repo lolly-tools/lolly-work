@@ -580,6 +580,10 @@ button.chip { min-height: 24px; display: inline-flex; align-items: center; curso
 td .lc-actions { justify-content: flex-end; }
 .lc-actions input[type="date"] { width: auto; min-width: 112px; }
 .lc-actions button { white-space: nowrap; padding: 6px 9px; }
+/* The inspect panel's start and end dates wrap on a narrow screen rather than push
+   Set dates and Revoke out of view. */
+.lc-actions--dates { flex-wrap: wrap; row-gap: 8px; }
+.lc-actions--dates label { display: inline-flex; align-items: center; gap: 6px; }
 
 /* ── catalog thumbnails + inspect ──────────────────────────────────────────
    A square asset preview: the served image contained inside a bordered tile, or
