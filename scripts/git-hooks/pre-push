@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+# Local source checks before publication. A source push does not deploy anything.
+# Install once per clone: git config core.hooksPath scripts/git-hooks
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+updates=$(cat) || exit 1
+node_bin=${LOLLY_NODE:-node}
+minimum=$(sed 's/^v//; s/\..*//' .nvmrc) || exit 1
+actual=$("$node_bin" -p 'process.versions.node.split(".")[0]') || exit 1
+for version in "$minimum" "$actual"; do
+  case "$version" in
+    ''|*[!0-9]*) printf '✗ pre-push could not read the Node version (.nvmrc: %s, found: %s).\n' "$minimum" "$actual"; exit 1 ;;
+  esac
+done
+if [ "$actual" -lt "$minimum" ]; then
+  printf '✗ pre-push needs Node %s or later from .nvmrc (found %s). Run nvm use, or set LOLLY_NODE to that Node executable.\n' "$minimum" "$actual"
+  exit 1
+fi
+printf '→ pre-push: private plans…\n'
+printf '%s\n' "$updates" | "$node_bin" scripts/check-pushed-plans.ts --pre-push || exit 1
