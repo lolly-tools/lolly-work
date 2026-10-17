@@ -12,7 +12,7 @@ Qualified release cohort: Work 1.1.1, from [`release.json`](release.json).
 
 | Channel | Route | Carries | Latest attempt | State | Still open |
 |---|---|---|---|---|---|
-| Container images (GHCR) | Image registry | [1.1.1](https://github.com/lolly-tools/lolly-work/releases/tag/v1.1.1) | published on 2026-10-15: Signed amd64 and arm64 images; both digests in release.json resolve without signing in. | current | Native arm64 runtime qualification. |
+| Container images (GHCR) | Image registry | [1.1.1](https://github.com/lolly-tools/lolly-work/releases/tag/v1.1.1) | published on 2026-10-15: Signed amd64 and arm64 images; both digests in release.json resolve without signing in. | current | Runtime qualification of the render worker's arm64 image; the server's arm64 image passes only the CI container qualification. |
 | Helm chart repository | Project repository | Nothing yet | None | prepared | First publication of chart 0.3.2, anonymous download and signature checks, then a live Rancher installation and upgrade. |
 | Artifact Hub | Public catalogue | Nothing yet | None | prepared | A project organisation and repository, then Verified publisher, then Official status. |
 | Neutral Compose package (VM or private server) | Direct recipe | [1.1.1](https://github.com/lolly-tools/lolly-work/tree/265ea5d31d4da010d535fd27092f6deb150bf1d9/deploy/marketplaces) | published on 2026-10-16: CI boots the pinned package, signs in, exports, restarts and restores its database. | current | An installed cross-version upgrade and recovery on a second host. |
