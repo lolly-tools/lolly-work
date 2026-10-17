@@ -80,8 +80,10 @@ interface Page {
   waitForFunction(expression: string, arg: undefined, options: { timeout: number; polling: number }): Promise<unknown>;
   waitForTimeout(ms: number): Promise<void>;
   screenshot(options: { type: 'png'; animations: 'disabled'; caret: 'hide' }): Promise<Uint8Array>;
+  evaluate(expression: string): Promise<unknown>;
   on(event: 'pageerror', handler: (error: Error) => void): void;
   on(event: 'response', handler: (response: Response) => void): void;
+  on(event: 'console', handler: (message: { type(): string; text(): string }) => void): void;
   close(): Promise<void>;
 }
 interface Context { addInitScript(script: { content: string }): Promise<void>; newPage(): Promise<Page>; close(): Promise<void> }
@@ -101,6 +103,9 @@ async function loadChromium(): Promise<Chromium> {
 // seeded before any page script runs. The console reads its theme from lw-theme.
 const INIT_SCRIPT = "try{for(const k of ['lolly-welcome-dismissed','lolly-tips-dismissed','lolly-privacy-ack','lolly-capture-neutral'])localStorage.setItem(k,'1');" +
   "localStorage.setItem('theme','light');localStorage.setItem('lw-theme','light')}catch(_){}";
+
+// What a view that never became ready was showing, for the CI log.
+const DESCRIBE = "JSON.stringify({href:location.href,view:document.querySelector('#view')?.className??null,text:document.body.innerText.replace(/\\s+/g,' ').slice(0,500)})";
 
 // Settled when the element count stops changing across three samples and the fonts are in.
 const STABLE_DOM = "(()=>{const n=document.querySelectorAll('*').length,w=globalThis;w.__lwStable=n===w.__lwCount?(w.__lwStable||0)+1:0;w.__lwCount=n;return w.__lwStable>=3&&document.fonts.status==='loaded'})()";
@@ -155,17 +160,30 @@ export async function captureListingScreenshots(options: CaptureOptions): Promis
     };
     const open = async (shot: ListingShot) => {
       const page = await context.newPage();
+      let messages = 0;
       page.on('pageerror', error => console.log(`${shot.file}: page error: ${error.message}`));
+      page.on('console', message => {
+        if (message.type() === 'error' && messages++ < 20) console.log(`${shot.file}: console: ${message.text().slice(0, 300)}`);
+      });
       page.on('response', response => {
         if (response.status() >= 400 && response.url().startsWith(origin)) console.log(`${shot.file}: ${response.status()} ${new URL(response.url()).pathname}`);
       });
       await page.goto(origin + shot.path, { waitUntil: 'load', timeout: 60000 });
-      await page.locator(shot.ready).first().waitFor({ state: 'attached', timeout: 120000 });
       return page;
+    };
+    // A view that never becomes ready leaves a screenshot under diagnostics/ for review.
+    // Those files are evidence of the failure, never listing material.
+    const diagnose = async (page: Page, shot: ListingShot) => {
+      try {
+        mkdirSync(join(options.outDir, 'diagnostics'), { recursive: true });
+        writeFileSync(join(options.outDir, 'diagnostics', shot.file), await page.screenshot({ type: 'png', animations: 'disabled', caret: 'hide' }));
+        console.log(`${shot.file}: ${String(await page.evaluate(DESCRIBE))}`);
+      } catch (error) { console.log(`${shot.file}: no diagnostics: ${(error as Error).message.split('\n')[0]}`); }
     };
     const [signIn, ...signedIn] = LISTING_SHOTS;
     // The sign-in capture doubles as the real browser sign-in for the later views.
     const page = await open(signIn!);
+    await page.locator(signIn!.ready).waitFor({ state: 'visible', timeout: 30000 });
     await capture(page, signIn!);
     await page.locator('#pw-email').fill(options.email);
     await page.locator('#pw-password').fill(options.password);
@@ -173,11 +191,16 @@ export async function captureListingScreenshots(options: CaptureOptions): Promis
     await page.waitForURL(url => url.origin === origin && !url.pathname.startsWith('/api/auth/'), { timeout: 30000 });
     await page.close();
     for (const shot of signedIn) {
+      let view: Page | undefined;
       try {
-        const view = await open(shot);
-        try { await capture(view, shot); } finally { await view.close(); }
+        view = await open(shot);
+        await view.locator(shot.ready).first().waitFor({ state: 'attached', timeout: 120000 });
+        await capture(view, shot);
       } catch (error) {
         failures.push(`${shot.file}: ${(error as Error).message.split('\n')[0]}`);
+        if (view) await diagnose(view, shot);
+      } finally {
+        await view?.close();
       }
     }
     const manifest = {
