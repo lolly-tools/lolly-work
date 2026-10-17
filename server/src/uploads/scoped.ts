@@ -8,12 +8,15 @@
  *   - `catalog-submission`: the original for `POST /api/v1/catalog/submit
  *     ?uploadId=...&checksum=...`, removed by a successful submission;
  *   - `automation-input`: bytes for the document verbs (`upload` in place of
- *     `bytesBase64`), readable until the upload expires.
+ *     `bytesBase64`), readable until the upload expires;
+ *   - `file`: a file reference (uploads/files.ts), which its owner also reads
+ *     back through /api/v1/files.
  *
  * Only the owner lists, sends, finishes, names or cancels an upload, and
- * nobody downloads one. An unfinished upload expires like a project file (15
- * minutes after its last accepted part, never later than `uploadTtlHours`
- * after it began); a finished one expires `readyTtlHours` after it finished.
+ * nobody downloads one but a file reference's owner. An unfinished upload
+ * expires like a project file (15 minutes after its last accepted part, never
+ * later than `uploadTtlHours` after it began); a finished one expires
+ * `readyTtlHours` after it finished, or `fileTtlHours` for a file reference.
  * Every upload that has not expired counts toward its owner's budget and the
  * instance budget; an expired one counts for nothing and the sweep removes it.
  */
@@ -23,7 +26,7 @@ import type { UserRecord } from '../store/types.ts';
 import { UNSAFE_TEXT } from '../projects/files.ts';
 import { parseTransferManifest, readTransfer, removeTransferParts, TRANSFER_MAX_BYTES, type TransferManifest, type TransferParts } from './parts.ts';
 
-export const UPLOAD_SCOPES = ['catalog-submission', 'automation-input'] as const;
+export const UPLOAD_SCOPES = ['catalog-submission', 'automation-input', 'file'] as const;
 export type UploadScope = typeof UPLOAD_SCOPES[number];
 export const isUploadScope = (value: unknown): value is UploadScope => UPLOAD_SCOPES.includes(value as UploadScope);
 
@@ -38,7 +41,16 @@ export interface UploadRecord extends TransferManifest {
   createdAt: string;
   expiresAt: string;
   ready: boolean;
+  /** A file reference's alone (uploads/files.ts): `original` for bytes a
+   *  client brought, `output` for the result of an operation. */
+  role?: FileRole;
+  /** A file reference's alone: the owner's own reference these bytes were made from. */
+  derivedFrom?: { id: string; checksum: string };
+  /** A file reference's alone: the FileOperationReportV1 that made these bytes,
+   *  and whether the owner supplied it or this instance wrote it. */
+  report?: { by: 'owner' | 'instance'; report: Record<string, unknown> };
 }
+export type FileRole = 'original' | 'output';
 
 /** `policy.uploads` (config/instance.ts validates it). */
 export interface UploadPolicy {
@@ -48,6 +60,8 @@ export interface UploadPolicy {
   instanceBudgetBytes: number;
   uploadTtlHours: number;
   readyTtlHours: number;
+  /** How long a finished file reference stays readable. */
+  fileTtlHours: number;
 }
 const MIB = 1024 * 1024;
 /** Off until the operator turns it on: its instance budget is separate from
@@ -56,7 +70,7 @@ const MIB = 1024 * 1024;
  *  that also holds the blobs; the per-file cap matches the default
  *  `policy.submit.maxBytes`. */
 export const UPLOAD_DEFAULTS: Readonly<UploadPolicy> = {
-  enabled: false, maxFileBytes: 64 * MIB, ownerBudgetBytes: 128 * MIB, instanceBudgetBytes: 256 * MIB, uploadTtlHours: 24, readyTtlHours: 24,
+  enabled: false, maxFileBytes: 64 * MIB, ownerBudgetBytes: 128 * MIB, instanceBudgetBytes: 256 * MIB, uploadTtlHours: 24, readyTtlHours: 24, fileTtlHours: 168,
 };
 /** Unfinished uploads one owner may hold at once. */
 export const UPLOAD_PENDING_LIMIT = 16;
@@ -74,6 +88,8 @@ export interface UploadLimits { ownerBudgetBytes: number; instanceBudgetBytes: n
 /** `refused`: the id is already taken. */
 export type UploadReservation = 'reserved' | 'owner-budget' | 'instance-budget' | 'pending' | 'refused';
 
+export interface UploadListFilter { scope?: UploadScope; ready?: boolean; before?: { createdAt: string; id: string } }
+
 /** Records for scoped uploads; `Store` extends this (memory.ts, postgres.ts here). */
 export interface UploadStore {
   /** Insert an unfinished upload when the owner's budget, the instance budget
@@ -81,8 +97,10 @@ export interface UploadStore {
    *  so parallel reservations cannot both pass the instance budget. */
   reserveUpload(upload: UploadRecord, limits: UploadLimits): Promise<UploadReservation>;
   getUpload(id: string): Promise<UploadRecord | null>;
-  /** One owner's uploads that have not expired, newest first (createdAt desc, then id). */
-  listUploads(owner: string, limit: number): Promise<UploadRecord[]>;
+  /** One owner's uploads that have not expired, newest first (createdAt desc,
+   *  then id), narrowed to one scope, to finished or unfinished uploads, and to
+   *  those after `before` in that order, when the filter says so. */
+  listUploads(owner: string, limit: number, filter?: UploadListFilter): Promise<UploadRecord[]>;
   /** Uploads to delete, earliest expiry first: those that expired by
    *  `expiredBy`, or every upload of `owner`, or both filters together. */
   listUploadsToRemove(filter: { owner?: string; expiredBy?: string }, limit: number): Promise<UploadRecord[]>;
@@ -122,6 +140,10 @@ export function unfinishedUploadExpiry(createdAt: string, uploadTtlHours: number
 }
 /** When an upload finished at `now` expires. */
 export const finishedUploadExpiry = (readyTtlHours: number, now = Date.now()): string => new Date(now + readyTtlHours * 60 * 60 * 1000).toISOString();
+/** How long a finished upload in `scope` stays usable, in hours. */
+export const finishedUploadTtlHours = (policy: UploadPolicy, scope: UploadScope): number => scope === 'file' ? policy.fileTtlHours : policy.readyTtlHours;
+/** The id an upload in `scope` gets: `fil_` for a file reference, `upl_` for the rest. */
+export const uploadIdPrefix = (scope: UploadScope): string => scope === 'file' ? 'fil_' : 'upl_';
 
 /** A begin body: a known scope, a name of 1 to 200 characters with no control
  *  character, a plain media type, and a transfer manifest within `maxBytes`. */
@@ -129,10 +151,17 @@ export function uploadInput(value: unknown, maxBytes: number): Pick<UploadRecord
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
   if (!isUploadScope(v.scope)) return null;
+  const described = uploadDescription(v);
+  const manifest = described && parseTransferManifest(v, Math.min(maxBytes, TRANSFER_MAX_BYTES));
+  return manifest ? { scope: v.scope, ...described, ...manifest } : null;
+}
+
+/** The name (1 to 200 characters, no control character, trimmed) and the
+ *  plain media type of a begin or create body, or null. */
+export function uploadDescription(v: Record<string, unknown>): Pick<UploadRecord, 'name' | 'contentType'> | null {
   if (typeof v.name !== 'string' || !v.name.trim() || v.name.length > 200 || UNSAFE_TEXT.test(v.name)) return null;
   if (typeof v.contentType !== 'string' || v.contentType.length > 100 || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(v.contentType)) return null;
-  const manifest = parseTransferManifest(v, Math.min(maxBytes, TRANSFER_MAX_BYTES));
-  return manifest ? { scope: v.scope, name: v.name.trim(), contentType: v.contentType, ...manifest } : null;
+  return { name: v.name.trim(), contentType: v.contentType };
 }
 
 /** What the owner sees of an upload: no owner (it is theirs) and no part table. */
@@ -234,13 +263,13 @@ export async function readUploadReference(
   ref: unknown, owner: string, scope: UploadScope, maxBytes = d.policy.maxFileBytes,
 ): Promise<{ upload: UploadRecord; bytes: Buffer }> {
   const { id, checksum } = (ref && typeof ref === 'object' ? ref : {}) as { id?: unknown; checksum?: unknown };
-  if (typeof id !== 'string' || !/^upl_[A-Za-z0-9_-]{1,64}$/.test(id) || typeof checksum !== 'string' || !/^[a-f0-9]{64}$/.test(checksum)) {
-    throw new UploadReferenceError(400, 'INVALID_INPUT', 'an upload reference is { id, checksum } for one finished upload');
+  if (typeof id !== 'string' || !/^(?:upl|fil)_[A-Za-z0-9_-]{1,64}$/.test(id) || typeof checksum !== 'string' || !/^[a-f0-9]{64}$/.test(checksum)) {
+    throw new UploadReferenceError(400, 'INVALID_INPUT', `${scope === 'file' ? 'a file' : 'an upload'} reference is { id, checksum } for one finished ${scope === 'file' ? 'file' : 'upload'}`);
   }
   if (!d.policy.enabled) throw new UploadReferenceError(404, 'NOT_FOUND', 'uploads are off');
   const upload = await d.store.getUpload(id);
   if (!upload || upload.owner !== owner || upload.scope !== scope || !upload.ready || !liveUpload(upload) || upload.checksum !== checksum) {
-    throw new UploadReferenceError(404, 'NOT_FOUND', 'no such finished upload');
+    throw new UploadReferenceError(404, 'NOT_FOUND', scope === 'file' ? 'no such file reference' : 'no such finished upload');
   }
   if (upload.size > maxBytes) throw new UploadReferenceError(413, 'PAYLOAD_TOO_LARGE', `the upload is larger than the ${maxBytes} bytes this use takes`);
   try { return { upload, bytes: await readTransfer(uploadParts(d.blobs, upload), maxBytes) }; }

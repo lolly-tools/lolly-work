@@ -15,6 +15,10 @@ const uploadFromRow = (r: Record<string, unknown>): UploadRecord => ({
   id: r.id as string, scope: r.scope as UploadRecord['scope'], owner: r.owner as string, name: r.name as string,
   size: Number(r.size), checksum: r.checksum as string, contentType: r.content_type as string, parts: r.parts as UploadRecord['parts'],
   createdAt: new Date(r.created_at as string).toISOString(), expiresAt: new Date(r.expires_at as string).toISOString(), ready: r.ready === true,
+  // A file reference's own fields (migration 0076), absent on the other scopes.
+  ...(r.role ? { role: r.role as NonNullable<UploadRecord['role']> } : {}),
+  ...(r.derived_from ? { derivedFrom: r.derived_from as NonNullable<UploadRecord['derivedFrom']> } : {}),
+  ...(r.report ? { report: r.report as NonNullable<UploadRecord['report']> } : {}),
 });
 
 export function createPostgresUploadStore(pool: Database): UploadStore {
@@ -35,10 +39,11 @@ export function createPostgresUploadStore(pool: Database): UploadStore {
           : Number(row.instance_used) + charge > limits.instanceBudgetBytes ? 'instance-budget' : null;
         if (refusal) { await client.query('rollback'); return refusal; }
         const inserted = await client.query(
-          `insert into uploads (id, scope, owner, name, size, checksum, content_type, parts, created_at, expires_at, ready)
-           values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,false) on conflict (id) do nothing returning id`,
+          `insert into uploads (id, scope, owner, name, size, checksum, content_type, parts, created_at, expires_at, ready, role, derived_from, report)
+           values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,false,$11,$12::jsonb,$13::jsonb) on conflict (id) do nothing returning id`,
           [upload.id, upload.scope, upload.owner, upload.name, upload.size, upload.checksum, upload.contentType,
-           JSON.stringify(upload.parts), upload.createdAt, upload.expiresAt]);
+           JSON.stringify(upload.parts), upload.createdAt, upload.expiresAt, upload.role ?? null,
+           upload.derivedFrom ? JSON.stringify(upload.derivedFrom) : null, upload.report ? JSON.stringify(upload.report) : null]);
         await client.query('commit');
         return inserted.rows.length === 1 ? 'reserved' : 'refused';
       } catch (error) { await client.query('rollback'); throw error; }
@@ -48,9 +53,13 @@ export function createPostgresUploadStore(pool: Database): UploadStore {
       const { rows } = await pool.query('select * from uploads where id = $1', [id]);
       return rows[0] ? uploadFromRow(rows[0]) : null;
     },
-    async listUploads(owner, limit) {
+    async listUploads(owner, limit, filter = {}) {
       const { rows } = await pool.query(
-        'select * from uploads where owner = $1 and expires_at > now() order by created_at desc, id collate "C" limit $2', [owner, limit]);
+        `select * from uploads where owner = $1 and expires_at > now()
+           and ($3::text is null or scope = $3) and ($4::boolean is null or ready = $4)
+           and ($5::timestamptz is null or created_at < $5 or (created_at = $5 and id collate "C" > $6))
+           order by created_at desc, id collate "C" limit $2`,
+        [owner, limit, filter.scope ?? null, filter.ready ?? null, filter.before?.createdAt ?? null, filter.before?.id ?? null]);
       return rows.map(uploadFromRow);
     },
     async listUploadsToRemove(filter, limit) {

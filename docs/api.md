@@ -723,25 +723,28 @@ Private, resumable uploads that a person or a service token names by reference
 files. A `catalog-submission` upload is the original for
 `POST /api/v1/catalog/submit?uploadId=…&checksum=…`, which removes it once the submission is
 stored. An `automation-input` upload is read by `upload: { id, checksum }` in `/api/v1/inspect`
-and `/api/v1/optimize`, as often as its owner likes until it expires. Nobody downloads an
-upload. `policy.uploads.enabled` is `false` by default, and while it is, every route here
-answers `404 NOT_FOUND` with the message `uploads are off`.
+and `/api/v1/optimize`, as often as its owner likes until it expires. A finished `file` upload
+is a [file reference](#file-references), which its owner can also read back. Nobody downloads
+an upload in the other two scopes. `policy.uploads.enabled` is `false` by default, and while it
+is, every route here answers `404 NOT_FOUND` with the message `uploads are off`.
 
 | Route | Who | Answer |
 |---|---|---|
 | `GET /api/v1/uploads` | a member or a service token | `200 { uploads, limits }`: the caller's own uploads that have not expired, newest first, at most 50 |
-| `POST /api/v1/uploads` | `catalog.submit` for scope `catalog-submission`, `tool.use` for `automation-input`; a member or a service token, never a guest | `201 { upload, partBytes }`: the upload is reserved |
+| `POST /api/v1/uploads` | `catalog.submit` for scope `catalog-submission`, `tool.use` for `automation-input` and `file`; a member or a service token, never a guest | `201 { upload, partBytes }`: the upload is reserved |
 | `GET /api/v1/uploads/:id` | the owner | `200 { upload }` |
 | `GET /api/v1/uploads/:id/parts` | the owner | `200`: the parts report, as for project files |
 | `PUT /api/v1/uploads/:id/parts/:n` | the owner | `204`; the body is part `n`'s bytes |
-| `POST /api/v1/uploads/:id/finalize` | the owner | `200 { upload }` with `ready: true`; repeating it is harmless |
+| `POST /api/v1/uploads/:id/finalize` | the owner | `200 { upload }` with `ready: true`, and `file` for scope `file`; repeating it is harmless |
 | `DELETE /api/v1/uploads/:id` | the owner | `204`; parts first, then the record |
 
 The begin body is `{ scope, name, size, checksum, contentType, parts: [{ size, checksum }] }`
-with the same digest and part rules as a project file. An `upload` is `{ id, scope, name, size,
+with the same digest and part rules as a project file; scope `file` also takes `role`,
+`derivedFrom` and `report` as below. An `upload` is `{ id, scope, name, size,
 checksum, contentType, ready, createdAt, expiresAt }`; the begin answer adds `parts`. An
 unfinished upload expires like a project file, at most `policy.uploads.uploadTtlHours` after
-its begin; a finished one expires `policy.uploads.readyTtlHours` after it finished. Every route
+its begin; a finished one expires `policy.uploads.readyTtlHours` after it finished, or
+`policy.uploads.fileTtlHours` for scope `file`. Every route
 but the list and the begin answers `404 NOT_FOUND` for an upload the caller does not own, so an
 id reveals nothing. `limits` is `{ partBytes, maxBytes, ownerBudgetBytes, ownerUsedBytes,
 instanceRemainingBytes }`.
@@ -764,6 +767,89 @@ with another checksum. Finishing an upload is audited as `upload.finish` and a c
 `upload.delete`, with the scope, size and checksum but not the name. Expired uploads are swept
 like project files. Erasing an account removes every upload the person owns, or answers
 `409 ERASE_UPLOADS_REMAIN` and changes nothing else while any remain.
+
+### File references
+
+A file reference is an opaque id for bytes kept on this instance, with their digest, an
+expiry and the operations its owner can run on them. Upload once, then inspect, optimize and
+read back by reference, without sending the bytes again or getting them back in a JSON body.
+A reference is a finished upload in scope `file`, so it shares the [uploads](#uploads)
+budgets, caps, sweep, erasure and `policy.uploads.enabled` switch. It lasts
+`policy.uploads.fileTtlHours` (a week by default) after it finished, and outlasts a restart.
+
+A reference belongs to the account that made it: a person, from any of their sessions, or one
+service token. A service token's references are its own, not those of the person who minted
+it, so a new token does not see an old token's references. Nobody else learns that a
+reference exists. Every route on one reference, and every request that names one, answers
+the same `404 NOT_FOUND` for someone else's reference as for an id that was never issued. Two
+owners who keep the same bytes get two references.
+
+| Route | Who | Answer |
+|---|---|---|
+| `GET /api/v1/files?limit=&cursor=` | a member or a service token with `tool.use` | `200 { files, nextCursor }`: the caller's own references, newest first, 50 a page by default and at most 50. `nextCursor` is opaque, or `null` on the last page |
+| `POST /api/v1/files` | as above | `201 { file }`: the bytes in the JSON body are kept as a reference |
+| `GET /api/v1/files/:id` | the owner | `200 { file, report }` |
+| `GET /api/v1/files/:id/content` | the owner | `200` with the bytes |
+| `DELETE /api/v1/files/:id` | the owner | `204`; the bytes go first, then the record |
+
+`POST /api/v1/files` takes `{ name, contentType, bytesBase64, checksum?, role?, derivedFrom?,
+report? }`, with the bytes as canonical base64, up to 4 MiB or `policy.uploads.maxFileBytes` if
+that is smaller. `checksum` is the sha256 you expect; other bytes are refused. Behind a request
+cap smaller than the body, such as Vercel's 4.5 MB, or for a larger file, begin an upload with
+scope `file` instead and send it in parts; `lw upload <file> --scope file` does that.
+
+`role` is `original` unless the bytes are the `output` of an operation done elsewhere. An
+output may name `derivedFrom: { id, checksum }`, one of the caller's own references, and
+carry a `report`: a `FileOperationReportV1` from `@lolly-tools/core/file-operation-v1`, at most
+64 KiB of JSON, that passes that contract's check. Work keeps the report the owner supplied
+and labels it so; it does not check the claims in it.
+
+A `file` is `{ id, name, contentType, size, checksum, role, derivedFrom, reportedBy, createdAt,
+expiresAt, operations, unavailable }`. `checksum` is the sha256 of the exact bytes.
+`reportedBy` is `owner`, `instance` or `null`. `operations` lists what the owner can do with
+this reference, each as the request to make: `read`, `inspect`, `optimize` for a PNG, JPEG or
+SVG, and `delete`. `unavailable` lists an operation this reference cannot take, with a
+`code` and a `reason`.
+
+Reading back streams the bytes as an attachment with `x-content-type-options: nosniff` and a
+sandboxing `content-security-policy`, whatever the declared type, so a reference never runs as
+a page. `ETag` is the quoted sha256 and `Repr-Digest` carries it as `sha-256=:…:`. Each part is
+checked as it streams, and a body that fails its declared digest is cut short. One owner may
+read back twice `policy.uploads.instanceBudgetBytes` a day, counted per server process; past
+that the answer is `429 RATE_LIMITED` with `retry-after`.
+
+The document verbs take a reference where they take bytes: `file: { id, checksum }` in
+`/api/v1/inspect` and `/api/v1/optimize`. `/api/v1/optimize` with `output: "file"` keeps its
+output as a new reference of the caller, with `role: "output"`, `derivedFrom` naming the input
+reference when there was one, and a report this instance wrote (`reportedBy: "instance"`). It
+answers `{ file, bytes, savedBytes, stages }` instead of `bytesBase64`. Queued (`?async=1`)
+requests read the reference when they run.
+
+Nothing about a reference or its caller is cached. Every request resolves the caller, checks
+`tool.use` against the current grants and loads the reference again, so each of these refuses
+the very next read, including one a queued request makes:
+
+- the owner deletes the reference: `404`;
+- an owner revokes the service token: `401`;
+- an admin disables the person, or signs them out everywhere: `401` for the old sessions;
+- a grant denies the caller `tool.use`: `403`, and the reference reads again once the grant
+  goes;
+- the reference expires, or the account is erased: `404`.
+
+Document agents, which act for a person inside one document, cannot use the person's file
+references. Making a reference is audited as `file.create` and deleting one through these
+routes as `file.delete`, with the size, checksum and role but not the name. Reads are not
+audited. [Discovery](#effective-schemas-and-discovery) reports `files.references`, which is
+`true` while `policy.uploads.enabled` is.
+
+| Code | Status | When |
+|---|---|---|
+| `UPLOAD_TOO_LARGE` | 413 | create: the bytes are over 4 MiB or `policy.uploads.maxFileBytes` |
+| `PAYLOAD_TOO_LARGE` | 413 | create: the body is too large to read |
+| `UPLOAD_BUDGET` / `INSTANCE_UPLOAD_BUDGET` / `UPLOAD_PENDING` | 413 | as for an upload begin |
+| `CHECKSUM_MISMATCH` | 422 | create: the bytes are not the `checksum` given |
+| `INVALID_INPUT` | 400 | malformed base64, name, media type, role, `derivedFrom`, report, `limit` or `cursor` |
+| `RATE_LIMITED` | 429 | read back: the owner's daily amount is used up |
 
 ### The collab socket
 
@@ -1045,7 +1131,7 @@ hidden from that principal. Render additionally requires `export.server`.
 
 | Route | Action | Notes |
 |---|---|---|
-| `GET /api/v1/discovery` | public | What this deployment can do, the same for everyone: document API and engine versions, server render formats, hooked tools, Content Credentials, automation verbs and batch limits, live collaboration, document agents, and `unavailable` entries for what it lacks. Shared caches may hold it; it carries an ETag |
+| `GET /api/v1/discovery` | public | What this deployment can do, the same for everyone: document API and engine versions, server render formats, hooked tools, Content Credentials, automation verbs and batch limits, live collaboration, document agents, whether [file references](#file-references) are on (`files.references`), and `unavailable` entries for what it lacks. Shared caches may hold it; it carries an ETag |
 | `GET /api/v1/discovery/me` | member, service token or open guest | What the caller can do: `principal` (`member`, `service` or `guest`), `can` bits for `tool.use`, `export.server`, `export.request`, `delivery.create` and `catalog.read`, provider reference schemes that resolve for the caller, limits, the render worker's live readiness when one is configured, and `unavailable` entries. Private, never cached |
 | `GET /api/v1/discovery/tools?limit=&cursor=` | as above | The tools the caller can use, sorted by id, 25 a page by default and at most 100. Each entry has `name`, `version`, `renderer`, the server `formats` the caller may request, `can.render`, its schema URL and `unavailable` entries. `next` is an opaque cursor, or `null` on the last page |
 | `GET /api/v1/schema/:toolId?view=&format=` | `tool.use` | The caller's effective input schema (below). `view=raw` returns the tool's own schema and needs `policy.edit`. `format` names the output format whose design-system rules apply. Without it, the schema carries only the rules that apply to every format |
@@ -1182,8 +1268,10 @@ credential, exposure and lifecycle; `net://<operator-allowed-origin>/<path>` is
 restricted to origins present in provider configuration. Both are timeout- and
 byte-bounded, content-addressed, and use immutable resize, format-conversion and
 metadata-strip stages. `/inspect` and `/optimize` also accept `bytesBase64`, a
-provider `source`, or `upload: { id, checksum }` naming the caller's own finished
-`automation-input` [upload](#uploads), for a file too large for one request; `/package` accepts either a compiled `document` or
+provider `source`, `upload: { id, checksum }` naming the caller's own finished
+`automation-input` [upload](#uploads), for a file too large for one request, or `file: { id,
+checksum }` naming one of the caller's [file references](#file-references). `/optimize` with
+`output: "file"` keeps its output as a file reference; `/package` accepts either a compiled `document` or
 `{toolId,inputs}` and can run asynchronously.
 
 These routes use the configurable `rateLimit.automation` bucket. It is technical

@@ -393,6 +393,15 @@ they are, and scoped uploads stay off until `policy.uploads.enabled` is set. Tur
 them on adds a second instance budget on the same blob store; see
 [configuration](configuration.md#policy) before you do.
 
+### Migration 0076 and file references
+
+Migration 0076 adds the `file` scope and three nullable columns (`role`, `derived_from`,
+`report`) to the `uploads` table, and checks that only a file reference uses them. Existing
+rows keep their values and no budget changes. [File references](api.md#file-references) share
+the scoped uploads' switch and budgets, so they stay off until `policy.uploads.enabled` is
+set; once it is, every member or service token with `tool.use` can keep and read back its own
+references for `policy.uploads.fileTtlHours` (a week by default).
+
 ### The engine pin
 
 The open-source engine is vendored, pinned and unmodified; `engine-pin.json` records the pin

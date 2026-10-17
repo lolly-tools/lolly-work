@@ -87,7 +87,7 @@ parts from the start, which is what tus calls `Upload-Offset`. It also gives
 `expiresAt`, the equivalent of `Upload-Expires`. Asking does not keep an upload
 alive; only an accepted part does.
 
-## One primitive, three scopes
+## One primitive, four scopes
 
 `server/src/uploads/parts.ts` is the shared primitive: the manifest rules, storing a
 verified part, the resume report, the running digest that spares finalize a second
@@ -99,14 +99,17 @@ authorization, budget and lifetime over it.
 | Project file, and so a session's staged images | `project_files` | an editor of the project with `session.create` | the uploader | until deleted | the project's file list and downloads, sessions saved in the project, renders through their read ticket, catalog submission by `projectId` and `fileId` |
 | Catalog submission original | `uploads`, scope `catalog-submission` | a person or a service token with `catalog.submit` | the owner | `policy.uploads.readyTtlHours` after it finished | `POST /api/v1/catalog/submit?uploadId=…&checksum=…`, which removes it once the submission is stored |
 | Automation input | `uploads`, scope `automation-input` | a person or a service token with `tool.use` | the owner | `policy.uploads.readyTtlHours` after it finished | `upload: { id, checksum }` in `/api/v1/inspect` and `/api/v1/optimize`, as often as the owner likes |
+| [File reference](api.md#file-references) | `uploads`, scope `file` | a person or a service token with `tool.use` | the owner | `policy.uploads.fileTtlHours` after it finished | `file: { id, checksum }` in `/api/v1/inspect` and `/api/v1/optimize`, and reading it back from `/api/v1/files/:id/content`, by the owner while they hold `tool.use` |
 
-Nobody downloads a scoped upload; it is named by reference only, and only by its
-owner. A reference carries the checksum too, so an id cannot stand in for other
-bytes. Any reference its owner cannot use (another owner's, another scope's, an
-unfinished or expired one) gets the same `404`, so ids reveal nothing.
+A scoped upload is named by reference only, and only by its owner. A reference
+carries the checksum too, so an id cannot stand in for other bytes. Any reference
+its owner cannot use (another owner's, another scope's, an unfinished or expired
+one) gets the same `404`, so ids reveal nothing. Nobody downloads a catalog
+submission original or an automation input; a file reference is the one scope its
+owner reads back.
 
-A session-scoped area that expires with its session, if one is wanted, would be a
-third scope on the `uploads` table over the same primitive.
+A session-scoped area that expires with its session, if one is wanted, would be one
+more scope on the `uploads` table over the same primitive.
 
 ## Limits, budgets and expiry
 
