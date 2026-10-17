@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { stringify } from 'yaml';
-import { type Attempt, type Channel, type ChannelRecord, carried, channelState, helmSummary, readRecord, recordAttempt, recordProblems,
-  renderTable, review, validateRecord, verifyImages, writeChannels } from '../scripts/marketplace-channels.ts';
+import { type Attempt, type Channel, type ChannelRecord, carried, channelState, failedBesideLifecycle, helmSummary, readRecord, recordAttempt,
+  recordProblems, renderTable, review, validateRecord, verifyImages, writeChannels } from '../scripts/marketplace-channels.ts';
 import { release } from '../scripts/marketplace-packages.ts';
 
 const published = (version: string, date: string, extra: Partial<Attempt> = {}): Attempt =>
@@ -52,6 +52,12 @@ test('a withdrawn version falls back to the previous publication', () => {
   assert.equal(carried(pulled)?.release, '1.1.0');
   assert.equal(channelState(pulled, '1.1.1'), 'behind');
   assert.match(problemsFor(record => record.channels[0]!.attempts.push({ release: '1.1.1', package: '1.1.1', outcome: 'withdrawn', date: '2026-10-03', note: 'Never shipped' })), /withdraws a version this channel does not carry/);
+  const empty = channel([published('1.1.1', '2026-10-01'), { release: '1.1.1', package: '1.1.1', outcome: 'withdrawn', date: '2026-10-02', note: 'Unsafe version pulled' }]);
+  validateRecord(recordOf(empty));
+  assert.equal(carried(empty), undefined);
+  assert.equal(channelState(empty, '1.1.1'), 'withdrawn', 'a channel that has published is never shown as prepared');
+  assert.match(renderTable(recordOf(empty), '1.1.1'), /\| Pilot catalogue \| Public catalogue \| Nothing \| withdrawn 1\.1\.1 on 2026-10-02: Unsafe version pulled \| withdrawn \|/);
+  assert.deepEqual(review(recordOf(empty), '1.1.1').pause, ['pilot is withdrawn. Update route: Open a catalogue pull request.']);
 });
 
 test('the record refuses account IDs, private receipts and unknown fields', () => {
@@ -60,6 +66,8 @@ test('the record refuses account IDs, private receipts and unknown fields', () =
     [record => { record.channels[0]!.attempts[0]!.note = 'Submitted by maintainer@example.test'; }, /an email address/],
     [record => { record.channels[0]!.open = 'Offer 12345678-1234-1234-1234-123456789abc awaits review'; }, /a UUID/],
     [record => { record.channels[0]!.update = 'Publish from account 123456789012'; }, /12-digit account number/],
+    [record => { record.channels[0]!.update = 'Publish from account 123456789012.'; }, /12-digit account number/],
+    [record => { record.channels[0]!.update = 'Use account 123456789012, region eu-west-1.'; }, /12-digit account number/],
     [record => { record.channels[0]!.attempts[0]!.evidence = 'https://example.test/receipt?token=abc'; }, /query string/],
     [record => { record.channels[0]!.attempts[0]!.evidence = 'http://example.test/receipt'; }, /must use https/],
     [record => { record.channels[0]!.attempts[0]!.evidence = 'https://192.168.1.10/receipt'; }, /public host/],
@@ -76,6 +84,7 @@ test('the record refuses account IDs, private receipts and unknown fields', () =
   for (const [change, expected] of cases) assert.match(problemsFor(change), expected);
   assert.equal(problemsFor(() => {}), '');
   assert.equal(problemsFor(record => { record.channels[0]!.attempts[0]!.note = 'Dockerfile: base image refreshed'; }), '', 'ordinary text passes');
+  assert.equal(problemsFor(record => { record.channels[0]!.attempts[0]!.note = 'See https://github.com/lolly-tools/lolly-work/actions/runs/123456789012.'; }), '', 'a run ID inside a link passes');
 });
 
 test('pausing and retirement need a reason, a published notice, an end date and a migration route', () => {
@@ -96,6 +105,28 @@ test('pausing and retirement need a reason, a published notice, an end date and 
   assert.equal(channelState(validateRecord(recordOf(retired)).channels[0]!, '1.1.1'), 'retired');
   assert.match(recordProblems(recordOf({ ...base, pause: paused.pause })).join('\n'), /only for one/);
   return assert.rejects(recordAttempt(recordOf(retired), 'pilot', published('1.1.2', '2026-11-06'), (async () => { throw new Error('no network'); }) as typeof fetch), /takes no further attempts/);
+});
+
+test('a failed attempt on a paused or retiring channel is flagged in the table and pauses expansion', () => {
+  const notice = { url: 'https://github.com/lolly-tools/lolly-work/issues/1', published: '2026-10-05', newInstallsEnd: '2026-11-05', migration: 'https://github.com/lolly-tools/lolly-work/blob/main/docs/install.md' };
+  const fix: Attempt = { release: '1.1.2', package: '1.1.2', outcome: 'failed', date: '2026-10-10', note: 'Security fix build failed' };
+  const retiring = channel([published('1.1.1', '2026-10-01'), fix], { id: 'leaving', lifecycle: 'retiring', notice });
+  const paused = channel([published('1.1.1', '2026-10-01'), fix], { id: 'resting', name: 'Resting catalogue', lifecycle: 'paused', pause: { since: '2026-10-11', reason: 'No maintainer' } });
+  const record = validateRecord(recordOf(retiring, paused));
+  assert.equal(channelState(retiring, '1.1.1'), 'retiring');
+  assert.equal(carried(retiring)?.release, '1.1.1', 'the failed fix never becomes the carried version');
+  const table = renderTable(record, '1.1.1');
+  assert.match(table, /on 2026-11-05; latest attempt \*\*failed\*\* \|/);
+  assert.match(table, /paused since 2026-10-11: No maintainer; latest attempt \*\*failed\*\* \|/);
+  const report = review(record, '1.1.1');
+  assert.deepEqual(report.pause.map(line => line.split('.')[0]), ['leaving is retiring and its latest attempt failed', 'resting is paused and its latest attempt failed']);
+  assert.doesNotMatch(report.lines.join('\n'), /No channel is failing/);
+  const recovered = channel([...retiring.attempts, published('1.1.2', '2026-10-12')], { id: 'leaving', lifecycle: 'retiring', notice });
+  assert.deepEqual(review(recordOf(recovered), '1.1.1').pause, [], 'a retiring channel that publishes its fix no longer blocks expansion');
+  const retired = { ...retiring, lifecycle: 'retired' as const, retired: '2026-11-05' };
+  validateRecord(recordOf(retired));
+  assert.equal(failedBesideLifecycle(retired), false, 'a retired channel takes no further attempts, so an old failure cannot block expansion for ever');
+  assert.deepEqual(review(recordOf(retired), '1.1.1').pause, []);
 });
 
 function helmFetch(index: unknown, archive: Uint8Array, seen: RequestInit[] = []) {
@@ -153,7 +184,15 @@ test('image publication checks resolve each release digest anonymously', async (
 test('the maintenance review pauses expansion while a channel is failing, behind, in review or paused', () => {
   const measured = channel([published('1.1.1', '2026-10-01', { minutes: 30, reviewDays: 4 }), published('1.1.1', '2026-10-02', { package: '1.1.1-2', minutes: 10 })]);
   const report = review(recordOf(measured), '1.1.1');
-  assert.match(report.lines.join('\n'), /pilot: current; 2 published, 0 failed or rejected; 20 minutes per publication over 2; longest review 4 days/);
+  assert.match(report.lines.join('\n'), /pilot: current; 2 published, 0 failed or rejected; 40 maintainer minutes; 20 minutes per publication over 2; longest review 4 days/);
+  const costly = channel([
+    { release: '1.1.1', package: '1.1.1', outcome: 'failed', date: '2026-10-01', note: 'Build failed', minutes: 240 },
+    { release: '1.1.1', package: '1.1.1', outcome: 'rejected', date: '2026-10-02', note: 'Listing refused', minutes: 180 },
+    published('1.1.1', '2026-10-03', { minutes: 10 }),
+  ]);
+  assert.match(review(recordOf(costly), '1.1.1').lines[0]!, /pilot: current; 1 published, 2 failed or rejected; 430 maintainer minutes, 420 of them on failed or rejected attempts; 430 minutes per publication over 1$/);
+  const unpublished = channel([{ release: '1.1.1', package: '1.1.1', outcome: 'failed', date: '2026-10-01', note: 'Build failed', minutes: 90 }]);
+  assert.match(review(recordOf(unpublished), '1.1.1').lines[0]!, /90 maintainer minutes, 90 of them on failed or rejected attempts; no publication yet$/);
   const blocked = review(recordOf(
     channel([published('1.1.0', '2026-10-01')], { id: 'old' }),
     channel([published('1.1.1', '2026-10-01'), { release: '1.1.1', package: '1.1.1-2', outcome: 'failed', date: '2026-10-02', note: 'Build failed' }], { id: 'broken' }),

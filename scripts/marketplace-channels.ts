@@ -17,7 +17,7 @@ const END = '<!-- channel-table:end -->';
 export type Route = 'registry' | 'feed' | 'direct' | 'catalogue';
 export type Outcome = 'submitted' | 'published' | 'failed' | 'rejected' | 'withdrawn';
 export type Lifecycle = 'maintained' | 'paused' | 'retiring' | 'retired';
-export type State = 'prepared' | 'in review' | 'current' | 'behind' | 'failed' | 'paused' | 'retiring' | 'retired';
+export type State = 'prepared' | 'in review' | 'current' | 'behind' | 'failed' | 'withdrawn' | 'paused' | 'retiring' | 'retired';
 export interface Attempt { release: string; package: string; outcome: Outcome; date: string; evidence?: string; note?: string; minutes?: number; reviewDays?: number }
 export interface Channel {
   id: string; name: string; route: Route; update: string; open?: string; lifecycle: Lifecycle;
@@ -69,8 +69,8 @@ function publicUrl(value: unknown): string | undefined {
 function scanPublic(value: unknown, path: string, problems: string[]) {
   if (typeof value === 'string') {
     for (const [pattern, what] of PRIVATE) if (pattern.test(value)) problems.push(`${path} contains ${what}; keep it in the private maintainer record`);
-    // Run IDs inside public URLs are fine; a bare 12-digit number reads as a cloud account.
-    if (!/^https:/.test(value) && /(?<![\w./-])\d{12}(?![\w./-])/.test(value)) problems.push(`${path} contains a 12-digit account number; keep it in the private maintainer record`);
+    // Run IDs inside public URLs are fine; a bare 12-digit number reads as a cloud account, even at the end of a sentence.
+    if (!/^https:/.test(value) && /(?<![\w./-])\d{12}(?![\w/-]|\.\w)/.test(value)) problems.push(`${path} contains a 12-digit account number; keep it in the private maintainer record`);
   } else if (Array.isArray(value)) value.forEach((item, i) => scanPublic(item, `${path}[${i}]`, problems));
   else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) scanPublic(item, `${path}.${key}`, problems);
 }
@@ -162,13 +162,18 @@ export function carried(channel: Channel): Attempt | undefined {
   return live.at(-1);
 }
 
+const latestFailed = (channel: Channel) => ['failed', 'rejected'].includes(channel.attempts.at(-1)?.outcome ?? '');
+const everPublished = (channel: Channel) => channel.attempts.some(attempt => attempt.outcome === 'published');
+/** Paused and retiring channels keep their lifecycle as the state, so a failed latest attempt is flagged beside it. */
+export const failedBesideLifecycle = (channel: Channel) => (channel.lifecycle === 'paused' || channel.lifecycle === 'retiring') && latestFailed(channel);
+
 /** A failed or rejected latest attempt always shows as failed, even when the carried version is current. */
 export function channelState(channel: Channel, cohort = release.version as string): State {
   if (channel.lifecycle !== 'maintained') return channel.lifecycle;
   const latest = channel.attempts.at(-1), carries = carried(channel);
-  if (latest?.outcome === 'failed' || latest?.outcome === 'rejected') return 'failed';
+  if (latestFailed(channel)) return 'failed';
   if (latest?.outcome === 'submitted') return 'in review';
-  if (!carries) return 'prepared';
+  if (!carries) return everPublished(channel) ? 'withdrawn' : 'prepared';
   return compareReleases(carries.release, cohort) >= 0 ? 'current' : 'behind';
 }
 
@@ -180,11 +185,13 @@ export function renderTable(record: ChannelRecord, cohort = release.version as s
     const carries = carried(channel), latest = channel.attempts.at(-1), state = channelState(channel, cohort);
     const named = latest === carries ? '' : ` ${linked(version(latest!), latest?.evidence)}`;
     const last = latest ? `${latest.outcome}${named} on ${latest.date}${latest.note ? `: ${latest.note}` : ''}` : 'None';
-    const shown = state === 'failed' ? '**failed**'
+    const shown = (state === 'failed' ? '**failed**'
       : state === 'paused' ? `paused since ${channel.pause!.since}: ${channel.pause!.reason}`
         : state === 'retiring' ? `retiring: ${linked('new installations end', channel.notice!.url)} on ${channel.notice!.newInstallsEnd}`
-          : state === 'retired' ? `retired on ${channel.retired} (${linked('notice', channel.notice!.url)})` : state;
-    return `| ${channel.name} | ${ROUTES[channel.route]} | ${carries ? linked(version(carries), carries.evidence) : 'Nothing yet'} | ${last} | ${shown} | ${channel.open ?? ''} |`;
+          : state === 'retired' ? `retired on ${channel.retired} (${linked('notice', channel.notice!.url)})` : state)
+      + (failedBesideLifecycle(channel) ? '; latest attempt **failed**' : '');
+    const nothing = everPublished(channel) ? 'Nothing' : 'Nothing yet';
+    return `| ${channel.name} | ${ROUTES[channel.route]} | ${carries ? linked(version(carries), carries.evidence) : nothing} | ${last} | ${shown} | ${channel.open ?? ''} |`;
   });
   return [
     `Qualified release cohort: Work ${cohort}, from [\`release.json\`](release.json).`, '',
@@ -272,20 +279,25 @@ export async function recordAttempt(record: ChannelRecord, id: string, attempt: 
   return { record: next, checked };
 }
 
-/** The maintainer review: measured effort per channel, and why expansion must pause. */
+const minutesOf = (attempts: Attempt[]) => attempts.reduce((sum, attempt) => sum + (attempt.minutes ?? 0), 0);
+
+/** The maintainer review: measured effort per channel, counting minutes spent on failures, and why expansion must pause. */
 export function review(record: ChannelRecord, cohort = release.version as string) {
   const lines: string[] = [], pause: string[] = [], unmeasured: string[] = [];
   for (const channel of record.channels) {
     const state = channelState(channel, cohort), published = channel.attempts.filter(a => a.outcome === 'published');
-    const failures = channel.attempts.filter(a => a.outcome === 'failed' || a.outcome === 'rejected').length;
-    const measured = published.filter(a => a.minutes !== undefined), waits = channel.attempts.flatMap(a => a.reviewDays ?? []);
-    const effort = measured.length ? `${Math.round(measured.reduce((sum, a) => sum + a.minutes!, 0) / measured.length)} minutes per publication over ${measured.length}` : 'effort not measured';
-    lines.push(`- ${channel.id}: ${state}; ${published.length} published, ${failures} failed or rejected; ${effort}${waits.length ? `; longest review ${Math.max(...waits)} days` : ''}`);
-    if (published.length > measured.length) unmeasured.push(channel.id);
-    if (['failed', 'behind', 'in review', 'paused'].includes(state)) pause.push(`${channel.id} is ${state}. Update route: ${channel.update}`);
+    const failures = channel.attempts.filter(a => a.outcome === 'failed' || a.outcome === 'rejected');
+    const total = minutesOf(channel.attempts), lost = minutesOf(failures), waits = channel.attempts.flatMap(a => a.reviewDays ?? []);
+    const perPublication = published.length ? `${Math.round(total / published.length)} minutes per publication over ${published.length}` : 'no publication yet';
+    const effort = channel.attempts.some(a => a.minutes !== undefined)
+      ? `${total} maintainer minutes${lost ? `, ${lost} of them on failed or rejected attempts` : ''}; ${perPublication}` : 'effort not measured';
+    const shown = failedBesideLifecycle(channel) ? `${state} and its latest attempt failed` : state;
+    lines.push(`- ${channel.id}: ${shown}; ${published.length} published, ${failures.length} failed or rejected; ${effort}${waits.length ? `; longest review ${Math.max(...waits)} days` : ''}`);
+    if (published.some(a => a.minutes === undefined)) unmeasured.push(channel.id);
+    if (['failed', 'withdrawn', 'behind', 'in review', 'paused'].includes(state) || failedBesideLifecycle(channel)) pause.push(`${channel.id} is ${shown}. Update route: ${channel.update}`);
   }
   if (unmeasured.length) lines.push('', `Publications recorded without minutes: ${unmeasured.join(', ')}. Measure the next one.`);
-  lines.push('', pause.length ? `Pause expansion:\n- ${pause.join('\n- ')}` : 'No channel is failing, behind, in review or paused.');
+  lines.push('', pause.length ? `Pause expansion:\n- ${pause.join('\n- ')}` : 'No channel is failing, withdrawn, behind, in review or paused.');
   return { lines, pause };
 }
 

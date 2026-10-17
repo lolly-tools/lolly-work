@@ -26,9 +26,11 @@ Qualified release cohort: Work 1.1.1, from [`release.json`](release.json).
 A channel carries the version from its last published attempt that was not later
 withdrawn. A submitted, failed or rejected attempt never changes that version. When
 the latest attempt failed or was rejected, the channel shows **failed** until a later
-attempt succeeds, even if it still carries the qualified release. Publication,
-qualification and catalogue admission are separate claims: the **Still open** column
-lists the acceptance that a published version still lacks.
+attempt succeeds, even if it still carries the qualified release. A paused or
+retiring channel keeps that state and adds "latest attempt **failed**" until a later
+attempt succeeds. Publication, qualification and catalogue admission are separate
+claims: the **Still open** column lists the acceptance that a published version
+still lacks.
 
 | State | Meaning |
 |---|---|
@@ -37,6 +39,7 @@ lists the acceptance that a published version still lacks.
 | current | The channel carries the release named in `release.json`, or a later one |
 | behind | The channel carries an older release than `release.json` names |
 | failed | The latest attempt failed or was rejected; the channel keeps its earlier version |
+| withdrawn | Every version published through the channel was withdrawn, so it carries nothing until the next publication |
 | paused | A maintainer review stopped updates through the channel for now |
 | retiring | A retirement notice is out and new installations end on the stated date |
 | retired | New installations are withdrawn; existing installations are left alone |
@@ -101,10 +104,13 @@ channel. Start with:
 node scripts/marketplace-channels.ts review
 ```
 
-It prints each channel's state, its published and failed attempts, the average
-minutes per publication and the longest review wait, and names publications recorded
-without minutes. It exits non-zero while any channel is failed, behind, in review or
-paused, and prints each one's update route. A non-zero exit means pause expansion:
+It prints each channel's state, its published and failed attempts, the maintainer
+minutes recorded on all its attempts and how many of them went to failed or rejected
+attempts, the minutes per publication (all recorded minutes divided by the number of
+publications) and the longest review wait, and names publications recorded without
+minutes. It exits non-zero while any channel is failed, withdrawn, behind, in review
+or paused, or while a paused or retiring channel's latest attempt failed, and prints
+each one's update route. A non-zero exit means pause expansion:
 update, fix, pause or retire those channels before adding another one. Add new
 adapters one at a time, and choose the next only after the previous one has completed
 a second publication and an installed-instance upgrade.
