@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { Store, UserRecord } from '../store/types.ts';
 import { loadEngine } from '../render/contract.ts';
 import { BrandError, type BrandService, type BrandSnapshot } from './service.ts';
-import { hash, managedRuleContext, projectRuleOverlay, ruleApi, sourceRules } from './rules.ts';
+import { hash, projectRuleOverlay, requestRuleContext, ruleApi, sourceRules } from './rules.ts';
 
 export function createBrandRuleService(brand: BrandService, store: Store, development: boolean) {
   const mutable = store.brandPersistence === 'durable' || development;
@@ -61,10 +61,9 @@ export function createBrandRuleService(brand: BrandService, store: Store, develo
     const overlays = await store.listOverlays();
     for (const mapping of snap.state.rulePolicies?.[snap.source.id]?.mappings ?? []) {
       // Scope-specific restrictions cannot be presented as unconditional input restrictions.
-      const contexts = await Promise.all(['png', 'svg', 'jpg', 'pdf'].map(format => managedRuleContext(snap, mapping.toolId, format)));
-      const first = contexts[0];
-      if (!first || contexts.some(c => hash(c?.results) !== hash(first.results))) continue;
-      const projected = projectRuleOverlay(overlays.get(mapping.toolId), first, groups);
+      const context = await requestRuleContext(snap, mapping.toolId);
+      if (!context) continue;
+      const projected = projectRuleOverlay(overlays.get(mapping.toolId), context, groups);
       if (projected) overlays.set(mapping.toolId, projected);
     }
     return overlays;

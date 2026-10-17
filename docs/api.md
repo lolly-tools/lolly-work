@@ -1007,6 +1007,9 @@ Saves, name and pin changes and restores share one limit per person: 10 a minute
 | `CONFLICT` | 409 | stale session `rev` - the body's `current` is the server session to rebase on |
 | `LINK_EXPIRED` / `LINK_REVOKED` | 410 | self-explanatory |
 | `INPUT_LOCKED` | 422 | a locked input was supplied by the caller |
+| `INPUT_HIDDEN` | 422 | the caller supplied an input that policy hides from them |
+| `INPUT_NOT_ALLOWED` | 422 | the value is not one of those a choice rule allows |
+| `BRAND_RULE_VIOLATION` | 422 | a render input breaks a reviewed design-system rule for that format |
 | `RATE_LIMITED` | 429 | too many requests of one kind from one person; `retry-after` gives the seconds to wait |
 | `INVALID_INPUT` | 400 | an automation request is missing or has malformed required fields |
 | `DOCUMENT_API_ERROR` | 400 | the requested compile/inspect/diff/measure/optimise/package operation could not be performed |
@@ -1037,6 +1040,84 @@ schema. JSON requests use `{toolId, inputs}` rather than URL-only merge fields.
 Schema, compile, package and render all enforce the caller's `tool.use` decision
 and tool-visibility overlay; a document verb cannot be used to discover a tool
 hidden from that principal. Render additionally requires `export.server`.
+
+## Effective schemas and discovery
+
+| Route | Action | Notes |
+|---|---|---|
+| `GET /api/v1/discovery` | public | What this deployment can do, the same for everyone: document API and engine versions, server render formats, hooked tools, Content Credentials, automation verbs and batch limits, live collaboration, document agents, and `unavailable` entries for what it lacks. Shared caches may hold it; it carries an ETag |
+| `GET /api/v1/discovery/me` | member, service token or open guest | What the caller can do: `principal` (`member`, `service` or `guest`), `can` bits for `tool.use`, `export.server`, `export.request`, `delivery.create` and `catalog.read`, provider reference schemes that resolve for the caller, limits, the render worker's live readiness when one is configured, and `unavailable` entries. Private, never cached |
+| `GET /api/v1/discovery/tools?limit=&cursor=` | as above | The tools the caller can use, sorted by id, 25 a page by default and at most 100. Each entry has `name`, `version`, `renderer`, the server `formats` the caller may request, `can.render`, its schema URL and `unavailable` entries. `next` is an opaque cursor, or `null` on the last page |
+| `GET /api/v1/schema/:toolId?view=&format=` | `tool.use` | The caller's effective input schema (below). `view=raw` returns the tool's own schema and needs `policy.edit`. `format` names the output format whose design-system rules apply. Without it, the schema carries only the rules that apply to every format |
+
+`GET /api/v1/schema/:toolId` keeps its `apiVersion` and `schema` fields. The
+schema is now the effective one for the caller, built from the tool, the tool
+policy that applies to the caller, the design-system choice rules for the
+format and the deployment's render probe:
+
+- An input the policy hides is absent from `properties` and `required`, and the
+  response does not mention it.
+- A locked input has `readOnly: true` and, when the rule carries a value, that
+  value as `const` and `default`. The server applies it, so leave it out of
+  requests: sending it is refused with `INPUT_LOCKED`.
+- A choice input gains an `enum` of the values the policy allows, narrowed to
+  the tool's own options when it declares some. A reviewed design-system choice
+  rule does the same, with `reason` naming the rule.
+
+The response adds `view`, `toolId`, `tool` (`name`, `version`), `versions`
+(`engine`, `tool`, `policy`, `design`, `catalog`, and `rules` when design-system
+rules apply), `policy`, `render` (`renderer`, `formats`, and `format` when one
+was requested), `unavailable` and `etag`. Each `policy` entry is one change the
+policy made, an `effect` of `locked`, `choice` or `format-excluded` with the
+`input` or `format`, plus the overlay's name as `by` and the rule's `reason`
+when they exist. Entries never name groups or values from rules that do not
+apply to the caller. The `ETag` header matches `etag` and moves with any change
+to the effective contract, so `If-None-Match` answers `304` while it holds.
+
+Each `unavailable` entry names one `format`, `action` or `feature` with a
+stable `code` and a `reason`:
+
+| Code | Meaning |
+|---|---|
+| `WORKER_NOT_CONFIGURED` | the format needs the Chromium render worker, and this deployment does not run one |
+| `UNSUPPORTED_FORMAT` | the deployment does not produce this format on the server; the web app can still export it |
+| `HOOKED_TOOL_NEEDS_CHROMIUM` | the tool runs scripts, and no worker is configured |
+| `TOOL_REQUIRES_UNMET` | the tool needs host APIs the in-process render host does not provide |
+| `SVG_TEMPLATE_REQUIRED` | server rendering needs an SVG template |
+| `FORMAT_NOT_ALLOWED` | tool policy does not allow the format |
+| `FORBIDDEN` | the caller lacks the permission, such as `export.server` for `render` |
+| `RENDER_BUSY` / `WORKER_UNREACHABLE` | the configured worker is at capacity or did not answer its readiness check |
+| `TOOL_UNAVAILABLE` | the deployment cannot load the tool |
+
+Compile, validate, package and the rows of `POST /api/v1/batch` check the
+caller's inputs against the same policy the schema shows. Compile and package
+refuse a locked, hidden or not-allowed input with `422` and the code the render
+route uses (`INPUT_LOCKED`, `INPUT_HIDDEN` or `INPUT_NOT_ALLOWED`), naming the
+`input`, `by` and `reason`, and compile with the locked values applied. Validate
+reports the same codes as errors and does not count a missing locked or hidden
+input against the caller. A batch row that breaks the policy fails
+`ROW_VALIDATION_FAILED` before the job is queued. Durable renders and render
+batches check the current policy at each attempt, as before, so one admitted
+before a policy change records that attempt's failure with the same codes.
+
+Design-system rules can apply to some output formats only. Compile, validate and
+package accept an optional `format`, one the tool declares, and then apply that
+format's rules, as the schema read with the same `format` shows. Without one,
+they apply only the rules every format shares, as the default schema shows. A
+batch row is checked against the rules for the batch's `format`, and a render
+against the rules for its format. Design-system rules that are not choices, such
+as a text length, are not in the schema; the render checks them and refuses a
+value that breaks one with `BRAND_RULE_VIOLATION`.
+
+The discovery routes and the schema route share the `rateLimit.automation`
+bucket. The public deployment record uses it too, so reading that record never
+costs a sign-in attempt.
+
+Discovery is served under `/api/v1` rather than `/.well-known/`, because on a
+shared origin `/.well-known/` belongs to the web shell, whose static
+`/.well-known/lolly.json` describes the shell.
+
+## Jobs, batches and provider references
 
 Pass `?async=1` or `Prefer: respond-async` to receive `202 {jobId,statusUrl}`.
 Poll `GET /api/v1/jobs/:id`, download a completed result from

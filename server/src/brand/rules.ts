@@ -51,6 +51,18 @@ export async function managedRuleContext(snap: BrandSnapshot, toolId: string, fo
     results: system ? ruleApi.resolveBrandPolicy(system, doc, toolId, format, mapping) : [{ id: 'unsupported-guide', state: 'unknown', enforced: true, reason: 'This guide version cannot be checked by this server.' }] };
 }
 
+/** The rules a request is checked against. A request that names an output format
+ *  gets that format's rules. One that names none (the default schema, a compile, a
+ *  validate, the console's org-config) gets them only when every format resolves
+ *  them the same way, so a format-scoped rule is never presented as unconditional. */
+export async function requestRuleContext(snap: BrandSnapshot, toolId: string, format?: string): Promise<ManagedRuleContext | undefined> {
+  if (format) return managedRuleContext(snap, toolId, format === 'jpeg' ? 'jpg' : format);
+  const first = await managedRuleContext(snap, toolId, 'png');
+  if (!first) return undefined;
+  const others = await Promise.all(['svg', 'jpg', 'pdf'].map(other => managedRuleContext(snap, toolId, other)));
+  return others.every(context => hash(context?.results) === hash(first.results)) ? first : undefined;
+}
+
 /** Intersect the new choices with the caller's existing restrictions; never replace authority. */
 export function projectRuleOverlay(original: ToolOverlay | undefined, context: ManagedRuleContext, groups: string[]): ToolOverlay | undefined {
   if (!context.mapping) return original;
