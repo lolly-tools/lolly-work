@@ -61,10 +61,26 @@ jobs:
           kubeconform -v
           node --test tests/helm-chart.test.ts tests/helm-profile-schema.test.ts tests/marketplace-packages.test.ts tests/marketplace-channels.test.ts
 
+  # Each architecture installs the same pinned package on its own native runner.
+  # An architecture joins qualifiedArchitectures in deploy/marketplaces/release.json
+  # only after its leg passes, and then its leg must stay required.
   neutral-compose:
-    name: Neutral Compose installation and recovery
-    runs-on: ubuntu-latest
+    name: Neutral Compose installation and recovery${{ matrix.suffix }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ !matrix.required }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            required: true
+            suffix: ''
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            required: true
+            suffix: ' (native arm64)'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -82,23 +98,24 @@ jobs:
       # Listing captures run only when a maintainer asks for them, with the
       # Chromium build pinned by the render worker's lockfile.
       - name: Install the capture browser
-        if: ${{ inputs.screenshots }}
+        if: ${{ inputs.screenshots && matrix.arch == 'amd64' }}
         timeout-minutes: 15
         run: |
           pnpm -C workers/render install --frozen-lockfile
           pnpm -C workers/render exec playwright-core install --with-deps --no-shell chromium
       - name: Boot the actual pinned neutral package and restore its database
         env:
+          LW_MARKETPLACE_ARCHITECTURE: ${{ matrix.arch }}
           LW_MARKETPLACE_RECEIPT: ${{ runner.temp }}/neutral-compose-receipt.json
-          LW_MARKETPLACE_SCREENSHOTS: ${{ inputs.screenshots && format('{0}/neutral-listing-screenshots', runner.temp) || '' }}
+          LW_MARKETPLACE_SCREENSHOTS: ${{ inputs.screenshots && matrix.arch == 'amd64' && format('{0}/neutral-listing-screenshots', runner.temp) || '' }}
         run: node scripts/qualify-marketplace-compose.ts
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: neutral-compose-${{ github.sha }}
+          name: neutral-compose-${{ matrix.arch }}-${{ github.sha }}
           path: ${{ runner.temp }}/neutral-compose-receipt.json
           if-no-files-found: error
       - name: Keep the listing screenshots for review
-        if: ${{ !cancelled() && inputs.screenshots }}
+        if: ${{ !cancelled() && inputs.screenshots && matrix.arch == 'amd64' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: neutral-listing-screenshots-${{ github.sha }}

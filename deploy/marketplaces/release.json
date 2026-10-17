@@ -21,6 +21,6 @@
     "x": "fHdyfof2ppicYg3eoDbeNxdnxjbt9KhBLsjVGso6eqo",
     "y": "SWK6wsAVjRAad2w8MxmIkTGdgNMFHhhSNdeEqfH5cVg"
   },
-  "qualifiedArchitectures": ["amd64"],
+  "qualifiedArchitectures": ["amd64", "arm64"],
   "modelOrigin": "https://lolli.li"
 }

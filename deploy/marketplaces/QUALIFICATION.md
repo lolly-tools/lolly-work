@@ -57,8 +57,33 @@ the shell in a browser. Browser use of the shell is not qualified; see
 [the listing screenshots](assets/README.md#shell-views-withheld-for-111).
 
 Still unqualified: an installed-instance **cross-version upgrade**, recovery on a
-second host, external organisation OIDC, native arm64 runtime, Dokploy UI/import/
+second host, external organisation OIDC, an arm64 provider VM, Dokploy UI/import/
 update behaviour and live Rancher installation. The infrastructure module's mocked
 CI checks are separate from this VM, which was created through UpCloud's API.
 The private host-preparation harness needed an SSH service-order correction; this
 result does not claim a one-click OS bootstrap or an end-to-end provider template.
+
+## Native arm64 in CI
+
+The same package also passes on GitHub's native `ubuntu-24.04-arm` runner. The
+Helm qualification workflow runs it as "Neutral Compose installation and recovery
+(native arm64)" on every pull request and main push, beside the amd64 job, and
+arm64 is listed in `qualifiedArchitectures` in [`release.json`](release.json) only
+while that job stays required. It first passed on 2026-10-17 in
+[PR #183](https://github.com/lolly-tools/lolly-work/pull/183) (workflow run
+39044655738, runner image `ubuntu-24.04-arm` 20261012.149). Its receipt records
+`nativeArchitecture: arm64` and the unchanged package Compose SHA-256 above.
+
+The driver refuses a runner whose Docker architecture differs from the job. It
+also checks that the server, database and proxy containers each run their native
+arm64 image, because an emulated amd64 image would report its own machine. The
+run covers a fresh container installation, HTTPS through a local test CA,
+first-owner password setup and sign-in, refusal of anonymous access and the
+development login, admitted catalogue access, a checked `asset-export` SVG,
+persistence across a server restart and a database dump restored into a second
+database.
+
+It does not cover a provider VM, public ACME, a full host reboot, member sign-in
+or restore into a separate installation. Those were checked on amd64 only. The
+render worker is not part of this package; its arm64 image is still built under
+emulation and has no arm64 runtime qualification.

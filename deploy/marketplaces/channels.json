@@ -6,7 +6,7 @@
       "name": "Container images (GHCR)",
       "route": "registry",
       "update": "The release workflow publishes signed server and render worker images for each Work release tag.",
-      "open": "Native arm64 runtime qualification.",
+      "open": "Runtime qualification of the render worker's arm64 image; the server's arm64 image passes only the CI container qualification.",
       "lifecycle": "maintained",
       "attempts": [
         {

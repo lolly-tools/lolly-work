@@ -8,7 +8,7 @@ signatures identify the upstream packages.
 
 | Route | Upstream source | Current boundary |
 |---|---|---|
-| Server and optional worker | Public `ghcr.io/lolly-tools/lolly-work-server` and `lolly-work-render-worker` | Signed 1.1.1 images are published for amd64/arm64. Native runtime qualification is amd64; arm64 remains open |
+| Server and optional worker | Public `ghcr.io/lolly-tools/lolly-work-server` and `lolly-work-render-worker` | Signed 1.1.1 images are published for amd64/arm64. The neutral package's server passes native container qualification on amd64 and arm64 in CI. The render worker's arm64 image has no runtime qualification |
 | Helm and Rancher | [Work chart](https://github.com/lolly-tools/lolly-work/tree/main/deploy/helm) | Chart 0.3.2 and HTTP publication workflow are prepared. The repository URL becomes live after its first successful publication; Artifact Hub registration/badges remain pending |
 | Neutral VM / private server | [Shared distribution package](https://github.com/lolly-tools/lolly-work/tree/main/deploy/marketplaces) | Pinned 1.1.1 server, complete matched neutral shell and PostgreSQL. Fresh provider acceptance must be recorded for each target |
 | UpCloud | [Infrastructure module](https://github.com/lolly-tools/lolly-work/tree/main/deploy/upcloud) plus the neutral VM package | [Ubuntu 24.04 amd64 reference](https://github.com/lolly-tools/lolly-work/blob/main/deploy/marketplaces/QUALIFICATION.md): fresh install, public HTTPS, native owner/member sign-in, checked SVG, reboot and independent application restore passed. Cross-version upgrade and second-host recovery remain open; module checks are separate |
