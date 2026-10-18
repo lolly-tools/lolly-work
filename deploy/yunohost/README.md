@@ -21,11 +21,54 @@ The `1.1.1~ynh1` package is a beta test candidate. Its server is Work 1.1.1,
 archived from `c2036a85c53c76bd8b7917a05aef41268103e2b3` and released as tag
 `v1.1.1`, with Lolly `26cf05324f46dc4cacd65d12d6f454ada181fb5e` and engine `1.261`.
 The neutral, signed web shell loads models from `https://lolli.li`. Source CI and
-archive checks passed. Its runtime results are added here after the
-`yunohost-runtime.yml` run on the mirror commit; until then the package is not
-runtime-qualified. The upgrade test starts from the `1.1.0~ynh3` package, and
-`arm64` installation remains unqualified. There is no catalog promotion. Keep a
+archive checks passed, and all seven official runtime checks passed on `amd64`
+(see [Runtime results](#runtime-results)). No `arm64` installation has been run.
+The package keeps its beta label and there is no catalog promotion. Keep a
 verified backup and complete a restore test before upgrading an existing instance.
+
+## Runtime results
+
+### `1.1.1~ynh1` on amd64
+
+[Run 38805424968](https://github.com/lolly-tools/lolly-work/actions/runs/38805424968)
+on 2026-10-15 checked mirror commit `399f670e571148498d217560b3f96acbf2e8f7fa`,
+which is the `v1.1.1-ynh1` tag. It ran on `amd64` Debian Bookworm with YunoHost
+12.1.41.2 (stable), the official `package_check` at
+`f7d32cadac3cfced282decede024707fba9e6ec6` and the package linter at
+`c1a7491aab2c22d28b220330513e9555a8da3a1d`. All seven checks passed:
+
+| Check | Result |
+|---|---|
+| Package linter | Passed, with 2 warnings |
+| Installation at the domain root | Passed |
+| Multiple-instance installation | Passed |
+| Backup and restore | Passed |
+| Upgrade from the same version | Passed |
+| Upgrade from `1.1.0~ynh3` (mirror commit `583cdc4a`) | Passed |
+| URL change | Passed |
+
+The two linter warnings are that this README was not made by YunoHost's README
+generator and that the app has no category in YunoHost's catalog.
+
+The run is still marked as failed. Its last step also requires `package_check`
+levels 1 to 5, and the linter's catalog checks count against two of them. The app
+is not in YunoHost's catalog, which the linter reports as critical, so level 1
+fails. It is not flagged as working there, which the linter reports as an error,
+so level 5 fails. The reported global level is therefore 0. Both findings are
+about catalog publication, which has not happened. No installation, upgrade,
+recovery or URL-change check failed. The run uploaded its results file and
+original logs as an artifact, kept for 14 days.
+
+### arm64
+
+Not yet run. The runtime workflow is fixed to `amd64`, and YunoHost's test image
+index, as fetched in that run, lists Bookworm images for `amd64` only, so this
+workflow cannot produce an `arm64` result as it stands. The neutral Compose
+package passes on a native arm64 runner (see its
+[qualification record](https://github.com/lolly-tools/lolly-work/blob/main/deploy/marketplaces/QUALIFICATION.md#native-arm64-in-ci)),
+but that job does not install this package, so it is not a YunoHost result.
+
+### Earlier candidate
 
 The previous `1.1.0~ynh3` candidate passed six runtime checks on `amd64` Debian
 Bookworm in [run 38284099878](https://github.com/lolly-tools/lolly-work/actions/runs/38284099878).
@@ -92,9 +135,12 @@ The workflow uses a fresh Ubuntu runner and the official Incus package checker.
 It requires successful root and multiple-instance installation, upgrade,
 backup/restore and URL-change results for the selected package. `tests.toml`
 also upgrades from mirror commit
-`583cdc4af5322e683991a548428859b79084db2d` (`1.1.0~ynh3`). Its original logs and
-checker revisions are uploaded even on failure; preserve those results when
-reporting candidate status.
+`583cdc4af5322e683991a548428859b79084db2d` (`1.1.0~ynh3`). Its last step also
+requires `package_check` levels 1 to 5. While the package is outside YunoHost's
+catalog, the linter's catalog findings keep levels 1 and 5 from passing, so the
+run is marked as failed even when every check passes. Its original logs and
+checker revisions are uploaded even on failure; preserve those results and give
+each check's result when reporting candidate status.
 
 ## Layout
 
