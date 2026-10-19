@@ -50,7 +50,7 @@ Consent requires an owner browser session, `LW_CREDENTIAL_SECRET` and an HTTPS i
 replaces any earlier pending consent; finish it within ten minutes in the same signed-in
 session. Cancelling, missing offline permission or a failed exchange retains the prior
 credential. **Continue setup** resumes a saved source after closing the panel or restarting
-the server. Disable an enabled source before editing or reconnecting it. Config-managed or
+the server. Disable an enabled source before editing or reconnecting the source. Config-managed or
 advanced settings continue through their existing API/CLI contract.
 
 For an organization-only Workspace app, configure the appropriate internal audience and

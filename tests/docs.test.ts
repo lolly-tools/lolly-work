@@ -1,8 +1,8 @@
 /**
  * The deployment docs surface: GET /api/v1/docs (manifest index) and
  * GET /api/v1/docs/:slug (markdown). Manifest-allowlisted, with the open-source
- * /info/ link present exactly when a Lolly deployment is reachable from this
- * deploy (appUrl set, or a served shellDir). Readable without a session on the
+ * canonical /info link present even on a Work-only deployment. Readable without
+ * a session on the
  * public sandbox (dev.enabled - the landing links straight here); member-only on
  * a governed deploy.
  */
@@ -127,19 +127,17 @@ test('a governed (non-dev) deploy keeps the docs member-only', async () => {
   assert.equal(cfg.publicDocs, false);
 });
 
-test('the open-source /info/ link tracks whether a Lolly deployment is reachable', async () => {
+test('the complete documentation link always opens the canonical entrance', async () => {
   const index = async (b: string) => {
     const res = await fetch(`${b}/api/v1/docs`, { headers: { cookie: await login(b) } });
     return await res.json() as DocsIndex;
   };
-  // No shell served and no appUrl ⇒ nothing to link to.
-  assert.equal((await index(base)).oss, undefined);
+  assert.equal((await index(base)).oss?.url, 'https://lolly.tools/info');
 
   const split = await boot({ appUrl: 'https://lolly.example.com' });
-  assert.equal((await index(split)).oss?.url, 'https://lolly.example.com/info/');
+  assert.equal((await index(split)).oss?.url, 'https://lolly.tools/info');
 
-  // Same-origin shell ⇒ a relative /info/ on this deploy. (buildApp only needs
-  // the path to be configured; dist freshness is a boot check in main.ts.)
+  // A same-origin shell keeps the canonical public documentation entrance.
   const sameOrigin = await boot({ shellDir: '/nonexistent-dist' });
-  assert.equal((await index(sameOrigin)).oss?.url, '/info/');
+  assert.equal((await index(sameOrigin)).oss?.url, 'https://lolly.tools/info');
 });

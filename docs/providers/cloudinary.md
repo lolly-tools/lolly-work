@@ -20,7 +20,7 @@ folder permissions; configure Work exposure explicitly.
 
 Store JSON containing `apiKey` and `apiSecret` in the write-only credential control or through
 `lw providers credential cloud-media`. Do not put either value in options, argv or a URL.
-For config-managed sources, `credentialRef` names an environment variable containing that JSON.
+For config-managed sources, `credentialRef` identifies an environment variable containing that JSON.
 The API secret signs short-lived server-side downloads. No secret or signed URL enters the feed.
 
 ## instance.json

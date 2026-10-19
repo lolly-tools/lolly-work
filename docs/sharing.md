@@ -18,7 +18,7 @@ engine → resolve overlays for the caller's groups → refuse or bake locked in
 optionally watermark → optionally embed provenance / sign → cache.
 
 - **Authorization:** a signed-in caller needs `export.server` (admin default, grantable). A
-  guest admitted to *that tool* may render it. Under `gated` mode, no principal at all is a
+  guest admitted to *that tool* may render that tool. Under `gated` mode, no principal at all is a
   `401`.
 - **Policy first:** a caller-supplied value for a `locked` input is a `422 INPUT_LOCKED`; the
   locked value is baked in regardless of the query. `hidden` inputs are absent from the
@@ -41,7 +41,7 @@ optionally watermark → optionally embed provenance / sign → cache.
 ```
 POST /api/v1/links      { kind, target, ttlHours?, password?, projectId? }
 GET  /l/:id?s=<sig>
-POST /l/:id?s=<sig>     { password } or, on a guest link's landing, { name, password? }
+POST /l/:id?s=<sig>     { password }
 POST /api/v1/links/:id/revoke
 GET  /api/v1/links[?all=1]
 ```
@@ -60,28 +60,7 @@ is ignored). Optional passwords are scrypt-hashed; see [Password links](#passwor
 
 Failure modes are distinct and honest: `403 BAD_SIGNATURE`, `410 LINK_EXPIRED`,
 `410 LINK_REVOKED`, `401 PASSWORD_REQUIRED`, `401 PASSWORD_INCORRECT` and
-`429 PASSWORD_LOCKED`. An API client gets them as JSON. A browser (a request that accepts
-`text/html`) gets a short page instead that says what happened in words: the link does not
-work, has ended, was turned off by the person who shared it, or has had too many wrong
-passwords.
-
-### Guest links in a browser
-
-A browser that opens a `guest-edit` link gets a landing page, not JSON. It says who invited
-them and to which tool, when the link ends (in UTC, since the page runs no script), and asks
-for their name, and for the password when the link has one. Opening the page admits nobody,
-so a chat preview or a mail scanner that fetches the link is not counted as a guest.
-
-**Join as a guest** posts the form to the link's own address. The server then checks the
-password, sets the `lw_guest` cookie, records one `guest.admit` audit entry and answers `303`
-into the app at the link's tool, with the inputs the link was made with
-(`/#/tool/<toolId>?…`, under `instance.appUrl` on a split deployment). The app lets a guest
-past its sign-in screen. A wrong password shows the landing again with the reason and keeps
-the name typed. When guest links are switched off (`policy.guestLinks.enabled: false`), or
-the person who made the link can no longer share it, the page says so and admits nobody.
-
-An API client that sends no `Accept: text/html` keeps the older answer: `GET /l/:id` with an
-optional `&name=` sets the cookie and returns `{ kind, toolId, sessionRef, guest }` as JSON.
+`429 PASSWORD_LOCKED`.
 
 ### Password links
 
@@ -132,7 +111,7 @@ Two checks, at two different times, and both matter:
 `download` sets `Content-Disposition: attachment`; `share` and `embed` serve inline. Either
 way the bytes carry the same private, no-CDN cache headers as `/catalog/*` plus a
 content-security policy that sandboxes them and allows no script, so a shared SVG cannot
-execute as the person who opens it. An old
+execute as the person who opens the link. An old
 federated id keeps resolving after [an exit](offboarding.md) through its alias. TTL, passwords,
 revocation, audit and `link.visit` telemetry are unchanged - an asset link is an ordinary link
 that happens to point at an asset, and the console's Links view lists it as one.
@@ -168,7 +147,7 @@ named for the asset and de-duplicated. A set too large to zip is refused up fron
 truncated silently.
 
 **Expiry is enforced from the signature alone**, so a link outlives a lost database row only
-until its own expiry. **Revocation is immediate** and kills live guest sessions with it. A
+until its own expiry. **Revocation is immediate** and kills live guest sessions using that link. A
 member can always revoke their own link; revoking someone else's needs `link.revoke`.
 
 Guest links are additionally capped by `policy.guestLinks.maxTtlHours` and can be disabled
@@ -180,7 +159,7 @@ URL, a one-click copy, its status and its expiry.
 ## Preview watermarking
 
 `enforce.watermark` on a tool overlay injects a diagonal, tiling **PREVIEW** brick pattern
-into the SVG root before any rasterisation, so both `svg` and `png` carry it. Alternating
+into the SVG root before any rasterisation, so both `svg` and `png` carry the watermark. Alternating
 brick rows use `#0002` and `#fff2` so it reads on light and dark artwork alike.
 
 `always` and `never` are fully wired. `until-approved` is the intended pairing with an
@@ -237,7 +216,7 @@ current owner or `project.manage`.
 
 ### People and roles
 
-Everyone who can see a project has one role on it. The highest of these applies:
+Everyone who can see a project has one role on that project. The highest of these applies:
 
 | Role | Who has it | What they may do |
 |---|---|---|
@@ -371,11 +350,11 @@ starts ticked when every address is at a domain in `policy.invites.passwordDomai
 A manager withdraws an invitation from the project with
 `DELETE /api/v1/projects/:id/invitations/:invitationId`. When a project invite created the
 invitation (`createdVia: "project"`) and no project is left on it, the invitation is revoked
-too, so the address can no longer sign in through it. An invitation made in the console only
+too, so the address can no longer sign in through that invitation. An invitation made in the console only
 loses the project: whether it still admits the person is for an admin to decide in People.
 An invitation accepted in the meantime is never revoked by this route.
 
-Someone who is already on a project is never also listed as invited to it. When a person
+Someone who is already on a project is never also listed as invited to that project. When a person
 becomes a member or the owner, by an invite, by accepting an invitation for another of
 their addresses, or by a transfer, the project comes off any pending invitation for an
 address they hold, and a project-made invitation left with no projects and no groups is
@@ -386,7 +365,7 @@ may be how that person gets in the first time.
 
 A person can also come to hold an invited address without accepting anything, for example
 by adding a sign-in for that address from their profile. The members list leaves such an
-invitation out only while accepting it would change nothing. When it names a higher role
+invitation out only while accepting it would change nothing. When it identifies a higher role
 than the person has on the project, it stays listed, because their next sign-in with that
 address raises them to that role. A manager who does not want that withdraws the invitation.
 
@@ -416,7 +395,7 @@ invite **new** people and on what terms:
 The tier and the domain list apply to invitations, which let a new person in, from a
 project or from the console and `lw invite add` alike. Sharing a project with someone who
 already has an account, or giving their account groups in the console, needs manager on the
-project (or the console's own checks) and an allowed role, and nothing else. `maxTtlHours`
+project (or the console's own checks) and an allowed role. `maxTtlHours`
 is for invitations made from a project; the console sets its own expiry. Lolly reads `can['user.invite']` and `invites` (`domains`,
 `maxTtlHours`, `projectRoles`) from `GET /api/v1/org-config` to offer only what the server
 accepts; older servers send neither, and Lolly then hides inviting. The same `invites` block
@@ -458,9 +437,9 @@ checked again on every list and answer, against the project stored on the reques
   answered and how ("Priya already approved this"), and nothing changes.
 - **Access another way.** When the person is added to the project with that role or a
   higher one, by an invite, a share or an accepted invitation, their open requests for it
-  close as `superseded`. Nobody gets a second notice; the share covers it.
+  close as `superseded`. Nobody gets a second notice; the share covers that access.
 - **Expiry.** A request expires after `policy.requests.ttlDays` (14 days), and its notice
-  with it.
+  expires at the same time.
 - **Limits.** One open request per person and project, and 20 requests a day per
   requester (`429 RATE_LIMITED` past that).
 
@@ -491,7 +470,7 @@ an answer or acceptance notice for 30 days at most.
 
 Comment notices (`kind: "comment"`, id `cn_…`) work differently. There is one per person
 per thread, updated as replies arrive. It stores no text and no names: the inbox writes
-the title, the excerpt and the names each time it is read, so an edited or deleted
+the title, the excerpt and participant labels each time it is read, so an edited or deleted
 message never lingers there. It is shown only while the person can still open the
 document and read its comments. Dismissing it removes it, and the next reply brings it
 back. Reading the thread in Lolly removes it too. The [API reference](api.md#approvals-and-inbox)
@@ -580,7 +559,7 @@ small hosted Postgres, which holds the file bytes as well. The file list reports
 `projectUsedBytes` and `instanceRemainingBytes` so Lolly can say how much room is left.
 
 Deleting a file that a live session in the project still uses is refused with
-`409 FILE_IN_USE`, naming those sessions; that session would otherwise open without it. A
+`409 FILE_IN_USE`, naming those sessions; that session would otherwise open without the file. A
 manager can delete it anyway with `?force=1`. Every finished upload is audited as
 `project.file-upload`, every rename as `project.file-rename` and every delete or cancel as
 `project.file-delete`. A person's

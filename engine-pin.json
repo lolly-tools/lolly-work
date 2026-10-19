@@ -1,17 +1,17 @@
 {
-  "generatedFrom": "beb603c297b157a3f97bb162f31824af09f4205d",
+  "generatedFrom": "d37a712abd27ff89fb36469a5884a56db82253f8",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
-    "version": "1.4.0",
-    "tarball": "lolly-tools-core-1.4.0.tgz",
-    "tarballSha256": "5cdfde9e7caae4f9ea381a9a5e1e1cac95045e3813641005ae9819074b479738",
-    "contentHash": "d0adc662ae2460201825e398087cf41fdbf94dde2d0553129c85c1ef1188ea69"
+    "version": "1.5.0",
+    "tarball": "lolly-tools-core-1.5.0.tgz",
+    "tarballSha256": "daeba95807a6cbf63f1585a932f24853238921ef258bbab0978335cdbe9d879d",
+    "contentHash": "215bb212c0a3b60a47db54798e1ee0e3f591d1cdee0396b80de5b2bd602995a4"
   },
   "engine": {
-    "version": "1.261.0",
-    "tarball": "lolly-engine-1.261.0.tgz",
-    "tarballSha256": "40f134a6a6ac1f5fc1c62d4fa7062964f1b1cd871139eeab5d6bcdca57465098",
-    "contentHash": "f54b6be4a65dbfa95761d52e2cf3f6e94c5bb7405a12917c1da40bf71568f011"
+    "version": "1.280.0",
+    "tarball": "lolly-engine-1.280.0.tgz",
+    "tarballSha256": "43246cfb58864475421d1e8b34dbc04a2721cce295ef4d69024f745b9cd71165",
+    "contentHash": "aacd07c28f278ddabe38764cc463d56c5eb4c4dea9407071cd6fdc97b1c632e6"
   },
   "schemas": {
     "asset-ref.schema.json": "e07d85d6db6c3a7c88190c86a4779707e2b073ce17dbaa9bb355ed2c015fcdae",
@@ -23,7 +23,7 @@
     "canvas-op.schema.json": "c9cfbdd56a0e6c1dd81ddebe5ac7b9e4fc8ce5a789c708123b069b523eb15e60",
     "chart-v1.schema.json": "7bc73ce09be779f9ba04ad7c2a0f872f5c663dc39558c81a74bf8295b272e822",
     "check-report-v1.schema.json": "907111ca5c75d11b72e90c087e884a9ca2312e526125b9db1953641a0c341561",
-    "content-inventory-v1.schema.json": "fc6e0a75509e4c6fb6b3709be65fb600528b7e3064ad6be25e21246879b349c6",
+    "content-inventory-v1.schema.json": "45790bac7659a17fe6ee58dde1b882bf81b66afcbdf09f486b29ccf0248352c0",
     "design-authoring-v1.schema.json": "0a41529dc27ef1eb98183c5851b60dad9965e47ad1b23d1fa5bcb53991fdaa3f",
     "design-compose-v1.schema.json": "97af1b80fd2e82fe4470ca23735ebc7b8bade0c75beb2faf85f559d8d8c875cb",
     "design-package-v1.schema.json": "07177ea87ede6a30cebf3ffced43738a35505c01b5c099ea111c68e4f0729239",
@@ -34,6 +34,7 @@
     "file-operation-report-v1.schema.json": "f95969fd3f0f5099ef642679e079de1eec7432b73275dfc1772e25a79b0447d7",
     "file-operation-request-v1.schema.json": "20ca45779c17949e4d5a8482209106fd9be768ff89ee71127624860d8d2c13e2",
     "ratecard.schema.json": "e164d8ce234279c04877511cb9673cc721d0118647cdae0401246c8f35d0b777",
+    "read-extract-v1.schema.json": "f61b40c61a5ac3cfdf9202aa25a1467edd43acaddf22d9bed297edb05a9b2d03",
     "rebrand-census-v1.schema.json": "174fca1471739bd5bd01fae50c1a95a07326ed2f51580bac2ee39e04457370c7",
     "rebrand-compiled-v1.schema.json": "b931daa79f5c03f5d256371afef07f467da6416991bbf62704c935cf9018d6e5",
     "rebrand-plan-v1.schema.json": "381b0cccffc71b408fdc706dbee683d3c67a3d9b894146338270575f351a8a3a",
@@ -46,6 +47,6 @@
     "text-frame-v1.schema.json": "4da9745015da8dfd75e60f7e15300604eeedd4902bca7a049d063a396455f069",
     "text-measure-v1.schema.json": "6a3b17fdc8d7d8769d723724b73dabd3d5d74c77df577480a9c42cfcb0a0e976",
     "tokens.schema.json": "012f3050656230bb609eb841c6a7e42a3cfa4088c7c3b938a561a81d3fa13dcc",
-    "tool.schema.json": "d2201e980480eaa6469d91e7882d626c1c2718f688581db6a5d787a4af6c988e"
+    "tool.schema.json": "81bee1d6cb0da5b280e10455338080f8a7278fd4317630ac1348b0bd2527465f"
   }
 }

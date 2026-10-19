@@ -36,7 +36,7 @@ fails the check. Each XML listing is capped at 2 MiB and the whole preview has a
 deadline. This sample does not verify every file, future access or a complete tenant contract.
 
 After a successful preview, an owner can choose **Save source and seal credential**. This
-creates a disabled source and verifies the credential again before sealing it. Set
+creates a disabled source and verifies the credential again before sealing the credential. Set
 `LW_CREDENTIAL_SECRET` in the server environment first. If credential storage fails, the
 panel keeps the same disabled source and offers **Retry credential**. Closing leaves the
 saved source disabled; continue from its source row. After a lost response or reload, inspect
@@ -44,7 +44,7 @@ that row before retrying creation with the same id.
 
 Choose **Sync and enable source** when the folder and groups are correct. The app runs a full
 sync first and leaves the source disabled if listing fails or finds no exposed files. It then
-checks health again and enables it. Disabling from the source row stops future federation.
+checks health again and enables the source. Disabling from the source row stops future federation.
 Admins with configuration access can save a disabled source and hand credential storage and
 activation to an owner. Config-managed sources stay read-only here: change their deployment
 source and redeploy. Other provider kinds retain their advanced forms and documented consent
@@ -83,7 +83,7 @@ Complete the [live-verify runbook](webdav-live-verify.md) for customer acceptanc
   The driver appends `options.root` and nothing else.
 - **A read-only account**, over HTTP Basic. Point it at a read-only mount, or give the account no
   write permission; the driver issues only `PROPFIND` and `GET`.
-- **That `PROPFIND` with `Depth: 1` reaches the server.** A reverse proxy in front of it often
+- **That `PROPFIND` with `Depth: 1` reaches the server.** A reverse proxy in front of that server often
   passes `GET` and drops every other method, which reads as a `405` on the first health check.
 - **HTTPS.** The credential is HTTP Basic, so a plaintext hop hands the password to the network.
 
@@ -180,11 +180,11 @@ and the credential.
 |---|---|
 | `webdav propfind 401 - the server rejected the credential` | Wrong login, wrong password, or the **account** password where an app password is required. |
 | `webdav propfind 403 - the server rejected the credential` | The credential parsed and the server refused it for this path. Usually that account may not read the folder: check the share in the Nextcloud UI. |
-| `webdav propfind 404 for /remote.php/dav/files/…` | The files root is wrong: usually `options.username` is the display name rather than the login, or `options.root` names a folder that account cannot see. |
-| `webdav propfind 405 for /…` | The server, or a proxy in front of it, does not allow `PROPFIND`. |
+| `webdav propfind 404 for /remote.php/dav/files/…` | The files root is wrong: usually `options.username` is the display name rather than the login, or `options.root` identifies a folder that account cannot see. |
+| `webdav propfind 405 for /…` | The server, or a proxy in front of that server, does not allow `PROPFIND`. |
 | `webdav propfind 301 for /… - the server redirected, sending it to …` | The server wants a different URL, usually the trailing slash on a collection or an `options.baseUrl` that is one hop off. The driver refuses every redirect, on either method, so it never streams another origin's bytes as your asset. |
 | `webdav credential must be "<username>:<password>" …` | The sealed string is neither documented form. Nothing was fetched. |
-| `none of the N resource(s) PROPFIND returned sit under the files root this driver built` | The server answered, but names its resources by a different path - a proxy rewriting the prefix, or the wrong login. |
+| `none of the N resource(s) PROPFIND returned sit under the files root this driver built` | The server answered, but identifies its resources by a different path - a proxy rewriting the prefix, or the wrong login. |
 
 To see what your server actually carries, property names and value types only, never values. This
 one asks with `<d:propname/>`, so it reports every property your server holds rather than only the
@@ -195,7 +195,7 @@ lw providers preview --kind webdav --shape --options '{"baseUrl":"https://cloud.
 ```
 
 Run the [WebDAV live-verify runbook](webdav-live-verify.md) against a real server before you
-commit to this kind: it is the ordered pass that confirms every assumption below and names the
+commit to this kind: it is the ordered pass that confirms every assumption below and identifies the
 constant to edit when one is wrong.
 
 ## Notes / limits

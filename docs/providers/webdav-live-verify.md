@@ -47,7 +47,7 @@ root returned a multistatus, which is rows 1, 2, 3 and 6 all at once.
 | `health FAILED: webdav propfind 403 - the server rejected the credential` | the credential is real, this path is not readable by it | The share or the mount permission, not the driver. |
 | `health FAILED: webdav propfind 404 for /remote.php/dav/files/…` | the server answered and that path is not there | Rows 1 and 2. The printed path is exactly what the driver built, so compare it against the URL your browser shows. |
 | `health FAILED: webdav propfind 405 for /…` | `PROPFIND` did not reach the server | A reverse proxy passing only `GET`, or `Dav On` missing. Row 3. |
-| `health FAILED: webdav propfind 301 for /… - the server redirected, sending it to …` | the server wants a different URL | Almost always the trailing slash on a collection (row 3); the message names the host and path it was being sent to, so compare that against `options.baseUrl`. This driver refuses every redirect rather than following it, because following one is how a pinned host stops being pinned. |
+| `health FAILED: webdav propfind 301 for /… - the server redirected, sending it to …` | the server wants a different URL | Almost always the trailing slash on a collection (row 3); the message identifies the host and path it was being sent to, so compare that against `options.baseUrl`. This driver refuses every redirect rather than following it, because following one is how a pinned host stops being pinned. |
 | `health FAILED: webdav PROPFIND answered without a multistatus root element (live-verify: …)` | something answered, and not with RFC 4918 XML | Row 6, or a captive portal or proxy error page in front of the server. |
 | `health FAILED: webdav credential must be "<username>:<password>" …` | the sealed string is neither documented form | No request left the process. |
 
@@ -64,14 +64,14 @@ lw providers preview --kind webdav --shape \
 ```
 
 The file holds one report for a `PROPFIND` with `Depth: 1` on the files root, asked with
-`<d:propname/>`: names only, no values, no file content, no hrefs - a request that named
+`<d:propname/>`: property identifiers only, no values, no file content, no hrefs - a request that named
 properties would get back only what it named (RFC 4918 section 9.1) and could never say what
 the server calls a property instead. The Nextcloud endpoint line prints
 `/remote.php/dav/files/<username>/` with the real login masked (it is half the Basic
 credential). The prompt goes to stderr. Read the three groups in this order:
 
 1. **EXPECTED BY THIS DRIVER, ABSENT** - the wrong guesses, and the answer this page exists for.
-   Each entry reads `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen.
+   Each entry reads `key|alternatives (CONSTANT_NAME)`, so it identifies the constant to widen.
    `(none)` means every guess matched.
 2. **IN THE RESPONSE, NOT MAPPED** - every other property your server carries on these resources.
    This is where a custom property carrying a date will show up, and it is the fix for an absent
@@ -128,7 +128,7 @@ lw providers sync acme-nextcloud           # federate: confirm the count, read e
 ```
 
 Read the sync output for three things: the **count** against what that folder holds; the
-**sections**, which should be the subdirectory names one level per directory; and any **note**.
+**sections**, which should be the subdirectories, one level per directory; and any **note**.
 Two notes are bounds rather than errors - `webdav stopped queueing directories at MAX_DIRS` and
 `webdav walked MAX_DIRS (500) directories and stopped` - and both mean the tree is bigger than
 one pass, so narrow `options.root`. A `skipped` count with no note is two things added together:
@@ -145,7 +145,7 @@ lw providers materialize acme-nextcloud --json
 ```
 
 Every per-asset failure prints under the summary as `<remoteId>: <message>`, and each message
-names the assumption, the constant and this page. To check fidelity by hand, take one remote id
+identifies the assumption, the constant and this page. To check fidelity by hand, take one remote id
 from that output - it is base64url of the file's path under the root - and fetch the blob:
 
 ```bash
@@ -155,7 +155,7 @@ shasum -a 256 /tmp/webdav-lolly.bin
 ```
 
 The format segment is `file`: a WebDAV file has exactly one format, its own bytes, and the byte
-path is a plain `GET` of the same URL the listing named, with no second call to describe it.
+path is a plain `GET` of the same URL the listing named, with no second call to describe the asset.
 Download the same file from the server's web UI and checksum that too. They must match exactly -
 WebDAV serves no renditions, so a mismatch is a real defect rather than a conversion, and is worth
 reporting immediately. A failure on the blob route surfaces as `502 PROVIDER_UNAVAILABLE`; the

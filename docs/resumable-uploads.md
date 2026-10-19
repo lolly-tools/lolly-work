@@ -1,7 +1,7 @@
 # Resumable uploads
 
 Decision record, 2026-10-17. It chooses the protocol for every upload into Lolly
-Work that may be larger than one request, and names the one primitive that project
+Work that may be larger than one request, and defines the shared primitive that project
 files, catalog submission, session staging and automation share. The routes are in
 the [API reference](api.md#project-files) and the limits in
 [configuration](configuration.md#policy).
@@ -11,7 +11,7 @@ the [API reference](api.md#project-files) and the limits in
 Work takes files in from four places:
 
 - **Project files.** Members share files inside a team project. They are also how a
-  session stages its images: a session saved in a project names each image as a
+  session stages its images: a session saved in a project identifies each image as a
   project file (`user/team/<file id>`), so every member who opens it gets the same
   bytes, and a render reads them through its read ticket. An earlier design for a
   separate per-session relay was never built; project files took its place.
@@ -92,7 +92,7 @@ alive; only an accepted part does.
 `server/src/uploads/parts.ts` is the shared primitive: the manifest rules, storing a
 verified part, the resume report, the running digest that spares finalize a second
 read, the finalize check and the verified read. Each scope keeps its own record,
-authorization, budget and lifetime over it.
+authorization, budget and lifetime for the shared upload process.
 
 | Scope | Record | Who may begin | Who may send, resume and finish | Lifetime | Used by |
 |---|---|---|---|---|---|

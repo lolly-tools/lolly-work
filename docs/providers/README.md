@@ -15,7 +15,7 @@ reviewed activation. Google Drive captures consent in the browser using your reg
 client. The other kinds currently use their advanced forms or CLI consent flows below.
 
 Open and sovereign sources lead the table: a server you run yourself is the first thing to reach
-for, and the vendor platforms below it are mostly sources you are federating in order to leave.
+for, and the vendor platforms below that table are mostly sources you are federating in order to leave.
 
 | Kind | Auth | Guide |
 |---|---|---|

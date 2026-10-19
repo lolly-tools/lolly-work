@@ -24,14 +24,14 @@ RUN pnpm install --frozen-lockfile --prod
 RUN rpm -e npm24 && zypper --non-interactive clean --all && \
     node --version && pnpm --version
 
-COPY tsconfig.json engine-pin.json content-resolver-pin.json ./
+COPY tsconfig.json engine-pin.json content-resolver-pin.json docs-pin.json ./
 COPY sbom.cdx.json THIRD-PARTY-NOTICES.md LICENSE ./
 COPY server ./server
 COPY console ./console
 COPY docs ./docs
 COPY migrations ./migrations
 COPY scripts ./scripts
-RUN node scripts/console-assets.ts && node scripts/verify-engine-pin.ts && node scripts/check-release-capabilities.ts
+RUN node scripts/console-assets.ts && node scripts/verify-docs-pin.ts && node scripts/verify-engine-pin.ts && node scripts/check-release-capabilities.ts
 RUN mkdir -p packs
 COPY packs/demo ./packs/demo
 

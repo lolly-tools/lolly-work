@@ -2,7 +2,7 @@
 
 Members can invite a named agent from a shared Design document. An invitation delegates the member's identity, with viewer or editor access to that document for one hour to seven days. It creates no account or project membership. An editor invitation cannot exceed the member's current permissions. Project access removal, account disablement, expiry and revocation stop access.
 
-The server stores only the SHA-256 hash of the random connection key. The plaintext key is returned once. Keep it in the agent's private MCP configuration. The invitation list never returns it. The inviter or a project manager can revoke an invitation. HTTP DELETE on the MCP endpoint disconnects the agent's live room connection; revoking the invitation invalidates the key.
+The server stores only the SHA-256 hash of the random connection key. The plaintext key is returned once. Keep it in the agent's private MCP configuration. The invitation list never returns the key. The inviter or a project manager can revoke an invitation. HTTP DELETE on the MCP endpoint disconnects the agent's live room connection; revoking the invitation invalidates the key.
 
 The Streamable HTTP MCP endpoint is `/api/workspace/mcp`. Each request uses `Authorization: Bearer <connection key>`. Cookies alone do not admit an agent. The endpoint validates any supplied Origin header, bounds request size and rate, and accepts MCP protocol versions 2025-03-26, 2025-06-18 and 2025-11-25. It returns JSON and does not offer an SSE stream.
 
@@ -33,7 +33,7 @@ Project creation and file tools work on hosts without a live collaboration gatew
 
 The audit trail records invitation and revocation by the member, agent connections and disconnections, and every authenticated tool call, including reads, refused calls and partially accepted edit batches. Agent events carry `agentId`, `agentLabel`, `invitedBy` (`user:<id>`), `actingFor`, and the project or document scope from the server’s invitation record. Tool-call events add the tool name, outcome and operation counts when available; credentials and document arguments are not copied into those events. Project operations routed through REST preserve the same agent attribution.
 
-The console activity timeline names the agent and links its inviter to People. Agents can be filtered individually; filtering by a person or group also includes their invited agents. Older agent join, leave and project-write events that already identify the inviter are displayed as agent activity. Where the inviter is unknown, the timeline leaves that attribution absent.
+The console activity timeline identifies the agent and links its inviter to People. Agents can be filtered individually; filtering by a person or group also includes their invited agents. Older agent join, leave and project-write events that already identify the inviter are displayed as agent activity. Where the inviter is unknown, the timeline leaves that attribution absent.
 
 This records the user who created the workspace invitation. It cannot identify which local process launched an agent or who later used a forwarded connection key.
 
@@ -59,9 +59,9 @@ while visible every 15 seconds, preserves a table being searched or focused,
 and stops refreshing after navigation or permission loss.
 
 Agents remain distinct from human users in the Activity timeline. Each delegated
-action names the agent and its inviter; filtering a person or group also includes
+action identifies the agent and its inviter; filtering a person or group also includes
 work delegated by that person. An invitation or revocation remains attributed to
-the human who performed it. Legacy agent room events are recognised without
+the human who performed the action. Legacy agent room events are recognised without
 rewriting the audit chain.
 
 ## Reported agent client and model

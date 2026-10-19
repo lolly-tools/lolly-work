@@ -84,7 +84,7 @@ function embedShotStyle(svg: string): string {
 
 const PORT = Number(process.env.PORT ?? 8799);
 const BASE = `http://localhost:${PORT}`;
-const OUT_DIR = join(ROOT, 'docs', 'shots');
+const OUT_DIR = process.env.LW_DOCS_OUTPUT_ROOT ? resolve(process.env.LW_DOCS_OUTPUT_ROOT) : join(ROOT, 'docs', 'shots');
 const WALKER_BUNDLE = join(ROOT, 'scripts', 'lib', 'walker-bundle.js');
 const VIEWPORT = { width: 1440, height: 900 };
 const ADMIN_PERSONA = 'docs-owner@example.invalid';

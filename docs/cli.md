@@ -4,7 +4,7 @@ A thin wrapper over the same API the console uses, so the two grow in parity by
 construction. Run it as `pnpm run cli <args>` from the repo, or `node cli/lw.ts`. To get
 the plain `lw` the examples below use, run `npm link` once in the checkout - that is the
 only thing that puts it on `PATH` (it is not in the container image or the Helm pod, so
-`lw` drives a deploy from a checkout, not from inside it).
+`lw` drives a deploy from a checkout, not from inside the deployment).
 
 ```bash
 export LW_BASE=https://lolly.example.com    # or pass --base <url>
@@ -51,7 +51,7 @@ lw instance pack-rm                      # stop hosting it
 The pack is cut in the OSS repo (`node scripts/build-instance-pack.ts --brand <name>
 --keyfile …`) with this deployment as its instance base; the upload refuses a pack that
 points anywhere else. An unsigned pack is hosted but labelled dev-only - a key-pinned
-app build will refuse it.
+app build will refuse that engine version.
 
 Lolly Work treats the pack as a signed byte artifact, not as a second token processor.
 It does not parse, rewrite, or filter `tokens.json`: the shell-reserved
@@ -174,7 +174,7 @@ lw scim token revoke <id>
 ```
 
 Owner-only (`scim.manage`). The secret is stored only as its hash and is unrecoverable, so
-the mint is the one moment you can copy it. The IdP then drives `/scim/v2` with it. See
+the mint is the one moment you can copy the bearer. The IdP then drives `/scim/v2` with that bearer. See
 [identity](identity.md#scim-provisioning).
 
 ## Data lifecycle
@@ -247,7 +247,7 @@ the slice or the options scope. `--json` prints the raw response for scripting. 
 means the health check failed.
 
 `--shape` answers the other question, and returns **no sample**: the call the driver made, and
-the key names and value **types** the tenant returned, diffed against the key names the driver
+the key labels and value **types** the tenant returned, diffed against the key labels the driver
 reads. Never a value, so the output redirects straight to a file you can send. Only the drivers
 whose field names are still taken from vendor documentation implement it - every other kind
 answers that it carries no live-verify debt. It is the first command in each live-verify
@@ -293,7 +293,7 @@ read with care: 3 comparison(s) used a stamp that names no timezone (shape NN/NN
 
 The stamp **shapes** are printed, never the stamps: digits collapse to `N` and letters to
 `A` (`NNNNNNNNNN` is an epoch integer, `NN/NN/NNNN NN:NN` a zoneless local datetime), so
-the line names the format for a driver fix without leaking an upstream value.
+the line identifies the format for a driver fix without leaking an upstream value.
 
 ## Catalog submit
 
@@ -309,7 +309,7 @@ lw catalog approve inst/ab12cd34
 lw catalog return  inst/ab12cd34 --body "wrong logo lockup"
 ```
 
-`submit` needs the `catalog.submit` action (the author role carries it). With no
+`submit` needs the `catalog.submit` action (the author role carries that action). With no
 `policy.submit.chain` configured the asset is live on return; with one, it prints the state as
 `submitted` and waits for `approve` or `return`. Identical bytes are reported as a duplicate
 and nothing is stored a second time:
@@ -382,7 +382,7 @@ lw catalog collection launch-kit --rm
 `--members` is comma-separated and **the order you type is the order the set keeps**; passing
 it replaces the whole list rather than appending, so the command is idempotent. `--groups`
 takes group names or `*` for everyone, and `--label` is the description. Both need
-`catalog.collection.manage`, and a save is refused if it names an asset you cannot see.
+`catalog.collection.manage`, and a save is refused if it identifies an asset you cannot see.
 
 ## Versions and supersession
 
@@ -398,7 +398,7 @@ lw catalog supersede inst/ab12cd34 inst/ef56ab78    # retire in favour of anothe
 lw catalog supersede inst/ab12cd34 --rm             # and undo that
 ```
 
-`--asset` turns `submit` into a new version rather than a new asset, so the id and its URL stay
+`--asset` turns `submit` into a new version rather than a new asset, the id and URL stay
 put and the prior bytes stay readable at `?v=N`. It needs `catalog.edit` (replacing published
 bytes is curation, not contribution), and the descriptive flags are refused with it - use
 `lw catalog meta` for those. `version-rm` answers `409` for the served version and for a held
@@ -428,7 +428,7 @@ retired rather than as a broken chain. It runs with the server's own environment
 container image carries it as `node scripts/audit-retire-key.ts`. Pass the head you recorded
 before the rotation with `--expect-head`. It refuses (exit 2, nothing written) when the rows
 do not look like a key change; `--allow-interleaved` and `--no-witness` override two of those
-checks, and the boundary records it. See [audit](audit.md#rotating-the-session-secret).
+checks, and the audit boundary records the rotation. See [audit](audit.md#rotating-the-session-secret).
 
 `lw c2pa init` mints a self-contained signing identity (root + leaf) so exports can be signed
 with zero corporate PKI, and prints exactly what to wire where. If you have a corporate CA,

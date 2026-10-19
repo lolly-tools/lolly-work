@@ -26,7 +26,7 @@ product's own dog food.
 | Runs | On the user's device | On your infrastructure |
 
 The open-source side is consumed **pinned and unmodified** (`vendor/@lolly/engine`,
-`vendor/@lolly-tools/core`, pin recorded in `engine-pin.json`). Nothing here forks it. The
+`vendor/@lolly-tools/core`, pin recorded in `engine-pin.json`). Work consumes the engine unmodified. The
 touchpoints the shells need are additive and dormant by default - a shell with no control
 plane configured behaves exactly as it does standalone.
 
@@ -47,7 +47,9 @@ tools they see, which inputs are locked, which profile fields are managed, which
 flags apply. It is pre-filtered for the caller's groups and ETag'd on a policy version, so
 a quiet poll is a `304`.
 
-## The trust model, honestly
+<a id="the-trust-model-honestly"></a>
+
+## The trust model
 
 - **Renders happen where the content is trusted.** The in-process (jsdom) fast path never
   runs a tool's `hooks.js` unless you opt in per pack (`render.allowHooksInFastPath`);

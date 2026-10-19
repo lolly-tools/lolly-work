@@ -67,7 +67,7 @@ Rondocode runs the singing models inside its own editor frame. The shell checks
 that are missing. Withdrawing the capability refuses later requests. A request
 that already passed those checks can still finish, and files the frame already
 holds are not recalled. Approve `sing` only for a Lolly 1.1.1 or later shell. An
-older shell refuses a lease that names a capability it does not know, so every
+older shell refuses a lease that requests a capability it does not know, so every
 AI capability stays off there until the shell is updated.
 
 Server browser exports do not have a member AI lease: the render worker always
