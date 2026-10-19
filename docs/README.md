@@ -4,17 +4,17 @@ The complete documentation lives at <https://lolly.tools/info>. These generated 
 
 Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/work), then follow the [bundle update instructions](https://github.com/lolly-tools/lolly/blob/main/docs/work/README.md). Do not edit this generated copy. The repository's `docs-pin.json` records the selected canonical commit and all file hashes; run `pnpm run verify:docs-pin` to verify the bundle. Keep the selected documentation appropriate for the Work release.
 
-## Start here
+## Start
 
 - [Work status and roadmap](status.md)
 
-## Build & automate
+## Automate
 
 - [Invite an agent to a document](document-agents.md)
 - [Lolly Work API](api.md)
 - [lw CLI: administer an instance](cli.md)
 
-## Manage an organisation
+## Manage
 
 - [Identity and sessions](identity.md)
 - [Account data controls](account-lifecycle.md)
@@ -47,7 +47,7 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 - [Microsoft 365 / SharePoint](providers/o365.md)
 - [Preview a project transfer](project-portability.md)
 
-## Deploy & operate
+## Deploy
 
 - [Run your own server](self-host.md)
 - [Release 1.1.1](release-1-1-1.md)
@@ -80,7 +80,7 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 - [Telemetry and dashboards](telemetry.md)
 - [Audit log](audit.md)
 
-## Trust & security
+## Trust
 
 - [Where work happens and what crosses the network](security-platform.md)
 - [Work storage and data lifecycle](data-lifecycle.md)

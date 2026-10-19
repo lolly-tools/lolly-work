@@ -12,7 +12,7 @@
     {
       "id": "start",
       "icon": "overview",
-      "title": "Start here",
+      "title": "Start",
       "docs": [
         {
           "slug": "status",
@@ -25,7 +25,7 @@
     {
       "id": "build",
       "icon": "docs",
-      "title": "Build & automate",
+      "title": "Automate",
       "docs": [
         {
           "slug": "document-agents",
@@ -50,7 +50,7 @@
     {
       "id": "manage",
       "icon": "instance",
-      "title": "Manage an organisation",
+      "title": "Manage",
       "docs": [
         {
           "slug": "identity",
@@ -237,7 +237,7 @@
     {
       "id": "operate",
       "icon": "audit",
-      "title": "Deploy & operate",
+      "title": "Deploy",
       "docs": [
         {
           "slug": "self-host",
@@ -424,7 +424,7 @@
     {
       "id": "trust",
       "icon": "instance",
-      "title": "Trust & security",
+      "title": "Trust",
       "docs": [
         {
           "slug": "security-platform",

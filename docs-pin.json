@@ -1,8 +1,8 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "2891d3d5c30b8d86b2cd6a48a622d4e111a92fe4",
-  "manifestSha256": "7f169a38cf34bf5fd6a3116ac2e009ac9ef444a336f75e0feb0367b6119faca7",
+  "commit": "0cdd30b5bce62f0e570f22e8866f0a0ede2c644e",
+  "manifestSha256": "d4873ec51da178b3f9037f08b11da4180ea3840d57df5256aefff2b29b7504d8",
   "files": {
     "account-lifecycle.md": {
       "sha256": "19bdf65c45608c077aec8e28417d2ae13db159e1dd5a76d7728eb88f170a2620",
@@ -69,7 +69,7 @@
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
-      "sha256": "0b728658fd37be3025b61c0314e6573021fe1aee9e49315f90ca9101d8e9c7f2",
+      "sha256": "47d6841d15f72e14b00c6cc4b31711e13981ee760dad57e3a4bcf001d1942de2",
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
@@ -253,7 +253,7 @@
       "source": "docs/work/public-model-proof-reuse.md"
     },
     "README.md": {
-      "sha256": "4556d13636536a226e23aae193e116828af149495ac6d51a48637bf58bd30a52",
+      "sha256": "2a1a6f8a76fd831657d24ff5d39c981e5e010c9353f58894c6309ea0fa4a6b02",
       "source": "scripts/export-work-docs.ts"
     },
     "release-1-1-0.md": {
