@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "2f3e3f4204369cad67a84d2fd4409b7ab2c13189",
+  "commit": "f9a067ce6988bda343042a4a239e5064ef8f257b",
   "manifestSha256": "69941d9d846f63e96e23318c544347ed2825e759ef1248111419b805192eb90e",
   "files": {
     "account-lifecycle.md": {
@@ -45,7 +45,7 @@
       "source": "docs/work/cloud-deployment.md"
     },
     "configuration.md": {
-      "sha256": "29b0b7eb6a992ded650aa35a83e8967dd9dfe2155a5734a836df2bc9493b8636",
+      "sha256": "9437144177b5773c4935617829c4b94e5e1aa8ffb1e2d31a4d9970f0396d9722",
       "source": "docs/work/configuration.md"
     },
     "customer-setup.md": {
@@ -129,7 +129,7 @@
       "source": "docs/work/offboarding.md"
     },
     "official-installations.md": {
-      "sha256": "d2710bdeafc61acc22145738bfed892652cee8839eff967727d4f10abd902c9e",
+      "sha256": "2329815772bbfef2e01c4558e04cb2b9867451ad1c845ba96af45d42aacdc645",
       "source": "docs/work/official-installations.md"
     },
     "operations.md": {
