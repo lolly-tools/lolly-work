@@ -51,6 +51,7 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 ## Deploy
 
 - [Run your own server](self-host.md)
+- [Release 1.1.2](release-1-1-2.md)
 - [Release 1.1.1](release-1-1-1.md)
 - [Release 1.1.0 (historical record)](release-1-1-0.md)
 - [Lolly Work architecture](overview.md)
