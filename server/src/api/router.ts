@@ -20,6 +20,7 @@ interface Route {
   segments: string[]; // ':name' = param, '*' = trailing wildcard (rest in params['*'])
   handler: Handler;
   delivery: DeliveryClass;
+  declared: boolean;
 }
 
 const requests = new WeakMap<ServerResponse, IncomingMessage>();
@@ -29,10 +30,14 @@ const classOptions = new WeakMap<ServerResponse, CachePolicyOptions>();
 export const SERVICE_WORKER_CACHE_CONTROL = 'no-cache, s-maxage=0, no-transform';
 /** Dynamic file routes select their class after resolving the actual file. */
 export function setDeliveryClass(res: ServerResponse, delivery: DeliveryClass, options: CachePolicyOptions = {}): void { classes.set(res, delivery); classOptions.set(res, options); }
+/** The class the matched route (or its handler) chose; unmatched responses are person-private. */
+export function deliveryClassOf(res: ServerResponse): DeliveryClass { return classes.get(res) ?? 'person-private'; }
 /** Credentials of any kind keep a response out of a shared cache. */
 export function carriesCredential(req: IncomingMessage): boolean {
   return Object.keys(req.headers).some(name => ['cookie', 'authorization', 'x-lolly-client'].includes(name.toLowerCase()) || name.toLowerCase().startsWith('x-lw-'));
 }
+/** The options a handler passed with setDeliveryClass, for the route conformance test. */
+export function deliveryOptionsOf(res: ServerResponse): CachePolicyOptions { return classOptions.get(res) ?? {}; }
 
 /** Install before dispatch, so auth errors and early raw responses are covered too. */
 export function guardDelivery(req: IncomingMessage, res: ServerResponse): void {
@@ -71,10 +76,14 @@ export function guardDelivery(req: IncomingMessage, res: ServerResponse): void {
   } as ServerResponse['writeHead'];
 }
 
+/** One registered route. `declared` is false when the route took the
+ *  person-private default instead of naming a class. */
+export interface RouteDescription { method: string; path: string; delivery: DeliveryClass; declared: boolean }
+
 export function createRouter(): {
   add: (method: string, path: string, handler: Handler, options?: { delivery?: DeliveryClass }) => void;
   /** Classes are conservative by default; public routes opt in explicitly. */
-  descriptions: () => Array<{ method: string; path: string; delivery: DeliveryClass }>;
+  descriptions: () => RouteDescription[];
   /** Returns the matched route PATTERN (e.g. '/api/v1/users/:id'), or null when
    *  nothing matched - a bounded label for the HTTP request metric. */
   dispatch: (req: IncomingMessage, res: ServerResponse) => Promise<string | null>;
@@ -82,9 +91,10 @@ export function createRouter(): {
   const routes: Route[] = [];
   return {
     add(method, path, handler, options) {
-      routes.push({ method, path, segments: path.split('/').filter(Boolean), handler, delivery: options?.delivery ?? 'person-private' });
+      routes.push({ method, path, segments: path.split('/').filter(Boolean), handler,
+        delivery: options?.delivery ?? 'person-private', declared: options?.delivery !== undefined });
     },
-    descriptions: () => routes.map(({ method, path, delivery }) => ({ method, path, delivery })),
+    descriptions: () => routes.map(({ method, path, delivery, declared }) => ({ method, path, delivery, declared })),
     async dispatch(req, res) {
       // Unit callers can use a minimal response double; HTTP callers get the guard.
       if (typeof res.writeHead === 'function') guardDelivery(req, res);

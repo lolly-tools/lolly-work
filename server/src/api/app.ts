@@ -3,6 +3,7 @@ import { registerSubjectRoutes } from '../privacy/routes.ts';
 import { registerOidcLogout } from '../iam/oidc-logout-routes.ts';
 import { localSessionKey, revokeBrowserSessions } from '../iam/local-logout.ts';
 import { createLinkPasswordAttempts } from '../links/password-attempts.ts';
+import { linkPasswordHtml } from '../links/password-page.ts';
 import { createProviderFetch, providerDestination, type ProviderResolver } from '../catalog/providers/egress.ts';
 import { credentialActive, credentialExpiry } from '../iam/credential-expiry.ts';
 import { safeMessageUrl } from '../inbox/message-url.ts';
@@ -26,14 +27,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Readable } from 'node:stream';
+import { pipeline, Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
 import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
+import { createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
 import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
 import { cachePolicy, publicStaticDeliveryClass, type DeliveryClass } from '@lolly-tools/core/delivery-v1';
 import { shellDirectories } from '../lib/shell-release.ts';
@@ -64,6 +65,7 @@ import {
 } from '../iam/identities.ts';
 import { PACK_MAX_BYTES, type InstancePackMeta } from '../catalog/instance-pack.ts';
 import { readBlobBody } from '../blobs/types.ts';
+import { parseSourceReview, freezeSourceReview, sourceReviewFormat, type SourceReviewSubject } from '../catalog/source-review.ts';
 import { createNotifier } from '../notify/notify.ts';
 import { createPeopleNotifier } from '../notify/people.ts';
 import { invitePageUrl, mintInviteToken } from '../access/invite-token.ts';
@@ -94,17 +96,21 @@ import { registerAgentRoutes } from '../agents/routes.ts';
 import { createProjectRequests } from '../agents/project-requests.ts';
 import type { AgentRoomBridge } from '../agents/types.ts';
 import type { VersionRoomBridge } from '../versions/restore.ts';
-import { recordSaveVersion } from '../versions/recorder.ts';
 import { registerVersionRoutes } from '../versions/routes.ts';
+import { registerHistoryRoutes } from '../versions/history.ts';
 import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader } from '../render/read-ticket.ts';
 import { projectSubmissionInput, ProjectSubmissionError } from '../catalog/project-source.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
+import { registerUploadRoutes } from '../uploads/routes.ts';
+import { registerFileRoutes } from '../uploads/file-routes.ts';
+import { createFileReference, creationRefusal, fileWire, FORMAT_TYPES, optimizeReport } from '../uploads/files.ts';
+import { readUploadReference, removeUpload, removeUploadsOwnedBy, uploadOwner, uploadPolicy, UploadReferenceError, type UploadRecord } from '../uploads/scoped.ts';
 import { effectiveAccessFor } from '../projects/effective-access.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
 import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
 import type { ProjectRequestWire } from '../access/types.ts';
 import { inviteDomainAllowed, mayInviteNewPeople, resolveInvitePolicy } from '../policy/invites.ts';
-import { PROJECT_MEMBER_ROLES, type InvitationProject } from '../store/types.ts';
+import { PROJECT_MEMBER_ROLES, type InvitationProject, type SessionRevisionCommit, type SessionVersionContributor } from '../store/types.ts';
 import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
@@ -118,6 +124,7 @@ import { buildFragment, callerSeesProvider, createFederation, credentialContext,
 import { createServedIndex } from '../catalog/served-index.ts';
 import { createCatalogDelivery, retainedToolBytes, type CatalogSnapshotKind } from '../catalog/delivery.ts';
 import { createExtCache, extCacheKey } from '../catalog/ext-cache.ts';
+import { contentRangeValue, parseByteRange, RangeNotSatisfiableError, satisfyByteRange } from '../catalog/byte-range.ts';
 import { browseAssets, normalisedQuery, parseBrowseQuery } from '../catalog/asset-browse.ts';
 import { providerDrift } from '../catalog/drift.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
@@ -150,7 +157,7 @@ import {
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { createBrandService, BrandError } from '../brand/service.ts';
 import { createBrandRuleService } from '../brand/rule-service.ts';
-import { managedRuleContext, projectRuleOverlay, sourceRules, hash as brandPolicyHash } from '../brand/rules.ts';
+import { managedRuleContext, projectRuleOverlay, requestRuleContext, sourceRules, hash as brandPolicyHash } from '../brand/rules.ts';
 import { registerBrandRoutes } from '../brand/routes.ts';
 import { createBrandChrome } from '../brand/chrome.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
@@ -185,7 +192,9 @@ import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkK
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
-import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, schemaVerb, validateVerb } from '../automation/verbs.ts';
+import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
+import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes } from '../automation/discovery.ts';
+import { mayRenderTool, mayUseTool, PolicyRefusal } from '../automation/effective-contract.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
 import { registerRenderRoutes } from '../renders/routes.ts';
@@ -204,13 +213,14 @@ import { sanitizeEvent, summarize, type RawEvent } from '../telemetry/ingest.ts'
 import { targetedMessages, type Message } from '../inbox/target.ts';
 import { accessibleNotices, listAccessibleNotices } from '../inbox/comment-notices.ts';
 import { parseClientHeader } from '../fleet/client-header.ts';
-import { verifyChain, deriveAuditMacKey } from '../audit/chain.ts';
+import { verifyChain, deriveAuditMacKey, type AuditEventBody } from '../audit/chain.ts';
 import { createLogger, requestId } from '../observability/log.ts';
 import { safeReturnTo } from '../iam/return-to.ts';
 import { registerPasskeyRoutes, passkeysEnabled } from '../iam/passkeys/routes.ts';
 import { csrfVerdict } from '../iam/csrf.ts';
 import { auditHead } from '../audit/head.ts';
-import { createMetrics, statusClass, metricsGate, type Metrics, type GaugeLine } from '../observability/metrics.ts';
+import { blobUsageLines, countResponseBytes, createMetrics, statusClass, metricsGate, type Metrics, type GaugeLine } from '../observability/metrics.ts';
+import { currentOffloadAlerts } from '../observability/offload-trigger.ts';
 import { createRateLimiter, clientIp, rateLimitSurface } from '../observability/rate-limit.ts';
 import { agentDashboard } from '../agents/dashboard.ts';
 import { buildActivity } from '../activity/feed.ts';
@@ -226,7 +236,16 @@ const STATE_COOKIE = 'lw_state';
 /** The signed half of the password forms' double-submit token (`lw/form`). */
 const FORM_COOKIE = 'lw_form';
 const LINK_KINDS: LinkKind[] = ['share', 'embed', 'download', 'guest-edit'];
-const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link'];
+/** The RFC 9745 `Deprecation` date (2026-10-17) sent when a credential arrives
+ *  in a query string: `?token=` on a job result and `?pw=` on a link (plan 80
+ *  E0b). A URL reaches access logs, proxies and CDN logs. Both still work for
+ *  one more release. */
+const QUERY_CREDENTIAL_DEPRECATION = '@1792195200';
+/** The header a job result token rides in instead of `?token=`. */
+const JOB_TOKEN_HEADER = 'x-lw-job-token';
+/** Longest a link's password cookie lasts; never past the link's own expiry. */
+const LINK_ACCESS_MAX_SEC = 12 * 3600;
+const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link', 'source-review'];
 
 /** The vendored engine version, read off engine-pin.json (the manifest the
  *  re-pin cadence maintains). Read once and cached; null when the file is not
@@ -303,11 +322,25 @@ export interface AppDeps {
    *  (main.ts reads LW_BACKGROUND_POLL_MS). Unset keeps their 1 s default; 0
    *  sets no timer, so work is picked up at boot, on submission and after each
    *  finished item only. A long-lived host on a database that scales to zero
-   *  needs that: a query every second keeps the database awake all month. */
+   *  needs that: a query every second keeps the database awake all month.
+   *  A pending job callback still sets a single timer for its next attempt, so
+   *  the database may be woken for up to about 45 minutes after a job with a
+   *  callback settles. */
   backgroundPollMs?: number;
 }
 
-export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+type DescribeRoutes = ReturnType<typeof createRouter>['descriptions'];
+const appRoutes = new WeakMap<App, DescribeRoutes>();
+/** The method, pattern and delivery class of every route an app registered.
+ *  For the route conformance test; serving never reads it. */
+export function appRouteDescriptions(app: App): ReturnType<DescribeRoutes> {
+  const describe = appRoutes.get(app);
+  if (!describe) throw new TypeError('not an app built by buildApp');
+  return describe();
+}
+
+export function buildApp(deps: AppDeps): App {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
   configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
@@ -351,9 +384,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const agentRequests = createProjectRequests(router);
   const metrics = deps.metrics ?? createMetrics();
   const limiter = createRateLimiter(config.rateLimit);
-  const automationResultUrl = (job: AutomationJob): string => {
-    const token = mintToken('lw/job', { jobId: job.id, principal: job.principal }, secrets.link, 24 * 3600);
-    return `${config.instance.baseUrl}/api/v1/jobs/${job.id}/result?token=${encodeURIComponent(token)}`;
+  // A result token lets a receiver without the caller's session read one
+  // job's result. It belongs in the x-lw-job-token header; the `?token=` URL
+  // is kept for one more release (plan 80 E0b), then the URL loses its query.
+  const automationResultToken = (job: AutomationJob): string =>
+    mintToken('lw/job', { jobId: job.id, principal: job.principal }, secrets.link, 24 * 3600);
+  const automationResultUrl = (job: AutomationJob, token = automationResultToken(job)): string =>
+    `${config.instance.baseUrl}/api/v1/jobs/${job.id}/result?token=${encodeURIComponent(token)}`;
+  const automationWire = (job: AutomationJob): Record<string, unknown> => {
+    const token = automationResultToken(job);
+    return jobWire(job, automationResultUrl(job, token), job.state === 'done' ? token : undefined);
   };
   const automationJobs = new AutomationQueue({
     store,
@@ -364,6 +404,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // URL. Reuse the configured webhook endpoint as the initial allowlist.
     callbackAllowed: (url) => url === config.notify.webhook?.url,
     resultUrl: automationResultUrl,
+    resultToken: automationResultToken,
     ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
   });
   // The Chromium render worker is active only when both the URL and the shared
@@ -434,17 +475,23 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return user && !user.disabledAt ? user : null;
   };
 
-  const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => {
+  /** An audit event as `audit` appends it; `commitSessionRevision` writes one with its commit. */
+  const auditBody = (actor: string, action: string, subject: string, payload?: Record<string, unknown>): AuditEventBody => {
     const agent = agentRequests.attribution();
     const delegated = agent && actor === `user:${agent.createdBy}`;
-    return store.appendAudit({ at: new Date().toISOString(), actor: delegated ? agentActor(agent) : actor, action, subject,
-      ...(payload || delegated ? { payload: { ...payload, ...(delegated ? agentAttribution(agent) : {}) } } : {}) });
+    return { at: new Date().toISOString(), actor: delegated ? agentActor(agent) : actor, action, subject,
+      ...(payload || delegated ? { payload: { ...payload, ...(delegated ? agentAttribution(agent) : {}) } } : {}) };
   };
+  const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
+    store.appendAudit(auditBody(actor, action, subject, payload));
 
   const revisionActor = (req: IncomingMessage, user: UserRecord): string => {
     const agent = agentRequests.principal(req)?.agent;
     return agent ? agentActor(agent) : user.id;
   };
+  /** The one contributor of a save by `revisionActor`'s principal. */
+  const saveContributor = (actor: string, user: UserRecord): SessionVersionContributor =>
+    actor.startsWith('agent:') ? { id: actor.slice('agent:'.length), kind: 'agent', edits: 1 } : { id: user.id, kind: 'user', edits: 1 };
   registerPasskeyRoutes(router, { store, baseUrl: config.instance.baseUrl, instanceName: config.instance.name, secret: secrets.session, verifySecrets: sessionVerify, sessionTtlSec, memberOf, audit });
 
   // Notification egress (plans/35 wave 1). Refused at boot, not discovered at
@@ -701,6 +748,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const [head, cursor] = await Promise.all([auditHead(store, auditMacKey), store.getSiemCursor()]);
       gauges.push({ name: 'lw_siem_lag', help: 'Audit events not yet confirmed by the SIEM receiver.', type: 'gauge', value: Math.max(0, head.seq - cursor) });
     }
+    // Blob reads and stored bytes (plan 80 section 10): the offload trigger's
+    // figures. A failed usage query leaves the lines out rather than the scrape.
+    const usage = await blobs.usage?.().catch((err: Error) => { log('warn', 'blob usage unavailable', { error: err.message }); return undefined; });
+    if (usage) gauges.push(...blobUsageLines(usage));
     for (const p of await store.listProviders({ includeFragment: false })) {
       gauges.push({ name: 'lw_provider_enabled', help: 'Catalog provider enabled (1) or disabled (0).', type: 'gauge', labels: { provider: p.id, kind: p.kind }, value: p.enabled ? 1 : 0 });
       gauges.push({ name: 'lw_provider_assets', help: 'Assets last synced from a catalog provider.', type: 'gauge', labels: { provider: p.id }, value: p.state?.assetCount ?? 0 });
@@ -2689,6 +2740,90 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { ok: true });
   });
 
+  // Link passwords (plan 80 E0b). The password arrives once, in the body of
+  // POST /l/:id, and the answer is an HttpOnly cookie scoped to the link's own
+  // path, so later requests (a collection's items and zip included) carry no
+  // password in their URLs. The cookie only stands in for the password: the
+  // signature, expiry and revocation are still checked on every request, and
+  // it dies with the link's password hash.
+  const linkAccessName = (link: LinkRecord): string => `lw_link_${link.id}`;
+  const linkAccessBinding = (link: LinkRecord): string => sha256Hex(`${link.id}.${link.pwHash ?? ''}`).slice(0, 32);
+  const linkAccessCookie = (link: LinkRecord): string => {
+    const ttl = Math.max(1, Math.min(LINK_ACCESS_MAX_SEC, link.exp - Math.floor(Date.now() / 1000)));
+    const token = mintToken('lw/link-access', { l: link.id, h: linkAccessBinding(link) }, secrets.link, ttl);
+    return [`${linkAccessName(link)}=${token}`, `Path=/l/${link.id}`, 'HttpOnly', 'SameSite=Lax', `Max-Age=${ttl}`, ...(secure ? ['Secure'] : [])].join('; ');
+  };
+  const linkAccessOk = (req: IncomingMessage, link: LinkRecord): boolean => {
+    const raw = parseCookies(req.headers.cookie)[linkAccessName(link)];
+    const box = raw ? verifyToken<{ l?: unknown; h?: unknown }>('lw/link-access', raw, linkVerify) : null;
+    return !!box && box.l === link.id && box.h === linkAccessBinding(link);
+  };
+  /** Adds a cookie without dropping one already set, such as a renewed session. */
+  const appendSetCookie = (res: ServerResponse, cookie: string): void => {
+    const prior = res.getHeader('set-cookie');
+    res.setHeader('set-cookie', [...(prior === undefined ? [] : Array.isArray(prior) ? prior : [String(prior)]), cookie]);
+  };
+  /** The address a password form posts to and returns to: the signature, and a
+   *  guest-edit link's chosen name, and nothing else. */
+  const linkFormPath = (link: LinkRecord, url: URL): string => {
+    const name = url.searchParams.get('name');
+    return `/l/${link.id}?s=${encodeURIComponent(url.searchParams.get('s') ?? '')}${name === null ? '' : `&name=${encodeURIComponent(name)}`}`;
+  };
+  const sendLinkPasswordPage = (res: ServerResponse, status: number, link: LinkRecord, url: URL, error?: string): void => {
+    res.writeHead(status, passwordPageHeaders);
+    res.end(linkPasswordHtml(config.instance.name, { action: linkFormPath(link, url), ...(error ? { error } : {}) }));
+  };
+  // `?pw=` still opens a link for one more release (plan 80 E0b; refusing it
+  // waits on decision D11). Each link is reported once per process.
+  const passwordQueryWarned = new Set<string>();
+  const warnPasswordQuery = (linkId: string): void => {
+    if (passwordQueryWarned.has(linkId)) return;
+    if (passwordQueryWarned.size >= 1000) passwordQueryWarned.clear();
+    passwordQueryWarned.add(linkId);
+    console.warn(`[lolly-work] WARNING - link ${linkId} was opened with ?pw=, which puts its password in the URL. That still works until the next release. Open the link without ?pw= and enter the password on its page, or POST it to the link (docs/sharing.md).`);
+  };
+
+  router.add('POST', '/l/:id', async (req, res, ctx) => {
+    const link = await store.getLink(ctx.params.id as string);
+    if (!link || link.kind === 'project-invite') return sendError(res, 404, 'NOT_FOUND', 'no such link');
+    const status = checkLink(link, ctx.url.searchParams.get('s') ?? '', linkVerify, { passwordOk: true });
+    if (status === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
+    if (status === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
+    if (status === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
+    let body: Awaited<ReturnType<typeof readSignInBody>>;
+    try { body = await readSignInBody(req); }
+    catch (e) {
+      return (e as { status?: number }).status === 413
+        ? sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'the password form is too large')
+        : sendError(res, 400, 'INVALID_INPUT', 'the request body could not be read');
+    }
+    if (!body) return sendError(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'send the password as a form or as JSON');
+    const json = body.json;
+    // A form gets the page again with the reason; an API caller gets JSON.
+    const fail = (code: number, errorCode: string, message: string, sentence: string): void =>
+      json ? sendError(res, code, errorCode, message) : sendLinkPasswordPage(res, code, link, ctx.url, sentence);
+    if (link.pwHash) {
+      const client = clientIp(req, config.rateLimit.trustedProxyHops);
+      const retryAfter = linkPasswordAttempts.retryAfter(link.id, client);
+      if (retryAfter) {
+        res.setHeader('retry-after', String(retryAfter));
+        return fail(429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later',
+          'Too many wrong passwords were tried from your network. Wait 15 minutes, then try again.');
+      }
+      const password = body.get('password');
+      if (!password) return fail(400, 'INVALID_INPUT', 'password is required', 'Enter the password.');
+      if (!(await verifyPassword(password, link.pwHash))) {
+        linkPasswordAttempts.miss(link.id, client);
+        return fail(401, 'PASSWORD_INCORRECT', 'that password does not open this link', 'That password does not open this link.');
+      }
+      linkPasswordAttempts.clear(link.id, client);
+      appendSetCookie(res, linkAccessCookie(link));
+    }
+    if (json) return sendJson(res, 200, { ok: true });
+    res.writeHead(303, { location: linkFormPath(link, ctx.url) });
+    res.end();
+  });
+
   // Link resolver. Guest-edit admits a guest principal; other kinds return
   // target info (the render plane will stream bytes here once it lands).
   router.add('GET', '/l/:id', async (req, res, ctx) => {
@@ -2702,25 +2837,41 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (initialStatus === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
     if (initialStatus === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
     let passwordOk = true;
+    let grantAccess = false;
     if (link.pwHash) {
-      const client = clientIp(req, config.rateLimit.trustedProxyHops);
-      const retryAfter = linkPasswordAttempts.retryAfter(link.id, client);
-      if (retryAfter) {
-        res.setHeader('retry-after', String(retryAfter));
-        return sendError(res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later');
+      if (pw !== null) {
+        res.setHeader('deprecation', QUERY_CREDENTIAL_DEPRECATION);
+        warnPasswordQuery(link.id);
       }
-      passwordOk = pw !== null && (await verifyPassword(pw, link.pwHash));
-      if (pw !== null && !passwordOk) {
-        linkPasswordAttempts.miss(link.id, client);
-      } else if (passwordOk) {
-        linkPasswordAttempts.clear(link.id, client);
+      passwordOk = linkAccessOk(req, link);
+      if (!passwordOk) {
+        const client = clientIp(req, config.rateLimit.trustedProxyHops);
+        const retryAfter = linkPasswordAttempts.retryAfter(link.id, client);
+        if (retryAfter) {
+          res.setHeader('retry-after', String(retryAfter));
+          return sendError(res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later');
+        }
+        passwordOk = pw !== null && (await verifyPassword(pw, link.pwHash));
+        if (pw !== null && !passwordOk) {
+          linkPasswordAttempts.miss(link.id, client);
+        } else if (passwordOk) {
+          linkPasswordAttempts.clear(link.id, client);
+          // The old query form swaps itself for the cookie, so the page's own
+          // links work without the password in them.
+          grantAccess = true;
+        }
       }
     }
     const status = checkLink(link, sig, linkVerify, { passwordOk });
     if (status === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
     if (status === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
     if (status === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
-    if (status === 'password-required') return sendError(res, 401, 'PASSWORD_REQUIRED', 'this link needs its password');
+    if (status === 'password-required') {
+      if (/\btext\/html\b/.test(String(req.headers.accept ?? ''))) {
+        return sendLinkPasswordPage(res, 401, link, ctx.url, pw === null ? undefined : 'That password does not open this link.');
+      }
+      return sendError(res, 401, 'PASSWORD_REQUIRED', 'this link needs its password');
+    }
     if (link.kind === 'guest-edit') {
       const name = (ctx.url.searchParams.get('name') ?? 'Guest').slice(0, 60);
       const ttlSec = Math.max(60, link.exp - Math.floor(Date.now() / 1000));
@@ -2736,7 +2887,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.end(JSON.stringify({ kind: 'guest-edit', toolId: link.target.toolId, sessionRef: link.target.sessionId ?? null, guest: name }));
       return;
     }
-    setDeliveryClass(res, 'link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) });
+    if (grantAccess) appendSetCookie(res, linkAccessCookie(link));
+    // A password link stays person-private: the cookie, not the URL, opens it,
+    // so no cache may answer that URL for someone else.
+    if (!link.pwHash) setDeliveryClass(res, 'link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) });
     // A collection target is a LIST of assets (plans/31 §5) - its own listing
     // page, one member's bytes, or the zip-all, all through this one signature.
     if (link.target.collectionId) return serveLinkedCollection(req, res, link, ctx.url);
@@ -3705,7 +3859,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const actor = await requireAction(req, res, 'instance.config');
     if (!actor) return;
     const result = await runRetention({ config, store, blobs });
-    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept) {
+    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept) {
       await audit(`user:${actor.id}`, 'retention.run', 'instance', { ...result });
     }
     sendJson(res, 200, result);
@@ -3750,7 +3904,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (Object.values((await store.previewUserErasure(target.id)).references).some((count) => count > 0)) return refused();
     // Unfinished uploads are nobody's shared work: they go (parts, then rows)
     // so their users FK does not block the erasure. Ready files block above.
+    // Scoped uploads have no FK to block on, so any left behind refuse here.
     await removeUploadsBy(store, blobs, target.id);
+    if (!(await removeUploadsOwnedBy(store, blobs, `user:${target.id}`)).complete) {
+      return sendError(res, 409, 'ERASE_UPLOADS_REMAIN',
+        'some of their uploads are still there, probably because they are still uploading; run the erasure again. No identity or telemetry was changed.');
+    }
     const result = await store.eraseUserAccount(target.id);
     if (result.status === 'referenced') return refused();
     if (result.status === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no such user');
@@ -4794,16 +4953,40 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { chainId, step: stepIndex, stepName: step.name, groups: step.approvers.groups, approvers });
   });
 
+  // Source subjects are checked as a whole. Omitting a hidden member, even from
+  // a count, would disclose the membership of a private proof.
+  const seesSourceReview = async (user: UserRecord, subject: SourceReviewSubject): Promise<boolean> => {
+    for (const file of subject.files) if (!await callerSeesAsset(user, file.assetId)) return false;
+    return true;
+  };
+  const sourceReviewAvailable = async (user: UserRecord, subject: SourceReviewSubject): Promise<boolean> => {
+    let total = 0;
+    for (const file of subject.files) {
+      if (!await callerSeesAsset(user, file.assetId) || (await catalogBytesGate(file.assetId, false)).blocked) return false;
+      const rec = await store.getInstanceAsset(file.assetId);
+      if (!rec || rec.origin || !submissionServable(rec) || !instanceAssetVisible(rec, user.groups)
+        || (rec.entry.formats ?? []).some(format => format.format === file.format && format.rendition)) return false;
+      const format = sourceReviewFormat(file, await assetVersionRows(rec));
+      if (!format || format.size > 64 * 1024 * 1024 || total + format.size > 128 * 1024 * 1024) return false;
+      const blob = await blobs.get(format.blobId);
+      if (!blob) return false;
+      const bytes = await readBlobBody(blob.body, Math.min(64 * 1024 * 1024, 128 * 1024 * 1024 - total));
+      total += bytes.length;
+      if (sha256Hex(bytes) !== file.sha256) return false;
+    }
+    return seesSourceReview(user, subject);
+  };
+
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
   router.add('POST', '/api/v1/approvals', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const body = (await readJson(req)) as {
-      subjectType?: string; subjectRef?: string; title?: string; chainId?: string; nominees?: unknown;
+      subjectType?: string; subjectRef?: string; title?: string; chainId?: string; nominees?: unknown; sourceReview?: unknown;
     } | null;
     if (!SUBJECT_TYPES.includes(body?.subjectType as never)) {
-      return sendError(res, 400, 'INVALID_INPUT', 'subjectType must be asset|tool-change|config|guest-link');
+      return sendError(res, 400, 'INVALID_INPUT', 'subjectType must be asset|tool-change|config|guest-link|source-review');
     }
     if (!body?.title || typeof body.title !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'title required');
     if (!body?.chainId || typeof body.chainId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'chainId required');
@@ -4816,7 +4999,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const check = validateNominees(chain, 0, nominees, await userGroupsMap());
     if (!check.ok) return sendError(res, 400, 'NOMINEE_NOT_ELIGIBLE', `not eligible for the first step: ${check.ineligible.join(', ')}`);
     const [users, grants] = await Promise.all([store.listUsers(), store.listGrants()]);
-    const subjectRef = typeof body.subjectRef === 'string' ? body.subjectRef.slice(0, 300) : '';
+    let sourceReview: SourceReviewSubject | undefined;
+    if (body.subjectType === 'source-review') {
+      const parsed = parseSourceReview(body.sourceReview);
+      if (!parsed) return sendError(res, 400, 'INVALID_INPUT', 'A source review needs a purpose, target and exact original file versions with SHA-256 digests.');
+      sourceReview = freezeSourceReview(parsed, new Date().toISOString(), agentRequests.principal(req) ? 'agent-delegated' : 'member-session');
+      if (!await sourceReviewAvailable(user, sourceReview)) return sendError(res, 409, 'SOURCE_UNAVAILABLE', 'The complete selected source subject is not available for review.');
+      for (const id of nominees) {
+        const nominee = users.find(candidate => candidate.id === id);
+        if (!nominee || !await seesSourceReview(nominee, sourceReview)) return sendError(res, 400, 'NOMINEE_NOT_ELIGIBLE', 'Every nominated reviewer must have current access to the complete subject.');
+      }
+    } else if (body.sourceReview !== undefined) return sendError(res, 400, 'INVALID_INPUT', 'Use the source-review subject type for source evidence.');
+    const subjectRef = sourceReview ? `source-review:${sourceReview.fingerprint}` : typeof body.subjectRef === 'string' ? body.subjectRef.slice(0, 300) : '';
     const canReview = (candidate: typeof user) => !candidate.disabledAt && candidate.id !== user.id
       && evaluate({ userId: candidate.id, groups: candidate.groups, role: candidate.role as Role }, 'approval.act', [`chain:${chain.id}`, subjectRef, '*'], grants);
     if (nominees.some(id => !users.some(candidate => candidate.id === id && canReview(candidate)))) {
@@ -4829,6 +5023,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       title: body.title.slice(0, 200),
       chain, nominees, createdBy: user.id, now: new Date().toISOString(),
     });
+    if (sourceReview) approval.sourceReview = sourceReview;
     await store.putApproval(approval);
     await audit(`user:${user.id}`, 'approval.submit', `approval:${approval.id}`, { chainId: chain.id, subjectType: approval.subjectType });
     if (nominees.length) {
@@ -4846,7 +5041,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // nominees, minus the requester - the same audience the inbox targets,
     // reached where they actually are.
     const step0 = currentStep(approval);
-    const reviewers = users.filter((u) => canReview(u) && (nominees.includes(u.id) || (step0 ? isEligible(step0, u.groups) : false)));
+    const reviewers = [];
+    for (const candidate of users) if (canReview(candidate) && (nominees.includes(candidate.id) || (step0 ? isEligible(step0, candidate.groups) : false))
+      && (!sourceReview || await seesSourceReview(candidate, sourceReview))) reviewers.push(candidate);
     notifier.email(reviewers.map((u) => u.email), `Approval requested: ${approval.title}`,
       `${user.email} asked for review on the “${step0?.name ?? 'first'}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
     notifier.event('approval.requested', { id: approval.id, title: approval.title, chainId: chain.id, by: user.email });
@@ -4864,11 +5061,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const actors = await actorsMap();
     const out = new Map<string, ReturnType<typeof serializeApproval>>();
     if (wantMine || both) {
-      for (const a of await store.listApprovals({ createdBy: user.id })) out.set(a.id, serializeApproval(a, user.id, 'mine', actors));
+      for (const a of await store.listApprovals({ createdBy: user.id })) {
+        if (a.sourceReview && !await seesSourceReview(user, a.sourceReview)) continue;
+        out.set(a.id, serializeApproval(a, user.id, 'mine', actors));
+      }
     }
     if (wantInbox || both) {
       const grants = await store.listGrants();
       for (const a of await store.listApprovals({ eligibleGroups: user.groups })) {
+        if (a.sourceReview && !await seesSourceReview(user, a.sourceReview)) continue;
         if (a.createdBy === user.id) continue; // separation of duties - never review your own
         if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'approval.act', [`approval:${a.id}`, `chain:${a.chainId}`, a.subjectRef, '*'], grants)) continue;
         out.set(a.id, serializeApproval(a, user.id, 'inbox', actors));
@@ -4884,14 +5085,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const approval = await store.getApproval(ctx.params.id as string);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
+    if (approval.sourceReview && !await sourceReviewAvailable(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no available source subject');
     if (approval.createdBy === user.id) return sendError(res, 403, 'SEPARATION_OF_DUTIES', 'A requester cannot act on their own approval.');
     if (!(await requireAction(req, res, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*']))) return;
-    const body = (await readJson(req)) as { action?: string; comment?: string } | null;
+    const body = (await readJson(req)) as { action?: string; comment?: string; sourceFingerprint?: string } | null;
+    if (approval.sourceReview && body?.sourceFingerprint !== approval.sourceReview.fingerprint) return sendError(res, 409, 'SOURCE_SUBJECT_CHANGED', 'Reopen this review and confirm its exact source subject.');
     if (body?.action !== 'approve' && body?.action !== 'reject') return sendError(res, 400, 'INVALID_INPUT', 'action must be approve or reject');
     const comment = typeof body.comment === 'string' && body.comment.trim() ? body.comment.slice(0, 2000) : undefined;
     let next: Approval;
     try {
       next = applyAction(approval, { id: user.id, groups: user.groups }, body.action, comment, new Date().toISOString());
+      if (approval.sourceReview) next.actions[next.actions.length - 1]!.origin = agentRequests.principal(req) ? 'agent-delegated' : 'member-session';
     } catch (err) {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
@@ -4932,6 +5136,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const approval = await store.getApproval(ctx.params.id as string);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
+    if (approval.sourceReview && !await seesSourceReview(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
     if (approval.createdBy !== user.id) return sendError(res, 403, 'FORBIDDEN', 'only the submitter can withdraw this request');
     let next: Approval;
     try {
@@ -5358,6 +5563,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const filePreview = ctx.url.searchParams.get('preview') === '1';
       const convertedPreview = ctx.url.searchParams.get('view') === '1';
       if (convertedPreview && filePreview) return sendError(res, 400, 'INVALID_INPUT', 'choose one preview representation');
+      // One byte range of the file itself, for viewers that read a large PDF in
+      // parts (plan 294). Each part is its own request, so every gate below runs
+      // again for it and an upstream part resolves the asset afresh. HTTP defines
+      // ranges for GET only, and a stale If-Range validator means the whole file.
+      const wantedRange = req.method !== 'GET' || filePreview || convertedPreview ? null : parseByteRange(req.headers.range);
+      const rangeFor = (validator: string) => wantedRange === null
+        || (req.headers['if-range'] !== undefined && req.headers['if-range'] !== validator) ? null : wantedRange;
+      const unsatisfiable = (size?: number): void => {
+        res.writeHead(416, { ...(size !== undefined ? { 'content-range': `bytes */${size}` } : {}), 'cache-control': 'private, no-store' });
+        res.end();
+      };
+      const sendPart = (headers: Record<string, string>, part: { start: number; end: number; size: number }, body: ReadableStream<Uint8Array>): void => {
+        res.writeHead(206, { ...headers, ...INERT_BYTES, 'accept-ranges': 'bytes', 'content-range': contentRangeValue(part), 'content-length': String(part.end - part.start + 1) });
+        pipeline(Readable.fromWeb(body as import('node:stream/web').ReadableStream<Uint8Array>), res, () => {});
+      };
 
       // The local row combined with any upstream availability window imported
       // from the DAM (plans/27 §2), read off the in-process fragment beside the
@@ -5384,6 +5604,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           }
           const local = await blobs.get(localId as string);
           if (local) {
+            // Always the whole file, even when a range was asked for. The blob
+            // store reads a file from its first byte, so each part would cost a
+            // whole read of the file, and parallel parts would multiply it.
             res.writeHead(200, {
               'content-type': local.stat.contentType, ...INERT_BYTES,
               'cache-control': 'private, max-age=300', etag, 'content-length': String(local.stat.size),
@@ -5415,9 +5638,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
       const cached = cacheKey ? extCache.get(cacheKey) : undefined;
       if (cached) {
+        const range = rangeFor(etag);
+        const part = range ? satisfyByteRange(range, cached.bytes.length) : null;
+        if (range === false || part === false) return unsatisfiable(cached.bytes.length);
+        if (part) {
+          res.writeHead(206, { 'content-type': cached.contentType, ...INERT_BYTES, 'cache-control': bytesCache, etag,
+            'accept-ranges': 'bytes', 'content-range': contentRangeValue(part), 'content-length': String(part.end - part.start + 1) });
+          res.end(cached.bytes.subarray(part.start, part.end + 1));
+          return;
+        }
         res.writeHead(200, {
           'content-type': cached.contentType, ...INERT_BYTES,
-          'cache-control': bytesCache, etag, 'content-length': String(cached.bytes.length),
+          'cache-control': bytesCache, etag, ...(filePreview ? {} : { 'accept-ranges': 'bytes' }), 'content-length': String(cached.bytes.length),
         });
         res.end(cached.bytes);
         return;
@@ -5425,7 +5657,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       try {
         const driver = federation.instantiate(rec);
         if (filePreview && !driver.resolveFilePreview) return sendError(res, 404, 'NOT_FOUND', 'this provider has no file preview');
-        const blob = filePreview ? await driver.resolveFilePreview!(remoteId, formatRef) : await driver.resolveBlob(remoteId, formatRef);
+        // Only a driver that declares ranges is asked for part of a file. Any
+        // other answers with the whole file, which HTTP allows.
+        const rangeable = !filePreview && !convertedPreview && driver.capabilities.ranges === true;
+        const range = rangeable ? rangeFor(etag) : null;
+        if (range === false) return unsatisfiable();
+        const blob = filePreview ? await driver.resolveFilePreview!(remoteId, formatRef) : await driver.resolveBlob(remoteId, formatRef, range ? { range } : undefined);
         if (convertedPreview) {
           if (blob.kind !== 'stream') return sendError(res, 422, 'PREVIEW_UNAVAILABLE', 'This source does not support conversion previews.');
           const controller = new AbortController(); const disconnected = () => { if (!res.writableFinished) controller.abort(); }; res.once('close', disconnected);
@@ -5449,17 +5686,24 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         // what the fragment says lets an <img> draw the SVG; INERT_BYTES keeps
         // the bytes script-free and sandboxed when opened directly.
         const servedType = declaredSvg ? 'image/svg+xml' : blob.contentType;
+        // A part is never kept in the byte cache, which holds whole files only.
+        if (blob.range) {
+          if (!range) throw new Error('the provider returned a part nobody asked for');
+          return sendPart({ 'content-type': servedType, 'cache-control': bytesCache, ...(etag ? { etag } : {}) }, blob.range, blob.body);
+        }
         res.writeHead(200, {
           'content-type': servedType,
           ...INERT_BYTES,
           'cache-control': bytesCache,
           ...(etag ? { etag } : {}),
+          ...(rangeable ? { 'accept-ranges': 'bytes' } : {}),
           ...(blob.size !== undefined ? { 'content-length': String(blob.size) } : {}),
         });
         const body = Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>);
         if (cacheKey) body.pipe(extCache.tee(cacheKey, servedType)).pipe(res);
         else body.pipe(res);
-      } catch {
+      } catch (error) {
+        if (error instanceof RangeNotSatisfiableError) return unsatisfiable(error.size);
         return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
       }
       return;
@@ -5940,28 +6184,27 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
     const items: CollectionPageItem[] = members.map((m) => {
       const source = m.source;
+      // No password rides in these addresses: a password link's cookie,
+      // scoped to this link's path, opens each item and the zip.
       const base = `/l/${link.id}?s=${encodeURIComponent(url.searchParams.get('s') ?? '')}`;
-      const pw = url.searchParams.get('pw');
-      const carry = pw === null ? '' : `&pw=${encodeURIComponent(pw)}`;
       const asset = `&asset=${encodeURIComponent(m.assetId)}`;
       return {
         assetId: m.assetId,
         name: source.filename,
         format: source.format,
         ...(sizeText(m.size) ? { sizeText: sizeText(m.size) as string } : {}),
-        ...(isPreviewableFormat(source.format) ? { previewHref: `${base}${carry}${asset}` } : {}),
-        downloadHref: `${base}${carry}${asset}&dl=1`,
+        ...(isPreviewableFormat(source.format) ? { previewHref: `${base}${asset}` } : {}),
+        downloadHref: `${base}${asset}&dl=1`,
       };
     });
     const s = encodeURIComponent(url.searchParams.get('s') ?? '');
-    const pw = url.searchParams.get('pw');
     const html = collectionPageHtml({
       instanceName: config.instance.name,
       name: rec.name,
       ...(rec.description ? { description: rec.description } : {}),
       items,
       withheld,
-      zipHref: `/l/${link.id}?s=${s}${pw === null ? '' : `&pw=${encodeURIComponent(pw)}`}&zip=1`,
+      zipHref: `/l/${link.id}?s=${s}&zip=1`,
       expiresAt: new Date(link.exp * 1000).toISOString().slice(0, 10),
       brand: await bearerBrand(),
     });
@@ -6053,8 +6296,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       const head = headVersionOf(instAsset);
       const rows = await assetVersionRows(instAsset);
+      const sourceReviews = [];
+      const reviewGrants = await store.listGrants();
+      for (const approval of await store.listApprovals({})) if (approval.sourceReview?.files.some(file => file.assetId === id)
+        && (approval.createdBy === user.id || (approval.chain.steps.some(step => isEligible(step, user.groups))
+          && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*'], reviewGrants)))
+        && await seesSourceReview(user, approval.sourceReview)) sourceReviews.push(serializeApproval(approval, user.id));
       return sendJson(res, 200, {
         id, head,
+        metadataHistory: 'not-recorded', sourceReviews,
+        sourceReviewCapability: instAsset.origin ? null : { kind: 'frozen-instance-originals-v1', maxFiles: 32, maxFileBytes: 64 * 1024 * 1024, maxTotalBytes: 128 * 1024 * 1024 },
         keep: config.policy.catalog.versionKeep,
         versions: [...rows].sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
       }, { 'cache-control': 'private, no-store' });
@@ -6664,6 +6915,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, credRow);
   });
 
+  // Alerts the server raises for administrators (plan 80 section 10), shown
+  // as the console banner. The blob offload trigger is the first; the daily
+  // check in main.ts emails the same alerts. A failed usage query is logged
+  // and shows no banner rather than breaking every console page.
+  router.add('GET', '/api/v1/alerts', async (req, res) => {
+    if (!(await requireAction(req, res, 'telemetry.view'))) return;
+    const alerts = await currentOffloadAlerts(blobs).catch((err: Error) => { log('warn', 'blob usage unavailable', { error: err.message }); return []; });
+    sendJson(res, 200, { alerts });
+  }, { delivery: 'person-private' });
+
   // Store-derived dashboard stats the telemetry fold can't answer: catalog
   // inventory (count + lifecycle state breakdown) and project size (sessions
   // per project). Popularity/usage counts (top assets, export destinations)
@@ -7043,17 +7304,35 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const declaredType = (ctx.url.searchParams.get('type') ?? '').trim();
     if (!name && !target && !isDataSubmissionType(declaredType)) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
     const maxBytes = config.policy.submit.maxBytes;
-    let projectInput: Awaited<ReturnType<typeof projectSubmissionInput>>;
-    try { projectInput = await projectSubmissionInput(ctx.url.searchParams, { config, store, blobs, user, currentUser: () => memberOf(req), access: projectAccessOf }); }
-    catch (error) {
-      if (error instanceof ProjectSubmissionError) return sendError(res, error.status, error.code, error.message);
-      throw error;
+    let projectInput: Awaited<ReturnType<typeof projectSubmissionInput>> = null;
+    // `?uploadId=…&checksum=…` names a finished catalog-submission upload
+    // (uploads/scoped.ts) in place of the request body: the resumable route for
+    // an original too large for one request.
+    let uploaded: { upload: UploadRecord; bytes: Buffer } | null = null;
+    if (ctx.url.searchParams.has('uploadId')) {
+      if (ctx.url.searchParams.has('projectId') || ctx.url.searchParams.has('fileId')) return sendError(res, 400, 'INVALID_INPUT', 'name a project file or an upload, not both');
+      try {
+        uploaded = await readUploadReference({ store, blobs, policy: uploadPolicy(config) },
+          { id: ctx.url.searchParams.get('uploadId'), checksum: ctx.url.searchParams.get('checksum') }, uploadOwner(user), 'catalog-submission', maxBytes);
+      } catch (error) {
+        if (error instanceof UploadReferenceError) return sendError(res, error.status, error.code, error.message);
+        throw error;
+      }
+    } else {
+      try { projectInput = await projectSubmissionInput(ctx.url.searchParams, { config, store, blobs, user, currentUser: () => memberOf(req), access: projectAccessOf }); }
+      catch (error) {
+        if (error instanceof ProjectSubmissionError) return sendError(res, error.status, error.code, error.message);
+        throw error;
+      }
     }
     let bytes: Buffer;
     try {
       if (projectInput) {
         if ((await readRaw(req, 1)).length) return sendError(res, 400, 'INVALID_INPUT', 'a project source takes no uploaded body');
         bytes = projectInput.bytes;
+      } else if (uploaded) {
+        if ((await readRaw(req, 1)).length) return sendError(res, 400, 'INVALID_INPUT', 'an upload reference takes no request body');
+        bytes = uploaded.bytes;
       } else bytes = await readRaw(req, maxBytes);
     } catch {
       return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `submission exceeds the ${maxBytes} byte cap (policy.submit.maxBytes)`);
@@ -7071,8 +7350,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const toolIdParam = (ctx.url.searchParams.get('toolId') ?? '').trim();
     const clientRef = (ctx.url.searchParams.get('clientRef') ?? '').trim();
 
-    const release = projectInput ? await store.claimCatalogSubmission(`${user.id}:${projectInput.source.projectId}:${projectInput.source.fileId}:${projectInput.source.checksum}`) : undefined;
-    if (release === null) return sendError(res, 409, 'SUBMISSION_BUSY', 'this project file is already being submitted; retry shortly');
+    const release = projectInput ? await store.claimCatalogSubmission(`${user.id}:${projectInput.source.projectId}:${projectInput.source.fileId}:${projectInput.source.checksum}`)
+      : uploaded ? await store.claimCatalogSubmission(`${user.id}:upload:${uploaded.upload.id}`) : undefined;
+    if (release === null) return sendError(res, 409, 'SUBMISSION_BUSY', projectInput ? 'this project file is already being submitted; retry shortly' : 'this upload is already being submitted; retry shortly');
+    // A submission that finished while this one read the bytes has used the upload.
+    if (uploaded && !await store.getUpload(uploaded.upload.id)) { await release?.(); return sendError(res, 404, 'NOT_FOUND', 'no such finished upload'); }
     let outcome: Awaited<ReturnType<typeof submitAsset>>;
     try { outcome = await submitAsset(submitDeps(), {
       bytes,
@@ -7084,11 +7366,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       tags: list('tags').slice(0, 32),
       ...(type ? { type } : {}),
       ...(declaredGroups.length ? { groups: declaredGroups } : {}),
-      ...(projectInput ? { contentType: projectInput.contentType } : req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
+      ...(projectInput ? { contentType: projectInput.contentType } : uploaded ? { contentType: uploaded.upload.contentType }
+        : req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
       submitter: { id: user.id, groups: user.groups },
       ...(toolIdParam ? { toolId: toolIdParam } : {}),
       ...(clientRef ? { clientRef } : {}),
     }); } finally { await release?.(); }
+    // A submission used its upload, whatever the review decides next. A removal
+    // that fails leaves the upload to expire.
+    if (outcome.ok && uploaded) await removeUpload(store, blobs, uploaded.upload).catch(() => false);
 
     if (!outcome.ok) {
       // The verdict is audited either way: a refusal is exactly the event an
@@ -7116,6 +7402,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       outcome: outcome.duplicate ? 'duplicate' : state,
       checksum: outcome.checksum, size: bytes.length, scan: outcome.scan,
       ...(projectInput ? { projectSource: projectInput.source } : {}),
+      ...(uploaded ? { uploadId: uploaded.upload.id } : {}),
       credential: outcome.credential,
       ...(outcome.version ? { version: outcome.version } : {}),
       ...(trimmed ? { trimmed } : {}),
@@ -8354,6 +8641,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit, renderFileReader: createRenderFileReader({ secret: linkVerify, store, projectAccessOf }) });
+  registerUploadRoutes(router, { config, store, blobs, memberOf, serviceAccountOf, audit });
+  registerFileRoutes(router, { config, store, blobs, memberOf, serviceAccountOf, delegated: (req) => !!agentRequests.principal(req), audit });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
   registerProjectTransferInventoryRoutes(router, { store, memberOf, requireAction, projectAccessOf, delegated: req => !!agentRequests.principal(req) });
   registerShareRoutes(router, { config, store, memberOf, requireAction, projectAccessOf, audit });
@@ -8605,7 +8894,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // If the room let go between the CAS and the re-read, the caller's base is
     // still current, so the save is tried once more. Without that, the answer
     // would be "session is at rev 5, you sent 5".
-    for (let attempt = 1; !(await store.casSession(next, body.rev)); attempt++) {
+    //
+    // The CAS is `commitSessionRevision` (plan 221): the head, its revision, a
+    // save version (plan 76 M4, including the save a shell retries after merging
+    // a 409; the store skips one that changed nothing) and the configured audit
+    // event are written together or not at all.
+    const saver = revisionActor(req, user);
+    const commit: SessionRevisionCommit = {
+      next, expectedRev: body.rev, actor: saver, version: { kind: 'save', contributors: [saveContributor(saver, user)], createdBy: user.id },
+      ...(config.policy.activity.auditSessionUpdates
+        ? { audit: auditBody(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId }) } : {}),
+    };
+    for (let attempt = 1; !(await store.commitSessionRevision(commit)).committed; attempt++) {
       const fresh = await store.getSession(next.id);
       if (!fresh) return sendError(res, 404, 'NOT_FOUND', 'no such session');
       if (fresh.deletedAt) return sendError(res, 410, 'SESSION_DELETED', 'this session was deleted');
@@ -8615,12 +8915,6 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await audit(`user:${user.id}`, 'session.conflict', `session:${fresh.id}`, { rev: fresh.rev, sentRev: body.rev, toolId: fresh.toolId });
       return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${fresh.rev}, you sent ${body.rev}` }, current: await conflictCurrent(fresh, user.id) });
     }
-    const saver = revisionActor(req, user);
-    await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta, actor: saver, at: now });
-    // A REST save is a version too (plan 76 M4), including the save a shell
-    // retries after merging a 409; the store skips one that changed nothing.
-    await recordSaveVersion(store, next, user.id, saver.startsWith('agent:') ? { id: saver.slice('agent:'.length), kind: 'agent' } : { id: user.id, kind: 'user' });
-    if (config.policy.activity.auditSessionUpdates) await audit(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId });
     sendJson(res, 200, sessionFull(next));
   });
 
@@ -9179,9 +9473,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // project.manage. dryRun previews a per-field diff; apply writes each session
   // via per-session CAS (`matched` is a snapshot, so a session someone edited
   // in between is exactly the one a sweep must not stomp - plans/23 §3.B),
-  // reporting losers in `skipped` rather than retrying; appends a revision per
-  // applied session, busts affected render keys, and audits ONE event (keys
-  // only - never input VALUES).
+  // reporting losers in `skipped` rather than retrying; commits a revision and
+  // a save version with each applied session (`commitSessionRevision`), busts
+  // affected render keys, and audits ONE event (keys only - never input VALUES).
   router.add('POST', '/api/v1/sessions/bulk', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
@@ -9222,12 +9516,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
 
     const now = new Date().toISOString();
+    const saver = revisionActor(req, user);
     const applied: SessionRecord[] = [];
     const skipped: Array<{ sessionId: string; rev: number; reason?: 'collab-active' }> = [];
     for (const s of matched) {
       const inputs = { ...s.inputs, ...set }; // merge by EXACT input id
       const next: SessionRecord = { ...s, inputs, rev: s.rev + 1, updatedBy: user.id, updatedAt: now };
-      if (!(await store.casSession(next, s.rev))) {
+      const version = { kind: 'save' as const, contributors: [saveContributor(saver, user)], createdBy: user.id };
+      if (!(await store.commitSessionRevision({ next, expectedRev: s.rev, actor: saver, version })).committed) {
         // A session in a live room is skipped too, but it is not a conflict.
         // A refusal at the snapshot's own rev on a live session was the room's
         // lease even if the room has let go since (the PUT route's rule).
@@ -9237,7 +9533,6 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         continue;
       }
       applied.push(next);
-      await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta: next.meta, actor: revisionActor(req, user), at: now });
     }
     // Bust affected render caches (reachable invalidation entry point, plans §6b).
     // The per-session rev bump also changes any future render key that folds in
@@ -9308,8 +9603,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, people, roomEvents: deps.roomEvents });
-  registerVersionRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, rooms: deps.versionRooms,
+  registerVersionRoutes(router, { config, store, memberOf, audit, auditBody, sessionFor: collabSessionFor, rooms: deps.versionRooms,
     toolInputs: toolId => readToolInputs(config.instance.pack, toolId) });
+  registerHistoryRoutes(router, { store, memberOf, delegated: req => !!agentRequests.principal(req) });
 
   // Invite autocomplete. Read-access only - an OBSERVER may look up who else
   // could watch, which is the same disclosure they already get from the room's
@@ -9459,25 +9755,68 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       groups: user?.groups ?? [],
     };
   };
+  /** Reads the caller's own finished automation-input uploads for the document
+   *  verbs; an anonymous principal owns none, so its references all fail. */
+  const automationUploadReader = (principal: string) => async (ref: unknown): Promise<Uint8Array> =>
+    new Uint8Array((await readUploadReference({ store, blobs, policy: uploadPolicy(config) }, ref, principal, 'automation-input')).bytes);
+  /** The caller's own file references for the document verbs (uploads/files.ts).
+   *  Each use loads the reference again and checks `tool.use` against the
+   *  current grants, so a reference deleted, or a right withdrawn, since the
+   *  last call is refused; queued work is checked when it runs. An anonymous
+   *  caller holds none, so its references all fail like anyone else's. */
+  const automationFiles = (caller: { user: UserRecord | null; principal: string }) => {
+    const toolUse = async (): Promise<boolean> => !caller.user
+      || evaluate({ userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role }, 'tool.use', ['*'], await store.listGrants());
+    return {
+      readFile: async (ref: unknown) => {
+        if (!await toolUse()) throw new UploadReferenceError(403, 'FORBIDDEN', 'tool.use required');
+        const { upload, bytes } = await readUploadReference({ store, blobs, policy: uploadPolicy(config) }, ref, caller.principal, 'file');
+        return { bytes: new Uint8Array(bytes), file: { id: upload.id, checksum: upload.checksum, name: upload.name, contentType: upload.contentType } };
+      },
+      saveFile: async (output: Uint8Array, made: { source?: { id: string; checksum: string; name: string; contentType: string }; input: Uint8Array; opts?: Record<string, unknown>; stages: string[] }) => {
+        const policy = uploadPolicy(config);
+        if (!policy.enabled) throw new UploadReferenceError(404, 'NOT_FOUND', 'uploads are off');
+        if (!caller.user || caller.user.role === 'guest') throw new UploadReferenceError(403, 'FORBIDDEN', 'keeping a file reference needs a member or a service token');
+        if (!await toolUse()) throw new UploadReferenceError(403, 'FORBIDDEN', 'tool.use required');
+        if (output.byteLength > policy.maxFileBytes) throw new UploadReferenceError(413, 'UPLOAD_TOO_LARGE', `a file reference can be at most ${policy.maxFileBytes} bytes`);
+        // Only a format this instance knows names an output with no source, so
+        // no client text of any length becomes the reference's name.
+        const asked = typeof made.opts?.format === 'string' ? made.opts.format.toLowerCase() : undefined;
+        const format = asked !== undefined && Object.hasOwn(FORMAT_TYPES, asked) ? asked : undefined;
+        const contentType = made.source?.contentType ?? (format ? FORMAT_TYPES[format]! : 'application/octet-stream');
+        const name = made.source?.name ?? `optimized.${format ?? 'bin'}`;
+        const report = optimizeReport({ name, contentType, bytes: made.input }, { name, contentType, bytes: output }, made.opts, made.stages);
+        const created = await createFileReference({ store, blobs, policy }, caller.principal, output, {
+          name, contentType, role: 'output', ...(made.source ? { derivedFrom: { id: made.source.id, checksum: made.source.checksum } } : {}), report: { by: 'instance', report },
+        });
+        if (!created.ok) { const [status, code, message] = creationRefusal(created.refusal); throw new UploadReferenceError(status, code, message); }
+        await audit(`user:${caller.user.id}`, 'file.create', `file:${created.file.id}`, { size: created.file.size, checksum: created.file.checksum, role: 'output' });
+        return fileWire(created.file);
+      },
+    };
+  };
   const automationBody = async (req: IncomingMessage, res: ServerResponse): Promise<Record<string, unknown> | null> => {
     const body = await readJson(req);
     if (!body || typeof body !== 'object' || Array.isArray(body)) { sendError(res, 400, 'INVALID_INPUT', 'JSON object body required'); return null; }
     return body as Record<string, unknown>;
   };
-  const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> => {
-    if (!(await automationMayUse(caller, toolId))) return false;
-    if (!caller.user) return config.policy.defaultAccessMode === 'open';
-    return evaluate({ userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role }, 'export.server', [`tool:${toolId}`, '*'], await store.listGrants());
-  };
-  const automationMayUse = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> => {
-    if (!caller.user) return config.policy.defaultAccessMode === 'open' && toolVisibleTo((await store.listOverlays()).get(toolId), []);
-    const principal = { userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role };
-    const grants = await store.listGrants();
-    const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
-    if (decision === 'deny') return false;
-    const overlay = (await store.listOverlays()).get(toolId);
-    if (!toolVisibleTo(overlay, caller.groups) && decision !== 'allow') return false;
-    return evaluate(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
+  // One rule for every automation route and for discovery (automation/effective-contract.ts).
+  const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
+    mayRenderTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
+  const automationMayUse = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
+    mayUseTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
+  // The caller's tool policy, which compile, validate and batch rows check inputs
+  // against. For a named tool, design-system choice rules narrow its overlay as
+  // the render pipeline does: the named format's rules, or with no format only
+  // the rules every format shares, which is what the default schema shows.
+  const automationPolicy = async (caller: { groups: string[] }, toolId?: unknown, format?: unknown) => {
+    const overlays = new Map(await store.listOverlays());
+    if (typeof toolId === 'string') {
+      const rules = await requestRuleContext(brand.current() ?? await brand.snapshot(), toolId, typeof format === 'string' ? format.toLowerCase() : undefined);
+      const projected = rules && projectRuleOverlay(overlays.get(toolId), rules, caller.groups);
+      if (projected) overlays.set(toolId, projected);
+    }
+    return { overlays, groups: caller.groups };
   };
   router.add('GET', '/api/v1/system/setup/tools/:id', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'instance.config'); if (!user) return;
@@ -9604,16 +9943,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const id = value && typeof value === 'object' ? (value as { toolId?: unknown }).toolId : undefined;
       if (typeof id === 'string' && !await automationMayUse(caller, id)) throw new Error('tool.use is no longer granted.');
     }
-    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) };
+    // Compile, validate and package read this policy. Batch rows render through the
+    // pipeline, which applies the rules for the batch format itself.
+    const governed = ['compile', 'validate', 'package'].includes(job.verb) ? body.toolId : undefined;
+    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format) };
     if (job.verb === 'batch') {
       if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const record = job;
       const rows = body.rows as Array<Record<string, unknown>>;
-      if (!Array.isArray(rows) || !rows.length || rows.length > 200) throw new Error('Durable batches need 1–200 snapshotted rows.');
+      if (!Array.isArray(rows) || !rows.length || rows.length > BATCH_LIMITS.rows) throw new Error('Durable batches need 1–200 snapshotted rows.');
       const zip = new ZipBuilder(); const used = new Set<string>(); const chunks: Buffer[] = [];
       const manifest: { toolId: string; format: string; total: number; succeeded: number; failed: number; rows: Array<{ index: number; name?: string; error?: string }> } = { toolId: body.toolId as string, format: body.format as string, total: rows.length, succeeded: 0, failed: 0, rows: [] };
-      const retries = Math.max(0, Math.min(3, Number(body.retries ?? 0) || 0));
-      const concurrency = Math.max(1, Math.min(4, Math.trunc(Number(body.concurrency ?? 1) || 1)));
+      const retries = Math.max(0, Math.min(BATCH_LIMITS.retries, Number(body.retries ?? 0) || 0));
+      const concurrency = Math.max(1, Math.min(BATCH_LIMITS.concurrency, Math.trunc(Number(body.concurrency ?? 1) || 1)));
       const overlays = await store.listOverlays();
       const outcomes: Array<{ result?: Awaited<ReturnType<typeof renderTool>>; error?: unknown }> = new Array(rows.length);
       let retainedBytes = 0;
@@ -9691,12 +10033,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
   };
 
-  router.add('GET', '/api/v1/schema/:toolId', async (req, res, ctx) => {
-    const caller = await automationCaller(req);
-    if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
-    if (!(await requireAutomationTools(res, caller, { toolId: ctx.params.toolId! }))) return;
-    try { return sendJson(res, 200, await schemaVerb({ pack: config.instance.pack, profile: caller.profile }, ctx.params.toolId!)); }
-    catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+  registerDiscoveryRoutes(router, {
+    caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
+    accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
+    toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
+    designRevision: () => brand.current()!.revision, catalogVersion: instanceCatalogVersion,
+    managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
+    caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
+    contentCredentials: async () => !!(await getC2paSigner()),
+    ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
+    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, fileReferences: uploadPolicy(config).enabled,
+    providerRefs: async (groups) => {
+      await providersReady;
+      return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
+    },
   });
 
   for (const verb of ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize'] as const) {
@@ -9706,7 +10056,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const body = await automationBody(req, res); if (!body) return;
       if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
       const hostedResolver = hostedAssetResolverFor(caller.groups);
-      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver };
+      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal), ...automationFiles(caller),
+        policy: await automationPolicy(caller, verb === 'compile' || verb === 'validate' ? body.toolId : undefined, body.format) };
       const execute = async (): Promise<unknown> => {
         let result: unknown;
         if (verb === 'compile') result = await compileVerb(automationContext, body as unknown as Parameters<typeof compileVerb>[1]);
@@ -9723,10 +10074,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         }, String(req.headers['idempotency-key'] ?? '') || undefined);
         if (!queued) return;
         const { job, reused } = queued;
-        return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+        return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
       }
       try { return sendJson(res, 200, await execute()); }
-      catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+      catch (e) {
+        if (e instanceof UploadReferenceError) return sendError(res, e.status, e.code, e.message);
+        if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
+        return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message);
+      }
     });
   }
 
@@ -9738,7 +10093,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!(await requireAutomationTools(res, caller, body, body.document))) return;
     const execute = async () => {
       const document = body.document ?? (await compileVerb(
-        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) },
+        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format) },
         body as unknown as Parameters<typeof compileVerb>[1],
       ) as { document: unknown }).document;
       return packageVerb(document);
@@ -9751,13 +10106,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }, String(req.headers['idempotency-key'] ?? '') || undefined);
       if (!queued) return;
       const { job, reused } = queued;
-      return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+      return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
     }
     try {
       const packed = await execute();
       res.writeHead(200, { 'content-type': 'application/vnd.lolly+zip', 'content-length': String(packed.bytes.byteLength), 'content-disposition': 'attachment; filename="document.lolly"' });
       res.end(Buffer.from(packed.bytes));
-    } catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+    } catch (e) {
+      if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
+      return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message);
+    }
   });
 
   router.add('POST', '/api/v1/render', async (req, res, ctx) => {
@@ -9783,7 +10141,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }, String(req.headers['idempotency-key'] ?? '') || undefined);
       if (!queued) return;
       const { job, reused } = queued;
-      return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+      return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
     }
     try {
       const result = await execute();
@@ -9806,10 +10164,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch (e) {
       return sendError(res, 400, 'DATA_BINDING_ERROR', (e as Error).message);
     }
-    if (!rows.length || rows.length > 200 || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return sendError(res, 400, 'INVALID_INPUT', 'batch rows must be a non-empty array of objects');
+    if (!rows.length || rows.length > BATCH_LIMITS.rows || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return sendError(res, 400, 'INVALID_INPUT', 'batch rows must be a non-empty array of objects');
+    const rowPolicy = await automationPolicy(caller, body.toolId, body.format);
     for (let index = 0; index < rows.length; index++) {
       const check = await validateVerb(
-        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) },
+        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: rowPolicy },
         { toolId: body.toolId, inputs: rows[index] },
       ) as { ok: boolean; errors?: unknown[] };
       if (!check.ok) return sendError(res, 422, 'ROW_VALIDATION_FAILED', `batch row ${index} does not satisfy the tool input schema`, { row: index, errors: check.errors ?? [] });
@@ -9819,22 +10178,25 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }, String(req.headers['idempotency-key'] ?? '') || undefined);
     if (!queued) return;
     const { job, reused } = queued;
-    return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+    return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
   });
 
   router.add('GET', '/api/v1/jobs', async (req, res) => {
     const caller = await automationCaller(req);
     if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
-    return sendJson(res, 200, { jobs: (await automationJobs.list(caller.principal)).map((job) => jobWire(job, automationResultUrl(job))) });
+    return sendJson(res, 200, { jobs: (await automationJobs.list(caller.principal)).map((job) => automationWire(job)) });
   });
   router.add('GET', '/api/v1/jobs/:id', async (req, res, ctx) => {
     const caller = await automationCaller(req);
     if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     const job = await automationJobs.get(ctx.params.id!, caller.principal);
-    return job ? sendJson(res, 200, jobWire(job, automationResultUrl(job))) : sendError(res, 404, 'NOT_FOUND', 'job not found');
+    return job ? sendJson(res, 200, automationWire(job)) : sendError(res, 404, 'NOT_FOUND', 'job not found');
   });
   router.add('GET', '/api/v1/jobs/:id/result', async (req, res, ctx) => {
-    const token = ctx.url.searchParams.get('token');
+    const header = req.headers[JOB_TOKEN_HEADER];
+    const queryToken = ctx.url.searchParams.get('token');
+    if (queryToken !== null) res.setHeader('deprecation', QUERY_CREDENTIAL_DEPRECATION);
+    const token = (typeof header === 'string' && header) || queryToken;
     const signed = token ? verifyToken<{ jobId: string; principal: string }>('lw/job', token, linkVerify) : null;
     const caller = signed ? null : await automationCaller(req);
     if (!signed && !caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
@@ -10551,7 +10913,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }, secrets.session, secure, renewal.ttlSec);
   };
 
-  return async (req, res) => {
+  const app: App = async (req, res) => {
     guardDelivery(req, res);
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
@@ -10575,8 +10937,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const reqId = requestId(req.headers['x-request-id']);
     res.setHeader('x-request-id', reqId);
     const startedAt = Date.now();
+    // Origin bytes are counted once: when the response finishes, or when the
+    // client goes away part way through a download.
+    const bodyBytes = countResponseBytes(req, res);
+    let originCounted = false;
+    const countOrigin = (): void => {
+      if (originCounted) return;
+      originCounted = true;
+      metrics.originBytes(deliveryClassOf(res), bodyBytes());
+    };
+    res.on('close', countOrigin);
     res.on('finish', () => {
       metrics.httpRequest(routeClass, statusClass(res.statusCode));
+      countOrigin();
       if (log.accessLog) log('info', 'http', { reqId, method: req.method, route: routeClass, status: res.statusCode, ms: Date.now() - startedAt });
     });
     // Cookie-authenticated mutations from another site are refused before any
@@ -10651,6 +11024,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!res.headersSent) sendError(res, status, err instanceof BrandError ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
     }
   };
+  appRoutes.set(app, router.descriptions);
+  return app;
 }
 
 /** A live collaboration room holds the session's lease (`Store.collabLeaseActive`,
@@ -10686,6 +11061,13 @@ function sendReadPreflight(res: ServerResponse): void {
     'access-control-max-age': '86400',
   });
   res.end();
+}
+
+/** A compile or package that tool policy refuses answers like a refused render:
+ *  the first violation's code, the input it names and the overlay that decided. */
+function sendPolicyRefusal(res: ServerResponse, e: PolicyRefusal): void {
+  const v = e.violations[0]!;
+  sendError(res, e.status, e.code, e.message, { input: v.param, ...(v.by ? { by: v.by } : {}), ...(v.reason ? { reason: v.reason } : {}) });
 }
 
 /** Does an `If-None-Match` header cover this entity tag (RFC 9110 section 13.1.2)?
@@ -10726,6 +11108,7 @@ function serializeApproval(
   return {
     id: a.id,
     subjectType: a.subjectType,
+    ...(a.sourceReview ? { sourceReview: a.sourceReview } : {}),
     subjectRef: a.subjectRef,
     title: a.title,
     chainId: a.chainId,

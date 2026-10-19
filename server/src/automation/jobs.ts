@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Durable automation queue: Store owns metadata and BlobStore owns bytes. */
-import { randomUUID, createHash, createHmac } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import type { AutomationJobRecord, Store } from '../store/types.ts';
-import { DurableAutomationRunner, type DurableExecutor } from './durable-runner.ts';
+import { DurableAutomationRunner, attemptResultRef, type DurableExecutor } from './durable-runner.ts';
+import { CallbackOutbox, type CallbackOutboxStore } from './callback-outbox.ts';
 
 export type AutomationJob = AutomationJobRecord;
-type JobStore = Pick<Store, 'putAutomationJob' | 'getAutomationJob' | 'listAutomationJobs' | 'findAutomationJobByIdempotency' | 'deleteAutomationJob' | 'claimAutomationJob' | 'renewAutomationJob' | 'saveClaimedAutomationJob'>;
+type JobStore = Pick<Store, 'putAutomationJob' | 'getAutomationJob' | 'listAutomationJobs' | 'findAutomationJobByIdempotency' | 'deleteAutomationJob' | 'claimAutomationJob' | 'renewAutomationJob' | 'saveClaimedAutomationJob'> & CallbackOutboxStore;
 export interface JobOutput { mime: string; bytes: Uint8Array; value?: unknown }
 
 export interface AutomationQueueOptions {
@@ -19,6 +20,11 @@ export interface AutomationQueueOptions {
   callbackAllowed?: (url: string) => boolean;
   /** Mint an authenticated, expiring result URL for an out-of-band callback. */
   resultUrl?: (job: AutomationJob) => string;
+  /** Mint the token a callback receiver sends as `x-lw-job-token`, so the
+   *  credential need not ride in the result URL. */
+  resultToken?: (job: AutomationJob) => string;
+  /** The wait after each failed callback attempt (callback-outbox.ts has the default). */
+  callbackRetryDelaysMs?: readonly number[];
   /** Process-local drain width. The durable lease/replica runner is plan 40;
    * this bound prevents one process from stampeding its render worker. */
   maxConcurrent?: number;
@@ -26,7 +32,11 @@ export interface AutomationQueueOptions {
    * no timer: it looks when enabled, on each submission and whenever a job
    * frees its slot (done, failed or requeued for a retry), so an idle host
    * never queries its database on a clock. A job left behind by a crashed
-   * process, or by a lease this one lost, waits for the next of those. */
+   * process, or by a lease this one lost, waits for the next of those.
+   * The callback outbox shares this timer. Without one it looks when enabled
+   * and after each settled job, and sets a single timer for its next due entry
+   * (up to about 45 minutes after a job settles), or for a bounded retry after
+   * a store error. */
   pollMs?: number;
 }
 
@@ -42,7 +52,21 @@ export class AutomationQueue {
   private durable?: DurableAutomationRunner;
   private durableVerbs = new Set<string>();
   private durableTimer?: ReturnType<typeof setInterval>;
-  constructor(options: AutomationQueueOptions = {}) { this.options = options; }
+  /** Settled jobs' callbacks. Without a store nothing durable can hold them, so none are sent. */
+  private readonly callbacks?: CallbackOutbox;
+  constructor(options: AutomationQueueOptions = {}) {
+    this.options = options;
+    if (options.store) {
+      this.callbacks = new CallbackOutbox(options.store, {
+        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+        ...(options.callbackSecret ? { secret: options.callbackSecret } : {}),
+        ...(options.callbackAllowed ? { allowed: options.callbackAllowed } : {}),
+        ...(options.resultUrl ? { resultUrl: options.resultUrl } : {}),
+        ...(options.resultToken ? { resultToken: options.resultToken } : {}),
+        ...(options.callbackRetryDelaysMs ? { retryDelaysMs: options.callbackRetryDelaysMs } : {}),
+      });
+    }
+  }
 
   enableDurable(executors: Record<string, DurableExecutor>): void {
     if (!this.options.store || !this.options.blobs) throw new Error('Durable execution needs metadata and blob stores.');
@@ -51,12 +75,17 @@ export class AutomationQueue {
     const poll = (): void => { void this.durable?.poll().catch(() => {}); };
     // Look again whenever a job frees its slot, however it ended (a retry is
     // requeued, a lease is lost), so a backlog drains without the timer, or with none.
-    this.durable = new DurableAutomationRunner(this.options.store, this.options.blobs, executors, { concurrency: this.options.maxConcurrent, onComplete: job => this.callback(job), onSettled: poll });
+    this.durable = new DurableAutomationRunner(this.options.store, this.options.blobs, executors, { concurrency: this.options.maxConcurrent, onComplete: async () => this.sendCallbacks(), onSettled: poll });
     const pollMs = this.options.pollMs ?? 1000;
-    if (pollMs > 0) { this.durableTimer = setInterval(poll, pollMs); this.durableTimer.unref(); }
+    if (pollMs > 0) {
+      this.durableTimer = setInterval(() => { poll(); this.sendCallbacks(); }, pollMs); this.durableTimer.unref();
+      this.callbacks?.polledOnTimer();
+    }
     poll();
+    // Boot: send what a stopped process left in the callback outbox.
+    this.sendCallbacks();
   }
-  stop(): void { clearInterval(this.durableTimer); this.durable?.stop(); }
+  stop(): void { clearInterval(this.durableTimer); this.durable?.stop(); this.callbacks?.stop(); }
 
   async create(principal: string, verb: string, request: Record<string, unknown>, run: (job: AutomationJob) => Promise<JobOutput>, idempotencyKey?: string): Promise<{ job: AutomationJob; reused: boolean }> {
     if (idempotencyKey) {
@@ -112,6 +141,12 @@ export class AutomationQueue {
     if (this.options.store && !(await this.options.store.deleteAutomationJob(id, principal))) return false;
     this.jobs.delete(id);
     if (job.resultRef) await this.options.blobs?.delete(job.resultRef);
+    // A durable job may also hold bytes from attempts that never published.
+    // Each claim takes the next lease token, so the tokens name every attempt path.
+    for (let token = 1; token <= (job.leaseToken ?? 0); token++) {
+      const ref = attemptResultRef(job.id, token);
+      if (ref !== job.resultRef) await this.options.blobs?.delete(ref).catch(() => {});
+    }
     return true;
   }
 
@@ -174,28 +209,14 @@ export class AutomationQueue {
       job.error = failure instanceof Error ? failure.message : String(failure ?? 'automation job failed');
       job.state = 'failed';
     }
-    job.finishedAt = new Date().toISOString(); await this.save(job); await this.callback(job);
+    if (job.callbackUrl && !this.callbacks) job.callbackFailed = true;
+    // Saving the settled job also stores its callback in the outbox.
+    job.finishedAt = new Date().toISOString(); await this.save(job); this.sendCallbacks();
   }
 
-  private async callback(job: AutomationJob): Promise<void> {
-    if (!job.callbackUrl) return;
-    if (!this.options.callbackAllowed?.(job.callbackUrl) || !this.options.callbackSecret) { job.callbackFailed = true; await this.save(job); return; }
-    const fetchImpl = this.options.fetchImpl ?? fetch;
-    const body = JSON.stringify({ jobId: job.id, state: job.state, resultUrl: job.state === 'done' ? (this.options.resultUrl?.(job) ?? `/api/v1/jobs/${job.id}/result`) : null });
-    const timestamp = String(Date.now());
-    const signature = createHmac('sha256', this.options.callbackSecret).update(`${timestamp}.${body}`).digest('hex');
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const response = await fetchImpl(job.callbackUrl, { method: 'POST', headers: { 'content-type': 'application/json', 'x-lolly-timestamp': timestamp, 'x-lolly-signature': `sha256=${signature}` }, body, signal: AbortSignal.timeout(10_000), redirect: 'error' });
-        await response.body?.cancel();
-        if (response.ok) { job.callbackFailed = false; await this.save(job); return; }
-      } catch { /* bounded retry below */ }
-      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 25 * (2 ** attempt)));
-    }
-    job.callbackFailed = true; await this.save(job);
-  }
+  private sendCallbacks(): void { void this.callbacks?.poll().catch(() => {}); }
 }
 
-export function jobWire(job: AutomationJob, resultUrl = `/api/v1/jobs/${job.id}/result`): Record<string, unknown> {
-  return { jobId: job.id, verb: job.verb, state: job.state, statusUrl: `/api/v1/jobs/${job.id}`, resultUrl: job.state === 'done' ? resultUrl : null, resultSha256: job.resultSha256 ?? null, error: job.error ?? null, callbackFailed: job.callbackFailed ?? false, progress: job.progress ?? null, priority: job.priority, attempt: job.attempt, createdAt: job.createdAt, finishedAt: job.finishedAt ?? null };
+export function jobWire(job: AutomationJob, resultUrl = `/api/v1/jobs/${job.id}/result`, resultToken?: string): Record<string, unknown> {
+  return { jobId: job.id, verb: job.verb, state: job.state, statusUrl: `/api/v1/jobs/${job.id}`, resultUrl: job.state === 'done' ? resultUrl : null, resultToken: job.state === 'done' ? (resultToken ?? null) : null, resultSha256: job.resultSha256 ?? null, error: job.error ?? null, callbackFailed: job.callbackFailed ?? false, callback: job.callback ?? null, progress: job.progress ?? null, priority: job.priority, attempt: job.attempt, createdAt: job.createdAt, finishedAt: job.finishedAt ?? null };
 }

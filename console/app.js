@@ -21,6 +21,7 @@ import { compareValues } from './table-sort.js';
 import { createTagPanel } from './catalog-tags.js';
 import { createSubmitPanel } from './catalog-submit.js';
 import { buildThemeMaps, themeFromTokens, resolveCssColor } from './brand-theme.js';
+import { dayBound, localDateValue, zoneName } from './lifecycle-dates.js';
 
 const $app = document.getElementById('app');
 const $tip = document.getElementById('tip');
@@ -2138,22 +2139,29 @@ function catalogThumb(entry, size, onOpen) {
   return box;
 }
 
-/** The Set-expiry / Revoke lifecycle controls for one asset, shared by the
+/** The dates / Revoke lifecycle controls for one asset, shared by the
  *  catalog row and the inspect panel so the two surfaces can never drift — both
  *  PUT the same endpoint and re-render the whole view (route()) on success.
+ *  Dates are whole days in the admin's own time zone (lifecycle-dates.js): an end
+ *  date closes at the end of that day, not at the start of it in UTC. The inspect
+ *  panel also offers a start date (`withStart`); the table row keeps one input.
  *  Returns { node, err } for the caller to place. */
-function lifecycleControls(entry) {
+function lifecycleControls(entry, { withStart = false } = {}) {
   const err = errSpan();
-  const dateInput = el('input', { type: 'date', 'aria-label': `Expiry date for ${entry.id}`, value: entry.validUntil ? entry.validUntil.slice(0, 10) : '' });
+  const fromInput = withStart ? el('input', { type: 'date', 'aria-label': `Start date for ${entry.id}`, value: localDateValue(entry.validFrom) }) : null;
+  const dateInput = el('input', { type: 'date', 'aria-label': `End date for ${entry.id}`, value: localDateValue(entry.validUntil) });
   const setBtn = el('button', { onclick: async () => {
-    if (!dateInput.value) { err.textContent = 'Pick a date first.'; return; }
+    const validFrom = fromInput ? dayBound(fromInput.value, 'start') : null;
+    const validUntil = dayBound(dateInput.value, 'end');
+    if (!validFrom && !validUntil) { err.textContent = withStart ? 'Pick a start or an end date first.' : 'Pick a date first.'; return; }
+    if (validFrom && validUntil && validFrom > validUntil) { err.textContent = 'The end date is before the start date.'; return; }
     err.textContent = '';
     setBtn.disabled = true;
     try {
-      await api(`/api/v1/catalog/lifecycle/${entry.id}`, { method: 'PUT', body: { validUntil: new Date(dateInput.value).toISOString() } });
+      await api(`/api/v1/catalog/lifecycle/${entry.id}`, { method: 'PUT', body: { ...(validFrom ? { validFrom } : {}), ...(validUntil ? { validUntil } : {}) } });
       route();
     } catch (e) { err.textContent = e.message; setBtn.disabled = false; }
-  } }, 'Set expiry');
+  } }, withStart ? 'Set dates' : 'Set end date');
   const revokeBtn = armConfirmButton({ class: 'danger' }, 'Revoke', 'Really revoke?', async (disarm) => {
     err.textContent = '';
     revokeBtn.disabled = true;
@@ -2162,7 +2170,15 @@ function lifecycleControls(entry) {
       route();
     } catch (e) { err.textContent = e.message; revokeBtn.disabled = false; disarm(); }
   });
-  return { node: el('div', { class: 'lc-actions' }, dateInput, setBtn, revokeBtn), err };
+  const zone = zoneName();
+  if (!withStart) return { node: el('div', { class: 'lc-actions' }, dateInput, setBtn, revokeBtn), err };
+  return {
+    node: el('div', { class: 'stack' },
+      el('div', { class: 'lc-actions lc-actions--dates' },
+        el('label', {}, 'Starts ', fromInput), el('label', {}, 'Ends ', dateInput), setBtn, revokeBtn),
+      zone ? el('p', { class: 'muted flush' }, `Whole days, ${zone} time.`) : null),
+    err,
+  };
 }
 
 /**
@@ -2634,7 +2650,7 @@ function renderCatalogDetail(detail, entry, host, opener, history) {
       }))
     : null;
 
-  const { node: lcNode, err: lcErr } = lifecycleControls(entry);
+  const { node: lcNode, err: lcErr } = lifecycleControls({ ...entry, validFrom: lc?.validFrom ?? entry.validFrom, validUntil: lc?.validUntil ?? entry.validUntil }, { withStart: true });
   const metaSection = catalogMetaEditor(detail, entry, host);
   const versionsSection = catalogVersionsPanel(detail, entry, host, history);
 
@@ -3474,7 +3490,7 @@ function approvalFooter(a) {
     clearNeed();
     err.textContent = '';
     try {
-      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined } });
+      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}) } });
       toast(action === 'approve' ? `Approved “${a.title}”` : `Rejected “${a.title}”`);
       route();
     } catch (e) { err.textContent = e.message; }
@@ -3500,6 +3516,11 @@ function renderApprovalCard(a, { actionable }) {
           el('span', { class: 'muted' }, a.chainName),
           el('span', { class: 'muted' }, a.mine ? 'raised by you' : ['raised by ', a.createdByName ?? a.createdBy], ' · ', relTime(a.createdAt)))),
       stateChip(a.state)),
+    a.sourceReview ? el('div', { class: 'appr-meta' },
+      el('p', {}, `${a.sourceReview.purpose} · ${a.sourceReview.target}`),
+      ...a.sourceReview.files.map(file => el('p', { class: 'mono' }, `${file.assetId} · version ${file.version} · ${file.format} · SHA-256 ${file.sha256} `,
+        el('a', { href: `/catalog/${file.assetId}/${encodeURIComponent(file.format)}?v=${file.version}`, download: `review-v${file.version}.${file.format}` }, 'Download reviewed original'))),
+      el('p', { class: 'muted' }, 'Review covers this frozen source set. Source access, historical attributes and final delivery approval remain separate.')) : null,
     // The actionable inbox stays fully expanded; a request you've only raised
     // collapses its stepper behind a one-line progress summary (it's reference,
     // not something you act on) so "Your requests" scans at a glance.
@@ -6356,6 +6377,32 @@ async function signInGate() {
   ]);
 }
 
+// Alerts the server raises for administrators (GET /api/v1/alerts): today the
+// blob offload trigger. Shown as a banner above every view for anyone who can
+// read the overview; asked for at most once a minute, and never by a person
+// without that permission. The same alerts reach administrators by email.
+let alertCache = { at: 0, alerts: [] };
+async function deploymentAlerts() {
+  if (!session?.console || !canAction('telemetry.view')) return [];
+  if (Date.now() - alertCache.at < 60_000) return alertCache.alerts;
+  const answer = await api('/api/v1/alerts').catch(() => null);
+  alertCache = { at: Date.now(), alerts: Array.isArray(answer?.alerts) ? answer.alerts : [] };
+  return alertCache.alerts;
+}
+
+// Views replace their own children as they load and refresh, so the banner is
+// put back whenever a view's re-render removes it.
+function showAlertBanner(main, alerts) {
+  if (!alerts.length || !main.isConnected) return;
+  const banner = el('section', { class: 'card alert-banner', 'aria-label': 'Deployment alerts' },
+    el('ul', { class: 'alert-list' }, ...alerts.map((alert) => el('li', { class: 'alert-item' },
+      el('strong', {}, alert.title), ' ', alert.detail, ' ',
+      alert.href ? el('a', { href: alert.href }, 'What to do next') : null))));
+  main.prepend(banner);
+  new MutationObserver(() => { if (!banner.isConnected && main.isConnected) main.prepend(banner); })
+    .observe(main, { childList: true });
+}
+
 let disposeAgentView = null;
 async function route() {
   if (activeAccountInspector) {
@@ -6421,6 +6468,7 @@ async function route() {
   // replaced by the view's own empty/error state / the catch below).
   const loading = loadingCard(view.title);
   main.append(loading);
+  const alerts = publicMode ? Promise.resolve([]) : deploymentAlerts();
   try {
     await view.render(main, params);
   } catch (err) {
@@ -6439,6 +6487,7 @@ async function route() {
     }
   }
   loading.remove();
+  showAlertBanner(main, await alerts);
   // Focus the view heading and announce it, so keyboard/SR users re-orient after
   // a navigation (or a mutation-triggered re-render) instead of losing focus.
   const focusHeading = main.querySelector('[data-doc-anchor]') ?? main.querySelector('h1');

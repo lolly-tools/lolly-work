@@ -20,7 +20,9 @@ import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
 import { runRetention } from './audit/retention.ts';
 import { scheduleProjectFileSweep } from './projects/files.ts';
-import { createNotifier } from './notify/notify.ts';
+import { scheduleUploadSweep } from './uploads/scoped.ts';
+import { administratorAddresses, createNotifier } from './notify/notify.ts';
+import { notifyOffloadAlerts } from './observability/offload-trigger.ts';
 import { expiringCredentials } from './catalog/credential-expiry.ts';
 import { auditHead } from './audit/head.ts';
 import { deriveAuditMacKey, retiredKeyNote } from './audit/chain.ts';
@@ -166,7 +168,9 @@ const blobs = config.blobs.driver === 's3'
 // LW_BACKGROUND_POLL_MS: how often the durable render and automation runners
 // look for queued work. Unset keeps 1 s; 0 sets no timer (work is still picked
 // up at boot and on submission), which lets a database that scales to zero
-// sleep while nobody uses the instance (deploy/vm/README.md).
+// sleep while nobody uses the instance (deploy/vm/README.md). A pending job
+// callback still sets a single timer for its next attempt, so the database may
+// be woken for up to about 45 minutes after a job with a callback settles.
 const backgroundPollMs = parseBackgroundPollMs(process.env.LW_BACKGROUND_POLL_MS);
 if (backgroundPollMs !== undefined) console.log(`[lolly-work] background poll ${backgroundPollMs === 0 ? 'off (work runs on submission)' : `every ${backgroundPollMs} ms`}`);
 let renderRunner: RenderRunner | undefined;
@@ -217,13 +221,22 @@ if (config.policy.retention.telemetryDays > 0 || config.policy.retention.auditDa
 // POST /api/v1/retention/run still sweeps whenever it is called. The boot pass
 // is not awaited: a large backlog must not hold up listening.
 scheduleProjectFileSweep(store, blobs);
+// Expired scoped uploads (uploads/scoped.ts) on the same schedule.
+scheduleUploadSweep(store, blobs);
 
 // Credential expiry (plans/36 §2): the daily nudge beside the always-on
 // surfaces (provider rows, console chip, the expiry-days gauge). Threshold-
 // crossing only, so each stated expiry is mentioned a handful of times, never
 // nagged daily; silent without notify egress, like everything notify-shaped.
+// The blob offload trigger (plan 80 section 10) rides the same daily tick, so
+// it wakes the database no more often: one email per alert per month, claimed
+// in the database so replicas and restarts do not repeat it.
 {
   const expiryNotifier = createNotifier({ config, secrets });
+  const checkOffload = async (): Promise<void> => {
+    await notifyOffloadAlerts({ blobs, notifier: expiryNotifier, baseUrl: config.instance.baseUrl,
+      recipients: async () => administratorAddresses(await store.listUsers()) });
+  };
   const checkExpiry = async (): Promise<void> => {
     const expiring = expiringCredentials(await store.listProviders());
     if (!expiring.length) return;
@@ -237,8 +250,11 @@ scheduleProjectFileSweep(store, blobs);
       expiryNotifier.event('provider.credential.expiring', { id: e.id, kind: e.kind, daysLeft: e.daysLeft, expiresAt: e.expiresAt });
     }
   };
+  const offloadFailed = (e: Error): void => console.error(`[lolly-work] blob offload check failed: ${e.message}`);
   await checkExpiry();
-  setInterval(() => void checkExpiry().catch((e: Error) => console.error(`[lolly-work] credential expiry check failed: ${e.message}`)), 24 * 60 * 60 * 1000).unref();
+  await checkOffload().catch(offloadFailed);
+  setInterval(() => void checkExpiry().catch((e: Error) => console.error(`[lolly-work] credential expiry check failed: ${e.message}`))
+    .then(() => checkOffload().catch(offloadFailed)), 24 * 60 * 60 * 1000).unref();
 }
 
 // SIEM forwarding (plans/35 wave 2): audit events pushed to the org's receiver
@@ -291,6 +307,8 @@ const shutdown = async (signal: string): Promise<void> => {
     }
   })()]);
   console.log('[lolly-work] drained');
+  // Write the buffered blob read tally, so a routine deploy keeps the month's figure.
+  await blobs.flushUsage?.().catch((err: Error) => console.error(`[lolly-work] blob read tally not written: ${err.message}`));
   process.exit(0);
 };
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {

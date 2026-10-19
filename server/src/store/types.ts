@@ -32,6 +32,7 @@ import type { ProviderRecord, ProviderState } from '../catalog/providers/types.t
 import type { DeliveryRecord } from '../delivery/types.ts';
 import type { PasskeyStore } from '../iam/passkeys/types.ts';
 import type { RenderStore } from '../renders/types.ts';
+import type { UploadStore } from '../uploads/scoped.ts';
 import type { ProjectFileLimits, ProjectFileRecord, ProjectFileReservation } from '../projects/files.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
 import { sha256Hex } from '../lib/crypto.ts';
@@ -354,7 +355,11 @@ export interface AutomationJobRecord {
   resultSha256?: string;
   error?: string;
   callbackUrl?: string;
+  /** True until the receiver acknowledges the callback. Read from the callback
+   *  outbox when the job has an entry there; older jobs keep their stored flag. */
   callbackFailed?: boolean;
+  /** Read-only summary of the job's callback outbox entry. Saves ignore it. */
+  callback?: AutomationCallbackSummary;
   progress?: { done: number; total: number };
   idempotencyKey?: string;
   /** Higher values drain first within this process; bounded to 0..9. */
@@ -363,6 +368,65 @@ export interface AutomationJobRecord {
   leaseOwner?: string;
   leaseUntil?: string;
   leaseToken?: number;
+}
+
+/** `acknowledged` means the receiver answered 2xx. It is not proof that the
+ *  receiver acted on the callback, so nothing here says "delivered". */
+export type AutomationCallbackState = 'pending' | 'acknowledged' | 'failed';
+/** What one send attempt learned. `uncertain`: the request may have reached the
+ *  receiver (a timeout, a dropped connection, or a sender that stopped before it
+ *  recorded the answer), so the next attempt reuses the same id. `not-sent`: no
+ *  request left this instance. */
+export type AutomationCallbackOutcome = 'acknowledged' | 'refused' | 'uncertain' | 'not-sent';
+export interface AutomationCallbackSummary {
+  /** The idempotency key every attempt sends, as `x-lolly-delivery-id` and in the signed body. */
+  id: string;
+  state: AutomationCallbackState;
+  attempts: number;
+  lastOutcome?: AutomationCallbackOutcome;
+  lastStatus?: number;
+  nextAttemptAt?: string;
+}
+/** Durable callback outbox entry. A job that settles (done or failed) with a
+ *  callback URL gets one in the same write; a dispatcher claims due entries with
+ *  a lease, so an entry no process finished is sent again after a restart. */
+export interface AutomationCallbackRecord {
+  id: string;
+  jobId: string;
+  principal: string;
+  url: string;
+  state: AutomationCallbackState;
+  attempt: number;
+  nextAttemptAt: string;
+  leaseOwner?: string;
+  leaseUntil?: string;
+  leaseToken: number;
+  lastOutcome?: AutomationCallbackOutcome;
+  lastStatus?: number;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  settledAt?: string;
+}
+/** Recorded on an entry claimed after its previous holder's lease expired. */
+export const UNRECORDED_CALLBACK_ATTEMPT = 'The previous attempt stopped before it recorded an answer; the receiver may have received it.';
+export function automationCallbackSummary(callback: AutomationCallbackRecord): AutomationCallbackSummary {
+  return {
+    id: callback.id, state: callback.state, attempts: callback.attempt,
+    ...(callback.lastOutcome ? { lastOutcome: callback.lastOutcome } : {}),
+    ...(callback.lastStatus !== undefined ? { lastStatus: callback.lastStatus } : {}),
+    ...(callback.state === 'pending' ? { nextAttemptAt: callback.nextAttemptAt } : {}),
+  };
+}
+/** The recorded result of one claimed attempt. `pending` schedules another
+ *  attempt `retryAfterMs` from now on the store's own clock; the other states
+ *  are final. */
+export interface AutomationCallbackResult {
+  state: AutomationCallbackState;
+  outcome: AutomationCallbackOutcome;
+  status?: number;
+  error?: string;
+  retryAfterMs?: number;
 }
 
 /** The upsert input carries the IdP-authoritative groups as `groups`; the store
@@ -566,6 +630,44 @@ export interface SessionRevision {
  *  bytes-small; this bounds unbounded history growth (plans/08 §2). */
 export const SESSION_REVISION_LIMIT = 20;
 
+/** The version a commit writes of its new head: every field of a version write
+ *  but the ones the head supplies (session, rev, inputs, meta) and the time. */
+export type SessionRevisionCommitVersion = Omit<SessionVersionWrite, 'sessionId' | 'rev' | 'inputs' | 'meta' | 'at'>;
+
+/**
+ * One write of a session's document by `commitSessionRevision` (plan 221): the
+ * new head, the revision row that records it, and, when given, a version of it
+ * and the audit event that reports it.
+ */
+export interface SessionRevisionCommit {
+  /** The new head. `rev` is `expectedRev + 1`; `deletedAt` is ignored, as `casSession` ignores it. */
+  next: SessionRecord;
+  expectedRev: number;
+  /** The revision row's `actor`; its time is `next.updatedAt`. */
+  actor: string;
+  version?: SessionRevisionCommitVersion;
+  audit?: AuditEventBody;
+}
+
+/** What `commitSessionRevision` did. `committed: false` is `casSession`'s false:
+ *  the row was not at `expectedRev`, was deleted, or a live room held it, and
+ *  nothing was written. `version` answers the version write as
+ *  `putSessionVersion` would; a version refused for space or the named limits
+ *  leaves the rest committed. */
+export type SessionRevisionCommitResult =
+  | { committed: true; session: SessionRecord; version?: SessionVersionPut }
+  | { committed: false };
+
+/** The version write of a commit, or undefined when it asks for none. Throws a
+ *  TypeError for a commit both drivers refuse before writing: a `next.rev` that
+ *  is not `expectedRev + 1`, no actor, or a version the schema refuses. */
+export function sessionRevisionCommitVersion(c: SessionRevisionCommit): (SessionVersionWrite & { at: string }) | undefined {
+  if (!Number.isSafeInteger(c.expectedRev) || c.expectedRev < 0 || c.next.rev !== c.expectedRev + 1) throw new TypeError('commit-rev');
+  if (typeof c.actor !== 'string' || !c.actor) throw new TypeError('commit-actor');
+  if (!c.version) return undefined;
+  return normalizeSessionVersionWrite({ ...c.version, sessionId: c.next.id, rev: c.next.rev, inputs: c.next.inputs, meta: c.next.meta });
+}
+
 /** A session as a listing shows it: every field but the document itself. */
 export type SessionSummary = Omit<SessionRecord, 'inputs'>;
 
@@ -667,9 +769,16 @@ export interface SessionVersionSummary {
   /** Size of the version's content (canonical inputs JSON), shared with any
    *  other version of the same document that has the same content. */
   bytes: number; at: string;
+  /** Pinned by a person (migration 0072): kept without a name. */
+  pinned: boolean;
+  /** The revision of the name and pin: 0 when the version is written, one more
+   *  on each change (`annotateSessionVersion`). The content never changes. */
+  annotationRev: number;
 }
 export interface SessionVersion extends SessionVersionSummary { inputs: Record<string, unknown>; meta: Record<string, unknown> }
-export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at'> & {
+/** A new version. Only a named version carries a label when it is written; a
+ *  later name or pin is an annotation (`annotateSessionVersion`). */
+export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at' | 'pinned' | 'annotationRev'> & {
   at?: string; requestId?: string;
   /** Versions of the same session this write's retention and space eviction
    *  must leave in place (a restore keeps the version it restores from). Not
@@ -680,6 +789,13 @@ export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at'> & 
  *  the write: the same request id, the same content as the latest version, or an
  *  automatic version skipped for space (the latest version is returned). */
 export type SessionVersionPut = { version: SessionVersionSummary; created: boolean } | 'version-limit' | 'version-space';
+/** A change to a version's name or pin. `label: null` removes the name; a field
+ *  left out keeps its value. `annotationRev` is the revision the caller read, and
+ *  `by` the person making the change. */
+export interface SessionVersionAnnotation { label?: string | null; pinned?: boolean; annotationRev: number; by: string }
+/** What `annotateSessionVersion` did. `changed: false` means the version already
+ *  had the asked-for name and pin, so nothing was written. */
+export type SessionVersionAnnotate = { version: SessionVersionSummary; changed: boolean } | 'not-found' | 'version-changed' | 'version-limit';
 /** Space caps on version content, counted over distinct contents. */
 export interface SessionVersionLimits { sessionMaxBytes: number; instanceMaxBytes: number }
 
@@ -688,7 +804,7 @@ export const VERSION_SESSION_MAX_BYTES = 100 * 1024 * 1024;
 /** The most content the whole instance's versions may hold, unless
  *  `configureVersionLimits` sets another (`policy.versions.maxBytes`). */
 export const VERSION_INSTANCE_MAX_BYTES = 1024 * 1024 * 1024;
-/** Named versions: per person per document, and per document. */
+/** Kept versions (`versionKept`): per person per document, and per document. */
 export const VERSION_NAMED_PER_PERSON = 20;
 export const VERSION_NAMED_PER_SESSION = 100;
 /** Restore rows kept per document (each with its paired 'before' row). */
@@ -703,6 +819,43 @@ export const VERSION_LABEL_MAX = 120;
 /** `listSessionVersions` page size: the default and the most allowed. */
 export const VERSION_LIST_DEFAULT = 30;
 export const VERSION_LIST_MAX = 100;
+/** `listVersionHistory` page size by default; the most allowed is VERSION_LIST_MAX. */
+export const VERSION_HISTORY_DEFAULT = 50;
+
+/** A version as the history across documents lists it (plan 221): its summary
+ *  and the facts of its document that a list row shows. Never its content. */
+export interface VersionHistoryEntry extends SessionVersionSummary {
+  projectId: string; toolId: string; toolVersion: string;
+  /** The document's current name (`meta.label`), or null when it has none. */
+  sessionLabel: string | null;
+}
+
+/**
+ * What `listVersionHistory` reads. `projectIds` is the whole scope: only
+ * versions of live documents in these projects, less the documents in
+ * `exceptSessionIds`. The caller works the scope out from the reader's access
+ * (versions/history.ts); the store applies it with the filters and knows
+ * nothing of people.
+ */
+export interface VersionHistoryQuery {
+  projectIds: readonly string[];
+  exceptSessionIds?: readonly string[];
+  toolId?: string;
+  kinds?: readonly SessionVersionKind[];
+  /** Only kept versions (`versionKept`). */
+  kept?: boolean;
+  /** ISO times (`toISOString`), both inclusive. */
+  from?: string; to?: string;
+  /** The page starts after this version, newest first (by `at`, then id). */
+  after?: { at: string; id: string };
+  limit: number;
+}
+
+/** A history entry from a version summary and the document it belongs to. */
+export function versionHistoryEntry(v: SessionVersionSummary, s: Pick<SessionRecord, 'projectId' | 'toolId' | 'toolVersion' | 'meta'>): VersionHistoryEntry {
+  return { ...v, projectId: s.projectId, toolId: s.toolId, toolVersion: s.toolVersion,
+    sessionLabel: typeof s.meta?.label === 'string' ? s.meta.label : null };
+}
 
 const VERSION_ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
 const RECYCLABLE_KINDS: ReadonlySet<SessionVersionKind> = new Set(['auto', 'close', 'save']);
@@ -758,6 +911,9 @@ export function sessionVersionContent(inputs: Record<string, unknown>): { digest
 
 const plainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+/** 1 to VERSION_LABEL_MAX characters, counted as code points. */
+const versionLabel = (value: unknown): value is string =>
+  typeof value === 'string' && [...value].length >= 1 && [...value].length <= VERSION_LABEL_MAX;
 
 /** A version write in the shape both drivers store, or a thrown error for a
  *  write the database would refuse. Contributors keep only their known fields,
@@ -766,7 +922,7 @@ export function normalizeSessionVersionWrite(v: SessionVersionWrite, now = new D
   if (typeof v.sessionId !== 'string' || !v.sessionId) throw new TypeError('version-session');
   if (!SESSION_VERSION_KINDS.includes(v.kind)) throw new TypeError('version-kind');
   if (!Number.isSafeInteger(v.rev) || v.rev < 0) throw new TypeError('version-rev');
-  if (v.label !== undefined && (typeof v.label !== 'string' || [...v.label].length < 1 || [...v.label].length > VERSION_LABEL_MAX)) throw new TypeError('version-label');
+  if (v.label !== undefined && (v.kind !== 'named' || !versionLabel(v.label))) throw new TypeError('version-label');
   if (!plainObject(v.inputs) || !plainObject(v.meta) || !Array.isArray(v.contributors)) throw new TypeError('version-shape');
   for (const ref of [v.createdBy, v.restoredFrom, v.beforeId, v.requestId]) if (ref !== undefined && (typeof ref !== 'string' || !ref)) throw new TypeError('version-reference');
   if (v.keep !== undefined && (!Array.isArray(v.keep) || v.keep.some((id) => typeof id !== 'string' || !id))) throw new TypeError('version-keep');
@@ -789,14 +945,25 @@ export function normalizeSessionVersionWrite(v: SessionVersionWrite, now = new D
   };
 }
 
-/** The facts the version rules read about one stored row. */
+/** The facts the version rules read about one stored row. `keptBy` is the person
+ *  who first named or pinned a version that was not saved with a name. */
 export interface SessionVersionRow {
   id: string; sessionId: string; kind: SessionVersionKind; digest: string; at: string;
   createdBy?: string; requestId?: string; beforeId?: string;
+  label?: string; pinned?: boolean; keptBy?: string;
 }
 /** Newest first: by `at`, then by id. */
 export const newestVersionFirst = (a: Pick<SessionVersionRow, 'id' | 'at'>, b: Pick<SessionVersionRow, 'id' | 'at'>): number =>
   a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+
+/** Whether a person keeps this version: it was saved with a name, or was named
+ *  or pinned later. Retention and space eviction never remove a kept version,
+ *  and kept versions count against the named limits. */
+export const versionKept = (r: Pick<SessionVersionRow, 'kind' | 'label' | 'pinned'>): boolean =>
+  r.kind === 'named' || r.label !== undefined || r.pinned === true;
+/** The person a kept version counts against: who saved it with a name, or who
+ *  first named or pinned it. */
+const keeperOf = (r: SessionVersionRow): string | undefined => r.kind === 'named' ? r.createdBy : r.keptBy;
 
 /**
  * The rows the retention rules remove from one document's versions, judged at
@@ -805,8 +972,9 @@ export const newestVersionFirst = (a: Pick<SessionVersionRow, 'id' | 'at'>, b: P
  * VERSION_RECENT_KEEP or are the newest of their UTC day within VERSION_DAILY_DAYS.
  * Restore rows beyond the newest VERSION_RESTORE_KEEP go with their 'before' rows;
  * a 'before' row no restore row points at (its restore never wrote one) counts
- * as a restore of its own, so it goes in its turn too. Named rows are never
- * chosen by these rules, nor is any id in `keep`.
+ * as a restore of its own, so it goes in its turn too. Kept rows (`versionKept`)
+ * are never chosen by these rules and take no place in their counts, nor is any
+ * id in `keep` chosen.
  */
 export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string, keep: ReadonlySet<string> = new Set()): string[] {
   const ref = Date.parse(refIso);
@@ -814,18 +982,21 @@ export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string,
   const dayFloor = new Date(ref - VERSION_DAILY_DAYS * DAY_MS).toISOString().slice(0, 10);
   const drops = new Set<string>();
   const days = new Set<string>();
-  rows.filter((r) => RECYCLABLE_KINDS.has(r.kind)).sort(newestVersionFirst).forEach((r, i) => {
+  const open = rows.filter((r) => !versionKept(r));
+  open.filter((r) => RECYCLABLE_KINDS.has(r.kind)).sort(newestVersionFirst).forEach((r, i) => {
     const day = r.at.slice(0, 10);
     const dailyKeep = !days.has(day) && day >= dayFloor;
     days.add(day);
     if (r.at < oldest || (i >= VERSION_RECENT_KEEP && !dailyKeep)) drops.add(r.id);
   });
   const paired = new Set(rows.flatMap((r) => (r.kind === 'restore' && r.beforeId ? [r.beforeId] : [])));
-  rows.filter((r) => r.kind === 'restore' || (r.kind === 'before' && !paired.has(r.id))).sort(newestVersionFirst)
+  open.filter((r) => r.kind === 'restore' || (r.kind === 'before' && !paired.has(r.id))).sort(newestVersionFirst)
     .slice(VERSION_RESTORE_KEEP).forEach((r) => {
       drops.add(r.id);
       if (r.beforeId) drops.add(r.beforeId);
     });
+  // A kept 'before' row stays when its restore row goes.
+  for (const r of rows) if (versionKept(r)) drops.delete(r.id);
   for (const id of keep) drops.delete(id);
   return [...drops];
 }
@@ -834,8 +1005,9 @@ export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string,
  * The oldest auto, close and save rows to remove so that at least `need` bytes of
  * content are freed. Content is shared, so a content's bytes count as freed only
  * when no remaining row uses it. `rows` are every row whose content is counted
- * (any kind); rows in `exclude` are treated as already gone, and rows in `keep`
- * are never chosen. Null when even removing every such row would not free enough.
+ * (any kind); rows in `exclude` are treated as already gone, and kept rows and
+ * rows in `keep` are never chosen. Null when even removing every such row would
+ * not free enough.
  */
 export function versionEvictionPlan(rows: SessionVersionRow[], bytesOf: (sessionId: string, digest: string) => number,
   need: number, exclude: ReadonlySet<string>, keep: ReadonlySet<string> = new Set()): string[] | null {
@@ -845,7 +1017,8 @@ export function versionEvictionPlan(rows: SessionVersionRow[], bytesOf: (session
   for (const r of rows) if (!exclude.has(r.id)) users.set(key(r), (users.get(key(r)) ?? 0) + 1);
   const drops: string[] = [];
   let freed = 0;
-  for (const r of rows.filter((x) => RECYCLABLE_KINDS.has(x.kind) && !exclude.has(x.id) && !keep.has(x.id)).sort(newestVersionFirst).reverse()) {
+  for (const r of rows.filter((x) => RECYCLABLE_KINDS.has(x.kind) && !versionKept(x) && !exclude.has(x.id) && !keep.has(x.id))
+    .sort(newestVersionFirst).reverse()) {
     drops.push(r.id);
     const left = (users.get(key(r)) ?? 1) - 1;
     users.set(key(r), left);
@@ -881,10 +1054,10 @@ export interface SessionVersionPutState {
  * rows read under their write lock and then apply the plan in the same
  * transaction. In order: a repeated request id answers with its row; an auto,
  * close or save write whose content equals the latest version's answers with that
- * version; the named limits; then retention, and for new content the space caps,
- * which first remove the oldest auto, close and save rows (of this document, then
- * of the instance) and otherwise refuse a named, restore or before write and skip
- * an automatic one.
+ * version; the named limits, which count every kept version; then retention, and
+ * for new content the space caps, which first remove the oldest auto, close and
+ * save rows that are not kept (of this document, then of the instance) and
+ * otherwise refuse a named, restore or before write and skip an automatic one.
  */
 export async function planSessionVersionPut(w: SessionVersionWrite & { at: string }, newId: string,
   content: { digest: string; bytes: number }, state: SessionVersionPutState, limits: SessionVersionLimits): Promise<SessionVersionPutPlan> {
@@ -895,11 +1068,7 @@ export async function planSessionVersionPut(w: SessionVersionWrite & { at: strin
   const recyclable = RECYCLABLE_KINDS.has(w.kind);
   const latest = [...state.rows].sort(newestVersionFirst)[0];
   if (recyclable && latest?.digest === content.digest) return { action: 'return', id: latest.id };
-  if (w.kind === 'named') {
-    const named = state.rows.filter((r) => r.kind === 'named');
-    if (named.length >= VERSION_NAMED_PER_SESSION || named.filter((r) => r.createdBy === w.createdBy).length >= VERSION_NAMED_PER_PERSON)
-      return { action: 'refuse', reason: 'version-limit' };
-  }
+  if (w.kind === 'named' && keptLimitReached(state.rows, w.createdBy)) return { action: 'refuse', reason: 'version-limit' };
   const row: SessionVersionRow = { id: newId, sessionId: w.sessionId, kind: w.kind, digest: content.digest, at: w.at,
     ...(w.createdBy !== undefined ? { createdBy: w.createdBy } : {}), ...(w.requestId !== undefined ? { requestId: w.requestId } : {}),
     ...(w.beforeId !== undefined ? { beforeId: w.beforeId } : {}) };
@@ -931,6 +1100,59 @@ export async function planSessionVersionPut(w: SessionVersionWrite & { at: strin
     for (const id of plan) drops.add(id);
   }
   return { action: 'insert', contentIsNew, drops: [...drops] };
+}
+
+/** Whether one more kept version for `person` would pass VERSION_NAMED_PER_SESSION
+ *  or VERSION_NAMED_PER_PERSON, given one document's rows. */
+function keptLimitReached(rows: SessionVersionRow[], person: string | undefined): boolean {
+  const kept = rows.filter(versionKept);
+  return kept.length >= VERSION_NAMED_PER_SESSION || kept.filter((r) => keeperOf(r) === person).length >= VERSION_NAMED_PER_PERSON;
+}
+
+/** An annotation in the shape both drivers apply, or a thrown TypeError: a label
+ *  of 1 to VERSION_LABEL_MAX characters or null, a true or false pin, at least one
+ *  of the two, a whole `annotationRev` from 0, and a person. */
+export function normalizeSessionVersionAnnotation(a: SessionVersionAnnotation): SessionVersionAnnotation {
+  if (!plainObject(a)) throw new TypeError('version-annotation');
+  if (a.label !== undefined && a.label !== null && !versionLabel(a.label)) throw new TypeError('version-label');
+  if (a.pinned !== undefined && typeof a.pinned !== 'boolean') throw new TypeError('version-pin');
+  if (a.label === undefined && a.pinned === undefined) throw new TypeError('version-annotation');
+  if (!Number.isSafeInteger(a.annotationRev) || a.annotationRev < 0) throw new TypeError('version-annotation-rev');
+  if (typeof a.by !== 'string' || !a.by) throw new TypeError('version-reference');
+  return { ...(a.label !== undefined ? { label: a.label } : {}), ...(a.pinned !== undefined ? { pinned: a.pinned } : {}),
+    annotationRev: a.annotationRev, by: a.by };
+}
+
+/** What a driver does with one annotation, decided by `planSessionVersionAnnotate`.
+ *  `same`: the version already has this name and pin, so nothing is written.
+ *  `update`: store `label` (none when absent), `pinned` and `keptBy`, and raise
+ *  the annotation revision by one. */
+export type SessionVersionAnnotatePlan =
+  | { action: 'same' }
+  | { action: 'refuse'; reason: 'version-changed' | 'version-limit' }
+  | { action: 'update'; label?: string; pinned: boolean; keptBy?: string };
+
+/**
+ * The annotation rules, shared by both drivers, which call it with the
+ * document's rows read under their write lock (`target` among them) and the
+ * target's current annotation revision. In order: a change that leaves the name
+ * and pin as they are is `same`, whatever revision it was made against; a change
+ * made against an older revision is refused; a version that becomes kept must fit
+ * the named limits for `change.by`, and counts against that person until it is
+ * no longer kept. A version saved with a name keeps a name: removing it throws
+ * `version-label`.
+ */
+export function planSessionVersionAnnotate(rows: SessionVersionRow[], target: SessionVersionRow, annotationRev: number,
+  change: SessionVersionAnnotation): SessionVersionAnnotatePlan {
+  const label = change.label === undefined ? target.label : change.label ?? undefined;
+  const pinned = change.pinned ?? target.pinned === true;
+  if (target.kind === 'named' && label === undefined) throw new TypeError('version-label');
+  if (label === target.label && pinned === (target.pinned === true)) return { action: 'same' };
+  if (change.annotationRev !== annotationRev) return { action: 'refuse', reason: 'version-changed' };
+  const was = versionKept(target), now = versionKept({ kind: target.kind, label, pinned });
+  if (!was && now && keptLimitReached(rows, change.by)) return { action: 'refuse', reason: 'version-limit' };
+  const keptBy = target.kind === 'named' || !now ? undefined : was ? target.keptBy : change.by;
+  return { action: 'update', ...(label !== undefined ? { label } : {}), pinned, ...(keptBy !== undefined ? { keptBy } : {}) };
 }
 
 /**
@@ -993,7 +1215,7 @@ export interface CatalogDeliverySnapshot {
   bytes: Buffer; until: number; toolIds: string[]; assetIds: string[];
 }
 
-export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, SubjectStore {
+export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, SubjectStore, UploadStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
   createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;
@@ -1251,6 +1473,14 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
   claimAutomationJob(owner: string, verbs: string[], leaseMs: number): Promise<AutomationJobRecord | null>;
   renewAutomationJob(job: AutomationJobRecord, leaseMs: number): Promise<boolean>;
   saveClaimedAutomationJob(job: AutomationJobRecord): Promise<boolean>;
+  // Callback outbox. putAutomationJob and saveClaimedAutomationJob append the
+  // entry when a job with a callback URL settles; deleting the job removes it.
+  // A claim of an entry whose last lease expired records that attempt as uncertain.
+  claimAutomationCallback(owner: string, leaseMs: number): Promise<AutomationCallbackRecord | null>;
+  /** Fenced by the claim's lease token: refused once another claim took the entry. */
+  settleAutomationCallback(callback: AutomationCallbackRecord, result: AutomationCallbackResult): Promise<boolean>;
+  /** When the earliest pending entry falls due, or null when none is pending. */
+  nextAutomationCallbackAt(): Promise<string | null>;
 
   // Organization delivery history. Reads and idempotency lookup are scoped to
   // the requesting principal; destination credentials never enter this store.
@@ -1621,6 +1851,22 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
    * the rev. `collabLeaseActive` tells that refusal from a revision conflict.
    */
   casSession(next: SessionRecord, expectedRev: number): Promise<boolean>;
+  /**
+   * Write a session's next document as one unit (plan 221): `casSession`'s
+   * compare-and-set on the head, the revision row of the new rev (replacing any
+   * row already at that rev, and pruned to SESSION_REVISION_LIMIT), the version
+   * when `version` is given (under `putSessionVersion`'s rules and lock) and the
+   * audit event when `audit` is given. Postgres runs them in one transaction on
+   * one connection; memory checks everything, then applies them together. A
+   * failure in any part writes none of them, so there is never a head without
+   * its revision. PUT, bulk edits, a restore without a room (`restoreByCas`) and
+   * `RoomPersistence` (its write-back, and the crash recovery `Room.open` runs)
+   * write through this. A store-backed live room does not: `commitCollab` moves
+   * the head per batch and its quiesce appends the revision separately. Throws
+   * what `sessionRevisionCommitVersion` refuses, `version-reference` as
+   * `putSessionVersion` does, and any storage error.
+   */
+  commitSessionRevision(commit: SessionRevisionCommit): Promise<SessionRevisionCommitResult>;
   /** Returns the record even when tombstoned (deletedAt set) so callers choose
    *  the response (404 vs 410); null only when the id is unknown. */
   getSession(id: string): Promise<SessionRecord | null>;
@@ -1672,20 +1918,41 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
    * Write a version, applying every rule of `planSessionVersionPut` in one
    * transaction. Idempotent on (session, createdBy, kind, requestId). Returns
    * 'version-limit' for a named version past VERSION_NAMED_PER_PERSON or
-   * VERSION_NAMED_PER_SESSION, and 'version-space' for a named, restore or before
-   * version that does not fit; an automatic one that does not fit answers with the
-   * latest version (`created: false`), or 'version-space' when there is none.
+   * VERSION_NAMED_PER_SESSION kept versions, and 'version-space' for a named,
+   * restore or before version that does not fit; an automatic one that does not
+   * fit answers with the latest version (`created: false`), or 'version-space'
+   * when there is none.
    * Throws `session-gone` for an unknown or deleted session, `version-reference`
    * when `restoredFrom` or `beforeId` is not a version of the same session, and a
-   * TypeError for a write the schema refuses (kind, label, rev, shape).
+   * TypeError for a write the schema refuses (kind, label, rev, shape), including
+   * a label on a version that is not named.
    */
   putSessionVersion(v: SessionVersionWrite): Promise<SessionVersionPut>;
   /** Newest first (by `at`, then id), at most `limit` (1 to VERSION_LIST_MAX).
    *  `before` is a version id: the page starts after it. An id that is not a
    *  version of this session gives an empty page. */
   listSessionVersions(sessionId: string, opts: { before?: string; limit: number }): Promise<SessionVersionSummary[]>;
+  /** Versions across documents (plan 221), newest first (by `at`, then id), at
+   *  most `limit` (1 to VERSION_LIST_MAX): those of live documents in
+   *  `projectIds`, less `exceptSessionIds`, that pass every filter given. An
+   *  empty `projectIds` gives an empty page. No content is read. */
+  listVersionHistory(query: VersionHistoryQuery): Promise<VersionHistoryEntry[]>;
   /** With its inputs and meta; null when the id is not a version of this session. */
   getSessionVersion(sessionId: string, id: string): Promise<SessionVersion | null>;
+  /**
+   * Name, rename, unname, pin or unpin a version (plan 221, migration 0072),
+   * applying `planSessionVersionAnnotate` in one transaction under the version
+   * write lock. Only the name, the pin and `annotationRev` change; the content,
+   * kind and the rest stay as written. 'version-changed' when `annotationRev` is
+   * not the version's current one, unless the version already has the asked-for
+   * name and pin (`changed: false`); 'version-limit' when a version that becomes
+   * kept would pass VERSION_NAMED_PER_PERSON or VERSION_NAMED_PER_SESSION;
+   * 'not-found' when the id is not a version of this session. Throws
+   * `session-gone` for an unknown or deleted session, and a TypeError for a
+   * change the rules refuse (a malformed label, pin or revision, or removing the
+   * name of a version saved with one).
+   */
+  annotateSessionVersion(sessionId: string, id: string, change: SessionVersionAnnotation): Promise<SessionVersionAnnotate>;
   /** Delete one version, and its pair: a restore row's 'before' row, or the
    *  restore rows of a 'before' row. False when it is not a version of this session. */
   deleteSessionVersion(sessionId: string, id: string): Promise<boolean>;

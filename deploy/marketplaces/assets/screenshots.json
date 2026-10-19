@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "fixture": "Helm qualification, Neutral Compose installation and recovery",
+  "source": "71367ba112ef33a826e0786c97d48d575ccb859b",
+  "run": "https://github.com/lolly-tools/lolly-work/actions/runs/38993326630",
+  "capturedAt": "2026-10-17T02:05:41.694Z",
+  "release": {
+    "version": "1.1.1",
+    "serverImage": "ghcr.io/lolly-tools/lolly-work-server@sha256:5fa8b86328bf453635791fc104f4cf6179fc3d3c02a1516da4dea07bd6ae1e55",
+    "shellSha256": "bc78012aa407983ecc818e63be98ae1b45ed7db1dcad3f4c8d4ffe0c371116c1"
+  },
+  "browser": "Chromium 156.0.8078.4, SwiftShader WebGPU",
+  "viewport": {
+    "width": 1280,
+    "height": 720,
+    "deviceScaleFactor": 1,
+    "colorScheme": "light"
+  },
+  "shots": [
+    {
+      "file": "sign-in.png",
+      "title": "Built-in email and password sign-in",
+      "path": "/api/auth/login?returnTo=%2F",
+      "ready": "#pw-email",
+      "catalogue": false,
+      "status": "captured",
+      "sha256": "4af5e9b85a0ea6e8f7dddfdbb7d50e6a792ddec1e6e534eca551078d71249811",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "file": "tool-gallery.png",
+      "title": "The matched Lolly web shell with the neutral tool catalogue",
+      "path": "/#/tools",
+      "ready": "[data-shots-settled]",
+      "catalogue": true,
+      "status": "withheld",
+      "reason": "Catalog refused: signature does not verify against the pinned key"
+    },
+    {
+      "file": "tool-editor.png",
+      "title": "A neutral community tool open for editing",
+      "path": "/#/tool/chart",
+      "ready": "#tool-canvas",
+      "catalogue": true,
+      "status": "withheld",
+      "reason": "Catalog refused: signature does not verify against the pinned key"
+    },
+    {
+      "file": "console-overview.png",
+      "title": "The Work console overview",
+      "path": "/admin#/overview",
+      "ready": "#main",
+      "catalogue": false,
+      "status": "captured",
+      "sha256": "86f7f8eb3c6a91c1711f1ef86fc28b1f3127e9301d4bee085a656a445107c60c",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "file": "console-tool-policy.png",
+      "title": "Tool policy in the Work console",
+      "path": "/admin#/instance?tab=tools",
+      "ready": "#inst-panel",
+      "catalogue": false,
+      "status": "captured",
+      "sha256": "d68a82ec14c3568889acc81c2f104db5a72f404eb147ba64cfe2b27f8cbe70cd",
+      "width": 1280,
+      "height": 720
+    }
+  ]
+}

@@ -13,6 +13,7 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 - [Invite an agent to a document](document-agents.md)
 - [Lolly Work API](api.md)
 - [lw CLI: administer an instance](cli.md)
+- [Resumable uploads](resumable-uploads.md)
 
 ## Manage
 

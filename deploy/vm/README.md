@@ -132,6 +132,9 @@ The server should still avoid queries on a clock:
 - `LW_BACKGROUND_POLL_MS=0` (the compose default): the render and automation runners look for
   queued work at boot, on submission and after each finished item, never on a timer. A value
   shorter than Neon's 5-minute suspend delay, such as 300000, would keep the compute awake.
+  With `0`, a pending job callback still sets a single timer for its next attempt, so the
+  database may be woken for up to about 45 minutes after a job with a callback settles.
+  Nothing runs on a clock while no callback is pending and the database answers.
 - The server's container health check is a TCP connect. The image's own check fetches
   `/healthz`, and every request to the server reads the design-system state from the database.
 - `audit.headLog.intervalMinutes` is `0` in `instance.json`: the audit head is logged at boot
@@ -144,8 +147,11 @@ polls), a daily provider-credential check, and requests to the server. Native sh
 also pass through the design-system state loader. Use a TCP/TLS check for frequent uptime
 monitoring; schedule HTTP readiness probes sparingly so they do not prevent autosuspend.
 
-Project-file and blob budgets remain enforced by `policy.projectFiles`. Provider metadata is
-cached to reduce repeated database reads and egress. Check the account before changing limits.
+Two policies limit what the blob store holds: `policy.projectFiles` for shared project files and
+`policy.uploads` for scoped uploads. Their instance budgets are separate and add up. Scoped
+uploads are off unless `policy.uploads.enabled` is set, so this kit's `instance.json` holds only
+the project file budget. Provider metadata is cached to reduce repeated database reads and
+egress. Check the account before changing limits or turning uploads on.
 
 ## Custom instance domains
 

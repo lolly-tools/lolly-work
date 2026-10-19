@@ -1,19 +1,19 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "0cdd30b5bce62f0e570f22e8866f0a0ede2c644e",
-  "manifestSha256": "d4873ec51da178b3f9037f08b11da4180ea3840d57df5256aefff2b29b7504d8",
+  "commit": "2f3e3f4204369cad67a84d2fd4409b7ab2c13189",
+  "manifestSha256": "69941d9d846f63e96e23318c544347ed2825e759ef1248111419b805192eb90e",
   "files": {
     "account-lifecycle.md": {
       "sha256": "19bdf65c45608c077aec8e28417d2ae13db159e1dd5a76d7728eb88f170a2620",
       "source": "docs/work/account-lifecycle.md"
     },
     "ai-policy.md": {
-      "sha256": "f41e4e46209673591cdb42a1bbed82342123d1f9cccb7ddb59752d9c0b9b754d",
+      "sha256": "939993a5b645bffc1a0cd37de154b30a739abdbba69282210d6c7c91461c9560",
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
-      "sha256": "8ff7e0feff3d233a218201370301117e2ac1e760f291f785ee95ad5eaad258b8",
+      "sha256": "a5f91ded0720209b544659e98314b7c62efc1c4b154567e53570832bf21bac72",
       "source": "docs/work/api.md"
     },
     "application-release-classification.md": {
@@ -21,7 +21,7 @@
       "source": "docs/work/application-release-classification.md"
     },
     "approvals.md": {
-      "sha256": "05d94d4b6c8de6102f1afd9532fa855c2441d4ec233bf2989b0b577195d76ca2",
+      "sha256": "50476f451d69415601c791833af7633b13d81ab58a1ece04d86a143494985267",
       "source": "docs/work/approvals.md"
     },
     "audit.md": {
@@ -33,11 +33,11 @@
       "source": "docs/work/c2pa.md"
     },
     "catalog.md": {
-      "sha256": "945c02abf426806e1784d37242d7d053253e6b989b274e06635362fac8ff0831",
+      "sha256": "1b5f5851e1dbff7b8a1d2150ccbb6d4a09a6a1857927679193927894397a6f97",
       "source": "docs/work/catalog.md"
     },
     "cli.md": {
-      "sha256": "1ed4cdc369f6dcd2577111f69b293e9b9ae0479aa4b58e299afe554205babe1d",
+      "sha256": "9230a9fd0a2537f296c86318e05056d5f8b839a270cd08596ba75e2b2f2d184c",
       "source": "docs/work/cli.md"
     },
     "cloud-deployment.md": {
@@ -45,7 +45,7 @@
       "source": "docs/work/cloud-deployment.md"
     },
     "configuration.md": {
-      "sha256": "8c91dba1b94da51bf30050e8b6470af284d896b98ab63f48eb8e6e9f8d0008a8",
+      "sha256": "29b0b7eb6a992ded650aa35a83e8967dd9dfe2155a5734a836df2bc9493b8636",
       "source": "docs/work/configuration.md"
     },
     "customer-setup.md": {
@@ -53,15 +53,15 @@
       "source": "docs/work/customer-setup.md"
     },
     "data-lifecycle.md": {
-      "sha256": "d4000c59323bf434b01548f43ce3bfcf864048a36ac380b5c9e7f4c8b875b8c7",
+      "sha256": "eb1692eb11371d8028b62081e054574bb624f4cb326d98d66117854f16f6fdd5",
       "source": "docs/work/data-lifecycle.md"
     },
     "delivery.md": {
-      "sha256": "64d5a52f5ec189b83e52247e560791577f89eb685bde7444a8e0adb265733cdc",
+      "sha256": "781f3b1777f011adbb278121613cfba5b09766a76f173b530016e415e8246475",
       "source": "docs/work/delivery.md"
     },
     "deployment.md": {
-      "sha256": "0e765742af937e6e26d910040d3ae79e2ef4b48152199261a3fe42b18723025b",
+      "sha256": "d5cfda5d97451162708890b890a2033393ae1b95386aa8462bf36be9ecaeea4d",
       "source": "docs/work/deployment.md"
     },
     "design-system-administration.md": {
@@ -69,7 +69,7 @@
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
-      "sha256": "47d6841d15f72e14b00c6cc4b31711e13981ee760dad57e3a4bcf001d1942de2",
+      "sha256": "3a05f09506b5ed58a0f2eababc54c7ffe0c5fa608cc872771623f89cc9ce8b0c",
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
@@ -117,7 +117,7 @@
       "source": "docs/work/install.md"
     },
     "instance-pack-production.md": {
-      "sha256": "d50fb8c703c9260d1d4d9c3d29f71c0a3ee42d01a0509358e7cd364d0046d2cb",
+      "sha256": "abf74d8bffafa2c9b277682d6ae2ea1b457372246c50796b3be99c9a0c20b16c",
       "source": "docs/work/instance-pack-production.md"
     },
     "LICENSE": {
@@ -129,11 +129,11 @@
       "source": "docs/work/offboarding.md"
     },
     "official-installations.md": {
-      "sha256": "e7dbff8ede03ea981b2706bcae7a170c37ba845557623851e6fdc65fb6f9da10",
+      "sha256": "d2710bdeafc61acc22145738bfed892652cee8839eff967727d4f10abd902c9e",
       "source": "docs/work/official-installations.md"
     },
     "operations.md": {
-      "sha256": "2c2ee3f9e5c6a91aa02d9dffb455e81eca451a3fa0f7dc7e78fe402888b2235f",
+      "sha256": "3518f3b0eaa6959cd3a8f6cdd2679d2d56e29d2c8693b95e7eaa491f4af350fd",
       "source": "docs/work/operations.md"
     },
     "overview.md": {
@@ -221,11 +221,11 @@
       "source": "docs/work/providers/optimizely-cmp.md"
     },
     "providers/orange-logic-live-verify.md": {
-      "sha256": "0328d327ef8d5540fc38f791c88a8bda305c982f7256bf6ea51bae7807987767",
+      "sha256": "4bf86957169acccbeffbda717a8c9152c72a56eb544bdb5924721e638df5ead9",
       "source": "docs/work/providers/orange-logic-live-verify.md"
     },
     "providers/orange-logic.md": {
-      "sha256": "ed7c90c8b0aa2d3529d48c3ee3f7d68953ae2718b2fef3562fd6bfcbd560d57a",
+      "sha256": "01dedad80d599dd08cb6babec5f96dbf69904377f9fa5a6cc9de0fd43767c22c",
       "source": "docs/work/providers/orange-logic.md"
     },
     "providers/penpot.md": {
@@ -253,7 +253,7 @@
       "source": "docs/work/public-model-proof-reuse.md"
     },
     "README.md": {
-      "sha256": "2a1a6f8a76fd831657d24ff5d39c981e5e010c9353f58894c6309ea0fa4a6b02",
+      "sha256": "2828262d12d15e43b45d744e54b6c0d5e6e337c638351c48d34c45069ba6b23b",
       "source": "scripts/export-work-docs.ts"
     },
     "release-1-1-0.md": {
@@ -265,8 +265,12 @@
       "source": "docs/work/release-1-1-1.md"
     },
     "renders.md": {
-      "sha256": "c5bf7751d0868c7b8d321a7f2c3ec9a737ce6e74ceb709bd3506ba76d5d61dd1",
+      "sha256": "75834f0371f9aa32e06307de28c7db433deadef09a0b7a4dc5545bdaa082efd5",
       "source": "docs/work/renders.md"
+    },
+    "resumable-uploads.md": {
+      "sha256": "e1e56fa8e877b3ca2885a162d6906e5e23f2d8496f7fa4316d9e67555f2ca061",
+      "source": "docs/work/resumable-uploads.md"
     },
     "security-platform.md": {
       "sha256": "9affdc4dcf922cf20e7d13221b963b0b02520ec562f960e1c23370a0677613b8",
@@ -277,7 +281,7 @@
       "source": "docs/work/self-host.md"
     },
     "sharing.md": {
-      "sha256": "314fe6a87fce1afa333701d49790f40b6c47513df33c0b24e54e2a8334507aaa",
+      "sha256": "954c767764ac120cf21898f01cc838921b119189033697f8e76678b377f246dc",
       "source": "docs/work/sharing.md"
     },
     "shell-deployment-workflow.md": {
@@ -485,7 +489,7 @@
       "source": "docs/work/status.md"
     },
     "telemetry.md": {
-      "sha256": "394a96f227c4322b3306e9ad010b83e33622046f2bcbd84dfcf6fff9838e600d",
+      "sha256": "dd2927b849c92cf4297a0c73b3d88362ee7863e4fc4814af11283128c4392bd2",
       "source": "docs/work/telemetry.md"
     },
     "wasm-deployment.md": {

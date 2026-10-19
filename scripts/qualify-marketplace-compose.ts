@@ -11,10 +11,16 @@ import { createHash, randomBytes } from 'node:crypto';
 import { parse, stringify } from 'yaml';
 import { prepareInstance } from './prepare-marketplace-instance.ts';
 import { release } from './marketplace-packages.ts';
+import { captureListingScreenshots } from './capture-marketplace-screenshots.ts';
 
 if (!process.env.LW_MARKETPLACE_RECEIPT) throw new Error('Set LW_MARKETPLACE_RECEIPT to retain the qualification result');
-const architecture = execFileSync('docker', ['info', '--format', '{{.Architecture}}'], { encoding: 'utf8' }).trim();
-if (!['amd64', 'x86_64'].includes(architecture)) throw new Error('This qualification target requires native amd64');
+// Docker, uname and Node each spell the two release architectures differently.
+const nativeNames: Record<string, string> = { amd64: 'amd64', x86_64: 'amd64', x64: 'amd64', arm64: 'arm64', aarch64: 'arm64' };
+const dockerArchitecture = execFileSync('docker', ['info', '--format', '{{.Architecture}}'], { encoding: 'utf8' }).trim();
+const architecture = nativeNames[dockerArchitecture];
+if (!architecture) throw new Error(`This qualification target requires native amd64 or arm64; Docker reports ${dockerArchitecture}`);
+const expectedArchitecture = process.env.LW_MARKETPLACE_ARCHITECTURE;
+if (expectedArchitecture && expectedArchitecture !== architecture) throw new Error(`This qualification target requires native ${expectedArchitecture}; Docker reports ${dockerArchitecture}`);
 const directory = mkdtempSync(join(tmpdir(), 'lolly-compose-qualification-'));
 const installation = join(directory, 'instance'), project = `lolly-marketplace-${process.pid}`;
 prepareInstance(installation, { LOLLY_DOMAIN: 'work.example.test', LOLLY_OWNER_EMAIL: 'owner@example.test' });
@@ -74,6 +80,11 @@ try {
   const address = docker(['port', 'caddy', '443']).trim();
   port = Number(address.split(':').at(-1)); assert.ok(port > 0);
   ca = docker(['exec', '-T', 'caddy', 'cat', '/data/caddy/pki/authorities/local/root.crt']);
+  // An emulated image reports its own machine, so this refuses a run that only
+  // worked through binfmt emulation. Content init uses the server image.
+  for (const [service, command] of [['server', ['node', '-p', 'process.arch']], ['db', ['uname', '-m']], ['caddy', ['uname', '-m']]] as const) {
+    assert.equal(nativeNames[docker(['exec', '-T', service, ...command]).trim()], architecture, `${service} runs the native ${architecture} image`);
+  }
   await ready();
   assert.equal((await probe('/')).status, 200, 'the matched web shell is served');
   assert.ok([401, 403].includes((await probe('/catalog/tools/index.json')).status), 'private catalogue refuses anonymous access');
@@ -92,6 +103,16 @@ try {
   assert.equal(rendered.status, 200, 'the neutral no-hook tool exports without a Chromium worker');
   assert.ok(rendered.body.includes('<svg') && rendered.body.includes('#205080'), 'the SVG contains the selected colour');
   assert.equal((await probe(url.pathname + url.search)).status, 410, 'the owner link is single-use');
+  // Optional listing captures, taken before the restart renames the instance. A capture
+  // failure is reported after the qualification checks finish, never instead of them.
+  let captureError: unknown;
+  if (process.env.LW_MARKETPLACE_SCREENSHOTS) {
+    try {
+      const files = await captureListingScreenshots({ port, domain: 'work.example.test', caPem: ca, email: 'owner@example.test', password,
+        outDir: process.env.LW_MARKETPLACE_SCREENSHOTS, release, source: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() });
+      console.log(`Captured ${files.length} listing screenshots`);
+    } catch (error) { captureError = error; }
+  }
   const keyHash = () => createHash('sha256').update(docker(['exec', '-T', 'server', 'node', '-e', 'process.stdout.write(require("node:fs").readFileSync("/app/keys/catalog.jwk"))'])).digest('hex');
   const key = keyHash();
   docker(['exec', '-T', 'server', 'node', '-e', 'const fs=require("node:fs"),path="/app/state/instance.json",config=JSON.parse(fs.readFileSync(path));config.instance.name="Persisted qualification";fs.writeFileSync(path,JSON.stringify(config));']);
@@ -111,9 +132,10 @@ try {
   const receipt = { status: 'CONTAINER_INSTALL_HTTPS_NATIVE_OWNER_PRIVATE_ACCESS_RESTART_AND_DATABASE_RESTORE_VERIFIED', release,
     packageSource: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), packageComposeSha256,
     qualificationComposeSha256: createHash('sha256').update(readFileSync(join(installation, 'compose.yaml'))).digest('hex'),
-    actualCustomerIdentity: 'NOT_TESTED', crossVersionUpgrade: 'NOT_TESTED', cloudProvider: 'NOT_TESTED', nativeArchitecture: 'amd64' };
+    actualCustomerIdentity: 'NOT_TESTED', crossVersionUpgrade: 'NOT_TESTED', cloudProvider: 'NOT_TESTED', nativeArchitecture: architecture };
   writeFileSync(process.env.LW_MARKETPLACE_RECEIPT, JSON.stringify(receipt, null, 2) + '\n');
   console.log(receipt.status);
+  if (captureError) throw captureError;
 } finally {
   // This project name and all its volumes were created above for this one run.
   docker(['down', '--volumes', '--remove-orphans']);

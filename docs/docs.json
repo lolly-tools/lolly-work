@@ -44,6 +44,12 @@
           "path": "cli.md",
           "title": "lw CLI: administer an instance",
           "summary": "Command reference for the admin CLI."
+        },
+        {
+          "slug": "resumable-uploads",
+          "path": "resumable-uploads.md",
+          "title": "Resumable uploads",
+          "summary": "Decision record: the parts protocol over tus, its resume report, and the scopes that share it."
         }
       ]
     },

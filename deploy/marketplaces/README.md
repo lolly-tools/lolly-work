@@ -15,7 +15,9 @@ both identities when updating a cohort and test admitted catalogue access/export
 Run `node scripts/marketplace-packages.ts` after reviewing a cohort or adapter
 change. This generates the VM Compose package and Dokploy blueprint from the same
 runtime scripts. `--check` refuses drift in CI. These files consume public images;
-they do not create another server build or registry namespace.
+they do not create another server build or registry namespace. After a cohort
+change, also run `node scripts/marketplace-channels.ts` so the
+[channel table](CHANNELS.md) shows which channels are now behind.
 
 The neutral archive is 724,143,600 bytes and expands to 1,480,550,877 bytes before
 the separate pack copy. Initialisation streams the archive to disk, verifies its
@@ -48,7 +50,8 @@ The [reference qualification](QUALIFICATION.md) records the tested UpCloud targe
 package hashes, reboot/restore outcomes and remaining acceptance limits.
 The [installation directory](../../docs/official-installations.md) records what
 is published and qualified. A prepared blueprint is not an accepted marketplace
-listing. Native arm64 runtime, other cloud/edge targets, organisation identity and
+listing. Native arm64 has passed the CI container qualification only. Provider
+targets on arm64, other cloud/edge targets, organisation identity and
 installed-version upgrades still need their own acceptance.
 
 ## Chart publication
@@ -84,11 +87,19 @@ form. No verification ID or badge is invented in this repository.
 [Artifact Hub publication and ownership rules](https://artifacthub.io/docs/topics/repositories/)
 and [Helm repository support](https://artifacthub.io/docs/topics/repositories/helm-charts/).
 
-## Required channel record
+## Channel records
 
-For Helm/Artifact Hub, UpCloud, YunoHost and Dokploy, record the project account,
-two maintainers with recovery access, actual publisher/listing IDs, publication
-and update URLs, release identities, test receipts and review effort. Keep
+[`CHANNELS.md`](CHANNELS.md) shows which channel carries which release. It is
+generated from the public [`channels.json`](channels.json) record. Record every
+publication attempt there, failures included, with
+`node scripts/marketplace-channels.ts record`. A channel's version changes only
+through a published attempt, and a failed latest attempt shows the channel as
+failed. The same page describes the maintenance review and the retirement and
+notice procedure.
+
+The private maintainer record holds what must stay out of this public repository:
+for each channel, the project account, two maintainers with recovery access, the
+actual publisher, offer and listing IDs, test receipts and review notes. Keep
 credentials and recovery codes outside Git. The existing `lolly-tools` source and
 image namespaces establish upstream provenance; access by two maintainers and
 ownership in other catalogues must still be checked.
@@ -96,5 +107,6 @@ ownership in other catalogues must still be checked.
 Listings describe free MPL-2.0 software, best-effort community support and the
 operator's own hosting/identity costs. Do not enable charges, referrals, earned
 credits, commissions or payout onboarding. Keep support, privacy and release
-limits aligned with the official installation page. Use the neutral icon and
-neutral-instance captures for screenshots; never use production member data.
+limits aligned with the official installation page. Use the neutral icon and the
+[neutral fixture captures](assets/README.md) for screenshots; never use production
+member data.

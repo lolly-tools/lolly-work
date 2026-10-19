@@ -18,7 +18,7 @@ import type { RenderRecord } from '../server/src/renders/types.ts';
 import { newRender, parseRenderSpec } from '../server/src/renders/request.ts';
 import { withFreshPostgres } from './pg-test-schema.ts';
 import { newRenderBatch, parseRenderBatchSpec } from '../server/src/renders/batch.ts';
-import { evidenceHash, type RenderEvidence } from '../server/src/render/evidence.ts';
+import { evidenceHash, renderIdentity, type RenderEvidence, type RenderIdentity } from '../server/src/render/evidence.ts';
 
 let pack: string;
 before(async () => {
@@ -335,6 +335,53 @@ test('revoking a tool grant hides retained renders and stops queued work without
   assert.deepEqual((await (await h.request('/api/v1/renders')).json() as { renders: unknown[] }).renders, []);
   assert.equal((await h.request('/api/v1/renders', 'POST', render)).status, 403);
   assert.equal((await h.request(`/api/v1/renders/${pending.id}`, 'DELETE')).status, 200);
+});
+
+test('a durable render identity binds the resolved request to its tool policy and detects tampering', async (t) => {
+  const h = await harness(); t.after(() => h.close());
+  const identityOf = async (body: unknown) => {
+    const r = await (await h.request('/api/v1/renders', 'POST', body)).json() as RenderRecord;
+    const done = await h.settle(r.id);
+    assert.equal(done.state, 'succeeded', JSON.stringify(done));
+    const wire = (done.output as unknown as { identity: { id: string; coverage: string } }).identity;
+    const response = await h.request(`/api/v1/renders/${r.id}/evidence`);
+    assert.equal(response.status, 200);
+    const read = await response.json() as { evidence: RenderEvidence; identity: RenderIdentity };
+    assert.deepEqual(read.identity, renderIdentity(done.request, read.evidence));
+    assert.deepEqual(wire, { id: read.identity.id, coverage: 'partial' });
+    return { id: r.id, identity: read.identity };
+  };
+  const first = await identityOf(render);
+  assert.equal(first.identity.tool.id, 'card');
+  assert.ok(first.identity.sources.designRevision, 'the brand revision the attempt rendered against');
+  const { inputs, format, toolId } = render;
+  assert.equal((await identityOf({ inputs, format, toolId, priority: 7, maxAttempts: 2 })).identity.id, first.identity.id);
+  await h.store.putOverlay({ toolId: 'other-tool', version: 3, enforce: { watermark: 'always' } });
+  assert.equal((await identityOf(render)).identity.id, first.identity.id, 'another tool\'s overlay is outside this render\'s policy');
+  await h.store.putOverlay({ toolId: 'card', version: 1, enforce: { formats: ['svg', 'png'] } });
+  const governed = await identityOf(render);
+  assert.notEqual(governed.identity.policy.effectiveSha256, first.identity.policy.effectiveSha256);
+  assert.notEqual(governed.identity.id, first.identity.id);
+
+  const get = h.store.getRender.bind(h.store);
+  h.store.getRender = async (id, owner) => {
+    const record = await get(id, owner);
+    if (record?.id === first.id && record.output?.identity) record.output.identity.sources.designRevision = 'tampered';
+    return record;
+  };
+  const corrupt = await h.request(`/api/v1/renders/${first.id}/evidence`);
+  assert.equal(corrupt.status, 409);
+  assert.equal((await corrupt.json() as { error: { code: string } }).error.code, 'EVIDENCE_INTEGRITY');
+
+  // A version this server cannot recompute is reported as such, not as tampering.
+  h.store.getRender = async (id, owner) => {
+    const record = await get(id, owner);
+    if (record?.id === governed.id && record.output?.identity) Object.assign(record.output.identity, { apiVersion: 'work/render-identity-v2' });
+    return record;
+  };
+  const newer = await h.request(`/api/v1/renders/${governed.id}/evidence`);
+  assert.equal(newer.status, 409);
+  assert.equal((await newer.json() as { error: { code: string } }).error.code, 'IDENTITY_VERSION_UNSUPPORTED');
 });
 
 test('CLI submits, inspects, downloads, cancels and retries over the real API', async (t) => {

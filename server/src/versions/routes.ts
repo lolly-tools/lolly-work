@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
  * Saved versions of a session (plan 76 milestone 4, R2): list, read, save with a
- * name, restore, and delete.
+ * name, name or pin an existing version (plan 221), restore, and delete.
  *
  * Every route is for a signed-in PERSON: `memberOf`, a service token refused,
  * then the session read gate (`sessionFor`: 404, 403, 410). Reading needs
- * `session.view`; saving and restoring need editor access, `session.edit` and a
- * project that is not archived; deleting needs a project manager. Saves and
- * restores share one per-person rate limit.
+ * `session.view`; saving, naming, pinning and restoring need editor access,
+ * `session.edit` and a project that is not archived; deleting needs a project
+ * manager. Saves, name and pin changes and restores share one per-person rate
+ * limit.
+ *
+ * A name or pin change carries the `annotationRev` the caller read, and applies
+ * only while it is current (store `annotateSessionVersion`). The version's
+ * content never changes.
  *
  * A restore runs under a per-session lock in this process, through the live
  * room when the host runs one (`rooms`, the gateway's `versions` bridge) and by
@@ -21,13 +26,14 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createRouter, readJson, sendError, sendJson } from '../api/router.ts';
+import type { AuditEventBody } from '../audit/chain.ts';
 import type { InstanceConfig } from '../config/instance.ts';
 import { createWindowQuota, nameWithoutEmail } from '../projects/sharing.ts';
 import { evaluate, mayJoinCollab, type Role } from '../rbac/evaluate.ts';
 import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import {
   VERSION_LABEL_MAX, VERSION_LIST_DEFAULT, VERSION_LIST_MAX,
-  type ProjectRecord, type SessionRecord, type SessionVersion, type SessionVersionSummary, type Store, type UserRecord,
+  type ProjectRecord, type SessionRecord, type SessionVersion, type SessionVersionAnnotation, type SessionVersionSummary, type Store, type UserRecord,
 } from '../store/types.ts';
 import { RestoreError, restoreByCas, type RestoreBefore, type RestoreFailure, type RestorePolicy, type VersionRestoreResult, type VersionRoomBridge } from './restore.ts';
 
@@ -36,6 +42,8 @@ interface Dependencies {
   store: Store;
   memberOf(req: IncomingMessage): Promise<UserRecord | null>;
   audit(actor: string, action: string, subject: string, payload?: Record<string, unknown>): Promise<unknown>;
+  /** The event `audit` appends, for a restore that commits it with the document. */
+  auditBody(actor: string, action: string, subject: string, payload?: Record<string, unknown>): AuditEventBody;
   sessionFor(res: ServerResponse, user: UserRecord, id: string | null): Promise<{ session: SessionRecord; project: ProjectRecord; access: ProjectAccess } | null>;
   /** The live-room restore (AppDeps.versionRooms). Undefined where no room runs. */
   rooms?: VersionRoomBridge;
@@ -43,7 +51,7 @@ interface Dependencies {
   toolInputs(toolId: string): Promise<Array<{ id: string; type?: unknown }> | null>;
 }
 
-/** Saves and restores together, per person. */
+/** Saves, name and pin changes and restores together, per person. */
 export const VERSION_CHANGES_PER_MINUTE = 10;
 export const VERSION_CHANGES_PER_HOUR = 60;
 /** How long a restore's answer is kept for a retry with the same request id. */
@@ -55,6 +63,25 @@ const REPEAT_SCAN_PAGES = 10;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const key = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(value);
 const PRIVATE = { 'cache-control': 'private, no-store' };
+const TOO_MANY_KEPT = 'This document has too many named or pinned versions. Remove a name or pin, or ask a manager to delete a version.';
+
+/** A PATCH body as a name or pin change, or null when it is not one: a trimmed
+ *  label of 1 to VERSION_LABEL_MAX characters or null, a true or false `pinned`,
+ *  at least one of the two, and the `annotationRev` the caller read. */
+function annotationOf(body: unknown): Omit<SessionVersionAnnotation, 'by'> | null {
+  if (!object(body) || !Number.isSafeInteger(body.annotationRev) || (body.annotationRev as number) < 0) return null;
+  let label: string | null | undefined;
+  if (body.label === null) label = null;
+  else if (body.label !== undefined) {
+    if (typeof body.label !== 'string') return null;
+    label = body.label.trim();
+    if (!label || [...label].length > VERSION_LABEL_MAX) return null;
+  }
+  if (body.pinned !== undefined && typeof body.pinned !== 'boolean') return null;
+  if (label === undefined && body.pinned === undefined) return null;
+  return { ...(label !== undefined ? { label } : {}), ...(body.pinned !== undefined ? { pinned: body.pinned as boolean } : {}),
+    annotationRev: body.annotationRev as number };
+}
 
 const FAILURES: Record<RestoreFailure, [number, string]> = {
   FORBIDDEN: [403, 'FORBIDDEN'],
@@ -67,6 +94,33 @@ const FAILURES: Record<RestoreFailure, [number, string]> = {
 };
 /** Errors the room raises when it closed or lost its lease under a restore. */
 const ROOM_GONE = new Set(['collab-storage-unavailable', 'collab-owner-lost', 'collab-seat-missing', 'collab-owner-conflict', 'collab-room-owned']);
+
+/** Names for the creators and contributors of these versions, read once, as a
+ *  function that adds them to a version. Built at read time and never an email:
+ *  people by `nameWithoutEmail`, agents by their label, guests as "Guest". */
+export async function versionNamer(store: Store, versions: SessionVersionSummary[]) {
+  const userIds = new Set<string>();
+  const agentIds = new Set<string>();
+  for (const v of versions) {
+    if (v.createdBy) userIds.add(v.createdBy);
+    for (const c of v.contributors) {
+      if (c.kind === 'user') userIds.add(c.id);
+      else if (c.kind === 'agent') agentIds.add(c.id);
+    }
+  }
+  const users = new Map((await store.getUsersByIds([...userIds])).map((u) => [u.id, nameWithoutEmail(u)]));
+  const agents = new Map<string, string>();
+  for (const id of agentIds) {
+    const agent = await store.getDocumentAgent(id) ?? await store.getProjectAgent(id);
+    agents.set(id, agent?.label?.trim() || 'Agent');
+  }
+  return <T extends SessionVersionSummary>(v: T) => ({
+    ...v,
+    ...(v.createdBy ? { createdByName: users.get(v.createdBy) ?? 'Member' } : {}),
+    contributors: v.contributors.map((c) => ({ ...c,
+      name: c.kind === 'guest' ? 'Guest' : c.kind === 'agent' ? agents.get(c.id) ?? 'Agent' : users.get(c.id) ?? 'Member' })),
+  });
+}
 
 export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d: Dependencies): void {
   // The instance cap on version content (policy.versions.maxBytes), set once at boot.
@@ -107,30 +161,7 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
     return true;
   };
 
-  /** Names for creators and contributors, built at read time and never an email. */
-  const namer = async (versions: SessionVersionSummary[]) => {
-    const userIds = new Set<string>();
-    const agentIds = new Set<string>();
-    for (const v of versions) {
-      if (v.createdBy) userIds.add(v.createdBy);
-      for (const c of v.contributors) {
-        if (c.kind === 'user') userIds.add(c.id);
-        else if (c.kind === 'agent') agentIds.add(c.id);
-      }
-    }
-    const users = new Map((await d.store.getUsersByIds([...userIds])).map((u) => [u.id, nameWithoutEmail(u)]));
-    const agents = new Map<string, string>();
-    for (const id of agentIds) {
-      const agent = await d.store.getDocumentAgent(id) ?? await d.store.getProjectAgent(id);
-      agents.set(id, agent?.label?.trim() || 'Agent');
-    }
-    return <T extends SessionVersionSummary>(v: T) => ({
-      ...v,
-      ...(v.createdBy ? { createdByName: users.get(v.createdBy) ?? 'Member' } : {}),
-      contributors: v.contributors.map((c) => ({ ...c,
-        name: c.kind === 'guest' ? 'Guest' : c.kind === 'agent' ? agents.get(c.id) ?? 'Agent' : users.get(c.id) ?? 'Member' })),
-    });
-  };
+  const namer = (versions: SessionVersionSummary[]) => versionNamer(d.store, versions);
 
   router.add('GET', '/api/v1/sessions/:id/versions', async (req, res, ctx) => {
     const g = await gate(req, res, ctx.params.id as string);
@@ -174,10 +205,49 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
       if ((error as Error)?.message === 'session-gone') return sendError(res, 410, 'SESSION_DELETED', 'this session was deleted');
       throw error;
     }
-    if (put === 'version-limit') return sendError(res, 409, 'VERSION_LIMIT', 'This document has too many named versions. Delete one first.');
+    if (put === 'version-limit') return sendError(res, 409, 'VERSION_LIMIT', TOO_MANY_KEPT);
     if (put === 'version-space') return sendError(res, 409, 'VERSION_SPACE', 'History is full. Ask a manager to delete old versions.');
     if (put.created) await d.audit(`user:${g.user.id}`, 'session.version.save', `session:${session.id}`, { versionId: put.version.id, labelLength: [...label].length });
     sendJson(res, put.created ? 201 : 200, { version: (await namer([put.version]))(put.version) });
+  });
+
+  router.add('PATCH', '/api/v1/sessions/:id/versions/:versionId', async (req, res, ctx) => {
+    const g = await gate(req, res, ctx.params.id as string);
+    if (!g || !writable(res, g)) return;
+    const versionId = ctx.params.versionId as string;
+    if (!key(versionId)) return sendError(res, 404, 'NOT_FOUND', 'This version is no longer available.');
+    const change = annotationOf(await readJson(req));
+    if (!change) {
+      return sendError(res, 400, 'INVALID_INPUT',
+        `The annotationRev you read and a name of 1 to ${VERSION_LABEL_MAX} characters (or null), pinned true or false, or both are required.`);
+    }
+    if (!allowed(res, g.user.id)) return;
+    let out;
+    try {
+      out = await d.store.annotateSessionVersion(g.session.id, versionId, { ...change, by: g.user.id });
+    } catch (error) {
+      const message = (error as Error)?.message;
+      if (message === 'session-gone') return sendError(res, 410, 'SESSION_DELETED', 'this session was deleted');
+      // The body was checked above, so a refused label here can only be the
+      // removal of a name the version was saved with.
+      if (error instanceof TypeError && message === 'version-label') return sendError(res, 400, 'INVALID_INPUT', 'A version saved with a name keeps a name.');
+      throw error;
+    }
+    if (out === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'This version is no longer available.');
+    if (out === 'version-limit') return sendError(res, 409, 'VERSION_LIMIT', TOO_MANY_KEPT);
+    if (out === 'version-changed') {
+      // The current name and pin, so the caller can show them and try again.
+      const current = await d.store.getSessionVersion(g.session.id, versionId);
+      if (!current) return sendError(res, 404, 'NOT_FOUND', 'This version is no longer available.');
+      const { inputs: _inputs, meta: _meta, ...summary } = current;
+      return sendError(res, 409, 'VERSION_CHANGED', 'Someone else changed the name or pin of this version. Check it and try again.',
+        { version: (await namer([summary]))(summary) });
+    }
+    if (out.changed) {
+      await d.audit(`user:${g.user.id}`, 'session.version.annotate', `session:${g.session.id}`, { versionId, kind: out.version.kind,
+        annotationRev: out.version.annotationRev, pinned: out.version.pinned, labelLength: out.version.label ? [...out.version.label].length : 0 });
+    }
+    sendJson(res, 200, { version: (await namer([out.version]))(out.version) }, PRIVATE);
   });
 
   router.add('POST', '/api/v1/sessions/:id/versions/:versionId/restore', async (req, res, ctx) => {
@@ -233,7 +303,8 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
       try {
         result = d.rooms
           ? await d.rooms.restore({ sessionId, user: g.user, target, beforeCommit })
-          : await restoreByCas({ store: d.store, policy: restorePolicy }, { sessionId, user: g.user, target, beforeCommit });
+          : await restoreByCas({ store: d.store, policy: restorePolicy }, { sessionId, user: g.user, target, beforeCommit,
+            record: { requestId, audit: (r) => d.auditBody(`user:${g.user.id}`, 'session.restore', `session:${sessionId}`, restoreAudit(target.id, r)) } });
       } catch (error) {
         // A 'before' row this attempt wrote goes when the document is still at
         // its revision, which proves nothing was committed. Otherwise a commit
@@ -268,16 +339,17 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
         }
         return failure(error);
       }
-      let restored: string | null = null;
-      try {
-        restored = await restoreRow(sessionId, g.user.id, requestId, target.id, result);
-      } catch (error) {
-        console.error(`[lolly-work] restore version row failed for ${sessionId}:`, (error as Error)?.message ?? error);
+      // A compare-and-swap restore committed its restore row and audit event with
+      // the document; a room's restore, or one that changed nothing, writes them now.
+      let restored: string | null = result.recorded?.restored ?? null;
+      if (!result.recorded) {
+        try {
+          restored = await restoreRow(sessionId, g.user.id, requestId, target.id, result);
+        } catch (error) {
+          console.error(`[lolly-work] restore version row failed for ${sessionId}:`, (error as Error)?.message ?? error);
+        }
+        await d.audit(`user:${g.user.id}`, 'session.restore', `session:${sessionId}`, restoreAudit(target.id, result));
       }
-      await d.audit(`user:${g.user.id}`, 'session.restore', `session:${sessionId}`, {
-        versionId: target.id, beforeVersionId: result.beforeId, revision: result.revision, live: result.live,
-        skipped: result.skipped.length, vetoed: result.vetoed.length,
-      });
       const body = answer(result.revision, result.live, restored, result.beforeId, result.skipped, result.vetoed);
       remember(replayKey, body);
       return { body };
@@ -286,6 +358,12 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
 
   const answer = (revision: number, live: boolean, restored: string | null, before: string, skipped: string[], vetoed: string[]) =>
     ({ revision, live, restored, before, skipped, vetoed });
+
+  /** The `session.restore` audit payload: ids and counts, never an input value. */
+  const restoreAudit = (versionId: string, result: VersionRestoreResult) => ({
+    versionId, beforeVersionId: result.beforeId, revision: result.revision, live: result.live,
+    skipped: result.skipped.length, vetoed: result.vetoed.length,
+  });
 
   const remember = (replayKey: string, body: Record<string, unknown>): void => {
     replays.set(replayKey, { at: Date.now(), body });

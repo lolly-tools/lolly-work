@@ -63,3 +63,12 @@ jobs:
           ARTIFACTHUB_REPOSITORY_ID: ${{ vars.ARTIFACTHUB_REPOSITORY_ID }}
           ARTIFACTHUB_OWNER_EMAIL: ${{ vars.ARTIFACTHUB_OWNER_EMAIL }}
         run: node scripts/publish-helm-chart.ts "$RUNNER_TEMP/chart"
+      # The channel record changes through a reviewed pull request, so the run only
+      # prints the command: failed for any unsuccessful run, checked publication otherwise.
+      - name: Show the channel record command
+        if: always()
+        continue-on-error: true
+        env:
+          RUN_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/marketplace-channels.ts helm-summary "$RUN_STATUS" "$RUN_URL" >> "$GITHUB_STEP_SUMMARY"

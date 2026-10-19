@@ -16,7 +16,11 @@
  *     points its pack at a directory that exists;
  *   - the commands the guide hands a first-timer agree with the artifacts they
  *     drive (the chart's Service port, the eval values' personas and baseUrl,
- *     the compose stack's boot ordering).
+ *     the compose stack's boot ordering);
+ *   - the mirror steps in docs/official-installations.md name the registries,
+ *     archive hosts, Compose services and proxy target the official packages
+ *     actually use, so a renamed service or a moved registry fails here rather
+ *     than in an operator's disconnected network.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,7 +28,10 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { parse as parseYaml } from 'yaml';
+
 import { parseConfig } from '../server/src/config/instance.ts';
+import { release } from '../scripts/marketplace-packages.ts';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DOCS = join(REPO, 'docs');
@@ -164,4 +171,98 @@ test('the Compose stack waits for its database instead of racing it', () => {
   assert.match(compose, /condition:\s*service_healthy/, 'server waits on the db healthcheck');
   assert.match(compose, /pg_isready/, 'db declares a healthcheck');
   assert.match(compose, /restart:\s*unless-stopped/, 'server recovers if the db goes away later');
+});
+
+// The external services section of the official installations page. Its mirror
+// steps restate service names, environment keys and image sources from the
+// generated packages, so each of those is read back from the package files.
+const OFFICIAL = readFileSync(join(DOCS, 'official-installations.md'), 'utf8');
+const MIRRORS = (() => {
+  const start = OFFICIAL.indexOf('\n## External services and mirrors\n');
+  if (start < 0) return '';
+  const end = OFFICIAL.indexOf('\n## ', start + 1);
+  return OFFICIAL.slice(start, end < 0 ? undefined : end);
+})();
+/** The body of the first fenced block of `lang` in the section, list indentation removed. */
+function fence(lang: string): string {
+  const m = new RegExp('^( *)```' + lang + '\\n([\\s\\S]*?)^\\1```', 'm').exec(MIRRORS);
+  assert.ok(m, `the mirror section has a ${lang} example`);
+  const indent = m[1]?.length ?? 0;
+  return (m[2] ?? '').split('\n').map((line) => line.slice(Math.min(indent, line.search(/\S|$/)))).join('\n');
+}
+/** Registry and namespace of an image reference: everything before its last path segment. */
+const registryPrefix = (image: string): string => {
+  const name = image.split('@')[0] ?? '';
+  return name.slice(0, name.lastIndexOf('/'));
+};
+/** Repository name of an image reference, without registry, tag or digest. */
+const repositoryName = (image: string): string => (image.split('@')[0] ?? '').split('/').pop()?.split(':')[0] ?? '';
+
+type ComposeService = { image?: string; environment?: Record<string, unknown> };
+const readCompose = (path: string) =>
+  parseYaml(readFileSync(join(REPO, path), 'utf8')) as { services: Record<string, ComposeService> };
+const VM_COMPOSE = readCompose('deploy/marketplaces/compose.yaml');
+const DOKPLOY_COMPOSE = readCompose('deploy/dokploy/lolly-work/docker-compose.yml');
+
+test('the external services inventory names every registry and archive host the packages use', () => {
+  assert.ok(MIRRORS, 'official-installations.md has an External services and mirrors section');
+  const images = [
+    ...Object.entries(release).filter(([key]) => key.endsWith('Image')).map(([, value]) => String(value)),
+    ...[VM_COMPOSE, DOKPLOY_COMPOSE].flatMap((c) => Object.values(c.services).flatMap((s) => (s.image ? [s.image] : []))),
+  ];
+  assert.ok(images.length >= 4, 'release.json pins the server, worker, PostgreSQL and Caddy images');
+  for (const prefix of new Set(images.map(registryPrefix))) {
+    assert.ok(prefix && MIRRORS.includes(prefix), `the inventory must list ${prefix}, which an official package pulls from`);
+  }
+  // YunoHost downloads both archives itself; the neutral packages download the shell.
+  const ynh = readFileSync(join(REPO, 'deploy/yunohost/manifest.toml'), 'utf8');
+  const archives = [release.shell.url as string, ...[...ynh.matchAll(/^\s*url\s*=\s*"(https:\/\/[^"]+)"/gm)].map((m) => m[1] ?? '')];
+  assert.ok(archives.length >= 3, 'the shell archive and both YunoHost sources are found');
+  for (const host of new Set(archives.map((url) => new URL(url).host))) {
+    assert.ok(MIRRORS.includes(host), `the inventory must list ${host}, which serves a release archive`);
+  }
+});
+
+test('the documented compose override replaces exactly the images the neutral package pulls', () => {
+  const block = fence('yaml');
+  const override = parseYaml(block) as { services: Record<string, ComposeService> };
+  const pulled = Object.entries(VM_COMPOSE.services).filter(([, s]) => s.image).map(([name]) => name);
+  assert.deepEqual(Object.keys(override.services).sort(), [...pulled].sort(),
+    'the override names every compose.yaml service that pulls an image, and no other');
+  for (const [name, service] of Object.entries(override.services)) {
+    assert.equal(repositoryName(service.image ?? ''), repositoryName(VM_COMPOSE.services[name]?.image ?? ''),
+      `the override gives ${name} a mirror of the image compose.yaml gives it`);
+  }
+  // The shell download belongs to whichever service initialises content, and
+  // that service checks the download against the release checksum. Overriding
+  // the URL elsewhere does nothing; overriding the checksum removes the check.
+  const holders = (c: { services: Record<string, ComposeService> }, key: string) =>
+    Object.entries(c.services).filter(([, s]) => s.environment?.[key] !== undefined).map(([name]) => name);
+  assert.deepEqual(holders(override, 'LW_SHELL_URL'), holders(VM_COMPOSE, 'LW_SHELL_URL'),
+    'the override sets LW_SHELL_URL on the service that downloads the shell');
+  for (const name of holders(VM_COMPOSE, 'LW_SHELL_URL')) {
+    assert.ok(VM_COMPOSE.services[name]?.environment?.LW_SHELL_SHA256, `${name} still checks the shell against LW_SHELL_SHA256`);
+  }
+  assert.ok(!block.includes('LW_SHELL_SHA256'), 'the override must not replace the pinned shell checksum');
+  assert.match(MIRRORS, /Keep `LW_SHELL_SHA256` unchanged/, 'the steps tell the operator to keep the checksum');
+});
+
+test('the documented Caddyfile keeps the shipped site address and proxy target', () => {
+  const shipped = readFileSync(join(REPO, 'deploy/marketplaces/Caddyfile'), 'utf8');
+  const example = fence('text');
+  const site = (file: string) => file.trim().split('\n')[0]?.trim();
+  const upstream = (file: string) => /^\s*reverse_proxy\s+(\S+)/m.exec(file)?.[1];
+  assert.ok(upstream(shipped), 'the shipped Caddyfile proxies to the server');
+  assert.equal(site(example), site(shipped), 'the example serves the same site address');
+  assert.equal(upstream(example), upstream(shipped), 'the example proxies to the same upstream');
+});
+
+test('the model files note stays while the shell fetches models from an external origin', () => {
+  // Mirroring the archive cannot move a model origin built into the shell. While
+  // the release still names one, the page must say so and must not imply that a
+  // disconnected bundle exists.
+  if (!/^https:\/\//.test(String(release.modelOrigin ?? ''))) return;
+  const text = MIRRORS.replace(/\s+/g, ' ');
+  assert.ok(text.includes(release.modelOrigin), `the model files note names ${release.modelOrigin}`);
+  assert.ok(text.includes('does not publish or qualify such a bundle'), 'the page states that no disconnected bundle is published');
 });

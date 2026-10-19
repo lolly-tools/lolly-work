@@ -7,8 +7,9 @@
  * ONE HISTORY, NOT TWO. plans/14 §6 is explicit that a room's work lands as a
  * NORMAL session revision, so L0 async share and L2 live editing read the same
  * `session_revisions` table. Nothing here invents a parallel timeline: a quiesce
- * is a `putSession` rev bump plus one `appendSessionRevision`, byte-identical in
- * shape to what `PUT /api/v1/sessions/:id` writes. The only difference is the
+ * is one `commitSessionRevision` (the rev bump, its revision and its audit event
+ * together), the store call `PUT /api/v1/sessions/:id` makes, with a revision
+ * byte-identical in shape to the one a PUT writes. The only difference is the
  * revision's `actor` (plan 76 M4, `revisionActorFor`): the one principal who
  * wrote since the last write-back when there was exactly one, else `'collab'`,
  * because a document several people converged has no single author and naming
@@ -56,6 +57,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { decodeCanvasAsset } from '@lolly-tools/core/canvas-asset-v1';
 
 import type { BoxId, BoxRow, CanvasDocState, ParamValue } from '@lolly-tools/core/canvas-op-v1';
+import type { AuditEventBody } from '../audit/chain.ts';
 import { guestActor } from '../iam/sessions.ts';
 import type { SessionRecord, Store } from '../store/types.ts';
 
@@ -260,13 +262,14 @@ type CommitOutcome =
 export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistence {
   const { store } = deps;
 
-  const audit = (action: string, subject: string, payload: Record<string, unknown>) =>
-    store.appendAudit({ at: new Date().toISOString(), actor: 'system', action, subject, payload });
+  const systemEvent = (action: string, subject: string, payload: Record<string, unknown>): AuditEventBody =>
+    ({ at: new Date().toISOString(), actor: 'system', action, subject, payload });
 
   /**
-   * Write the room's document as the next revision of a session. The shape `PUT
-   * /api/v1/sessions/:id` writes, with `actor: 'collab'` and `updatedBy` kept a
-   * real user (it is a FK in Postgres).
+   * Write the room's document as the next revision of a session, with the audit
+   * event `event` makes of the new head, in one `commitSessionRevision`. The shape
+   * `PUT /api/v1/sessions/:id` writes, with `actor: 'collab'` and `updatedBy` kept
+   * a real user (it is a FK in Postgres).
    *
    * IT IS A CAS, AND IT RE-DERIVES ON A LOSS - which is what makes the merge
    * documented on `docToInputs` ("the room wins what it edited, the PUT keeps
@@ -279,12 +282,14 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
    * the room's (the revision PK is `(session_id, rev)`, so the room's row is the one
    * `on conflict do nothing` drops) - a silent divergence in an audited control
    * plane - and, when the racing request was a DELETE, write `deleted_at` back as
-   * NULL and resurrect a tombstoned session. `casSession` cannot do any of those.
+   * NULL and resurrect a tombstoned session. The commit's CAS cannot do any of
+   * those, and its revision and audit event are written with the head or not at all.
    */
   const commit = async (
     sessionId: string,
     derive: (base: SessionRecord) => Record<string, unknown>,
     writers: readonly RoomWriter[],
+    event: (next: SessionRecord) => AuditEventBody,
   ): Promise<CommitOutcome> => {
     let lastRev = 0;
     for (let attempt = 0; attempt < COMMIT_ATTEMPTS; attempt++) {
@@ -304,10 +309,8 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
         updatedBy: lastUserOf(writers, session.updatedBy),
         updatedAt: now,
       };
-      if (!(await store.casSession(next, session.rev))) continue; // somebody moved it - re-read and re-merge
-      await store.appendSessionRevision({
-        sessionId, rev, inputs, meta: session.meta, actor: revisionActorFor(writers), at: now,
-      });
+      const out = await store.commitSessionRevision({ next, expectedRev: session.rev, actor: revisionActorFor(writers), audit: event(next) });
+      if (!out.committed) continue; // somebody moved it - re-read and re-merge
       return { ok: true, rev, session: next };
     }
     return { ok: false, why: 'contended', rev: lastRev };
@@ -337,7 +340,10 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
       // only on the next quiesce: the recovering join might be a reader who never
       // writes, and the recovered work must not depend on someone else's gesture
       // to become durable.
-      const out = await commit(session.id, () => snap.inputs, []);
+      const out = await commit(session.id, () => snap.inputs, [], (next) => systemEvent('collab.recover', `session:${session.id}`, {
+        rev: next.rev, basedOnRev: snap.baseRev, ops: snap.ops, snapshotAt: snap.updatedAt,
+        projectId: next.projectId, toolId: next.toolId,
+      }));
       await store.deleteCollabSnapshot(session.id);
       if (!out.ok) {
         // Lost the race the `baseRev` check was guarding: something moved the
@@ -346,10 +352,6 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
         const fresh = (await store.getSession(session.id)) ?? session;
         return { inputs: fresh.inputs, rev: fresh.rev, recovered: false };
       }
-      await audit('collab.recover', `session:${session.id}`, {
-        rev: out.rev, basedOnRev: snap.baseRev, ops: snap.ops, snapshotAt: snap.updatedAt,
-        projectId: session.projectId, toolId: session.toolId,
-      });
       return { inputs: snap.inputs, rev: out.rev, recovered: true };
     },
 
@@ -384,19 +386,18 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
       // The "nothing actually changed" test lives INSIDE the commit loop, because
       // it is a question about the base that is finally written against, not about
       // the one first read.
-      const out = await commit(sessionId, (base) => doc.toInputs(base.inputs), opts.writers);
-      await store.deleteCollabSnapshot(sessionId);
-      if (!out.ok) return { written: false, rev: out.rev };
-      await audit('collab.quiesce', `session:${sessionId}`, {
-        rev: out.rev,
+      const out = await commit(sessionId, (base) => doc.toInputs(base.inputs), opts.writers, (next) => systemEvent('collab.quiesce', `session:${sessionId}`, {
+        rev: next.rev,
         // When these differ, an ordinary PUT landed while the room was live and
         // the write-back was a per-input-id merge rather than a clean succession.
         basedOnRev: opts.baseRev,
-        supersededRev: out.rev - 1,
+        supersededRev: next.rev - 1,
         ops: opts.ops,
-        projectId: out.session.projectId,
-        toolId: out.session.toolId,
-      });
+        projectId: next.projectId,
+        toolId: next.toolId,
+      }));
+      await store.deleteCollabSnapshot(sessionId);
+      if (!out.ok) return { written: false, rev: out.rev };
       return { written: true, rev: out.rev };
     },
   };

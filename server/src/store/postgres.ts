@@ -38,17 +38,20 @@ import type { ProjectAccess } from '../rbac/project-access.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
 import {
-  newestVersionFirst, normalizeSessionVersionWrite, planSessionVersionPut, resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
-  type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+  newestVersionFirst, normalizeSessionVersionAnnotation, normalizeSessionVersionWrite, planSessionVersionAnnotate, planSessionVersionPut,
+  resolveVersionLimits, sessionRevisionCommitVersion, sessionVersionContent, sessionVersionId, versionHistoryEntry, versionListLimit,
+  type SessionVersionAnnotate, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+  type SessionVersionWrite,
 } from './types.ts';
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
+import { createPostgresUploadStore } from '../uploads/postgres.ts';
 import {
-  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, UNRECORDED_CALLBACK_ATTEMPT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
   type ProjectTransferMetadata,
   type CommentNotice, type CommentNoticeWrite,
   type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationCallbackOutcome, type AutomationCallbackRecord, type AutomationCallbackState, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -177,8 +180,45 @@ function automationJobFromRow(r: Record<string, unknown>): AutomationJobRecord {
     ...(r.error ? { error: r.error as string } : {}), ...(r.callback_url ? { callbackUrl: r.callback_url as string } : {}),
     ...(r.callback_failed ? { callbackFailed: true } : {}), ...(r.progress ? { progress: r.progress as { done: number; total: number } } : {}),
     ...(r.idempotency_key ? { idempotencyKey: r.idempotency_key as string } : {}), priority: Number(r.priority ?? 0), attempt: Number(r.attempt ?? 0),
+    // The outbox entry, when there is one, decides the flag: true until acknowledged.
+    ...(r.cb_id ? {
+      callbackFailed: r.cb_state !== 'acknowledged',
+      callback: {
+        id: r.cb_id as string, state: r.cb_state as AutomationCallbackState, attempts: Number(r.cb_attempt ?? 0),
+        ...(r.cb_last_outcome ? { lastOutcome: r.cb_last_outcome as AutomationCallbackOutcome } : {}),
+        ...(r.cb_last_status !== null && r.cb_last_status !== undefined ? { lastStatus: Number(r.cb_last_status) } : {}),
+        ...(r.cb_state === 'pending' ? { nextAttemptAt: new Date(r.cb_next_attempt_at as string).toISOString() } : {}),
+      },
+    } : {}),
   };
 }
+
+/** Job reads join the callback outbox entry: it decides the flag and the summary. */
+const AUTOMATION_JOB_SELECT = `select j.*, c.id as cb_id, c.state as cb_state, c.attempt as cb_attempt, c.next_attempt_at as cb_next_attempt_at,
+  c.last_outcome as cb_last_outcome, c.last_status as cb_last_status
+  from automation_jobs j left join automation_callbacks c on c.job_id = j.id`;
+
+function callbackFromRow(r: Record<string, unknown>): AutomationCallbackRecord {
+  const iso = (v: unknown): string => new Date(v as string).toISOString();
+  return {
+    id: r.id as string, jobId: r.job_id as string, principal: r.principal as string, url: r.url as string,
+    state: r.state as AutomationCallbackRecord['state'], attempt: Number(r.attempt ?? 0), nextAttemptAt: iso(r.next_attempt_at),
+    ...(r.lease_owner ? { leaseOwner: r.lease_owner as string } : {}), ...(r.lease_until ? { leaseUntil: iso(r.lease_until) } : {}),
+    leaseToken: Number(r.lease_token ?? 0),
+    ...(r.last_outcome ? { lastOutcome: r.last_outcome as AutomationCallbackRecord['lastOutcome'] } : {}),
+    ...(r.last_status !== null && r.last_status !== undefined ? { lastStatus: Number(r.last_status) } : {}),
+    ...(r.last_error ? { lastError: r.last_error as string } : {}),
+    createdAt: iso(r.created_at), updatedAt: iso(r.updated_at), ...(r.settled_at ? { settledAt: iso(r.settled_at) } : {}),
+  };
+}
+
+/** Appended to a statement whose `saved` CTE returns the written job row: a job
+ *  that settled with a callback URL gets its outbox entry in the same statement. */
+const appendAutomationCallback = (idParam: string): string => `, outbox as (
+  insert into automation_callbacks (id, job_id, principal, url, state, next_attempt_at, created_at, updated_at)
+  select ${idParam}, id, principal, callback_url, 'pending', now(), now(), now() from saved
+  where callback_url is not null and state in ('done','failed')
+  on conflict (job_id) do nothing)`;
 
 function deliveryFromRow(r: Record<string, unknown>): DeliveryRecord {
   return {
@@ -537,6 +577,8 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...(r.expires_at ? { expiresAt: new Date(r.expires_at as string).toISOString() } : {}),
   });
 
+  const { putVersionInTransaction, ...versionMethods } = createPostgresVersions(pool);
+
   const sessionFromRow = (r: Record<string, unknown>): SessionRecord => ({
     id: r.id as string,
     projectId: r.project_id as string,
@@ -593,6 +635,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return { scope, kind, hash: row.hash as string, bytes: row.bytes as Buffer, until: Number(row.until_ms), toolIds: row.tool_ids as string[], assetIds: row.asset_ids as string[] };
     },
     ...createPostgresRenderStore(pool),
+    ...createPostgresUploadStore(pool),
     ...createPostgresOidcLogout(pool),
     ...createPostgresPasskeys(pool),
     ...createPostgresSubjects(pool, () => roleGroups),
@@ -1267,30 +1310,36 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return (rowCount ?? 0) > 0;
     },
     async saveClaimedAutomationJob(job) {
-      const { rowCount } = await pool.query(
-        `update automation_jobs set state=$4, updated_at=now(), finished_at=$5, result_ref=$6, result_mime=$7, result_sha256=$8, error=$9, progress=$10::jsonb, callback_failed=$11
-         where id=$1 and lease_owner=$2 and lease_token=$3 and ((state='running' and lease_until > now()) or (state=$4 and state in ('done','failed')))`,
-        [job.id, job.leaseOwner, job.leaseToken, job.state, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.progress ? JSON.stringify(job.progress) : null, job.callbackFailed ?? false]);
-      return (rowCount ?? 0) > 0;
+      const { rows } = await pool.query(
+        `with saved as (
+           update automation_jobs set state=$4, updated_at=now(), finished_at=$5, result_ref=$6, result_mime=$7, result_sha256=$8, error=$9, progress=$10::jsonb, callback_failed=$11
+           where id=$1 and lease_owner=$2 and lease_token=$3 and ((state='running' and lease_until > now()) or (state=$4 and state in ('done','failed')))
+           returning id, principal, state, callback_url)${appendAutomationCallback('$12')}
+         select count(*)::int as saved from saved`,
+        [job.id, job.leaseOwner, job.leaseToken, job.state, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.progress ? JSON.stringify(job.progress) : null, job.callbackFailed ?? false, `cbk_${randomId(16)}`]);
+      return Number(rows[0]?.saved ?? 0) > 0;
     },
     async putAutomationJob(job) {
       await pool.query(
-        `insert into automation_jobs (id, principal, verb, request, state, created_at, updated_at, finished_at, result_ref, result_mime, result_sha256, error, callback_url, callback_failed, progress, idempotency_key, priority, attempt)
-         values ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
-         on conflict (id) do update set state=excluded.state, updated_at=excluded.updated_at, finished_at=excluded.finished_at, result_ref=excluded.result_ref, result_mime=excluded.result_mime, result_sha256=excluded.result_sha256, error=excluded.error, callback_failed=excluded.callback_failed, progress=excluded.progress, priority=excluded.priority, attempt=excluded.attempt`,
-        [job.id, job.principal, job.verb, JSON.stringify(job.request), job.state, job.createdAt, job.updatedAt, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.callbackUrl ?? null, job.callbackFailed ?? false, job.progress ? JSON.stringify(job.progress) : null, job.idempotencyKey ?? null, job.priority, job.attempt],
+        `with saved as (
+           insert into automation_jobs (id, principal, verb, request, state, created_at, updated_at, finished_at, result_ref, result_mime, result_sha256, error, callback_url, callback_failed, progress, idempotency_key, priority, attempt)
+           values ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
+           on conflict (id) do update set state=excluded.state, updated_at=excluded.updated_at, finished_at=excluded.finished_at, result_ref=excluded.result_ref, result_mime=excluded.result_mime, result_sha256=excluded.result_sha256, error=excluded.error, callback_failed=excluded.callback_failed, progress=excluded.progress, priority=excluded.priority, attempt=excluded.attempt
+           returning id, principal, state, callback_url)${appendAutomationCallback('$19')}
+         select 1`,
+        [job.id, job.principal, job.verb, JSON.stringify(job.request), job.state, job.createdAt, job.updatedAt, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.callbackUrl ?? null, job.callbackFailed ?? false, job.progress ? JSON.stringify(job.progress) : null, job.idempotencyKey ?? null, job.priority, job.attempt, `cbk_${randomId(16)}`],
       );
     },
     async getAutomationJob(id, principal) {
-      const { rows } = await pool.query('select * from automation_jobs where id=$1 and principal=$2', [id, principal]);
+      const { rows } = await pool.query(`${AUTOMATION_JOB_SELECT} where j.id=$1 and j.principal=$2`, [id, principal]);
       return rows[0] ? automationJobFromRow(rows[0]) : null;
     },
     async listAutomationJobs(principal) {
-      const { rows } = await pool.query('select * from automation_jobs where principal=$1 order by created_at desc', [principal]);
+      const { rows } = await pool.query(`${AUTOMATION_JOB_SELECT} where j.principal=$1 order by j.created_at desc`, [principal]);
       return rows.map(automationJobFromRow);
     },
     async findAutomationJobByIdempotency(principal, key) {
-      const { rows } = await pool.query('select * from automation_jobs where principal=$1 and idempotency_key=$2', [principal, key]);
+      const { rows } = await pool.query(`${AUTOMATION_JOB_SELECT} where j.principal=$1 and j.idempotency_key=$2`, [principal, key]);
       return rows[0] ? automationJobFromRow(rows[0]) : null;
     },
     async deleteAutomationJob(id, principal) {
@@ -1301,6 +1350,32 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         [id, principal],
       );
       return (rowCount ?? 0) > 0;
+    },
+    async claimAutomationCallback(owner, leaseMs) {
+      // A lease still set here expired with its attempt unrecorded: the sender
+      // stopped after it may have sent the request.
+      const { rows } = await pool.query(
+        `update automation_callbacks c set lease_owner=$1, lease_until=now()+($2 * interval '1 millisecond'), lease_token=c.lease_token+1, attempt=c.attempt+1, updated_at=now(),
+           last_outcome=case when c.lease_until is null then c.last_outcome else 'uncertain' end,
+           last_status=case when c.lease_until is null then c.last_status else null end,
+           last_error=case when c.lease_until is null then c.last_error else $3 end
+         from (select id from automation_callbacks where state='pending' and next_attempt_at <= now() and (lease_until is null or lease_until < now())
+           order by next_attempt_at for update skip locked limit 1) candidate
+         where c.id=candidate.id returning c.*`, [owner, leaseMs, UNRECORDED_CALLBACK_ATTEMPT]);
+      return rows[0] ? callbackFromRow(rows[0]) : null;
+    },
+    async settleAutomationCallback(callback, result) {
+      const { rowCount } = await pool.query(
+        `update automation_callbacks set state=$4::text, last_outcome=$5, last_status=$6, last_error=$7,
+           next_attempt_at=case when $8::double precision is null then next_attempt_at else now()+($8::double precision * interval '1 millisecond') end,
+           lease_owner=null, lease_until=null, updated_at=now(), settled_at=case when $4::text='pending' then null else now() end
+         where id=$1 and lease_owner=$2 and lease_token=$3 and state='pending'`,
+        [callback.id, callback.leaseOwner ?? null, callback.leaseToken, result.state, result.outcome, result.status ?? null, result.error ?? null, result.retryAfterMs ?? null]);
+      return (rowCount ?? 0) > 0;
+    },
+    async nextAutomationCallbackAt() {
+      const { rows } = await pool.query(`select min(greatest(next_attempt_at, coalesce(lease_until, next_attempt_at))) as at from automation_callbacks where state='pending'`);
+      return rows[0]?.at ? new Date(rows[0].at as string).toISOString() : null;
     },
 
     async putDelivery(delivery) {
@@ -2580,6 +2655,44 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       );
       return res.rowCount === 1;
     },
+    async commitSessionRevision(commit) {
+      const write = sessionRevisionCommitVersion(commit);
+      const { next, expectedRev } = commit;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        // casSession's statement. The row lock it takes is held to the end, so the
+        // revision, version and audit rows below are written against this head.
+        const head = await client.query(
+          `update sessions set inputs = $2::jsonb, meta = $3::jsonb, updated_by = $4, rev = $5, updated_at = $6
+            where id = $1 and rev = $7 and deleted_at is null
+              and (collab_lease_until is null or collab_lease_until <= clock_timestamp())
+            returning *`,
+          [next.id, JSON.stringify(next.inputs), JSON.stringify(next.meta), next.updatedBy, next.rev, next.updatedAt, expectedRev],
+        );
+        if (!head.rows[0]) {
+          await client.query('rollback');
+          return { committed: false };
+        }
+        // A row left at this rev is replaced: the revision must record this head.
+        await client.query(
+          `insert into session_revisions (session_id, rev, inputs, meta, actor, at)
+           values ($1, $2, $3::jsonb, $4::jsonb, $5, $6)
+           on conflict (session_id, rev) do update set inputs = excluded.inputs, meta = excluded.meta, actor = excluded.actor, at = excluded.at`,
+          [next.id, next.rev, JSON.stringify(next.inputs), JSON.stringify(next.meta), commit.actor, next.updatedAt],
+        );
+        await client.query(
+          `delete from session_revisions where session_id = $1 and rev not in
+            (select rev from session_revisions where session_id = $1 order by rev desc limit $2)`,
+          [next.id, SESSION_REVISION_LIMIT],
+        );
+        const version = write ? await putVersionInTransaction(client, write) : undefined;
+        if (commit.audit) await appendAuditInTransaction(client, commit.audit);
+        await client.query('commit');
+        return { committed: true, session: sessionFromRow(head.rows[0]), ...(version !== undefined ? { version } : {}) };
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
     async getSession(id) {
       const { rows } = await pool.query('select * from sessions where id = $1', [id]);
       return rows[0] ? sessionFromRow(rows[0]) : null;
@@ -2758,7 +2871,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteCollabSnapshot(sessionId) {
       await pool.query('delete from collab_room_snapshots where session_id = $1', [sessionId]);
     },
-    ...createPostgresVersions(pool),
+    ...versionMethods,
 
     // The sharing ladder (migration 0060; lolly plan 299 M1).
     async setProjectMemberExpiry(projectId, userId, expiresAt) {
@@ -2847,9 +2960,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
 }
 
 const iso = (value: unknown): string => new Date(value as string).toISOString();
-const VERSION_SUMMARY_COLUMNS = 'v.id, v.session_id, v.rev, v.kind, v.label, v.contributors, v.created_by, v.restored_from, v.before_id, v.at, c.bytes';
+const VERSION_SUMMARY_COLUMNS = `v.id, v.session_id, v.rev, v.kind, v.label, v.contributors, v.created_by, v.restored_from, v.before_id, v.at, c.bytes,
+  v.pinned, v.annotation_rev`;
 const VERSIONS_WITH_CONTENT = 'session_versions v join session_version_contents c on c.session_id = v.session_id and c.digest = v.digest';
-const VERSION_ROW_COLUMNS = 'id, session_id, kind, digest, at, created_by, request_id, before_id';
+const VERSION_ROW_COLUMNS = 'id, session_id, kind, digest, at, created_by, request_id, before_id, label, pinned, kept_by';
 
 function versionSummaryFromRow(r: Record<string, unknown>): SessionVersionSummary {
   return {
@@ -2859,7 +2973,7 @@ function versionSummaryFromRow(r: Record<string, unknown>): SessionVersionSummar
     ...(r.created_by ? { createdBy: r.created_by as string } : {}),
     ...(r.restored_from ? { restoredFrom: r.restored_from as string } : {}),
     ...(r.before_id ? { beforeId: r.before_id as string } : {}),
-    bytes: Number(r.bytes), at: iso(r.at),
+    bytes: Number(r.bytes), at: iso(r.at), pinned: r.pinned === true, annotationRev: Number(r.annotation_rev),
   };
 }
 
@@ -2869,18 +2983,27 @@ function versionRowFromRow(r: Record<string, unknown>): SessionVersionRow {
     ...(r.created_by !== null && r.created_by !== undefined ? { createdBy: r.created_by as string } : {}),
     ...(r.request_id !== null && r.request_id !== undefined ? { requestId: r.request_id as string } : {}),
     ...(r.before_id ? { beforeId: r.before_id as string } : {}),
+    ...(r.label !== null && r.label !== undefined ? { label: r.label as string } : {}),
+    ...(r.pinned === true ? { pinned: true } : {}),
+    ...(r.kept_by !== null && r.kept_by !== undefined ? { keptBy: r.kept_by as string } : {}),
   };
 }
 
-type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'listVersionHistory' | 'getSessionVersion'
+  | 'annotateSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
 
 /**
- * Session versions (plan 76 M4 R2, migration 0053). Every write and delete holds
- * SESSION_VERSIONS_LOCK_KEY for its transaction, reads the document's rows, and
- * applies the shared `planSessionVersionPut`, so the memory driver keeps the same
- * rules. Contents no version uses any more are deleted in the same transaction.
+ * Session versions (plan 76 M4 R2, migrations 0053 and 0072). Every write,
+ * annotation and delete holds SESSION_VERSIONS_LOCK_KEY for its transaction,
+ * reads the document's rows, and applies the shared `planSessionVersionPut` or
+ * `planSessionVersionAnnotate`, so the memory driver keeps the same rules.
+ * Contents no version uses any more are deleted in the same transaction.
  */
-function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> {
+function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> & {
+  /** `putSessionVersion` inside the caller's open transaction on `client`: takes
+   *  the version lock, which the transaction then holds until it ends. */
+  putVersionInTransaction(client: PgClient, w: SessionVersionWrite & { at: string }): Promise<SessionVersionPut>;
+} {
   let limits: SessionVersionLimits = resolveVersionLimits({});
   const locked = async <T>(work: (client: PgClient) => Promise<T>): Promise<T> => {
     const client = await pool.connect();
@@ -2912,48 +3035,57 @@ function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> {
     return versionSummaryFromRow(rows[0]!);
   };
 
+  /** One version write, on a transaction that holds the version lock. */
+  const putVersionLocked = async (client: PgClient, w: SessionVersionWrite & { at: string }, content: { digest: string; bytes: number }): Promise<SessionVersionPut> => {
+    const session = await client.query('select deleted_at from sessions where id = $1', [w.sessionId]);
+    if (!session.rows[0] || session.rows[0].deleted_at) throw new Error('session-gone');
+    const mine = (await client.query(`select ${VERSION_ROW_COLUMNS} from session_versions where session_id = $1`, [w.sessionId])).rows.map(versionRowFromRow);
+    for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && !mine.some((r) => r.id === ref)) throw new Error('version-reference');
+    const stored = await client.query('select digest, bytes from session_version_contents where session_id = $1', [w.sessionId]);
+    const id = sessionVersionId();
+    const plan = await planSessionVersionPut(w, id, content, {
+      rows: mine,
+      contents: new Map(stored.rows.map((r) => [r.digest as string, Number(r.bytes)])),
+      // One row, kept by migration 0053's triggers.
+      instanceBytes: async () => Number((await client.query('select coalesce((select bytes from session_version_totals where id), 0)::bigint as n')).rows[0]!.n),
+      instanceRows: async () => {
+        const rows = (await client.query(`select ${VERSION_ROW_COLUMNS} from session_versions`)).rows.map(versionRowFromRow);
+        const all = (await client.query('select session_id, digest, bytes from session_version_contents')).rows;
+        return { rows, contents: new Map(all.map((r) => [`${r.session_id as string} ${r.digest as string}`, Number(r.bytes)])) };
+      },
+    }, limits);
+    if (plan.action === 'refuse') return plan.reason;
+    if (plan.action === 'return') return { version: await summaryById(client, plan.id), created: false };
+    if (plan.action === 'skip') {
+      const latest = mine.sort(newestVersionFirst)[0];
+      return latest ? { version: await summaryById(client, latest.id), created: false } : 'version-space';
+    }
+    if (plan.contentIsNew) {
+      await client.query(`insert into session_version_contents (session_id, digest, inputs, bytes) values ($1, $2, $3::jsonb, $4)
+        on conflict (session_id, digest) do nothing`, [w.sessionId, content.digest, JSON.stringify(w.inputs), content.bytes]);
+    }
+    await client.query(`insert into session_versions (id, session_id, rev, kind, label, digest, meta, contributors,
+        created_by, restored_from, before_id, request_id, at)
+      values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13)`,
+    [id, w.sessionId, w.rev, w.kind, w.label ?? null, content.digest, JSON.stringify(w.meta), JSON.stringify(w.contributors),
+      w.createdBy ?? null, w.restoredFrom ?? null, w.beforeId ?? null, w.requestId ?? null, w.at]);
+    const touched = await dropVersions(client, plan.drops);
+    await dropUnusedContents(client, [...new Set([w.sessionId, ...touched])]);
+    return { version: await summaryById(client, id), created: true };
+  };
+  const putVersionInTransaction = async (client: PgClient, w: SessionVersionWrite & { at: string }): Promise<SessionVersionPut> => {
+    const content = sessionVersionContent(w.inputs);
+    await client.query('select pg_advisory_xact_lock($1)', [SESSION_VERSIONS_LOCK_KEY]);
+    return putVersionLocked(client, w, content);
+  };
+
   return {
+    putVersionInTransaction,
     configureVersionLimits(next) { limits = resolveVersionLimits(next); },
     async putSessionVersion(input) {
       const w = normalizeSessionVersionWrite(input);
       const content = sessionVersionContent(w.inputs);
-      return locked(async (client): Promise<SessionVersionPut> => {
-        const session = await client.query('select deleted_at from sessions where id = $1', [w.sessionId]);
-        if (!session.rows[0] || session.rows[0].deleted_at) throw new Error('session-gone');
-        const mine = (await client.query(`select ${VERSION_ROW_COLUMNS} from session_versions where session_id = $1`, [w.sessionId])).rows.map(versionRowFromRow);
-        for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && !mine.some((r) => r.id === ref)) throw new Error('version-reference');
-        const stored = await client.query('select digest, bytes from session_version_contents where session_id = $1', [w.sessionId]);
-        const id = sessionVersionId();
-        const plan = await planSessionVersionPut(w, id, content, {
-          rows: mine,
-          contents: new Map(stored.rows.map((r) => [r.digest as string, Number(r.bytes)])),
-          // One row, kept by migration 0053's triggers.
-          instanceBytes: async () => Number((await client.query('select coalesce((select bytes from session_version_totals where id), 0)::bigint as n')).rows[0]!.n),
-          instanceRows: async () => {
-            const rows = (await client.query(`select ${VERSION_ROW_COLUMNS} from session_versions`)).rows.map(versionRowFromRow);
-            const all = (await client.query('select session_id, digest, bytes from session_version_contents')).rows;
-            return { rows, contents: new Map(all.map((r) => [`${r.session_id as string} ${r.digest as string}`, Number(r.bytes)])) };
-          },
-        }, limits);
-        if (plan.action === 'refuse') return plan.reason;
-        if (plan.action === 'return') return { version: await summaryById(client, plan.id), created: false };
-        if (plan.action === 'skip') {
-          const latest = mine.sort(newestVersionFirst)[0];
-          return latest ? { version: await summaryById(client, latest.id), created: false } : 'version-space';
-        }
-        if (plan.contentIsNew) {
-          await client.query(`insert into session_version_contents (session_id, digest, inputs, bytes) values ($1, $2, $3::jsonb, $4)
-            on conflict (session_id, digest) do nothing`, [w.sessionId, content.digest, JSON.stringify(w.inputs), content.bytes]);
-        }
-        await client.query(`insert into session_versions (id, session_id, rev, kind, label, digest, meta, contributors,
-            created_by, restored_from, before_id, request_id, at)
-          values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13)`,
-        [id, w.sessionId, w.rev, w.kind, w.label ?? null, content.digest, JSON.stringify(w.meta), JSON.stringify(w.contributors),
-          w.createdBy ?? null, w.restoredFrom ?? null, w.beforeId ?? null, w.requestId ?? null, w.at]);
-        const touched = await dropVersions(client, plan.drops);
-        await dropUnusedContents(client, [...new Set([w.sessionId, ...touched])]);
-        return { version: await summaryById(client, id), created: true };
-      });
+      return locked((client) => putVersionLocked(client, w, content));
     },
     async listSessionVersions(sessionId, opts) {
       const limit = versionListLimit(opts.limit);
@@ -2970,11 +3102,55 @@ function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> {
          order by v.at desc, v.id collate "C" desc limit $3`, [sessionId, opts.before, limit]);
       return rows.map(versionSummaryFromRow);
     },
+    async listVersionHistory(q) {
+      if (!q.projectIds.length) return [];
+      const values: unknown[] = [[...q.projectIds], [...(q.exceptSessionIds ?? [])]];
+      const where = ['s.deleted_at is null', 's.project_id = any($1::text[])', 'not (v.session_id = any($2::text[]))'];
+      const param = (value: unknown): string => `$${values.push(value)}`;
+      if (q.toolId !== undefined) where.push(`s.tool_id = ${param(q.toolId)}`);
+      if (q.kinds) where.push(`v.kind = any(${param([...q.kinds])}::text[])`);
+      // versionKept, in SQL.
+      if (q.kept) where.push(`(v.kind = 'named' or v.label is not null or v.pinned)`);
+      if (q.from !== undefined) where.push(`v.at >= ${param(q.from)}::timestamptz`);
+      if (q.to !== undefined) where.push(`v.at <= ${param(q.to)}::timestamptz`);
+      if (q.after) {
+        // `v.at <= at` says again what the or says, as a bound the index can start
+        // from. With the or alone, every later page read the index from the newest
+        // version in the instance down to its position.
+        const at = `${param(q.after.at)}::timestamptz`, id = param(q.after.id);
+        where.push(`v.at <= ${at}`, `(v.at < ${at} or (v.at = ${at} and v.id collate "C" < ${id} collate "C"))`);
+      }
+      // Migration 0076's index serves this order, so a page starts at its position
+      // and stops after `limit` rows match.
+      const { rows } = await pool.query(`select ${VERSION_SUMMARY_COLUMNS}, s.project_id, s.tool_id, s.tool_version, s.meta -> 'label' as session_label
+          from ${VERSIONS_WITH_CONTENT} join sessions s on s.id = v.session_id
+         where ${where.join(' and ')}
+         order by v.at desc, v.id collate "C" desc limit ${param(versionListLimit(q.limit))}`, values);
+      return rows.map((r) => versionHistoryEntry(versionSummaryFromRow(r), {
+        projectId: r.project_id as string, toolId: r.tool_id as string, toolVersion: r.tool_version as string, meta: { label: r.session_label },
+      }));
+    },
     async getSessionVersion(sessionId, id) {
       const { rows } = await pool.query(`select ${VERSION_SUMMARY_COLUMNS}, v.meta, c.inputs from ${VERSIONS_WITH_CONTENT}
         where v.session_id = $1 and v.id = $2`, [sessionId, id]);
       const r = rows[0];
       return r ? { ...versionSummaryFromRow(r), inputs: (r.inputs as Record<string, unknown>) ?? {}, meta: (r.meta as Record<string, unknown>) ?? {} } : null;
+    },
+    async annotateSessionVersion(sessionId, id, input) {
+      const change = normalizeSessionVersionAnnotation(input);
+      return locked(async (client): Promise<SessionVersionAnnotate> => {
+        const session = await client.query('select deleted_at from sessions where id = $1', [sessionId]);
+        if (!session.rows[0] || session.rows[0].deleted_at) throw new Error('session-gone');
+        const { rows } = await client.query(`select ${VERSION_ROW_COLUMNS}, annotation_rev from session_versions where session_id = $1`, [sessionId]);
+        const target = rows.find((r) => r.id === id);
+        if (!target) return 'not-found';
+        const plan = planSessionVersionAnnotate(rows.map(versionRowFromRow), versionRowFromRow(target), Number(target.annotation_rev), change);
+        if (plan.action === 'refuse') return plan.reason;
+        if (plan.action === 'same') return { version: await summaryById(client, id), changed: false };
+        await client.query(`update session_versions set label = $2, pinned = $3, kept_by = $4, annotation_rev = annotation_rev + 1
+          where id = $1`, [id, plan.label ?? null, plan.pinned, plan.keptBy ?? null]);
+        return { version: await summaryById(client, id), changed: true };
+      });
     },
     async deleteSessionVersion(sessionId, id) {
       return locked(async (client) => {

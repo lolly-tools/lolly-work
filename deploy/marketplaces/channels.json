@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "channels": [
+    {
+      "id": "ghcr-images",
+      "name": "Container images (GHCR)",
+      "route": "registry",
+      "update": "The release workflow publishes signed server and render worker images for each Work release tag.",
+      "open": "Runtime qualification of the render worker's arm64 image; the server's arm64 image passes only the CI container qualification.",
+      "lifecycle": "maintained",
+      "attempts": [
+        {
+          "release": "1.1.1",
+          "package": "1.1.1",
+          "outcome": "published",
+          "date": "2026-10-15",
+          "evidence": "https://github.com/lolly-tools/lolly-work/releases/tag/v1.1.1",
+          "note": "Signed amd64 and arm64 images; both digests in release.json resolve without signing in."
+        }
+      ]
+    },
+    {
+      "id": "helm-repository",
+      "name": "Helm chart repository",
+      "route": "feed",
+      "update": "Dispatch Publish official Helm chart with the reviewed main SHA; every chart change needs a new chart version.",
+      "open": "First publication of chart 0.3.2, anonymous download and signature checks, then a live Rancher installation and upgrade.",
+      "lifecycle": "maintained",
+      "attempts": []
+    },
+    {
+      "id": "artifact-hub",
+      "name": "Artifact Hub",
+      "route": "catalogue",
+      "update": "Artifact Hub indexes each new chart version from the Helm chart repository.",
+      "open": "A project organisation and repository, then Verified publisher, then Official status.",
+      "lifecycle": "maintained",
+      "attempts": []
+    },
+    {
+      "id": "neutral-compose",
+      "name": "Neutral Compose package (VM or private server)",
+      "route": "direct",
+      "update": "Regenerate with node scripts/marketplace-packages.ts after a reviewed change to release.json; operators replace the package files to upgrade.",
+      "open": "An installed cross-version upgrade and recovery on a second host.",
+      "lifecycle": "maintained",
+      "attempts": [
+        {
+          "release": "1.1.1",
+          "package": "1.1.1",
+          "outcome": "published",
+          "date": "2026-10-16",
+          "evidence": "https://github.com/lolly-tools/lolly-work/tree/265ea5d31d4da010d535fd27092f6deb150bf1d9/deploy/marketplaces",
+          "note": "CI boots the pinned package, signs in, exports, restarts and restores its database."
+        }
+      ]
+    },
+    {
+      "id": "upcloud",
+      "name": "UpCloud quick start",
+      "route": "direct",
+      "update": "The UpCloud infrastructure module plus the neutral Compose package; it follows each package update.",
+      "open": "An installed cross-version upgrade, recovery on a second host, organisation OIDC and a boot through the infrastructure module.",
+      "lifecycle": "maintained",
+      "attempts": [
+        {
+          "release": "1.1.1",
+          "package": "1.1.1",
+          "outcome": "published",
+          "date": "2026-10-16",
+          "evidence": "https://github.com/lolly-tools/lolly-work/blob/265ea5d31d4da010d535fd27092f6deb150bf1d9/deploy/marketplaces/QUALIFICATION.md",
+          "note": "Reference installation on Ubuntu 24.04 amd64 in Frankfurt, created through the provider API."
+        }
+      ]
+    },
+    {
+      "id": "evroc",
+      "name": "Evroc quick start",
+      "route": "direct",
+      "update": "The Evroc infrastructure module plus the neutral Compose package.",
+      "open": "Boot and application acceptance on an Evroc account.",
+      "lifecycle": "maintained",
+      "attempts": []
+    },
+    {
+      "id": "yunohost-package",
+      "name": "YunoHost package (beta)",
+      "route": "direct",
+      "update": "Mirror deploy/yunohost to lolly-work_ynh and tag it, for example v1.1.1-ynh1, after its runtime checks.",
+      "open": "Runtime acceptance (the 1.1.1 run fails its level check), arm64 installation; the beta label stays.",
+      "lifecycle": "maintained",
+      "attempts": [
+        {
+          "release": "1.1.1",
+          "package": "1.1.1~ynh1",
+          "outcome": "published",
+          "date": "2026-10-15",
+          "evidence": "https://github.com/lolly-tools/lolly-work_ynh/tree/v1.1.1-ynh1",
+          "note": "Beta tag; its pinned archives download. All seven package tests passed on amd64 Bookworm."
+        }
+      ]
+    },
+    {
+      "id": "yunohost-catalogue",
+      "name": "YunoHost app catalogue",
+      "route": "catalogue",
+      "update": "A YunoHost/apps pull request registers the package; the catalogue then follows the referenced package repository.",
+      "open": "Catalogue registration, which waits for a maintainer's authorisation.",
+      "lifecycle": "maintained",
+      "attempts": []
+    },
+    {
+      "id": "dokploy-templates",
+      "name": "Dokploy templates",
+      "route": "catalogue",
+      "update": "Copy deploy/dokploy/lolly-work to blueprints/lolly-work in a Dokploy/templates pull request; later versions use the same repository.",
+      "open": "Isolated Dokploy import and acceptance, a second-version installed upgrade, then the catalogue pull request.",
+      "lifecycle": "maintained",
+      "attempts": []
+    }
+  ]
+}

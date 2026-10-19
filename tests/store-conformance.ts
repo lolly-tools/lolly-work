@@ -7,22 +7,27 @@
 import assert from 'node:assert/strict';
 import { verifyChain } from '../server/src/audit/chain.ts';
 import { createApproval, type Chain } from '../server/src/approvals/engine.ts';
+import { freezeSourceReview } from '../server/src/catalog/source-review.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { Message } from '../server/src/inbox/target.ts';
-import { COMMENT_NOTICE_COUNT_MAX, commentNoticeId, type CommentNoticeWrite, type Store } from '../server/src/store/types.ts';
+import { COMMENT_NOTICE_COUNT_MAX, UNRECORDED_CALLBACK_ATTEMPT, commentNoticeId, type AutomationJobRecord, type CommentNoticeWrite, type Store } from '../server/src/store/types.ts';
 import { PROJECT_FILE_OVERHEAD_BYTES, type ProjectFileRecord } from '../server/src/projects/files.ts';
 import { runErasureConformance } from './erasure-conformance.ts';
 
 import { ReferenceCanvasDoc } from '@lolly-tools/core/canvas-op-v1';
 import { VERSION_LABEL_MAX, VERSION_NAMED_PER_PERSON, VERSION_NAMED_PER_SESSION, VERSION_RESTORE_KEEP,
-  type SessionVersionPut, type SessionVersionSummary, type SessionVersionWrite } from '../server/src/store/types.ts';
+  type SessionRecord, type SessionRevisionCommitResult,
+  type SessionVersionAnnotate, type SessionVersionAnnotation, type SessionVersionPut, type SessionVersionSummary, type SessionVersionWrite,
+  type VersionHistoryQuery } from '../server/src/store/types.ts';
+import type { AuditEventBody } from '../server/src/audit/chain.ts';
 
 /**
  * Session versions (plan 76 M4 R2, migration 0053): space caps (per document and
  * per instance, shared contents counted once), dedupe, idempotency with the kind
  * in the key, the named limits (S-21 store part), restore and 'before' pairs,
- * retention of automatic and restore rows, paging, session deletion, and
- * commitCollab writing no revision. Runs on a store with no versions yet.
+ * retention of automatic and restore rows, paging, names and pins added later
+ * (plan 221, migration 0072), session deletion, and commitCollab writing no
+ * revision. Runs on a store with no versions yet.
  */
 async function runSessionVersionsConformance(store: Store): Promise<void> {
   const user = (sub: string) => store.upsertUserBySub({ sub, email: `${sub}@example.invalid`, groups: [], role: 'member' });
@@ -32,7 +37,8 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   const session = (id: string) => store.putSession({ id, projectId: 'prj_ver', toolId: 'versions-tool', toolVersion: '1.0.0',
     inputs: { title: id }, meta: {}, createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: now });
   const sessions = ['ses_v_inst1', 'ses_v_inst2', 'ses_v_space', 'ses_v_evict', 'ses_v_main', 'ses_v_named', 'ses_v_pair',
-    'ses_v_keep', 'ses_v_old', 'ses_v_restore', 'ses_v_collab', 'ses_v_protect', 'ses_v_protect2'];
+    'ses_v_keep', 'ses_v_old', 'ses_v_restore', 'ses_v_collab', 'ses_v_protect', 'ses_v_protect2', 'ses_v_annot', 'ses_v_annot_limit',
+    'ses_v_annot_space'];
   for (const id of sessions) await session(id);
   /** Inputs whose canonical JSON is exactly `bytes` long ('{"p":""}' is 8). */
   const sized = (bytes: number, tag: string): Record<string, unknown> => ({ p: tag + 'x'.repeat(bytes - 8 - tag.length) });
@@ -104,7 +110,7 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   })), 'first');
   assert.match(first.id, /^ver_[0-9a-hjkmnp-tv-z]{16}$/);
   assert.deepEqual({ ...first, id: '', at: '' }, {
-    id: '', sessionId: 'ses_v_main', rev: 4, kind: 'auto', bytes: Buffer.byteLength('{"a":1,"b":2}'), at: '',
+    id: '', sessionId: 'ses_v_main', rev: 4, kind: 'auto', bytes: Buffer.byteLength('{"a":1,"b":2}'), at: '', pinned: false, annotationRev: 0,
     contributors: [{ id: owner.id, kind: 'user', edits: 3 }, { id: 'guest', kind: 'guest', edits: 2 }, { id: 'agt_1', kind: 'agent', edits: 0 }],
   }, 'a guest is stored without its link id; unknown kinds and empty ids are dropped');
   const full = await store.getSessionVersion('ses_v_main', first.id);
@@ -145,6 +151,7 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   await assert.rejects(put(write('ses_v_main', 'restore', { a: 7 }, { restoredFrom: a.id })), /version-reference/, 'a version of another document');
   await assert.rejects(put(write('ses_v_main', 'restore', { a: 7 }, { beforeId: 'ver_unknown' })), /version-reference/);
   await assert.rejects(put(write('ses_v_main', 'auto', { a: 7 }, { keep: [''] })), TypeError);
+  await assert.rejects(put(write('ses_v_main', 'auto', { a: 7 }, { label: 'Later' })), /version-label/, 'only a named version is written with a name');
 
   // Paging.
   const all = await ids('ses_v_main');
@@ -224,6 +231,84 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   assert.equal(rows.length, 2 * VERSION_RESTORE_KEEP);
   assert.deepEqual(rows.slice(-2).map((v) => v.at), [day(0, 3), day(0, 2)], 'the oldest pair went together');
 
+  // Names and pins added later (plan 221, migration 0072): only the name, the pin
+  // and their own revision change, and a kept version is never removed.
+  const annotate = (sessionId: string, id: string, change: Partial<SessionVersionAnnotation>): Promise<SessionVersionAnnotate> =>
+    store.annotateSessionVersion(sessionId, id, { annotationRev: 0, by: owner.id, ...change });
+  const annotated = (result: SessionVersionAnnotate, why: string): SessionVersionSummary => {
+    assert.ok(typeof result === 'object' && result.changed, `${why}: changed`);
+    return result.version;
+  };
+  const old = made(await put(write('ses_v_annot', 'auto', { n: 1 }, { at: day(-500, 0) })), 'an old automatic version');
+  assert.deepEqual([old.pinned, old.annotationRev], [false, 0]);
+  const launch = annotated(await annotate('ses_v_annot', old.id, { label: 'Launch' }), 'named');
+  assert.deepEqual([launch.label, launch.pinned, launch.annotationRev, launch.kind, launch.rev, launch.bytes, launch.at],
+    ['Launch', false, 1, 'auto', old.rev, old.bytes, old.at]);
+  assert.deepEqual((await store.getSessionVersion('ses_v_annot', old.id))?.inputs, { n: 1 }, 'the content stays as written');
+  assert.equal(await annotate('ses_v_annot', old.id, { label: 'Stale' }), 'version-changed', 'a change made against an older revision');
+  const already = await annotate('ses_v_annot', old.id, { label: 'Launch' });
+  assert.ok(typeof already === 'object' && !already.changed && already.version.annotationRev === 1, 'the asked-for name already: nothing is written');
+  const pinned = annotated(await annotate('ses_v_annot', old.id, { pinned: true, annotationRev: 1 }), 'pinned');
+  assert.deepEqual([pinned.label, pinned.pinned, pinned.annotationRev], ['Launch', true, 2], 'a field left out keeps its value');
+  const racers2 = await Promise.all(['First', 'Second'].map((label) => annotate('ses_v_annot', old.id, { label, annotationRev: 2 })));
+  assert.deepEqual(racers2.map((r) => typeof r === 'object' ? 'changed' : r).sort(), ['changed', 'version-changed'], 'two changes made against one revision: one applies');
+  const raceWinner = (await store.getSessionVersion('ses_v_annot', old.id))!;
+  assert.equal(raceWinner.annotationRev, 3);
+  const unnamed = annotated(await annotate('ses_v_annot', old.id, { label: null, annotationRev: 3 }), 'unnamed');
+  assert.deepEqual(['label' in unnamed, unnamed.pinned, unnamed.annotationRev], [false, true, 4], 'null removes the name');
+  made(await put(write('ses_v_annot', 'auto', { n: 2 }, { at: day(-134, 0) })), 'a write a year later');
+  assert.ok((await ids('ses_v_annot')).includes(old.id), 'retention never removes a pinned version');
+  annotated(await annotate('ses_v_annot', old.id, { pinned: false, annotationRev: 4 }), 'unpinned');
+  made(await put(write('ses_v_annot', 'auto', { n: 3 }, { at: day(-134, 1) })), 'the next write');
+  assert.equal((await ids('ses_v_annot')).includes(old.id), false, 'once it is not kept, retention removes it in its turn');
+  const savedByName = made(await put(write('ses_v_annot', 'named', { n: 4 }, { label: 'Saved', createdBy: editor.id })), 'named');
+  assert.equal(annotated(await annotate('ses_v_annot', savedByName.id, { label: 'Renamed' }), 'renamed').label, 'Renamed');
+  await assert.rejects(annotate('ses_v_annot', savedByName.id, { label: null, annotationRev: 1 }), /version-label/, 'a version saved with a name keeps a name');
+  assert.equal(await annotate('ses_v_main', savedByName.id, { pinned: true }), 'not-found', 'a version of another document');
+  assert.equal(await annotate('ses_v_annot', 'ver_unknown', { pinned: true }), 'not-found');
+  for (const bad of [{ label: '' }, { label: 'x'.repeat(VERSION_LABEL_MAX + 1) }, { pinned: 'yes' as never }, {}, { pinned: true, annotationRev: -1 },
+    { pinned: true, annotationRev: 1.5 }, { pinned: true, by: '' }]) {
+    await assert.rejects(annotate('ses_v_annot', savedByName.id, bad), TypeError, JSON.stringify(bad));
+  }
+  await assert.rejects(annotate('ses_v_nope', savedByName.id, { pinned: true }), /session-gone/);
+
+  // A version named or pinned later counts against the named limits, for the
+  // person who did it, and only while it is kept.
+  for (let i = 1; i < VERSION_NAMED_PER_PERSON; i++) made(await put(write('ses_v_annot_limit', 'named', { i }, { label: `L${i}`, createdBy: owner.id })), `named ${i}`);
+  const autoA = made(await put(write('ses_v_annot_limit', 'auto', { a: 1 })), 'automatic A');
+  const autoB = made(await put(write('ses_v_annot_limit', 'auto', { b: 1 })), 'automatic B');
+  annotated(await annotate('ses_v_annot_limit', autoA.id, { pinned: true }), 'the 20th kept by one person');
+  assert.equal(await annotate('ses_v_annot_limit', autoB.id, { label: 'One more' }), 'version-limit');
+  assert.equal(await put(write('ses_v_annot_limit', 'named', { over: 1 }, { label: 'Over', createdBy: owner.id })), 'version-limit',
+    'a named save counts a pinned version too');
+  annotated(await annotate('ses_v_annot_limit', autoB.id, { pinned: true, by: editor.id }), 'another person still may');
+  const firstNamed = (await store.listSessionVersions('ses_v_annot_limit', { limit: 100 })).find((v) => v.label === 'L1')!;
+  annotated(await annotate('ses_v_annot_limit', firstNamed.id, { label: 'L1 renamed' }), 'a rename keeps nothing more');
+  annotated(await annotate('ses_v_annot_limit', autoA.id, { pinned: false, annotationRev: 1 }), 'unpinned');
+  made(await put(write('ses_v_annot_limit', 'named', { again: 1 }, { label: 'Again', createdBy: owner.id })), 'the place is free again');
+  // A kept version stays with whoever first named or pinned it: the owner, at the
+  // limit, renames the editor's pinned version, and it still counts for the editor.
+  for (let i = 1; i < VERSION_NAMED_PER_PERSON; i++) made(await put(write('ses_v_annot_limit', 'named', { e: i }, { label: `E${i}`, createdBy: editor.id })), `editor named ${i}`);
+  annotated(await annotate('ses_v_annot_limit', autoB.id, { label: 'Editor pin', annotationRev: 1 }), 'renamed by a person at the limit');
+  assert.equal(await put(write('ses_v_annot_limit', 'named', { e: 0 }, { label: 'E over', createdBy: editor.id })), 'version-limit',
+    'the renamed version still counts for the person who pinned it');
+  assert.equal(await store.deleteSessionVersion('ses_v_annot_limit', firstNamed.id), true);
+  annotated(await annotate('ses_v_annot_limit', autoA.id, { pinned: true, annotationRev: 2 }), 'and not for the person who renamed it');
+  const namedAuto = (await store.listSessionVersions('ses_v_named', { limit: 1 }))[0]!;
+  assert.equal(namedAuto.kind, 'auto');
+  assert.equal(await annotate('ses_v_named', namedAuto.id, { pinned: true, by: 'usr_named_new' }), 'version-limit',
+    `${VERSION_NAMED_PER_SESSION} kept versions in one document`);
+
+  // Space eviction never chooses a kept version either.
+  store.configureVersionLimits({ sessionMaxBytes: 100 });
+  const p1 = made(await put(write('ses_v_annot_space', 'auto', sized(40, 'p1'))), 'p1');
+  annotated(await annotate('ses_v_annot_space', p1.id, { pinned: true }), 'p1 pinned');
+  const p2 = made(await put(write('ses_v_annot_space', 'auto', sized(40, 'p2'))), 'p2');
+  const p3 = made(await put(write('ses_v_annot_space', 'auto', sized(40, 'p3'))), 'p3');
+  assert.deepEqual(await ids('ses_v_annot_space'), [p3.id, p1.id], 'the oldest version that is not kept made room');
+  assert.equal(await store.getSessionVersion('ses_v_annot_space', p2.id), null);
+  store.configureVersionLimits({});
+
   // A live room's commit writes no revision row; quiesce owns that.
   const live = (await store.getSession('ses_v_collab'))!;
   const history = await store.listSessionRevisions('ses_v_collab');
@@ -247,6 +332,208 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   store.configureVersionLimits({});
   await store.putSession({ ...live, rev: rev, inputs: { title: 'live' }, deletedAt: now });
   await assert.rejects(put(write('ses_v_collab', 'auto', { gone: true })), /session-gone/, 'a deleted document takes no versions');
+}
+
+/**
+ * The commit service (plan 221, `commitSessionRevision`): the head, its revision,
+ * its version and its audit event are written together, a refused or failed
+ * commit writes none of them, and two commits on one rev give one winner. The
+ * faults are a version naming a version that does not exist (after the head and
+ * revision in a Postgres transaction) and an audit event that cannot be written
+ * (the last step). Runs after the versions suite, and removes what it wrote.
+ */
+async function runSessionCommitConformance(store: Store): Promise<void> {
+  const owner = await store.upsertUserBySub({ sub: 'commit-owner', email: 'commit-owner@example.invalid', groups: [], role: 'member' });
+  const at = new Date().toISOString();
+  await store.putProject({ id: 'prj_commit', name: 'Commits', visibility: 'private', ownerId: owner.id, createdAt: at });
+  const ids = ['ses_c_main', 'ses_c_gone', 'ses_c_lease', 'ses_c_race', 'ses_c_space'];
+  for (const id of ids) {
+    await store.putSession({ id, projectId: 'prj_commit', toolId: 'commit-tool', toolVersion: '1.0.0', inputs: { title: id }, meta: { label: id },
+      createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: at });
+  }
+  const read = async (id: string) => (await store.getSession(id))!;
+  const event = (action: string): AuditEventBody => ({ at: new Date().toISOString(), actor: `user:${owner.id}`, action, subject: 'session:ses_c_main', payload: { n: 1 } });
+  const saveVersion = { kind: 'save' as const, contributors: [{ id: owner.id, kind: 'user' as const, edits: 1 }], createdBy: owner.id };
+  const step = (base: SessionRecord, inputs: Record<string, unknown>): SessionRecord =>
+    ({ ...base, inputs, rev: base.rev + 1, updatedAt: new Date().toISOString() });
+  /** Everything a commit may write for one session, to compare before and after. */
+  const state = async (id: string) => ({ head: await read(id), revisions: await store.listSessionRevisions(id),
+    versions: await store.listSessionVersions(id, { limit: 100 }), audit: (await store.listAudit()).length });
+
+  // One commit writes all four.
+  const base = await read('ses_c_main');
+  const next = step(base, { title: 'Saved' });
+  const auditBefore = (await store.listAudit()).length;
+  const out = await store.commitSessionRevision({ next, expectedRev: base.rev, actor: owner.id, version: saveVersion, audit: event('session.update') });
+  assert.ok(out.committed, 'committed');
+  assert.deepEqual([out.session.rev, out.session.inputs, out.session.deletedAt], [2, { title: 'Saved' }, undefined]);
+  assert.deepEqual(await read('ses_c_main'), out.session, 'the stored head is the answer');
+  const [revision] = await store.listSessionRevisions('ses_c_main');
+  assert.deepEqual(revision, { sessionId: 'ses_c_main', rev: 2, inputs: { title: 'Saved' }, meta: { label: 'ses_c_main' }, actor: owner.id, at: next.updatedAt },
+    'the revision records the head');
+  assert.ok(typeof out.version === 'object' && out.version.created, 'a version was written');
+  const saved = await store.getSessionVersion('ses_c_main', out.version.version.id);
+  assert.deepEqual([saved?.kind, saved?.rev, saved?.inputs, saved?.createdBy], ['save', 2, { title: 'Saved' }, owner.id], 'of the new head');
+  const audit = await store.listAudit();
+  assert.equal(audit.length, auditBefore + 1);
+  assert.deepEqual([audit.at(-1)?.action, audit.at(-1)?.payload], ['session.update', { n: 1 }]);
+  assert.deepEqual(verifyChain(audit, await store.getAuditAnchor()), { ok: true }, 'the event joined the chain');
+
+  // A commit that changed nothing since the latest version writes no second version.
+  const same = await store.commitSessionRevision({ next: step(out.session, { title: 'Saved' }), expectedRev: 2, actor: owner.id, version: saveVersion });
+  assert.ok(same.committed && typeof same.version === 'object' && !same.version.created && same.version.version.id === saved?.id);
+  assert.equal((await store.listSessionRevisions('ses_c_main'))[0]?.rev, 3, 'the revision is still written');
+
+  // Refusals write nothing: a stale rev, a deleted session, a live room, an unknown id.
+  const before = await state('ses_c_main');
+  assert.equal(before.head.rev, 3);
+  assert.equal((await store.commitSessionRevision({ next: { ...before.head, inputs: { title: 'Stale' }, rev: 3 }, expectedRev: 2, actor: owner.id,
+    version: saveVersion, audit: event('stale') })).committed, false, 'a stale rev');
+  assert.deepEqual(await state('ses_c_main'), before, 'and nothing changed');
+  const gone = await read('ses_c_gone');
+  await store.putSession({ ...gone, deletedAt: at });
+  assert.equal((await store.commitSessionRevision({ next: step(gone, { title: 'Back' }), expectedRev: 1, actor: owner.id, version: saveVersion })).committed, false,
+    'a deleted session');
+  assert.equal((await read('ses_c_gone')).deletedAt, at, 'stays deleted');
+  assert.deepEqual(await store.listSessionRevisions('ses_c_gone'), []);
+  assert.equal((await store.commitSessionRevision({ next: { ...gone, id: 'ses_c_unknown', rev: 2 }, expectedRev: 1, actor: owner.id })).committed, false,
+    'an unknown id');
+  const leased = await read('ses_c_lease');
+  assert.equal(await store.claimCollab('ses_c_lease', 'commit-room', 30_000), true);
+  assert.equal((await store.commitSessionRevision({ next: step(leased, { title: 'REST' }), expectedRev: 1, actor: owner.id })).committed, false,
+    'a live room');
+  assert.deepEqual(await store.listSessionRevisions('ses_c_lease'), []);
+  await store.releaseCollab('ses_c_lease', 'commit-room');
+  assert.equal((await store.commitSessionRevision({ next: step(leased, { title: 'REST' }), expectedRev: 1, actor: owner.id })).committed, true,
+    'and once it lets go');
+
+  // A commit both drivers refuse before writing.
+  await assert.rejects(store.commitSessionRevision({ next: { ...before.head, rev: before.head.rev + 2 }, expectedRev: before.head.rev, actor: owner.id }),
+    /commit-rev/);
+  await assert.rejects(store.commitSessionRevision({ next: step(before.head, {}), expectedRev: before.head.rev, actor: '' }), /commit-actor/);
+  assert.deepEqual(await state('ses_c_main'), before);
+
+  // Faults: a failure after the head was written leaves no head, no revision,
+  // no version and no audit event.
+  await assert.rejects(store.commitSessionRevision({ next: step(before.head, { title: 'Faulted' }), expectedRev: before.head.rev, actor: owner.id,
+    version: { ...saveVersion, kind: 'restore', restoredFrom: 'ver_does_not_exist' }, audit: event('faulted') }), /version-reference/);
+  assert.deepEqual(await state('ses_c_main'), before, 'a failed version write takes the head and revision with it');
+  await assert.rejects(store.commitSessionRevision({ next: step(before.head, { title: 'Faulted again' }), expectedRev: before.head.rev, actor: owner.id,
+    version: saveVersion, audit: { ...event('faulted'), at: 0 as unknown as string } }));
+  assert.deepEqual(await state('ses_c_main'), before, 'a failed audit write takes the head, revision and version with it');
+  const recovered = await store.commitSessionRevision({ next: step(before.head, { title: 'After the faults' }), expectedRev: before.head.rev, actor: owner.id,
+    version: saveVersion });
+  assert.ok(recovered.committed, 'the next commit at the same rev goes through');
+
+  // A revision row left at the new rev is replaced, so history agrees with the head.
+  const head = await read('ses_c_main');
+  await store.appendSessionRevision({ sessionId: 'ses_c_main', rev: head.rev + 1, inputs: { title: 'left over' }, meta: {}, actor: 'someone', at });
+  assert.ok((await store.commitSessionRevision({ next: step(head, { title: 'Current' }), expectedRev: head.rev, actor: owner.id })).committed);
+  assert.deepEqual([(await store.listSessionRevisions('ses_c_main'))[0]?.inputs, (await store.listSessionRevisions('ses_c_main'))[0]?.actor],
+    [{ title: 'Current' }, owner.id]);
+
+  // A version that does not fit leaves the rest committed.
+  store.configureVersionLimits({ sessionMaxBytes: 10 });
+  try {
+    const roomless = await read('ses_c_space');
+    const tight = await store.commitSessionRevision({ next: step(roomless, { title: 'x'.repeat(40) }), expectedRev: 1, actor: owner.id,
+      version: { ...saveVersion, kind: 'named', label: 'Too big' } });
+    assert.ok(tight.committed && tight.version === 'version-space', 'the version is refused');
+    assert.deepEqual([(await read('ses_c_space')).rev, (await store.listSessionRevisions('ses_c_space')).map((r) => r.rev)], [2, [2]], 'the head and revision are not');
+  } finally { store.configureVersionLimits({}); }
+
+  // Two commits at one rev: one wins, and its revision and version are the ones kept.
+  const race = await read('ses_c_race');
+  const results = await Promise.all(['A', 'B'].map((title) => store.commitSessionRevision({ next: step(race, { title }), expectedRev: 1, actor: owner.id,
+    version: saveVersion })));
+  assert.deepEqual(results.map((r) => r.committed).sort(), [false, true], 'one winner');
+  const winner = results.find((r) => r.committed) as Extract<SessionRevisionCommitResult, { committed: true }>;
+  assert.deepEqual((await store.listSessionRevisions('ses_c_race')).map((r) => [r.rev, r.inputs]), [[2, winner.session.inputs]]);
+  const raceVersions = await store.listSessionVersions('ses_c_race', { limit: 10 });
+  assert.equal(raceVersions.length, 1);
+  assert.deepEqual((await store.getSessionVersion('ses_c_race', raceVersions[0]!.id))?.inputs, winner.session.inputs);
+
+  for (const id of ids) await store.deleteSessionVersions(id);
+  for (const id of ids) await store.putSession({ ...(await read(id)), deletedAt: at });
+}
+
+/**
+ * History across documents (plan 221, `listVersionHistory`): only versions of
+ * live documents in the given projects, less the excepted documents; the tool,
+ * kind, kept and time filters; newest first with ids breaking ties, so paging
+ * by position continues over equal times without a gap or a repeat. No content
+ * comes back. Uses its own projects, so versions other suites left stay out.
+ */
+async function runVersionHistoryConformance(store: Store): Promise<void> {
+  const owner = await store.upsertUserBySub({ sub: 'hist-owner', email: 'hist-owner@example.invalid', groups: [], role: 'member' });
+  const created = new Date().toISOString();
+  for (const id of ['prj_hist_a', 'prj_hist_b', 'prj_hist_out']) await store.putProject({ id, name: id, visibility: 'private', ownerId: owner.id, createdAt: created });
+  const docs: Array<[string, string, string, Record<string, unknown>]> = [
+    ['ses_hist_a1', 'prj_hist_a', 'design', { label: 'Poster' }], ['ses_hist_a2', 'prj_hist_a', 'chart', { label: 7 }],
+    ['ses_hist_b1', 'prj_hist_b', 'design', {}], ['ses_hist_out', 'prj_hist_out', 'design', { label: 'Out' }], ['ses_hist_gone', 'prj_hist_a', 'design', {}],
+  ];
+  for (const [id, projectId, toolId, meta] of docs) {
+    await store.putSession({ id, projectId, toolId, toolVersion: '2.0.0', inputs: { body: `content of ${id}` }, meta,
+      createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: created });
+  }
+  const base = Date.parse('2026-08-01T12:00:00.000Z');
+  const at = (minute: number) => new Date(base + minute * 60_000).toISOString();
+  let n = 0;
+  const put = async (sessionId: string, minute: number, extra: Partial<SessionVersionWrite> = {}): Promise<SessionVersionSummary> => {
+    const out = await store.putSessionVersion({ sessionId, rev: 1, kind: 'save', inputs: { body: `content ${++n}` }, meta: {}, contributors: [], at: at(minute), ...extra });
+    assert.ok(typeof out === 'object' && out.created, `version ${n} written`);
+    return out.version;
+  };
+  const inScope = [await put('ses_hist_a1', 1), await put('ses_hist_a1', 2), await put('ses_hist_a2', 3), await put('ses_hist_b1', 4, { kind: 'auto' }),
+    await put('ses_hist_a2', 5), await put('ses_hist_a2', 5), await put('ses_hist_a1', 5, { kind: 'named', label: 'Kept', createdBy: owner.id }),
+    await put('ses_hist_b1', 6)];
+  await put('ses_hist_out', 7);
+  await put('ses_hist_gone', 8);
+  await store.putSession({ ...(await store.getSession('ses_hist_gone'))!, deletedAt: created });
+  const pinned = await store.annotateSessionVersion('ses_hist_b1', inScope[3]!.id, { pinned: true, annotationRev: 0, by: owner.id });
+  assert.ok(typeof pinned === 'object' && pinned.changed);
+
+  const scope = { projectIds: ['prj_hist_a', 'prj_hist_b'] };
+  const expected = [...inScope].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0)).map((v) => v.id);
+  const ids = async (q: Partial<VersionHistoryQuery>) => (await store.listVersionHistory({ ...scope, limit: 100, ...q })).map((e) => e.id);
+  assert.deepEqual(await store.listVersionHistory({ projectIds: [], limit: 100 }), [], 'no project, no page');
+  assert.deepEqual(await ids({}), expected, 'newest first, ids breaking ties; no other project and no deleted document');
+  const all = await store.listVersionHistory({ ...scope, limit: 100 });
+  const named = all.find((e) => e.kind === 'named')!;
+  assert.deepEqual([named.projectId, named.toolId, named.toolVersion, named.sessionLabel, named.label], ['prj_hist_a', 'design', '2.0.0', 'Poster', 'Kept']);
+  assert.equal(all.find((e) => e.sessionId === 'ses_hist_a2')!.sessionLabel, null, 'a label that is not text is no label');
+  assert.equal(all.find((e) => e.sessionId === 'ses_hist_b1')!.sessionLabel, null);
+  assert.ok(all.every((e) => e.bytes > 0 && !('inputs' in e) && !('meta' in e)), 'sizes, never content');
+  assert.equal(all.find((e) => e.id === inScope[3]!.id)!.pinned, true);
+
+  assert.deepEqual(await ids({ exceptSessionIds: ['ses_hist_a2'] }), expected.filter((id) => !inScope.slice(2, 3).concat(inScope.slice(4, 6)).some((v) => v.id === id)));
+  assert.deepEqual(await ids({ toolId: 'chart' }), expected.filter((id) => [inScope[2], inScope[4], inScope[5]].some((v) => v!.id === id)));
+  assert.deepEqual(await ids({ kinds: ['named'] }), [inScope[6]!.id]);
+  assert.deepEqual(await ids({ kinds: [] }), [], 'no kind, no version');
+  assert.deepEqual((await ids({ kept: true })).sort(), [inScope[3]!.id, inScope[6]!.id].sort(), 'named, and pinned later');
+  assert.deepEqual((await ids({ from: at(3), to: at(5) })).sort(), inScope.slice(2, 7).map((v) => v.id).sort(), 'both ends included');
+  assert.deepEqual(await ids({ from: at(9) }), []);
+
+  // Pages of two, each after the last entry of the one before.
+  const paged: string[] = [];
+  let after: { at: string; id: string } | undefined;
+  for (let page = 0; page < 10; page++) {
+    const rows = await store.listVersionHistory({ ...scope, limit: 2, ...(after ? { after } : {}) });
+    paged.push(...rows.map((e) => e.id));
+    if (rows.length < 2) break;
+    after = { at: rows[1]!.at, id: rows[1]!.id };
+  }
+  assert.deepEqual(paged, expected, 'no gap and no repeat across three versions at one time');
+  // A position need not be a stored version: the page starts after it.
+  assert.deepEqual(await ids({ after: { at: at(5), id: 'ver_zzzzzzzzzzzzzzzz' } }), expected.slice(1));
+  assert.deepEqual(await ids({ after: { at: at(5), id: 'ver_0' } }), expected.slice(4));
+  assert.equal((await store.listVersionHistory({ ...scope, limit: 0 })).length, 1, 'the limit is at least one');
+
+  for (const [id] of docs) {
+    await store.deleteSessionVersions(id);
+    const s = (await store.getSession(id))!;
+    if (!s.deletedAt) await store.putSession({ ...s, deletedAt: created });
+  }
 }
 
 export async function runStoreConformance(store: Store): Promise<void> {
@@ -706,6 +993,61 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(await store.getAutomationJob('job_1', 'user:a'), null);
   assert.ok((await store.findApiTokenByHash('hash-a'))?.revokedAt, 'revoked rows are returned, callers refuse them');
 
+  // callback outbox: a job that settles with a callback URL gets one entry in the
+  // same write; claims are leased and fenced by token; a retry and a replay keep
+  // the entry's id; deleting the job removes the entry.
+  assert.equal(await store.claimAutomationCallback('outbox-a', 60_000), null, 'nothing is pending yet');
+  assert.equal(await store.nextAutomationCallbackAt(), null);
+  const hooked: AutomationJobRecord = { id: 'job_cb', principal: 'user:a', verb: 'render', request: {}, state: 'running', createdAt: jobAt, updatedAt: jobAt, callbackUrl: 'https://hooks.example/lolly', priority: 0, attempt: 1 };
+  await store.putAutomationJob(hooked);
+  assert.equal(await store.claimAutomationCallback('outbox-a', 60_000), null, 'an unsettled job has no callback entry');
+  assert.equal((await store.getAutomationJob('job_cb', 'user:a'))?.callback, undefined);
+  await store.putAutomationJob({ ...hooked, state: 'done', finishedAt: jobAt });
+  await store.putAutomationJob({ ...hooked, state: 'done', finishedAt: jobAt, callbackFailed: false });
+  const pending = await store.getAutomationJob('job_cb', 'user:a');
+  assert.match(pending?.callback?.id ?? '', /^cbk_[A-Za-z0-9_-]+$/);
+  assert.equal(pending?.callback?.state, 'pending');
+  assert.equal(pending?.callback?.attempts, 0);
+  assert.equal(pending?.callbackFailed, true, 'not acknowledged, so never reported as delivered, whatever a save said');
+  assert.equal((await store.listAutomationJobs('user:a')).find(job => job.id === 'job_cb')?.callback?.id, pending!.callback!.id);
+  assert.ok(await store.nextAutomationCallbackAt());
+  const firstCallback = await store.claimAutomationCallback('outbox-a', 60_000);
+  assert.deepEqual([firstCallback?.id, firstCallback?.jobId, firstCallback?.principal, firstCallback?.url, firstCallback?.attempt, firstCallback?.leaseToken],
+    [pending!.callback!.id, 'job_cb', 'user:a', 'https://hooks.example/lolly', 1, 1], 'saving the settled job twice appended one entry');
+  assert.equal(await store.claimAutomationCallback('outbox-b', 60_000), null, 'a leased entry is not claimed twice');
+  assert.equal(await store.settleAutomationCallback({ ...firstCallback!, leaseToken: 99 }, { state: 'acknowledged', outcome: 'acknowledged', status: 204 }), false, 'a wrong token cannot record');
+  assert.equal(await store.settleAutomationCallback(firstCallback!, { state: 'pending', outcome: 'refused', status: 503, error: 'busy', retryAfterMs: 0 }), true);
+  assert.equal(await store.settleAutomationCallback(firstCallback!, { state: 'acknowledged', outcome: 'acknowledged', status: 204 }), false, 'a claim records once');
+  const retry = await store.claimAutomationCallback('outbox-b', 60_000);
+  assert.deepEqual([retry?.id, retry?.attempt, retry?.leaseToken, retry?.lastOutcome, retry?.lastStatus], [firstCallback!.id, 2, 2, 'refused', 503], 'the retry keeps the id and sees the last answer');
+  assert.equal(await store.settleAutomationCallback(retry!, { state: 'acknowledged', outcome: 'acknowledged', status: 204 }), true);
+  const acknowledged = await store.getAutomationJob('job_cb', 'user:a');
+  assert.deepEqual(acknowledged?.callback, { id: firstCallback!.id, state: 'acknowledged', attempts: 2, lastOutcome: 'acknowledged', lastStatus: 204 });
+  assert.equal(acknowledged?.callbackFailed, false);
+  assert.equal(await store.claimAutomationCallback('outbox-a', 60_000), null, 'an acknowledged entry is final');
+  assert.equal(await store.nextAutomationCallbackAt(), null);
+  assert.equal(await store.deleteAutomationJob('job_cb', 'user:a'), true);
+  // The fenced save of a claimed job appends too. A sender that stops with its
+  // lease held is replayed with the same id once the lease expires, and the
+  // replay records the lost attempt as uncertain.
+  await store.putAutomationJob({ ...hooked, id: 'job_cb2', verb: 'callback-conformance', state: 'queued', attempt: 0 });
+  const claimedJob = await store.claimAutomationJob('runner', ['callback-conformance'], 60_000);
+  assert.ok(claimedJob);
+  assert.equal(await store.saveClaimedAutomationJob({ ...claimedJob, state: 'queued' }), true);
+  assert.equal(await store.claimAutomationCallback('outbox-a', 60_000), null, 'a job requeued for a retry has not settled');
+  const reclaimedJob = await store.claimAutomationJob('runner', ['callback-conformance'], 60_000);
+  assert.equal(await store.saveClaimedAutomationJob({ ...reclaimedJob!, state: 'failed', error: 'no', finishedAt: jobAt }), true);
+  const lost = await store.claimAutomationCallback('outbox-a', 1);
+  assert.equal(lost?.jobId, 'job_cb2');
+  assert.ok(await store.nextAutomationCallbackAt(), 'an entry held by a lease is still pending');
+  await new Promise(resolve => setTimeout(resolve, 25));
+  const replay = await store.claimAutomationCallback('outbox-b', 60_000);
+  assert.deepEqual([replay?.id, replay?.attempt, replay?.leaseToken, replay?.lastOutcome, replay?.lastError], [lost!.id, 2, 2, 'uncertain', UNRECORDED_CALLBACK_ATTEMPT]);
+  assert.equal(await store.settleAutomationCallback(lost!, { state: 'acknowledged', outcome: 'acknowledged', status: 200 }), false, 'the lost attempt cannot record over the replay');
+  assert.equal(await store.deleteAutomationJob('job_cb2', 'user:a'), true);
+  assert.equal(await store.settleAutomationCallback(replay!, { state: 'acknowledged', outcome: 'acknowledged', status: 200 }), false, 'deleting the job removed its entry');
+  assert.equal(await store.nextAutomationCallbackAt(), null);
+
   // organization deliveries: principal isolation, idempotency, lifecycle
   // updates, and immutable output/target facts across those updates.
   const deliveryAt = '2026-09-05T10:00:00.000Z';
@@ -810,6 +1152,11 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal((await store.listApprovals({ state: 'approved' })).length, 0);
   assert.equal((await store.listApprovals({ eligibleGroups: ['brand'] })).length, 1);
   assert.equal((await store.listApprovals({ eligibleGroups: ['legal'] })).length, 0);
+  const frozen = freezeSourceReview({ purpose: 'Creative review', target: 'launch:print',
+    files: [{ assetId: 'inst/hero', version: 1, format: 'png', sha256: 'a'.repeat(64), representation: 'original' }] }, '2026-10-16T12:00:00Z');
+  const sourceApproval = { ...approval, id: 'apr_source', subjectType: 'source-review' as const, subjectRef: `source-review:${frozen.fingerprint}`, sourceReview: frozen };
+  await store.putApproval(sourceApproval);
+  assert.deepEqual(await store.getApproval(sourceApproval.id), sourceApproval, 'frozen review subject survives the driver round trip');
 
   // catalog lifecycle: put/get/list round-trip, re-put updates in place
   assert.equal(await store.getLifecycle('acme/logo/primary'), null);
@@ -1386,6 +1733,8 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(revs[0]?.inputs, { title: 'Hi3' });
 
   await runSessionVersionsConformance(store);
+  await runVersionHistoryConformance(store);
+  await runSessionCommitConformance(store);
 
   // collab room snapshots (plans/14 §6): at most one per session, put REPLACES
   // (there is no update log), delete is idempotent, and `inputs` round-trips

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 import { setTimeout as delay } from 'node:timers/promises';
 import { readBlobBody } from '../../blobs/types.ts';
-import type { ProviderAssetRef, ProviderExposure, ResolvedBlob } from './types.ts';
+import { checkPartialReply, exactLength, rangeHeaderValue, RangeNotSatisfiableError, unsatisfiedSize } from '../byte-range.ts';
+import type { ByteRangeRequest, ProviderAssetRef, ProviderExposure, ResolvedBlob } from './types.ts';
 
 export class DamHttpError extends Error {
   readonly status: number;
@@ -25,7 +26,8 @@ export function damOrigin(value: string, kind: string): string {
 export function createDamHttp(kind: string, fetchImpl: typeof fetch, minGapMs: number) {
   if (!Number.isInteger(minGapMs) || minGapMs < 0 || minGapMs > 60_000) throw new Error(`${kind} minGapMs must be between 0 and 60000`);
   let tail: Promise<void> = Promise.resolve(), lastStart = 0;
-  const request = async (url: string, init: RequestInit = {}): Promise<Response> => {
+  /** A partial reply reaches only a caller that asked for a range; anywhere else it is an error. */
+  const request = async (url: string, init: RequestInit = {}, ranged = false): Promise<Response> => {
     const slot = tail.then(async () => {
       const wait = minGapMs - (Date.now() - lastStart);
       if (wait > 0) await delay(wait);
@@ -36,6 +38,7 @@ export function createDamHttp(kind: string, fetchImpl: typeof fetch, minGapMs: n
     let res: Response;
     try { res = await fetchImpl(url, { ...init, redirect: 'error', signal: init.signal ?? AbortSignal.timeout(30_000) }); }
     catch { throw new Error(`${kind} transport failed; check connectivity and redirect policy`); }
+    if (ranged && (res.status === 206 || res.status === 416)) return res;
     if (!res.ok || res.status === 206) {
       await res.body?.cancel().catch(() => {});
       throw new DamHttpError(kind, res.status);
@@ -51,11 +54,29 @@ export function createDamHttp(kind: string, fetchImpl: typeof fetch, minGapMs: n
         return JSON.parse((await readBlobBody(res.body, 4 * 1024 * 1024)).toString('utf8'));
       } catch { throw new Error(`${kind} returned invalid or oversized JSON`); }
     },
-    async stream(url: string, init?: RequestInit): Promise<ResolvedBlob> {
-      const res = await request(url, init);
+    /** A range is sent on GET only. A 200 reply is the whole file; a 206 must match the request exactly. */
+    async stream(url: string, init?: RequestInit, range?: ByteRangeRequest): Promise<ResolvedBlob> {
+      const ranged = range !== undefined && (init?.method ?? 'GET').toUpperCase() === 'GET';
+      const headers = new Headers(init?.headers);
+      if (ranged) headers.set('range', rangeHeaderValue(range));
+      const res = await request(url, ranged ? { ...init, headers } : init, ranged);
+      if (res.status === 416) {
+        await res.body?.cancel().catch(() => {});
+        throw new RangeNotSatisfiableError(unsatisfiedSize(res.headers.get('content-range')));
+      }
       if (!res.body) throw new Error(`${kind} returned no file body`);
+      const contentType = res.headers.get('content-type') ?? 'application/octet-stream';
+      if (res.status === 206) {
+        const part = checkPartialReply(range!, res.headers.get('content-range'), res.headers.get('content-length'));
+        if (!part) {
+          await res.body.cancel().catch(() => {});
+          throw new Error(`${kind} returned a partial file that does not match the requested range`);
+        }
+        const length = part.end - part.start + 1;
+        return { kind: 'stream', body: exactLength(res.body, length), contentType, size: length, range: part };
+      }
       const size = Number(res.headers.get('content-length'));
-      return { kind: 'stream', body: res.body, contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+      return { kind: 'stream', body: res.body, contentType,
         ...(res.headers.has('content-length') && Number.isSafeInteger(size) && size >= 0 ? { size } : {}) };
     },
   };

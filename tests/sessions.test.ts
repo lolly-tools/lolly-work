@@ -697,18 +697,19 @@ test('a room that lets go between a refused CAS and the re-read is never reporte
   const make = async (toolId: string) => await (await json(alice, 'POST', `/api/v1/projects/${teamProjectId}/sessions`, {
     toolId, inputs: { title: 'Before the room', date: '2026-01-01' }, meta: {},
   })).json() as { id: string; rev: number };
-  const real = store.casSession.bind(store);
+  // A PUT or bulk write is a `commitSessionRevision`, whose compare-and-set the room refuses.
+  const real = store.commitSessionRevision.bind(store);
   let calls = 0;
   try {
     // The room lets go right after the CAS it caused to refuse. The caller's
     // base is still current, so the PUT saves on its one retry.
     const released = await make('room-let-go');
     assert.equal(await store.claimCollab(released.id, 'test-room', 30_000), true);
-    store.casSession = async (next, expectedRev) => {
+    store.commitSessionRevision = async (commit) => {
       calls++;
-      const ok = await real(next, expectedRev);
-      if (!ok) await store.releaseCollab(next.id, 'test-room');
-      return ok;
+      const out = await real(commit);
+      if (!out.committed) await store.releaseCollab(commit.next.id, 'test-room');
+      return out;
     };
     const put = await json(alice, 'PUT', `/api/v1/sessions/${released.id}`, { rev: released.rev, inputs: { title: 'After the room' } });
     assert.equal(put.status, 200);
@@ -721,10 +722,10 @@ test('a room that lets go between a refused CAS and the re-read is never reporte
     // retry is refused too, and the answer is still the room, not a conflict.
     const flapping = await make('room-flaps');
     calls = 0;
-    store.casSession = async (next, expectedRev) => {
+    store.commitSessionRevision = async (commit) => {
       calls++;
-      await store.claimCollab(next.id, 'test-room', 30_000);
-      try { return await real(next, expectedRev); } finally { await store.releaseCollab(next.id, 'test-room'); }
+      await store.claimCollab(commit.next.id, 'test-room', 30_000);
+      try { return await real(commit); } finally { await store.releaseCollab(commit.next.id, 'test-room'); }
     };
     const refused = await json(alice, 'PUT', `/api/v1/sessions/${flapping.id}`, { rev: flapping.rev, inputs: { title: 'Over the room' } });
     assert.equal(refused.status, 409);
@@ -735,9 +736,9 @@ test('a room that lets go between a refused CAS and the re-read is never reporte
     assert.equal((await store.getSession(flapping.id))?.rev, flapping.rev, 'nothing written');
 
     // Bulk does not retry, but the same refusal is a live-room skip, not a conflict.
-    store.casSession = async (next, expectedRev) => {
-      await store.claimCollab(next.id, 'test-room', 30_000);
-      try { return await real(next, expectedRev); } finally { await store.releaseCollab(next.id, 'test-room'); }
+    store.commitSessionRevision = async (commit) => {
+      await store.claimCollab(commit.next.id, 'test-room', 30_000);
+      try { return await real(commit); } finally { await store.releaseCollab(commit.next.id, 'test-room'); }
     };
     const bulk = await json(admin, 'POST', '/api/v1/sessions/bulk', { filter: { toolId: 'room-flaps' }, set: { date: '2026-12-25' } });
     assert.equal(bulk.status, 200);
@@ -746,7 +747,7 @@ test('a room that lets go between a refused CAS and the re-read is never reporte
     assert.equal(swept?.payload?.skipped, undefined, 'not folded into conflicts30d');
     assert.equal(swept?.payload?.collabActive, 1);
   } finally {
-    store.casSession = real;
+    store.commitSessionRevision = real;
   }
   assert.equal(await conflicts(), conflictsBefore, 'no session.conflict audited');
 });

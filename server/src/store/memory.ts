@@ -10,8 +10,10 @@ import type { CollabReceipt } from './types.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
 import {
-  newestVersionFirst, normalizeSessionVersionWrite, planSessionVersionPut, resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
-  type SessionVersion, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+  newestVersionFirst, normalizeSessionVersionAnnotation, normalizeSessionVersionWrite, planSessionVersionAnnotate, planSessionVersionPut,
+  resolveVersionLimits, sessionRevisionCommitVersion, sessionVersionContent, sessionVersionId, versionHistoryEntry, versionKept, versionListLimit,
+  type SessionVersion, type SessionVersionAnnotate, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+  type SessionVersionWrite,
 } from './types.ts';
 import type { ProjectUserStateRecord, ShareGroupRecord } from './types.ts';
 /**
@@ -40,13 +42,14 @@ import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryPasskeys } from '../iam/passkeys/memory.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
+import { createMemoryUploadStore } from '../uploads/memory.ts';
 import {
-  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, UNRECORDED_CALLBACK_ATTEMPT, automationCallbackSummary, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
   type ProjectTransferMetadata,
   type CommentNotice,
   type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
-  type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
+  type ApiTokenRecord, type AutomationCallbackRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
+  type SessionRecord, type SessionRevision, type SessionRevisionCommitResult, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
 // Grants have no exposed id - they're identified by their full tuple.
@@ -123,6 +126,26 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     for (const [k, r] of accessRequests) if (gone(r)) accessRequests.delete(k);
   };
   const automationJobs = new Map<string, AutomationJobRecord>();
+  const automationCallbacks = new Map<string, AutomationCallbackRecord>(); // by job id, as Postgres keeps one per job
+  /** Match Postgres: a job that settles with a callback URL gets its outbox entry in the same write. */
+  const storeAutomationJob = (job: AutomationJobRecord, extra: Partial<AutomationJobRecord> = {}): void => {
+    const stored: AutomationJobRecord = { ...structuredClone(job), ...extra };
+    delete stored.callback;
+    automationJobs.set(job.id, stored);
+    if (!stored.callbackUrl || (stored.state !== 'done' && stored.state !== 'failed') || automationCallbacks.has(job.id)) return;
+    const at = new Date().toISOString();
+    automationCallbacks.set(job.id, { id: `cbk_${randomId(16)}`, jobId: job.id, principal: stored.principal, url: stored.callbackUrl, state: 'pending', attempt: 0, nextAttemptAt: at, leaseToken: 0, createdAt: at, updatedAt: at });
+  };
+  /** A job as a reader sees it: the callback summary and flag come from the outbox entry. */
+  const readAutomationJob = (job: AutomationJobRecord): AutomationJobRecord => {
+    const copy = structuredClone(job);
+    const callback = automationCallbacks.get(job.id);
+    if (callback) {
+      copy.callbackFailed = callback.state !== 'acknowledged';
+      copy.callback = automationCallbackSummary(callback);
+    }
+    return copy;
+  };
   const deliveries = new Map<string, DeliveryRecord>();
   let siemCursor = 0; // highest audit seq confirmed delivered to the SIEM receiver
   let auditAnchor: AuditAnchor | null = null; // retention trim boundary (plans/35 wave 3)
@@ -185,6 +208,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const sessions = new Map<string, SessionRecord>();
   const sessionRevisions = new Map<string, SessionRevision[]>(); // sessionId -> ascending by rev
   const collabOwners = new Map<string, { owner: string; until: number }>();
+  const { serial: serialVersions, stage: stageVersion, ...versionMethods } = createMemoryVersions(sessions);
   const collabCheckpoints = new Map<string, { revision: number; headRevision: number; checkpoint: CanvasCheckpoint }>();
   const collabJournal = new Map<string, { revision: number; ops: CanvasOp[] }[]>();
   const collabReceipts = new Map<string, CollabReceipt>();
@@ -238,6 +262,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
     storageKind: 'memory',
     ...createMemoryRenderStore(),
+    ...createMemoryUploadStore(),
     ...createMemoryOidcLogout(),
     ...passkeys.store,
     brandPersistence: 'ephemeral',
@@ -721,27 +746,57 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const live = automationJobs.get(job.id);
       if (!live || live.leaseOwner !== job.leaseOwner || live.leaseToken !== job.leaseToken) return false;
       if (!(live.state === 'running' && Date.parse(live.leaseUntil ?? '') > Date.now() || live.state === job.state && ['done', 'failed'].includes(live.state))) return false;
-      automationJobs.set(job.id, { ...structuredClone(job), leaseUntil: live.leaseUntil }); return true;
+      storeAutomationJob(job, { leaseUntil: live.leaseUntil }); return true;
     },
     async putAutomationJob(job) {
       if (job.idempotencyKey && [...automationJobs.values()].some(existing => existing.id !== job.id && existing.principal === job.principal && existing.idempotencyKey === job.idempotencyKey)) throw new Error('IDEMPOTENCY_KEY_REUSED');
-      automationJobs.set(job.id, structuredClone(job));
+      storeAutomationJob(job);
     },
     async getAutomationJob(id, principal) {
       const job = automationJobs.get(id);
-      return job?.principal === principal ? structuredClone(job) : null;
+      return job?.principal === principal ? readAutomationJob(job) : null;
     },
     async listAutomationJobs(principal) {
-      return [...automationJobs.values()].filter((job) => job.principal === principal).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((job) => structuredClone(job));
+      return [...automationJobs.values()].filter((job) => job.principal === principal).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(readAutomationJob);
     },
     async findAutomationJobByIdempotency(principal, key) {
       const job = [...automationJobs.values()].find((candidate) => candidate.principal === principal && candidate.idempotencyKey === key);
-      return job ? structuredClone(job) : null;
+      return job ? readAutomationJob(job) : null;
     },
     async deleteAutomationJob(id, principal) {
       const job = automationJobs.get(id);
       if ([...deliveries.values()].some((delivery) => delivery.sourceJobId === id)) return false;
-      return Boolean(job?.principal === principal && automationJobs.delete(id));
+      if (!(job?.principal === principal && automationJobs.delete(id))) return false;
+      automationCallbacks.delete(id); // Postgres cascades the outbox entry
+      return true;
+    },
+    async claimAutomationCallback(owner, leaseMs) {
+      const now = Date.now();
+      const due = [...automationCallbacks.values()]
+        .filter(c => c.state === 'pending' && Date.parse(c.nextAttemptAt) <= now && (!c.leaseUntil || Date.parse(c.leaseUntil) < now))
+        .sort((a, b) => a.nextAttemptAt.localeCompare(b.nextAttemptAt))[0];
+      if (!due) return null;
+      // A lease still set here expired with its attempt unrecorded: the sender
+      // stopped after it may have sent the request.
+      if (due.leaseUntil) { Object.assign(due, { lastOutcome: 'uncertain', lastError: UNRECORDED_CALLBACK_ATTEMPT }); delete due.lastStatus; }
+      Object.assign(due, { leaseOwner: owner, leaseUntil: new Date(now + leaseMs).toISOString(), leaseToken: due.leaseToken + 1, attempt: due.attempt + 1, updatedAt: new Date(now).toISOString() });
+      return structuredClone(due);
+    },
+    async settleAutomationCallback(callback, result) {
+      const live = automationCallbacks.get(callback.jobId);
+      if (!live || live.id !== callback.id || live.state !== 'pending' || live.leaseOwner !== callback.leaseOwner || live.leaseToken !== callback.leaseToken) return false;
+      const at = new Date().toISOString();
+      Object.assign(live, { state: result.state, lastOutcome: result.outcome, nextAttemptAt: result.retryAfterMs !== undefined ? new Date(Date.now() + result.retryAfterMs).toISOString() : live.nextAttemptAt, updatedAt: at });
+      if (result.status !== undefined) live.lastStatus = result.status; else delete live.lastStatus;
+      if (result.error !== undefined) live.lastError = result.error; else delete live.lastError;
+      if (result.state !== 'pending') live.settledAt = at;
+      delete live.leaseOwner; delete live.leaseUntil;
+      return true;
+    },
+    async nextAutomationCallbackAt() {
+      const times = [...automationCallbacks.values()].filter(c => c.state === 'pending')
+        .map(c => c.leaseUntil && c.leaseUntil > c.nextAttemptAt ? c.leaseUntil : c.nextAttemptAt).sort();
+      return times[0] ?? null;
     },
 
     async putDelivery(delivery) {
@@ -1623,6 +1678,32 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       sessions.set(next.id, { ...next, ...(cur.deletedAt ? { deletedAt: cur.deletedAt } : {}) });
       return true;
     },
+    async commitSessionRevision(commit) {
+      const write = sessionRevisionCommitVersion(commit);
+      const { next, expectedRev } = commit;
+      const current = (): boolean => {
+        const cur = sessions.get(next.id);
+        return !!cur && cur.rev === expectedRev && !cur.deletedAt && (collabOwners.get(next.id)?.until ?? 0) <= Date.now();
+      };
+      // Under the version lock, as Postgres takes it, so the version is planned
+      // against rows no other write can change before it is stored.
+      return serialVersions(async (): Promise<SessionRevisionCommitResult> => {
+        if (!current()) return { committed: false };
+        const staged = write ? await stageVersion(write) : undefined;
+        // Every check and every step that can throw runs before the first change,
+        // and nothing below awaits, so no other writer can move the row in between.
+        if (!current()) return { committed: false };
+        const event = commit.audit ? nextEvent(audit[audit.length - 1] ?? null, commit.audit, auditMacKey) : undefined;
+        const { deletedAt: _deletedAt, ...head } = next;
+        const revision: SessionRevision = { sessionId: next.id, rev: next.rev, inputs: next.inputs, meta: next.meta, actor: commit.actor, at: next.updatedAt };
+        const kept = [...(sessionRevisions.get(next.id) ?? []).filter((r) => r.rev !== next.rev), revision].sort((a, b) => a.rev - b.rev);
+        sessions.set(next.id, head);
+        sessionRevisions.set(next.id, kept.slice(-SESSION_REVISION_LIMIT));
+        const version = staged ? ('answer' in staged ? staged.answer : staged.apply()) : undefined;
+        if (event) audit.push(event);
+        return { committed: true, session: { ...head }, ...(version !== undefined ? { version } : {}) };
+      });
+    },
     async getSession(id) {
       return sessions.get(id) ?? null;
     },
@@ -1787,19 +1868,30 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       projectUserState.set(key, next);
       return { ...next };
     },
-    ...createMemoryVersions(sessions),
+    ...versionMethods,
   };
 }
 
-type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'listVersionHistory' | 'getSessionVersion'
+  | 'annotateSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
+/** A planned version write: the answer when nothing is to be stored, or the
+ *  synchronous step that stores it. */
+type StagedVersion = { answer: SessionVersionPut } | { apply(): SessionVersionPut };
 
 /**
  * Session versions (plan 76 M4 R2): the memory twin of migration 0053's two
- * tables. Writes run one at a time, as the Postgres driver's lock makes them, and
- * the rules are the shared `planSessionVersionPut`.
+ * tables and 0072's annotation columns. Writes run one at a time, as the Postgres
+ * driver's lock makes them, and the rules are the shared `planSessionVersionPut`
+ * and `planSessionVersionAnnotate`. A session commit plans its version in the
+ * same queue (`serial` and `stage`), as the Postgres commit takes the same lock.
  */
-function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pick<Store, VersionMethods> {
-  type Stored = Omit<SessionVersion, 'inputs' | 'bytes'> & { digest: string; requestId?: string };
+function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pick<Store, VersionMethods> & {
+  /** Run `work` with no other version write or delete in progress. */
+  serial<T>(work: () => Promise<T>): Promise<T>;
+  /** Plan one normalized write against the stored rows; call inside `serial`. */
+  stage(w: SessionVersionWrite & { at: string }): Promise<StagedVersion>;
+} {
+  type Stored = Omit<SessionVersion, 'inputs' | 'bytes'> & { digest: string; requestId?: string; keptBy?: string };
   const versions = new Map<string, Stored>(); // by id
   const contents = new Map<string, { sessionId: string; digest: string; inputs: Record<string, unknown>; bytes: number }>(); // `${sessionId} ${digest}`
   const contentKey = (sessionId: string, digest: string): string => `${sessionId} ${digest}`;
@@ -1812,12 +1904,13 @@ function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pic
   };
   const rowOf = (v: Stored): SessionVersionRow => ({ id: v.id, sessionId: v.sessionId, kind: v.kind, digest: v.digest, at: v.at,
     ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}), ...(v.requestId !== undefined ? { requestId: v.requestId } : {}),
-    ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}) });
+    ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}), ...(v.label !== undefined ? { label: v.label } : {}),
+    ...(v.pinned ? { pinned: true } : {}), ...(v.keptBy !== undefined ? { keptBy: v.keptBy } : {}) });
   const summary = (v: Stored): SessionVersionSummary => ({
     id: v.id, sessionId: v.sessionId, rev: v.rev, kind: v.kind, ...(v.label !== undefined ? { label: v.label } : {}),
     contributors: structuredClone(v.contributors), ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}),
     ...(v.restoredFrom !== undefined ? { restoredFrom: v.restoredFrom } : {}), ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}),
-    bytes: contents.get(contentKey(v.sessionId, v.digest))?.bytes ?? 0, at: v.at,
+    bytes: contents.get(contentKey(v.sessionId, v.digest))?.bytes ?? 0, at: v.at, pinned: v.pinned, annotationRev: v.annotationRev,
   });
   const own = (sessionId: string): Stored[] => [...versions.values()].filter((v) => v.sessionId === sessionId);
   /** Delete versions as Postgres would: references to them become unset, then
@@ -1839,35 +1932,47 @@ function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pic
     return count;
   };
 
-  return {
-    configureVersionLimits(next) { limits = resolveVersionLimits(next); },
-    putSessionVersion(input) {
-      return serial(async (): Promise<SessionVersionPut> => {
-        const w = normalizeSessionVersionWrite(input);
-        const session = sessions.get(w.sessionId);
-        if (!session || session.deletedAt) throw new Error('session-gone');
-        for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && versions.get(ref)?.sessionId !== w.sessionId) throw new Error('version-reference');
-        const content = sessionVersionContent(w.inputs);
-        const id = sessionVersionId();
-        const mine = own(w.sessionId);
-        const plan = await planSessionVersionPut(w, id, content, {
-          rows: mine.map(rowOf),
-          contents: new Map([...contents.values()].filter((c) => c.sessionId === w.sessionId).map((c) => [c.digest, c.bytes])),
-          instanceBytes: async () => [...contents.values()].reduce((sum, c) => sum + c.bytes, 0),
-          instanceRows: async () => ({ rows: [...versions.values()].map(rowOf), contents: new Map([...contents].map(([key, c]) => [key, c.bytes])) }),
-        }, limits);
-        if (plan.action === 'refuse') return plan.reason;
-        if (plan.action === 'return') return { version: summary(versions.get(plan.id)!), created: false };
-        if (plan.action === 'skip') {
-          const latest = mine.sort(newestVersionFirst)[0];
-          return latest ? { version: summary(latest), created: false } : 'version-space';
-        }
-        if (plan.contentIsNew) contents.set(contentKey(w.sessionId, content.digest), { sessionId: w.sessionId, digest: content.digest, inputs: structuredClone(w.inputs), bytes: content.bytes });
-        const { inputs: _inputs, keep: _keep, ...fields } = w;
-        const stored: Stored = { ...structuredClone(fields), id, digest: content.digest };
+  const stage = async (w: SessionVersionWrite & { at: string }): Promise<StagedVersion> => {
+    const session = sessions.get(w.sessionId);
+    if (!session || session.deletedAt) throw new Error('session-gone');
+    for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && versions.get(ref)?.sessionId !== w.sessionId) throw new Error('version-reference');
+    const content = sessionVersionContent(w.inputs);
+    const id = sessionVersionId();
+    const mine = own(w.sessionId);
+    const plan = await planSessionVersionPut(w, id, content, {
+      rows: mine.map(rowOf),
+      contents: new Map([...contents.values()].filter((c) => c.sessionId === w.sessionId).map((c) => [c.digest, c.bytes])),
+      instanceBytes: async () => [...contents.values()].reduce((sum, c) => sum + c.bytes, 0),
+      instanceRows: async () => ({ rows: [...versions.values()].map(rowOf), contents: new Map([...contents].map(([key, c]) => [key, c.bytes])) }),
+    }, limits);
+    if (plan.action === 'refuse') return { answer: plan.reason };
+    if (plan.action === 'return') return { answer: { version: summary(versions.get(plan.id)!), created: false } };
+    if (plan.action === 'skip') {
+      const latest = mine.sort(newestVersionFirst)[0];
+      return { answer: latest ? { version: summary(latest), created: false } : 'version-space' };
+    }
+    // Cloned now, so the step that stores them cannot fail half way.
+    const { inputs: _inputs, keep: _keep, ...fields } = w;
+    const stored: Stored = { ...structuredClone(fields), id, digest: content.digest, pinned: false, annotationRev: 0 };
+    const newContent = plan.contentIsNew ? { sessionId: w.sessionId, digest: content.digest, inputs: structuredClone(w.inputs), bytes: content.bytes } : undefined;
+    return {
+      apply: () => {
+        if (newContent) contents.set(contentKey(w.sessionId, content.digest), newContent);
         versions.set(id, stored);
         drop(plan.drops);
         return { version: summary(stored), created: true };
+      },
+    };
+  };
+
+  return {
+    serial,
+    stage,
+    configureVersionLimits(next) { limits = resolveVersionLimits(next); },
+    putSessionVersion(input) {
+      return serial(async (): Promise<SessionVersionPut> => {
+        const staged = await stage(normalizeSessionVersionWrite(input));
+        return 'answer' in staged ? staged.answer : staged.apply();
       });
     },
     async listSessionVersions(sessionId, opts) {
@@ -1879,11 +1984,43 @@ function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pic
       }
       return rows.slice(start, start + versionListLimit(opts.limit)).map(summary);
     },
+    async listVersionHistory(q) {
+      const projects = new Set(q.projectIds), except = new Set(q.exceptSessionIds ?? []), kinds = q.kinds ? new Set(q.kinds) : null;
+      const found: Array<{ v: Stored; s: SessionRecord }> = [];
+      for (const v of versions.values()) {
+        const s = sessions.get(v.sessionId);
+        if (!s || s.deletedAt || !projects.has(s.projectId) || except.has(s.id)) continue;
+        if ((q.toolId !== undefined && s.toolId !== q.toolId) || (kinds && !kinds.has(v.kind)) || (q.kept && !versionKept(v))) continue;
+        if ((q.from !== undefined && v.at < q.from) || (q.to !== undefined && v.at > q.to)) continue;
+        // Older than the cursor: later in newest-first order.
+        if (q.after && newestVersionFirst(v, q.after) <= 0) continue;
+        found.push({ v, s });
+      }
+      return found.sort((a, b) => newestVersionFirst(a.v, b.v)).slice(0, versionListLimit(q.limit))
+        .map(({ v, s }) => versionHistoryEntry(summary(v), s));
+    },
     async getSessionVersion(sessionId, id) {
       const v = versions.get(id);
       if (!v || v.sessionId !== sessionId) return null;
       const inputs = contents.get(contentKey(sessionId, v.digest))?.inputs ?? {};
       return { ...summary(v), inputs: structuredClone(inputs), meta: structuredClone(v.meta) };
+    },
+    annotateSessionVersion(sessionId, id, input) {
+      return serial(async (): Promise<SessionVersionAnnotate> => {
+        const change = normalizeSessionVersionAnnotation(input);
+        const session = sessions.get(sessionId);
+        if (!session || session.deletedAt) throw new Error('session-gone');
+        const v = versions.get(id);
+        if (!v || v.sessionId !== sessionId) return 'not-found';
+        const plan = planSessionVersionAnnotate(own(sessionId).map(rowOf), rowOf(v), v.annotationRev, change);
+        if (plan.action === 'refuse') return plan.reason;
+        if (plan.action === 'same') return { version: summary(v), changed: false };
+        if (plan.label !== undefined) v.label = plan.label; else delete v.label;
+        if (plan.keptBy !== undefined) v.keptBy = plan.keptBy; else delete v.keptBy;
+        v.pinned = plan.pinned;
+        v.annotationRev += 1;
+        return { version: summary(v), changed: true };
+      });
     },
     deleteSessionVersion(sessionId, id) {
       return serial(async () => {

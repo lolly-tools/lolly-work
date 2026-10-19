@@ -4,7 +4,7 @@ import { resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createBrandSources } from '../brand/sources.ts';
 import { loadEngine } from '../render/contract.ts';
-import { renderCapabilities } from '../render/capabilities.ts';
+import { IN_PROCESS_HOST_APIS, renderCapabilities, toolServerFormats } from '../render/capabilities.ts';
 
 export interface PackToolCheck {
   source: string; id: string; valid: boolean; requiredEngine?: string;
@@ -57,18 +57,18 @@ export async function inspectPack(pack: string, options: {
         if (tool.manifest.hooks) await fetchFile(`${id}/hooks.js`);
         check.sourceHash = createHash('sha256').update(JSON.stringify([...observed].sort(([a], [b]) => a.localeCompare(b)))).digest('hex');
         check.valid = true;
-        const formats = tool.manifest.render.formats.map(format => format === 'jpeg' ? 'jpg' : format);
         const browserNeeded = !!tool.manifest.hooks && !options.allowHooksInFastPath;
         const svgTemplate = typeof tool.template === 'string' && /<svg\b/i.test(tool.template);
-        const hostApis = new Set(['color', 'profile', 'assets', 'state', 'clipboard', 'export', ...(source.tokensHead ? ['tokens'] : [])]);
+        const hostApis = new Set<string>([...IN_PROCESS_HOST_APIS, ...(source.tokensHead ? ['tokens'] : [])]);
         const unmet = (tool.manifest.requires ?? []).filter(api => !hostApis.has(api));
-        const canRender = browserNeeded ? !!options.workerConfigured : svgTemplate && !unmet.length;
         if (!browserNeeded && !svgTemplate) check.diagnostics.push('The current server export path requires an SVG template. This tool can still be used locally.');
         if (!options.workerConfigured && browserNeeded) check.diagnostics.push('This tool needs a Chromium worker for server rendering.');
         if (tool.manifest.hooks && options.allowHooksInFastPath) check.diagnostics.push('Hooks run in the application process for this curated evaluation pack. Configure an isolated worker before production.');
         if (!options.workerConfigured && unmet.length) check.diagnostics.push(`Server host APIs unavailable: ${unmet.join(', ')}.`);
-        check.serverFormats = canRender && (!browserNeeded || options.workerConfigured) ? formats.filter(format => capability.formats.includes(format)) : [];
-        check.unavailableFormats = formats.filter(format => !check.serverFormats.includes(format));
+        const probe = toolServerFormats({ formats: tool.manifest.render.formats, hooks: !!tool.manifest.hooks, svgTemplate, requires: tool.manifest.requires ?? [] },
+          { caps: capability, allowHooksInFastPath: !!options.allowHooksInFastPath, tokens: !!source.tokensHead });
+        check.serverFormats = probe.formats;
+        check.unavailableFormats = probe.unavailable.map(entry => entry.format);
         if (options.requireServerRendering && !check.serverFormats.length) check.valid = false;
       } catch {
         check.diagnostics.push(check.requiredEngine

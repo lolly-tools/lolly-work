@@ -441,16 +441,32 @@ test('the boundary: a bearer reaches this collection and nothing else', async ()
   assert.equal((await fetch(share.path)).status, 410, 'LINK_REVOKED');
 });
 
-test('a password-guarded collection link carries its password into every item and the zip', async () => {
+test('a password-guarded collection link opens its items and zip with the link cookie, never a password in the URL', async () => {
   const designer = await login('designer@test');
   const guarded = await mintOk(designer, { kind: 'share', target: { collectionId: 'launch' }, password: 'hunter2' });
   assert.equal((await fetch(guarded.path)).status, 401, 'PASSWORD_REQUIRED');
-  const opened = await fetch(`${guarded.path}&pw=hunter2`);
+  const posted = await fetch(guarded.path, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'password=hunter2' });
+  assert.equal(posted.status, 303);
+  const cookie = posted.headers.getSetCookie().find((value) => value.startsWith(`lw_link_${guarded.id}=`))?.split(';')[0];
+  assert.ok(cookie, 'the password comes back as the link cookie');
+  const opened = await fetch(guarded.path, { headers: { cookie } });
   assert.equal(opened.status, 200);
-  const html = await opened.text();
-  assert.ok(html.includes('pw=hunter2'), 'the page\'s own links stay usable rather than 401-ing one click later');
-  const zip = await fetch(`${guarded.path}&pw=hunter2&zip=1`);
+  const html = (await opened.text()).replace(/&amp;/g, '&');
+  assert.ok(!html.includes('pw='), 'the page\'s own links carry no password');
+  const hrefs = [...html.matchAll(/(?:href|src)="(\/l\/[^"]+)"/g)].map((match) => match[1]!);
+  assert.ok(hrefs.some((href) => href.includes('zip=1')) && hrefs.some((href) => href.includes('asset=')), hrefs.join(' '));
+  for (const href of hrefs) {
+    assert.equal((await fetch(`${base}${href}`, { headers: { cookie } })).status, 200, `${href} opens with the cookie`);
+    assert.equal((await fetch(`${base}${href}`)).status, 401, `${href} needs the cookie`);
+  }
+  const zip = await fetch(`${guarded.path}&zip=1`, { headers: { cookie } });
   assert.equal(zip.headers.get('content-type'), 'application/zip');
+  // The old query form still opens the page for one more release, and sets
+  // the same cookie, so the page's links work without the password in them.
+  const legacy = await fetch(`${guarded.path}&pw=hunter2`);
+  assert.equal(legacy.status, 200);
+  assert.ok(!(await legacy.text()).includes('pw=hunter2'));
+  assert.ok(legacy.headers.getSetCookie().some((value) => value.startsWith(`lw_link_${guarded.id}=`)));
 });
 
 test('lifecycle governs per member at resolve: an expired or revoked asset leaves both the page and the zip', async () => {

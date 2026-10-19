@@ -2,26 +2,26 @@
 /**
  * Shared project files over HTTP (plans/74; docs/api.md "Project files").
  * Anyone who can see the project lists and downloads its ready files; an
- * editor uploads (begin, parts, finalize); the uploader or a project manager
- * deletes. Every route answers 404 while the feature is off
- * (`projectFilesEnabled`).
+ * editor uploads (begin, parts, finalize) through the shared transfer
+ * primitive (uploads/parts.ts), and the uploader can ask which parts arrived
+ * to resume an interrupted upload; the uploader or a project manager deletes.
+ * Every route answers 404 while the feature is off (`projectFilesEnabled`).
  */
-import { createHash, type Hash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createRouter, readJson, readRaw, sendError, sendJson } from '../api/router.ts';
 import type { BlobStore } from '../blobs/types.ts';
-import { readBlobBody } from '../blobs/types.ts';
 import type { InstanceConfig } from '../config/instance.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import { accessAtLeast, type ProjectAccess } from '../rbac/project-access.ts';
 import { randomId } from '../lib/crypto.ts';
 import { nameWithoutEmail } from './sharing.ts';
 import {
-  activeProjectFile, fileChecksum, filePartBlobId, projectFileExpiry, projectFileInput, projectFilePolicy, projectFilesEnabled, projectFileWire,
+  activeProjectFile, projectFileExpiry, projectFileInput, projectFileParts, projectFilePolicy, projectFilesEnabled, projectFileWire,
   removeProjectFile, sweepExpiredProjectFiles, validProjectFileName, PROJECT_FILE_PART_BYTES, PROJECT_FILE_PENDING_FILES, PROJECT_FILE_PENDING_LIMIT,
   type ProjectFileRecord,
 } from './files.ts';
+import { parsePartIndex, RunningDigests, storeTransferPart, transferChunks, transferProgress, verifyTransfer } from '../uploads/parts.ts';
 
 interface Dependencies {
   config: InstanceConfig;
@@ -36,9 +36,6 @@ interface Dependencies {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const SHA256 = /^[a-f0-9]{64}$/;
-/** Uploads whose running digest this process keeps at once (see `running`). */
-const RUNNING_LIMIT = 256;
 /** What one person may download in a day, in instance budgets. Every byte is
  *  read out of the database, whose host may meter that (Neon Free: 5 GB a
  *  month), and the shell keeps what it fetched, so only a runaway client
@@ -74,21 +71,8 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
   };
 
   // The digest of each upload whose parts arrive in order, so finalize need
-  // not read every byte back out of the database. Per process and bounded: a
-  // restart, an out-of-order part or another instance means finalize reads the
-  // parts back instead. Only verified bytes ever reach a digest.
-  const running = new Map<string, { next: number; hash: Hash; expires: number }>();
-  const track = (file: ProjectFileRecord, n: number, bytes: Uint8Array, expires: number): void => {
-    const now = Date.now();
-    for (const [id, r] of running) if (r.expires <= now) running.delete(id);
-    let r = running.get(file.id);
-    if (!r && n === 0 && running.size < RUNNING_LIMIT) {
-      r = { next: 0, hash: createHash('sha256'), expires };
-      running.set(file.id, r);
-    }
-    // A retried part is already in the digest; a skipped one breaks the chain.
-    if (r?.next === n) { r.hash.update(bytes); r.next++; r.expires = expires; }
-  };
+  // not read every byte back out of the database (RunningDigests).
+  const running = new RunningDigests();
   // Bytes each person downloaded in the day since their first download in it, per process.
   const downloads = new Map<string, { since: number; bytes: number }>();
   /** Seconds until `bytes` more fit in the person's day, or 0 after counting them. */
@@ -152,23 +136,36 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
     if (file.createdBy !== gated.user.id) return sendError(res, 403, 'FORBIDDEN', 'only the uploader may complete this file');
     if (file.ready) return sendError(res, 409, 'FILE_READY', 'this file is already complete');
     if (!activeProjectFile(file)) return sendError(res, 410, 'UPLOAD_EXPIRED', 'start a new upload');
-    const n = Number(ctx.params.part);
-    const part = /^\d+$/.test(ctx.params.part!) && Number.isSafeInteger(n) ? file.parts[n] : undefined;
-    if (!part) return sendError(res, 400, 'INVALID_PART', 'no such part');
+    const n = parsePartIndex(ctx.params.part);
+    if (!file.parts[n]) return sendError(res, 400, 'INVALID_PART', 'no such part');
     const bytes = await readRaw(req, PROJECT_FILE_PART_BYTES);
-    if (bytes.length !== part.size || fileChecksum(bytes) !== part.checksum) return sendError(res, 422, 'CHECKSUM_MISMATCH', 'part does not match the declared bytes');
-    await d.blobs.put(filePartBlobId(file, n), bytes, 'application/octet-stream');
+    if (await storeTransferPart(projectFileParts(d.blobs, file), n, bytes) !== 'stored') return sendError(res, 422, 'CHECKSUM_MISMATCH', 'part does not match the declared bytes');
     // An accepted part keeps the upload alive. A cancel or the expiry can land
     // while the bytes were in flight: take back a part whose upload is gone,
     // so it cannot outlive the row that finds it (see removeProjectFile).
     const expires = projectFileExpiry(file.createdAt, projectFilePolicy(d.config).uploadTtlHours);
     if (!await d.store.touchProjectFile(file.id, expires)) {
-      await d.blobs.delete(filePartBlobId(file, n));
+      await d.blobs.delete(projectFileParts(d.blobs, file).partId(n));
       return sendError(res, 410, 'UPLOAD_EXPIRED', 'start a new upload');
     }
-    track(file, n, bytes, Date.parse(expires));
+    running.track(file.id, n, bytes, Date.parse(expires));
     res.writeHead(204); res.end();
   });
+  // Resume: which parts are stored, so an interrupted uploader sends only the
+  // rest. Reading this does not keep the upload alive; only an accepted part does.
+  router.add('GET', '/api/v1/projects/:id/files/:fileId/parts', async (req, res, ctx) => {
+    const gated = await gate(req, res, ctx.params.id!, 'write');
+    if (!gated) return;
+    const file = await find(res, ctx.params.id!, ctx.params.fileId!);
+    if (!file) return;
+    if (file.createdBy !== gated.user.id) return sendError(res, 403, 'FORBIDDEN', 'only the uploader may complete this file');
+    if (!activeProjectFile(file)) return sendError(res, 410, 'UPLOAD_EXPIRED', 'start a new upload');
+    const progress = file.ready
+      ? { partBytes: PROJECT_FILE_PART_BYTES, parts: file.parts.length, missing: [], receivedParts: file.parts.length, receivedBytes: file.size, offset: file.size }
+      : await transferProgress(projectFileParts(d.blobs, file));
+    sendJson(res, 200, { id: file.id, ready: file.ready, size: file.size, checksum: file.checksum, ...(file.ready ? {} : { expiresAt: file.expiresAt }), ...progress },
+      { 'cache-control': 'no-store' });
+  }, { delivery: 'person-private' });
   router.add('POST', '/api/v1/projects/:id/files/:fileId/finalize', async (req, res, ctx) => {
     const gated = await gate(req, res, ctx.params.id!, 'write');
     if (!gated) return;
@@ -177,41 +174,12 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
     if (file.createdBy !== gated.user.id) return sendError(res, 403, 'FORBIDDEN', 'only the uploader may complete this file');
     if (!activeProjectFile(file)) return sendError(res, 410, 'UPLOAD_EXPIRED', 'start a new upload');
     if (file.ready) return sendJson(res, 200, { file }, { 'cache-control': 'no-store' });
-    // Each part's stored size and sha256 come from its stat, so nothing is
-    // read back where the driver reports a sha256 (memory, pg). S3 reports an
-    // ETag instead, so those parts are read and hashed.
-    let readBack = false;
-    for (let n = 0; n < file.parts.length; n++) {
-      const part = file.parts[n]!;
-      const stat = await d.blobs.head(filePartBlobId(file, n));
-      if (!stat) return sendError(res, 409, 'UPLOAD_INCOMPLETE', 'upload every part first');
-      if (stat.size !== part.size || (SHA256.test(stat.checksum) && stat.checksum !== part.checksum)) {
-        return sendError(res, 422, 'CHECKSUM_MISMATCH', 'stored part failed verification');
-      }
-      if (!SHA256.test(stat.checksum)) readBack = true;
-    }
-    // The whole-file digest: one part is the whole file (projectFileInput
-    // holds the two digests equal); otherwise the running digest, else the
-    // parts read back.
-    const r = running.get(file.id);
-    let digest: string;
-    if (!readBack && file.parts.length === 1) digest = file.parts[0]!.checksum;
-    else if (!readBack && r?.next === file.parts.length) digest = r.hash.copy().digest('hex');
-    else {
-      const hash = createHash('sha256');
-      for (let n = 0; n < file.parts.length; n++) {
-        const part = file.parts[n]!;
-        const stored = await d.blobs.get(filePartBlobId(file, n));
-        if (!stored) return sendError(res, 409, 'UPLOAD_INCOMPLETE', 'upload every part first');
-        const bytes = await readBlobBody(stored.body, PROJECT_FILE_PART_BYTES);
-        if (bytes.length !== part.size || fileChecksum(bytes) !== part.checksum) return sendError(res, 422, 'CHECKSUM_MISMATCH', 'stored part failed verification');
-        hash.update(bytes);
-      }
-      digest = hash.digest('hex');
-    }
-    if (digest !== file.checksum) return sendError(res, 422, 'CHECKSUM_MISMATCH', 'file failed verification');
+    // The shared check: every part from its stat, then the whole file from the
+    // running digest, or the parts read back where there is none.
+    const check = await verifyTransfer(projectFileParts(d.blobs, file), running.digest(file.id, file.parts.length));
+    if (!check.ok) return sendError(res, check.code === 'UPLOAD_INCOMPLETE' ? 409 : 422, check.code, check.message);
     if (!await d.store.completeProjectFile(file.id)) return sendError(res, 410, 'UPLOAD_EXPIRED', 'start a new upload');
-    running.delete(file.id);
+    running.forget(file.id);
     await d.audit(`user:${gated.user.id}`, 'project.file-upload', `project:${file.projectId}`, { fileId: file.id, name: file.name, size: file.size, checksum: file.checksum });
     sendJson(res, 200, { file: { ...file, ready: true } }, { 'cache-control': 'no-store' });
   });
@@ -228,22 +196,10 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
     }
     // Every part is checked as it streams, and the whole file before its last
     // part goes out, so a body that fails its declared digest is cut short.
-    const bytes = async function* () {
-      const whole = createHash('sha256');
-      for (let n = 0; n < file.parts.length; n++) {
-        const stored = await d.blobs.get(filePartBlobId(file, n));
-        if (!stored) throw new Error('project file part unavailable');
-        const data = await readBlobBody(stored.body, PROJECT_FILE_PART_BYTES);
-        if (data.length !== file.parts[n]!.size || fileChecksum(data) !== file.parts[n]!.checksum) throw new Error('project file part failed verification');
-        whole.update(data);
-        if (n === file.parts.length - 1 && whole.digest('hex') !== file.checksum) throw new Error('project file failed verification');
-        yield data;
-      }
-    };
     res.writeHead(200, { 'content-type': file.contentType, 'content-length': String(file.size),
       'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'x-content-type-options': 'nosniff',
       'cache-control': 'private, no-store', etag: `"${file.checksum}"` });
-    Readable.from(bytes()).on('error', () => res.destroy()).pipe(res);
+    Readable.from(transferChunks(projectFileParts(d.blobs, file))).on('error', () => res.destroy()).pipe(res);
   });
   router.add('PATCH', '/api/v1/projects/:id/files/:fileId', async (req, res, ctx) => {
     const gated = await gate(req, res, ctx.params.id!, 'rename'); if (!gated) return;
@@ -277,7 +233,7 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
       });
     }
     await removeProjectFile(d.store, d.blobs, file);
-    running.delete(file.id);
+    running.forget(file.id);
     await d.audit(`user:${gated.user.id}`, 'project.file-delete', `project:${file.projectId}`, {
       fileId: file.id, name: file.name, size: file.size, ready: file.ready, ...(forced ? { forced: true, sessions: using.map((s) => s.id) } : {}),
     });

@@ -17,7 +17,8 @@
 import { parseArgs } from 'node:util';
 import { closeSync, constants, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { fileSource, fileStateStore, resumableUpload, UploadClientError, type UploadTarget } from './upload-client.ts';
 
 const CONFIG_DIR = join(homedir(), '.config', 'lolly-work');
 const SESSION_FILE = join(CONFIG_DIR, 'session');
@@ -91,6 +92,10 @@ const OPTIONS = {
     'no-witness': { type: 'boolean' },
     prune: { type: 'boolean' },
     json: { type: 'boolean' },
+    // `lw upload`: a project file (--project) or a scoped upload (--scope).
+    project: { type: 'string' },
+    scope: { type: 'string' },
+    'content-type': { type: 'string' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -147,6 +152,13 @@ async function call(path: string, opts: { method?: string; body?: unknown; heade
     fail(`${res.status} ${err?.code ?? ''} ${err?.message ?? ''}`.trim());
   }
   return data;
+}
+
+/** A media type from a file name, for the common kinds; anything else is octet-stream. */
+function contentTypeOf(file: string): string {
+  const types: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+    pdf: 'application/pdf', mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', zip: 'application/zip', json: 'application/json' };
+  return types[file.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream';
 }
 
 function fail(msg: string): never {
@@ -458,11 +470,12 @@ switch (cmd) {
 
   case 'retention': {
     if (sub !== 'run') fail('usage: lw retention run');
-    const r = await call('/api/v1/retention/run', { method: 'POST' }) as { telemetryTrimmed: number; auditTrimmed: number; projectFilesSwept?: number };
+    const r = await call('/api/v1/retention/run', { method: 'POST' }) as { telemetryTrimmed: number; auditTrimmed: number; projectFilesSwept?: number; uploadsSwept?: number };
     out(r);
     if (!values.json) {
       console.log(`trimmed ${r.telemetryTrimmed} telemetry event(s), ${r.auditTrimmed} audit row(s)`
-        + (typeof r.projectFilesSwept === 'number' ? `, swept ${r.projectFilesSwept} expired project-file upload(s)` : ''));
+        + (typeof r.projectFilesSwept === 'number' ? `, swept ${r.projectFilesSwept} expired project-file upload(s)` : '')
+        + (typeof r.uploadsSwept === 'number' ? ` and ${r.uploadsSwept} expired scoped upload(s)` : ''));
     }
     break;
   }
@@ -1076,6 +1089,41 @@ switch (cmd) {
     break;
   }
 
+  // Resumable uploads (docs/resumable-uploads.md). The upload id is saved
+  // beside the session until the upload finishes, so running the same
+  // command again after an interruption sends only the missing parts.
+  case 'upload': {
+    const file = positionals[1] ?? fail('usage: lw upload <file> (--project <id> | --scope catalog-submission|automation-input|file) [--name "…"] [--content-type <type>]');
+    const target: UploadTarget = values.project ? { kind: 'project', projectId: values.project }
+      : values.scope === 'catalog-submission' || values.scope === 'automation-input' || values.scope === 'file' ? { kind: 'upload', scope: values.scope }
+      : fail('lw upload needs --project <id> or --scope catalog-submission|automation-input|file');
+    const cookie = savedCookie(), bearer = values.token ?? process.env.LW_TOKEN;
+    const source = await fileSource(file).catch((error: Error) => fail(`cannot read ${file}: ${error.message}`));
+    try {
+      const result = await resumableUpload({
+        base, target, source, state: fileStateStore(join(CONFIG_DIR, 'uploads')),
+        name: values.name ?? basename(file), contentType: values['content-type'] ?? contentTypeOf(file),
+        headers: { ...(bearer ? { authorization: `Bearer ${bearer}` } : cookie ? { cookie } : {}), 'x-lolly-client': 'lw-cli engine/0' },
+        onProgress: values.json ? undefined : (sent, total) => process.stderr.write(`\r${Math.floor((sent / total) * 100)}% of ${total} bytes`),
+      });
+      if (!values.json) process.stderr.write('\n');
+      out(result);
+      if (!values.json) {
+        console.log(`${result.resumed ? 'resumed and finished' : 'finished'} ${result.id} (${result.size} bytes, sha256 ${result.checksum}, ${result.sentParts} part(s) sent)`);
+        if (target.kind === 'upload' && target.scope === 'catalog-submission') console.log(`submit it: POST /api/v1/catalog/submit?name=…&uploadId=${result.id}&checksum=${result.checksum}`);
+        if (target.kind === 'upload' && target.scope === 'automation-input') console.log(`use it: "upload": { "id": "${result.id}", "checksum": "${result.checksum}" } in /api/v1/inspect or /api/v1/optimize`);
+        if (target.kind === 'upload' && target.scope === 'file') console.log(`use it: "file": { "id": "${result.id}", "checksum": "${result.checksum}" } in /api/v1/inspect or /api/v1/optimize; read it at /api/v1/files/${result.id}/content`);
+      }
+    } catch (error) {
+      if (!values.json) process.stderr.write('\n');
+      // No answer, a 429 or a 5xx can pass; a refusal will not.
+      const passing = !(error instanceof UploadClientError) || error.status === 0 || error.status === 429 || error.status >= 500;
+      fail(passing ? `upload stopped: ${(error as Error).message}; run the same command again to resume`
+        : `upload refused (${(error as UploadClientError).status} ${(error as UploadClientError).code}): ${(error as Error).message}`);
+    } finally { await source.close(); }
+    break;
+  }
+
   // Catalog submit (plans/31 §3): put a local file INTO the instance catalog,
   // and review what is waiting. The bytes ride the raw body exactly as
   // `providers publish` sends an export out; the declared metadata rides query
@@ -1557,6 +1605,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   providers preview --kind <kind> --shape [--remote-id <id>]   instead of the sample: the tenant's record structure, key names and types only
   providers credential <id> (prompts) · auth <id> (OAuth consent) · enable|disable|sync|health|rm <id>
   providers drift <id>       materialized copies whose upstream updatedAt has moved on
+  upload <file> --project <id> | --scope catalog-submission|automation-input|file [--name "…"] [--content-type <t>]   resumable upload; run it again to resume
   catalog submit <file> [--name "…"] [--tags a,b] [--groups a,b]   put a file into this instance's catalog
   catalog queue [--all] · catalog edit <assetId> [--name --tags --type --label]   the review queue, and a fix before publishing
   catalog approve|return <assetId> [--body "comment"]   decide one submission
