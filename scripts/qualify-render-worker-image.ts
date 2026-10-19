@@ -450,7 +450,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   phase = 'PLATFORM';
   assert.equal(process.platform, 'linux', 'Install frozen Work dependencies on the Linux qualification host');
   assert.ok(process.arch === 'x64' || process.arch === 'arm64', 'Image acceptance requires a supported Linux architecture');
-  assert.equal(process.versions.node, '26.11.1', 'Use the worker Node version for this image acceptance');
+  assert.equal(process.versions.node, '26.12.0', 'Use the worker Node version for this image acceptance');
   phase = 'MATCHED_SOURCE';
   const source = matchedShell(JSON.parse(readFileSync(join(ROOT, 'engine-pin.json'), 'utf8')),
     output('git', ['rev-parse', 'HEAD'], lollyRoot), JSON.parse(readFileSync(join(lollyRoot, 'engine/package.json'), 'utf8')).version);
