@@ -273,7 +273,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         if: matrix.image == 'render-worker'
         with:
-          node-version: '26.11.1'
+          node-version: '26.12.0'
       - name: Read matched Lolly source
         if: matrix.image == 'render-worker'
         id: matched-shell
