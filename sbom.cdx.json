@@ -1,22 +1,22 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:64d7b6ec-479c-42fa-83c0-5d7ecc6c74bb",
+  "serialNumber": "urn:uuid:9baaa9a8-0d1e-45ec-826e-a036dcd8e646",
   "version": 1,
   "metadata": {
     "tools": [
       {
         "vendor": "lolly",
         "name": "build-sbom",
-        "version": "1.1.1"
+        "version": "1.1.2"
       }
     ],
     "component": {
       "type": "application",
-      "bom-ref": "pkg:npm/lolly-work@1.1.1",
+      "bom-ref": "pkg:npm/lolly-work@1.1.2",
       "name": "lolly-work",
-      "version": "1.1.1",
-      "purl": "pkg:npm/lolly-work@1.1.1",
+      "version": "1.1.2",
+      "purl": "pkg:npm/lolly-work@1.1.2",
       "licenses": [
         {
           "license": {
@@ -2562,10 +2562,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/prettier@3.9.9",
+      "bom-ref": "pkg:npm/prettier@3.9.10",
       "name": "prettier",
-      "version": "3.9.9",
-      "purl": "pkg:npm/prettier@3.9.9",
+      "version": "3.9.10",
+      "purl": "pkg:npm/prettier@3.9.10",
       "scope": "required",
       "licenses": [
         {
@@ -2577,7 +2577,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "67f0891c891dba33bf3ad37b9d75228b445fdd54f9491ba18c103cd97beed978415205f79e13faed3d0b1dc7817502dec7b38e1464e8c7e439620f09936422be"
+          "content": "b241874c7d586fd42f6930b88569d14f3118b42a40a45d143013f3fadff464fccff2285e7e8fdbb4a77e400ee9504d1f13003549b4bf36687211cb2d75738874"
         }
       ]
     },
@@ -2814,10 +2814,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/smol-toml@1.9.0",
+      "bom-ref": "pkg:npm/smol-toml@1.9.1",
       "name": "smol-toml",
-      "version": "1.9.0",
-      "purl": "pkg:npm/smol-toml@1.9.0",
+      "version": "1.9.1",
+      "purl": "pkg:npm/smol-toml@1.9.1",
       "scope": "required",
       "licenses": [
         {
@@ -2829,7 +2829,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "86977e1cb38dec77595ea61c84c33ff8b6934db74ad00537367808278295c966d8f5b7d0a9d2fd703fb8c9fe9d528536029e15b14d099108ba171008d41da65d"
+          "content": "8fb5b23dd7f4089a2eb4cccca0f2c5fdb5571ed299213f516f87867846d6c3c5f6b79a22ae33e0a4bf8ea5a10d66b20b61a5ea6309d51feaa053055b97ea5425"
         }
       ]
     },
