@@ -13,7 +13,7 @@ The [1.1.1 release](docs/release-1-1-1.md) records the matched Lolly source,
 component versions, migrations and the checks required before publication. The
 [1.1.0 release](docs/release-1-1-0.md) keeps its own record.
 
-The default server and render-worker containers use Node 26.11.1. CI checks Node 26;
+The default server and render-worker containers use Node 26.12.0. CI checks Node 26;
 the SUSE BCI and admission images retain their separately qualified Node 24 base.
 The source minimum remains Node 24.
 
