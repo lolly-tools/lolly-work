@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "f9a067ce6988bda343042a4a239e5064ef8f257b",
+  "commit": "c900c9882fcebc9aa676e01c579c1de174b09cba",
   "manifestSha256": "69941d9d846f63e96e23318c544347ed2825e759ef1248111419b805192eb90e",
   "files": {
     "account-lifecycle.md": {
@@ -13,7 +13,7 @@
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
-      "sha256": "a5f91ded0720209b544659e98314b7c62efc1c4b154567e53570832bf21bac72",
+      "sha256": "f5fe60bc359a71ad551360640b13684d7298ed21bba555fb410a0ec5413c0110",
       "source": "docs/work/api.md"
     },
     "application-release-classification.md": {
@@ -93,7 +93,7 @@
       "source": "docs/work/governance.md"
     },
     "identity.md": {
-      "sha256": "71bcb7c7c900fcc018902eb9336ad2a7b3da88d1bdb803556e6bbeb6e42cf812",
+      "sha256": "e978f172afda30fe51c12484bb91fd6c56f747d40897c994739dc915773f89fe",
       "source": "docs/work/identity.md"
     },
     "img/helm-icon-color.svg": {
@@ -281,7 +281,7 @@
       "source": "docs/work/self-host.md"
     },
     "sharing.md": {
-      "sha256": "954c767764ac120cf21898f01cc838921b119189033697f8e76678b377f246dc",
+      "sha256": "5443fd1ca27b7caa81740c7686201ebe32815332efd4b033f4e762caeb7db59e",
       "source": "docs/work/sharing.md"
     },
     "shell-deployment-workflow.md": {

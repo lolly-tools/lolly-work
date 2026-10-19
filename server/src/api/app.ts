@@ -4,6 +4,7 @@ import { registerOidcLogout } from '../iam/oidc-logout-routes.ts';
 import { localSessionKey, revokeBrowserSessions } from '../iam/local-logout.ts';
 import { createLinkPasswordAttempts } from '../links/password-attempts.ts';
 import { linkPasswordHtml } from '../links/password-page.ts';
+import { guestLandingHtml, linkEndHtml, type LinkEnd } from '../links/guest-page.ts';
 import { createProviderFetch, providerDestination, type ProviderResolver } from '../catalog/providers/egress.ts';
 import { credentialActive, credentialExpiry } from '../iam/credential-expiry.ts';
 import { safeMessageUrl } from '../inbox/message-url.ts';
@@ -2773,6 +2774,104 @@ export function buildApp(deps: AppDeps): App {
     res.writeHead(status, passwordPageHeaders);
     res.end(linkPasswordHtml(config.instance.name, { action: linkFormPath(link, url), ...(error ? { error } : {}) }));
   };
+
+  // ── Guest links in a browser (plan 320 J1, plan 75 J8) ──────────────────────
+  // A browser gets pages: a guest link's landing, and a page saying why a link
+  // cannot open. Anything else (an API client, the CLI) keeps the JSON answers.
+  const wantsHtml = (req: IncomingMessage): boolean => /\btext\/html\b/.test(String(req.headers.accept ?? ''));
+  const linkPageHeaders = { ...passwordPageHeaders, 'x-robots-tag': 'noindex, nofollow' };
+  /** The member who made a link, by name only, never by address. */
+  const linkMakerName = async (link: LinkRecord): Promise<string | null> => {
+    const maker = await store.getUser(link.createdBy);
+    return maker && !maker.disabledAt ? nameWithoutEmail(maker) : null;
+  };
+  /** A link that cannot open: a page for a browser, the usual JSON otherwise. */
+  const sendLinkEnd = async (req: IncomingMessage, res: ServerResponse, status: number, code: string, message: string, end: LinkEnd, link?: LinkRecord): Promise<void> => {
+    if (!wantsHtml(req)) return sendError(res, status, code, message);
+    res.writeHead(status, linkPageHeaders);
+    res.end(linkEndHtml(end, { workspace: config.instance.name, inviter: link ? await linkMakerName(link) : null }));
+  };
+  /** Whether a guest link can let anyone in now: the same standing principalOf
+   *  asks of every guest request, asked before anyone joins. */
+  const guestStanding = async (link: LinkRecord): Promise<'ok' | 'guests-off' | 'inviter'> => {
+    if (!config.policy.guestLinks.enabled) return 'guests-off';
+    const inviter = await store.getUser(link.createdBy);
+    return inviter && !inviter.disabledAt && evaluate({ userId: inviter.id, groups: inviter.groups, role: inviter.role as Role },
+      'link.create-guest', linkResourceSelectors(link.target), await store.listGrants()) ? 'ok' : 'inviter';
+  };
+  /** The tool's own name from the pack, for the landing's heading. */
+  const toolNameOf = async (toolId: string | undefined): Promise<string | null> => {
+    if (!toolId || !/^[a-z0-9][a-z0-9-]*$/.test(toolId)) return null;
+    try {
+      const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown };
+      return typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name.trim() : null;
+    } catch { return null; }
+  };
+  /** Where a guest goes after joining: the link's tool in the app, with the
+   *  inputs the link was made with. */
+  const guestDestination = (link: LinkRecord): string => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(link.target.params ?? {})) {
+      if (v == null) continue;
+      q.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+    }
+    const app = config.instance.appUrl?.replace(/\/+$/, '') ?? '';
+    const query = q.toString();
+    return link.target.toolId ? `${app}/#/tool/${encodeURIComponent(link.target.toolId)}${query ? `?${query}` : ''}` : `${app}/`;
+  };
+  const sendGuestLanding = async (req: IncomingMessage, res: ServerResponse, status: number, link: LinkRecord, url: URL, opts: { error?: string; name?: string } = {}): Promise<void> => {
+    const back = `/l/${link.id}?s=${encodeURIComponent(url.searchParams.get('s') ?? '')}`;
+    const login = authProvider().loginPath;
+    res.writeHead(status, linkPageHeaders);
+    res.end(guestLandingHtml({
+      workspace: config.instance.name,
+      inviter: await linkMakerName(link),
+      tool: await toolNameOf(link.target.toolId),
+      expiresAt: new Date(link.exp * 1000).toISOString(),
+      now: Date.now(),
+      action: back,
+      password: !!link.pwHash && !linkAccessOk(req, link),
+      signInHref: login ? `${login}?returnTo=${encodeURIComponent(back)}` : null,
+      ...opts,
+    }));
+  };
+  /** Join as a guest: the landing's POST. The guest cookie and the audit entry
+   *  happen here and only here for a browser, so fetching the link (a chat
+   *  preview, a mail scanner) admits nobody. */
+  const joinAsGuest = async (req: IncomingMessage, res: ServerResponse, link: LinkRecord, url: URL, body: NonNullable<Awaited<ReturnType<typeof readSignInBody>>>): Promise<void> => {
+    const standing = await guestStanding(link);
+    if (standing !== 'ok') return sendLinkEnd(req, res, 403, 'GUEST_LINK_UNAVAILABLE', 'this guest link cannot admit anyone', standing, link);
+    const name = (body.get('name') ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 60);
+    const again = (status: number, error: string): Promise<void> => sendGuestLanding(req, res, status, link, url, { error, name });
+    if (link.pwHash && !linkAccessOk(req, link)) {
+      const client = clientIp(req, config.rateLimit.trustedProxyHops);
+      const retryAfter = linkPasswordAttempts.retryAfter(link.id, client);
+      if (retryAfter) {
+        res.setHeader('retry-after', String(retryAfter));
+        return sendLinkEnd(req, res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later', 'locked', link);
+      }
+      const password = body.get('password');
+      if (!password) return again(400, 'Enter the password.');
+      if (!(await verifyPassword(password, link.pwHash))) {
+        linkPasswordAttempts.miss(link.id, client);
+        return again(401, 'That password does not open this link.');
+      }
+      linkPasswordAttempts.clear(link.id, client);
+      appendSetCookie(res, linkAccessCookie(link));
+    }
+    const guestName = name || 'Guest';
+    const ttlSec = Math.max(60, link.exp - Math.floor(Date.now() / 1000));
+    appendSetCookie(res, mintGuestCookie(
+      {
+        linkId: link.id, toolId: link.target.toolId ?? '', inviter: link.createdBy, name: guestName,
+        ...(link.target.sessionId ? { sessionRef: link.target.sessionId } : {}),
+      },
+      secrets.session, secure, ttlSec,
+    ));
+    await audit(guestActor(link.id), 'guest.admit', `link:${link.id}`, { name: guestName });
+    res.writeHead(303, { location: guestDestination(link), 'cache-control': 'no-store', 'referrer-policy': 'strict-origin' });
+    res.end();
+  };
   // `?pw=` still opens a link for one more release (plan 80 E0b; refusing it
   // waits on decision D11). Each link is reported once per process.
   const passwordQueryWarned = new Set<string>();
@@ -2785,11 +2884,11 @@ export function buildApp(deps: AppDeps): App {
 
   router.add('POST', '/l/:id', async (req, res, ctx) => {
     const link = await store.getLink(ctx.params.id as string);
-    if (!link || link.kind === 'project-invite') return sendError(res, 404, 'NOT_FOUND', 'no such link');
+    if (!link || link.kind === 'project-invite') return sendLinkEnd(req, res, 404, 'NOT_FOUND', 'no such link', 'not-found');
     const status = checkLink(link, ctx.url.searchParams.get('s') ?? '', linkVerify, { passwordOk: true });
-    if (status === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
-    if (status === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
-    if (status === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
+    if (status === 'bad-signature') return sendLinkEnd(req, res, 403, 'BAD_SIGNATURE', 'link signature invalid', 'not-found');
+    if (status === 'expired') return sendLinkEnd(req, res, 410, 'LINK_EXPIRED', 'this link has expired', 'ended', link);
+    if (status === 'revoked') return sendLinkEnd(req, res, 410, 'LINK_REVOKED', 'this link was revoked', 'turned-off', link);
     let body: Awaited<ReturnType<typeof readSignInBody>>;
     try { body = await readSignInBody(req); }
     catch (e) {
@@ -2799,6 +2898,8 @@ export function buildApp(deps: AppDeps): App {
     }
     if (!body) return sendError(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'send the password as a form or as JSON');
     const json = body.json;
+    // The guest landing's form: join here, then go into the app.
+    if (link.kind === 'guest-edit' && !json) return joinAsGuest(req, res, link, ctx.url, body);
     // A form gets the page again with the reason; an API caller gets JSON.
     const fail = (code: number, errorCode: string, message: string, sentence: string): void =>
       json ? sendError(res, code, errorCode, message) : sendLinkPasswordPage(res, code, link, ctx.url, sentence);
@@ -2828,14 +2929,30 @@ export function buildApp(deps: AppDeps): App {
   // target info (the render plane will stream bytes here once it lands).
   router.add('GET', '/l/:id', async (req, res, ctx) => {
     const link = await store.getLink(ctx.params.id as string);
-    if (!link) return sendError(res, 404, 'NOT_FOUND', 'no such link');
+    if (!link) return sendLinkEnd(req, res, 404, 'NOT_FOUND', 'no such link', 'not-found');
     if (link.kind === 'project-invite') return sendError(res, 404, 'NOT_FOUND', 'open the project invitation address');
     const sig = ctx.url.searchParams.get('s') ?? '';
     const pw = ctx.url.searchParams.get('pw');
     const initialStatus = checkLink(link, sig, linkVerify, { passwordOk: true });
-    if (initialStatus === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
-    if (initialStatus === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
-    if (initialStatus === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
+    if (initialStatus === 'bad-signature') return sendLinkEnd(req, res, 403, 'BAD_SIGNATURE', 'link signature invalid', 'not-found');
+    if (initialStatus === 'expired') return sendLinkEnd(req, res, 410, 'LINK_EXPIRED', 'this link has expired', 'ended', link);
+    if (initialStatus === 'revoked') return sendLinkEnd(req, res, 410, 'LINK_REVOKED', 'this link was revoked', 'turned-off', link);
+    // A browser opening a guest link gets its landing, which asks for a name
+    // (and the password, when the link has one) and joins on the POST. The GET
+    // admits nobody. An API client keeps the JSON admission below.
+    if (link.kind === 'guest-edit' && wantsHtml(req)) {
+      const standing = await guestStanding(link);
+      if (standing !== 'ok') return sendLinkEnd(req, res, 403, 'GUEST_LINK_UNAVAILABLE', 'this guest link cannot admit anyone', standing, link);
+      if (link.pwHash && !linkAccessOk(req, link)) {
+        const retryAfter = linkPasswordAttempts.retryAfter(link.id, clientIp(req, config.rateLimit.trustedProxyHops));
+        if (retryAfter) {
+          res.setHeader('retry-after', String(retryAfter));
+          return sendLinkEnd(req, res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later', 'locked', link);
+        }
+      }
+      const chosen = ctx.url.searchParams.get('name');
+      return sendGuestLanding(req, res, 200, link, ctx.url, chosen ? { name: chosen.slice(0, 60) } : {});
+    }
     let passwordOk = true;
     let grantAccess = false;
     if (link.pwHash) {
@@ -2849,7 +2966,7 @@ export function buildApp(deps: AppDeps): App {
         const retryAfter = linkPasswordAttempts.retryAfter(link.id, client);
         if (retryAfter) {
           res.setHeader('retry-after', String(retryAfter));
-          return sendError(res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later');
+          return sendLinkEnd(req, res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later', 'locked', link);
         }
         passwordOk = pw !== null && (await verifyPassword(pw, link.pwHash));
         if (pw !== null && !passwordOk) {
@@ -2863,9 +2980,9 @@ export function buildApp(deps: AppDeps): App {
       }
     }
     const status = checkLink(link, sig, linkVerify, { passwordOk });
-    if (status === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
-    if (status === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
-    if (status === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
+    if (status === 'bad-signature') return sendLinkEnd(req, res, 403, 'BAD_SIGNATURE', 'link signature invalid', 'not-found');
+    if (status === 'expired') return sendLinkEnd(req, res, 410, 'LINK_EXPIRED', 'this link has expired', 'ended', link);
+    if (status === 'revoked') return sendLinkEnd(req, res, 410, 'LINK_REVOKED', 'this link was revoked', 'turned-off', link);
     if (status === 'password-required') {
       if (/\btext\/html\b/.test(String(req.headers.accept ?? ''))) {
         return sendLinkPasswordPage(res, 401, link, ctx.url, pw === null ? undefined : 'That password does not open this link.');
