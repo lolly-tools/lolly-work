@@ -157,11 +157,14 @@ test('documentation-shot inputs follow the actual mirror grammar and remain a pr
   const root = mkdtempSync(join(tmpdir(), 'worker-shot-inputs-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, 'docs/shots/covers'), { recursive: true });
+  mkdirSync(join(root, 'docs/shots/work'), { recursive: true });
   writeFileSync(join(root, 'docs/shots/first.svg'), '<svg/>');
   writeFileSync(join(root, 'docs/shots/covers/first.webm'), 'cover');
+  writeFileSync(join(root, 'docs/shots/work/console.svg'), '<svg/>');
+  writeFileSync(join(root, 'docs/shots/work/console.root.pem'), 'signing root, not a served shot');
   writeFileSync(join(root, 'docs/shots/unserved.webp'), 'outside the root mirror grammar');
   const captured = documentationResourceDigests(root);
-  assert.deepEqual(Object.keys(captured).sort(), ['/info/shots/covers/first.webm', '/info/shots/first.svg']);
+  assert.deepEqual(Object.keys(captured).sort(), ['/info/shots/covers/first.webm', '/info/shots/first.svg', '/info/shots/work/console.svg']);
   writeFileSync(join(root, 'docs/shots/first.svg'), '<svg>changed</svg>');
   writeFileSync(join(root, 'docs/shots/extra.svg'), '<svg/>');
   const changed = documentationResourceDigests(root);

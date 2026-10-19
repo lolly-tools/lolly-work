@@ -252,6 +252,12 @@
           "summary": "Release downloads and installation paths for YunoHost, Linux, macOS, Windows and Kubernetes."
         },
         {
+          "slug": "release-1-1-2",
+          "path": "release-1-1-2.md",
+          "title": "Release 1.1.2",
+          "summary": "Work 1.1.2 paired with Lolly 1.1.2: matched components, what Lolly 1.1.2 needs from Work, changes since 1.1.1, migrations and qualification."
+        },
+        {
           "slug": "release-1-1-1",
           "path": "release-1-1-1.md",
           "title": "Release 1.1.1",

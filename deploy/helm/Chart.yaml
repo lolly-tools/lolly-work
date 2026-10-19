@@ -9,12 +9,12 @@ description: >-
 type: application
 
 # Chart version — bump on any change to templates/values (SemVer for the chart).
-version: 0.3.2
+version: 0.3.3
 
 # The lolly-work server version this chart is designed against. Used as the
 # default image tag when image.tag is left empty. Keep in sync with the app's
 # package.json "version".
-appVersion: "1.1.1"
+appVersion: "1.1.2"
 
 home: https://lolly.work
 sources:
@@ -40,3 +40,5 @@ annotations:
   artifacthub.io/changes: |
     - kind: added
       description: Official chart distribution, package documentation and Rancher configuration questions.
+    - kind: changed
+      description: Default server and render worker image tags follow Work 1.1.2.
