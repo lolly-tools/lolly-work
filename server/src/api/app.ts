@@ -5357,12 +5357,15 @@ export function buildApp(deps: AppDeps): App {
     const directories = shellDirectories(config.instance), active = directories[0]!;
     const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
     if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
-    // A path ending in a file extension is a real asset. Anything else is an SPA
-    // route: a tool or a view answers the shell build's landing stub, whose head
-    // carries that page's share card (shell/share-cards.ts); every other route
-    // answers index.html, and the shell routes from there. Docs paths never get
-    // here: serveShellDocs answers them first, from the same info/ pages.
-    const asset = /\.[a-z0-9]+$/i.test(clean);
+    // A path ending in a file extension is a real asset, and so is a file the dist
+    // really has without one (pdf.js ships LICENSE files; answering those with the
+    // app page failed the shell's "Download the app" for offline use). Anything
+    // else is an SPA route: a tool or a view answers the shell build's landing
+    // stub, whose head carries that page's share card (shell/share-cards.ts);
+    // every other route answers index.html, and the shell routes from there. Docs
+    // paths never get here: serveShellDocs answers them first, from the same
+    // info/ pages.
+    const asset = /\.[a-z0-9]+$/i.test(clean) || (!!clean && clean !== '.' && !!await safeFile(active, clean));
     const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json'
       : asset && clean ? clean : (shellStubFor(clean, (r) => existsSync(join(active, r))) ?? 'index.html');
     const delivery: DeliveryClass = publicStaticDeliveryClass('/' + target);
@@ -5374,6 +5377,54 @@ export function buildApp(deps: AppDeps): App {
     }
     sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
   } : null;
+
+  // ── on-device models (instance.modelOrigin) ─────────────────────────────
+  // The shell fetches its models at /models/<family>[@<hash>]/<file>. A dist that
+  // carries them answers from disk. The public build does not (1.2 GB of weights
+  // live on the release host), and this server used to answer 404, so every model
+  // download on such an instance failed (lolly.ing, 2026-10-19). What the dist
+  // cannot answer goes to modelOrigin the way lolly.tools' own proxy sends it: the
+  // browser stays same-origin, so there is no CORS preflight, and Range, If-Range
+  // and the validators pass through, so an interrupted download resumes.
+  const MODEL_PATH = /^models\/[A-Za-z0-9_.@+-]+(?:\/[A-Za-z0-9_.@+[\]-]+)+$/;
+  const MODEL_FORWARD = ['range', 'if-range', 'if-none-match', 'if-modified-since'] as const;
+  const MODEL_REPLY = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified'] as const;
+  /** How long the model host has to start answering; the body itself may take minutes. */
+  const MODEL_HEADERS_TIMEOUT_MS = 30_000;
+  const serveModel = async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<void> => {
+    if (!MODEL_PATH.test(rel) || rel.split('/').some(part => part === '.' || part === '..')) return sendError(res, 404, 'NOT_FOUND', 'no such model file');
+    // A content-addressed path (`<family>@<hash>/`) never changes under its name.
+    const delivery: DeliveryClass = /^models\/[^/]+@[0-9a-f]{16}\//.test(rel) ? 'public-immutable' : 'public-revalidate';
+    setDeliveryClass(res, delivery);
+    const cacheControl = cachePolicy(delivery).cacheControl;
+    if (shellDir && await sendFile(req, res, shellDirectories(config.instance)[0]!, rel, { contentType: contentType(rel), ranges: true, compression: false,
+      headers: { 'cache-control': cacheControl } })) return;
+    const origin = config.instance.modelOrigin;
+    if (!origin) return sendError(res, 404, 'NOT_FOUND', 'no such model file');
+    // Identity bytes, so the length, the ranges and the bytes passed on are the
+    // host's own (fetch would otherwise decode a compressed body behind them).
+    const headers: Record<string, string> = { 'accept-encoding': 'identity' };
+    for (const name of MODEL_FORWARD) { const value = req.headers[name]; if (typeof value === 'string') headers[name] = value; }
+    const abort = new AbortController();
+    const slow = setTimeout(() => abort.abort(), MODEL_HEADERS_TIMEOUT_MS);
+    res.on('close', () => abort.abort());
+    let upstream: Response;
+    try {
+      upstream = await fetchImpl(`${origin}/${rel}`, { method: req.method === 'HEAD' ? 'HEAD' : 'GET', headers, redirect: 'error', signal: abort.signal });
+    } catch {
+      return sendError(res, 502, 'MODEL_HOST_UNREACHABLE', 'the model host did not answer');
+    } finally {
+      clearTimeout(slow);
+    }
+    if (upstream.status === 404 || upstream.status === 410) return sendError(res, 404, 'NOT_FOUND', 'no such model file');
+    if (![200, 206, 304, 416].includes(upstream.status)) return sendError(res, 502, 'MODEL_HOST_ERROR', `the model host answered ${upstream.status}`);
+    const reply: Record<string, string> = { ...INERT_BYTE_HEADERS, 'cache-control': cacheControl };
+    for (const name of MODEL_REPLY) { const value = upstream.headers.get(name); if (value) reply[name] = value; }
+    if (upstream.headers.get('content-encoding')) delete reply['content-length'];
+    res.writeHead(upstream.status, reply);
+    if (req.method === 'HEAD' || !upstream.body || upstream.status === 304) { res.end(); return; }
+    pipeline(Readable.fromWeb(upstream.body as import('node:stream/web').ReadableStream), res, () => { /* the client left, or the host stopped mid-file */ });
+  };
 
   // ── tool files (pack mount, the tool index's own per-caller visibility) ────
   // The shell fetches `/tools/<id>/<file>` from its own origin. Served from the
@@ -10841,13 +10892,15 @@ export function buildApp(deps: AppDeps): App {
     router.add('GET', '/*', async (req, res, ctx) => {
       const p = ctx.params['*'] || '';
       if (RESERVED_PREFIX.test(p)) return sendError(res, 404, 'NOT_FOUND', `no route for GET /${p}`);
+      if (p === 'models' || p.startsWith('models/')) return serveModel(req, res, p);
       if (!(await serveShellDocs(req, res, p))) await serveShell(req, res, p);
     }, { delivery: 'public-revalidate' });
     router.add('HEAD', '/*', async (req, res, ctx) => {
       const p = ctx.params['*'] || '';
       if (RESERVED_PREFIX.test(p)) {
         sendError(res, 404, 'NOT_FOUND', `no route for HEAD /${p}`);
-      } else if (!(await serveShellDocs(req, res, p))) await serveShell(req, res, p);
+      } else if (p === 'models' || p.startsWith('models/')) await serveModel(req, res, p);
+      else if (!(await serveShellDocs(req, res, p))) await serveShell(req, res, p);
     }, { delivery: 'public-revalidate' });
   } else if (config.dev.enabled) {
     // The passwordless testing sandbox serves persona sign-in, docs and the

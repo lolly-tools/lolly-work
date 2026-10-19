@@ -29,6 +29,10 @@ import type { AdmissionPolicy, EmailVerification } from '../iam/admission.ts';
 import type { RoleGroups } from '../rbac/evaluate.ts';
 import { validateSharingPolicy } from '../policy/sharing.ts';
 
+/** The project's release host, which serves the shell's on-device models
+ *  (instance.modelOrigin's default). */
+export const DEFAULT_MODEL_ORIGIN = 'https://lolli.li';
+
 /** A deploy-time (GitOps/air-gap) provider entry - upserted at boot with
  *  managedBy:'config' and read-only in the control-plane API (plans/17 §4).
  *  Credentials come from the env var named by credentialRef, per the
@@ -139,6 +143,15 @@ export interface InstanceConfig {
     connectPack?: string;
     /** Explicit tokens asset per source id when a catalogue carries multiple token sets. */
     brandTokens?: Record<string, string>;
+    /** Where the served shell's on-device models come from when the shell dist does
+     *  not carry them (the public build does not: 1.2 GB of weights live on the release
+     *  host). Requests for `/models/*` that the dist cannot answer are passed to this
+     *  exact origin, with Range, If-Range and ETag, so the browser stays same-origin
+     *  and an interrupted download resumes, as lolly.tools does. Default
+     *  `https://lolli.li`, the project's release host; `null` keeps every model request
+     *  on this server, for a deployment that carries the models or wants none. HTTPS
+     *  only, except a loopback origin for local testing. */
+    modelOrigin?: string | null;
     /** Exact HTTPS origins the served shell's connectors may call, added to the shell's
      *  `connect-src` (api/shell-headers.ts). For deployments whose ingress cannot replace
      *  response headers. The shell build's own VITE_CONNECTOR_ORIGINS list still applies. */
@@ -879,6 +892,16 @@ export function parseConfig(json: string): InstanceConfig {
     const key = cfg.instance.catalogPublicKey;
     if (!key || Array.isArray(key) || key.kty !== 'EC' || key.crv !== 'P-256' || typeof key.x !== 'string'
       || typeof key.y !== 'string' || 'd' in key) throw new Error('instance.catalogPublicKey must be a public P-256 JWK');
+  }
+  if (cfg.instance.modelOrigin === undefined) cfg.instance.modelOrigin = DEFAULT_MODEL_ORIGIN;
+  else if (cfg.instance.modelOrigin !== null) {
+    let origin: URL | null = null;
+    try { origin = new URL(String(cfg.instance.modelOrigin)); } catch { origin = null; }
+    const loopback = origin?.protocol === 'http:' && (origin.hostname === '127.0.0.1' || origin.hostname === 'localhost');
+    if (!origin || (origin.protocol !== 'https:' && !loopback) || origin.origin !== String(cfg.instance.modelOrigin).replace(/\/+$/, '')) {
+      throw new Error('instance.modelOrigin must be an exact HTTPS origin such as https://lolli.li, without a path, or null');
+    }
+    cfg.instance.modelOrigin = origin.origin;
   }
   if (cfg.instance.connectorOrigins !== undefined) {
     let origins: string[];
