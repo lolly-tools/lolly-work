@@ -35,7 +35,7 @@ test('packaged worker keeps Node and Playwright versions with a glibc browser in
   assert.match(docker, /chmod -R a\+rX \/opt\/lolly-browsers/);
   assert.match(docker, /^USER node$/m);
   assert.doesNotMatch(docker, /LOLLY_BROWSER_PATH=|apk add|--privileged|SYS_ADMIN/);
-  assert.match(lock, /playwright-core:[\s\S]*version: 1\.64\.0/);
+  assert.match(lock, /playwright-core:[\s\S]*version: 1\.64\.1/);
   const server = readFileSync(new URL('../workers/render/src/server.ts', import.meta.url), 'utf8');
   assert.match(server, /return chromium\.launch\(browserOptions\)/);
   assert.match(server, /if \(MAIN\) void getBrowser\(\)\.catch/);
