@@ -9,9 +9,10 @@ just config + a pack mount.
 > Lolly renders on-device by design; everything hosted lives here (the public MCP server is
 > the one exception).
 
-The [1.1.1 release](docs/release-1-1-1.md) records the matched Lolly source,
+The [1.1.2 release](docs/release-1-1-2.md) records the matched Lolly source,
 component versions, migrations and the checks required before publication. The
-[1.1.0 release](docs/release-1-1-0.md) keeps its own record.
+[1.1.1](docs/release-1-1-1.md) and [1.1.0](docs/release-1-1-0.md) releases keep
+their own records.
 
 The default server and render-worker containers use Node 26.12.0. CI checks Node 26;
 the SUSE BCI and admission images retain their separately qualified Node 24 base.
