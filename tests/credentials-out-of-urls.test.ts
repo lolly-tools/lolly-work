@@ -252,20 +252,25 @@ test('?pw= still opens a link for one more release, with a Deprecation header, o
   }
 });
 
-test('a guest-edit password link keeps the chosen name through the form', async () => {
+test('a guest-edit password link takes the name and the password in one form (plan 320 J1)', async () => {
   await store.putGrant({ principal: 'group:owner', action: 'tool.use', resource: 'tool:swatch', effect: 'allow' });
   const link = await mint({ kind: 'guest-edit', target: { toolId: 'swatch' }, password: 'hunter2', ttlHours: 1 });
+  // A browser gets the landing, which asks for both, and admits nobody yet.
   const page = await fetch(`${link.path}&name=Sam`, { headers: { accept: 'text/html' } });
-  assert.equal(page.status, 401);
-  const action = /<form method="post" action="([^"]+)">/.exec(await page.text())?.[1]?.replace(/&amp;/g, '&');
-  assert.match(String(action), /&name=Sam$/);
-  const opened = await postForm(`${base}${action}`, { password: 'hunter2' });
-  assert.equal(opened.status, 303);
-  assert.equal(opened.headers.get('location'), action);
-  const cookie = linkCookie(opened, link.id);
-  assert.ok(cookie);
-  const admitted = await fetch(`${base}${action}`, { headers: { cookie: cookie.pair } });
-  assert.equal(admitted.status, 200);
-  assert.equal((await admitted.json() as { guest: string }).guest, 'Sam');
-  assert.ok(admitted.headers.getSetCookie().some(value => value.startsWith('lw_guest=')));
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.getSetCookie().some(value => value.startsWith('lw_guest=')), false);
+  const html = await page.text();
+  assert.match(html, /name="password"/);
+  assert.match(html, /name="name"[^>]*value="Sam"/, 'a name carried in the link is filled in');
+  const action = /<form class="stack" method="post" action="([^"]+)">/.exec(html)?.[1]?.replace(/&amp;/g, '&');
+  assert.ok(action);
+  assert.doesNotMatch(String(action), /name=|pw=/, 'the form posts the fields, not a query');
+  const joined = await postForm(`${base}${action}`, { name: 'Sam', password: 'hunter2' }, { accept: 'text/html' });
+  assert.equal(joined.status, 303);
+  assert.equal(joined.headers.get('location'), '/#/tool/swatch');
+  assert.ok(linkCookie(joined, link.id), 'the password cookie stands in for the password from here on');
+  const guest = joined.headers.getSetCookie().find(value => value.startsWith('lw_guest='))?.split(';')[0];
+  assert.ok(guest);
+  const who = await (await fetch(`${base}/api/auth/session`, { headers: { cookie: guest } })).json() as { kind: string; guest: { name: string } };
+  assert.deepEqual([who.kind, who.guest.name], ['guest', 'Sam']);
 });
