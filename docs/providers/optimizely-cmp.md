@@ -45,7 +45,7 @@ refuses it: see the
 }
 ```
 
-- `options.publish: true` opts this provider into the **publish-out** arm (off by default - 
+- `options.publish: true` opts this provider into the **publish-out** arm (off by default -
   a source is read-only unless you turn it on). `options.baseUrl`/`tokenUrl` override the
   defaults (legacy tenants: `api.welcomesoftware.com`).
 - `exposure.requireApproved: true` uses CMP's `is_public` (and not-`is_archived`) as the

@@ -5834,6 +5834,12 @@ function mdToNodes(text, { skipTitle = true } = {}) {
       nodes.push(el('pre', {}, el('code', {}, body.join('\n'))));
       continue;
     }
+    const legacyAnchor = /^\s*<a id="([a-z0-9][a-z0-9-]*)"><\/a>\s*$/.exec(line);
+    if (legacyAnchor) {
+      flushPara();
+      nodes.push(el('span', { id: legacyAnchor[1], 'aria-hidden': 'true' }));
+      continue;
+    }
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
     if (h) {
       flushPara();
@@ -5954,7 +5960,8 @@ async function viewDocs(main, params) {
     prose.replaceChildren(...mdToNodes(await apiText(`/api/v1/docs/${current.slug}`)));
     const anchor = params?.get?.('anchor');
     if (anchor) {
-      const heading = [...prose.querySelectorAll('h1,h2,h3,h4')].find(node =>
+      const alias = [...prose.querySelectorAll('[id]')].find(node => node.id === anchor);
+      const heading = (alias?.nextElementSibling ?? alias) ?? [...prose.querySelectorAll('h1,h2,h3,h4')].find(node =>
         node.textContent.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-') === anchor);
       if (heading) heading.setAttribute('data-doc-anchor', '');
     }

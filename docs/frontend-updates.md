@@ -25,7 +25,7 @@ application update.
 | Images or documentation inside unchanged signed content | Reuse those accepted bytes; there is no need to rebuild them. |
 | Changed tools, catalogued assets, brand content or served documentation | Qualify a complete content release with signatures and retained addresses. Reuse the runtime only when its exact compatibility is established. |
 | Backend TypeScript or the baked admin console | Qualified application image via [application updates](../deploy/helm/APP-UPDATES.md). |
-| Engine, schema, native runtime or dependency changes | Matched release and its broader checks; infrastructure stays in place unless that change requires it. |
+| Engine, schema, native runtime or dependency changes | Matched release and its broader checks; infrastructure stays in place unless the release requires an infrastructure change. |
 
 A new commit on `main` is the input to qualification, not an automatic live
 release. Keep old claims and immutable files until the new release is accepted.

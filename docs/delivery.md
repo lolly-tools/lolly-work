@@ -161,7 +161,7 @@ delivery deliberately. Credential rotation does not move the version.
 `POST /api/v1/jobs/:id/deliveries` consumes a completed `render` job owned by the same member or
 service principal. The JSON body is `{ "destinationId": "campaign-archive", "name": "Launch
 poster" }`; an optional `format` must equal the immutable render request rather than overriding
-it. When the job completes, Work records SHA-256 over the actual output bytes independently of
+the render request. When the job completes, Work records SHA-256 over the actual output bytes independently of
 the blob provider (an S3 ETag is not a portable content digest). Delivery reads the retained
 result, verifies it against that digest, re-verifies its Lolly Content Credential, then points
 the delivery's private `sourceRef` at that existing blob. There is no download/upload round trip
@@ -216,7 +216,7 @@ Discovery and history routes are listed in the [API reference](api.md#outbound-d
 
 Three gated tests check each adapter against a real endpoint. Each one is skipped unless its
 switch is set to `1`, writes inert text under a random `canary-<uuid>` delivery id, and removes
-that exact object afterwards, or fails and names each id whose removal it could not confirm.
+that exact object afterwards, or fails and lists each id whose removal it could not confirm.
 None of them lists or browses the remote side or prints a credential.
 
 | Test | Switch | Settings (each prefixed with the switch name) |

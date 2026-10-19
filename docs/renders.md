@@ -2,7 +2,7 @@
 
 Submit a render or a batch, keep its status and output, and recover interrupted work
 after restarting the server. The request uses the existing Lolly tool inputs and
-renderer. Each resource belongs to the user or service token that submitted it.
+renderer. Each resource belongs to the user or service token that submitted the job.
 
 ## Submit and retrieve
 
@@ -241,7 +241,7 @@ render adds `worker-resources-outside-identity`, because the worker's own
 resource reads are not bound. The catalog version is coarse: it also moves
 when an unrelated catalog asset changes, since template and global reads are
 not all observed. Work does not reuse outputs by identity. A render identity
-is not a source review either: it names the bytes a render read, not whether
+is not a source review either: it identifies the bytes a render read, not whether
 anyone approved them.
 
 The evidence download recomputes the identity from the stored request and
@@ -249,7 +249,7 @@ receipt and reports `409 EVIDENCE_INTEGRITY` when they disagree. What the
 `work/render-identity-v1` identity hashes is fixed, so a later release that
 hashes something else uses a new `apiVersion`. A server that meets an identity
 version it cannot check reports `409 IDENTITY_VERSION_UNSUPPORTED` instead. A receipt that
-names a different tool or format fails the attempt with
+specifies a different tool or format fails the attempt with
 `RENDER_EVIDENCE_MISMATCH` before any output is stored. Outputs made before this
 release, and outputs without a receipt, have no identity.
 
@@ -279,7 +279,7 @@ Submit through `lw renders submit` or `lw render-batches submit` as usual.
 The `work/output-v1` profile checks the actual format, MIME type, readability
 and requested dimensions after watermarking, provenance and signing. SVG is
 parsed as XML without executing scripts or loading linked resources. PNG and
-JPEG are fully decoded with sharp. The receipt's `inspection` names each check,
+JPEG are fully decoded with sharp. The receipt's `inspection` identifies each check,
 its result, the measured dimensions, the final SHA-256 and the detector version.
 A completed decoder does not establish that the design looks correct.
 

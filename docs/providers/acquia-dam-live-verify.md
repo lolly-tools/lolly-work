@@ -11,7 +11,7 @@ in the other runbooks.
 
 - A Widen collective you may test against, and optionally a search query to scope the pass.
 - A Widen API token (a personal access token) with read access: one sealed bearer string, not a
-  JSON blob. It carries the permissions of the user behind it, and there is no anonymous mode.
+  JSON blob. It carries the permissions of the user behind that token, and there is no anonymous mode.
 - The asset statuses your collective treats as approved (row 10 - the `["active"]` default is a
   guess about your workflow, not about the API).
 - On this instance: `catalog.provider.manage` for every step, plus `catalog.provider.credential`
@@ -57,7 +57,7 @@ bytes come from (row 18). Both are key names and value types only: no values, no
 credential, and the prompt goes to stderr. Read the three groups in this order:
 
 1. **EXPECTED BY THIS DRIVER, ABSENT** - the wrong guesses, and the answer this page exists for.
-   Each entry reads `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen.
+   Each entry reads `key|alternatives (CONSTANT_NAME)`, so it identifies the constant to widen.
    `(none)` means every guess matched.
 2. **IN THE RESPONSE, NOT MAPPED** - what your collective sent that the driver ignores. The fix for
    an absent guess is usually sitting here: ABSENT `expiration_date (AVAILABLE_UNTIL_KEYS)` beside
@@ -78,11 +78,11 @@ row and that header disagree, the header is right and this table is stale.
 | # | The assumption | How the report answers it | Fix it in `providers/acquia-dam.ts` |
 |---|---|---|---|
 | 1 | The REST base is `https://api.widencollective.com/v2` | Not in the diff: the report's first line prints the path it called. A wrong base fails step 1 as `acquia-dam api 404` or a DNS error | `options.baseUrl` on the provider entry; the default is `DEFAULT_BASE` |
-| 2 | Listing is `GET /assets?limit=100&offset=<n>&expand=file_properties,embeds,thumbnails` | The first line names the exact call, `expand=` list included; `envelope: items: object[] (N)` says how many came back. A `400` here is usually an `expand` name Widen does not know | `listPath` and `PAGE_SIZE` |
+| 2 | Listing is `GET /assets?limit=100&offset=<n>&expand=file_properties,embeds,thumbnails` | The first line identifies the exact call, `expand=` list included; `envelope: items: object[] (N)` says how many came back. A `400` here is usually an `expand` name Widen does not know | `listPath` and `PAGE_SIZE` |
 | 3 | A collective is scoped with `&search=<query>`, in Widen's own query syntax | Re-run step 1 with and without `--options '{"query":"…"}'` and compare the sample totals; shape mode reports the query only as the path it called. A query the API rejects fails as a `400`, not as an empty page | `listPath`; the query itself is `options.query` on the entry |
 | 4 | Auth is `Authorization: Bearer <token>` on every call | Not in the report: a wrong scheme fails as a `401`, the same symptom as a wrong token, so rule the token out in the Widen UI first | The `api` helper's headers |
-| 5 | The asset array rides `items` | The `record:` line names the key that held it, or says no record array was found and lists `items (LIST_ENVELOPE_KEYS)` under ABSENT with the real key in NOT MAPPED | `LIST_ENVELOPE_KEYS` |
-| 6 | The envelope carries `total_count` | `envelope: total_count: number` confirms it. Nothing breaks if it is absent: this driver pages by "was the page full", never by the total | `TOTAL_COUNT_KEYS` |
+| 5 | The asset array rides `items` | The `record:` line identifies the key that held it, or says no record array was found and lists `items (LIST_ENVELOPE_KEYS)` under ABSENT with the real key in NOT MAPPED | `LIST_ENVELOPE_KEYS` |
+| 6 | The envelope carries `total_count` | `envelope: total_count: number` confirms the total count. Nothing breaks if it is absent: this driver pages by "was the page full", never by the total | `TOTAL_COUNT_KEYS` |
 | 7 | The asset id is `id`, then `external_id` | ABSENT `id\|external_id (RECORD_ID_KEYS)`. An asset with no readable id throws rather than federating silently | `RECORD_ID_KEYS` |
 | 8 | The filename is `filename` | ABSENT `filename (FILENAME_KEYS)`, with the real name in NOT MAPPED. Recoverable: the id becomes the name | `FILENAME_KEYS` |
 | 9 | Approval rides `status` | ABSENT `status (STATUS_KEYS)`. An absent status is treated as approved, so a wrong key here fails open - catch it by reading the report, not by symptom | `STATUS_KEYS` |
@@ -113,7 +113,7 @@ lw providers materialize acme-widen --remote-id a1b2c3 --json
 ```
 
 `--remote-id` filters the walk rather than skipping it, so keep `options.query` narrow. Every
-per-asset failure prints under the summary as `<remoteId>: <message>`, and each message names the
+per-asset failure prints under the summary as `<remoteId>: <message>`, and each message identifies the
 assumption, the constant and this page.
 
 Fidelity - the one that matters most for this kind, because a Widen embed is a conversion and
@@ -126,7 +126,7 @@ shasum -a 256 /tmp/widen-lolly.bin
 file /tmp/widen-lolly.bin
 ```
 
-The format segment is `original`, not `download`: this kind names its single format after the
+The format segment is `original`, not `download`: this kind identifies its single format after the
 embed it reads. Download the same asset from the Widen UI as the original, checksum both, then:
 
 - **Checksums match** - strike row 18.

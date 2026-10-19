@@ -1,6 +1,6 @@
 # Identity and sessions
 
-Two principals, two cookies, two token domains. Everything is a signed, stateless token - 
+Two principals, two cookies, two token domains. Everything is a signed, stateless token -
 there is no session table.
 
 ![The People directory - every signed-in member with role, groups and instant lockout](shots/people-directory.svg)
@@ -170,7 +170,7 @@ is accepted and its groups join; and the sign-in joins the existing person who h
 the same verified email (see [one person, several sign-ins](#one-person-several-sign-ins)),
 unless that person's only verified sign-ins are pinned to a directory. A password
 brings no IdP groups. The password sign-in itself is stored as unverified: an admin
-typed the address, no mailbox proved it. So a later sign-in through another provider
+typed the address, no mailbox proved ownership. So a later sign-in through another provider
 never joins an account by a password's address; a person who wants both adds the other
 one from their profile while signed in with the password.
 
@@ -184,7 +184,7 @@ attempts in a row without a success lock the address for 15 minutes (a success r
 the count). An attempt is counted before its password is checked, so a burst of
 parallel guesses gets no more than ten checks, and attempts during a lock are not
 counted. An admin or owner can unlock a person from the console (Unlock) without
-making them choose a new password; anyone can lock an address by guessing at it. An
+making them choose a new password; anyone can lock an address by guessing the password. An
 unknown address, a wrong password and a locked address all get the same answer: "That
 email and password do not match." The form carries a signed double-submit token
 against login CSRF. Passwords are stored as scrypt hashes; passwords, hashes and link
@@ -232,10 +232,10 @@ The checks run in this order, and the first that applies decides:
    a fresh account the lists or their invitation would admit. Re-enable each of their
    accounts to let them back in.
 2. Per-IdP pins: when `hostedDomain` is set, Google's `hd` claim must equal it; when
-   `tenantId` is set, Entra's `tid` claim must equal it. A mismatch, or a missing claim,
+   `tenantId` is set, Entra's `tid` claim must equal that tenant ID. A mismatch, or a missing claim,
    always refuses, whatever the lists say.
 3. With no `idp.admission` block, every verified sign-in is admitted. This is the
-   behaviour before admission existed, and production setup shows a warning for it.
+   behaviour before admission existed, and production setup shows a warning about that behaviour.
 4. Otherwise an email the IdP does not vouch for (see below) is refused before the lists
    are read, so the refusal never says whether an address is listed or invited.
 5. Then one of these admits: an open invitation for the email (while `invitations`
@@ -260,7 +260,7 @@ and you must choose `trusted` on purpose for an IdP whose usernames you control.
 
 A reverse proxy is the authority for the address it sends, so proxy sign-ins count as
 verified. The refusal page starts with the workspace name ("lolly.ing is invite only"),
-names the account the person used, says to sign in with the account the invitation went
+identifies the account the person used, says to sign in with the account the invitation went
 to or to ask an admin, and links to `/api/auth/login?prompt=select_account` so a browser
 holding several accounts can pick another (behind a proxy only the proxy can switch
 accounts, so the link is left out). With `policy.requests.join` on, a person refused as
@@ -274,7 +274,7 @@ person is no longer admitted.
 
 **Invitations.** Admins and owners (the `user.invite` permission) invite people by email
 from **Invite people** on the console's People view, with `lw invite add`, or with
-`POST /api/v1/invitations` (see [the API](api.md#invitations)). An invitation names one
+`POST /api/v1/invitations` (see [the API](api.md#invitations)). An invitation identifies one
 address, stored lowercased, plus optional local groups and an optional expiry of at most
 366 days. Nothing is emailed: every pending invitation has a personal
 [invite link](#invite-links), which the console copies on its own or inside a
@@ -327,7 +327,7 @@ owner role. `idp.bootstrapOwners` lists the emails that get the owner group when
 account is first created:
 the first name in `roleGroups.owner`, else the literal `owner`. It applies only to an
 admitted person with a verified email. The group is stored in local membership and
-an owner may remove it later; subsequent sign-ins do not restore it. Each grant writes an
+an owner may remove it later; subsequent sign-ins do not restore the grant. Each grant writes an
 `auth.bootstrap-owner` audit row. Every bootstrap owner must be admitted by `emails` or
 `domains`, and the server refuses a config where one is not. That check reads the lists
 only: a `hostedDomain` or `tenantId` pin can still refuse the owner's account, so check
@@ -364,7 +364,7 @@ to join and to use another account write the `access.*` rows listed in
 
 ### Planned sign-ins
 
-`idp.pending` lists provider names that appear as disabled choices on sign-in and invitation pages. For example, `"pending": ["SUSE ID"]` shows **SUSE ID (pending)** without adding an authentication route. Remove the name when adding the registered OIDC provider to `idp.additional`.
+`idp.pending` lists providers that appear as disabled choices on sign-in and invitation pages. For example, `"pending": ["SUSE ID"]` shows **SUSE ID (pending)** without adding an authentication route. Remove the name when adding the registered OIDC provider to `idp.additional`.
 
 For SUSE ID, obtain the app's actual issuer and client ID from its administrator, register `https://lolly.ing/api/auth/callback`, and store its secret in the environment variable named by `clientSecretRef`. The discovery URL is specific to the app registration. Existing admission, invitation and email-verification checks also apply to this provider.
 
@@ -472,7 +472,7 @@ GitHub lets anyone add any address to an account without proving it, so an accou
 with no verified address is refused on every instance, open or not, with a page asking
 the person to add and confirm one (`auth.failed`, reason `no-email`). For the same
 reason a GitHub entry accepts only `emailVerification: "claim"` (the default); the
-server refuses `trusted` on it. "Keep my email addresses private" in GitHub does not
+server refuses `trusted` for that provider. "Keep my email addresses private" in GitHub does not
 hide the list from this app: `user:email` reads private addresses too, so the address
 shown in Lolly Work may differ from the public profile. For invitations only, every
 other verified address on the account counts too (see
@@ -500,11 +500,11 @@ in, and the address they sign in with must be the invited one. The token is sign
 stored (see [the API](api.md#invite-links-and-access-requests)), so every inviter who added
 a project to an invitation can copy a working link at any time.
 
-**The invite page.** Opening a link shows a page with no script on it. It says who invited
+**The invite page.** Opening a link shows a page with no script. It says who invited
 the person, to which project and with which role, which address to use, and when the
 invitation ends:
 
-- the heading names the inviter and the project ("Andy invited you to Brand refresh"), or
+- the heading identifies the inviter and the project ("Andy invited you to Brand refresh"), or
   the workspace for a workspace link ("Andy invited you to lolly.ing"). Each link shows
   its own project only, never the others the invitation carries. An archived project is
   shown as a workspace invite;
@@ -549,7 +549,7 @@ address to use without filling it in. When the sign-in comes back:
 - **The address matches.** The sign-in finishes as usual, the invitation is accepted, and
   Lolly opens on the project (`/#/team/project/<id>`), or on `/` for a workspace link.
 - **Another address, not admitted.** The page "This is not the invited account" (403)
-  names both addresses (the invited one masked) and offers **Use a different account**
+  identifies both addresses (the invited one masked) and offers **Use a different account**
   and [Ask to use this account](#using-another-account). No user row is written. The
   audit log gets `auth.denied` (reason `not-invited`, with `invitationId`) and
   `invite.wrong-account` with `admitted: false`.
@@ -606,7 +606,7 @@ manager who may invite new people.
 ### GitHub addresses
 
 GitHub accounts often carry several verified addresses: a personal one as primary and a
-work one beside it. For invitations, and only for invitations, a GitHub sign-in counts
+work account alongside the personal account. For invitations, and only for invitations, a GitHub sign-in counts
 every verified address on the account (up to 10; never the
 `users.noreply.github.com` commit address). So a person invited at their work address can
 sign in with a personal GitHub account that has the work address verified on it, and the
@@ -626,7 +626,7 @@ offers **Ask to join**: "Ask the admins of lolly.ing to let sam.k@gmail.com in."
 optional note of up to 280 characters. The request carries the address the sign-in just
 verified, never a typed one. With it off, the page says to ask the person who invited them
 to invite this address. Other refusals (a disabled account, an unverified email, a
-`hostedDomain` or `tenantId` mismatch) never offer it.
+`hostedDomain` or `tenantId` mismatch) never offer that sign-in route.
 
 - **Who answers.** Every enabled account that may invite new people (`policy.invites.allow`;
   on lolly.ing, admins and owners). They see the request in the console's Requests card on
@@ -678,7 +678,7 @@ them."
 A person may sign in with Google one day and GitHub the next. Both sign-ins belong to
 one user: the same projects, groups, inbox and role. Each sign-in is an identity (one
 IdP subject, such as `github:4242`), and `user_identities` (migration 0039) links each
-identity to one user. The session cookie always names the user's own `users.sub`, the
+identity to one user. The session cookie always identifies the user's own `users.sub`, the
 subject the account was created with, whichever sign-in was used.
 
 **How a sign-in finds its user.** After the IdP proves who the person is, and before
@@ -784,7 +784,7 @@ address.
 ## The dev provider
 
 `dev.enabled: true` plus a `dev.users` list enables `GET /api/auth/dev?email=…`: a
-passwordless local sign-in for development, demos and tests. It bypasses OIDC entirely - 
+passwordless local sign-in for development, demos and tests. It bypasses OIDC entirely -
 keep it off in production. The Helm values ship it disabled.
 
 ## Reverse-proxy sign-in
@@ -829,7 +829,7 @@ and an `auth.proxy.rejected` audit row; the presented value is never recorded. T
 stops a process on the same host from reaching the instance port directly and naming
 itself an owner: only the proxy knows the secret, and it injects the header on every request
 it forwards. In production the variable is required whenever the provider is enabled; the
-server refuses to boot without it.
+server refuses to boot without that secret.
 
 **Static grants.** `groups` maps a login to groups that are unioned in at every sign-in -
 the way a deployment gives its first owner the `owner` group before any directory or group
@@ -912,7 +912,7 @@ explicit empty arrays disable that mapping. Names are exact, case sensitive and 
 contain commas. Duplicate assignments and wildcard names are refused. Existing accounts
 resolve roles from the current mapping on authenticated reads, including directory paging.
 Local group editing can grant any mapped role and remains an audited administration action.
-Additional issuers namespace subjects, not groups; choose distinct names when authority differs.
+Additional issuers namespace subjects, not groups; choose distinct group identifiers when authority differs.
 
 [Customer setup](customer-setup.md) validates mappings, previews the intended owner,
 generates deployment files and requires a real owner sign-in before its preview API removes
@@ -1020,7 +1020,7 @@ live session of the disabled person therefore dies on its next request; there is
 to ride out. SCIM `active=false` (above) composes exactly this. Two further notes:
 
 - The epoch kills all of a person's sessions at once. `bumpSessionEpoch` is the
-  lever for signing the whole account out without disabling it. Local logout
+  lever for signing the whole account out without disabling the account. Local logout
   separately revokes the current browser's session chain and any guest cookie;
   replaying those cookies cannot restore access. Renewals carry the same revocation
   id. Older cookies use a token-specific fallback carried into renewal, leaving
@@ -1034,7 +1034,7 @@ to ride out. SCIM `active=false` (above) composes exactly this. Two further note
   (`429 RATE_LIMITED`, `retry-after`). Audited as `user.sessions.revoked` with the person
   as both actor and subject and payload `{ self: true }`; the admin route
   (`POST /api/v1/users/:id/revoke-sessions`, `grant.edit`) writes the same action without
-  it. A plain logout still ends only the browser it is sent from.
+  that self marker. A plain logout still ends only the browser it is sent from.
 - A group or role change is **immediate for API authorization**: `requireAction` resolves
   the live user record on every request and ignores the role baked into the cookie. What
   waits for the next token mint is only the role the shell's own token *claims*; lowering
@@ -1043,7 +1043,7 @@ to ride out. SCIM `active=false` (above) composes exactly this. Two further note
 ## Guest sessions
 
 A guest-edit link admits someone with no account: `GET /l/:id?s=…` mints an `lw_guest`
-cookie scoped to that link's tool (and session, if the link names one), for whatever
+cookie scoped to that link's tool (and session, if the link identifies one), for whatever
 remains of the link's lifetime. Guests carry the `guest` role, which grants **nothing** by
 default - their access is entirely link-scoped. Links can carry a password (scrypt-hashed),
 and `policy.guestLinks.maxTtlHours` caps the lifetime regardless of what the minting UI

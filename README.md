@@ -45,19 +45,17 @@ are in [`docs/install.md`](docs/install.md); the full operator set is in `docs/`
 
 ## Documentation
 
-Two sets, different jobs:
+The complete Lolly and Work documentation lives at **<https://lolly.tools/info>**.
+The canonical Markdown and navigation are maintained in the [Lolly repository](https://github.com/lolly-tools/lolly/tree/main/docs).
 
-- **`docs/`** - operator and administrator documentation for a *deploy*: install,
-  deployment shapes, the full config reference, identity, roles/grants, governance,
-  catalog, approvals, rendering/sharing, telemetry, audit, operations runbook, API and
-  CLI references, a per-platform onboarding guide for every catalog provider kind
-  (`docs/providers/`), and an honest status page. Start at [`docs/README.md`](docs/README.md).
-  **Every page is served in the console at `/admin#/docs`**, so whoever runs a deploy
-  doesn't need this repository - `docs/docs.json` is the manifest that surface reads.
+This repository's `docs/` directory is a generated, version-pinned bundle for the
+console at `/admin#/docs` and offline installations. Existing guide links continue
+to work. `docs-pin.json` records the exact canonical source and every file hash;
+`pnpm run verify:docs-pin` checks the bundle without a separate Lolly checkout.
 
-The open-source half of Lolly documents itself at **`/info/`** on any Lolly deployment;
-the console links there when this deploy serves or points at one (`instance.appUrl` /
-`instance.shellDir`).
+To change a guide, edit its canonical source, then follow the
+[bundle update instructions](docs/README.md). Keep the docs pin appropriate for the
+Work release; updating documentation does not repin the engine.
 
 ## Layout
 

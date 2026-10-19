@@ -122,7 +122,7 @@ gates. Generating a hostname does not register an OIDC client or move DNS.
 Choose managed PostgreSQL when its operations, availability and recovery policy
 fit the deployment. [UpCloud's managed database service](https://upcloud.com/global/products/managed-databases/)
 provides PostgreSQL and backup options. Price the actual database, storage and
-backup configuration before provisioning it. On Evroc, use a reviewed external
+backup configuration before provisioning the database. On Evroc, use a reviewed external
 service or the local option; no managed PostgreSQL product has been assumed.
 Neither VM module creates a database.
 
@@ -136,7 +136,7 @@ The database service is not part of the default deployment and no port is publis
 For a migration, use PostgreSQL client tools at least as new as the source server.
 Keep credentials in a mode-0600 libpq service/password file rather than a command
 argument. For example, `~/.pg_service.conf` can define `lolly-source` and
-`lolly-target` with host, port, database, user and TLS mode; `PGPASSFILE` names the
+`lolly-target` with host, port, database, user and TLS mode; `PGPASSFILE` identifies the
 separate password file. PostgreSQL documents [password-file permissions](https://www.postgresql.org/docs/17/libpq-pgpass.html).
 
 Rehearse on a separate database first. The helper creates a custom-format dump,
@@ -186,7 +186,7 @@ operator-controlled tunnel. Do not add a public PostgreSQL port for the helper.
 Before the final dump, stop the server and every
 other writer using the source database; preserve the render/relay overlays and
 wait for the collaboration drain. Restore into the empty target, then run
-migrations against it. Add the override to the complete Compose file list only
+migrations against that database. Add the override to the complete Compose file list only
 for the reviewed server cutover. Subsequent deployments must use that same file
 list; the existing `push.sh` base-only path does not manage this optional database.
 

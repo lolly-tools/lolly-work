@@ -74,7 +74,7 @@ that every stored byte is present and intact.
 History has two separate storage paths. Legacy `session_revisions` keeps the
 newest 20 revisions. Saved session versions have a separate paginated history,
 retention rules and space limits; the preview samples at most 100 version
-summaries per visible session. A full sample may have more rows behind it. Live
+summaries per visible session. A full sample may have more rows behind the preview. Live
 collaboration also has a compacted checkpoint and recovery journal, which is not
 a complete edit history. The preview does not transfer any of these stores.
 

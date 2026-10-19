@@ -221,7 +221,7 @@ an internal issuer. Dokploy's proxy has its own certificate settings.
   pulls on any node that lacks an image, keep the registry available while the
   cluster runs. If admission control checks image signatures, copy the
   signatures as well and test that check against your registry before relying
-  on it.
+  on that signature check.
 - **Dokploy.** The blueprint uses the same server image, PostgreSQL image and
   archive URL, so make the same replacements in its Compose editor. Dokploy's own
   installation and proxy have their own download sources.

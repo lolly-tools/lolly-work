@@ -56,16 +56,16 @@ POST /api/v1/catalog/submit?name=Campaign%20Hero&tags=campaign,hero&groups=desig
 ```
 
 The bytes ride the raw request body; the declared metadata rides query params (`name`,
-`description`, `tags`, `type`, `groups`). The response names the new `inst/<id>` asset, its
+`description`, `tags`, `type`, `groups`). The response identifies the new `inst/<id>` asset, its
 checksum, and the state it arrived in.
 
 **Open to authors is the default.** Anyone holding `catalog.submit` submits, and the asset is
-live the moment it is stored. An org that wants review names an approval chain in
+live the moment it is stored. An org that wants review identifies an approval chain in
 `policy.submit.chain`; then a submission waits in state `submitted`, invisible in the feed,
-unservable at `/catalog/*` and not linkable, until an approver publishes it. Defaults set
+unservable at `/catalog/*` and not linkable, until an approver publishes the asset. Defaults set
 direction; limits are something an org chooses.
 
-Once chosen, the limit holds: if `policy.submit.chain` names a chain this instance does not
+Once chosen, the limit holds: if `policy.submit.chain` identifies a chain this instance does not
 have - a rename, a deletion, a first boot in the wrong order - submissions are refused with
 `503 SUBMIT_CHAIN_MISSING` naming the chain to fix - a refusal, never silently-open
 publishing.
@@ -106,7 +106,7 @@ POST /api/v1/catalog/submit?type=user-tool                               # body:
 
 A template body is `{ "toolId", "name", "description"?, "values" }`, the file the app's
 **Export as file** writes plus the tool id (which `toolId=` supplies when the file does not
-carry it). A user tool body is `{ "baseToolId", "title", "description"?, "icon"?, "formats"?,
+carry the tool id). A user tool body is `{ "baseToolId", "title", "description"?, "icon"?, "formats"?,
 "values" }`. The `name` query param is optional for both; the document's own name is used.
 
 Before anything is hashed or stored the server checks that the body is one JSON object at most
@@ -120,14 +120,14 @@ The review queue shows what each one seeds ("Template for Design (design), 12 va
 file would show a thumbnail, and keeps its type: a reviewer can rename or retag it but not turn
 it into an image. Once live it composes into the feed as an asset of type `template` or
 `user-tool` with one `json` format, and its entry's `meta` carries `toolId` (or `baseToolId`)
-and `valueCount`, so an app can offer it before downloading it.
+and `valueCount`, so an app can offer it before downloading the collection.
 
 ### Choosing a collection while reviewing
 
 `PATCH /api/v1/catalog/submissions/<id>` takes `"collectionId": "launch-kit"` (or `null` to
 clear it) from a reviewer who also holds `catalog.collection.manage`. Nothing joins while the
 submission waits: on approval the asset is appended to that collection, keeping the curated
-order, and the approval's audit event names the collection. A collection deleted in the
+order, and the approval's audit event identifies the collection. A collection deleted in the
 meantime is left alone.
 
 A submitting client can also pass `clientRef=<its own reference>` on submit. It is echoed
@@ -156,7 +156,7 @@ the inbox. Audit records `catalog.submit`, `catalog.approve-submission` and
 `catalog.return-submission`; a refused submission is audited too, because nothing was stored
 to hang the event off otherwise.
 
-**A reviewer can fix the metadata rather than return the asset over it.** `PATCH` corrects a
+**A reviewer can fix the metadata rather than return the asset over a metadata error.** `PATCH` corrects a
 pending submission's declared `name`, `type`, `tags` and `description`, fills in the
 org's own [custom fields](#org-defined-metadata) (`"fields": { "region": "EMEA" }`) on the same
 overlay a published asset uses, and takes the submitter's on-device [`extractedText`](#org-defined-metadata)
@@ -173,7 +173,7 @@ route. It reports whether the asset went live or is waiting for review.
 The console's Catalog view shows the queue above the served assets. Reviewing one opens a panel
 below the table with the preview, the metadata as an editable form, and the decision with its
 comment - the same place the served-asset inspect panel opens. Approving saves an unsaved
-correction first, so a fixed name is never lost on the way to publishing it. From a terminal:
+correction first, so a fixed name is never lost on the way to publishing the asset. From a terminal:
 
 ```bash
 lw catalog submit ./hero.png --name "Campaign Hero" --tags campaign,hero --groups design
@@ -186,7 +186,7 @@ lw catalog return  inst/ab12cd34 --body "wrong logo lockup"
 ## Org-defined metadata
 
 Tags are a flat list, and for a long time they were the only taxonomy an org had. Custom
-fields are the other half: an org names the fields it files assets under, and fills them in on
+fields are the other half: an org identifies the fields it files assets under, and fills them in on
 any asset this deploy serves.
 
 The two halves have different owners on purpose.
@@ -255,7 +255,7 @@ bag ignores it, one that renders unknown keys shows the values as ordinary rows,
 version is ever required in lockstep. `GET /api/v1/catalog/search` matches the values too, so
 an asset is findable by what an org filed it under.
 
-**Find it by the words on it.** An asset's overlay can also carry `extractedText` - the OCR
+**Find an asset by its text.** An asset's overlay can also carry `extractedText` - the OCR
 text of the asset, produced **on the device** that submits or curates it (the same reader the
 shell already ships). The server never runs a model: the client posts the text and it is
 whitespace-collapsed, capped, and folded into the `GET /api/v1/catalog/search` haystack beside
@@ -437,7 +437,7 @@ lw catalog supersede inst/hero-2026 inst/hero-2027    # or: lw catalog supersede
 
 It writes `replacedBy` onto the asset, which rides the served feed additively (the key is
 already in the open-source asset schema, so a shell that does not read it yet simply ignores
-it). Any asset takes one - pack, federated or instance-owned - because it names a successor id
+that key). Any asset takes one - pack, federated or instance-owned - because it identifies a successor id
 rather than editing a record this deployment owns. The successor has to be an asset you can
 see, and an asset cannot replace itself.
 
@@ -604,7 +604,7 @@ touched.
 A rule is a list of exact tags or prefixes ending in `*` (`internal:*`), matched without regard
 to case, in one of two scopes: `*` for every entry the catalog serves (pack, uploads and every
 provider), or `provider:<id>` for one provider's entries. The `provider:<id>` tag itself is
-never hidden, because apps filter by it.
+never hidden, because apps filter by source.
 
 The rules are applied when the index is served, not when a provider syncs. Hiding and showing a
 tag both take effect on the next catalog read, nothing re-syncs, and a hidden tag is still
@@ -617,7 +617,7 @@ PUT /api/v1/catalog/tags/rules  { "scope": "provider:brand-dam", "hidden": ["leg
 ```
 
 The instance scope needs `policy.edit` and a provider scope needs `catalog.provider.manage`.
-`hide` and `show` edit the list; `hidden` replaces it. Every change is audited as
+`hide` and `show` edit the list; `hidden` replaces the list. Every change is audited as
 `catalog.tags.update` with the list before and after, and the rules ride the policy document as
 `tagRules`.
 
@@ -632,7 +632,7 @@ those show in the list as set in instance.json.
 Credentials are **write-only**. A stored credential is sealed with AES-256-GCM under
 `LW_CREDENTIAL_SECRET`; APIs only ever return a display fingerprint (hash prefix +
 last four). Storing one requires the owner-only `catalog.provider.credential`, and so does
-the `enable` kill switch - an admin can shape a provider, but only an owner arms it.
+the `enable` kill switch - an admin can shape a provider, but only an owner enables the provider.
 
 Config-managed providers (declared in `instance.json`) are upserted at boot as
 `managedBy: 'config'`, name their secret via `credentialRef` (an env var name), and are
@@ -734,7 +734,7 @@ is pending. Removed or inaccessible sources do not receive this deferral.
 The answer includes `{ assets, total, nextCursor, facets, version, sources, complete, countsScope, capabilities }`. Entries have the same shape as
 the feed's, sorted by name and then id; `total` counts every match; `facets` counts the
 matches by `sources`, `sections`, `collections`, `tags` (top 50), `types` and taxonomy nodes (top 200). `facets.truncated` identifies capped value lists. `version` is
-the feed version the page came from. The cursor names the last entry returned, so an insertion before that position does not shift later page offsets. Renames, removals and changing membership can alter a walk; refresh to read the current listing. This is not a historical snapshot.
+the feed version the page came from. The cursor identifies the last entry returned, so an insertion before that position does not shift later page offsets. Renames, removals and changing membership can alter a walk; refresh to read the current listing. This is not a historical snapshot.
 
 The shell requests `?paged=1` during catalog startup and shows shared records in bounded
 pages. Cold providers sync in the background and appear as pending; cached/outage and
@@ -785,6 +785,8 @@ read does. A part never enters the memory cache. A stale `If-Range` validator re
 current file, and a range outside the file returns `416`. Pinned local copies, previews and other
 sources return the whole file. A pinned copy is read from the store from its first byte, so serving
 it in parts would read the whole file again for every part.
+
+<a id="the-exit---materialize-a-source-into-your-own-store"></a>
 
 ### The exit - materialize a source into your own store
 
@@ -873,7 +875,7 @@ project *includes an integration for* those services and is not affiliated with 
   [IntelligenceBank](providers/intelligencebank.md), [Penpot](providers/penpot.md),
   [git](providers/git.md), [Dropbox](providers/dropbox.md), [Google Drive](providers/gdrive.md),
   [M365](providers/o365.md)).
-- **Connecting your first one, end to end:** [install section 9](install.md#9-connect-a-source).
+- **Connect your first source:** [install section 9](install.md#9-connect-a-source).
 - **Leaving a DAM:** [off-boarding](offboarding.md).
 - Restricting tools and inputs: [governance](governance.md)
 - Serving and sharing what the catalog holds: [sharing](sharing.md)
