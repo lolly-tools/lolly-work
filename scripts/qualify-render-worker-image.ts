@@ -132,10 +132,11 @@ export function publicResourceDigests(root: string): Record<string, string> {
 export function documentationResourceDigests(root: string): Record<string, string> {
   const resources: Record<string, string> = Object.create(null);
   let entries = 0, files = 0;
-  for (const suffix of ['', 'covers']) {
+  // A Lolly source that carries the Work guides also mirrors their shots to /info/shots/work/.
+  for (const suffix of ['', 'covers', 'work']) {
     const directory = join(root, 'docs/shots', suffix);
     if (!existsSync(directory)) continue;
-    for (const parent of ['docs', 'docs/shots', ...(suffix ? ['docs/shots/covers'] : [])]) {
+    for (const parent of ['docs', 'docs/shots', ...(suffix ? [`docs/shots/${suffix}`] : [])]) {
       const meta = lstatSync(join(root, parent)); assert.ok(meta.isDirectory() && !meta.isSymbolicLink());
     }
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
