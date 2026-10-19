@@ -257,11 +257,14 @@ for (const { name, skip, withStore } of drivers) {
       return orphan;
     };
     let fail = false;
-    const runner = new DurableAutomationRunner(store, blobs, { convert: async () => { if (fail) throw new Error('codec failed'); return { mime: 'text/plain', bytes: new TextEncoder().encode('published') }; } });
+    // The fenced terminal save precedes blob cleanup. A Postgres reader can
+    // observe that save before the sweep finishes; onComplete follows both.
+    const completed = new Set<string>();
+    const runner = new DurableAutomationRunner(store, blobs, { convert: async () => { if (fail) throw new Error('codec failed'); return { mime: 'text/plain', bytes: new TextEncoder().encode('published') }; } }, { onComplete: async job => { completed.add(job.id); } });
     try {
       const recovered = queued(); const orphan = await crashedAfterStore(recovered);
       await runner.poll();
-      const done = await until(() => store.getAutomationJob(recovered.id, recovered.principal), current => current?.state === 'done');
+      const done = await until(() => store.getAutomationJob(recovered.id, recovered.principal), current => current?.state === 'done' && completed.has(current.id));
       assert.equal(done!.resultRef, attemptResultRef(recovered.id, 2));
       assert.ok(await blobs.get(done!.resultRef!), 'the published attempt keeps its bytes');
       assert.equal(await blobs.get(orphan), null, 'the crashed attempt\'s bytes are removed');
@@ -269,7 +272,7 @@ for (const { name, skip, withStore } of drivers) {
       fail = true;
       const failing = queued({ jobRetries: 0 }); const failedOrphan = await crashedAfterStore(failing);
       await runner.poll();
-      await until(() => store.getAutomationJob(failing.id, failing.principal), current => current?.state === 'failed');
+      await until(() => store.getAutomationJob(failing.id, failing.principal), current => current?.state === 'failed' && completed.has(current.id));
       assert.equal(await blobs.get(failedOrphan), null, 'a final failure also removes earlier attempts\' bytes');
     } finally { runner.stop(); }
 
