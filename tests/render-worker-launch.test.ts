@@ -29,13 +29,13 @@ test('worker browser startup budget cannot be disabled or made unbounded', () =>
 test('packaged worker keeps Node and Playwright versions with a glibc browser installation', () => {
   const docker = readFileSync(new URL('../workers/render/Dockerfile', import.meta.url), 'utf8');
   const lock = readFileSync(new URL('../workers/render/pnpm-lock.yaml', import.meta.url), 'utf8');
-  assert.match(docker, /^FROM node:26\.11\.1-bookworm-slim@sha256:[a-f0-9]{64}$/m);
+  assert.match(docker, /^FROM node:26\.12\.0-bookworm-slim@sha256:[a-f0-9]{64}$/m);
   assert.match(docker, /PLAYWRIGHT_BROWSERS_PATH=\/opt\/lolly-browsers/);
   assert.match(docker, /pnpm install --frozen-lockfile --prod[\s\S]*pnpm exec playwright-core install --with-deps chromium/);
   assert.match(docker, /chmod -R a\+rX \/opt\/lolly-browsers/);
   assert.match(docker, /^USER node$/m);
   assert.doesNotMatch(docker, /LOLLY_BROWSER_PATH=|apk add|--privileged|SYS_ADMIN/);
-  assert.match(lock, /playwright-core:[\s\S]*version: 1\.64\.0/);
+  assert.match(lock, /playwright-core:[\s\S]*version: 1\.64\.1/);
   const server = readFileSync(new URL('../workers/render/src/server.ts', import.meta.url), 'utf8');
   assert.match(server, /return chromium\.launch\(browserOptions\)/);
   assert.match(server, /if \(MAIN\) void getBrowser\(\)\.catch/);

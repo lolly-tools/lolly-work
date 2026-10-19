@@ -12,7 +12,7 @@ test('built worker authenticates TLS and HMAC and renders with the actual Linux 
   skip: process.env.LOLLY_RENDER_TLS_IMAGE_TEST !== '1' && 'Run in the built worker image with its reviewed sandbox policy.', timeout: 45000,
 }, async t => {
   assert.equal(process.getuid?.(), 1000); assert.equal(process.platform, 'linux');
-  assert.equal(process.versions.node, '26.11.1');
+  assert.equal(process.versions.node, '26.12.0');
   const directory = mkdtempSync(join(tmpdir(), 'worker-tls-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const cert = join(directory, 'tls.crt'), key = join(directory, 'tls.key');
