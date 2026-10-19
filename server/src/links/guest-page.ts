@@ -72,7 +72,7 @@ ${v.error ? `<p class="err" role="alert" id="guest-err">${esc(v.error)}</p>` : '
 <p class="muted" id="guest-name-hint">People you work with see this name.</p>
 ${v.password ? `<label class="field" for="guest-pw">Password</label>
 <input class="field" id="guest-pw" type="password" name="password" autocomplete="off" required autofocus${invalid}>` : ''}
-<button class="primary" type="submit">Join as a guest</button>
+<div class="row"><button class="primary" type="submit">Join as a guest</button></div>
 </form>
 ${v.signInHref ? `<p>Have an account on ${esc(v.workspace)}? <a href="${esc(v.signInHref)}">Sign in instead</a>.</p>` : ''}
 </div>`;
