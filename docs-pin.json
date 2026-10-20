@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "9151eb738fad42e6ed8b91457b83de92d972ae7c",
+  "commit": "4e7bafc8996f3b98449c12c2e15afa3f5feee855",
   "manifestSha256": "fec006cf3eac82ce269749a24b803b77ab9ca5cfd44d4dd606ba08c246e47998",
   "files": {
     "account-lifecycle.md": {
@@ -13,7 +13,7 @@
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
-      "sha256": "f5fe60bc359a71ad551360640b13684d7298ed21bba555fb410a0ec5413c0110",
+      "sha256": "d34478a0ceb286832da20ce5bdd2fa1020a60b3509d3a3fc73989f6cf40813ac",
       "source": "docs/work/api.md"
     },
     "application-release-classification.md": {
@@ -57,7 +57,7 @@
       "source": "docs/work/data-lifecycle.md"
     },
     "delivery.md": {
-      "sha256": "781f3b1777f011adbb278121613cfba5b09766a76f173b530016e415e8246475",
+      "sha256": "0528d7973ee41e0240315fb685b14476e0663aa36b38b3cd9ee6f7d044a739e6",
       "source": "docs/work/delivery.md"
     },
     "deployment.md": {
