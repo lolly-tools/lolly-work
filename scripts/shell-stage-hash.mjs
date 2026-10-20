@@ -8,7 +8,7 @@ const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const parts = []; let count = 0;
 for await (const bytes of process.stdin) { count += bytes.length; need(count <= 32 * 1024 ** 2, 'Input exceeds bound'); parts.push(bytes); }
 const input = JSON.parse(Buffer.concat(parts));
-need(path.isAbsolute(input.root) && fs.realpathSync(input.root) === input.root && Array.isArray(input.files) && input.files.length > 0 && input.files.length <= 120000, 'Canonical full-tree request required');
+need(path.isAbsolute(input.root) && fs.realpathSync(input.root) === input.root && Array.isArray(input.files) && input.files.length > 0 && input.files.length <= 130000, 'Canonical full-tree request required');
 const expected = new Map(); let total = 0;
 for (const file of input.files) {
   need(file.path && !file.path.startsWith('/') && !file.path.includes('\\') && file.path.split('/').every(part => part && part !== '.' && part !== '..') && !expected.has(file.path)

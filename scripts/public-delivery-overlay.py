@@ -8,7 +8,7 @@ coding decodes, models, resources and native HTTP remain independent gates.
 from __future__ import annotations
 import re
 
-MAX_FILES = 120_000
+MAX_FILES = 130_000
 MAX_BYTES = 8 * 1024**3
 MAX_MAP_BYTES = 64 * 1024**2
 MAP = ".delivery-etags.conf"

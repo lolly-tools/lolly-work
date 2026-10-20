@@ -197,7 +197,7 @@ function tree(root,limit){const files=[];let totalBytes=0;function walk(dir,pref
  const end=fs.fstatSync(fd);if(bytes!==s.size||end.ino!==s.ino||end.size!==s.size||end.mtimeMs!==s.mtimeMs)throw Error('changed');}finally{fs.closeSync(fd);}
  totalBytes+=s.size;files.push({path:relative,size:s.size,sha256:hasher.digest('hex')});}}}walk(root,'');files.sort((a,b)=>Buffer.compare(Buffer.from(a.path),Buffer.from(b.path)));
  return {version:1,files,totalBytes};}
-const result={version:1,shell:tree(shell,120000),pack:tree(pack,100000),pinSha256:hash(fs.readFileSync(pin))};
+const result={version:1,shell:tree(shell,130000),pack:tree(pack,100000),pinSha256:hash(fs.readFileSync(pin))};
 if(publicJwk){const jwk=JSON.parse(publicJwk),stable=v=>Array.isArray(v)?'['+v.map(stable).join(',')+']':
  v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+stable(v[k])).join(',')+'}':JSON.stringify(v);
 const index=fs.readFileSync(path.join(shell,'catalog/tools/index.json')),envelopeBytes=fs.readFileSync(path.join(shell,'catalog/tools/index.sig.json')),

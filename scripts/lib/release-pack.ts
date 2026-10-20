@@ -12,8 +12,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 // A complete shell release (application plus catalog) holds more files than the
 // catalog delivery inventory. The release bound matches server/src/lib/shell-release.ts
 // and MAX_SHELL_FILES in scripts/prepare-private-cohort.py.
-export const RELEASE_MAX_FILES = 120_000, INVENTORY_MAX_FILES = 100_000;
-const MAX_BYTES = 8 * 1024 ** 3, JSON_LIMIT = 32 * 1024 ** 2;
+export const RELEASE_MAX_FILES = 130_000, INVENTORY_MAX_FILES = 100_000;
+const MAX_BYTES = 8 * 1024 ** 3, JSON_LIMIT = 32 * 1024 ** 2, MAX_TREE_ENTRIES = 240_000;
 const SHA = /^[0-9a-f]{64}$/;
 const VERIFIER = 'scripts/verify-release-catalog.ts';
 const SIGNATURE = 'catalog/tools/index.sig.json';
@@ -170,7 +170,7 @@ function treeFiles(root: string): { paths: string[]; directories: Map<string, st
   const paths: string[] = [], directories = new Map<string, string>();
   let count = 0;
   function walk(path: string, depth: number): void {
-    requireValue(depth <= 64 && ++count <= RELEASE_MAX_FILES * 2, 'tree exceeds its depth or entry bound');
+    requireValue(depth <= 64 && ++count <= MAX_TREE_ENTRIES, 'tree exceeds its depth or entry bound');
     const directory = join(root, path), st = lstatSync(directory);
     requireValue(st.isDirectory() && !(st.mode & 0o022), 'tree directory must not be a symlink or writable by others');
     const names = readdirSync(directory).sort();
@@ -179,7 +179,7 @@ function treeFiles(root: string): { paths: string[]; directories: Map<string, st
       const leaf = path ? `${path}/${name}` : name; safePath(leaf);
       const st = lstatSync(join(root, leaf));
       if (st.isDirectory()) walk(leaf, depth + 1);
-      else { requireValue(st.isFile() && ++count <= RELEASE_MAX_FILES * 2, 'tree contains a link or special file'); paths.push(leaf); }
+      else { requireValue(st.isFile() && ++count <= MAX_TREE_ENTRIES, 'tree contains a link or special file'); paths.push(leaf); }
     }
   }
   walk('', 0);

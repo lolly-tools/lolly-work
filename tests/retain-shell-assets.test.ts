@@ -39,8 +39,8 @@ function fixture(t: { after: (fn: () => void) => void }) {
 test('regular files and directory entries have separate finite inventory bounds', () => {
   assert.doesNotThrow(() => requireInventoryCounts(99_111, 102_563));
   assert.doesNotThrow(() => requireInventoryCounts(100_746, 104_198));
-  assert.doesNotThrow(() => requireInventoryCounts(120_000, 200_000));
-  assert.throws(() => requireInventoryCounts(120_001, 120_002), RetentionRefusal);
+  assert.doesNotThrow(() => requireInventoryCounts(130_000, 200_000));
+  assert.throws(() => requireInventoryCounts(130_001, 130_002), RetentionRefusal);
   assert.throws(() => requireInventoryCounts(99_111, 200_001), RetentionRefusal);
   for (const [files, entries] of [[-1, 1], [1, 0], [0, -1], [1.5, 2], [1, 2.5], [NaN, 2], [1, Infinity]] as const) {
     assert.throws(() => requireInventoryCounts(files, entries), RetentionRefusal);
