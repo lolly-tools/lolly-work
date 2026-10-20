@@ -116,7 +116,7 @@ export function compileMap(files, models = []) {
   validators.unshift(`map_hash_bucket_size ${2 ** Math.ceil(Math.log2(Math.max(128, longest + 64)))};`,
     `map_hash_max_size ${2 ** Math.ceil(Math.log2(Math.max(2048, conditions.size)))};`);
   const result = validators.join('\n') + '\n';
-  need(Buffer.byteLength(result) <= 64 * 1024 ** 2, 'Map file exceeds reviewed bound');
+  need(Buffer.byteLength(result) <= 96 * 1024 ** 2, 'Map file exceeds reviewed bound');
   return result;
 }
 

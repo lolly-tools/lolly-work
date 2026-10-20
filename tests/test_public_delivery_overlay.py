@@ -62,6 +62,15 @@ class DeliveryOverlay(unittest.TestCase):
         self.new[m.MAP] = self.old[m.MAP]
         with self.assertRaises(m.Refusal): self.invoke()
 
+    def test_retained_root_maps_fit_a_finite_96_mib_bound(self):
+        self.assertEqual(m.MAX_MAP_BYTES, 96 * 1024**2)
+        for size in [74_420_515, m.MAX_MAP_BYTES]:
+            with self.subTest(size=size):
+                self.new[m.MAP]["size"] = size
+                self.invoke()
+        self.new[m.MAP]["size"] = m.MAX_MAP_BYTES + 1
+        with self.assertRaises(m.Refusal): self.invoke()
+
     def test_map_only_rewrite_is_not_a_frontend_update(self):
         n = copy.deepcopy(self.old); n[m.MAP] = self.new[m.MAP]
         with self.assertRaises(m.Refusal): self.invoke(new=n)

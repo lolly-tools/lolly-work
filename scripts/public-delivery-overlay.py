@@ -10,7 +10,7 @@ import re
 
 MAX_FILES = 130_000
 MAX_BYTES = 8 * 1024**3
-MAX_MAP_BYTES = 64 * 1024**2
+MAX_MAP_BYTES = 96 * 1024**2
 MAP = ".delivery-etags.conf"
 ROOT = "/usr/share/nginx/html"
 ANCHOR = "/run/lolly-public-overlay"
