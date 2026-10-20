@@ -121,7 +121,7 @@ services:
     cpus: 1
     restart: no
   db:
-    image: public.ecr.aws/docker/library/postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
+    image: docker.io/library/postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
     environment:
       POSTGRES_DB: lollywork
       POSTGRES_USER: lolly
@@ -270,7 +270,7 @@ services:
       content:
         condition: service_completed_successfully
   caddy:
-    image: public.ecr.aws/docker/library/caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    image: docker.io/library/caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     environment:
       LOLLY_DOMAIN: ${LOLLY_DOMAIN:?set LOLLY_DOMAIN}
     ports:

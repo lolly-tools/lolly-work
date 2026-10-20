@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-/** Read an immutable project file for catalog admission, checking every stored part. */
+/** Read an immutable project original for admission or delivery, checking every stored part. */
 import type { BlobStore } from '../blobs/types.ts';
 import { projectFileParts, PROJECT_FILE_MAX_BYTES, type ProjectFileRecord } from '../projects/files.ts';
 import { projectFilesEnabled } from '../projects/files.ts';
@@ -18,13 +18,14 @@ export class ProjectSubmissionError extends Error {
 
 export async function projectSubmissionInput(query: URLSearchParams, d: {
   config: InstanceConfig; store: Store; blobs: BlobStore; user: UserRecord;
+  maxBytes?: number;
   currentUser(): Promise<UserRecord | null>;
   access(user: UserRecord, project: NonNullable<Awaited<ReturnType<Store['getProject']>>>): Promise<ProjectAccess>;
 }) {
   const projectId = query.get('projectId'), fileId = query.get('fileId'), checksum = query.get('checksum');
   if (projectId === null && fileId === null && checksum === null) return null;
   if (!projectId || !fileId || !checksum || !/^[a-f0-9]{64}$/.test(checksum) || query.has('assetId') || query.has('type') || query.has('toolId')) {
-    throw new ProjectSubmissionError(400, 'INVALID_INPUT', 'projectId, fileId and checksum select one original file for a new catalog submission');
+    throw new ProjectSubmissionError(400, 'INVALID_INPUT', 'projectId, fileId and checksum select one original project file');
   }
   if (!projectFilesEnabled(d.config, d.store)) throw new ProjectSubmissionError(404, 'NOT_FOUND', 'project files are off');
   if (d.user.id.startsWith('svc_')) throw new ProjectSubmissionError(403, 'FORBIDDEN', 'project files need a signed-in person');
@@ -36,11 +37,12 @@ export async function projectSubmissionInput(query: URLSearchParams, d: {
   };
   if (!await stillReadable()) throw new ProjectSubmissionError(404, 'NOT_FOUND', 'project file is unavailable or changed');
   const file = (await d.store.getProjectFile(fileId))!;
-  if (file.size > d.config.policy.submit.maxBytes) throw new ProjectSubmissionError(413, 'PAYLOAD_TOO_LARGE', 'project file exceeds policy.submit.maxBytes');
+  const maxBytes = d.maxBytes ?? d.config.policy.submit.maxBytes;
+  if (file.size > maxBytes) throw new ProjectSubmissionError(413, 'PAYLOAD_TOO_LARGE', 'project file exceeds the configured byte limit');
   let bytes: Buffer;
-  try { bytes = await readProjectSubmission(file, d.blobs, d.config.policy.submit.maxBytes); }
-  catch { throw new ProjectSubmissionError(422, 'SOURCE_UNAVAILABLE', 'project file could not be verified; nothing was submitted'); }
-  return { source, bytes, contentType: file.contentType, stillReadable };
+  try { bytes = await readProjectSubmission(file, d.blobs, maxBytes); }
+  catch { throw new ProjectSubmissionError(422, 'SOURCE_UNAVAILABLE', 'project file could not be verified; no copy was made'); }
+  return { source, bytes, name: file.name, contentType: file.contentType, stillReadable };
 }
 
 export async function readProjectSubmission(file: ProjectFileRecord, blobs: BlobStore, maxBytes: number): Promise<Buffer> {

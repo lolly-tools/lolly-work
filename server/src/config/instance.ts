@@ -1,3 +1,5 @@
+import { validateBrandfolderDelivery, type BrandfolderDeliveryOptions } from '../delivery/brandfolder.ts';
+import { validateCloudinaryDelivery, type CloudinaryDeliveryOptions } from '../delivery/cloudinary.ts';
 import type { ActivityPolicy } from '../policy/activity.ts';
 /**
  * Instance configuration (plans/01 §4). One JSON file + secrets from env.
@@ -1201,7 +1203,13 @@ export function parseConfig(json: string): InstanceConfig {
       && (typeof destination.approvalChain !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(destination.approvalChain))) {
       throw new Error(`invalid delivery destination ${destination.id} approvalChain`);
     }
-    if (destination.kind === 's3') {
+    if (destination.projectFiles !== undefined && (typeof destination.projectFiles !== 'boolean'
+      || !['brandfolder', 'cloudinary'].includes(destination.kind))) throw new Error('projectFiles is supported only on DAM delivery destinations');
+    if (destination.kind === 'brandfolder') {
+      validateBrandfolderDelivery(destination.options as unknown as BrandfolderDeliveryOptions);
+    } else if (destination.kind === 'cloudinary') {
+      validateCloudinaryDelivery(destination.options as unknown as CloudinaryDeliveryOptions);
+    } else if (destination.kind === 's3') {
       const bucket = destination.options?.bucket;
       if (typeof bucket !== 'string' || !bucket.trim()) throw new Error(`s3 delivery destination ${destination.id} needs options.bucket`);
       for (const key of ['endpoint', 'publicBaseUrl'] as const) {
