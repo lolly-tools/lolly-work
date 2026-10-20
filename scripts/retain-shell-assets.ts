@@ -10,7 +10,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloneShellFiles, shellFileCustody, shellFileStamp } from './shell-update-files.ts';
 
-const MAX_FILES = 120_000;
+const MAX_FILES = 130_000;
 const MAX_ENTRIES = 200_000;
 const MAX_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_DEPTH = 64;

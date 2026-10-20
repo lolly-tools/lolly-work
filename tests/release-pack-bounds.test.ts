@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
  * File-count bounds in scripts/lib/release-pack.ts. A complete shell release
- * (application plus catalog) may list up to 120,000 files, the same bound the
+ * (application plus catalog) may list up to 130,000 files, the same bound the
  * server's shell release parser and the cohort preparer use, so a release they
  * accept is not refused by the pack builder. The catalog delivery inventory
  * keeps its own bound of 100,000 rows.
@@ -46,12 +46,12 @@ function inventoryFixture(name: string, count: number): { root: string; rows: Ma
   return { root, rows };
 }
 
-test('a complete release manifest of up to 120,000 rows is accepted and 120,001 is refused', () => {
-  for (const count of [103_421, 120_000]) {
+test('a complete release manifest of up to 130,000 rows is accepted and 130,001 is refused', () => {
+  for (const count of [103_421, 120_000, 122_343, 130_000]) {
     const rows = manifestRows(Buffer.from(JSON.stringify(releaseManifest(count))));
     assert.equal(rows.size, count);
   }
-  assert.throws(() => manifestRows(Buffer.from(JSON.stringify(releaseManifest(120_001)))), /invalid complete tree manifest/);
+  assert.throws(() => manifestRows(Buffer.from(JSON.stringify(releaseManifest(130_001)))), /invalid complete tree manifest/);
 });
 
 test('the catalog delivery inventory still refuses more than 100,000 rows', () => {
@@ -62,10 +62,10 @@ test('the catalog delivery inventory still refuses more than 100,000 rows', () =
 });
 
 test('the release bound matches the server shell parser and the cohort preparer', () => {
-  assert.equal(RELEASE_MAX_FILES, 120_000);
+  assert.equal(RELEASE_MAX_FILES, 130_000);
   assert.equal(INVENTORY_MAX_FILES, 100_000);
-  assert.equal(parseReleaseManifest(releaseManifest(120_000)).files.length, 120_000);
-  assert.throws(() => parseReleaseManifest(releaseManifest(120_001)), /Invalid shell release manifest/);
+  assert.equal(parseReleaseManifest(releaseManifest(130_000)).files.length, 130_000);
+  assert.throws(() => parseReleaseManifest(releaseManifest(130_001)), /Invalid shell release manifest/);
   const cohort = spawnSync('python3', ['-B', '-c', `
 import importlib.util,json
 from pathlib import Path

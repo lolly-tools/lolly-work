@@ -21,7 +21,7 @@ function keys(value: unknown, names: string[]): value is Record<string, unknown>
 }
 export function parseReleaseManifest(value: unknown): ReleaseManifest {
   releaseNeed(keys(value, ['version', 'files', 'totalBytes']) && value.version === 1 && Array.isArray(value.files)
-    && value.files.length > 0 && value.files.length <= 120_000, 'Invalid shell release manifest');
+    && value.files.length > 0 && value.files.length <= 130_000, 'Invalid shell release manifest');
   let total = 0, previous = '';
   for (const row of value.files) {
     releaseNeed(keys(row, ['path', 'size', 'sha256']) && typeof row.path === 'string' && row.path > previous

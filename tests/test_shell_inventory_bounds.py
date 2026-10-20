@@ -38,7 +38,7 @@ class Bounds(unittest.TestCase):
         self.value = {'root': str(self.root), 'manifest': {'path': str(manifest), 'sha256': hashlib.sha256(data).hexdigest()}}
 
     def test_shell_file_cap_is_explicit_and_catalog_and_entries_remain_original(self):
-        self.assertEqual((m.MAX_FILES, m.MAX_SHELL_FILES, m.MAX_TREE_ENTRIES), (100_000, 120_000, 200_000))
+        self.assertEqual((m.MAX_FILES, m.MAX_SHELL_FILES, m.MAX_TREE_ENTRIES), (100_000, 130_000, 200_000))
         with patch.object(m, 'MAX_FILES', 2), patch.object(m, 'MAX_SHELL_FILES', 3):
             with self.assertRaises(m.Refusal): m.Tree(self.value, m.Inputs(self.base))
             inputs = m.Inputs(self.base); tree = m.Tree(self.value, inputs, shell=True)
@@ -56,7 +56,7 @@ class Bounds(unittest.TestCase):
             with self.assertRaises(a.Refusal): a.manifest_id(self.manifest, shell_tree=True)
 
     def test_delivery_inventory_exact_cap_and_overflow(self):
-        self.assertEqual(o.MAX_FILES, 120_000)
+        self.assertEqual(o.MAX_FILES, 130_000)
         with patch.object(o, 'MAX_FILES', 3): self.assertEqual(len(o.manifest(self.manifest)), 3)
         with patch.object(o, 'MAX_FILES', 2):
             with self.assertRaises(o.Refusal): o.manifest(self.manifest)
@@ -64,7 +64,9 @@ class Bounds(unittest.TestCase):
     def test_original_remote_owner_hash_enforces_each_tree_limit(self):
         # Run the actual owner readback with proportional limits and tiny files.
         # No public key means this tests physical inventory only, not a signature.
-        program = p.OWNER_READBACK.replace('shell,120000', 'shell,3').replace('pack,100000', 'pack,2')
+        self.assertEqual(p.OWNER_READBACK.count('shell,130000'), 1)
+        self.assertEqual(p.OWNER_READBACK.count('pack,100000'), 1)
+        program = p.OWNER_READBACK.replace('shell,130000', 'shell,3').replace('pack,100000', 'pack,2')
         self.assertNotEqual(program, p.OWNER_READBACK)
         pack = self.base / 'pack'; pack.mkdir(); (pack / 'one').write_bytes(b'a'); (pack / 'two').write_bytes(b'b')
         pin = self.base / 'pin'; pin.write_bytes(b'pin')
