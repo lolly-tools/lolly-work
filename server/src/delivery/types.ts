@@ -3,10 +3,10 @@
  * Organization-owned outbound delivery. Deliberately separate from catalog
  * providers (remote assets coming IN) and personal send targets (device-owned
  * credentials): a destination is a fixed place the instance is allowed to
- * write, and a delivery is one immutable request to put one Lolly export there.
+ * write, and a delivery is one immutable request to put one permitted file there.
  */
 
-export const DELIVERY_DESTINATION_KINDS = ['s3', 'webdav', 'https'] as const;
+export const DELIVERY_DESTINATION_KINDS = ['s3', 'webdav', 'https', 'brandfolder', 'cloudinary'] as const;
 export type DeliveryDestinationKind = (typeof DELIVERY_DESTINATION_KINDS)[number];
 
 export interface ConfigDeliveryDestination {
@@ -25,6 +25,8 @@ export interface ConfigDeliveryDestination {
   /** Optional human review chain. Bytes stage first; provider egress waits for
    *  the terminal approved decision on the immutable delivery record. */
   approvalChain?: string;
+  /** Explicit opt-in for verified shared-project originals. */
+  projectFiles?: boolean;
   options: Record<string, unknown>;
 }
 
@@ -36,6 +38,7 @@ export interface DeliveryDestinationDescriptor {
   formats: string[];
   maxBytes: number;
   visibility: 'private' | 'public';
+  projectFiles?: true;
 }
 
 export type DeliveryState =
@@ -47,7 +50,9 @@ export type DeliveryState =
   | 'rejected'
   | 'cancelled';
 
-/** Durable history for one immutable export+destination request. */
+export interface DeliveryProgress { phase: 'creating' | 'created'; remoteId?: string }
+
+/** Durable history for one immutable file and destination request. */
 export interface DeliveryRecord {
   id: string;
   principal: string;
@@ -58,13 +63,17 @@ export interface DeliveryRecord {
   contentType: string;
   size: number;
   sha256: string;
-  /** Hash of destination/version + export facts; used to police idempotency-key reuse. */
+  /** Hash of destination/version and immutable source facts; used to police idempotency-key reuse. */
   requestHash: string;
   /** Private BlobStore reference for retry. Never serialized to a client. */
   sourceRef: string;
   /** Durable automation output this delivery consumes directly. Absent for a
    * manual shell upload. The referenced job cannot be deleted while retained. */
   sourceJobId?: string;
+  /** Private, immutable source identity, rechecked before every project-file egress. */
+  projectSource?: { projectId: string; fileId: string; checksum: string };
+  /** Private progress, never signed storage URLs or credentials. */
+  providerProgress?: DeliveryProgress;
   state: DeliveryState;
   attempt: number;
   approvalId?: string;
@@ -81,6 +90,10 @@ export interface DeliveryRecord {
 
 export interface DeliveryInput {
   deliveryId: string;
+  progress?: DeliveryProgress;
+  checkpoint?(progress: DeliveryProgress): Promise<void>;
+  /** Recheck current authority immediately before a remote write. */
+  authorize?(): Promise<void>;
   bytes: Uint8Array;
   name: string;
   format: string;
