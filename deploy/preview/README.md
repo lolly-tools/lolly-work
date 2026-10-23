@@ -34,10 +34,14 @@ and preview host tooling must not ship to private deployers.
     cannot be repeated, moved after the site, abbreviated or overridden.
 - **The tool checks itself too.** Running `preview-deploy.py` directly does not skip the lock.
   - The command reads `tool.lock.json` from the state directory and requires its own tree hash to equal it.
-  - The state directory must be `lolly-private/production/preview`, and `--check-target` must be the `check-target.py`
-    beside it.
-  - It refuses changed locked files in the checkout, and a checkout commit that is not on lolly-work `main`. That
-    commit is resolved to a SHA first; the bare name `main` is never compared.
+  - The state directory must be exactly `~/Build/lolly-private/production/preview`. A copy elsewhere is refused even
+    when its path ends the same way. `lolly-private/production` must be a `0700` directory owned by the operator, and
+    `--check-target` must be the `check-target.py` beside the state directory.
+  - check-target is hashed when its identities are read and again just before it runs (`CHECK_TARGET_CHANGED`).
+  - It refuses a checkout commit that is not on lolly-work `main`. That commit is resolved to a SHA first; the bare
+    name `main` is never compared.
+  - It refuses locked files whose bytes differ from the lock or from the files committed at `HEAD`. This does not rely
+    on `git status`, which `assume-unchanged` and clean filters can mislead.
 - **Trust anchors are code.** These live in `lib/preview_anchors.py`:
   - the repositories and workflow paths;
   - the receipt artifact name and the image package;
@@ -67,7 +71,8 @@ launch.py lolly.tools rollback               go back to the recorded previous bu
 launch.py lolly.tools status                 live phase, image, source, Pod, unit state, last result (read-only)
 launch.py lolly.tools status --follow ID     follow one run to its end and record its result in deploys.jsonl
 launch.py lolly.tools gc [--execute]         image retention report; --execute (after a report) removes images only
-launch.py lolly.tools selftest               read-only checks inside the real unit sandbox on the node
+launch.py lolly.tools selftest               read-only checks inside the real unit sandbox (check-target first)
+launch.py lolly.tools adopt <sha>            re-seed the records for the live image from a bound build of <sha>
 launch.py lolly.tools plan <sha>             one-time 3.6 conversion plan (read-only)
 launch.py lolly.tools plan <sha> --apply PLAN --reviewed-plan-sha256 HASH
 ```
@@ -112,8 +117,12 @@ Flags:
      would make this check exact.
 9. Refuses if the models manifest differs from the mounted models release (use the models procedure), or if an older
    build would lower a stored format.
-10. Checks the backup window (no deploys 01:30 to 02:30 UTC), then runs `check-target.py --site lolly.tools` once,
-    immediately before the run starts. That check also covers the run's own automatic rollback.
+10. Checks the backup window (01:30 to 02:30 UTC) against the run's worst-case end, not only its start. This check
+    also runs before a build is reused or dispatched. A deploy can last about 55 minutes with the default profile, so
+    one started at 00:40 is refused. The node checks the window again before each forward change, but never before a
+    rollback.
+    Then it runs `check-target.py --site lolly.tools` once, immediately before the run starts. That check also covers
+    the run's own automatic rollback.
 11. Starts the node unit and follows its progress:
     - A dropped SSH or Wi-Fi link only pauses the follow; the unit keeps going.
     - A start whose reply is lost is uncertain, not failed. The command looks for the run by its id.
@@ -178,15 +187,19 @@ counted like any other failure.
 - `csp`: the CSP is served exactly once, exactly as the source declares it.
 - `edge headers`: Caddy owns `Referrer-Policy`, `X-Content-Type-Options`, `Cross-Origin-Opener-Policy`,
   `Cross-Origin-Embedder-Policy` and `Permissions-Policy`, and today sends the image's values. They must equal what
-  the edge served before the switch, not the image's config. Each differing header is reported on its own line.
+  the edge served just before the switch, not the image's config. Each differing header is reported on its own line.
+  - This relaxes the earlier rule, which compared every header with the source exactly. Only the CSP is still
+    compared with the source.
+  - A header the edge did not send before the switch is skipped.
 - Catalog index, signature and asset index match the receipt; no tool or asset id starts with `suse`.
 - `https://www.lolly.tools/` answers 308 to the apex; `/healthz` answers 200.
 - The profile's pages, plus up to three `/info` pages this build added, answer 200 with the signed hash.
 - One model file: HEAD 200 with the right length, and `Range: bytes=0-0` 206. This proves the models claim is mounted.
 - `pod`: exactly one Running or Pending Pod of the current ReplicaSet. An evicted Pod of an older ReplicaSet does not
   count. The Pod must be Ready with 0 restarts, and its working set must be under 80% of the memory limit.
-  - The working set is containerd's `workingSetBytes`, which is usage minus `inactive_file`, as the kubelet counts it.
-    Page cache from model reads does not count.
+  - The working set is containerd's `workingSetBytes`: usage minus `inactive_file`, as the kubelet counts it.
+    Inactive page cache does not count. Active page cache does, for example model files read moments ago, so the 80%
+    threshold leaves room for it.
 
 ### Automatic rollback
 
@@ -206,7 +219,20 @@ The rollback is one attempt:
    is missing.
 2. The smoke with the previous build's recorded expectations, and the edge headers from before the switch.
 3. If that fails too, the phase becomes `rollback-unhealthy` and the result is `ROLLBACK_UNHEALTHY`. Every later run
-   refuses until a human looks and passes `--clear-hold`.
+   refuses until a human looks. The records then describe the failed new build while the old image is live, so
+   `--clear-hold` alone is not enough: `ship` and `deploy` refuse `RECORDS_STALE` before any build is reused or
+   dispatched. The way forward is `adopt` (below).
+
+### Adopt
+
+`adopt <sha>` re-seeds the records for the image that is live. It never dispatches a build.
+1. It binds the candidate run of `<sha>` that built exactly the live image.
+2. It runs check-target, then a full smoke of the live image against that build's expectations, inside the unit.
+3. If the smoke passes, it writes the records with phase `accepted` (`ADOPTED`). It changes only annotations.
+4. If the smoke fails, it refuses (`ADOPT_SMOKE_FAILED`) and changes nothing.
+   - `adopt <sha> --clear-hold` writes the records anyway, with phase `adopted-unhealthy` (`ADOPTED_UNHEALTHY`).
+   - That phase still holds every later run. `deploy <fix> --clear-hold` then ships a fix over the broken build, which
+     becomes its rollback target.
 
 The automatic rollback inside the watch runs even when the new build raised a stored format, because a broken site
 is worse. A user who loaded the new shell in those minutes finds local storage locked (never deleted) until the next
@@ -232,7 +258,8 @@ rollout and a smoke. The request validator refuses a longer watch or rollout, an
 
 ### Selftest
 
-`selftest` starts a read-only run in the same unit and sandbox. It checks:
+`selftest` installs and starts the unit like a real run, so check-target runs first. Inside the same unit and sandbox it
+runs read-only checks:
 - the Python version, `NoNewPrivileges` and the SELinux context;
 - that kubectl, `crictl` and `ctr` run under those restrictions;
 - that pins can be read;
@@ -293,7 +320,9 @@ Never touches:
 
 - Deployment annotations `lolly.tools/preview-*`: `phase`, `deploy-id`, `source`, `image`, `ci-run`, `tool`,
   `formats`, `expect`, `previous`, `reason`, `layout`, `deploys`, `updated`. They are metadata, so writing them never
-  starts a rollout.
+  starts a rollout. `previous` is the build to roll back to. It keeps that build's own record of its predecessor one
+  level deep, with no further nesting and no edge headers, so the annotations stay the same size however many deploys
+  go by.
 - One JSON line per mutating run, including refusals, in `deploys.jsonl` in the state directory. That includes
   `selftest`, `gc` reports and results recorded by `status --follow`.
 - The node journal (`journalctl -u lolly-preview-deploy`) and a result file per run in `/var/lib/lolly-preview/results`,
@@ -313,6 +342,14 @@ Images follow a standing policy, decided by image ID.
     first.
 - **First run:** `gc` with no flag is a report and is recorded. `gc --execute` refuses until a report exists. The first
   `gc --execute` also arms the post-deploy retention; until then, accepted deploys pin but remove nothing.
+- **Images left by other procedures:** with about 32 GiB free and a 25 GiB reserve, the node has room for roughly one
+  new build. So the report also lists every unused `lolly-web` image this command did not pull. Each entry gives its
+  refs, size, pinned refs, who pinned it (`preview-deploy` or another procedure) and any old revision still naming it.
+  Each entry comes with commands for Andy. The command never runs them:
+  1. check-target;
+  2. a fresh report;
+  3. unpin each pinned ref, if the procedure that pinned it no longer needs it;
+  4. `crictl rmi <image id>`, which removes every name of that image.
 
 Claims are never deleted by the command. `gc` lists only allowlisted claims: the profile's `gc.legacyClaims`, or claims
 labelled `lolly.tools/managed-by=preview-deploy`. It blocks a claim that:
@@ -330,19 +367,21 @@ On local-path storage a deleted claim deletes its data.
 
 ## Exit codes and results
 
-- `0`: LIVE, ALREADY_LIVE, CONVERTED, GC_DONE, SELFTEST_OK.
-- `1`: REFUSED (with a code), ABORTED, SELFTEST_FAILED, or a stop without a result.
+- `0`: LIVE, ALREADY_LIVE, CONVERTED, GC_DONE, SELFTEST_OK, ADOPTED.
+- `1`: REFUSED (with a code), ABORTED, SELFTEST_FAILED, NOT_STARTED, DETACHED, or a stop without a result.
 - `2`: ROLLED_BACK or CONVERSION_REVERTED.
-- `3`: ROLLBACK_UNHEALTHY.
+- `3`: ROLLBACK_UNHEALTHY or ADOPTED_UNHEALTHY.
 
 Common refusal codes:
 - **Tool and inputs:** `BAD_ARGUMENTS`, `TOOL_NOT_LOCKED`, `TOOL_DIRTY`, `TOOL_NOT_MAIN`, `TOOL_HASH_MISMATCH`,
-  `STATE_DIR_INVALID`, `CHECK_TARGET_PATH`, `CHECK_TARGET_IDENTITY`, `PROFILE_INVALID`, `SITE_PHASE_2`.
+  `STATE_DIR_INVALID`, `CHECK_TARGET_PATH`, `CHECK_TARGET_IDENTITY`, `CHECK_TARGET_CHANGED`, `PROFILE_INVALID`,
+  `SITE_PHASE_2`.
 - **Source, build and run:** `NOT_MAIN_HEAD`, `NOT_ON_MAIN`, `CI_NOT_GREEN`, `CANDIDATE_ACTIVE`, `RUN_NOT_BOUND`,
   `RUN_FAILED`, `RECEIPT_INVALID`, `CONNECTOR_ORIGINS_CHANGED`, `CONNECTOR_ORIGINS_UNPROVEN`, `MODELS_CHANGED`,
   `FORMAT_LOWERING`.
 - **Live state:** `RECORDS_STALE`, `LIVE_SMOKE_FAILED`, `BACKUP_WINDOW`, `CHECK_TARGET_FAILED`, `LOCK_HELD`,
-  `HELD_FOR_HUMAN`, `NOT_CONVERTED`, `NOT_READY`, `STATE_CHANGED`, `LOW_CAPACITY`, `PIN_FAILED`, `BAD_IMAGE`.
+  `HELD_FOR_HUMAN`, `NOT_CONVERTED`, `NOT_READY`, `STATE_CHANGED`, `LOW_CAPACITY`, `PIN_FAILED`, `BAD_IMAGE`,
+  `NOT_STARTED`, `ADOPT_SMOKE_FAILED`.
 - **Conversion and gc:** `PLAN_MISMATCH`, `PRECONVERSION_SMOKE`, `GC_REPORT_FIRST`.
 
 ## Before the first live run

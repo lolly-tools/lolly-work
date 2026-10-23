@@ -587,6 +587,13 @@ def patch_node_modules(tool_lib, sandbox, state_path):
     preview_node.filesystem_bytes = capacity
     clock = FakeClock()
     preview_node.SLEEP, preview_node.CLOCK = clock.sleep, clock
+    wall = os.environ.get("FAKE_WALL_UTC")  # HH:MM today, for the in-run backup-window check
+    if wall:
+        import calendar
+        import time as real_time
+        today = real_time.gmtime()
+        stamp = calendar.timegm((today.tm_year, today.tm_mon, today.tm_mday, int(wall[:2]), int(wall[3:]), 0))
+        preview_node.WALL = lambda: stamp
     preview_smoke.FETCH = make_fetch(state_path)
 
     def check_dns(anchors, address):
@@ -614,11 +621,29 @@ def systemctl_main(argv):
         return 0
     if argv[:1] in (["daemon-reload"], ["reset-failed"]):
         return 0
+    if argv[:1] == ["run-unit"]:
+        delay = float(os.environ.get("FAKE_UNIT_DELAY", "0"))
+        if delay:
+            import time
+            time.sleep(delay)
+        return run_unit(sandbox, state_path, argv[1])
     if argv[:2] != ["start", "--no-block"]:
         return 1
     if os.environ.get("FAKE_UNIT_NEVER_STARTS"):
         return 0
-    unit = (Path(sandbox) / "run/systemd/system" / argv[2]).read_text()
+    if os.environ.get("FAKE_UNIT_ASYNC"):  # like systemd: start returns at once and the unit runs on
+        import subprocess
+        unit_state.write_text("active")
+        with open(Path(sandbox) / "unit-async.log", "a") as log:
+            subprocess.Popen([sys.executable, "-S", os.environ["FAKE_BIN"] + "/systemctl", "run-unit", argv[2]],
+                             stdout=log, stderr=log, start_new_session=True)
+        return 0
+    return run_unit(sandbox, state_path, argv[2])
+
+
+def run_unit(sandbox, state_path, name):
+    unit_state = Path(sandbox) / "unit-state"
+    unit = (Path(sandbox) / "run/systemd/system" / name).read_text()
     starts = re.findall(r"^ExecStart=(.*)$", unit, re.M)
     stops = re.findall(r"^ExecStopPost=(.*)$", unit, re.M)
     assert len(starts) == 1 and len(stops) == 1
@@ -693,6 +718,11 @@ def ssh_main(argv):
     fake_os.lstat = lambda path: _RootStat(os.lstat(path))
     fake_os.chdir = lambda path: None
     namespace["os"] = fake_os
+    fake_time = types.ModuleType("time")  # the start wait sleeps on a fake clock
+    fake_time.now = 0.0
+    fake_time.monotonic = lambda: fake_time.now
+    fake_time.sleep = lambda seconds: setattr(fake_time, "now", fake_time.now + seconds)
+    namespace["time"] = fake_time
     os.makedirs(f"{sandbox}/run/systemd/system", exist_ok=True)
     if payload.get("action") == "read":
         work = Path(sandbox) / "read-modules"
@@ -700,6 +730,10 @@ def ssh_main(argv):
             with __import__("tarfile").open(fileobj=io.BytesIO(base64.b64decode(payload["bundle"])), mode="r:gz") as archive:
                 archive.extractall(work)
         patch_node_modules(work / "lib", sandbox, os.environ["FAKE_STATE"])
+    if payload.get("action") == "start" and os.environ.get("FAKE_START_DROPPED"):
+        return 255  # the link dropped before the node ran anything
+    if payload.get("action") == "poll" and os.environ.get("FAKE_POLL_DOWN"):
+        return 255
     namespace["main"](payload)
     if payload.get("action") == "start" and os.environ.get("FAKE_START_REPLY_LOST"):
         return 255  # the run started, but the reply never came back

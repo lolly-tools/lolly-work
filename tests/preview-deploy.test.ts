@@ -12,6 +12,7 @@ const GROUPS = [
   ['Deploys'],
   ['Refusals'],
   ['Operations'],
+  ['Endurance'],
 ];
 
 function run(classes: string[]): Promise<{ status: number | null; output: string }> {
@@ -26,7 +27,7 @@ function run(classes: string[]): Promise<{ status: number | null; output: string
   });
 }
 
-test('preview deploy command verifies, switches, smokes and rolls back over fakes', { timeout: 900_000 }, async () => {
+test('preview deploy command verifies, switches, smokes and rolls back over fakes', { timeout: 1_500_000 }, async () => {
   const results = await Promise.all(GROUPS.map(run));
   const failed = results.flatMap((result, index) => result.status === 0 ? [] : [`${(GROUPS[index] ?? []).join(', ')}:\n${result.output.slice(-6000)}`]);
   assert.deepEqual(failed, []);

@@ -39,9 +39,12 @@ from preview_layout import conversion_plan
 TOOL_PATHS = ("deploy/preview", "scripts/app-update.py")
 LIB = Path(__file__).resolve().parent
 TOOL_ROOT = LIB.parents[2]  # <root>/deploy/preview/lib -> <root>; tests point it at their copy
+# The one private state directory (review R1). A copy elsewhere, even one whose path ends the
+# same way, is refused. Tests point it at their own tree.
+STATE_DIR = Path.home() / "Build" / "lolly-private" / "production" / "preview"
 BUSY = ("active", "activating", "deactivating", "reloading", "refreshing")
 RESULT_EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "SELFTEST_OK": 0,
-               "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2, "ROLLBACK_UNHEALTHY": 3}
+               "ADOPTED": 0, "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2, "ROLLBACK_UNHEALTHY": 3, "ADOPTED_UNHEALTHY": 3}
 GIB = 2 ** 30
 SLEEP = time.sleep
 LAUNCHER_OPTIONS = ("--state-dir", "--tool-sha256", "--checkout", "--check-target")
@@ -194,9 +197,12 @@ class Context:
         self.site = args.site
         self.anchors = A.site_anchors(args.site)
         self.state_dir = Path(args.state_dir).resolve()
-        require(self.state_dir.parts[-3:] == A.STATE_DIR_SUFFIX and self.state_dir.is_dir(), "STATE_DIR_INVALID",
-                "the state dir must be lolly-private/production/preview")
+        require(self.state_dir == Path(STATE_DIR).resolve() and self.state_dir.parts[-3:] == A.STATE_DIR_SUFFIX
+                and self.state_dir.is_dir(), "STATE_DIR_INVALID", f"the state dir must be {STATE_DIR}")
         require(not (self.state_dir.stat().st_mode & 0o022), "STATE_DIR_INVALID", "the state dir must not be group or world writable")
+        production = self.state_dir.parent.lstat()
+        require(stat.S_ISDIR(production.st_mode) and production.st_uid == os.getuid() and stat.S_IMODE(production.st_mode) == 0o700,
+                "STATE_DIR_INVALID", "lolly-private/production must be a 0700 directory owned by this user")
         self.check_target_path = self.state_dir.parent / "check-target.py"
         require(Path(args.check_target).resolve() == self.check_target_path.resolve() and self.check_target_path.is_file(),
                 "CHECK_TARGET_PATH", "check-target.py must be the one beside the state dir")
@@ -207,6 +213,7 @@ class Context:
                 "TOOL_HASH_MISMATCH", "the running tool differs from tool.lock.json")
         require(Path(args.checkout).resolve() == Path(self.lock["checkout"]).resolve(), "TOOL_HASH_MISMATCH",
                 "the checkout differs from the locked checkout")
+        self.check_target_sha256 = sha256_hex(self.check_target_path.read_bytes())
         self.identity = load_check_target(self.check_target_path)
         self.profile = load_profile(self.state_dir, args.site)
         self.gh = gh or G.Gh()
@@ -251,17 +258,44 @@ class Context:
         listed = [(relative, checkout / relative) for relative in self.lock["files"]]
         require(all(path.is_file() for _, path in listed) and digest_of(listed) == self.tool_hash, "TOOL_HASH_MISMATCH",
                 "the checkout's locked files differ from the running tool")
+        # git status trusts assume-unchanged and clean filters; compare the bytes with HEAD's blobs (review R2).
+        for relative, path in listed:
+            try:
+                blob = subprocess.run(["git", "-C", str(checkout), "cat-file", "blob", f"HEAD:{relative}"],
+                                      capture_output=True, timeout=60, check=True).stdout
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise Refusal("TOOL_DIRTY", f"{relative} is not committed at HEAD") from exc
+            require(blob == path.read_bytes(), "TOOL_DIRTY", f"{relative} differs from the committed file")
         main_sha = G.branch_head(self.gh, A.TOOL_REPOSITORY)
         require(G.contains(self.gh, A.TOOL_REPOSITORY, head, main_sha), "TOOL_NOT_MAIN", "the tool checkout is not on lolly-work main")
         return head
 
-    def backup_window(self):
+    def worst_case_seconds(self, kind):
+        """How long a run of this kind can last on the node (review L2)."""
+        rollout, watch = self.profile["rolloutTimeoutSeconds"], self.profile["watch"]["minutes"] * 60
+        pull, smoke = A.PULL_TIMEOUT_SECONDS, A.SMOKE_BUDGET_SECONDS
+        return {"deploy": 2 * pull + 2 * rollout + watch + 3 * smoke + 300,
+                "rollback": pull + rollout + watch + smoke + 300,
+                "convert": pull + 2 * rollout + watch + 2 * smoke + 300,
+                "adopt": smoke + 300, "gc": A.GC_BUDGET_SECONDS}[kind]
+
+    def backup_window(self, kind):
+        """Refuse a run whose worst-case end could reach the backup window, not only one that starts in it."""
         start, end = self.profile["noDeployUtc"]
-        now = utc_now().strftime("%H:%M")
-        require(not (start <= now < end), "BACKUP_WINDOW", f"no preview deploys from {start} to {end} UTC")
+        first, last = (int(t[:2]) * 60 + int(t[3:]) for t in (start, end))
+        now = utc_now()
+        begin = now.hour * 60 + now.minute
+        span = -(-self.worst_case_seconds(kind) // 60)
+        inside = any((first <= (minute % 1440) < last) if first <= last else
+                     ((minute % 1440) >= first or (minute % 1440) < last) for minute in range(begin, begin + span + 1))
+        require(not inside, "BACKUP_WINDOW", f"a {kind} run can last {span} minutes and would reach the {start}-{end} UTC "
+                                             "backup window; start it later")
 
     def check_target(self):
-        """check-target.py --site, once, immediately before the run starts (decision 8)."""
+        """check-target.py --site, once, immediately before the run starts (decision 8).
+        It must be the same file the identities were read from (review R1)."""
+        require(sha256_hex(self.check_target_path.read_bytes()) == self.check_target_sha256, "CHECK_TARGET_CHANGED",
+                "check-target.py changed while the command ran")
         try:
             done = subprocess.run([sys.executable, "-I", "-B", str(self.check_target_path), "--site", self.site],
                                   capture_output=True, timeout=240, check=False)
@@ -311,7 +345,8 @@ class Context:
                               "watchIntervalSeconds": watch["intervalSeconds"], "watchFailures": watch["failures"],
                               "memoryFraction": smoke["memoryFraction"], "retainPreviousImages": profile["retainPreviousImages"],
                               "maxAddedPages": smoke["maxAddedPages"], "edgeAddress": identity["edgeAddress"],
-                              "needBytes": int(profile["capacity"]["minFreeAboveReserveBytes"])}}
+                              "needBytes": int(profile["capacity"]["minFreeAboveReserveBytes"]),
+                              "noDeployUtc": list(profile["noDeployUtc"])}}
         request.update(extra)
         return request
 
@@ -333,7 +368,7 @@ class Context:
 
     def follow(self, deploy_id, poll_seconds=5, max_failures=24, must_appear=False):
         """Print the unit's progress until it ends. A dropped link only pauses this; the unit keeps going."""
-        offset, failures, idle, seen = 0, 0, 0, not must_appear
+        offset, failures, idle, seen, announced = 0, 0, 0, not must_appear, False
         while True:
             try:
                 state = self.ssh({"action": "poll", "deployId": deploy_id, "offset": offset}, timeout=60)
@@ -347,6 +382,9 @@ class Context:
                 continue
             failures = 0
             seen = seen or state.get("current") == deploy_id or bool(state.get("result"))
+            if not announced and state.get("unit") in BUSY and state.get("current") == deploy_id:
+                emit("following", deployId=deploy_id, unit=state.get("unit"))
+                announced = True
             for line in state.get("progress", []):
                 print(line, flush=True)
             offset = state.get("offset", offset)
@@ -407,7 +445,7 @@ class Context:
 
 def _phase_hold(context, preview):
     phase = preview.get("phase")
-    if phase in A.UNCERTAIN_PHASES + ("rollback-unhealthy",) and not context.args.clear_hold:
+    if phase in A.HOLD_PHASES and not context.args.clear_hold:
         raise Refusal("HELD_FOR_HUMAN", f"the live phase is {phase.upper()}; inspect with status, then pass --clear-hold")
 
 
@@ -466,7 +504,7 @@ def deploy_bound(context, command, sha, bound):
                               release={"source": sha, "image": bound["image"], "ciRun": str(bound["run"]),
                                        "formats": formats, "expect": expect})
     request["limits"]["needBytes"] = need
-    context.backup_window()
+    context.backup_window("deploy")
     context.check_target()
     result = context.start_and_follow(request)
     return _finish(context, command, result, sha=sha, ciRun=bound["run"])
@@ -482,6 +520,10 @@ def cmd_ship(context, sha):
     if preview.get("source") == sha and _settled(status) and preview.get("phase") == "accepted":
         return _finish(context, "ship", {"result": "ALREADY_LIVE", "source": sha, "image": status["deployment"]["image"]})
     require(status["deployment"]["converted"], "NOT_CONVERTED", "run the 3.6 conversion plan first")
+    # Before any build is reused or dispatched (review N2, L2).
+    require(_settled(status), "RECORDS_STALE", "the preview records do not describe the live image; run adopt <sha of the "
+                                               "live build> first")
+    context.backup_window("deploy")
     try:  # reuse a build of this commit that still binds (review C-L7)
         bound = G.latest_bound_run(gh, anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT)
         emit("reused", run=bound["run"], image=bound["image"])
@@ -504,6 +546,7 @@ def cmd_ship(context, sha):
 
 
 def cmd_deploy(context, sha):
+    context.backup_window("deploy")
     G.require_on_main(context.gh, context.anchors, sha)
     bound = G.latest_bound_run(context.gh, context.anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT)
     emit("bound", run=bound["run"], image=bound["image"])
@@ -523,7 +566,7 @@ def cmd_rollback(context):
             "); roll forward instead")
     request = context.request("rollback", context.deploy_id("rollback", previous["source"]), rollbackTo=previous["source"])
     request["limits"]["needBytes"] = context.need_bytes(previous["image"])
-    context.backup_window()
+    context.backup_window("rollback")
     context.check_target()
     result = context.start_and_follow(request)
     return _finish(context, "rollback", result, sha=previous["source"])
@@ -563,6 +606,10 @@ def cmd_gc(context, execute):
     emit("gc-images", keep=report["images"]["keep"], remove=report["images"]["remove"],
          removeBytes=report["images"]["removeBytes"], untouched=report["images"]["untouched"],
          retentionArmed=report["retentionArmed"])
+    for image in report["images"].get("unusedForeign", []):
+        emit("gc-foreign-image", id=image["id"], refs=image["refs"], sizeBytes=image["size"], pinnedRefs=image["pinnedRefs"],
+             pinnedBy=image["pinnedBy"], referencedBy=image["referencedBy"], forAndy=foreign_commands(context, image),
+             note="this command did not pull it and never removes it; Andy decides")
     for claim in report["claims"]:
         emit("gc-claim", name=claim["name"], uid=claim["uid"], candidate=claim["candidate"], blockedBy=claim["blockedBy"],
              referencedBy=claim["referencedBy"],
@@ -574,15 +621,51 @@ def cmd_gc(context, execute):
     require(any(row.get("result") == "GC_REPORT" for row in context.records()), "GC_REPORT_FIRST",
             "run gc without --execute first and read its report")
     request = context.request("gc", context.deploy_id("gc"))
-    context.backup_window()
+    context.backup_window("gc")
     context.check_target()
     result = context.start_and_follow(request)
     return _finish(context, "gc --execute", result)
 
 
+def cmd_adopt(context, sha):
+    """Re-seed the records for the live image from a bound build of <sha> (review N2). Never dispatches a build."""
+    anchors, gh = context.anchors, context.gh
+    status = context.read("status")
+    require(status.get("unit") not in BUSY, "LOCK_HELD", "a preview run is active on the node; wait or run status --follow")
+    require(status["deployment"]["converted"], "NOT_CONVERTED", "adopt works on the image layout only")
+    G.require_on_main(gh, anchors, sha)
+    live_image = status["deployment"]["image"]
+    bound = G.latest_bound_run(gh, anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT, prefer_image=live_image)
+    expect, formats = context.expectations(sha, bound.get("runCreatedAt"))
+    request = context.request("adopt", context.deploy_id("adopt", sha),
+                              release={"source": sha, "image": bound["image"], "ciRun": str(bound["run"]),
+                                       "formats": formats, "expect": expect})
+    context.backup_window("adopt")
+    context.check_target()
+    result = context.start_and_follow(request)
+    return _finish(context, "adopt", result, sha=sha, ciRun=bound["run"])
+
+
+def foreign_commands(context, image):
+    """For Andy only, never run by the tool: check-target, a fresh report, then unpin and remove one foreign image."""
+    identity = context.identity
+    k3s = ["sudo", identity["k3s"]]
+    commands = ["python3 " + shlex.quote(str(context.check_target_path)) + " --site " + shlex.quote(context.site),
+                "python3 launch.py " + shlex.quote(context.site) + " gc   # the image must still be listed as unused"]
+    for ref in image["pinnedRefs"]:
+        commands.append(" ".join(shlex.quote(word) for word in k3s + ["ctr", "-n", "k8s.io", "images", "label", ref,
+                                                                       "io.cri-containerd.pinned="]) +
+                        "   # only if the procedure that pinned it no longer needs it")
+    commands.append(" ".join(shlex.quote(word) for word in k3s + ["crictl", "rmi", image["id"]]) +
+                    "   # removes every name of this image")
+    return commands
+
+
 def cmd_selftest(context):
-    """Read-only checks inside the real unit sandbox (review C-M7)."""
+    """Read-only checks inside the real unit sandbox (review C-M7). It still installs and starts the
+    unit on the host, so check-target runs first (review R4)."""
     request = context.request("selftest", context.deploy_id("selftest"))
+    context.check_target()
     result = context.start_and_follow(request)
     for item in result.get("checks") or []:
         emit("selftest-result", **item)
@@ -661,7 +744,7 @@ def cmd_plan_apply(context, sha, path, reviewed):
     require(not status["deployment"]["converted"], "ALREADY_CONVERTED", "the Deployment already serves the image root")
     request = context.request("convert", plan["deployId"], release=plan["release"], conversion=plan["conversion"])
     request["limits"]["needBytes"] = context.need_bytes(plan["release"]["image"])
-    context.backup_window()
+    context.backup_window("convert")
     context.check_target()
     result = context.start_and_follow(request)
     return _finish(context, "plan --apply", result, sha=sha)
@@ -691,6 +774,9 @@ def parser():
     s = command("gc")
     s.add_argument("--execute", action="store_true", help="remove images outside retention (never claims)")
     command("selftest")
+    s = command("adopt")
+    s.add_argument("sha")
+    s.add_argument("--clear-hold", action="store_true", help="record a live build that fails its smoke as adopted-unhealthy")
     s = command("plan")
     s.add_argument("sha")
     s.add_argument("--apply", metavar="PLAN")
@@ -700,7 +786,7 @@ def parser():
     return p
 
 
-MUTATING = {"ship", "deploy", "rollback"}
+MUTATING = {"ship", "deploy", "rollback", "adopt"}
 
 
 def main(argv=None, gh=None, opener=None):
@@ -730,6 +816,8 @@ def main(argv=None, gh=None, opener=None):
             return cmd_gc(context, args.execute)
         if args.command == "selftest":
             return cmd_selftest(context)
+        if args.command == "adopt":
+            return cmd_adopt(context, args.sha)
         if args.apply:
             return cmd_plan_apply(context, args.sha, args.apply, args.reviewed_plan_sha256)
         return cmd_plan(context, args.sha)

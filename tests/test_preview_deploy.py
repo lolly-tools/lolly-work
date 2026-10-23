@@ -444,6 +444,7 @@ class EndToEnd(unittest.TestCase):
         self.production = base / "lolly-private" / "production"
         self.state_dir = self.production / "preview"
         self.state_dir.mkdir(parents=True, mode=0o700)
+        self.production.chmod(0o700)
         self.check_target_path = self.production / "check-target.py"
         F.write_check_target(self.check_target_path, self.bin / "k3s", self.known_hosts)
         self.lock = F.lock_for(self.checkout, self.checkout)
@@ -485,7 +486,8 @@ class EndToEnd(unittest.TestCase):
         self.patches = [mock.patch.object(A, "RELEASE_PUBLIC_KEY_JWK", self.pin),
                         mock.patch.object(A, "RELEASE_PUBLIC_KEY_THUMBPRINT", self.thumb),
                         mock.patch.object(M, "SLEEP", lambda seconds: None),
-                        mock.patch.object(M, "TOOL_ROOT", self.checkout)]
+                        mock.patch.object(M, "TOOL_ROOT", self.checkout),
+                        mock.patch.object(M, "STATE_DIR", self.state_dir)]
         for patcher in self.patches:
             patcher.start()
 
@@ -499,10 +501,32 @@ class EndToEnd(unittest.TestCase):
         self.profile["watch"]["minutes"] = minutes
         self.write_profile()
 
+    def add_build(self, sha, label, run_id):
+        """A built and bound commit that `deploy` and `adopt` can use."""
+        build = F.make_build(self.key, sha, label)
+        self.builds[label] = build
+        self.gh = json.loads(self.gh_path.read_text())
+        self.gh["runs"].append(F.run_object(run_id, sha))
+        self.gh["artifacts"][str(run_id)] = [{"id": run_id + 100000, "name": "public-candidate-web-receipts-attempt-1", "expired": False}]
+        self.gh["zips"][str(run_id + 100000)] = F.receipt_zip(build, run_id, 1, self.pin, self.thumb)
+        self.gh["files"].update(F.source_files(build))
+        self.write_gh()
+        state = self.cluster()
+        state["builds"][build["image"]] = build
+        state["registry"][build["image"]] = True
+        self.set_cluster(state)
+        return build
+
     def write_profile(self):
         path = self.state_dir / "lolly.tools.json"
         path.write_text(json.dumps(self.profile))
         path.chmod(0o600)
+
+    def update_gh(self, **changes):
+        """Change the GitHub fake without losing what it recorded since setUp."""
+        self.gh = json.loads(self.gh_path.read_text())
+        self.gh.update(changes)
+        self.write_gh()
 
     def write_gh(self):
         self.gh_path.write_text(json.dumps(self.gh))
@@ -875,15 +899,99 @@ class Refusals(EndToEnd):
         self.assertEqual(self.done(events)["code"], "TOOL_NOT_MAIN")
 
     def test_state_dir_and_check_target_are_fixed(self):
-        """Review S-H1."""
+        """Review S-H1 and R1."""
         elsewhere = Path(self.tmp.name) / "elsewhere" / "preview"
         elsewhere.mkdir(parents=True, mode=0o700)
         code, events = self.cli("status", state_dir=elsewhere)
         self.assertEqual(self.done(events)["code"], "STATE_DIR_INVALID")
+        # A copied private folder whose path ends the same way, with a forged lock and check-target.
+        copy_root = Path(self.tmp.name) / "copy" / "lolly-private" / "production"
+        shutil.copytree(self.production, copy_root)
+        copy_root.chmod(0o700)
+        code, events = self.cli("status", state_dir=copy_root / "preview", check_target=copy_root / "check-target.py")
+        self.assertEqual(self.done(events)["code"], "STATE_DIR_INVALID")
+        self.production.chmod(0o755)
+        code, events = self.cli("status")
+        self.assertEqual(self.done(events)["code"], "STATE_DIR_INVALID")
+        self.production.chmod(0o700)
         other = Path(self.tmp.name) / "check-target.py"
         F.write_check_target(other, self.bin / "k3s", self.known_hosts)
         code, events = self.cli("status", check_target=other)
         self.assertEqual(self.done(events)["code"], "CHECK_TARGET_PATH")
+
+    def test_check_target_must_not_change_after_its_identities_were_read(self):
+        """Review R1: the file that is run is the file the identities came from."""
+        original = G.connector_origins
+
+        def tamper(*args, **kwargs):
+            with self.check_target_path.open("a") as handle:
+                handle.write("# changed\n")
+            return original(*args, **kwargs)
+        with mock.patch.object(G, "connector_origins", side_effect=tamper):
+            code, events = self.cli("ship", NEW)
+        self.assertEqual(self.done(events)["code"], "CHECK_TARGET_CHANGED")
+        self.assertEqual(self.patches_written(), [])
+
+    def test_locked_files_are_compared_with_the_committed_blobs(self):
+        """Review R2: assume-unchanged hides an edit from git status, not from the byte comparison."""
+        target = self.checkout / "deploy/preview/README.md"
+        git = ["git", "-C", str(self.checkout), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        original = target.read_bytes()
+        target.write_bytes(original + b"committed elsewhere\n")
+        subprocess.run(git + ["commit", "-qam", "drift"], check=True, capture_output=True)
+        target.write_bytes(original)  # the locked bytes again, hidden from git status
+        subprocess.run(git + ["update-index", "--assume-unchanged", "deploy/preview/README.md"], check=True)
+        self.assertEqual(subprocess.run(git + ["status", "--porcelain"], capture_output=True, text=True).stdout, "")
+        code, events = self.cli("status")
+        self.assertEqual(self.done(events)["code"], "TOOL_DIRTY")
+
+    def test_backup_window_counts_the_whole_run(self):
+        """Review L2: before the start by the worst case, and again inside the run before a change."""
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        soon = lambda minutes: (now + datetime.timedelta(minutes=minutes)).strftime("%H:%M")
+        if soon(10) < soon(70):  # skip the minutes around midnight, where the window would wrap
+            self.profile["noDeployUtc"] = [soon(10), soon(70)]
+            self.write_profile()
+            code, events = self.cli("ship", NEW)
+            refused = self.done(events)
+            self.assertEqual(refused["code"], "BACKUP_WINDOW")
+            self.assertIn("would reach", refused["reason"])
+        self.tearDown()
+        self.setUp()
+        later = (now + datetime.timedelta(hours=5))
+        self.profile["noDeployUtc"] = [later.strftime("%H:%M"), (later + datetime.timedelta(minutes=30)).strftime("%H:%M")]
+        self.write_profile()
+        os.environ["FAKE_WALL_UTC"] = (later + datetime.timedelta(minutes=5)).strftime("%H:%M")
+        code, events = self.cli("ship", NEW)
+        result = self.done(events)
+        self.assertEqual((result["result"], result.get("code")), ("REFUSED", "BACKUP_WINDOW"), events)
+        self.assertEqual(self.patches_written(), [])
+        self.assertEqual(self.live()[0], self.old["image"])
+        os.environ.pop("FAKE_WALL_UTC")
+
+    def test_a_run_that_never_starts_is_reported_as_not_started(self):
+        """The unit never leaves inactive; and, separately, the start never reached the node."""
+        os.environ["FAKE_UNIT_NEVER_STARTS"] = "1"
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "NOT_STARTED"), events)
+        os.environ.pop("FAKE_UNIT_NEVER_STARTS")
+        self.tearDown()
+        self.setUp()
+        os.environ["FAKE_START_DROPPED"] = "1"
+        code, events = self.cli("ship", NEW)
+        self.assertTrue(any(e.get("event") == "start-uncertain" for e in events))
+        self.assertEqual((code, self.done(events)["code"]), (1, "NOT_STARTED"), events)
+        os.environ.pop("FAKE_START_DROPPED")
+        self.assertEqual(self.patches_written(), [])
+        self.assertEqual(self.records()[-1]["code"], "NOT_STARTED")
+
+    def test_selftest_runs_check_target_first(self):
+        """Review R4: selftest installs and starts a unit on the host."""
+        os.environ["FAKE_CHECK_TARGET"] = "fail"
+        code, events = self.cli("selftest")
+        self.assertEqual((code, self.done(events)["code"]), (1, "CHECK_TARGET_FAILED"))
+        self.assertFalse((self.sandbox / "run/systemd/system/lolly-preview-deploy.service").exists())
 
     def test_identities_come_from_check_target_not_the_profile(self):
         """Review S-M3."""
@@ -980,6 +1088,77 @@ class Operations(EndToEnd):
             self.assertIsNotNone(self.node_image(kept), kept)
         self.assertEqual(self.node_image(foreign)["refs"][foreign], {"io.cri-containerd.pinned": "pinned"})
 
+    def test_gc_lists_unused_foreign_images_as_commands_for_andy(self):
+        """Review N3: images other procedures left, never removed by the command."""
+        state = self.cluster()
+        foreign = F.IMAGE_REPO + "@sha256:" + "d" * 64
+        image_id, entry = F.image_entry(foreign, {"io.cri-containerd.pinned": "pinned"}, (F.IMAGE_REPO + ":candidate-old",))
+        state["images"][image_id] = entry
+        self.set_cluster(state)
+        code, events = self.cli("gc")
+        listed = [e for e in events if e.get("event") == "gc-foreign-image"]
+        self.assertEqual(len(listed), 1)
+        self.assertEqual((listed[0]["id"], listed[0]["pinnedBy"], listed[0]["pinnedRefs"]), (image_id, "another procedure", [foreign]))
+        self.assertEqual(sorted(listed[0]["refs"]), sorted([foreign, F.IMAGE_REPO + ":candidate-old"]))
+        self.assertGreater(listed[0]["sizeBytes"], 0)
+        commands = listed[0]["forAndy"]
+        self.assertIn("--site lolly.tools", commands[0])
+        self.assertTrue(any("images label " + foreign + " io.cri-containerd.pinned=" in c for c in commands))
+        self.assertIn("crictl rmi " + image_id, commands[-1])
+        live_id = next(i for i, e in self.cluster()["images"].items() if self.old["image"] in e["refs"])
+        self.assertNotIn(live_id, [e["id"] for e in listed])  # the live image is kept, so it is never listed
+        code, events = self.cli("gc", "--execute")
+        self.assertEqual(self.done(events)["result"], "GC_DONE")
+        self.assertIsNotNone(self.node_image(foreign))
+
+    def test_adopt_is_the_way_forward_after_an_unhealthy_rollback(self):
+        """Review N2: records re-seeded from a bound build, never by dispatching one."""
+        fix = self.add_build("c" * 40, "fix", 1101)
+        self.behave(brokenSite=[self.new["image"]], watchFailAfter={self.old["image"]: 1})
+        code, events = self.cli("ship", NEW)
+        self.assertEqual(self.done(events)["result"], "ROLLBACK_UNHEALTHY")
+        posts = len([c for c in self.gh_calls() if c["method"] == "POST"])
+        self.update_gh(mainHead="c" * 40)
+        code, events = self.cli("ship", "c" * 40, "--clear-hold")  # stale records: refused before any build
+        self.assertEqual(self.done(events)["code"], "RECORDS_STALE")
+        self.assertEqual(len([c for c in self.gh_calls() if c["method"] == "POST"]), posts)
+        code, events = self.cli("adopt", OLD)  # the old build is broken, so adopt refuses
+        self.assertEqual(self.done(events)["code"], "ADOPT_SMOKE_FAILED")
+        self.assertEqual(self.live()[1]["phase"], "rollback-unhealthy")
+        code, events = self.cli("adopt", OLD, "--clear-hold")
+        self.assertEqual((code, self.done(events)["result"]), (3, "ADOPTED_UNHEALTHY"))
+        image, notes = self.live()
+        self.assertEqual((image, notes["image"], notes["source"], notes["phase"]), (self.old["image"], self.old["image"], OLD, "adopted-unhealthy"))
+        code, events = self.cli("deploy", "c" * 40)
+        self.assertEqual(self.done(events)["code"], "HELD_FOR_HUMAN")
+        code, events = self.cli("deploy", "c" * 40, "--clear-hold")
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.live()[0], fix["image"])
+
+    def test_adopt_of_a_healthy_live_build_restores_accepted_records(self):
+        notes = F.preview_annotations(self.old, phase="rolling-back")
+        notes["lolly.tools/preview-image"] = self.new["image"]
+        self.set_cluster(F.cluster_state(self.builds, self.old, annotations=notes))
+        code, events = self.cli("adopt", OLD)
+        self.assertEqual((code, self.done(events)["result"]), (0, "ADOPTED"), events)
+        image, notes = self.live()
+        self.assertEqual((notes["phase"], notes["image"], notes["source"], notes["reason"]), ("accepted", self.old["image"], OLD, "ADOPTED"))
+        self.assert_only_owned_writes()
+
+    def test_status_follow_reattaches_to_a_running_unit(self):
+        """A dropped link while the unit runs: ship detaches, status --follow sees it running and records the end."""
+        os.environ.update(FAKE_UNIT_ASYNC="1", FAKE_UNIT_DELAY="3", FAKE_POLL_DOWN="1")
+        code, events = self.cli("ship", NEW)
+        detached = self.done(events)
+        self.assertEqual(detached["result"], "DETACHED", events)
+        os.environ.pop("FAKE_POLL_DOWN")
+        code, events = self.cli("status", "--follow", detached["deployId"])
+        self.assertTrue(any(e.get("event") == "following" and e.get("unit") == "active" for e in events), events)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual((self.records()[-1]["command"], self.records()[-1]["result"]), ("status --follow", "LIVE"))
+        for name in ("FAKE_UNIT_ASYNC", "FAKE_UNIT_DELAY"):
+            os.environ.pop(name)
+
     def test_claim_command_for_andy_carries_a_uid_precondition(self):
         """Review C-L5 and S-L6."""
         state = self.cluster()
@@ -1059,6 +1238,27 @@ class Operations(EndToEnd):
         self.assertFalse(L.is_converted(deploy, 0, A.TOOLS))
         self.assertEqual(deploy["spec"]["revisionHistoryLimit"], 2)
         self.assertEqual(deploy["spec"]["template"], F.deployment(self.old["image"], converted=False)["spec"]["template"])
+
+
+class Endurance(EndToEnd):
+    """Review N1: the records stay the same size however many deploys go by."""
+
+    def test_twenty_accepted_deploys_keep_the_annotations_bounded(self):
+        sizes = []
+        for number in range(20):
+            sha = f"{number + 10:02d}" * 20
+            build = self.add_build(sha, f"build {number}", 3000 + number)
+            code, events = self.cli("deploy", sha)
+            self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events[-3:])
+            annotations = self.cluster()["deployment"]["metadata"]["annotations"]
+            previous = json.loads(annotations["lolly.tools/preview-previous"])
+            self.assertTrue(previous["prior"] is None or ("prior" not in previous["prior"] and "edge" not in previous["prior"]))
+            self.assertEqual(self.live()[0], build["image"])
+            sizes.append(len(json.dumps(annotations)))
+        self.assertLess(max(sizes), 24 * 1024)
+        self.assertLessEqual(sizes[-1], sizes[2] + 256)  # steady state from the third deploy on, not growth
+        self.assert_only_owned_writes()
+
 
 if __name__ == "__main__":
     unittest.main()

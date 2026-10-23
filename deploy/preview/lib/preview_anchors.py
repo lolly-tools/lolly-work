@@ -118,10 +118,15 @@ UNIT_STOP_TIMEOUT_SECONDS = PULL_TIMEOUT_SECONDS + MAX_ROLLOUT_SECONDS + SMOKE_B
 # template, so writing them never starts a rollout.
 ANNOTATION_PREFIX = "lolly.tools/preview-"
 PHASES = ("switching", "switched-unverified", "accepted", "rolling-back", "rolled-back",
-          "rollback-unhealthy", "aborted", "converting")
+          "rollback-unhealthy", "aborted", "converting", "adopted-unhealthy")
 UNCERTAIN_PHASES = ("switching", "switched-unverified", "rolling-back", "converting")
-# Phases whose records describe the image that is live (review C-H2).
-SETTLED_PHASES = ("accepted", "rolled-back", "aborted")
+# Phases that stop every later run until a human passes --clear-hold.
+HOLD_PHASES = UNCERTAIN_PHASES + ("rollback-unhealthy", "adopted-unhealthy")
+# Phases whose records describe the image that is live (review C-H2). `adopt` writes
+# adopted-unhealthy when a human adopts a live build that fails its smoke (review N2).
+SETTLED_PHASES = ("accepted", "rolled-back", "aborted", "adopted-unhealthy")
+# The longest a gc run takes, for the backup-window check before it starts.
+GC_BUDGET_SECONDS = 900
 
 SITES = {"lolly.tools": TOOLS, "lolly.ing": None}
 

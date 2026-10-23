@@ -31,12 +31,14 @@ PATHS = {"run": A.NODE_RUN_DIR, "results": A.NODE_RESULTS_DIR, "lock": A.NODE_LO
          "imagefs": A.NODE_IMAGE_FILESYSTEM, "systemctl": A.NODE_SYSTEMCTL, "armed": A.NODE_RETENTION_ARMED,
          "procStatus": "/proc/self/status", "procAttr": "/proc/self/attr/current"}
 MIB = 2 ** 20
-EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "SELFTEST_OK": 0,
+EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "SELFTEST_OK": 0, "ADOPTED": 0,
+        "ADOPTED_UNHEALTHY": 3,
         "ABORTED": 1, "REFUSED": 1, "STOPPED": 1, "SELFTEST_FAILED": 1, "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2,
         "ROLLBACK_UNHEALTHY": 3}
 SWITCH_ATTEMPTS = 5
 SLEEP = time.sleep
 CLOCK = time.monotonic
+WALL = time.time
 
 
 def load_app_update(path):
@@ -94,7 +96,7 @@ def validate_expect(expect):
 def validate_request(request, au):
     require_python()
     require(isinstance(request, dict) and request.get("version") == 1, "BAD_REQUEST", "unsupported request")
-    require(request.get("kind") in ("deploy", "rollback", "convert", "gc", "selftest", "read"), "BAD_REQUEST", "unknown kind")
+    require(request.get("kind") in ("deploy", "rollback", "convert", "gc", "selftest", "adopt", "read"), "BAD_REQUEST", "unknown kind")
     anchors = A.site_anchors(request.get("site"))
     require(isinstance(request.get("deployId"), str) and DEPLOY_ID.fullmatch(request["deployId"]) is not None,
             "BAD_REQUEST", "deploy id is malformed")
@@ -120,10 +122,13 @@ def validate_request(request, au):
     _number(limits.get("needBytes"), 0, 2 ** 40, "capacity need")
     require(isinstance(limits.get("edgeAddress"), str) and re.fullmatch(r"[0-9a-f.:]{3,45}", limits["edgeAddress"]) is not None,
             "BAD_REQUEST", "edge address")
+    window = limits.get("noDeployUtc")
+    require(isinstance(window, list) and len(window) == 2 and all(isinstance(t, str) and re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", t)
+                                                                   for t in window), "BAD_REQUEST", "backup window")
     require(isinstance(request.get("modelsRelease"), str) and re.fullmatch(r"models-[0-9a-f]{64}", request["modelsRelease"]) is not None,
             "BAD_REQUEST", "models release")
     require(type(request.get("drillFailSmoke")) is bool and type(request.get("clearHold")) is bool, "BAD_REQUEST", "flags")
-    if request["kind"] in ("deploy", "convert"):
+    if request["kind"] in ("deploy", "convert", "adopt"):
         release = request.get("release")
         require(isinstance(release, dict) and set(release) == {"source", "image", "ciRun", "formats", "expect"},
                 "BAD_REQUEST", "release is malformed")
@@ -159,9 +164,17 @@ class Runner:
         self.log = log or (lambda event, **fields: None)
 
     # Reads ---------------------------------------------------------------
-    def deployment(self):
-        self.au.check_cluster(self.target, self.kube)
-        value, index = self.au.check_deployment(self.component, self.kube)
+    def deployment(self, full=True):
+        """The target Deployment. full: cluster, node, namespace and Deployment identity, as before every change.
+        Otherwise one read that still checks the Deployment's UID, name and owned container, for health probes."""
+        if full:
+            self.au.check_cluster(self.target, self.kube)
+            value, index = self.au.check_deployment(self.component, self.kube)
+        else:
+            value = self.kube.get("deployment", self.anchors["deployment"], self.anchors["namespace"])
+            require(value["metadata"].get("uid") == self.component["deploymentUID"] and not value["metadata"].get("deletionTimestamp"),
+                    "IDENTITY_MISMATCH", "wrong Deployment")
+            index = L.container_index(value, self.anchors["container"])
         require(value["metadata"].get("name") == self.anchors["deployment"]
                 and value["metadata"].get("namespace") == self.anchors["namespace"], "IDENTITY_MISMATCH", "wrong Deployment")
         return value, index
@@ -222,8 +235,9 @@ class Runner:
                 and current in {owner.get("uid") for owner in pod["metadata"].get("ownerReferences", [])}]
 
     def working_set(self, container_id):
-        """The kubelet's working set: containerd reports usage minus inactive_file, so page cache from
-        model reads does not count (review C-L6). Never usageBytes."""
+        """The kubelet's working set: containerd reports usage minus inactive_file, never usageBytes
+        (review C-L6). Inactive page cache does not count; active page cache, such as model files read
+        moments ago, still does, so the 80% threshold leaves room for it."""
         data = json.loads(self.k3s_run(["crictl", "stats", "-o", "json", "--id", container_id]))
         stats = data.get("stats") or []
         if len(stats) != 1:
@@ -233,7 +247,7 @@ class Runner:
 
     def pod_check(self, image, memory):
         try:
-            value, index = self.deployment()
+            value, index = self.deployment(full=False)
             pods = self.pods(value)
             if len(pods) != 1:
                 return False, f"{len(pods)} running Pods in the current ReplicaSet"
@@ -337,7 +351,7 @@ class Runner:
 
     def wait_rollout(self, image):
         self.kube.rollout(self.component, int(self.limits["rolloutTimeoutSeconds"]))
-        value, index = self.deployment()
+        value, index = self.deployment(full=False)
         require(self.image_of(value, index) == image and self.ready(value), "NOT_READY", "the rollout did not become Ready")
 
     def switch_image(self, from_image, to_image):
@@ -350,7 +364,7 @@ class Runner:
         """
         last = "no attempt"
         for _ in range(SWITCH_ATTEMPTS):
-            value, index = self.deployment()
+            value, index = self.deployment(full=False)  # app-update.py checks the cluster itself before it patches
             current = self.image_of(value, index)
             if current == to_image:
                 return self.wait_rollout(to_image)  # an earlier attempt committed
@@ -370,7 +384,7 @@ class Runner:
                 last = str(exc)
             self.log("switch-retry", reason=last[:200])
             SLEEP(2)
-        value, index = self.deployment()
+        value, index = self.deployment(full=False)
         if self.image_of(value, index) == to_image:
             return self.wait_rollout(to_image)
         raise Refusal("SWITCH_NOT_APPLIED", f"the image was not changed after {SWITCH_ATTEMPTS} attempts: {last[:200]}")
@@ -384,8 +398,17 @@ class Runner:
         self.log("result", **{k: v for k, v in record.items() if k not in ("checks", "rollbackChecks")})
         return EXIT.get(result, 1)
 
+    def window_check(self):
+        """Before each forward mutation: never start one inside the backup window (review L2).
+        Rollbacks are not checked; a broken site is worse than a busy backup."""
+        start, end = self.request["limits"]["noDeployUtc"]
+        now = time.strftime("%H:%M", time.gmtime(WALL()))
+        inside = (start <= now < end) if start <= end else (now >= start or now < end)  # a window may wrap midnight
+        require(not inside, "BACKUP_WINDOW", f"the {start}-{end} UTC backup window began during the run; "
+                                                            "nothing further was changed")
+
     def hold_check(self, phase):
-        if phase in A.UNCERTAIN_PHASES + ("rollback-unhealthy",) and not self.request["clearHold"]:
+        if phase in A.HOLD_PHASES and not self.request["clearHold"]:
             raise Refusal("HELD_FOR_HUMAN", f"the live phase is {str(phase).upper()}; inspect with status, "
                                             "then pass --clear-hold to proceed")
 
@@ -411,6 +434,20 @@ class Runner:
         require(self.ann(value, "image") == live and phase in A.SETTLED_PHASES and record["expect"]["source"] == record["source"],
                 "RECORDS_STALE", f"the preview records do not describe the live image (phase {phase}); inspect with status")
         return record
+
+    def prior_record(self, value):
+        """The live build's own rollback record, one level deep: never its `prior` or `edge` (review N1)."""
+        record = self.ann_json(value, "previous")
+        if not isinstance(record, dict):
+            return None
+        return {name: item for name, item in record.items() if name not in ("prior", "edge")}
+
+    def edge_now(self):
+        """The edge-owned headers the edge serves right now, as a baseline for a rollback; None if unreadable."""
+        try:
+            return S.observed_edge_headers(S.FETCH(self.anchors["origin"] + "/"))
+        except Refusal:
+            return None
 
     def run_smoke(self, expect, image, extra_pages=None, exact_headers=True, edge_baseline=None):
         S.check_dns(self.anchors, self.limits["edgeAddress"])
@@ -456,11 +493,13 @@ class Runner:
         require(previous["source"] == self.request.get("liveSource"), "STATE_CHANGED", "the live release changed since the command read it")
         old_files, edge = self.live_smoke(previous["expect"])
         previous["edge"] = edge
-        previous["prior"] = self.ann(value, "previous")  # restored if the switch aborts
+        previous["prior"] = self.prior_record(value)  # restored if the switch aborts; never nested deeper (review N1)
+        self.window_check()
         self.ensure_image(release["image"], int(self.limits["needBytes"]))
         self.ensure_image(live_image, int(self.limits["needBytes"]))  # the rollback target stays pinned
         added = lambda files: S.added_info_pages(files, old_files, int(self.limits["maxAddedPages"]))
         deploys = int(self.ann(value, "deploys") or "0")
+        self.window_check()
         self.annotate({"phase": "switching", "deploy-id": self.request["deployId"], "previous": compact(previous),
                        "reason": None, "updated": utc_stamp()}, expect_image=live_image)
         self.log("phase", phase="switching")
@@ -468,7 +507,8 @@ class Runner:
             self.switch_image(live_image, release["image"])
         except Refusal as exc:
             if exc.code == "SWITCH_NOT_APPLIED":
-                self.annotate({"phase": "aborted", "previous": previous["prior"], "reason": exc.message[:500],
+                self.annotate({"phase": "aborted", "previous": compact(previous["prior"]) if previous["prior"] else None,
+                               "reason": exc.message[:500],
                                "updated": utc_stamp()}, expect_image=live_image)
                 return self.finish("ABORTED", reason=exc.message, image=live_image)
             return self.restore(previous, "ROLLOUT_FAILED: " + str(exc)[:300], watch=False)
@@ -506,10 +546,11 @@ class Runner:
             require(anchored_image(previous.get("image"), self.anchors), "BAD_IMAGE", "the recorded previous image is not the anchored package")
             value, index = self.deployment()
             current = self.image_of(value, index)
+            edge = previous.get("edge") or self.edge_now()  # the edge owns these headers, whatever the image
             if current != previous["image"]:
                 self.ensure_image(previous["image"], int(self.limits["needBytes"]))
                 self.switch_image(current, previous["image"])
-            back, files = self.run_smoke(previous["expect"], previous["image"], edge_baseline=previous.get("edge"))
+            back, files = self.run_smoke(previous["expect"], previous["image"], edge_baseline=edge)
             problem = None if back.ok else "smoke of the previous build failed: " + ", ".join(i["check"] for i in back.failures())
             if problem is None and watch:
                 problem = self.watch(files["index.html"], previous["image"])
@@ -545,9 +586,40 @@ class Runner:
         require(not lowering, "FORMAT_LOWERING", "the rollback would lower stored formats (" + ", ".join(lowering) +
                 "); roll forward instead")
         require(L.is_converted(value, index, self.anchors), "NOT_CONVERTED", "the Deployment is not on the image layout")
+        self.window_check()
         self.ensure_image(previous["image"], int(self.limits["needBytes"]))  # refuse here, before anything is marked
+        previous = {name: item for name, item in previous.items() if name not in ("prior", "edge")}  # a fresh edge baseline
         self.annotate({"deploy-id": self.request["deployId"], "updated": utc_stamp()})
         return self.restore(previous, "MANUAL", watch=True)
+
+    # Adopt (review N2) ---------------------------------------------------
+    def run_adopt(self):
+        """Re-seed the records for the image that is live, after a full smoke against a bound build.
+
+        The way forward after ROLLBACK_UNHEALTHY or stale records. It changes only annotations.
+        With a failing smoke it refuses, unless a human passes --clear-hold: then the records are
+        written with phase adopted-unhealthy, which every later run still holds for a human.
+        """
+        release = self.request["release"]
+        value, index = self.deployment()
+        require(self.image_of(value, index) == release["image"], "IMAGE_DIFFERS", "adopt only describes the image that is live")
+        require(L.is_converted(value, index, self.anchors), "NOT_CONVERTED", "the Deployment is not on the image layout")
+        require(L.models_release(value, index, self.anchors) == self.request["modelsRelease"], "MODELS_CHANGED",
+                "the mounted models release is not the one the profile names")
+        checks, _ = self.run_smoke(release["expect"], release["image"], edge_baseline=self.edge_now())
+        if not checks.ok and not self.request["clearHold"]:
+            return self.finish("REFUSED", code="ADOPT_SMOKE_FAILED", reason="the live build fails its smoke: " +
+                               ", ".join(i["check"] for i in checks.failures()) + "; deploy a fix with --clear-hold after "
+                               "adopt --clear-hold, or inspect by hand", checks=checks.items)
+        self.window_check()
+        phase = "accepted" if checks.ok else "adopted-unhealthy"
+        self.annotate({"phase": phase, "deploy-id": self.request["deployId"], "source": release["source"],
+                       "image": release["image"], "ci-run": release["ciRun"], "tool": self.request["tool"],
+                       "formats": compact(release["formats"]), "expect": compact(release["expect"]), "previous": None,
+                       "reason": "ADOPTED" if checks.ok else "ADOPTED_UNHEALTHY", "updated": utc_stamp()},
+                      expect_image=release["image"])
+        return self.finish("ADOPTED" if checks.ok else "ADOPTED_UNHEALTHY", source=release["source"], image=release["image"],
+                           checks=checks.items)
 
     # Conversion (PROPOSAL 3.6) -------------------------------------------
     def conversion_now(self, value, plan):
@@ -568,6 +640,7 @@ class Runner:
         self.conversion_now(value, plan)
         S.check_dns(self.anchors, self.limits["edgeAddress"])
         edge = S.observed_edge_headers(S.FETCH(self.anchors["origin"] + "/"))  # the edge owns these (review C-M2)
+        self.window_check()
         self.ensure_image(release["image"], int(self.limits["needBytes"]))
         self.log("phase", phase="converting")
         applied, last = False, None
@@ -656,7 +729,7 @@ class Runner:
         """Keep, by image ID, the live image and the newest N previous ones of this Deployment, and
         everything any Pod runs. Remove only images this command pulled itself, by their exact
         repo@digest, when no other name or foreign pin holds them (review S-M1, C-M5)."""
-        value, index = self.deployment()
+        value, index = self.deployment(full=False)
         uid = value["metadata"]["uid"]
         images = self.node_images()
         by_ref = {ref: image_id for image_id, image in images.items() for ref in image["refs"]}
@@ -692,11 +765,24 @@ class Runner:
             keep_refs.append(previous["image"])
         keep = {resolve(ref) for ref in keep_refs} - {None}
         containerd = self.containerd_refs()
-        remove, foreign = [], []
+        repository = self.anchors["imageRepository"]
+        remove, foreign, unused_foreign = [], [], []
         for image_id, image in sorted(images.items()):
             ours = [ref for ref in image["refs"] if anchored_image(ref, self.anchors)
                     and containerd.get(ref, (None, {}))[1].get(A.PULLED_LABEL.split("=")[0]) == "true"]
-            if image_id in keep or image_id in in_use or not ours:
+            if image_id in keep or image_id in in_use:
+                continue
+            if not ours:
+                if any(ref.startswith(repository + "@") or ref.startswith(repository + ":") for ref in image["refs"]):
+                    labels = {ref: containerd.get(ref, (None, {}))[1] for ref in image["refs"]}
+                    pins = [ref for ref, found in labels.items() if found.get("io.cri-containerd.pinned") == "pinned"]
+                    own = any(found.get(A.OWN_PIN_LABEL.split("=")[0]) == "true" for found in labels.values())
+                    unused_foreign.append({
+                        "id": image_id, "refs": image["refs"], "size": image["size"], "pinnedRefs": pins,
+                        "pinnedBy": "preview-deploy" if own else ("another procedure" if pins else None),
+                        "labels": labels,
+                        "referencedBy": [f"ReplicaSet revision {revision}" for revision, refs in history
+                                         if image_id in {resolve(ref) for ref in refs}]})
                 continue
             others = [ref for ref in image["refs"] if ref not in ours]
             pinned_by_others = any(labels.get("io.cri-containerd.pinned") == "pinned"
@@ -706,15 +792,23 @@ class Runner:
                 foreign.append(ours[0])
                 continue
             remove.append({"ref": ours[0], "id": image_id, "size": image["size"]})
-        return {"keep": keep_refs, "keepIds": sorted(keep), "remove": remove, "untouched": sorted(foreign)}
+        return {"keep": keep_refs, "keepIds": sorted(keep), "remove": remove, "untouched": sorted(foreign),
+                "unusedForeign": unused_foreign}
 
     def retain_images(self, execute):
         """Pin what is kept; remove only when execute (gc --execute, or after gc has been armed)."""
         try:
             plan = self.image_plan()
+            containerd, labelled = self.containerd_refs(), False
             for ref in plan["keep"]:
-                if self.inspect(ref) is not None:
-                    self.ensure_image(ref, 0)
+                if ref in containerd and containerd[ref][1].get("io.cri-containerd.pinned") != "pinned":
+                    self.label(ref, A.PINNED_LABEL)
+                    self.label(ref, A.OWN_PIN_LABEL)
+                    labelled = True
+            if labelled:  # read the pins back once
+                images = self.node_images()
+                require(all(image["pinned"] for image in images.values() if set(image["refs"]) & set(plan["keep"])),
+                        "PIN_FAILED", "a kept image did not stay pinned")
             removed = []
             if execute:
                 containerd = self.containerd_refs()
@@ -732,6 +826,7 @@ class Runner:
             return {"skipped": True}
 
     def run_gc(self):
+        self.window_check()
         retention = self.retain_images(execute=True)
         if not retention.get("skipped"):
             with open(PATHS["armed"], "w") as handle:  # later deploys may now apply retention themselves
@@ -788,7 +883,7 @@ class Runner:
                 outcome = json.load(handle).get("result")
             if outcome in ("ROLLED_BACK", "ROLLBACK_UNHEALTHY", "CONVERSION_REVERTED"):
                 return 0  # the run already made its one rollback attempt
-        if self.request["kind"] in ("gc", "selftest"):
+        if self.request["kind"] in ("gc", "selftest", "adopt"):
             return 0 if finished else self.finish("STOPPED", reason="unit stopped")
         stopped = {name: environment.get(name) for name in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")}
         reason = "UNIT_STOPPED " + compact(stopped)
@@ -807,7 +902,8 @@ class Runner:
         if not isinstance(previous, dict) or not previous.get("image"):
             return self.finish("STOPPED", reason=reason, phase=phase, problem="no recorded previous build")
         if phase == "switching" and self.image_of(value, index) == previous["image"]:
-            self.annotate({"phase": "aborted", "previous": previous.get("prior"), "reason": reason[:500]},
+            prior = previous.get("prior")
+            self.annotate({"phase": "aborted", "previous": compact(prior) if isinstance(prior, dict) else None, "reason": reason[:500]},
                           expect_image=previous["image"])
             return self.finish("ABORTED", reason=reason)
         return self.restore(previous, reason, watch=False)
@@ -873,7 +969,7 @@ def main(argv, app_update_path, environment=None):
             if argv[0] == "stop-post":
                 return runner.stop_post(environment)
             handler = {"deploy": runner.run_deploy, "rollback": runner.run_rollback, "convert": runner.run_convert,
-                       "gc": runner.run_gc, "selftest": runner.run_selftest}[request["kind"]]
+                       "gc": runner.run_gc, "selftest": runner.run_selftest, "adopt": runner.run_adopt}[request["kind"]]
             return handler()
     except Refusal as exc:
         if argv[0] == "stop-post":
@@ -930,7 +1026,8 @@ def read(query, au):
     plan = runner.image_plan()
     claims = gc_claims(runner, value, query.get("legacyClaims") or [])
     return {"images": {"keep": plan["keep"], "remove": [item["ref"] for item in plan["remove"]],
-                       "removeBytes": sum(item["size"] for item in plan["remove"]), "untouched": plan["untouched"]},
+                       "removeBytes": sum(item["size"] for item in plan["remove"]), "untouched": plan["untouched"],
+                       "unusedForeign": plan["unusedForeign"]},
             "claims": claims, "deploysSinceConversion": int(runner.ann(value, "deploys") or "0"),
             "retentionArmed": os.path.exists(PATHS["armed"])}
 
