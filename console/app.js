@@ -5914,6 +5914,46 @@ function mdToNodes(text, { skipTitle = true } = {}) {
   return nodes;
 }
 
+// Console slugs a documentation restructure retired (Lolly #501). An old link or
+// bookmark opens the page that took the content over, at the section that holds
+// it, instead of falling back to the first page. A slug the manifest still lists
+// always wins, so a page that returns under its old name is served as itself.
+const DOC_SLUG_ALIASES = {
+  'release-1-1-1': { slug: 'past-releases', anchor: '111' },
+  'release-1-1-0': { slug: 'past-releases', anchor: '110' },
+  'frontend-updates': { slug: 'shell-deployment-workflow' },
+  'public-model-proof-reuse': { slug: 'shell-deployment-workflow' },
+  'application-release-classification': { slug: 'shell-deployment-workflow' },
+  'provider-webdav-live-verify': { slug: 'provider-tenant-check', anchor: 'webdav-nextcloud' },
+  'provider-canto-live-verify': { slug: 'provider-tenant-check', anchor: 'canto' },
+  'provider-imagerelay-live-verify': { slug: 'provider-tenant-check', anchor: 'image-relay' },
+  'provider-intelligencebank-live-verify': { slug: 'provider-tenant-check', anchor: 'intelligencebank' },
+  'provider-acquia-dam-live-verify': { slug: 'provider-tenant-check', anchor: 'acquia-dam-widen' },
+  'provider-cloudinary-live-verify': { slug: 'provider-tenant-check', anchor: 'cloudinary' },
+  'provider-orange-logic-live-verify': { slug: 'provider-tenant-check', anchor: 'orange-logic' },
+};
+
+// The page and section a docs route asks for, after retired slugs are followed.
+function docTarget(flat, want, anchor) {
+  if (want && !flat.some((d) => d.slug === want) && Object.hasOwn(DOC_SLUG_ALIASES, want)) {
+    const alias = DOC_SLUG_ALIASES[want];
+    if (flat.some((d) => d.slug === alias.slug)) return { slug: alias.slug, anchor: anchor || alias.anchor || '', aliased: true };
+  }
+  return { slug: want, anchor: anchor || '', aliased: false };
+}
+
+// The node an anchor lands on: a legacy <a id>, a heading, or a section title
+// the bundle generator lowered to a bold line of its own (a disclosure or a note
+// keeps its title that way, so links into one still reach it).
+function docAnchorNode(prose, anchor) {
+  const slugOf = (node) => node.textContent.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-');
+  const marker = [...prose.querySelectorAll('[id]')].find(node => node.id === anchor);
+  if (marker) return marker.nextElementSibling ?? marker;
+  return [...prose.querySelectorAll('h1,h2,h3,h4')].find(node => slugOf(node) === anchor)
+    ?? [...prose.querySelectorAll('p')].find(node => node.childNodes.length === 1 && node.firstElementChild?.tagName === 'STRONG' && slugOf(node) === anchor)
+    ?? null;
+}
+
 async function viewDocs(main, params) {
   const index = await api('/api/v1/docs');
   const sections = index.sections ?? [];
@@ -5922,8 +5962,13 @@ async function viewDocs(main, params) {
     main.replaceChildren(el('h1', {}, 'Docs'), el('p', { class: 'empty' }, 'This deployment ships no documentation.'));
     return;
   }
-  const want = params?.get?.('doc');
-  const current = flat.find((d) => d.slug === want) ?? flat[0];
+  const target = docTarget(flat, params?.get?.('doc'), params?.get?.('anchor'));
+  if (target.aliased) {
+    // Deep-linkable under the new name; replaceState fires no hashchange.
+    try { history.replaceState(null, '', `#/docs?doc=${target.slug}${target.anchor ? `&anchor=${encodeURIComponent(target.anchor)}` : ''}`); } catch { /* ignore */ }
+    renderedRouteHash = location.hash;
+  }
+  const current = flat.find((d) => d.slug === target.slug) ?? flat[0];
   // Rebuilt per view so a manifest change lands without a reload.
   docPathToSlug = new Map(flat.map((d) => [d.path ?? `${d.slug}.md`, d.slug]));
   docCurrentDir = (current.path ?? '').includes('/') ? current.path.replace(/\/[^/]*$/, '') : '';
@@ -5958,13 +6003,8 @@ async function viewDocs(main, params) {
   );
   try {
     prose.replaceChildren(...mdToNodes(await apiText(`/api/v1/docs/${current.slug}`)));
-    const anchor = params?.get?.('anchor');
-    if (anchor) {
-      const alias = [...prose.querySelectorAll('[id]')].find(node => node.id === anchor);
-      const heading = (alias?.nextElementSibling ?? alias) ?? [...prose.querySelectorAll('h1,h2,h3,h4')].find(node =>
-        node.textContent.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-') === anchor);
-      if (heading) heading.setAttribute('data-doc-anchor', '');
-    }
+    const heading = target.anchor ? docAnchorNode(prose, target.anchor) : null;
+    if (heading) heading.setAttribute('data-doc-anchor', '');
   } catch (e) {
     prose.replaceChildren(el('p', { class: 'empty' }, `Couldn’t load this page: ${e.message}`));
   }
