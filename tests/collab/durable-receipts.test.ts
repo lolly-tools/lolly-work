@@ -105,6 +105,54 @@ test('Postgres rolls back checkpoint and session if the receipt insert fails, an
   } finally { await admin.end(); }
 }));
 
+test('Postgres writes a batch of receipts in one statement, and a stored id still refuses the batch', {
+  skip: !process.env.LW_TEST_DATABASE_URL,
+}, async () => withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, async store => {
+  const { default: pg } = await import('pg');
+  const { ReferenceCanvasDoc } = await import('@lolly-tools/core/canvas-op-v1');
+  const user = await store.upsertUserBySub({ sub: 'statements', email: 'statements@example.invalid', groups: [], role: 'member' });
+  const now = new Date().toISOString();
+  await store.putProject({ id: 'p', name: 'Test', visibility: 'private', ownerId: user.id, createdAt: now });
+  await store.putSession({ id: 's', projectId: 'p', toolId: 'design', toolVersion: '1', inputs: { title: 'before' }, meta: {},
+    createdBy: user.id, updatedBy: user.id, rev: 1, updatedAt: now });
+  assert.equal(await store.claimCollab('s', 'owner', 30000), true);
+  const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  // A full gateway message: 200 ops with one receipt each, one of them refused.
+  const receipts = Array.from({ length: 200 }, (_, i) => ({ id: `op-${i}`, digest: `digest-${i}`, accepted: i !== 7 }));
+  const batch = { sessionId: 's', owner: 'owner', principal: user.id, expectedRev: 1, inputs: { title: 'after' },
+    checkpoint: new ReferenceCanvasDoc().checkpoint(), ops: [], receipts, actor: 'collab', updatedBy: user.id };
+  const refusals = Array.from({ length: 200 }, (_, i) => ({ id: `refused-${i}`, digest: `refused-${i}`, accepted: false }));
+
+  // Every pooled connection is a pg.Client, so its prototype sees each statement the store sends.
+  const prototype = pg.Client.prototype as unknown as { query(...args: unknown[]): Promise<unknown> };
+  const query = prototype.query, inserts: string[] = [];
+  prototype.query = function (this: unknown, ...args: unknown[]) {
+    if (typeof args[0] === 'string' && /^\s*insert into collab_receipts\b/.test(args[0])) inserts.push(args[0]);
+    return query.apply(this, args);
+  };
+  try {
+    assert.equal(await store.commitCollab(batch), 2);
+    assert.equal(inserts.length, 1, 'one statement for 200 receipts');
+    await store.commitCollabReceipts({ sessionId: 's', owner: 'owner', principal: user.id, expectedRev: 2, receipts: refusals });
+    assert.equal(inserts.length, 2, 'a batch that accepted nothing is one statement too');
+  } finally { prototype.query = query; }
+
+  assert.deepEqual((await store.getCollabReceipts('s', user.id, receipts.map(r => r.id))).sort(byId),
+    receipts.map(r => ({ ...r, revision: 2 })).sort(byId), 'every receipt, at the batch revision');
+  assert.deepEqual((await store.getCollabReceipts('s', user.id, refusals.map(r => r.id))).sort(byId),
+    refusals.map(r => ({ ...r, revision: 2 })).sort(byId), 'refusals at the revision they were refused against');
+
+  // A receipt id written before refuses the whole batch: no session write, no new receipt.
+  const repeat = [{ id: 'fresh', digest: 'fresh', accepted: true }, { id: 'op-3', digest: 'digest-3', accepted: true }];
+  await assert.rejects(store.commitCollab({ ...batch, expectedRev: 2, inputs: { title: 'again' }, receipts: repeat }), /collab_receipts_pkey/);
+  await assert.rejects(store.commitCollabReceipts({ sessionId: 's', owner: 'owner', principal: user.id, expectedRev: 2,
+    receipts: [{ id: 'fresh-refusal', digest: 'x', accepted: false }, { id: 'fresh-refusal', digest: 'x', accepted: false }] }),
+  /collab_receipts_pkey/, 'an id repeated inside one batch is refused as well');
+  const session = (await store.getSession('s'))!;
+  assert.deepEqual([session.rev, session.inputs.title], [2, 'after']);
+  assert.deepEqual(await store.getCollabReceipts('s', user.id, ['fresh', 'fresh-refusal']), []);
+}));
+
 test('an empty blocks input survives the initial join and checkpoint restart', async () => {
   const store = createMemoryStore();
   const user = await store.upsertUserBySub({ sub: 'empty', email: 'empty@test', groups: [], role: 'member' });

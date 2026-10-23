@@ -330,6 +330,22 @@ const addClause = (clauses: string[], values: unknown[], column: string, value: 
   clauses.push(`${column} = $${values.length}`);
 };
 
+/** One collab batch's receipts in one statement, at `revision`, inside the caller's
+ *  transaction. A batch carries up to 200 ops (`MAX_OPS_PER_MESSAGE` in
+ *  collab/rooms.ts), one receipt each, so a statement per receipt was up to 200
+ *  round trips with the session row locked. The primary key
+ *  still refuses a receipt written twice, and that error rolls the batch back as
+ *  before. `unnest` keeps the arrays' order, and the statement text stays the same
+ *  whatever the batch size. */
+async function insertCollabReceipts(client: PgClient, sessionId: string, principal: string,
+  receipts: readonly { id: string; digest: string; accepted: boolean }[], revision: number): Promise<void> {
+  if (!receipts.length) return;
+  await client.query(`insert into collab_receipts(session_id,principal,id,digest,accepted,revision)
+    select $1::text, $2::text, r.id, r.digest, r.accepted, $6::bigint
+    from unnest($3::text[], $4::text[], $5::boolean[]) as r(id, digest, accepted)`,
+  [sessionId, principal, receipts.map(r => r.id), receipts.map(r => r.digest), receipts.map(r => r.accepted), revision]);
+}
+
 export async function createPostgresStore(databaseUrl: string): Promise<Store & { close(): Promise<void> }> {
   let roleGroups: RoleGroups = {};
   let auditMacKey: string | undefined;
@@ -2834,8 +2850,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
           if (advanced.rowCount !== 1) throw new Error('collab-checkpoint-required');
           await client.query('insert into collab_journal(session_id,revision,ops) values($1,$2,$3::jsonb)', [batch.sessionId, rev, JSON.stringify(batch.ops)]);
         }
-        for (const r of batch.receipts) await client.query(`insert into collab_receipts(session_id,principal,id,digest,accepted,revision) values($1,$2,$3,$4,$5,$6)`,
-          [batch.sessionId, batch.principal, r.id, r.digest, r.accepted, rev]);
+        await insertCollabReceipts(client, batch.sessionId, batch.principal, batch.receipts, rev);
         await client.query('commit');
         return rev;
       } catch (error) { await client.query('rollback'); throw error; }
@@ -2851,8 +2866,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         const locked = await client.query(`select 1 from sessions where id=$1 and rev=$2 and deleted_at is null
           and collab_owner=$3 and collab_lease_until>clock_timestamp() for update`, [batch.sessionId, batch.expectedRev, batch.owner]);
         if (!locked.rows[0]) throw new Error('collab-owner-conflict');
-        for (const r of batch.receipts) await client.query(`insert into collab_receipts(session_id,principal,id,digest,accepted,revision) values($1,$2,$3,$4,$5,$6)`,
-          [batch.sessionId, batch.principal, r.id, r.digest, r.accepted, batch.expectedRev]);
+        await insertCollabReceipts(client, batch.sessionId, batch.principal, batch.receipts, batch.expectedRev);
         await client.query('commit');
       } catch (error) { await client.query('rollback'); throw error; }
       finally { client.release(); }
