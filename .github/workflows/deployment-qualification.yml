@@ -1,17 +1,25 @@
 # SPDX-License-Identifier: MPL-2.0
+# Cloud modules, YunoHost package lint and the PostgreSQL backup drill.
+# Pushes to main and v* tags, the nightly schedule and manual runs start it here
+# and run every job; chart publication requires the main push run.
+# Pull requests call it from pr-qualification.yml when its inputs change.
 name: Deployment qualification
 
 on:
-  pull_request:
   push:
     branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '37 3 * * *'
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
+# The event is in the group so a nightly or manual run never cancels a main push run.
 concurrency:
-  group: deployment-qualification-${{ github.ref }}
+  group: deployment-qualification-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

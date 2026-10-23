@@ -163,6 +163,48 @@ test('only signing jobs get an OIDC token and every image job checks out the exa
   }
 });
 
+test('a release runs only from its own tag, so the signing identity names that tag', () => {
+  const validate = step(job('release-source'), 'Validate release selectors').run ?? '';
+  const program = /python3 - <<'PY'\n([\s\S]*?)\nPY\n?$/.exec(validate)?.[1];
+  assert.ok(program, 'selector heredoc');
+  const sha = 'a'.repeat(40), repository = 'lolly-tools/lolly-work';
+  const run = (tag: string, ref: string, workflowRef: string) => spawnSync('python3', ['-c', program], {
+    env: { ...process.env, RELEASE_TAG: tag, EXPECTED_SOURCE_SHA: sha, GITHUB_REPOSITORY: repository, GITHUB_REF: ref, GITHUB_WORKFLOW_REF: workflowRef },
+    encoding: 'utf8',
+  });
+  const at = (ref: string) => `${repository}/.github/workflows/release.yml@${ref}`;
+  assert.equal(run('v1.2.3', 'refs/tags/v1.2.3', at('refs/tags/v1.2.3')).status, 0);
+  assert.equal(run('v1.2.3-rc.1', 'refs/tags/v1.2.3-rc.1', at('refs/tags/v1.2.3-rc.1')).status, 0);
+  const refused = run('v1.2.3', 'refs/heads/main', at('refs/heads/main'));
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /gh workflow run release\.yml --ref v1\.2\.3/);
+  for (const [ref, workflowRef] of [
+    ['refs/tags/v1.2.4', at('refs/tags/v1.2.4')],
+    ['refs/heads/v1.2.3', at('refs/heads/v1.2.3')],
+    ['refs/tags/v1.2.3', `${repository}/.github/workflows/other.yml@refs/tags/v1.2.3`],
+    ['refs/tags/v1.2.3', `someone/lolly-work-copy/.github/workflows/release.yml@refs/tags/v1.2.3`],
+  ] as const) {
+    assert.notEqual(run('v1.2.3', ref, workflowRef).status, 0, `${ref} ${workflowRef}`);
+  }
+});
+
+test('each signed image is verified against the anchored release identity before the job ends', () => {
+  const merge = job('server-manifest');
+  const worker = job('render-worker-image');
+  const verify = step(merge, 'Verify the signature with the release identity');
+  assert.equal(verify.run, step(worker, 'Verify the signature with the release identity').run);
+  for (const owner of [merge, worker]) {
+    const signed = position(owner, candidate => candidate.name === 'Sign the image (keyless)');
+    assert.equal(position(owner, candidate => candidate.name === 'Verify the signature with the release identity'), signed + 1);
+  }
+  const commands = verify.run ?? '';
+  assert.match(commands, /cosign verify "\$IMAGE@\$DIGEST" \\\n\s+--certificate-oidc-issuer https:\/\/token\.actions\.githubusercontent\.com \\\n/);
+  assert.match(commands, /--certificate-identity "\$GITHUB_SERVER_URL\/\$GITHUB_REPOSITORY\/\.github\/workflows\/release\.yml@refs\/tags\/v\$VERSION"/);
+  const source = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /identity-regexp|github\.com\/\.\+|GHCR_PAT/);
+  assert.match(source, /--certificate-identity "https:\/\/github\.com\/lolly-tools\/lolly-work\/\.github\/workflows\/release\.yml@refs\/tags\/v<version>"/);
+});
+
 test('the render-worker image still builds both platforms in one QEMU job', () => {
   const worker = job('render-worker-image');
   assert.equal(worker['runs-on'], 'ubuntu-latest');

@@ -67,8 +67,9 @@ result does not claim a one-click OS bootstrap or an end-to-end provider templat
 
 The same package also passes on GitHub's native `ubuntu-24.04-arm` runner. The
 Helm qualification workflow runs it as "Neutral Compose installation and recovery
-(native arm64)" on every pull request and main push, beside the amd64 job, and
-arm64 is listed in `qualifiedArchitectures` in [`release.json`](release.json) only
+(native arm64)" on every main push, release tag and nightly run, and on each pull
+request that changes chart, Compose, marketplace or server inputs, beside the
+amd64 job. arm64 is listed in `qualifiedArchitectures` in [`release.json`](release.json) only
 while that job stays required. It first passed on 2026-10-17 in
 [PR #183](https://github.com/lolly-tools/lolly-work/pull/183) (workflow run
 39044655738, runner image `ubuntu-24.04-arm` 20261012.149). Its receipt records

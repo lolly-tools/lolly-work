@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
 # Opt-in BCI candidate qualification; no registry push or production activation.
+# Documentation changes do not start it. docs/ is a pinned bundle that changes
+# only with docs-pin.json; CI checks every file against that pin on each pull
+# request and push (scripts/verify-docs-pin.ts), and CI's default server image
+# build runs the same check. The engine and content resolver pins still start it.
 name: SUSE container qualification
 
 on:
@@ -13,12 +17,12 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
-      - '*-pin.json'
+      - 'engine-pin.json'
+      - 'content-resolver-pin.json'
       - 'vendor/@lolly/**'
       - 'vendor/@lolly-tools/**'
       - 'server/**'
       - 'console/**'
-      - 'docs/**'
       - 'migrations/**'
       - 'scripts/**'
       - 'packs/demo/**'
@@ -36,12 +40,12 @@ on:
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
-      - '*-pin.json'
+      - 'engine-pin.json'
+      - 'content-resolver-pin.json'
       - 'vendor/@lolly/**'
       - 'vendor/@lolly-tools/**'
       - 'server/**'
       - 'console/**'
-      - 'docs/**'
       - 'migrations/**'
       - 'scripts/**'
       - 'packs/demo/**'

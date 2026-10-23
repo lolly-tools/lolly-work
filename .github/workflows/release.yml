@@ -5,6 +5,13 @@
 # CI (ci.yml) is the quality gate; this workflow only packages and publishes.
 # A manual dispatch can rebuild one image for an existing tag; a tag push
 # always builds both.
+#
+# Every run must start from the release tag itself, so each keyless signature
+# names this workflow at that tag:
+#   https://github.com/lolly-tools/lolly-work/.github/workflows/release.yml@refs/tags/vX.Y.Z
+# Dispatch a rebuild on the tag, for example
+#   gh workflow run release.yml --ref v1.2.3 -f version_tag=v1.2.3 -f expected_source_sha=<sha> -f images=server
+# A run from a branch stops before it builds anything.
 name: Release
 
 on:
@@ -13,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       version_tag:
-        description: Existing version tag to package, for example v1.1.0
+        description: Existing version tag to package, for example v1.1.0; dispatch on that same tag (--ref)
         required: true
         type: string
       expected_source_sha:
@@ -51,10 +58,17 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, re
-          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?', os.environ['RELEASE_TAG']):
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?', tag):
               raise SystemExit('An existing version tag is required')
           if not re.fullmatch('[a-f0-9]{40}', os.environ['EXPECTED_SOURCE_SHA']):
               raise SystemExit('A full reviewed release source SHA is required')
+          # The signing certificate's identity is this workflow ref. Accept only
+          # this repository's release.yml at the release tag.
+          expected = os.environ['GITHUB_REPOSITORY'] + '/.github/workflows/release.yml@refs/tags/' + tag
+          if os.environ['GITHUB_REF'] != 'refs/tags/' + tag or os.environ['GITHUB_WORKFLOW_REF'] != expected:
+              raise SystemExit('Run the release from its tag (gh workflow run release.yml --ref ' + tag + '), not from '
+                               + os.environ['GITHUB_WORKFLOW_REF'] + ', so the signature names ' + expected)
           PY
       # A tag push has no inputs and always builds both images.
       - name: Select images
@@ -154,7 +168,7 @@ jobs:
           node -e 'if (JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version !== process.env.RELEASE_VERSION) process.exit(1)'
 
       # Use the repository-scoped Actions token, as recommended for GHCR.
-      # Existing GHCR_PAT configuration remains untouched and is not consumed.
+      # Releases use no personal access token.
       - name: Log in to GHCR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -288,10 +302,10 @@ jobs:
           python3 "$RUNNER_TEMP/check-index.py" "$IMAGE" < "$RUNNER_TEMP/index.pushed.json"
 
       # Keyless signature over the pushed index digest - verifiable against
-      # this workflow's identity, no signing key anywhere:
-      #   cosign verify "$IMAGE:<version>" \
+      # this workflow's identity at the release tag, no signing key anywhere:
+      #   cosign verify "ghcr.io/lolly-tools/lolly-work-server@<digest>" \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-      #     --certificate-identity-regexp 'github.com/.+/lolly-work/\.github/workflows/release\.yml@.*'
+      #     --certificate-identity "https://github.com/lolly-tools/lolly-work/.github/workflows/release.yml@refs/tags/v<version>"
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Sign the image (keyless)
         env:
@@ -299,6 +313,15 @@ jobs:
         run: |
           DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{ printf "%s" .Manifest.Digest }}')
           cosign sign "$IMAGE@$DIGEST"
+      # The job fails unless the new signature verifies against the exact
+      # identity operators are told to require.
+      - name: Verify the signature with the release identity
+        run: |
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{ printf "%s" .Manifest.Digest }}')
+          cosign verify "$IMAGE@$DIGEST" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/v$VERSION" > /dev/null
+          echo "Verified $IMAGE@$DIGEST as $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/v$VERSION"
 
   render-worker-image:
     name: render-worker image
@@ -360,3 +383,10 @@ jobs:
         run: |
           DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{ printf "%s" .Manifest.Digest }}')
           cosign sign "$IMAGE@$DIGEST"
+      - name: Verify the signature with the release identity
+        run: |
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{ printf "%s" .Manifest.Digest }}')
+          cosign verify "$IMAGE@$DIGEST" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/v$VERSION" > /dev/null
+          echo "Verified $IMAGE@$DIGEST as $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/v$VERSION"

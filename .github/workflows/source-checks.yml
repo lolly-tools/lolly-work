@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
+# Secret history scan and source canaries. Every push to main runs it here;
+# every pull request runs it from pr-qualification.yml.
 name: Source checks
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_call:
 permissions:
   contents: read
 jobs:

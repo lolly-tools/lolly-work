@@ -1,10 +1,18 @@
 # SPDX-License-Identifier: MPL-2.0
+# Helm schemas and profiles, generated marketplace packages and the neutral
+# Compose installation on amd64 and native arm64.
+# Pushes to main and v* tags, the nightly schedule and manual runs start it here
+# and run every job; chart publication requires the main push run.
+# Pull requests call it from pr-qualification.yml when its inputs change.
 name: Helm qualification
 
 on:
-  pull_request:
   push:
     branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '57 3 * * *'
+  workflow_call:
   workflow_dispatch:
     inputs:
       screenshots:
@@ -15,8 +23,9 @@ on:
 permissions:
   contents: read
 
+# The event is in the group so a nightly or manual run never cancels a main push run.
 concurrency:
-  group: helm-qualification-${{ github.ref }}
+  group: helm-qualification-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
