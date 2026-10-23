@@ -117,8 +117,18 @@ def conversion_plan(value, anchors, annotations):
         "after": {"volumes": after_volumes, "volumeMounts": after_mounts,
                   "revisionHistoryLimit": anchors["revisionHistoryLimit"]},
         "removedVolumes": [volume for volume in volumes if volume.get("name") in _removed(anchors)],
+        "annotations": dict(annotations),
         "patch": patch,
     }
+
+
+def comparable_plan(plan):
+    """A conversion plan without its resourceVersion, which status updates move (review C-H1, C-M9)."""
+    keys = ("containerIndex", "image", "deploymentUID", "beforeSpecSha256", "before", "after", "removedVolumes",
+            "annotations", "patch")
+    result = {key: copy.deepcopy(plan.get(key)) for key in keys}
+    result["patch"] = [op for op in result["patch"] or [] if op.get("path") != "/metadata/resourceVersion"]
+    return result
 
 
 def _without_layout(spec, index):

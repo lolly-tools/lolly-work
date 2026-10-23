@@ -3,12 +3,14 @@
 
 Runs on the node against the real edge with normal TLS verification, no
 redirect following, no cookies and no credentials. Response bodies are hashed,
-never logged.
+never logged. Every transport problem becomes a Refusal, so one bad probe is
+counted and never crashes the unit.
 """
 
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import socket
 import ssl
@@ -17,10 +19,12 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
+import preview_anchors as A
 from preview_common import Refusal, require, strict_json
 from preview_receipt import etag_values, verify_frontend_receipt
 
 MAX_BODY = 64 * 1024 * 1024
+TRANSPORT_ERRORS = (OSError, http.client.HTTPException, urllib.error.URLError, ValueError)
 
 
 class Response:
@@ -52,18 +56,20 @@ def http_fetch(url, method="GET", headers=None, limit=MAX_BODY):
     request.add_header("User-Agent", "lolly-preview-deploy")
     opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
     try:
-        response = opener.open(request, timeout=20)
-    except urllib.error.HTTPError as error:
-        response = error
-    except (OSError, urllib.error.URLError) as exc:
+        try:
+            response = opener.open(request, timeout=20)
+        except urllib.error.HTTPError as error:
+            response = error
+        try:
+            body = b"" if method == "HEAD" else response.read(limit + 1)
+            status = getattr(response, "status", None) or response.code
+            headers_out = list(response.headers.items())
+        finally:
+            response.close()
+    except TRANSPORT_ERRORS as exc:
         raise Refusal("SMOKE_TRANSPORT", f"{method} {parts.path or '/'} failed: {type(exc).__name__}") from exc
-    try:
-        body = b"" if method == "HEAD" else response.read(limit + 1)
-        require(len(body) <= limit, "SMOKE_TRANSPORT", "response exceeds its bound")
-        return Response(response.status if hasattr(response, "status") else response.code,
-                        list(response.headers.items()), body)
-    finally:
-        response.close()
+    require(len(body) <= limit, "SMOKE_TRANSPORT", "response exceeds its bound")
+    return Response(status, headers_out, body)
 
 
 # Replaced by tests; production code always uses http_fetch.
@@ -116,36 +122,76 @@ def check_dns(anchors, edge_address):
         require(found == [edge_address], "SMOKE_DNS", f"{host} does not resolve only to the edge address")
 
 
-def smoke(expect, anchors, public_jwk, pod_check=None, extra_pages=None, exact_headers=True):
+def _edge_owned(name):
+    return name.lower() in {header.lower() for header in A.EDGE_OWNED_HEADERS}
+
+
+def header_differences(response, expected):
+    """One readable line per header whose served value is not exactly the expected one."""
+    lines = []
+    for name, want in expected:
+        got = response.header_values(name)
+        if got != [want]:
+            served = "missing" if not got else ("served twice" if len(got) > 1 else repr(got[0]))
+            lines.append(f"{name}: expected {want!r}, served {served}")
+    return lines
+
+
+def observed_edge_headers(response):
+    return [[name, response.header(name) or ""] for name in A.EDGE_OWNED_HEADERS]
+
+
+def _receipt(checks, expect, anchors, public_jwk):
+    receipt = _get(checks, "receipt", anchors["origin"] + "/release-frontend.sig.json", limit=MAX_BODY)
+    if receipt is None:
+        return None
+    if receipt.status != 200:
+        checks.record("receipt", False, f"HTTP {receipt.status}")
+        return None
+    try:
+        files = verify_frontend_receipt(receipt.body, public_jwk, expect["source"], anchors["receiptTarget"], expect["profile"])
+    except Refusal as exc:
+        checks.record("receipt", False, exc.code)
+        return None
+    checks.record("receipt", True, f"signed by the pin; source {expect['source'][:12]}; {len(files)} files")
+    return files
+
+
+def _root(checks, files, expect, anchors, edge_baseline, exact_headers):
+    """`/` body and ETag, then the CSP exactly against the source and edge-owned headers against the baseline."""
+    root = _get(checks, "root", anchors["origin"] + "/")
+    if root is None:
+        return None
+    etag = root.header("ETag")
+    body_ok = files is not None and root.status == 200 and _sha(root.body) == files.get("index.html")
+    etag_ok = files is not None and etag in etag_values(files)
+    checks.record("root", body_ok and etag_ok,
+                  f"HTTP {root.status}; body {'matches' if body_ok else 'differs from'} the signed index.html; "
+                  f"ETag {'is' if etag_ok else 'is not'} a delivery-map value")
+    if exact_headers:
+        source_owned = [item for item in expect["headers"] if not _edge_owned(item[0])]
+        differences = header_differences(root, source_owned)
+        checks.record("csp", not differences, "served exactly as the source declares" if not differences
+                      else "; ".join(differences))
+        edge_expected = edge_baseline if edge_baseline is not None else \
+            [item for item in expect["headers"] if _edge_owned(item[0])]
+        differences = header_differences(root, [item for item in edge_expected if item[1]])
+        checks.record("edge headers", not differences,
+                      ("unchanged from before the switch" if edge_baseline is not None else "as the source declares")
+                      if not differences else "; ".join(differences))
+    return root
+
+
+def smoke(expect, anchors, public_jwk, pod_check=None, extra_pages=None, exact_headers=True, edge_baseline=None):
     """Run every check; return (Checks, receipt files or None).
 
     extra_pages is a callable that gets the verified receipt file map and returns
     more {path, file} pages to check, such as /info pages this build added.
+    edge_baseline is [[name, value], ...] the edge served before the switch.
     """
     checks, origin = Checks(), anchors["origin"]
-    files = None
-    receipt = _get(checks, "receipt", origin + "/release-frontend.sig.json", limit=MAX_BODY)
-    if receipt is not None:
-        if receipt.status != 200:
-            checks.record("receipt", False, f"HTTP {receipt.status}")
-        else:
-            try:
-                files = verify_frontend_receipt(receipt.body, public_jwk, expect["source"], anchors["receiptTarget"], expect["profile"])
-                checks.record("receipt", True, f"signed by the pin; source {expect['source'][:12]}; {len(files)} files")
-            except Refusal as exc:
-                checks.record("receipt", False, exc.code)
-    root = _get(checks, "root", origin + "/")
-    if root is not None:
-        etag = root.header("ETag")
-        body_ok = files is not None and root.status == 200 and _sha(root.body) == files.get("index.html")
-        etag_ok = files is not None and etag in etag_values(files)
-        checks.record("root", body_ok and etag_ok,
-                      f"HTTP {root.status}; body {'matches' if body_ok else 'differs from'} the signed index.html; "
-                      f"ETag {'is' if etag_ok else 'is not'} a delivery-map value")
-        if exact_headers:
-            bad = [name for name, value in expect["headers"] if root.header_values(name) != [value]]
-            checks.record("headers", not bad, "all source security headers served exactly" if not bad
-                          else "differs: " + ", ".join(bad))
+    files = _receipt(checks, expect, anchors, public_jwk)
+    _root(checks, files, expect, anchors, edge_baseline, exact_headers)
     for path, key in (("/catalog/tools/index.json", "tools"), ("/catalog/tools/index.sig.json", None),
                       ("/catalog/assets/index.json", "assets")):
         file = path.lstrip("/")
@@ -194,6 +240,21 @@ def smoke(expect, anchors, public_jwk, pod_check=None, extra_pages=None, exact_h
         ok, detail = pod_check(memory=True)
         checks.record("pod", ok, detail)
     return checks, files
+
+
+def light_smoke(expect, anchors, public_jwk):
+    """Before the switch: the LIVE build still serves its own signed bytes and CSP (review C-M4).
+
+    Returns (Checks, receipt files or None, the edge-owned headers it served).
+    """
+    checks = Checks()
+    files = _receipt(checks, expect, anchors, public_jwk)
+    root = _root(checks, files, expect, anchors, None, True)
+    checks.items = [item for item in checks.items if item["check"] != "edge headers"]  # the edge sets these
+    health = _get(checks, "healthz", anchors["origin"] + "/healthz")
+    if health is not None:
+        checks.record("healthz", health.status == 200, f"HTTP {health.status}")
+    return checks, files, (observed_edge_headers(root) if root is not None else None)
 
 
 def added_info_pages(new_files, old_files, limit):

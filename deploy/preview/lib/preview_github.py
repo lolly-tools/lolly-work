@@ -64,18 +64,30 @@ def _same_repository(run, repository):
             and (run.get("head_repository") or {}).get("full_name") == repository)
 
 
-def main_head(gh, anchors):
-    ref = gh.json(f"repos/{anchors['repository']}/git/ref/heads/{anchors['branch']}")
+def branch_head(gh, repository, branch="main"):
+    """The branch head as a commit SHA, read from refs/heads/<branch>. Never the bare name (a tag could share it)."""
+    ref = gh.json(f"repos/{repository}/git/ref/heads/{branch}")
     sha = (ref.get("object") or {}).get("sha")
-    require(ref.get("ref") == "refs/heads/" + anchors["branch"] and isinstance(sha, str) and SHA.fullmatch(sha),
-            "GITHUB_FAILED", "could not read the main head")
+    require(ref.get("ref") == "refs/heads/" + branch and (ref.get("object") or {}).get("type") == "commit"
+            and isinstance(sha, str) and SHA.fullmatch(sha) is not None, "GITHUB_FAILED", f"could not read the {branch} head")
     return sha
 
 
-def require_on_main(gh, anchors, sha):
-    compare = gh.json(f"repos/{anchors['repository']}/compare/{sha}...{anchors['branch']}")
-    require(compare.get("status") in ("ahead", "identical"), "NOT_ON_MAIN",
-            f"{sha} is not on {anchors['branch']} (compare status {compare.get('status')!r})")
+def main_head(gh, anchors):
+    return branch_head(gh, anchors["repository"], anchors["branch"])
+
+
+def contains(gh, repository, ancestor, head):
+    """True when `ancestor` is `head` or one of its ancestors. Both are SHAs."""
+    require(SHA.fullmatch(ancestor) is not None and SHA.fullmatch(head) is not None, "BAD_INPUT", "compare needs two SHAs")
+    return gh.json(f"repos/{repository}/compare/{ancestor}...{head}").get("status") in ("ahead", "identical")
+
+
+def require_on_main(gh, anchors, sha, main_sha=None):
+    main_sha = main_sha or main_head(gh, anchors)
+    require(contains(gh, anchors["repository"], sha, main_sha), "NOT_ON_MAIN",
+            f"{sha} is not on {anchors['branch']} at {main_sha[:12]}")
+    return main_sha
 
 
 def green_ci_run(gh, anchors, sha):
@@ -112,7 +124,7 @@ def dispatch_runs(gh, anchors, sha):
 def dispatch_build(gh, anchors, sha, ci_run, public_jwk):
     """Ask for the existing candidate build (L/scripts/main-web-preparation.ts:101)."""
     pin = json.dumps({key: public_jwk[key] for key in ("kty", "crv", "x", "y")}, separators=(",", ":"))
-    body = {"ref": anchors["branch"], "inputs": {"build_images": "true", "release_scope": "web",
+    body = {"ref": "refs/heads/" + anchors["branch"], "inputs": {"build_images": "true", "release_scope": "web",
             "expected_source": sha, "ci_run": str(ci_run), "public_key_jwk": pin}}
     require(len(json.dumps(body)) <= 2048, "DISPATCH_TOO_LARGE", "candidate request exceeds its bound")
     gh.post(f"repos/{anchors['repository']}/actions/workflows/{anchors['buildWorkflowFile']}/dispatches", body)
@@ -129,11 +141,19 @@ def find_new_run(gh, anchors, sha, known_ids, attempts=20, pause=6):
     raise Refusal("RUN_NOT_FOUND", "the dispatched candidate run did not appear")
 
 
-def wait_for_run(gh, anchors, run_id, poll_seconds, timeout_minutes):
+def wait_for_run(gh, anchors, run_id, poll_seconds, timeout_minutes, tolerated_errors=6):
     deadline = time.monotonic() + timeout_minutes * 60
-    last = None
+    last, errors = None, 0
     while True:
-        run = gh.json(f"repos/{anchors['repository']}/actions/runs/{run_id}")
+        try:
+            run = gh.json(f"repos/{anchors['repository']}/actions/runs/{run_id}")
+            errors = 0
+        except Refusal as exc:  # a brief GitHub error while waiting is not a failed build
+            errors += 1
+            require(exc.code in ("GITHUB_FAILED", "GITHUB_UNAVAILABLE") and errors < tolerated_errors, exc.code, exc.message)
+            emit("build", run=run_id, note="GitHub did not answer; waiting", attempt=errors)
+            gh.sleep(max(poll_seconds, 5))
+            continue
         state = (run.get("status"), run.get("conclusion"))
         if state != last:
             note = "waiting for a reviewer at the signing gate; Andy approves in GitHub, agents never do" \
@@ -210,17 +230,36 @@ def bind_run(gh, anchors, run, sha, public_jwk, thumbprint):
             "RECEIPT_MISSING", f"run {run['id']} has no single live {name} artifact")
     data = gh.binary(f"repos/{anchors['repository']}/actions/artifacts/{matches[0]['id']}/zip", limit=1024 * 1024)
     bound = read_receipt_artifact(data, run, sha, anchors, public_jwk, thumbprint)
-    bound.update({"run": run["id"], "attempt": run["run_attempt"], "runCreatedAt": run.get("created_at")})
+    bound.update({"run": run["id"], "attempt": run["run_attempt"], "runCreatedAt": run.get("created_at"),
+                  "receiptExpiresAt": matches[0].get("expires_at")})
     return bound
 
 
-def latest_bound_run(gh, anchors, sha, public_jwk, thumbprint):
-    """For `deploy`: the newest successful candidate run for this commit that binds."""
+def latest_bound_run(gh, anchors, sha, public_jwk, thumbprint, prefer_image=None):
+    """The newest successful candidate run for this commit that still binds.
+
+    With prefer_image (the live image, for the conversion), only a run that built
+    exactly that image is accepted, even when a newer rebuild of the commit exists.
+    Runs whose receipt artifact has expired are skipped.
+    """
     candidates = sorted((run for run in dispatch_runs(gh, anchors, sha)
                          if run.get("status") == "completed" and run.get("conclusion") == "success"),
                         key=lambda run: run["id"], reverse=True)
     require(bool(candidates), "RUN_NOT_FOUND", f"no successful candidate build for {sha}; use ship")
-    return bind_run(gh, anchors, candidates[0], sha, public_jwk, thumbprint)
+    skipped = []
+    for run in candidates:
+        try:
+            bound = bind_run(gh, anchors, run, sha, public_jwk, thumbprint)
+        except Refusal as exc:
+            if exc.code != "RECEIPT_MISSING":
+                raise
+            skipped.append(run["id"])
+            continue
+        if prefer_image is None or bound["image"] == prefer_image:
+            return bound
+        skipped.append(run["id"])
+    raise Refusal("RUN_NOT_FOUND", f"no live, binding candidate run for {sha}" +
+                  (f" that built {prefer_image}" if prefer_image else "") + f" (looked at {len(skipped)})")
 
 
 def source_file(gh, anchors, path, sha):
@@ -229,20 +268,46 @@ def source_file(gh, anchors, path, sha):
     return gh.raw(f"repos/{anchors['repository']}/contents/{path}?ref={sha}")
 
 
-def connector_origins(gh, anchors, build_created_at):
-    """The repository variable the build read, refused if it changed after the build started."""
+def connector_origins_variable(gh, anchors):
+    """(value, updated_at, scope) of vars.VITE_CONNECTOR_ORIGINS as the build's jobs see it.
+
+    The web-image job names no environment, so a repository variable wins and an
+    organisation variable shared with the repository applies otherwise. Neither
+    means the build used none.
+    """
+    name = anchors["connectorOriginsVariable"]
     try:
-        variable = gh.json(f"repos/{anchors['repository']}/actions/variables/{anchors['connectorOriginsVariable']}")
+        variable = gh.json(f"repos/{anchors['repository']}/actions/variables/{name}")
+        scope = "repository"
     except Refusal as exc:
-        if exc.code == "GITHUB_NOT_FOUND":
-            return ""
-        raise
+        if exc.code != "GITHUB_NOT_FOUND":
+            raise
+        shared = gh.json(f"repos/{anchors['repository']}/actions/organization-variables", per_page=30)
+        found = [item for item in shared.get("variables", []) if isinstance(item, dict) and item.get("name") == name]
+        require(shared.get("total_count", 0) <= 30, "CONNECTOR_ORIGINS", "too many organisation variables to read in one page")
+        if not found:
+            return "", None, "none"
+        variable, scope = found[0], "organization"
     value, updated = variable.get("value"), variable.get("updated_at")
-    require(isinstance(value, str), "CONNECTOR_ORIGINS", "connector origins variable is malformed")
+    require(isinstance(value, str) and (updated is None or isinstance(updated, str)), "CONNECTOR_ORIGINS",
+            "connector origins variable is malformed")
+    return value, updated, scope
+
+
+def connector_origins(gh, anchors, build_created_at):
+    """The connector origins the build read, refused if the variable changed after the build started."""
+    value, updated, _ = connector_origins_variable(gh, anchors)
     if isinstance(updated, str) and build_created_at:
         require(parse_utc(updated) <= parse_utc(build_created_at), "CONNECTOR_ORIGINS_CHANGED",
                 "the connector origins variable changed after this build started; rebuild")
     return value
+
+
+def run_created_at(gh, anchors, run_id):
+    run = gh.json(f"repos/{anchors['repository']}/actions/runs/{int(run_id)}")
+    created = run.get("created_at")
+    require(isinstance(created, str), "GITHUB_FAILED", "the run has no creation time")
+    return created
 
 
 def registry_image_bytes(image, anchors, opener=None):

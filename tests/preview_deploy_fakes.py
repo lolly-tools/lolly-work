@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Fakes for tests/test_preview_deploy.py: gh, ssh, k3s (kubectl, crictl, ctr), systemctl and check-target.
+"""Fakes for tests/test_preview_deploy.py: gh, ssh, k3s (kubectl, crictl, ctr), systemctl and check-target.py.
 
 Every fake is a small executable that calls into this module and keeps its state
 in a JSON file, so the command under test runs its real subprocess paths. No
@@ -11,30 +11,31 @@ from __future__ import annotations
 import base64
 import contextlib
 import copy
-import gzip
 import hashlib
 import io
 import json
 import os
 import re
-import secrets
 import sys
-import types
-import zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+# The fake executables import this module on every call, so heavy imports
+# (zipfile, gzip, the receipt verifier) happen only in the functions that need them.
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 LIB = ROOT / "deploy" / "preview" / "lib"
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
-import preview_receipt as R  # noqa: E402
-from preview_common import canonical_js_json  # noqa: E402
-
 KUBECONFIG = "/root/test.kubeconfig"
 CONTEXT = "test"
+CLUSTER_UID = "11111111-1111-4111-8111-111111111111"
+NODE_UID = "22222222-2222-4222-8222-222222222222"
+NAMESPACE_UID = "33333333-3333-4333-8333-333333333333"
+DEPLOYMENT_UID = "44444444-4444-4444-8444-444444444444"
+NODE_NAME = "node-1"
+EDGE_ADDRESS = "203.0.113.10"
 NAMESPACE = "lolly-public"
 DEPLOYMENT = "sovereign-web"
 REPO = "lolly-tools/lolly"
@@ -53,12 +54,15 @@ NODE_VECTORS = {
 
 # Test signing key (verification-only code lives in the product; signing is test-only).
 def _affine(point):
+    import preview_receipt as R
     x, y, z = point
     inverse = pow(z, -1, R.P)
     return x * inverse * inverse % R.P, y * inverse * inverse * inverse % R.P
 
 
 def make_key():
+    import secrets
+    import preview_receipt as R
     d = secrets.randbelow(R.N - 1) + 1
     x, y = _affine(R._multiply_add(d, (R.GX, R.GY), 0, (R.GX, R.GY)))
     b64 = lambda n: base64.urlsafe_b64encode(n.to_bytes(32, "big")).rstrip(b"=").decode()
@@ -73,6 +77,8 @@ def _der_int(n):
 
 
 def sign(d, message):
+    import secrets
+    import preview_receipt as R
     e = int.from_bytes(hashlib.sha256(message).digest(), "big")
     while True:
         k = secrets.randbelow(R.N - 1) + 1
@@ -121,6 +127,8 @@ def expected_headers():
 
 def make_build(key, sha_, label, extra_pages=(), formats=None):
     """One candidate build: its served site, signed receipt, image digest and registry manifest."""
+    import gzip
+    from preview_common import canonical_js_json
     index = f"<!doctype html><title>{label}</title>".encode()
     files = {
         "index.html": index,
@@ -153,6 +161,9 @@ def expect_for(build, pages=None):
 
 
 # Fake cluster ------------------------------------------------------------------
+LABELS = {"app.kubernetes.io/component": "web", "app.kubernetes.io/instance": "sovereign", "app.kubernetes.io/name": "lolly-sovereign"}
+
+
 def deployment(image, converted=True, annotations=None):
     volumes = [{"name": "tmp", "emptyDir": {"sizeLimit": "16Mi"}},
                {"name": "models", "persistentVolumeClaim": {"claimName": "lolly-public-models-test-v1"}}]
@@ -168,23 +179,27 @@ def deployment(image, converted=True, annotations=None):
             {"name": "public-delivery", "mountPath": "/usr/share/nginx/html", "readOnly": True, "subPath": "site"},
             {"name": "public-delivery", "mountPath": "/etc/nginx/delivery-etags.conf", "readOnly": True,
              "subPath": "site/.delivery-etags.conf"}] + mounts[1:]
-    labels = {"app.kubernetes.io/component": "web", "app.kubernetes.io/instance": "sovereign", "app.kubernetes.io/name": "lolly-sovereign"}
     return {"apiVersion": "apps/v1", "kind": "Deployment",
-            "metadata": {"name": DEPLOYMENT, "namespace": NAMESPACE, "uid": "deployment-uid", "resourceVersion": "100",
-                         "generation": 23, "labels": dict(labels, **{"helm.sh/chart": "lolly-sovereign-0.1.3"}),
+            "metadata": {"name": DEPLOYMENT, "namespace": NAMESPACE, "uid": DEPLOYMENT_UID, "resourceVersion": "100",
+                         "generation": 23, "labels": dict(LABELS, **{"helm.sh/chart": "lolly-sovereign-0.1.3"}),
                          "annotations": dict({"deployment.kubernetes.io/revision": "23"}, **(annotations or {}))},
             "spec": {"replicas": 1, "revisionHistoryLimit": 2 if not converted else 5, "progressDeadlineSeconds": 600,
-                     "selector": {"matchLabels": labels}, "strategy": {"type": "Recreate"},
-                     "template": {"metadata": {"labels": labels, "annotations": {"lolly.tools/models-release": "models-" + "1" * 64}},
+                     "selector": {"matchLabels": LABELS}, "strategy": {"type": "Recreate"},
+                     "template": {"metadata": {"labels": LABELS, "annotations": {"lolly.tools/models-release": "models-" + "1" * 64}},
                                   "spec": {"containers": [{"name": "web", "image": image, "imagePullPolicy": "IfNotPresent",
                                                            "resources": {"limits": {"memory": "768Mi"}}, "volumeMounts": mounts}],
                                            "volumes": volumes, "securityContext": {"runAsNonRoot": True}}}},
             "status": {"observedGeneration": 23, "replicas": 1, "readyReplicas": 1, "availableReplicas": 1, "updatedReplicas": 1}}
 
 
-def preview_annotations(build, phase="accepted", previous=None, deploys="0"):
+def old_record(build, run="800"):
+    return {"source": build["sha"], "image": build["image"], "ciRun": run,
+            "formats": {"channelMessage": 2, "indexedDb": 26, "revisionArchive": 1, "session": 4}, "expect": expect_for(build)}
+
+
+def preview_annotations(build, phase="accepted", previous=None, deploys="0", run="800"):
     import preview_common
-    values = {"phase": phase, "source": build["sha"], "image": build["image"], "ci-run": "100",
+    values = {"phase": phase, "source": build["sha"], "image": build["image"], "ci-run": run,
               "formats": preview_common.compact({"channelMessage": 2, "indexedDb": 26, "revisionArchive": 1, "session": 4}),
               "expect": preview_common.compact(expect_for(build)), "layout": "image-root", "deploys": deploys,
               "deploy-id": "20261023T000000Z-tools-convert-" + build["sha"][:8]}
@@ -193,38 +208,63 @@ def preview_annotations(build, phase="accepted", previous=None, deploys="0"):
     return {"lolly.tools/preview-" + k: v for k, v in values.items()}
 
 
+def image_entry(ref, labels=None, extra_refs=()):
+    """One CRI image: an ID (its config digest), the manifest digest and named refs, each with containerd labels."""
+    digest = ref.partition("@")[2] or "sha256:" + sha(ref.encode())
+    image_id = "sha256:" + sha(("config" + ref).encode())
+    refs = {ref: dict(labels or {}), image_id: {}}
+    for extra in extra_refs:
+        refs[extra] = {}
+    return image_id, {"digest": digest, "size": 120 * MIB, "refs": refs}
+
+
 def cluster_state(builds, live, converted=True, annotations=None, registry=None):
     deploy = deployment(live["image"], converted, annotations)
-    return {
-        "namespaces": {"kube-system": "cluster-uid", NAMESPACE: "namespace-uid"},
-        "node": {"name": "node-1", "uid": "node-uid"},
+    state = {
+        "namespaces": {"kube-system": CLUSTER_UID, NAMESPACE: NAMESPACE_UID},
+        "node": {"name": NODE_NAME, "uid": NODE_UID},
         "deployment": deploy,
-        "replicasets": [{"revision": 23, "image": live["image"], "template": _template_digest(deploy)}],
-        "pod": _pod(deploy, 23),
+        "replicasets": [{"uid": "rs-23", "revision": 23, "image": live["image"], "template": _template_digest(deploy)}],
+        "pods": [],
         "configmaps": {"lolly-public-nginx-test-v1": {"default.conf": "server { listen 8080; }\n", "security-headers.conf": "old\n",
                                                        "delivery-maps.conf": "maps\n", "delivery-headers.conf": "headers\n"}},
         "pvcs": [{"metadata": {"name": n, "uid": n + "-uid", "creationTimestamp": "2026-10-21T00:00:00Z", "labels": {}}}
                  for n in ("lolly-public-web-test-v1", "lolly-public-models-test-v1", "unrelated-claim")],
-        "images": {live["image"]: {"id": "sha256:" + sha(live["image"].encode()), "size": 120 * MIB, "pinned": True}},
+        "images": {},
         "registry": registry if registry is not None else {b["image"]: True for b in builds.values()},
         "builds": {b["image"]: b for b in builds.values()},
-        "behaviour": {"notReady": [], "brokenSite": [], "watchFailAfter": {}, "restarts": {}, "workingSet": 100 * MIB},
+        "behaviour": {"notReady": [], "brokenSite": [], "watchFailAfter": {}, "restarts": {}, "workingSet": 100 * MIB,
+                      "usage": 700 * MIB, "rvChurnRate": 0.125, "rvChurnAfterDryRun": {}, "edgeHeaders": {},
+                      "edgeHeadersByImage": {}, "transport": {}, "dnsFailures": 0},
+        "reads": 0,
         "capacity": {"total": 100 * GIB, "available": 40 * GIB},
         "fetches": {},
         "writes": [],
     }
+    # The live image was imported and pinned by an earlier procedure: no labels of this command.
+    image_id, entry = image_entry(live["image"], {"io.cri-containerd.pinned": "pinned"})
+    state["images"][image_id] = entry
+    state["pods"] = [_pod(state, deploy, "rs-23", 23)]
+    stray = _pod(state, deploy, "rs-22", 22)  # an evicted Pod of an older ReplicaSet stays listed (review C-M3)
+    stray["status"]["phase"] = "Failed"
+    stray["metadata"]["name"] = "sovereign-web-22-evicted"
+    state["pods"].append(stray)
+    return state
 
 
 def _template_digest(deploy):
     return sha(json.dumps(deploy["spec"]["template"], sort_keys=True).encode())
 
 
-def _pod(deploy, revision):
+def _pod(state, deploy, rs_uid, revision):
     image = deploy["spec"]["template"]["spec"]["containers"][0]["image"]
-    return {"metadata": {"name": f"sovereign-web-{revision}", "namespace": NAMESPACE, "labels": deploy["spec"]["selector"]["matchLabels"]},
+    ready = image not in state["behaviour"]["notReady"]
+    return {"metadata": {"name": f"sovereign-web-{revision}", "namespace": NAMESPACE, "labels": dict(LABELS),
+                         "ownerReferences": [{"kind": "ReplicaSet", "uid": rs_uid}]},
             "spec": copy.deepcopy(deploy["spec"]["template"]["spec"]),
-            "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}],
-                       "containerStatuses": [{"name": "web", "ready": True, "restartCount": 0,
+            "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+                       "containerStatuses": [{"name": "web", "ready": ready, "image": image, "imageID": image,
+                                              "restartCount": state["behaviour"]["restarts"].get(image, 0),
                                               "containerID": "containerd://" + sha(f"{image}{revision}".encode())[:32]}]}}
 
 
@@ -278,18 +318,17 @@ def _apply_deployment_change(state, before, after):
         revision = max(rs["revision"] for rs in state["replicasets"]) + 1
         digest = _template_digest(deploy)
         state["replicasets"] = [rs for rs in state["replicasets"] if rs["template"] != digest]
-        state["replicasets"].append({"revision": revision, "image": deploy["spec"]["template"]["spec"]["containers"][0]["image"],
-                                     "template": digest})
+        uid = f"rs-{revision}"
+        image = deploy["spec"]["template"]["spec"]["containers"][0]["image"]
+        state["replicasets"].append({"uid": uid, "revision": revision, "image": image, "template": digest})
         state["replicasets"] = sorted(state["replicasets"], key=lambda rs: rs["revision"])[-(deploy["spec"].get("revisionHistoryLimit", 10) + 1):]
         deploy["metadata"]["annotations"]["deployment.kubernetes.io/revision"] = str(revision)
-        pod = _pod(deploy, revision)
-        image = deploy["spec"]["template"]["spec"]["containers"][0]["image"]
+        stray = [pod for pod in state["pods"] if pod["status"]["phase"] == "Failed"]
+        state["pods"] = [_pod(state, deploy, uid, revision)] + stray
         ready = image not in state["behaviour"]["notReady"]
-        pod["status"]["conditions"][0]["status"] = "True" if ready else "False"
-        pod["status"]["containerStatuses"][0]["ready"] = ready
-        pod["status"]["containerStatuses"][0]["restartCount"] = state["behaviour"]["restarts"].get(image, 0)
-        state["pod"] = pod
-        state["images"].setdefault(image, {"id": "sha256:" + sha(image.encode()), "size": 120 * MIB, "pinned": False})
+        if not any(image in entry["refs"] for entry in state["images"].values()):
+            image_id, entry = image_entry(image)
+            state["images"][image_id] = entry
         deploy["status"] = {"observedGeneration": deploy["metadata"]["generation"], "replicas": 1,
                             "readyReplicas": 1 if ready else 0, "availableReplicas": 1 if ready else 0, "updatedReplicas": 1}
     elif changed_spec:
@@ -301,14 +340,32 @@ def _replicaset_objects(state):
     deploy = state["deployment"]
     items = []
     for rs in state["replicasets"]:
+        current = rs["template"] == _template_digest(deploy)
         items.append({"kind": "ReplicaSet", "metadata": {"name": f"sovereign-web-rs{rs['revision']}", "namespace": NAMESPACE,
+                      "uid": rs["uid"], "labels": dict(LABELS),
                       "annotations": {"deployment.kubernetes.io/revision": str(rs["revision"])},
                       "ownerReferences": [{"kind": "Deployment", "uid": deploy["metadata"]["uid"]}]},
                       "spec": {"template": {"spec": {"containers": [{"name": "web", "image": rs["image"]}],
-                                                     "volumes": deploy["spec"]["template"]["spec"]["volumes"]
-                                                     if rs["template"] == _template_digest(deploy) else
+                                                     "volumes": deploy["spec"]["template"]["spec"]["volumes"] if current else
                                                      [{"name": "public-delivery", "persistentVolumeClaim": {"claimName": "lolly-public-web-test-v1"}}]}}}})
     return items
+
+
+def _image_by_ref(state, ref):
+    for image_id, entry in state["images"].items():
+        if ref == image_id or ref in entry["refs"]:
+            return image_id, entry
+    return None, None
+
+
+def _pinned(entry):
+    return any(labels.get("io.cri-containerd.pinned") == "pinned" for labels in entry["refs"].values())
+
+
+def _cri_image(image_id, entry):
+    names = [ref for ref in entry["refs"] if ref != image_id]
+    return {"id": image_id, "repoDigests": [ref for ref in names if "@" in ref], "repoTags": [ref for ref in names if "@" not in ref],
+            "size": str(entry["size"]), "pinned": _pinned(entry)}
 
 
 def k3s_main(argv):
@@ -328,6 +385,18 @@ def k3s_main(argv):
                     return 1
                 out.write(json.dumps({"metadata": {"uid": node["uid"]}, "status": {"conditions": [{"type": "Ready", "status": "True"}]}}))
             elif args[:2] == ["get", "deployment"]:
+                # Status updates move resourceVersion between reads (review C-H1): a light,
+                # deterministic background churn, plus a targeted one right after a dry run
+                # that sets a given image, which is where app-update.py refuses.
+                state["reads"] += 1
+                behaviour, pending = state["behaviour"], state.pop("pendingChurn", None)
+                targeted = pending is not None and behaviour["rvChurnAfterDryRun"].get(pending, 0) > 0
+                if targeted:
+                    behaviour["rvChurnAfterDryRun"][pending] -= 1
+                background = int(sha(str(state["reads"]).encode())[:8], 16) / 2 ** 32 < behaviour["rvChurnRate"]
+                if targeted or background:
+                    meta = state["deployment"]["metadata"]
+                    meta["resourceVersion"] = str(int(meta["resourceVersion"]) + 1)
                 out.write(json.dumps(state["deployment"]))
             elif args[:2] == ["patch", "deployment"]:
                 patch = json.loads(args[args.index("--patch") + 1])
@@ -336,7 +405,11 @@ def k3s_main(argv):
                 except (ValueError, KeyError, IndexError):
                     print("the patch test failed", file=sys.stderr)
                     return 1
-                if "--dry-run=server" not in args:
+                if "--dry-run=server" in args:
+                    images = [op["value"] for op in patch if op["op"] == "replace" and op["path"].endswith("/image")]
+                    if images:
+                        state["pendingChurn"] = images[0]
+                else:
                     state["writes"].append(patch)
                     _apply_deployment_change(state, state["deployment"], after)
                     after = state["deployment"]
@@ -344,56 +417,76 @@ def k3s_main(argv):
             elif args[:2] == ["rollout", "status"]:
                 image = state["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"]
                 return 1 if image in state["behaviour"]["notReady"] else 0
+            elif args[:2] == ["get", "replicasets"] and "-l" in args:
+                out.write(json.dumps({"items": _replicaset_objects(state)}))
             elif args[:2] == ["get", "pods"] and "-l" in args:
-                out.write(json.dumps({"items": [state["pod"]]}))
+                out.write(json.dumps({"items": state["pods"]}))
             elif args[:2] == ["get", "pods,replicasets"]:
-                pod = dict(state["pod"], kind="Pod")
+                pods = [dict(pod, kind="Pod") for pod in state["pods"]]
+                mcp = "ghcr.io/lolly-tools/lolly-mcp@sha256:" + "9" * 64
                 other = {"kind": "Pod", "metadata": {"name": "mcp", "namespace": NAMESPACE},
-                         "spec": {"containers": [{"name": "mcp", "image": "ghcr.io/lolly-tools/lolly-mcp@sha256:" + "9" * 64}]}}
-                out.write(json.dumps({"items": [pod, other] + _replicaset_objects(state)}))
+                         "spec": {"containers": [{"name": "mcp", "image": mcp}]},
+                         "status": {"containerStatuses": [{"name": "mcp", "image": mcp, "imageID": mcp}]}}
+                out.write(json.dumps({"items": pods + [other] + _replicaset_objects(state)}))
             elif args[:2] == ["get", "configmap"]:
                 out.write(json.dumps({"data": state["configmaps"][args[2]]}))
             elif args[:2] == ["get", "persistentvolumeclaims"]:
                 out.write(json.dumps({"items": state["pvcs"]}))
             elif args[:2] == ["get", "pods,replicasets,statefulsets"]:
-                pod = dict(state["pod"], kind="Pod")
-                out.write(json.dumps({"items": [pod] + _replicaset_objects(state)}))
+                pods = [dict(pod, kind="Pod") for pod in state["pods"] if pod["status"]["phase"] != "Failed"]
+                out.write(json.dumps({"items": pods + _replicaset_objects(state)}))
             else:
                 print("unsupported kubectl " + " ".join(args[:2]), file=sys.stderr)
                 return 1
         return 0
     with state_file(state_path) as state:
-        if argv[:2] == ["crictl", "pull"]:
+        if argv[:2] == ["crictl", "version"]:
+            out.write("Version:  0.1.0\nRuntimeName:  containerd\n")
+        elif argv[:2] == ["crictl", "pull"]:
             if not state["registry"].get(argv[2]):
                 return 1
-            state["images"][argv[2]] = {"id": "sha256:" + sha(argv[2].encode()), "size": 120 * MIB, "pinned": False}
+            image_id, entry = image_entry(argv[2])
+            state["images"][image_id] = entry
             state["writes"].append(["pull", argv[2]])
         elif argv[:2] == ["crictl", "inspecti"]:
-            if argv[-1] not in state["images"]:
+            image_id, entry = _image_by_ref(state, argv[-1])
+            if entry is None:
                 return 1
-            out.write(json.dumps({"status": {"repoDigests": [argv[-1]]}}))
+            out.write(json.dumps({"status": _cri_image(image_id, entry)}))
         elif argv[:2] == ["crictl", "images"]:
-            out.write(json.dumps({"images": [{"id": v["id"], "repoDigests": [k], "size": str(v["size"]), "pinned": v["pinned"]}
-                                             for k, v in state["images"].items()]}))
+            out.write(json.dumps({"images": [_cri_image(i, e) for i, e in state["images"].items()]}))
         elif argv[:2] == ["crictl", "stats"]:
-            image = state["pod"]["spec"]["containers"][0]["image"]
+            image = state["pods"][0]["spec"]["containers"][0]["image"]
             used = state["behaviour"].get("workingSetByImage", {}).get(image, state["behaviour"]["workingSet"])
-            out.write(json.dumps({"stats": [{"memory": {"workingSetBytes": {"value": str(used)}}}]}))
+            out.write(json.dumps({"stats": [{"memory": {"workingSetBytes": {"value": str(used)},
+                                                        "usageBytes": {"value": str(state["behaviour"]["usage"])}}}]}))
         elif argv[:2] == ["crictl", "rmi"]:
-            for name, image in list(state["images"].items()):
-                if image["id"] == argv[2]:
-                    if image["pinned"]:
-                        return 1
-                    del state["images"][name]
-                    state["writes"].append(["rmi", name])
+            # CRI RemoveImage deletes every name of the image and does not care about pins.
+            image_id, entry = _image_by_ref(state, argv[2])
+            if entry is None:
+                return 1
+            del state["images"][image_id]
+            state["writes"].append(["rmi", argv[2], sorted(entry["refs"])])
         elif argv[:5] == ["ctr", "-n", "k8s.io", "images", "ls"]:
             lines = ["REF TYPE DIGEST SIZE PLATFORMS LABELS"]
-            for name, image in state["images"].items():
-                lines.append(f"{name} application/vnd.oci.image.manifest.v1+json {name.partition('@')[2]} 1MiB linux/amd64 -")
+            for image_id, entry in state["images"].items():
+                for ref, labels in entry["refs"].items():
+                    text = ",".join(f"{k}={v}" for k, v in sorted(labels.items())) or "-"
+                    lines.append(f"{ref} application/vnd.oci.image.manifest.v1+json {entry['digest']} 120.0 MiB linux/amd64 {text}")
             out.write("\n".join(lines) + "\n")
         elif argv[:5] == ["ctr", "-n", "k8s.io", "images", "label"]:
-            name, label = argv[5], argv[6]
-            state["images"][name]["pinned"] = label == "io.cri-containerd.pinned=pinned"
+            ref, label = argv[5], argv[6]
+            image_id, entry = _image_by_ref(state, ref)
+            if entry is None:
+                return 1
+            name, _, value = label.partition("=")
+            if state["behaviour"].get("pinsIgnored") and name == "io.cri-containerd.pinned":
+                return 0  # the label call succeeds but nothing sticks (review C-L4)
+            if value:
+                entry["refs"][ref][name] = value
+            else:
+                entry["refs"][ref].pop(name, None)
+            state["writes"].append(["label", ref, label])
         else:
             print("unsupported " + " ".join(argv[:2]), file=sys.stderr)
             return 1
@@ -402,28 +495,42 @@ def k3s_main(argv):
 
 # Fake edge (patched into preview_smoke.FETCH inside the fake node processes) ----
 def make_fetch(state_path):
+    import preview_common
     import preview_smoke
 
     def fetch(url, method="GET", headers=None, limit=None):
+        parts = urlsplit(url)
         with state_file(state_path) as state:
             deploy = state["deployment"]
             image = deploy["spec"]["template"]["spec"]["containers"][0]["image"]
             converted = not any(v["name"] == "public-delivery" for v in deploy["spec"]["template"]["spec"]["volumes"])
             build = state["builds"].get(image)
-            parts = urlsplit(url)
+            behaviour = state["behaviour"]
             count = state["fetches"].get(image, 0)
-            if parts.path == "/":
+            if parts.path == "/" and parts.hostname == "lolly.tools":
                 state["fetches"][image] = count + 1
-        headers_out = [(name, value) for name, value in expected_headers()]
-        if not converted:
-            headers_out = [(n, v + " https://*.sharepoint.com" if n == "Content-Security-Policy" else v) for n, v in headers_out]
+            rule = behaviour["transport"].get(image, {}).get(parts.path)
+            failing = False
+            if rule is not None and parts.hostname == "lolly.tools":
+                seen = rule.get("seen", 0)
+                rule["seen"] = seen + 1
+                failing = rule["after"] <= seen < rule["after"] + rule["count"]
+            edge = dict(behaviour["edgeHeaders"], **behaviour["edgeHeadersByImage"].get(image, {}))
+        if failing:  # what http_fetch turns a reset connection or a truncated body into
+            raise preview_common.Refusal("SMOKE_TRANSPORT", f"{method} {parts.path} failed: ConnectionResetError")
+        headers_out = []
+        for name, value in expected_headers():
+            if name == "Content-Security-Policy" and not converted:
+                value += " https://*.sharepoint.com"
+            headers_out.append((name, edge.get(name, value)))
+        headers_out += [("Via", "1.1 Caddy"), ("Alt-Svc", 'h3=":443"')]
         if parts.hostname == "www.lolly.tools":
             return preview_smoke.Response(308, [("Location", "https://lolly.tools/")], b"")
         if build is None:
             return preview_smoke.Response(502, [], b"")
         site = {path: base64.b64decode(data) for path, data in build["site"].items()}
-        broken = image in state["behaviour"]["brokenSite"]
-        fail_after = state["behaviour"]["watchFailAfter"].get(image)
+        broken = image in behaviour["brokenSite"]
+        fail_after = behaviour["watchFailAfter"].get(image)
         path = parts.path
         if path == "/healthz":
             return preview_smoke.Response(200, headers_out, b"ok\n")
@@ -469,8 +576,10 @@ def patch_node_modules(tool_lib, sandbox, state_path):
     pin = json.loads(os.environ["FAKE_PIN"])
     preview_anchors.RELEASE_PUBLIC_KEY_JWK = pin
     preview_node.PATHS.update({"run": f"{sandbox}/var/lib/lolly-preview/run", "results": f"{sandbox}/var/lib/lolly-preview/results",
-                               "lock": f"{sandbox}/run/lock/lolly-preview-deploy.lock", "imagefs": "/",
-                               "systemctl": os.environ["FAKE_BIN"] + "/systemctl"})
+                               "lock": f"{sandbox}/run/lolly-preview/deploy.lock", "lockDir": f"{sandbox}/run/lolly-preview",
+                               "imagefs": "/", "armed": f"{sandbox}/var/lib/lolly-preview/retention-armed",
+                               "systemctl": os.environ["FAKE_BIN"] + "/systemctl",
+                               "procStatus": f"{sandbox}/proc-status", "procAttr": f"{sandbox}/proc-attr"})
 
     def capacity(_path):
         data = json.loads(Path(state_path).read_text())["capacity"]
@@ -479,10 +588,13 @@ def patch_node_modules(tool_lib, sandbox, state_path):
     clock = FakeClock()
     preview_node.SLEEP, preview_node.CLOCK = clock.sleep, clock
     preview_smoke.FETCH = make_fetch(state_path)
+
     def check_dns(anchors, address):
+        assert address == EDGE_ADDRESS, address
         with state_file(state_path) as state:
-            failing = state["behaviour"].get("dnsFailures", 0) > 0
-            if failing:
+            state["dnsCalls"] = state.get("dnsCalls", 0) + 1
+            failing = state["behaviour"].get("dnsFailures", 0) > 0 or state["behaviour"].get("dnsFailAt") == state["dnsCalls"]
+            if state["behaviour"].get("dnsFailures", 0) > 0:
                 state["behaviour"]["dnsFailures"] -= 1
         if failing:
             raise preview_node.Refusal("SMOKE_DNS", "lolly.tools does not resolve only to the edge address")
@@ -496,10 +608,16 @@ def systemctl_main(argv):
     if argv[:3] == ["show", "-p", "ActiveState"]:
         print(unit_state.read_text() if unit_state.exists() else "inactive")
         return 0
+    if argv[:3] == ["show", "-p", "Job"]:
+        job = Path(sandbox) / "unit-job"
+        print(job.read_text() if job.exists() else "")
+        return 0
     if argv[:1] in (["daemon-reload"], ["reset-failed"]):
         return 0
     if argv[:2] != ["start", "--no-block"]:
         return 1
+    if os.environ.get("FAKE_UNIT_NEVER_STARTS"):
+        return 0
     unit = (Path(sandbox) / "run/systemd/system" / argv[2]).read_text()
     starts = re.findall(r"^ExecStart=(.*)$", unit, re.M)
     stops = re.findall(r"^ExecStopPost=(.*)$", unit, re.M)
@@ -539,12 +657,19 @@ def systemctl_main(argv):
     return 0
 
 
+class _RootStat:
+    """os.lstat as root sees the sandbox: the test user's directories count as owned by uid 0."""
+
+    def __init__(self, real):
+        self.st_mode, self.st_uid = real.st_mode, (0 if real.st_uid == os.getuid() else real.st_uid)
+
+
 def ssh_main(argv):
     """Check the route flags, then run the bootstrap program as the node would, inside the sandbox."""
     sandbox = os.environ["FAKE_SANDBOX"]
     required = {"-oBatchMode=yes", "-oStrictHostKeyChecking=yes", "-oConnectTimeout=12"}
-    if not required <= set(argv) or not any(a.startswith("-oUserKnownHostsFile=/") for a in argv) or \
-            argv[-1] != "sudo -n python3 -" or "-J" not in argv:
+    if not required <= set(argv) or f"-oUserKnownHostsFile={os.environ['FAKE_KNOWN_HOSTS']}" not in argv or \
+            argv[-1] != "sudo -n python3 -I -" or argv[argv.index("-J") + 1] != "sles@192.0.2.1" or argv[-2] != "sles@10.0.0.2":
         print("unexpected ssh invocation", file=sys.stderr)
         return 255
     if os.environ.get("FAKE_SSH_DOWN"):
@@ -556,18 +681,19 @@ def ssh_main(argv):
     exec(compile(head, "bootstrap.py", "exec"), namespace)
     for name, value in (("ROOT", "/var/lib/lolly-preview"), ("RUN", "/var/lib/lolly-preview/run"),
                         ("RESULTS", "/var/lib/lolly-preview/results"), ("TMP", "/var/lib/lolly-preview/tmp"),
-                        ("UNIT_PATH", "/run/systemd/system/lolly-preview-deploy.service"),
-                        ("LOCK", "/run/lock/lolly-preview-deploy.lock"), ("START_LOCK", "/run/lock/lolly-preview-start.lock")):
+                        ("UNIT_PATH", "/run/systemd/system/lolly-preview-deploy.service"), ("LOCK_DIR", "/run/lolly-preview"),
+                        ("LOCK", "/run/lolly-preview/deploy.lock"), ("START_LOCK", "/run/lolly-preview/start.lock")):
         assert namespace[name] == value, name
         namespace[name] = sandbox + value
     namespace["SYSTEMCTL"] = os.environ["FAKE_BIN"] + "/systemctl"
+    import types
     fake_os = types.ModuleType("os")
     fake_os.__dict__.update(os.__dict__)
     fake_os.geteuid = lambda: 0
+    fake_os.lstat = lambda path: _RootStat(os.lstat(path))
     fake_os.chdir = lambda path: None
     namespace["os"] = fake_os
-    for directory in ("run/systemd/system", "run/lock"):
-        os.makedirs(f"{sandbox}/{directory}", exist_ok=True)
+    os.makedirs(f"{sandbox}/run/systemd/system", exist_ok=True)
     if payload.get("action") == "read":
         work = Path(sandbox) / "read-modules"
         if not work.exists():
@@ -575,11 +701,14 @@ def ssh_main(argv):
                 archive.extractall(work)
         patch_node_modules(work / "lib", sandbox, os.environ["FAKE_STATE"])
     namespace["main"](payload)
+    if payload.get("action") == "start" and os.environ.get("FAKE_START_REPLY_LOST"):
+        return 255  # the run started, but the reply never came back
     return 0
 
 
 # Fake GitHub ---------------------------------------------------------------------
 def receipt_zip(build, run_id, attempt, pin, thumbprint, **overrides):
+    import zipfile
     web = {"imageId": "sha256:" + sha(build["image"].encode()), "digest": build["image"], "platform": "linux/amd64", "source": build["sha"]}
     release = {"source": build["sha"], "runId": str(run_id), "runAttempt": attempt, "neutralProfile": True,
                "images": {"web": web}, "candidateRuntimeQualified": False}
@@ -603,6 +732,9 @@ def run_object(run_id, sha_, path=".github/workflows/deployment-suse.yml", event
             "repository": {"full_name": repository}, "head_repository": {"full_name": repository}}
 
 
+TOOL_MAIN = "e" * 40
+
+
 def gh_main(argv):
     state_path = os.environ["FAKE_GH_STATE"]
     if argv[:1] != ["api"]:
@@ -621,15 +753,25 @@ def gh_main(argv):
     route = parts.path
     with state_file(state_path) as gh:
         gh["calls"].append({"method": method, "path": path, "body": data})
+        if gh.get("flaky", 0) > 0 and re.fullmatch(rf"repos/{REPO}/actions/runs/\d+", route):
+            gh["flaky"] -= 1
+            print("gh: Bad Gateway (HTTP 502)", file=sys.stderr)
+            return 1
         if method == "POST":
-            if not route.endswith("/actions/workflows/deployment-suse.yml/dispatches"):
+            if not route.endswith("/actions/workflows/deployment-suse.yml/dispatches") or data.get("ref") != "refs/heads/main":
                 return 1
             run = gh.get("onDispatch")
             if run:
                 gh["runs"].append(run)
                 gh["onDispatch"] = None
             return 0
+        if route == "repos/lolly-tools/lolly-work/git/ref/heads/main":
+            sys.stdout.write(json.dumps({"ref": "refs/heads/main", "object": {"type": "commit", "sha": TOOL_MAIN}}))
+            return 0
         if route.startswith("repos/lolly-tools/lolly-work/compare/"):
+            if not route.endswith("..." + TOOL_MAIN):
+                print("compare against something other than the main SHA", file=sys.stderr)
+                return 1
             sys.stdout.write(json.dumps({"status": gh.get("toolCompare", "identical")}))
             return 0
         if route == f"repos/{REPO}/git/ref/heads/main":
@@ -637,6 +779,9 @@ def gh_main(argv):
             return 0
         if route.startswith(f"repos/{REPO}/compare/"):
             spec = route.rsplit("/", 1)[1]
+            if not re.fullmatch(r"[0-9a-f]{40}\.\.\.[0-9a-f]{40}", spec):
+                print("compare must name two SHAs, never a branch name", file=sys.stderr)
+                return 1
             sys.stdout.write(json.dumps({"status": gh["compare"].get(spec, "ahead")}))
             return 0
         match = re.fullmatch(rf"repos/{REPO}/actions/workflows/(ci|deployment-suse)\.yml/runs", route)
@@ -648,7 +793,7 @@ def gh_main(argv):
             return 0
         match = re.fullmatch(rf"repos/{REPO}/actions/runs/(\d+)", route)
         if match:
-            run = next(r for r in gh["runs"] if r["id"] == int(match.group(1)))
+            run = next(r for r in gh["runs"] + gh["ciRuns"] if r["id"] == int(match.group(1)))
             sequence = gh["statusSequence"].get(str(run["id"]))
             if sequence:
                 run["status"] = sequence.pop(0)
@@ -678,6 +823,10 @@ def gh_main(argv):
                 return 1
             sys.stdout.write(json.dumps(variable))
             return 0
+        if route == f"repos/{REPO}/actions/organization-variables":
+            variables = gh.get("orgVariables", [])
+            sys.stdout.write(json.dumps({"total_count": len(variables), "variables": variables}))
+            return 0
         print("gh: unexpected " + route, file=sys.stderr)
         return 1
 
@@ -691,25 +840,56 @@ def source_files(build):
     return encoded
 
 
-def check_target_main(argv):
-    if argv != ["--site", "lolly.tools"]:
-        print("FAIL: This preflight takes no target overrides or deploy commands", file=sys.stderr)
-        return 1
-    if os.environ.get("FAKE_CHECK_TARGET") == "fail":
-        print("FAIL: Production Deployment is not reconciled and ready: lolly-public/sovereign-web", file=sys.stderr)
-        return 1
-    print(json.dumps({"result": "PASS"}))
-    return 0
+CHECK_TARGET = '''#!/usr/bin/env python3
+# Test double of lolly-private/production/check-target.py with the --site patch's identities.
+import os, sys
+ADDRESS = {address!r}
+NODE_NAME = {node!r}
+NODE_UID = {node_uid!r}
+CLUSTER_UID = {cluster!r}
+NAMESPACE_UIDS = {{'lolly-public': {namespace!r}, 'lolly-private': '55555555-5555-4555-8555-555555555555'}}
+SITE_DEPLOYMENTS = {{'lolly-public/sovereign-web': {deployment!r}}}
+SSH = ['ssh', '-oBatchMode=yes', '-oConnectTimeout=12', '-oStrictHostKeyChecking=yes']
+CURRENT_SSH = SSH + ['-oUserKnownHostsFile=' + {known!r}, '-J', 'sles@192.0.2.1', 'sles@10.0.0.2']
+CURRENT_READ = """
+import json
+k=[{k3s!r},'kubectl','--kubeconfig',
+   {kubeconfig!r},
+   '--context',{context!r}]
+"""
+if __name__ == '__main__':
+    if sys.argv[1:] != ['--site', 'lolly.tools']:
+        print('FAIL: This preflight takes only --site lolly.tools|lolly.ing', file=sys.stderr)
+        sys.exit(1)
+    if os.environ.get('FAKE_CHECK_TARGET') == 'fail':
+        print('FAIL: Production Deployment identity mismatch: lolly-public/sovereign-web', file=sys.stderr)
+        sys.exit(1)
+    print('{{"result": "PASS"}}')
+'''
+
+
+def write_check_target(path, k3s, known_hosts):
+    Path(path).write_text(CHECK_TARGET.format(address=EDGE_ADDRESS, node=NODE_NAME, node_uid=NODE_UID, cluster=CLUSTER_UID,
+                                              namespace=NAMESPACE_UID, deployment=DEPLOYMENT_UID, known=str(known_hosts),
+                                              k3s=str(k3s), kubeconfig=KUBECONFIG, context=CONTEXT))
+    Path(path).chmod(0o600)
+
+
+def note_call(name, argv):
+    """Optional call log for profiling the suite (FAKE_CALL_LOG)."""
+    path = os.environ.get("FAKE_CALL_LOG")
+    if path:
+        with open(path, "a") as out:
+            out.write(name + " " + " ".join(word for word in argv[:6] if not word.startswith("/") and len(word) < 60) + "\n")
 
 
 def write_executables(bin_dir):
     bin_dir = Path(bin_dir)
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for name, function in (("gh", "gh_main"), ("ssh", "ssh_main"), ("k3s", "k3s_main"),
-                           ("systemctl", "systemctl_main"), ("check-target.py", "check_target_main")):
+    for name, function in (("gh", "gh_main"), ("ssh", "ssh_main"), ("k3s", "k3s_main"), ("systemctl", "systemctl_main")):
         path = bin_dir / name
-        path.write_text(f"#!{sys.executable}\nimport sys\nsys.dont_write_bytecode = True\n"
-                        f"sys.path.insert(0, {str(TESTS)!r})\nimport preview_deploy_fakes as f\n"
+        path.write_text(f"#!{sys.executable} -S\nimport sys\nsys.dont_write_bytecode = True\n"
+                        f"sys.path.insert(0, {str(TESTS)!r})\nimport preview_deploy_fakes as f\nf.note_call({name!r}, sys.argv[1:])\n"
                         f"raise SystemExit(f.{function}(sys.argv[1:]))\n")
         path.chmod(0o755)
     return bin_dir
@@ -734,3 +914,14 @@ def registry_opener(builds):
             return Response(manifests[digest])
         raise OSError("not found")
     return opener
+
+
+def lock_for(root, checkout):
+    """tool.lock.json as make-tool-lock.py writes it, for the test checkout."""
+    import preview_mac
+    files = {}
+    for relative, path in preview_mac.tool_files(root):
+        mode = "x" if os.stat(path).st_mode & 0o100 else "-"
+        files[relative] = f"{mode} {sha(path.read_bytes())}"
+    return {"version": 1, "repository": "lolly-tools/lolly-work", "checkout": str(checkout), "commit": TOOL_MAIN,
+            "toolSha256": preview_mac.tool_digest(root), "files": files, "generatedAt": "2026-10-23T00:00:00Z", "note": "test"}

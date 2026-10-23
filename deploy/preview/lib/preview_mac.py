@@ -1,21 +1,26 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Operator side of the preview deploy command: ship, deploy, rollback, status, gc and plan.
+"""Operator side of the preview deploy command: ship, deploy, rollback, status, gc, plan and selftest.
 
 Inputs are only a site and a commit. Everything else comes from the bound CI
-run, the source commit's own files, the live cluster and the private profile.
+run, the source commit's own files, the live cluster, check-target.py's
+identities and the private profile (pages, thresholds and the models release).
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import difflib
+import gzip
 import hashlib
 import hmac
+import importlib.util
 import io
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -27,29 +32,33 @@ import preview_anchors as A
 import preview_github as G
 from preview_common import (HEX64, SHA, Refusal, compact, compact_digest, emit, require, sha256_hex,
                             strict_json, utc_now, utc_stamp, write_private_new)
-from preview_expect import (configured_nginx_conf, expected_headers, format_lowering, models_sample,
-                            stored_formats)
+from preview_expect import (configure_connect_src, configured_nginx_conf, csp_default, expected_headers, format_lowering,
+                            models_sample, parse_connector_origins, stored_formats)
 from preview_layout import conversion_plan
 
-TOOL_REPOSITORY = "lolly-tools/lolly-work"
 TOOL_PATHS = ("deploy/preview", "scripts/app-update.py")
 LIB = Path(__file__).resolve().parent
-TOOL_ROOT = LIB.parents[2]  # <root>/deploy/preview/lib -> <root>
+TOOL_ROOT = LIB.parents[2]  # <root>/deploy/preview/lib -> <root>; tests point it at their copy
 BUSY = ("active", "activating", "deactivating", "reloading", "refreshing")
-RESULT_EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0,
+RESULT_EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "SELFTEST_OK": 0,
                "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2, "ROLLBACK_UNHEALTHY": 3}
 GIB = 2 ** 30
 SLEEP = time.sleep
+LAUNCHER_OPTIONS = ("--state-dir", "--tool-sha256", "--checkout", "--check-target")
+LOCK_KEYS = {"version", "repository", "checkout", "commit", "toolSha256", "files", "generatedAt", "note"}
+UID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
 
 # Tool identity ---------------------------------------------------------------
 def tool_files(root):
-    """(relative path, absolute path) for every file the tool lock covers."""
+    """(relative path, absolute path) for every file the tool lock covers. Bytecode caches are not part of the tool."""
     root = Path(root)
     entries = []
     preview = root / "deploy" / "preview"
     require(preview.is_dir() and not preview.is_symlink(), "TOOL_INVALID", "deploy/preview is missing")
     for path in sorted(preview.rglob("*")):
+        if "__pycache__" in path.relative_to(root).parts:
+            continue
         require(not path.is_symlink(), "TOOL_INVALID", "the tool tree holds a symbolic link")
         if path.is_file():
             entries.append((path.relative_to(root).as_posix(), path))
@@ -61,66 +70,114 @@ def tool_files(root):
     return sorted(entries)
 
 
-def tool_digest(root):
-    """The hash tool.lock.json pins. launch.py computes the same value."""
+def digest_of(entries):
+    """sha256 over 'path NUL mode NUL sha256 LF' lines. launch.py computes the same value."""
     lines = []
-    for relative, path in tool_files(root):
+    for relative, path in sorted(entries):
+        require(not Path(path).is_symlink(), "TOOL_INVALID", "the tool tree holds a symbolic link")
         mode = "x" if os.stat(path).st_mode & stat.S_IXUSR else "-"
-        lines.append(f"{relative}\0{mode}\0{hashlib.sha256(path.read_bytes()).hexdigest()}\n")
+        lines.append(f"{relative}\0{mode}\0{hashlib.sha256(Path(path).read_bytes()).hexdigest()}\n")
     return hashlib.sha256("".join(lines).encode()).hexdigest()
+
+
+def tool_digest(root):
+    return digest_of(tool_files(root))
 
 
 def bundle(root):
     """Deterministic tar.gz of the tool tree plus app-update.py, laid out as the node expects."""
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for relative, path in tool_files(root):
             name = "app-update.py" if relative == "scripts/app-update.py" else relative[len("deploy/preview/"):]
-            if "__pycache__" in name:
-                continue
             data = path.read_bytes()
             info = tarfile.TarInfo(name)
             info.size, info.mtime, info.uid, info.gid = len(data), 0, 0, 0
             info.mode = 0o500 if os.stat(path).st_mode & stat.S_IXUSR else 0o400
             archive.addfile(info, io.BytesIO(data))
-    return base64.b64encode(buffer.getvalue()).decode()
+    return base64.b64encode(gzip.compress(buffer.getvalue(), mtime=0)).decode()  # no clock in the gzip header
+
+
+def check_argv(argv):
+    """The launcher's four options, each exactly once, as separate words, before the site (review S-H1)."""
+    sites = [index for index, word in enumerate(argv) if word in A.SITES]
+    require(bool(sites), "BAD_ARGUMENTS", "name a site")
+    head, tail = argv[:sites[0]], argv[sites[0]:]
+    for option in LAUNCHER_OPTIONS:
+        require(head.count(option) == 1, "BAD_ARGUMENTS", f"{option} must be given exactly once, before the site")
+    require(len(head) == 2 * len(LAUNCHER_OPTIONS) and all(head[i] in LAUNCHER_OPTIONS for i in range(0, len(head), 2)),
+            "BAD_ARGUMENTS", "only the launcher's options may precede the site")
+    for word in tail:
+        name = word.split("=", 1)[0]
+        require(not (word.startswith("--") and name in LAUNCHER_OPTIONS), "BAD_ARGUMENTS", f"{name} is a launcher option")
+
+
+def read_lock(state_dir):
+    path = Path(state_dir) / "tool.lock.json"
+    require(path.is_file() and not path.is_symlink(), "TOOL_NOT_LOCKED", "tool.lock.json is missing from the state dir")
+    lock = strict_json(path.read_text(), "tool lock")
+    require(isinstance(lock, dict) and set(lock) == LOCK_KEYS and lock["version"] == 1 and lock["repository"] == A.TOOL_REPOSITORY
+            and isinstance(lock["toolSha256"], str) and HEX64.fullmatch(lock["toolSha256"]) is not None
+            and isinstance(lock["files"], dict) and lock["files"], "TOOL_NOT_LOCKED", "tool.lock.json is malformed")
+    return lock
+
+
+def load_check_target(path):
+    """The identities check-target.py checks, so the profile carries no identity of its own (review S-M3)."""
+    spec = importlib.util.spec_from_file_location("preview_check_target", str(path))
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        route = list(module.CURRENT_SSH)
+        known = [word.split("=", 1)[1] for word in route if word.startswith("-oUserKnownHostsFile=")]
+        jump = route[route.index("-J") + 1]
+        found = re.search(r"\bk=\[(.*?)\]", module.CURRENT_READ, re.S)
+        kubectl = ast.literal_eval("[" + found.group(1) + "]")
+        identity = {
+            "knownHostsFile": known[0], "jump": jump, "host": route[-1],
+            "k3s": kubectl[0], "kubeconfig": kubectl[kubectl.index("--kubeconfig") + 1],
+            "context": kubectl[kubectl.index("--context") + 1],
+            "nodeName": module.NODE_NAME, "nodeUID": module.NODE_UID, "clusterUID": module.CLUSTER_UID,
+            "namespaceUID": module.NAMESPACE_UIDS[A.TOOLS["namespace"]],
+            "deploymentUID": module.SITE_DEPLOYMENTS[A.TOOLS["checkTargetDeployment"]],
+            "edgeAddress": module.ADDRESS,
+        }
+    except (AttributeError, IndexError, KeyError, ValueError, SyntaxError, TypeError, OSError) as exc:
+        raise Refusal("CHECK_TARGET_IDENTITY", "check-target.py does not carry the --site identities "
+                      "(apply check-target-site.patch first)") from exc
+    require(len(known) == 1 and os.path.isabs(known[0]) and kubectl[1] == "kubectl" and os.path.isabs(identity["k3s"])
+            and os.path.isabs(identity["kubeconfig"]) and all(re.fullmatch(r"[A-Za-z0-9_.@-]+", identity[k]) for k in ("jump", "host"))
+            and all(UID.fullmatch(str(identity[k])) for k in ("nodeUID", "clusterUID", "namespaceUID", "deploymentUID")),
+            "CHECK_TARGET_IDENTITY", "check-target.py identities are malformed")
+    return identity
 
 
 # Profile ---------------------------------------------------------------------
-PROFILE_KEYS = {"version", "site", "ssh", "node", "deployment", "models", "smoke", "watch", "build",
-                "rolloutTimeoutSeconds", "capacity", "retainPreviousImages", "noDeployUtc", "gc"}
+PROFILE_KEYS = {"version", "site", "models", "smoke", "watch", "build", "rolloutTimeoutSeconds", "capacity",
+                "retainPreviousImages", "noDeployUtc", "gc"}
 
 
 def load_profile(state_dir, site):
-    """The private instance profile: identifiers, page list and thresholds only (S9)."""
-    state = Path(state_dir)
-    require(state.is_absolute() and state.is_dir() and not state.is_symlink(), "PROFILE_INVALID", "state dir is not a directory")
-    require(not (state.stat().st_mode & 0o022), "PROFILE_INVALID", "the state dir must not be group or world writable")
-    path = state / (site + ".json")
+    """The private profile: pages, thresholds and the models release only. Identities and anchors are elsewhere."""
+    path = Path(state_dir) / (site + ".json")
     require(path.is_file() and not path.is_symlink(), "PROFILE_INVALID", f"{path.name} is missing from the state dir")
     require(not (path.stat().st_mode & 0o022), "PROFILE_INVALID", "the profile must not be group or world writable")
     profile = strict_json(path.read_text(), "profile")
     require(isinstance(profile, dict) and set(profile) == PROFILE_KEYS and profile["version"] == 1 and profile["site"] == site,
-            "PROFILE_INVALID", "profile fields do not match version 1 for this site")
-    ssh, node, deployment = profile["ssh"], profile["node"], profile["deployment"]
-    require(isinstance(ssh, dict) and set(ssh) == {"host", "jump", "knownHostsFile"}
-            and all(re.fullmatch(r"[A-Za-z0-9_.@:\[\]-]+", str(ssh[k])) and not str(ssh[k]).startswith("-") for k in ("host", "jump"))
-            and os.path.isabs(ssh["knownHostsFile"]), "PROFILE_INVALID", "ssh route")
-    require(isinstance(node, dict) and set(node) == {"k3s", "kubeconfig", "context", "name", "uid", "clusterUID"}
-            and os.path.isabs(node["k3s"]) and os.path.isabs(node["kubeconfig"]), "PROFILE_INVALID", "node")
-    require(isinstance(deployment, dict) and set(deployment) == {"namespaceUID", "deploymentUID", "requiredLabels"},
-            "PROFILE_INVALID", "deployment")
+            "PROFILE_INVALID", "profile fields do not match version 2 of the profile for this site")
     models = profile["models"]
     require(isinstance(models, dict) and set(models) == {"release", "manifestSha256"}
             and re.fullmatch(r"models-[0-9a-f]{64}", models["release"]) and HEX64.fullmatch(models["manifestSha256"]),
             "PROFILE_INVALID", "models")
     smoke = profile["smoke"]
-    require(isinstance(smoke, dict) and set(smoke) == {"edgeAddress", "pages", "maxAddedPages", "memoryFraction"},
-            "PROFILE_INVALID", "smoke")
+    require(isinstance(smoke, dict) and set(smoke) == {"pages", "maxAddedPages", "memoryFraction"}, "PROFILE_INVALID", "smoke")
     require(isinstance(smoke["pages"], list) and 1 <= len(smoke["pages"]) <= 12, "PROFILE_INVALID", "smoke pages")
     watch, build = profile["watch"], profile["build"]
-    require(isinstance(watch, dict) and set(watch) == {"minutes", "intervalSeconds", "failures"}, "PROFILE_INVALID", "watch")
+    require(isinstance(watch, dict) and set(watch) == {"minutes", "intervalSeconds", "failures"}
+            and 0 <= watch["minutes"] <= A.MAX_WATCH_MINUTES, "PROFILE_INVALID", "watch")
     require(isinstance(build, dict) and set(build) == {"pollSeconds", "timeoutMinutes"}, "PROFILE_INVALID", "build")
+    require(type(profile["rolloutTimeoutSeconds"]) is int and 30 <= profile["rolloutTimeoutSeconds"] <= A.MAX_ROLLOUT_SECONDS,
+            "PROFILE_INVALID", "rolloutTimeoutSeconds")
     capacity = profile["capacity"]
     require(isinstance(capacity, dict) and set(capacity) == {"minFreeAboveReserveBytes", "imageSizeFactor"}, "PROFILE_INVALID", "capacity")
     window = profile["noDeployUtc"]
@@ -136,15 +193,25 @@ class Context:
         self.args = args
         self.site = args.site
         self.anchors = A.site_anchors(args.site)
-        self.state_dir = Path(args.state_dir)
-        self.profile = load_profile(args.state_dir, args.site)
+        self.state_dir = Path(args.state_dir).resolve()
+        require(self.state_dir.parts[-3:] == A.STATE_DIR_SUFFIX and self.state_dir.is_dir(), "STATE_DIR_INVALID",
+                "the state dir must be lolly-private/production/preview")
+        require(not (self.state_dir.stat().st_mode & 0o022), "STATE_DIR_INVALID", "the state dir must not be group or world writable")
+        self.check_target_path = self.state_dir.parent / "check-target.py"
+        require(Path(args.check_target).resolve() == self.check_target_path.resolve() and self.check_target_path.is_file(),
+                "CHECK_TARGET_PATH", "check-target.py must be the one beside the state dir")
+        self.lock = read_lock(self.state_dir)
+        self.root = Path(TOOL_ROOT)
+        self.tool_hash = tool_digest(self.root)
+        require(hmac.compare_digest(self.tool_hash, self.lock["toolSha256"]) and hmac.compare_digest(self.tool_hash, args.tool_sha256),
+                "TOOL_HASH_MISMATCH", "the running tool differs from tool.lock.json")
+        require(Path(args.checkout).resolve() == Path(self.lock["checkout"]).resolve(), "TOOL_HASH_MISMATCH",
+                "the checkout differs from the locked checkout")
+        self.identity = load_check_target(self.check_target_path)
+        self.profile = load_profile(self.state_dir, args.site)
         self.gh = gh or G.Gh()
         self.opener = opener
         self.pin = A.RELEASE_PUBLIC_KEY_JWK
-        self.root = Path(args.tool_root) if getattr(args, "tool_root", None) else TOOL_ROOT
-        self.tool_hash = tool_digest(self.root)
-        require(hmac.compare_digest(self.tool_hash, args.tool_sha256), "TOOL_HASH_MISMATCH",
-                "the running tool differs from the hash launch.py checked")
         self.started = utc_stamp()
 
     # Records -------------------------------------------------------------
@@ -152,16 +219,28 @@ class Context:
         entry = {"site": self.site, "command": command, "result": result, "tool": self.tool_hash,
                  "profileSha256": self.profile["_sha256"], "start": self.started, "end": utc_stamp(), **fields}
         path = self.state_dir / "deploys.jsonl"
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "a") as out:
             out.write(json.dumps(entry, sort_keys=True) + "\n")
 
+    def records(self):
+        path = self.state_dir / "deploys.jsonl"
+        if not path.exists():
+            return []
+        rows = []
+        for line in path.read_text().splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+        return rows
+
     # Preconditions -------------------------------------------------------
     def check_tool_checkout(self):
-        """The tool must be clean and on lolly-work main (S10). launch.py pins its exact bytes (R21 R4)."""
+        """The locked files in the checkout are unchanged and its commit is on lolly-work main (S-H1, S-L3)."""
         checkout = Path(self.args.checkout)
         try:
-            status = subprocess.run(["git", "-C", str(checkout), "status", "--porcelain", "--", *TOOL_PATHS],
+            status = subprocess.run(["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=no", "--", *TOOL_PATHS],
                                     capture_output=True, timeout=60, check=True).stdout
             head = subprocess.run(["git", "-C", str(checkout), "rev-parse", "HEAD"], capture_output=True,
                                   timeout=60, check=True).stdout.decode().strip()
@@ -169,9 +248,11 @@ class Context:
             raise Refusal("TOOL_NOT_MAIN", "cannot read the tool checkout") from exc
         require(not status, "TOOL_DIRTY", "the tool checkout has local changes in its tool paths")
         require(SHA.fullmatch(head) is not None, "TOOL_NOT_MAIN", "tool checkout HEAD is unreadable")
-        require(tool_digest(checkout) == self.tool_hash, "TOOL_HASH_MISMATCH", "the checkout differs from the running tool")
-        compare = self.gh.json(f"repos/{TOOL_REPOSITORY}/compare/{head}...main")
-        require(compare.get("status") in ("ahead", "identical"), "TOOL_NOT_MAIN", "the tool checkout is not on lolly-work main")
+        listed = [(relative, checkout / relative) for relative in self.lock["files"]]
+        require(all(path.is_file() for _, path in listed) and digest_of(listed) == self.tool_hash, "TOOL_HASH_MISMATCH",
+                "the checkout's locked files differ from the running tool")
+        main_sha = G.branch_head(self.gh, A.TOOL_REPOSITORY)
+        require(G.contains(self.gh, A.TOOL_REPOSITORY, head, main_sha), "TOOL_NOT_MAIN", "the tool checkout is not on lolly-work main")
         return head
 
     def backup_window(self):
@@ -182,7 +263,7 @@ class Context:
     def check_target(self):
         """check-target.py --site, once, immediately before the run starts (decision 8)."""
         try:
-            done = subprocess.run([sys.executable, "-I", "-B", self.args.check_target, "--site", self.site],
+            done = subprocess.run([sys.executable, "-I", "-B", str(self.check_target_path), "--site", self.site],
                                   capture_output=True, timeout=240, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise Refusal("CHECK_TARGET_FAILED", "check-target.py did not run") from exc
@@ -195,10 +276,10 @@ class Context:
         source = (self.root / "deploy" / "preview" / "node" / "bootstrap.py").read_text()
         encoded = base64.b64encode(json.dumps(payload).encode()).decode()
         program = source + f"\nmain(json.loads(base64.b64decode({encoded!r}).decode()))\n"
-        route = self.profile["ssh"]
+        route = self.identity
         argv = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=12", "-oStrictHostKeyChecking=yes",
                 "-oUserKnownHostsFile=" + route["knownHostsFile"], "-oServerAliveInterval=15", "-oServerAliveCountMax=4",
-                "-J", route["jump"], route["host"], "sudo -n python3 -"]
+                "-J", route["jump"], route["host"], "sudo -n python3 -I -"]
         try:
             done = subprocess.run(argv, input=program.encode(), capture_output=True, timeout=timeout, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -212,25 +293,25 @@ class Context:
         return reply
 
     def request(self, kind, deploy_id, **extra):
-        profile, anchors = self.profile, self.anchors
-        node, deployment = profile["node"], profile["deployment"]
+        profile, anchors, identity = self.profile, self.anchors, self.identity
         target = {"version": 1,
-                  "transport": {"type": "local", "kubectl": [node["k3s"], "kubectl"], "kubeconfig": node["kubeconfig"],
-                                "context": node["context"]},
-                  "clusterUID": node["clusterUID"], "node": {"name": node["name"], "uid": node["uid"]},
+                  "transport": {"type": "local", "kubectl": [identity["k3s"], "kubectl"], "kubeconfig": identity["kubeconfig"],
+                                "context": identity["context"]},
+                  "clusterUID": identity["clusterUID"], "node": {"name": identity["nodeName"], "uid": identity["nodeUID"]},
                   "components": {anchors["component"]: {
-                      "namespace": anchors["namespace"], "namespaceUID": deployment["namespaceUID"],
-                      "deployment": anchors["deployment"], "deploymentUID": deployment["deploymentUID"],
-                      "container": anchors["container"], "requiredLabels": deployment["requiredLabels"]}}}
+                      "namespace": anchors["namespace"], "namespaceUID": identity["namespaceUID"],
+                      "deployment": anchors["deployment"], "deploymentUID": identity["deploymentUID"],
+                      "container": anchors["container"], "requiredLabels": anchors["requiredLabels"]}}}
         smoke, watch = profile["smoke"], profile["watch"]
         request = {"version": 1, "kind": kind, "site": self.site, "deployId": deploy_id, "tool": self.tool_hash,
-                   "target": target, "k3s": node["k3s"], "modelsRelease": profile["models"]["release"],
+                   "target": target, "k3s": identity["k3s"], "modelsRelease": profile["models"]["release"],
                    "drillFailSmoke": bool(getattr(self.args, "drill_fail_smoke", False)),
                    "clearHold": bool(getattr(self.args, "clear_hold", False)), "liveSource": None,
                    "limits": {"rolloutTimeoutSeconds": profile["rolloutTimeoutSeconds"], "watchMinutes": watch["minutes"],
                               "watchIntervalSeconds": watch["intervalSeconds"], "watchFailures": watch["failures"],
                               "memoryFraction": smoke["memoryFraction"], "retainPreviousImages": profile["retainPreviousImages"],
-                              "maxAddedPages": smoke["maxAddedPages"], "edgeAddress": smoke["edgeAddress"], "needBytes": 0}}
+                              "maxAddedPages": smoke["maxAddedPages"], "edgeAddress": identity["edgeAddress"],
+                              "needBytes": int(profile["capacity"]["minFreeAboveReserveBytes"])}}
         request.update(extra)
         return request
 
@@ -239,13 +320,20 @@ class Context:
         return self.ssh({"action": "read", "bundle": bundle(self.root), "query": query})["data"]
 
     def start_and_follow(self, request):
+        """Start the unit. A lost reply is uncertain, never a failure: poll by deploy id (review C-M8)."""
         emit("starting", deployId=request["deployId"], kind=request["kind"])
-        self.ssh({"action": "start", "bundle": bundle(self.root), "request": request})
+        try:
+            self.ssh({"action": "start", "bundle": bundle(self.root), "request": request})
+        except Refusal as exc:
+            if exc.code != "NODE_UNREACHABLE":
+                raise
+            emit("start-uncertain", deployId=request["deployId"], note="no reply from the node; looking for the run by its id")
+            return self.follow(request["deployId"], must_appear=True)
         return self.follow(request["deployId"])
 
-    def follow(self, deploy_id, poll_seconds=5, max_failures=24):
+    def follow(self, deploy_id, poll_seconds=5, max_failures=24, must_appear=False):
         """Print the unit's progress until it ends. A dropped link only pauses this; the unit keeps going."""
-        offset, failures, idle = 0, 0, 0
+        offset, failures, idle, seen = 0, 0, 0, not must_appear
         while True:
             try:
                 state = self.ssh({"action": "poll", "deployId": deploy_id, "offset": offset}, timeout=60)
@@ -254,10 +342,11 @@ class Context:
                 emit("follow", note="node unreachable; the unit keeps running", code=exc.code, attempt=failures)
                 if failures >= max_failures:
                     return {"result": "DETACHED", "deployId": deploy_id,
-                            "reason": "lost the node; run status to see the live phase"}
+                            "reason": f"lost the node; run status --follow {deploy_id}"}
                 SLEEP(poll_seconds)
                 continue
             failures = 0
+            seen = seen or state.get("current") == deploy_id or bool(state.get("result"))
             for line in state.get("progress", []):
                 print(line, flush=True)
             offset = state.get("offset", offset)
@@ -266,6 +355,9 @@ class Context:
                     return state["result"]
                 idle += 1
                 if idle >= 3:
+                    if not seen:
+                        return {"result": "REFUSED", "code": "NOT_STARTED", "deployId": deploy_id,
+                                "reason": "the run never reached the node; nothing was changed"}
                     return {"result": "STOPPED_WITHOUT_RESULT", "deployId": deploy_id, "reason": "inspect with status"}
             SLEEP(poll_seconds)
 
@@ -287,6 +379,26 @@ class Context:
                   "pages": [{"path": page["path"], "file": page["file"]} for page in self.profile["smoke"]["pages"]]}
         return expect, formats
 
+    def check_live_origins(self, preview):
+        """The connector origins variable must still reproduce the CSP recorded for the live build,
+        unless it changed after that build (review C-H4). Recording the origins in Lolly's signed
+        receipt would make this exact; that is a lolly-side follow-up."""
+        anchors, gh = self.anchors, self.gh
+        live = _json_or_none(preview.get("expect"))
+        if not isinstance(live, dict) or not preview.get("ci-run"):
+            return
+        value, updated, scope = G.connector_origins_variable(gh, anchors)
+        built = G.run_created_at(gh, anchors, preview["ci-run"])
+        if updated and G.parse_utc(updated) > G.parse_utc(built):
+            emit("connector-origins", note="changed after the live build; its recorded CSP is not compared", scope=scope)
+            return
+        nginx = G.source_file(gh, anchors, anchors["nginxConfPath"], live["source"]).decode("utf-8")
+        implied = configure_connect_src(csp_default(nginx), parse_connector_origins(value))
+        recorded = [v for n, v in live.get("headers", []) if n.lower() == "content-security-policy"]
+        require(recorded == [implied], "CONNECTOR_ORIGINS_UNPROVEN",
+                f"the {scope} variable {anchors['connectorOriginsVariable']} does not reproduce the CSP recorded for the live "
+                "build; check organisation and environment variables before deploying")
+
     def need_bytes(self, image):
         compressed = G.registry_image_bytes(image, self.anchors, self.opener)
         capacity = self.profile["capacity"]
@@ -299,6 +411,12 @@ def _phase_hold(context, preview):
         raise Refusal("HELD_FOR_HUMAN", f"the live phase is {phase.upper()}; inspect with status, then pass --clear-hold")
 
 
+def _settled(status):
+    """The live records describe the live image (review C-H2)."""
+    preview, image = status.get("preview", {}), status["deployment"]["image"]
+    return preview.get("image") == image and preview.get("phase") in A.SETTLED_PHASES
+
+
 def _finish(context, command, result, **fields):
     name = result.get("result", "REFUSED")
     context.record(command, name, **{k: v for k, v in result.items() if k in ("deployId", "reason", "code", "problem",
@@ -307,21 +425,38 @@ def _finish(context, command, result, **fields):
     return RESULT_EXIT.get(name, 1)
 
 
+def _json_or_none(text):
+    try:
+        return strict_json(text, "annotation") if text else None
+    except Refusal:
+        return None
+
+
+def _live_state(context):
+    """Read live state; refuse while a run is active, and before anything else when a human must look."""
+    status = context.read("status")
+    require(status.get("unit") not in BUSY, "LOCK_HELD", "a preview run is active on the node; wait or run status --follow")
+    _phase_hold(context, status.get("preview", {}))
+    return status
+
+
 def deploy_bound(context, command, sha, bound):
     """Second half of ship, and all of deploy: expectations, checks, then the node unit."""
     anchors, gh = context.anchors, context.gh
-    status = context.read("status")
+    status = _live_state(context)
     preview, deployment = status.get("preview", {}), status["deployment"]
     if deployment["image"] == bound["image"]:
+        require(preview.get("phase") == "accepted" and preview.get("image") == bound["image"], "RECORDS_STALE",
+                f"this build is live but its phase is {preview.get('phase')}; inspect with status")
         return _finish(context, command, {"result": "ALREADY_LIVE", "image": bound["image"], "source": sha})
     require(deployment["converted"], "NOT_CONVERTED", "lolly.tools still serves the claim root; run the 3.6 conversion plan first")
-    _phase_hold(context, preview)
+    require(_settled(status), "RECORDS_STALE", "the preview records do not describe the live image; inspect with status")
     live_source = preview.get("source")
     require(isinstance(live_source, str) and SHA.fullmatch(live_source) is not None, "NO_PREVIOUS_RECORD",
             "the live release carries no preview records")
+    context.check_live_origins(preview)
     expect, formats = context.expectations(sha, bound.get("runCreatedAt"))
-    forward = gh.json(f"repos/{anchors['repository']}/compare/{live_source}...{sha}").get("status") in ("ahead", "identical")
-    if not forward:
+    if not G.contains(gh, anchors["repository"], live_source, sha):
         lowering = format_lowering(_json_or_none(preview.get("formats")), formats)
         require(not lowering, "FORMAT_LOWERING", "this older build would lower stored formats (" + ", ".join(lowering) +
                 "); roll forward instead")
@@ -337,23 +472,23 @@ def deploy_bound(context, command, sha, bound):
     return _finish(context, command, result, sha=sha, ciRun=bound["run"])
 
 
-def _json_or_none(text):
-    try:
-        return strict_json(text, "annotation") if text else None
-    except Refusal:
-        return None
-
-
 def cmd_ship(context, sha):
     anchors, gh = context.anchors, context.gh
-    require(G.main_head(gh, anchors) == sha, "NOT_MAIN_HEAD",
+    main_sha = G.main_head(gh, anchors)
+    require(main_sha == sha, "NOT_MAIN_HEAD",
             "Phase 1 ships only the current main head (the candidate build refuses older commits); use deploy for a built commit")
-    status = context.read("status")
+    status = _live_state(context)
     preview = status.get("preview", {})
-    if preview.get("source") == sha and preview.get("phase") == "accepted":
+    if preview.get("source") == sha and _settled(status) and preview.get("phase") == "accepted":
         return _finish(context, "ship", {"result": "ALREADY_LIVE", "source": sha, "image": status["deployment"]["image"]})
     require(status["deployment"]["converted"], "NOT_CONVERTED", "run the 3.6 conversion plan first")
-    _phase_hold(context, preview)
+    try:  # reuse a build of this commit that still binds (review C-L7)
+        bound = G.latest_bound_run(gh, anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT)
+        emit("reused", run=bound["run"], image=bound["image"])
+        return deploy_bound(context, "ship", sha, bound)
+    except Refusal as exc:
+        if exc.code != "RUN_NOT_FOUND":
+            raise
     ci = G.green_ci_run(gh, anchors, sha)
     active = G.active_candidate_runs(gh, anchors)
     if active:
@@ -376,47 +511,68 @@ def cmd_deploy(context, sha):
 
 
 def cmd_rollback(context):
-    status = context.read("status")
+    status = _live_state(context)
     preview = status.get("preview", {})
-    _phase_hold(context, preview)
     previous = _json_or_none(preview.get("previous"))
     require(isinstance(previous, dict) and isinstance(previous.get("source"), str), "NO_PREVIOUS",
             "no recorded previous build; deploy a build instead")
+    require(isinstance(previous.get("image"), str) and previous["image"].startswith(context.anchors["imageRepository"] + "@"),
+            "BAD_IMAGE", "the recorded previous image is not the anchored package")
     lowering = format_lowering(_json_or_none(preview.get("formats")), previous.get("formats"))
     require(not lowering, "FORMAT_LOWERING", "rolling back would lower stored formats (" + ", ".join(lowering) +
             "); roll forward instead")
     request = context.request("rollback", context.deploy_id("rollback", previous["source"]), rollbackTo=previous["source"])
+    request["limits"]["needBytes"] = context.need_bytes(previous["image"])
     context.backup_window()
     context.check_target()
     result = context.start_and_follow(request)
     return _finish(context, "rollback", result, sha=previous["source"])
 
 
-def cmd_status(context):
+def cmd_status(context, follow=None):
+    if follow:
+        require(re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[a-z0-9-]{1,40}", follow) is not None, "BAD_ARGUMENTS", "deploy id")
+        result = context.follow(follow)
+        return _finish(context, "status --follow", result)
     status = context.read("status")
     preview = status.get("preview", {})
     phase = preview.get("phase") or "none"
     emit("status", phase=phase if phase == "accepted" else phase.upper(), source=preview.get("source"),
-         image=status["deployment"]["image"], ready=status["deployment"]["ready"], converted=status["deployment"]["converted"],
-         revision=status["deployment"]["revision"], unit=status.get("unit"), pods=status.get("pods"),
-         deployId=preview.get("deploy-id"), reason=preview.get("reason"), lastResult=status.get("lastResult"))
+         image=status["deployment"]["image"], recordsDescribeLiveImage=_settled(status), ready=status["deployment"]["ready"],
+         converted=status["deployment"]["converted"], revision=status["deployment"]["revision"], unit=status.get("unit"),
+         pods=status.get("pods"), deployId=preview.get("deploy-id"), reason=preview.get("reason"), lastResult=status.get("lastResult"))
     return 0
 
 
+def claim_commands(context, claim):
+    """For Andy only: check-target first, a fresh report, then a delete that the API refuses unless the UID still matches."""
+    identity, namespace = context.identity, context.anchors["namespace"]
+    kubectl = ["sudo", identity["k3s"], "kubectl", "--kubeconfig", identity["kubeconfig"], "--context", identity["context"]]
+    body = json.dumps({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": claim["uid"]}}, separators=(",", ":"))
+    path = f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{claim['name']}"
+    return [
+        "python3 " + shlex.quote(str(context.check_target_path)) + " --site " + shlex.quote(context.site),
+        "python3 launch.py " + shlex.quote(context.site) + " gc   # the claim must still be a candidate with no referencedBy",
+        "printf '%s' " + shlex.quote(body) + " | " + " ".join(shlex.quote(word) for word in kubectl + ["delete", "--raw", path, "-f", "-"]),
+    ]
+
+
 def cmd_gc(context, execute):
+    """Report first. --execute needs an earlier report in deploys.jsonl, removes images only, never claims."""
     report = context.read("gc", legacyClaims=context.profile["gc"]["legacyClaims"])
     emit("gc-images", keep=report["images"]["keep"], remove=report["images"]["remove"],
-         removeBytes=report["images"]["removeBytes"])
-    node = context.profile["node"]
+         removeBytes=report["images"]["removeBytes"], untouched=report["images"]["untouched"],
+         retentionArmed=report["retentionArmed"])
     for claim in report["claims"]:
-        command = (f"sudo {node['k3s']} kubectl --kubeconfig {node['kubeconfig']} --context {node['context']} "
-                   f"delete pvc {claim['name']} --namespace {context.anchors['namespace']}")
         emit("gc-claim", name=claim["name"], uid=claim["uid"], candidate=claim["candidate"], blockedBy=claim["blockedBy"],
              referencedBy=claim["referencedBy"],
-             forAndy=(command + "   # Andy runs this himself; deleting a local-path claim deletes its data")
-             if claim["candidate"] else None)
+             forAndy=claim_commands(context, claim) if claim["candidate"] else None,
+             note="Andy runs these himself; deleting a local-path claim deletes its data" if claim["candidate"] else None)
     if not execute:
+        context.record("gc", "GC_REPORT", remove=report["images"]["remove"])
         return 0
+    require(any(row.get("result") == "GC_REPORT" for row in context.records()), "GC_REPORT_FIRST",
+            "run gc without --execute first and read its report")
     request = context.request("gc", context.deploy_id("gc"))
     context.backup_window()
     context.check_target()
@@ -424,22 +580,30 @@ def cmd_gc(context, execute):
     return _finish(context, "gc --execute", result)
 
 
+def cmd_selftest(context):
+    """Read-only checks inside the real unit sandbox (review C-M7)."""
+    request = context.request("selftest", context.deploy_id("selftest"))
+    result = context.start_and_follow(request)
+    for item in result.get("checks") or []:
+        emit("selftest-result", **item)
+    return _finish(context, "selftest", result)
+
+
 IMAGE_NGINX_FILES = (("default.conf", "nginxConfPath"), ("security-headers.conf", "securityHeadersPath"),
                      ("delivery-maps.conf", "deliveryMapsPath"), ("delivery-headers.conf", "deliveryHeadersPath"))
+HEADER_CHECKS = ("csp", "edge headers")
 
 
 def cmd_plan(context, sha):
-    """PROPOSAL 3.6 plan mode: print the exact guarded patch and the nginx diff; change nothing."""
+    """PROPOSAL 3.6 plan mode: print the exact guarded patch, the layout a revert restores and the nginx diff."""
     anchors, gh = context.anchors, context.gh
     G.require_on_main(gh, anchors, sha)
-    bound = G.latest_bound_run(gh, anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT)
-    expect, formats = context.expectations(sha, bound.get("runCreatedAt"))
     live = context.read("plan")
     deployment = live["deployment"]
     index = [c["name"] for c in deployment["spec"]["template"]["spec"]["containers"]].index(anchors["container"])
     live_image = deployment["spec"]["template"]["spec"]["containers"][index]["image"]
-    require(live_image == bound["image"], "IMAGE_DIFFERS",
-            "the conversion serves the bytes that are live now; plan it for the live build's commit")
+    bound = G.latest_bound_run(gh, anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT, prefer_image=live_image)
+    expect, formats = context.expectations(sha, bound.get("runCreatedAt"))
     deploy_id = context.deploy_id("convert", sha)
     release = {"source": sha, "image": bound["image"], "ciRun": str(bound["run"]), "formats": formats, "expect": expect}
     annotations = {A.ANNOTATION_PREFIX + name: value for name, value in {
@@ -460,8 +624,17 @@ def cmd_plan(context, sha):
         diff += list(difflib.unified_diff(mounted.splitlines(True), text.splitlines(True),
                                           f"configmap/{configmap.get('name', '?')}/{name}", f"image@{sha[:12]}/{name}"))
     smoke = context.read("smoke", expect=expect)
+    failing = [item for item in smoke["checks"] if not item["ok"]]
+    for item in failing:
+        if item["check"] in HEADER_CHECKS:
+            for line in item["detail"].split("; "):
+                emit("pre-conversion-header", check=item["check"], difference=line)
+    others = [item["check"] for item in failing if item["check"] not in HEADER_CHECKS]
+    require(not others, "PRECONVERSION_SMOKE", "the live site fails more than its header checks before the conversion: " +
+            ", ".join(others) + "; fix that first")
     plan = {"version": 1, "kind": "convert", "site": context.site, "source": sha, "deployId": deploy_id,
-            "tool": context.tool_hash, "createdAt": utc_stamp(), "run": {k: bound[k] for k in ("run", "attempt", "image", "imageId")},
+            "tool": context.tool_hash, "createdAt": utc_stamp(),
+            "run": {k: bound[k] for k in ("run", "attempt", "image", "imageId", "receiptExpiresAt")},
             "release": release, "conversion": conversion, "nginxDiff": "".join(diff), "preConversionSmoke": smoke}
     plans = context.state_dir / "plans"
     plans.mkdir(mode=0o700, exist_ok=True)
@@ -469,8 +642,10 @@ def cmd_plan(context, sha):
     write_private_new(path, json.dumps(plan, indent=2, sort_keys=True) + "\n")
     print(json.dumps(conversion["patch"], indent=2))
     print("".join(diff) or "(the image's nginx files equal the ConfigMap)")
+    emit("revert-restores", volumes=conversion["before"]["volumes"], volumeMounts=conversion["before"]["volumeMounts"],
+         revisionHistoryLimit=conversion["before"]["revisionHistoryLimit"])
     emit("plan", path=str(path), reviewedPlanSha256=compact_digest(plan), removedVolumes=conversion["removedVolumes"],
-         preConversionSmoke=[item for item in smoke["checks"] if not item["ok"]] or "all passed",
+         receiptExpiresAt=bound.get("receiptExpiresAt"), headerDifferencesBeforeConversion=len(failing),
          next="review, then: plan <sha> --apply PATH --reviewed-plan-sha256 HASH (named owner, Andy present)")
     return 0
 
@@ -482,7 +657,10 @@ def cmd_plan_apply(context, sha, path, reviewed):
     require(plan.get("kind") == "convert" and plan.get("site") == context.site and plan.get("source") == sha,
             "PLAN_MISMATCH", "the plan is for another site or commit")
     require(plan.get("tool") == context.tool_hash, "PLAN_TOOL_CHANGED", "the tool changed since the plan; make a new plan")
+    status = _live_state(context)
+    require(not status["deployment"]["converted"], "ALREADY_CONVERTED", "the Deployment already serves the image root")
     request = context.request("convert", plan["deployId"], release=plan["release"], conversion=plan["conversion"])
+    request["limits"]["needBytes"] = context.need_bytes(plan["release"]["image"])
     context.backup_window()
     context.check_target()
     result = context.start_and_follow(request)
@@ -490,25 +668,30 @@ def cmd_plan_apply(context, sha, path, reviewed):
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="preview-deploy", description="Deploy the lolly.tools preview from one main commit.")
-    p.add_argument("--state-dir", required=True, help="private preview directory holding <site>.json and deploys.jsonl")
-    p.add_argument("--tool-sha256", required=True, help="tool hash checked by launch.py against tool.lock.json")
-    p.add_argument("--checkout", required=True, help="the lolly-work checkout the tool was copied from")
-    p.add_argument("--check-target", required=True, help="path of check-target.py (needs --site)")
-    p.add_argument("--tool-root", help=argparse.SUPPRESS)
+    p = argparse.ArgumentParser(prog="preview-deploy", allow_abbrev=False,
+                                description="Deploy the lolly.tools preview from one main commit.")
+    p.add_argument("--state-dir", required=True, help="lolly-private/production/preview")
+    p.add_argument("--tool-sha256", required=True, help="tool hash launch.py checked against tool.lock.json")
+    p.add_argument("--checkout", required=True, help="the locked lolly-work checkout")
+    p.add_argument("--check-target", required=True, help="lolly-private/production/check-target.py")
     p.add_argument("site", choices=sorted(A.SITES))
     sub = p.add_subparsers(dest="command", required=True)
+
+    def command(name):
+        return sub.add_parser(name, allow_abbrev=False)
     for name in ("ship", "deploy"):
-        s = sub.add_parser(name)
+        s = command(name)
         s.add_argument("sha")
         s.add_argument("--drill-fail-smoke", action="store_true", help="force a smoke failure to drill the automatic rollback")
         s.add_argument("--clear-hold", action="store_true", help="proceed although the live phase needs a human")
-    s = sub.add_parser("rollback")
+    s = command("rollback")
     s.add_argument("--clear-hold", action="store_true")
-    sub.add_parser("status")
-    s = sub.add_parser("gc")
+    s = command("status")
+    s.add_argument("--follow", metavar="DEPLOY_ID", help="follow one run to its end and record its result")
+    s = command("gc")
     s.add_argument("--execute", action="store_true", help="remove images outside retention (never claims)")
-    s = sub.add_parser("plan")
+    command("selftest")
+    s = command("plan")
     s.add_argument("sha")
     s.add_argument("--apply", metavar="PLAN")
     s.add_argument("--reviewed-plan-sha256")
@@ -521,6 +704,12 @@ MUTATING = {"ship", "deploy", "rollback"}
 
 
 def main(argv=None, gh=None, opener=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        check_argv(argv)
+    except Refusal as exc:
+        emit("refused", code=exc.code, reason=exc.message)
+        return 1
     args = parser().parse_args(argv)
     context = None
     try:
@@ -536,16 +725,18 @@ def main(argv=None, gh=None, opener=None):
         if args.command == "rollback":
             return cmd_rollback(context)
         if args.command == "status":
-            return cmd_status(context)
+            return cmd_status(context, args.follow)
         if args.command == "gc":
             return cmd_gc(context, args.execute)
+        if args.command == "selftest":
+            return cmd_selftest(context)
         if args.apply:
             return cmd_plan_apply(context, args.sha, args.apply, args.reviewed_plan_sha256)
         return cmd_plan(context, args.sha)
     except Refusal as exc:
         emit("refused", code=exc.code, reason=exc.message)
         mutating = args.command in MUTATING or (args.command == "gc" and args.execute) or \
-            (args.command == "plan" and args.apply)
+            (args.command == "plan" and args.apply) or args.command == "selftest"
         if context is not None and mutating:
             context.record(args.command, "REFUSED", code=exc.code, reason=exc.message[:500], sha=getattr(args, "sha", None))
         return 1

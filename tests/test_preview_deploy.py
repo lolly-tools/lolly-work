@@ -153,6 +153,17 @@ class Layout(unittest.TestCase):
         self.assertEqual(restored["spec"]["revisionHistoryLimit"], 2)
         L.guard_layout_result(after, restored, 0, plan["before"])
 
+    def test_recomputed_plan_ignores_only_the_resource_version(self):
+        """Review C-H1 and C-M9: the node recomputes the plan; a status update must not invalidate it."""
+        before = F.deployment("img@sha256:" + "a" * 64, converted=False)
+        plan = L.conversion_plan(before, self.ANCHORS, {"lolly.tools/preview-phase": "converting"})
+        churned = copy.deepcopy(before)
+        churned["metadata"]["resourceVersion"] = "101"
+        self.assertEqual(L.comparable_plan(L.conversion_plan(churned, self.ANCHORS, plan["annotations"])), L.comparable_plan(plan))
+        changed = copy.deepcopy(before)
+        changed["spec"]["template"]["spec"]["volumes"].append({"name": "extra", "emptyDir": {}})
+        self.assertNotEqual(L.comparable_plan(L.conversion_plan(changed, self.ANCHORS, plan["annotations"])), L.comparable_plan(plan))
+
     def test_conversion_refuses_unexpected_layouts(self):
         with self.assertRaises(C.Refusal) as caught:
             L.conversion_plan(F.deployment("img@sha256:" + "a" * 64), self.ANCHORS, {})
@@ -208,11 +219,13 @@ class Binding(unittest.TestCase):
     def test_bind_run_requires_workflow_event_repository_branch_commit_success(self):
         class StubGh:
             def json(inner, path, **params):
-                return {"artifacts": [{"id": 5, "name": "public-candidate-web-receipts-attempt-1", "expired": False}]}
+                return {"artifacts": [{"id": 5, "name": "public-candidate-web-receipts-attempt-1", "expired": False,
+                                       "expires_at": "2026-11-05T08:25:02Z"}]}
 
             def binary(inner, path, limit):
                 return base64.b64decode(F.receipt_zip(self.build, 77, 1, self.pin, self.thumb))
-        self.assertEqual(G.bind_run(StubGh(), A.TOOLS, self.run, "b" * 40, self.pin, self.thumb)["run"], 77)
+        bound = G.bind_run(StubGh(), A.TOOLS, self.run, "b" * 40, self.pin, self.thumb)
+        self.assertEqual((bound["run"], bound["receiptExpiresAt"]), (77, "2026-11-05T08:25:02Z"))
         for field, value in (("path", ".github/workflows/evil.yml"), ("event", "push"), ("head_branch", "preview"),
                              ("head_sha", "c" * 40), ("conclusion", "failure"),
                              ("head_repository", {"full_name": "fork/lolly"})):
@@ -220,7 +233,7 @@ class Binding(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(C.Refusal):
                 G.bind_run(StubGh(), A.TOOLS, run, "b" * 40, self.pin, self.thumb)
 
-    def test_dispatch_request_matches_the_retired_bot(self):
+    def test_dispatch_request_matches_the_retired_bot_with_a_full_ref(self):
         class Recorder:
             posted = None
 
@@ -229,7 +242,7 @@ class Binding(unittest.TestCase):
         G.dispatch_build(Recorder(), A.TOOLS, "b" * 40, 900, self.pin)
         path, body = Recorder.posted
         self.assertEqual(path, "repos/lolly-tools/lolly/actions/workflows/deployment-suse.yml/dispatches")
-        self.assertEqual(body["ref"], "main")
+        self.assertEqual(body["ref"], "refs/heads/main")  # review S-M2: never the bare name a tag could share
         self.assertEqual({k: v for k, v in body["inputs"].items() if k != "public_key_jwk"},
                          {"build_images": "true", "release_scope": "web", "expected_source": "b" * 40, "ci_run": "900"})
         self.assertEqual(json.loads(body["inputs"]["public_key_jwk"]), self.pin)
@@ -248,16 +261,16 @@ class Smoke(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_smoke(self, fetch):
+    def run_smoke(self, fetch, baseline=None):
         with mock.patch.object(S, "FETCH", fetch):
-            return S.smoke(F.expect_for(self.build), A.TOOLS, self.pin, pod_check=lambda memory: (True, "ok"))
+            return S.smoke(F.expect_for(self.build), A.TOOLS, self.pin, pod_check=lambda memory: (True, "ok"), edge_baseline=baseline)
 
     def test_good_site_passes(self):
         checks, files = self.run_smoke(self.fetch)
         self.assertTrue(checks.ok, checks.failures())
         self.assertIn("index.html", files)
 
-    def test_header_drift_suse_ids_and_bad_etag_fail(self):
+    def test_csp_drift_edge_drift_suse_ids_and_bad_etag_fail(self):
         def drift(url, **kwargs):
             response = self.fetch(url, **kwargs)
             response.headers = [(n, v + " https://*.sharepoint.com" if n == "Content-Security-Policy" else v) for n, v in response.headers]
@@ -265,7 +278,7 @@ class Smoke(unittest.TestCase):
 
         def duplicate(url, **kwargs):
             response = self.fetch(url, **kwargs)
-            response.headers = response.headers + [("Referrer-Policy", "no-referrer")]
+            response.headers = response.headers + [("Content-Security-Policy", "default-src *")]
             return response
 
         def suse(url, **kwargs):
@@ -279,11 +292,47 @@ class Smoke(unittest.TestCase):
             if url.endswith("lolly.tools/"):
                 response.headers = [(n, v) for n, v in response.headers if n != "ETag"] + [("ETag", '"' + "9" * 64 + '"')]
             return response
-        for name, fetch, failing in (("csp", drift, "headers"), ("duplicate", duplicate, "headers"),
+        for name, fetch, failing in (("csp", drift, "csp"), ("duplicate", duplicate, "csp"),
                                      ("suse", suse, "catalog catalog/tools/index.json"), ("etag", body_etag, "root")):
             with self.subTest(name=name):
                 checks, _ = self.run_smoke(fetch)
                 self.assertEqual([item["check"] for item in checks.failures()], [failing])
+        checks, _ = self.run_smoke(drift)
+        self.assertIn("Content-Security-Policy: expected", checks.failures()[0]["detail"])  # one line per header (review C-M1)
+
+    def test_edge_owned_headers_compare_with_what_the_edge_served_before(self):
+        """Review C-M2: Caddy owns these headers; the source is not the reference for them."""
+        def edge(url, **kwargs):
+            response = self.fetch(url, **kwargs)
+            response.headers = [(n, "strict-origin" if n == "Referrer-Policy" else v) for n, v in response.headers]
+            return response
+        baseline = [["Referrer-Policy", "strict-origin"], ["X-Content-Type-Options", "nosniff"]]
+        checks, _ = self.run_smoke(edge, baseline)
+        self.assertTrue(checks.ok, checks.failures())
+        checks, _ = self.run_smoke(self.fetch, baseline)  # the edge value changed across the switch
+        self.assertEqual([item["check"] for item in checks.failures()], ["edge headers"])
+
+    def test_transport_errors_become_refusals(self):
+        """Review C-H3: a reset connection or a truncated body is a counted probe failure, not a crash."""
+        import http.client
+
+        class Broken:
+            def __init__(self, failure):
+                self.failure = failure
+
+            def open(self, request, timeout):
+                if self.failure == "open":
+                    raise ConnectionResetError("reset")
+                response = mock.Mock(status=200, headers={})
+                response.read.side_effect = http.client.IncompleteRead(b"partial")
+                return response
+        for failure in ("open", "read"):
+            with self.subTest(failure=failure), mock.patch("urllib.request.build_opener", return_value=Broken(failure)), \
+                    self.assertRaises(C.Refusal) as caught:
+                S.http_fetch("https://lolly.tools/")
+            self.assertEqual(caught.exception.code, "SMOKE_TRANSPORT")
+        with mock.patch.object(S, "FETCH", side_effect=C.Refusal("SMOKE_TRANSPORT", "reset")):
+            self.assertEqual(S.watch_probe("0" * 64, A.TOOLS, lambda memory: (True, "ok")), ["/ SMOKE_TRANSPORT", "/healthz SMOKE_TRANSPORT"])
 
     def test_added_info_pages_prefer_english(self):
         new = {"info/index.html": "1", "info/new.html": "2", "info/de/new.html": "3", "info/a/b/c.html": "4"}
@@ -292,19 +341,26 @@ class Smoke(unittest.TestCase):
 
 
 class Shipped(unittest.TestCase):
-    def test_unit_file_and_bootstrap_use_the_anchored_paths(self):
+    def test_unit_file_bootstrap_and_time_budget_use_the_anchors(self):
         unit = (ROOT / "deploy/preview/node/lolly-preview-deploy.service").read_text()
         self.assertIn(f"ExecStart=/usr/bin/python3 -I -B {A.NODE_RUN_DIR}/tool/node/node_runner.py run {A.NODE_RUN_DIR}/request.json", unit)
         self.assertIn(f"ExecStopPost=/usr/bin/python3 -I -B {A.NODE_RUN_DIR}/tool/node/node_runner.py stop-post {A.NODE_RUN_DIR}/request.json", unit)
-        self.assertIn("RuntimeMaxSec=1800", unit)
+        self.assertIn(f"RuntimeMaxSec={A.UNIT_RUNTIME_MAX_SECONDS}\n", unit)
+        self.assertIn(f"TimeoutStopSec={A.UNIT_STOP_TIMEOUT_SECONDS}\n", unit)
+        self.assertGreaterEqual(A.UNIT_RUNTIME_MAX_SECONDS, 2 * A.PULL_TIMEOUT_SECONDS + 2 * A.MAX_ROLLOUT_SECONDS + A.MAX_WATCH_MINUTES * 60)
+        self.assertGreaterEqual(A.UNIT_STOP_TIMEOUT_SECONDS, A.PULL_TIMEOUT_SECONDS + A.MAX_ROLLOUT_SECONDS + A.SMOKE_BUDGET_SECONDS)
         self.assertNotRegex(unit, r"(?m)^\[Install\]")
         namespace = {}
         source = (ROOT / "deploy/preview/node/bootstrap.py").read_text()
         exec(compile(source, "bootstrap.py", "exec"), namespace)
         for name, value in (("ROOT", A.NODE_ROOT), ("RUN", A.NODE_RUN_DIR), ("RESULTS", A.NODE_RESULTS_DIR), ("TMP", A.NODE_TMP_DIR),
-                            ("UNIT", A.NODE_UNIT), ("UNIT_PATH", A.NODE_UNIT_PATH), ("LOCK", A.NODE_LOCK),
-                            ("START_LOCK", A.NODE_START_LOCK), ("SYSTEMCTL", A.NODE_SYSTEMCTL)):
+                            ("UNIT", A.NODE_UNIT), ("UNIT_PATH", A.NODE_UNIT_PATH), ("LOCK_DIR", A.NODE_LOCK_DIR),
+                            ("LOCK", A.NODE_LOCK), ("START_LOCK", A.NODE_START_LOCK), ("SYSTEMCTL", A.NODE_SYSTEMCTL)):
             self.assertEqual(namespace[name], value, name)
+        for bad in ("../../etc/passwd", "20261023T000000Z-x/../../y", None):
+            with self.subTest(bad=bad), self.assertRaises(SystemExit):  # review S-L4
+                with contextlib.redirect_stdout(io.StringIO()):
+                    namespace["deploy_id"](bad)
 
     def test_tool_stays_out_of_work_images(self):
         for dockerfile in ("deploy/compose/Dockerfile", "deploy/compose/Dockerfile.suse"):
@@ -325,8 +381,37 @@ class Shipped(unittest.TestCase):
             A.site_anchors("lolly.ing")
         self.assertEqual(caught.exception.code, "SITE_PHASE_2")
 
+    def test_launcher_options_cannot_be_repeated_moved_or_abbreviated(self):
+        """Review S-H1: the caller cannot override what launch.py set."""
+        base = ["--state-dir", "/s", "--tool-sha256", "0" * 64, "--checkout", "/c", "--check-target", "/t"]
+        M.check_argv(base + ["lolly.tools", "status"])
+        for argv in (base + ["lolly.tools", "status", "--state-dir", "/x"],
+                     base + ["lolly.tools", "ship", "a" * 40, "--tool-sha256=" + "1" * 64],
+                     base + ["--state-dir", "/x", "lolly.tools", "status"],
+                     ["--state", "/s"] + base[2:] + ["lolly.tools", "status"],
+                     base[2:] + ["lolly.tools", "status"],
+                     base + ["lolly.tools", "--checkout", "/x", "status"]):
+            with self.subTest(argv=argv), self.assertRaises(C.Refusal):
+                M.check_argv(argv)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            M.parser().parse_args(base + ["lolly.tools", "gc", "--exec"])  # abbreviations are refused
+
+    def test_node_lock_directory_must_be_private(self):
+        import preview_node as N
+        with tempfile.TemporaryDirectory() as tmp:
+            open_dir = Path(tmp) / "open"
+            open_dir.mkdir()
+            open_dir.chmod(0o777)
+            with self.assertRaises(C.Refusal) as caught:
+                N.secure_lock_dir(str(open_dir))
+            self.assertEqual(caught.exception.code, "LOCK_UNSAFE")
+            (Path(tmp) / "link").symlink_to(open_dir)
+            with self.assertRaises(C.Refusal):
+                N.secure_lock_dir(str(Path(tmp) / "link"))
+
 
 OLD, NEW = "a" * 40, "b" * 40
+GIB_1 = 2 ** 30
 
 
 class EndToEnd(unittest.TestCase):
@@ -338,36 +423,38 @@ class EndToEnd(unittest.TestCase):
         self.key, self.pin = F.make_key()
         self.thumb = R.jwk_thumbprint(self.pin)
         self.builds = {"old": F.make_build(self.key, OLD, "old"),
-                       "new": F.make_build(self.key, NEW, "new", extra_pages=["info/new-page.html"])}
+                       "new": F.make_build(self.key, NEW, "new", extra_pages=["info/new-page.html"]),
+                       "rebuild": F.make_build(self.key, OLD, "old rebuild")}
         self.old, self.new = self.builds["old"], self.builds["new"]
         # A clean git checkout holding exactly the tool, as launch.py would find it.
         self.checkout = base / "checkout"
         for relative, path in M.tool_files(ROOT):
-            if "__pycache__" in relative:
-                continue
             target = self.checkout / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, target)
         git = ["git", "-C", str(self.checkout), "-c", "user.name=t", "-c", "user.email=t@example.com"]
         for command in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "tool"]):
             subprocess.run(git + command, check=True, capture_output=True)
-        self.tool_hash = M.tool_digest(self.checkout)
         self.bin = F.write_executables(base / "bin")
         self.sandbox = base / "node"
         self.sandbox.mkdir()
-        self.state_dir = base / "state"
-        self.state_dir.mkdir(mode=0o700)
+        (self.sandbox / "proc-status").write_text("Name:\tpython3\nNoNewPrivs:\t1\n")
+        (self.sandbox / "proc-attr").write_text("system_u:system_r:unconfined_service_t:s0\x00")
+        self.known_hosts = base / "known_hosts"
+        self.production = base / "lolly-private" / "production"
+        self.state_dir = self.production / "preview"
+        self.state_dir.mkdir(parents=True, mode=0o700)
+        self.check_target_path = self.production / "check-target.py"
+        F.write_check_target(self.check_target_path, self.bin / "k3s", self.known_hosts)
+        self.lock = F.lock_for(self.checkout, self.checkout)
+        (self.state_dir / "tool.lock.json").write_text(json.dumps(self.lock))
+        self.tool_hash = self.lock["toolSha256"]
         self.profile = {
             "version": 1, "site": "lolly.tools",
-            "ssh": {"host": "sles@10.0.0.2", "jump": "sles@192.0.2.1", "knownHostsFile": str(base / "known_hosts")},
-            "node": {"k3s": str(self.bin / "k3s"), "kubeconfig": F.KUBECONFIG, "context": F.CONTEXT, "name": "node-1",
-                     "uid": "node-uid", "clusterUID": "cluster-uid"},
-            "deployment": {"namespaceUID": "namespace-uid", "deploymentUID": "deployment-uid",
-                           "requiredLabels": {"app.kubernetes.io/component": "web", "app.kubernetes.io/name": "lolly-sovereign"}},
             "models": {"release": "models-" + "1" * 64, "manifestSha256": F.sha(F.MODELS)},
-            "smoke": {"edgeAddress": "203.0.113.10", "maxAddedPages": 3, "memoryFraction": 0.8,
+            "smoke": {"maxAddedPages": 3, "memoryFraction": 0.8,
                       "pages": [{"path": "/info/", "file": "info/index.html"}, {"path": "/tools", "file": "view/tools.html"}]},
-            "watch": {"minutes": 1, "intervalSeconds": 15, "failures": 3},
+            "watch": {"minutes": 0, "intervalSeconds": 15, "failures": 3},  # with_watch() for the watch tests
             "build": {"pollSeconds": 0, "timeoutMinutes": 10}, "rolloutTimeoutSeconds": 300,
             "capacity": {"minFreeAboveReserveBytes": GIB_1, "imageSizeFactor": 3}, "retainPreviousImages": 2,
             "noDeployUtc": ["00:00", "00:00"], "gc": {"legacyClaims": ["lolly-public-web-test-v1"]}}
@@ -377,24 +464,28 @@ class EndToEnd(unittest.TestCase):
         self.gh_path = base / "gh.json"
         self.gh = {"mainHead": NEW, "compare": {f"{OLD}...{NEW}": "ahead", f"{NEW}...{OLD}": "behind"}, "calls": [],
                    "ciRuns": [F.run_object(900, NEW, path=".github/workflows/ci.yml", event="push")],
-                   "runs": [], "statusSequence": {"1001": ["waiting", "completed"]}, "finalConclusion": "success",
+                   "runs": [F.run_object(800, OLD, created="2026-10-21T08:00:00Z")],
+                   "statusSequence": {"1001": ["waiting", "completed"]}, "finalConclusion": "success",
                    "onDispatch": F.run_object(1001, NEW, status="queued", conclusion=None),
                    "artifacts": {"1001": [{"id": 555, "name": "public-candidate-web-receipts-attempt-1", "expired": False}],
-                                 "800": [{"id": 556, "name": "public-candidate-web-receipts-attempt-1", "expired": False}]},
+                                 "800": [{"id": 556, "name": "public-candidate-web-receipts-attempt-1", "expired": False,
+                                          "expires_at": "2026-11-05T08:25:02Z"}]},
                    "zips": {"555": F.receipt_zip(self.new, 1001, 1, self.pin, self.thumb),
                             "556": F.receipt_zip(self.old, 800, 1, self.pin, self.thumb)},
                    "files": {**F.source_files(self.old), **F.source_files(self.new)},
-                   "variable": {"value": F.CONNECTORS, "updated_at": "2026-10-23T04:00:00Z"}}
+                   "variable": {"value": F.CONNECTORS, "updated_at": "2026-10-20T04:00:00Z"}}
         self.write_gh()
         self.environ = mock.patch.dict(os.environ, {
             "PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_STATE": str(self.cluster_path), "FAKE_GH_STATE": str(self.gh_path),
-            "FAKE_SANDBOX": str(self.sandbox), "FAKE_BIN": str(self.bin), "FAKE_PIN": json.dumps(self.pin)})
+            "FAKE_SANDBOX": str(self.sandbox), "FAKE_BIN": str(self.bin), "FAKE_PIN": json.dumps(self.pin),
+            "FAKE_KNOWN_HOSTS": str(self.known_hosts)})
         self.environ.start()
-        for name in ("FAKE_CRASH_PHASE", "FAKE_CHECK_TARGET", "FAKE_SSH_DOWN"):
+        for name in ("FAKE_CRASH_PHASE", "FAKE_CHECK_TARGET", "FAKE_SSH_DOWN", "FAKE_START_REPLY_LOST", "FAKE_UNIT_NEVER_STARTS"):
             os.environ.pop(name, None)
         self.patches = [mock.patch.object(A, "RELEASE_PUBLIC_KEY_JWK", self.pin),
                         mock.patch.object(A, "RELEASE_PUBLIC_KEY_THUMBPRINT", self.thumb),
-                        mock.patch.object(M, "SLEEP", lambda seconds: None)]
+                        mock.patch.object(M, "SLEEP", lambda seconds: None),
+                        mock.patch.object(M, "TOOL_ROOT", self.checkout)]
         for patcher in self.patches:
             patcher.start()
 
@@ -404,7 +495,10 @@ class EndToEnd(unittest.TestCase):
         self.environ.stop()
         self.tmp.cleanup()
 
-    # Helpers -----------------------------------------------------------------
+    def with_watch(self, minutes=1):
+        self.profile["watch"]["minutes"] = minutes
+        self.write_profile()
+
     def write_profile(self):
         path = self.state_dir / "lolly.tools.json"
         path.write_text(json.dumps(self.profile))
@@ -427,11 +521,11 @@ class EndToEnd(unittest.TestCase):
         state["behaviour"].update(changes)
         self.set_cluster(state)
 
-    def cli(self, *argv):
+    def cli(self, *argv, state_dir=None, check_target=None, tool_hash=None):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = M.main(["--state-dir", str(self.state_dir), "--tool-sha256", self.tool_hash, "--checkout", str(self.checkout),
-                           "--check-target", str(self.bin / "check-target.py"), "--tool-root", str(self.checkout),
+            code = M.main(["--state-dir", str(state_dir or self.state_dir), "--tool-sha256", tool_hash or self.tool_hash,
+                           "--checkout", str(self.checkout), "--check-target", str(check_target or self.check_target_path),
                            "lolly.tools", *argv], gh=G.Gh(executable=str(self.bin / "gh"), sleep=lambda s: None),
                           opener=F.registry_opener(self.builds))
         events = []
@@ -455,50 +549,28 @@ class EndToEnd(unittest.TestCase):
                        if k.startswith("lolly.tools/preview-")}
         return deploy["spec"]["template"]["spec"]["containers"][0]["image"], annotations
 
+    def patches_written(self):
+        return [w for w in self.cluster()["writes"] if isinstance(w, list) and w and isinstance(w[0], dict)]
+
     def assert_only_owned_writes(self):
-        for patch in self.cluster()["writes"]:
-            if isinstance(patch, list) and patch and isinstance(patch[0], dict):
-                changed = [op["path"] for op in patch if op["op"] != "test"]
-                allowed = all(path.startswith("/metadata/annotations") or path == "/spec/template/spec/containers/0/image"
-                              for path in changed)
-                self.assertTrue(allowed, changed)
+        for patch in self.patches_written():
+            changed = [op["path"] for op in patch if op["op"] != "test"]
+            self.assertTrue(all(path.startswith("/metadata/annotations") or path == "/spec/template/spec/containers/0/image"
+                                for path in changed), changed)
+        for write in self.cluster()["writes"]:
+            if write and write[0] == "rmi":
+                self.fail("a deploy removed an image: " + str(write))
 
-    # Scenarios -----------------------------------------------------------------
-    def test_ship_dispatches_binds_switches_smokes_watches_and_records(self):
-        code, events = self.cli("ship", NEW)
-        result = self.done(events)
-        self.assertEqual((code, result["result"]), (0, "LIVE"), events)
-        image, notes = self.live()
-        self.assertEqual(image, self.new["image"])
-        self.assertEqual((notes["phase"], notes["source"], notes["ci-run"], notes["tool"]), ("accepted", NEW, "1001", self.tool_hash))
-        self.assertEqual(json.loads(notes["previous"])["image"], self.old["image"])
-        posts = [call for call in self.gh_calls() if call["method"] == "POST"]
-        self.assertEqual(len(posts), 1)
-        self.assertEqual(posts[0]["body"]["inputs"]["expected_source"], NEW)
-        self.assertEqual(posts[0]["body"]["inputs"]["ci_run"], "900")
-        results = json.loads((self.sandbox / "var/lib/lolly-preview/results").joinpath(next(
-            p.name for p in (self.sandbox / "var/lib/lolly-preview/results").iterdir())).read_text())
-        checks = {item["check"]: item["ok"] for item in results["checks"]}
-        self.assertTrue(all(checks.values()), checks)
-        self.assertIn("page /info/new-page.html", checks)
-        images = self.cluster()["images"]
-        self.assertTrue(images[self.new["image"]]["pinned"] and images[self.old["image"]]["pinned"])
-        self.assertEqual([r["result"] for r in self.records()], ["LIVE"])
-        self.assert_only_owned_writes()
-        # A second ship of the same commit changes nothing (ALREADY_LIVE, no dispatch).
-        writes = len(self.cluster()["writes"])
-        code, events = self.cli("ship", NEW)
-        self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"))
-        self.assertEqual(len(self.cluster()["writes"]), writes)
-        self.assertEqual(len([c for c in self.gh_calls() if c["method"] == "POST"]), 1)
+    def result_file(self):
+        results = self.sandbox / "var/lib/lolly-preview/results"
+        names = sorted(p for p in results.iterdir() if not p.name.endswith(".request.json"))
+        return json.loads(names[-1].read_text())
 
-    def test_deploy_of_a_built_commit_already_live_is_a_no_op(self):
-        self.gh["runs"] = [F.run_object(800, OLD)]
-        self.gh["compare"][f"{OLD}...main"] = "ahead"
-        self.write_gh()
-        code, events = self.cli("deploy", OLD)
-        self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"))
-        self.assertEqual(self.cluster()["writes"], [])
+    def node_image(self, ref):
+        for image_id, entry in self.cluster()["images"].items():
+            if ref in entry["refs"]:
+                return entry
+        return None
 
     def assert_rolled_back(self, code, events, reason):
         result = self.done(events)
@@ -506,9 +578,121 @@ class EndToEnd(unittest.TestCase):
         self.assertIn(reason, result["reason"])
         image, notes = self.live()
         self.assertEqual(image, self.old["image"])
-        self.assertEqual((notes["phase"], notes["source"]), ("rolled-back", OLD))
+        self.assertEqual((notes["phase"], notes["source"], notes["image"]), ("rolled-back", OLD, self.old["image"]))
         self.assertNotIn("previous", notes)
         self.assert_only_owned_writes()
+
+    def cluster_with_previous(self, live, record, new_formats=None):
+        notes = F.preview_annotations(live, previous=record, run="1001")
+        if new_formats:
+            notes["lolly.tools/preview-formats"] = C.compact(new_formats)
+        state = F.cluster_state(self.builds, live, annotations=notes)
+        image_id, entry = F.image_entry(self.old["image"], {"io.cri-containerd.pinned": "pinned"})
+        state["images"][image_id] = entry
+        self.gh["runs"].append(F.run_object(1001, NEW))
+        self.write_gh()
+        self.set_cluster(state)
+
+    def converted_plan(self, rebuild_newer=False):
+        self.set_cluster(F.cluster_state(self.builds, self.old, converted=False))
+        if rebuild_newer:  # a newer rebuild of the same commit, with other bytes (review C-H4)
+            self.gh["runs"].append(F.run_object(850, OLD))
+            self.gh["artifacts"]["850"] = [{"id": 557, "name": "public-candidate-web-receipts-attempt-1", "expired": False}]
+            self.gh["zips"]["557"] = F.receipt_zip(self.builds["rebuild"], 850, 1, self.pin, self.thumb)
+            self.gh["runs"].append(F.run_object(860, OLD))
+            self.gh["artifacts"]["860"] = [{"id": 558, "name": "public-candidate-web-receipts-attempt-1", "expired": True}]
+        self.write_gh()
+        code, events = self.cli("plan", OLD)
+        plan = [e for e in events if e.get("event") == "plan"]
+        self.assertEqual(code, 0, events)
+        self.assertEqual(self.cluster()["writes"], [])
+        plan = plan[0]
+        self.assertEqual({v["name"] for v in plan["removedVolumes"]}, {"nginx", "public-delivery"})
+        self.assertEqual(plan["receiptExpiresAt"], "2026-11-05T08:25:02Z")
+        differences = [e for e in events if e.get("event") == "pre-conversion-header"]
+        self.assertTrue(differences and differences[0]["difference"].startswith("Content-Security-Policy: expected"))
+        restores = [e for e in events if e.get("event") == "revert-restores"][0]
+        self.assertEqual(len(restores["volumeMounts"]), 10)
+        return plan
+
+
+class Deploys(EndToEnd):
+    """Ship and deploy: switch, smoke, watch and every rollback path."""
+
+    def test_ship_dispatches_binds_switches_smokes_watches_and_records(self):
+        code, events = self.cli("ship", NEW)
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (0, "LIVE"), events)
+        image, notes = self.live()
+        self.assertEqual(image, self.new["image"])
+        self.assertEqual((notes["phase"], notes["source"], notes["image"], notes["ci-run"], notes["tool"]),
+                         ("accepted", NEW, self.new["image"], "1001", self.tool_hash))
+        self.assertEqual(json.loads(notes["previous"])["image"], self.old["image"])
+        posts = [call for call in self.gh_calls() if call["method"] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertEqual((posts[0]["body"]["ref"], posts[0]["body"]["inputs"]["expected_source"], posts[0]["body"]["inputs"]["ci_run"]),
+                         ("refs/heads/main", NEW, "900"))
+        checks = {item["check"]: item["ok"] for item in self.result_file()["checks"]}
+        self.assertTrue(all(checks.values()), checks)
+        self.assertIn("page /info/new-page.html", checks)
+        self.assertIn("edge headers", checks)
+        new_entry, old_entry = self.node_image(self.new["image"]), self.node_image(self.old["image"])
+        self.assertEqual(new_entry["refs"][self.new["image"]].get("lolly.tools/preview-pin"), "true")
+        self.assertEqual(old_entry["refs"][self.old["image"]], {"io.cri-containerd.pinned": "pinned"})  # a foreign pin, untouched
+        self.assertEqual([r["result"] for r in self.records()], ["LIVE"])
+        self.assert_only_owned_writes()
+        writes = len(self.cluster()["writes"])
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"))
+        self.assertEqual(len(self.cluster()["writes"]), writes)
+        self.assertEqual(len([c for c in self.gh_calls() if c["method"] == "POST"]), 1)
+
+    def test_ship_reuses_a_bound_build_and_tolerates_brief_github_errors(self):
+        """Review C-L7."""
+        self.gh["runs"].append(F.run_object(1001, NEW))
+        self.gh["onDispatch"] = None
+        self.gh["statusSequence"] = {}
+        self.write_gh()
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual([c for c in self.gh_calls() if c["method"] == "POST"], [])
+        self.tearDown()
+        self.setUp()
+        self.gh["flaky"] = 2
+        self.write_gh()
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+
+    def test_resource_version_churn_is_re_planned_not_fatal(self):
+        """Review C-H1: a status update between app-update's plan and patch makes it refuse; the switch
+        and the one rollback re-read and re-plan instead of giving up."""
+        self.behave(rvChurnAfterDryRun={self.new["image"]: 2})
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(len([e for e in events if e.get("event") == "switch-retry"]), 2)
+        self.tearDown()
+        self.setUp()
+        self.behave(rvChurnAfterDryRun={self.old["image"]: 2}, brokenSite=[self.new["image"]])
+        code, events = self.cli("ship", NEW)
+        self.assert_rolled_back(code, events, "SMOKE_FAILED")
+        self.assertEqual(len([e for e in events if e.get("event") == "switch-retry"]), 2)
+
+    def test_a_switch_that_never_applies_is_aborted_not_rolled_back(self):
+        """Review C-M4: nothing changed, so there is nothing to roll back."""
+        self.behave(rvChurnAfterDryRun={self.new["image"]: 20})
+        code, events = self.cli("ship", NEW)
+        result = self.done(events)
+        self.assertEqual(result["result"], "ABORTED", events)
+        image, notes = self.live()
+        self.assertEqual((image, notes["phase"]), (self.old["image"], "aborted"))
+        self.assertNotIn("previous", notes)  # the earlier record is put back (none before this run)
+        self.assert_only_owned_writes()
+        self.assertFalse([p for p in self.patches_written() if any(op["path"].endswith("/image") and op["op"] == "replace" for op in p)])
+
+    def test_deploy_of_a_built_commit_already_live_is_a_no_op(self):
+        code, events = self.cli("deploy", OLD)
+        self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"))
+        self.assertEqual(self.cluster()["writes"], [])
 
     def test_failed_smoke_rolls_back_once(self):
         self.behave(brokenSite=[self.new["image"]])
@@ -518,25 +702,56 @@ class EndToEnd(unittest.TestCase):
         self.assert_rolled_back(*self.cli("ship", NEW, "--drill-fail-smoke"), "drill")
 
     def test_failed_watch_rolls_back(self):
+        self.with_watch()
         self.behave(watchFailAfter={self.new["image"]: 2})
+        self.assert_rolled_back(*self.cli("ship", NEW), "WATCH_FAILED")
+
+    def test_transport_errors_in_the_watch_are_tolerated_then_counted(self):
+        """Review C-H3: two dropped probes pass; three in a row roll back."""
+        self.with_watch()
+        self.behave(transport={self.new["image"]: {"/": {"after": 2, "count": 2}}})
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.tearDown()
+        self.setUp()
+        self.with_watch()
+        self.behave(transport={self.new["image"]: {"/": {"after": 2, "count": 3}}})
         self.assert_rolled_back(*self.cli("ship", NEW), "WATCH_FAILED")
 
     def test_rollout_timeout_rolls_back(self):
         self.behave(notReady=[self.new["image"]])
         self.assert_rolled_back(*self.cli("ship", NEW), "ROLLOUT_FAILED")
 
-    def test_memory_over_threshold_rolls_back(self):
+    def test_memory_uses_the_working_set_and_rolls_back_over_the_threshold(self):
+        """Review C-L6: usage with page cache (700 MiB here) never trips it; the working set does."""
+        self.behave(usage=760 * 2 ** 20)
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.tearDown()
+        self.setUp()
         self.behave(workingSetByImage={self.new["image"]: 700 * 2 ** 20})
         self.assert_rolled_back(*self.cli("ship", NEW), "SMOKE_FAILED: pod")
 
-    def test_a_refusal_after_the_switch_still_rolls_back(self):
-        self.behave(dnsFailures=1)
+    def test_edge_owned_headers_follow_the_edge(self):
+        """Review C-M2."""
+        self.behave(edgeHeaders={"Referrer-Policy": "strict-origin-when-cross-origin"})
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.tearDown()
+        self.setUp()
+        self.behave(edgeHeadersByImage={self.new["image"]: {"Referrer-Policy": "unsafe-url"}})
+        self.assert_rolled_back(*self.cli("ship", NEW), "SMOKE_FAILED: edge headers")
+
+    def test_post_switch_refusal_rolls_back(self):
+        """A Refusal after the switch never leaves the new build live: here the smoke's DNS check.
+        The live smoke before the switch makes the first DNS check; the second one fails."""
+        self.behave(dnsFailAt=2)
         self.assert_rolled_back(*self.cli("ship", NEW), "UNVERIFIED: SMOKE_DNS")
 
     def test_unhealthy_rollback_stops_for_a_human(self):
-        self.behave(brokenSite=[self.new["image"], self.old["image"]])
+        self.behave(brokenSite=[self.new["image"]], watchFailAfter={self.old["image"]: 1})  # the old build breaks after the switch
         code, events = self.cli("ship", NEW)
-        self.assertEqual((code, self.done(events)["result"]), (3, "ROLLBACK_UNHEALTHY"))
+        self.assertEqual((code, self.done(events)["result"]), (3, "ROLLBACK_UNHEALTHY"), events)
         image, notes = self.live()
         self.assertEqual((image, notes["phase"]), (self.old["image"], "rollback-unhealthy"))
         code, events = self.cli("ship", NEW)
@@ -558,17 +773,37 @@ class EndToEnd(unittest.TestCase):
         image, notes = self.live()
         self.assertEqual((image, notes["phase"]), (self.old["image"], "aborted"))
 
+    def test_lost_start_reply_is_followed_by_deploy_id(self):
+        """Review C-M8: a dropped link during start is uncertain, never a failure."""
+        os.environ["FAKE_START_REPLY_LOST"] = "1"
+        code, events = self.cli("ship", NEW)
+        self.assertTrue(any(e.get("event") == "start-uncertain" for e in events))
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        os.environ.pop("FAKE_START_REPLY_LOST")
+        deploy_id = self.result_file()["deployId"]
+        code, events = self.cli("status", "--follow", deploy_id)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"))
+        self.assertEqual(self.records()[-1]["command"], "status --follow")
+        self.assertEqual(self.records()[-1]["deployId"], deploy_id)
+
+
+class Refusals(EndToEnd):
+    """Every refusal before a change, and the tool, profile and identity checks."""
+
     def test_refusals_before_any_change(self):
         cases = [
             ("lock", lambda: (self.sandbox / "unit-state").write_text("active"), "LOCK_HELD"),
+            ("queued job", lambda: (self.sandbox / "unit-job").write_text("1234"), "LOCK_HELD"),
             ("check-target", lambda: os.environ.__setitem__("FAKE_CHECK_TARGET", "fail"), "CHECK_TARGET_FAILED"),
             ("capacity", lambda: self.set_cluster(dict(self.cluster(), capacity={"total": 100 * F.GIB, "available": 26 * F.GIB})), "LOW_CAPACITY"),
+            ("pins ignored", lambda: self.behave(pinsIgnored=True), "PIN_FAILED"),
             ("not main head", lambda: self.gh.update(mainHead="c" * 40), "NOT_MAIN_HEAD"),
             ("ci red", lambda: self.gh.update(ciRuns=[F.run_object(900, NEW, path=".github/workflows/ci.yml", event="push", conclusion="failure")]), "CI_NOT_GREEN"),
-            ("candidate active", lambda: self.gh.update(runs=[F.run_object(990, "d" * 40, status="waiting", conclusion=None)]), "CANDIDATE_ACTIVE"),
+            ("candidate active", lambda: self.gh["runs"].append(F.run_object(990, "d" * 40, status="waiting", conclusion=None)), "CANDIDATE_ACTIVE"),
             ("build failed", lambda: self.gh.update(finalConclusion="failure"), "RUN_FAILED"),
             ("receipt", lambda: self.gh["zips"].update({"555": F.receipt_zip(self.new, 1001, 1, self.pin, self.thumb, **{"web.json": {}})}), "RECEIPT_INVALID"),
             ("origins changed", lambda: self.gh.update(variable={"value": F.CONNECTORS, "updated_at": "2026-10-23T06:00:00Z"}), "CONNECTOR_ORIGINS_CHANGED"),
+            ("origins unproven", lambda: self.gh.update(variable={"value": "https://other.example.com", "updated_at": "2026-10-20T04:00:00Z"}), "CONNECTOR_ORIGINS_UNPROVEN"),
             ("models", lambda: (self.profile["models"].update(manifestSha256="0" * 64), self.write_profile()), "MODELS_CHANGED"),
             ("not converted", lambda: self.set_cluster(F.cluster_state(self.builds, self.old, converted=False)), "NOT_CONVERTED"),
             ("backup window", lambda: (self.profile.update(noDeployUtc=["00:00", "23:59"]), self.write_profile()), "BACKUP_WINDOW"),
@@ -581,20 +816,100 @@ class EndToEnd(unittest.TestCase):
                 self.write_gh()
                 code, events = self.cli("ship", NEW)
                 self.assertEqual((code, self.done(events).get("code")), (1, code_name), events[-3:])
-                self.assertEqual(self.cluster()["writes"], [])
+                self.assertEqual(self.patches_written(), [])
                 self.assertEqual(self.live()[0], self.old["image"])
                 self.assertEqual(self.records()[-1]["code"], code_name)
 
-    def test_tool_must_be_clean_and_pinned(self):
+    def test_hold_comes_before_already_live(self):
+        """Review S-M4: an unsettled phase is held even when the requested build is the live one."""
+        notes = F.preview_annotations(self.old, phase="rollback-unhealthy")
+        self.set_cluster(F.cluster_state(self.builds, self.old, annotations=notes))
+        code, events = self.cli("deploy", OLD)
+        self.assertEqual(self.done(events)["code"], "HELD_FOR_HUMAN")
+
+    def test_records_that_do_not_describe_the_live_image_are_refused(self):
+        """Review C-H2: source and expectations from one build, the image from another."""
+        notes = F.preview_annotations(self.old)
+        notes["lolly.tools/preview-image"] = self.builds["rebuild"]["image"]
+        self.set_cluster(F.cluster_state(self.builds, self.old, annotations=notes))
+        code, events = self.cli("ship", NEW)
+        self.assertEqual(self.done(events)["code"], "RECORDS_STALE")
+        self.assertEqual(self.patches_written(), [])
+
+    def test_live_build_must_pass_its_own_smoke_first(self):
+        """Review C-M4: no rollback target that is already broken."""
+        self.behave(brokenSite=[self.old["image"]])
+        code, events = self.cli("ship", NEW)
+        self.assertEqual(self.done(events)["code"], "LIVE_SMOKE_FAILED")
+        self.assertEqual(self.patches_written(), [])
+        self.assertEqual(self.live()[0], self.old["image"])
+
+    def test_organisation_variable_is_used_when_the_repository_has_none(self):
+        """Review C-H4: vars.VITE_CONNECTOR_ORIGINS can come from the organisation."""
+        self.gh["variable"] = None
+        self.gh["orgVariables"] = [{"name": "VITE_CONNECTOR_ORIGINS", "value": F.CONNECTORS, "updated_at": "2026-10-20T04:00:00Z"}]
+        self.write_gh()
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+
+    def test_tool_must_be_locked_clean_and_on_main(self):
+        """Review S-H1, S-L3."""
+        code, events = self.cli("status", tool_hash="1" * 64)
+        self.assertEqual(self.done(events)["code"], "TOOL_HASH_MISMATCH")
+        (self.state_dir / "tool.lock.json").unlink()
+        code, events = self.cli("status")
+        self.assertEqual(self.done(events)["code"], "TOOL_NOT_LOCKED")
+        (self.state_dir / "tool.lock.json").write_text(json.dumps(self.lock))
+        (self.checkout / "deploy/preview/lib/stray.py").write_text("import os\n")  # an untracked file beside the tool
+        code, events = self.cli("status")
+        self.assertEqual(self.done(events)["code"], "TOOL_HASH_MISMATCH")
+        (self.checkout / "deploy/preview/lib/stray.py").unlink()
         with (self.checkout / "deploy/preview/preview-deploy.py").open("a") as handle:
             handle.write("# changed\n")
         code, events = self.cli("status")
-        self.assertEqual((code, self.done(events)["code"]), (1, "TOOL_HASH_MISMATCH"))
+        self.assertEqual(self.done(events)["code"], "TOOL_HASH_MISMATCH")
         subprocess.run(["git", "-C", str(self.checkout), "checkout", "--", "."], check=True)
         self.gh["toolCompare"] = "diverged"
         self.write_gh()
         code, events = self.cli("status")
         self.assertEqual(self.done(events)["code"], "TOOL_NOT_MAIN")
+
+    def test_state_dir_and_check_target_are_fixed(self):
+        """Review S-H1."""
+        elsewhere = Path(self.tmp.name) / "elsewhere" / "preview"
+        elsewhere.mkdir(parents=True, mode=0o700)
+        code, events = self.cli("status", state_dir=elsewhere)
+        self.assertEqual(self.done(events)["code"], "STATE_DIR_INVALID")
+        other = Path(self.tmp.name) / "check-target.py"
+        F.write_check_target(other, self.bin / "k3s", self.known_hosts)
+        code, events = self.cli("status", check_target=other)
+        self.assertEqual(self.done(events)["code"], "CHECK_TARGET_PATH")
+
+    def test_identities_come_from_check_target_not_the_profile(self):
+        """Review S-M3."""
+        self.profile["node"] = {"k3s": "/tmp/evil"}
+        self.write_profile()
+        code, events = self.cli("status")
+        self.assertEqual(self.done(events)["code"], "PROFILE_INVALID")
+        del self.profile["node"]
+        self.write_profile()
+        text = self.check_target_path.read_text().replace("CLUSTER_UID =", "OTHER_UID =")
+        self.check_target_path.write_text(text)
+        code, events = self.cli("status")
+        self.assertEqual(self.done(events)["code"], "CHECK_TARGET_IDENTITY")
+
+    def test_lolly_ing_refuses_without_touching_anything(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = M.main(["--state-dir", str(self.state_dir), "--tool-sha256", self.tool_hash, "--checkout", str(self.checkout),
+                           "--check-target", str(self.check_target_path), "lolly.ing", "ship", NEW])
+        self.assertEqual(code, 1)
+        self.assertIn("SITE_PHASE_2", out.getvalue())
+        self.assertEqual(self.gh_calls(), [])
+
+
+class Operations(EndToEnd):
+    """Manual rollback, status, gc, selftest and the one-time conversion."""
 
     def test_manual_rollback_and_stored_format_refusal(self):
         self.assertEqual(self.cli("ship", NEW)[0], 0)
@@ -604,75 +919,139 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self.live()[0], self.old["image"])
         code, events = self.cli("rollback")
         self.assertEqual(self.done(events)["code"], "NO_PREVIOUS")
-        # A build that raised DB_VERSION cannot be rolled back by hand.
-        raised = F.make_build(self.key, NEW, "new", formats=F.format_files(db=27))
-        self.gh["files"].update(F.source_files(raised))
-        self.write_gh()
-        self.setUp_cluster_with_previous(self.new, self.old, new_formats={"channelMessage": 2, "indexedDb": 27, "revisionArchive": 1, "session": 4})
+        self.cluster_with_previous(self.new, F.old_record(self.old), new_formats={"channelMessage": 2, "indexedDb": 27,
+                                                                                  "revisionArchive": 1, "session": 4})
         code, events = self.cli("rollback")
         self.assertEqual(self.done(events)["code"], "FORMAT_LOWERING")
 
-    def setUp_cluster_with_previous(self, live, previous, new_formats):
-        record = {"source": previous["sha"], "image": previous["image"], "ciRun": "800",
-                  "formats": {"channelMessage": 2, "indexedDb": 26, "revisionArchive": 1, "session": 4}, "expect": F.expect_for(previous)}
-        notes = F.preview_annotations(live, previous=record)
-        notes["lolly.tools/preview-formats"] = C.compact(new_formats)
-        self.set_cluster(F.cluster_state(self.builds, live, annotations=notes))
+    def test_manual_rollback_checks_the_previous_image_and_capacity_first(self):
+        """Review S-L1 and C-M6."""
+        record = F.old_record(self.old)
+        record["image"] = "ghcr.io/evil/lolly-web@sha256:" + "1" * 64
+        self.cluster_with_previous(self.new, record)
+        code, events = self.cli("rollback")
+        self.assertEqual(self.done(events)["code"], "BAD_IMAGE")
+        self.cluster_with_previous(self.new, F.old_record(self.old))
+        state = self.cluster()
+        state["images"] = {i: e for i, e in state["images"].items() if self.old["image"] not in e["refs"]}
+        state["capacity"] = {"total": 100 * F.GIB, "available": 26 * F.GIB}
+        self.set_cluster(state)
+        code, events = self.cli("rollback")
+        result = self.done(events)
+        self.assertEqual((code, result["result"], result.get("code")), (1, "REFUSED", "LOW_CAPACITY"), events)
+        self.assertEqual(self.live()[0], self.new["image"])
+        self.assertEqual(self.patches_written(), [])
 
     def test_status_reports_the_live_phase(self):
         code, events = self.cli("status")
         status = [e for e in events if e.get("event") == "status"][0]
-        self.assertEqual((code, status["phase"], status["source"], status["converted"]), (0, "accepted", OLD, True))
+        self.assertEqual((code, status["phase"], status["source"], status["converted"], status["recordsDescribeLiveImage"]),
+                         (0, "accepted", OLD, True, True))
+        self.assertEqual(status["pods"], [{"name": "sovereign-web-23", "phase": "Running", "restarts": 0, "ready": True}])  # C-M3
 
-    def test_gc_reports_claims_for_andy_and_removes_only_old_images(self):
+    def test_gc_reports_first_and_removes_only_its_own_images(self):
+        """Review S-M1 and C-M5."""
         state = self.cluster()
-        stale = F.IMAGE_REPO + "@sha256:" + "e" * 64
-        state["images"][stale] = {"id": "sha256:stale", "size": 50 * 2 ** 20, "pinned": True}
+        own = F.IMAGE_REPO + "@sha256:" + "e" * 64
+        foreign = F.IMAGE_REPO + "@sha256:" + "d" * 64
+        tagged = F.IMAGE_REPO + "@sha256:" + "c" * 64
+        state["replicasets"].insert(0, {"uid": "rs-22", "revision": 22, "image": self.old["image"], "template": "claim-layout"})
+        for ref, labels, extra in ((own, {"lolly.tools/preview-pulled": "true", "lolly.tools/preview-pin": "true",
+                                          "io.cri-containerd.pinned": "pinned"}, ()),
+                                   (foreign, {"io.cri-containerd.pinned": "pinned"}, ()),
+                                   (tagged, {"lolly.tools/preview-pulled": "true"}, (F.IMAGE_REPO + ":candidate-x",))):
+            image_id, entry = F.image_entry(ref, labels, extra)
+            state["images"][image_id] = entry
         self.set_cluster(state)
+        code, events = self.cli("gc", "--execute")
+        self.assertEqual(self.done(events)["code"], "GC_REPORT_FIRST")
         code, events = self.cli("gc")
         images = [e for e in events if e.get("event") == "gc-images"][0]
-        self.assertEqual((code, images["remove"]), (0, [stale]))
+        self.assertEqual((code, images["remove"], sorted(images["untouched"])), (0, [own], [tagged]))
         claims = {e["name"]: e for e in events if e.get("event") == "gc-claim"}
         self.assertEqual(set(claims), {"lolly-public-web-test-v1"})
         self.assertFalse(claims["lolly-public-web-test-v1"]["candidate"])
-        self.assertIn(stale, self.cluster()["images"])  # a report changes nothing
+        self.assertIn("referenced by a retained ReplicaSet or StatefulSet (a rollback point)", claims["lolly-public-web-test-v1"]["blockedBy"])
+        self.assertIsNotNone(self.node_image(own))  # a report changes nothing
         code, events = self.cli("gc", "--execute")
-        self.assertEqual((code, self.done(events)["result"]), (0, "GC_DONE"))
-        self.assertNotIn(stale, self.cluster()["images"])
-        self.assertIn(self.old["image"], self.cluster()["images"])
-        self.assertFalse([w for w in self.cluster()["writes"] if isinstance(w, list) and w and w[0] == "delete"])
+        self.assertEqual((code, self.done(events)["result"]), (0, "GC_DONE"), events)
+        self.assertIsNone(self.node_image(own))
+        for kept in (foreign, tagged, self.old["image"]):
+            self.assertIsNotNone(self.node_image(kept), kept)
+        self.assertEqual(self.node_image(foreign)["refs"][foreign], {"io.cri-containerd.pinned": "pinned"})
 
-    def converted_plan(self):
-        self.set_cluster(F.cluster_state(self.builds, self.old, converted=False))
-        self.gh["runs"] = [F.run_object(800, OLD)]
-        self.gh["compare"][f"{OLD}...main"] = "ahead"
-        self.write_gh()
-        code, events = self.cli("plan", OLD)
-        plan = [e for e in events if e.get("event") == "plan"][0]
-        self.assertEqual(code, 0)
-        self.assertEqual(self.cluster()["writes"], [])
-        self.assertEqual({v["name"] for v in plan["removedVolumes"]}, {"nginx", "public-delivery"})
-        self.assertTrue(any(item["check"] == "headers" for item in plan["preConversionSmoke"]))  # the ConfigMap CSP differs
-        return plan
+    def test_claim_command_for_andy_carries_a_uid_precondition(self):
+        """Review C-L5 and S-L6."""
+        state = self.cluster()
+        state["pvcs"] = [{"metadata": {"name": "lolly-public-web-test-v1", "uid": "pvc-uid-1", "labels": {}}}]
+        state["deployment"]["metadata"]["annotations"]["lolly.tools/preview-deploys"] = "2"
+        self.set_cluster(state)
+        context = mock.Mock(identity={"k3s": "/usr/local/bin/k3s", "kubeconfig": "/root/k config", "context": "c"},
+                            anchors=A.TOOLS, check_target_path=self.check_target_path, site="lolly.tools")
+        commands = M.claim_commands(context, {"name": "lolly-public-web-test-v1", "uid": "pvc-uid-1"})
+        self.assertIn("check-target.py' --site lolly.tools", commands[0].replace(str(self.check_target_path), "check-target.py'"))
+        self.assertIn('"preconditions":{"uid":"pvc-uid-1"}', commands[2])
+        self.assertIn("'/root/k config'", commands[2])
+        self.assertIn("delete --raw /api/v1/namespaces/lolly-public/persistentvolumeclaims/lolly-public-web-test-v1 -f -", commands[2])
+
+    def test_selftest_runs_inside_the_unit_and_changes_nothing(self):
+        """Review C-M7."""
+        code, events = self.cli("selftest")
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (0, "SELFTEST_OK"), events)
+        self.assertEqual(self.patches_written(), [])
+        (self.sandbox / "proc-status").write_text("NoNewPrivs:\t0\n")
+        code, events = self.cli("selftest")
+        self.assertEqual(self.done(events)["result"], "SELFTEST_FAILED")
+        failed = [e for e in events if e.get("event") == "selftest-result" and not e["ok"]]
+        self.assertEqual([e["check"] for e in failed], ["no new privileges"])
+
+    def test_previous_request_is_kept_beside_its_result(self):
+        """Review C-L3."""
+        self.assertEqual(self.cli("selftest")[0], 0)
+        self.assertEqual(self.cli("selftest")[0], 0)
+        kept = list((self.sandbox / "var/lib/lolly-preview/results").glob("*.request.json"))
+        self.assertEqual(len(kept), 1)
 
     def test_plan_then_apply_converts_with_the_same_bytes(self):
-        plan = self.converted_plan()
+        plan = self.converted_plan(rebuild_newer=True)
+        self.assertEqual(json.loads(Path(plan["path"]).read_text())["run"]["run"], 800)  # the live image's run
         code, events = self.cli("plan", OLD, "--apply", plan["path"], "--reviewed-plan-sha256", "0" * 64)
         self.assertEqual(self.done(events)["code"], "PLAN_MISMATCH")
+        self.behave(rvChurnRate=0.5)  # the plan's resourceVersion is long gone: the node recomputes
         code, events = self.cli("plan", OLD, "--apply", plan["path"], "--reviewed-plan-sha256", plan["reviewedPlanSha256"])
         self.assertEqual((code, self.done(events)["result"]), (0, "CONVERTED"), events)
         image, notes = self.live()
         deploy = self.cluster()["deployment"]
         self.assertEqual(image, self.old["image"])
-        self.assertEqual((notes["phase"], notes["source"], notes["layout"], notes["deploys"]), ("accepted", OLD, "image-root", "0"))
+        self.assertEqual((notes["phase"], notes["source"], notes["image"], notes["layout"], notes["deploys"]),
+                         ("accepted", OLD, self.old["image"], "image-root", "0"))
         self.assertEqual(deploy["spec"]["revisionHistoryLimit"], 5)
         self.assertTrue(L.is_converted(deploy, 0, A.TOOLS))
-        # The converted site then takes a normal ship.
         code, events = self.cli("ship", NEW)
         self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
 
+    def test_plan_refuses_a_live_site_failing_more_than_headers(self):
+        """Review C-M1."""
+        self.set_cluster(F.cluster_state(self.builds, self.old, converted=False))
+        self.behave(brokenSite=[self.old["image"]])
+        code, events = self.cli("plan", OLD)
+        self.assertEqual(self.done(events)["code"], "PRECONVERSION_SMOKE")
+        self.assertEqual(list((self.state_dir / "plans").glob("*.json")) if (self.state_dir / "plans").exists() else [], [])
+
+    def test_apply_refuses_when_the_live_deployment_moved_from_the_plan(self):
+        """Review C-M9: the node recomputes the plan from live state."""
+        plan = self.converted_plan()
+        state = self.cluster()
+        state["deployment"]["spec"]["template"]["spec"]["volumes"].append({"name": "extra", "emptyDir": {}})
+        self.set_cluster(state)
+        code, events = self.cli("plan", OLD, "--apply", plan["path"], "--reviewed-plan-sha256", plan["reviewedPlanSha256"])
+        self.assertEqual(self.done(events).get("code"), "PLAN_MISMATCH", events)
+        self.assertEqual(self.patches_written(), [])
+
     def test_failed_conversion_restores_the_claim_layout(self):
         plan = self.converted_plan()
+        self.behave(rvChurnRate=0.5)
         code, events = self.cli("plan", OLD, "--apply", plan["path"], "--reviewed-plan-sha256", plan["reviewedPlanSha256"],
                                 "--drill-fail-smoke")
         self.assertEqual((code, self.done(events)["result"]), (2, "CONVERSION_REVERTED"), events)
@@ -680,19 +1059,6 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse(L.is_converted(deploy, 0, A.TOOLS))
         self.assertEqual(deploy["spec"]["revisionHistoryLimit"], 2)
         self.assertEqual(deploy["spec"]["template"], F.deployment(self.old["image"], converted=False)["spec"]["template"])
-
-    def test_lolly_ing_refuses_without_touching_anything(self):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = M.main(["--state-dir", str(self.state_dir), "--tool-sha256", self.tool_hash, "--checkout", str(self.checkout),
-                           "--check-target", "x", "lolly.ing", "ship", NEW])
-        self.assertEqual(code, 1)
-        self.assertIn("SITE_PHASE_2", out.getvalue())
-        self.assertEqual(self.gh_calls(), [])
-
-
-GIB_1 = 2 ** 30
-
 
 if __name__ == "__main__":
     unittest.main()

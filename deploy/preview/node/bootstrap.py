@@ -15,10 +15,13 @@ import fcntl  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 import shutil  # noqa: E402
+import stat  # noqa: E402
 import subprocess  # noqa: E402
 import tarfile  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 
 ROOT = "/var/lib/lolly-preview"
 RUN = ROOT + "/run"
@@ -26,10 +29,12 @@ RESULTS = ROOT + "/results"
 TMP = ROOT + "/tmp"
 UNIT = "lolly-preview-deploy.service"
 UNIT_PATH = "/run/systemd/system/" + UNIT
-LOCK = "/run/lock/lolly-preview-deploy.lock"
-START_LOCK = "/run/lock/lolly-preview-start.lock"
+LOCK_DIR = "/run/lolly-preview"
+LOCK = LOCK_DIR + "/deploy.lock"
+START_LOCK = LOCK_DIR + "/start.lock"
 SYSTEMCTL = "/usr/bin/systemctl"
 BUSY = ("active", "activating", "deactivating", "reloading", "refreshing")
+DEPLOY_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-z0-9-]{1,40}\Z")
 
 
 def out(value):
@@ -61,40 +66,70 @@ def unpack(bundle, destination):
             os.chmod(target, 0o500 if member.mode & 0o100 else 0o400)
 
 
-def unit_state():
-    done = subprocess.run([SYSTEMCTL, "show", "-p", "ActiveState", "--value", UNIT],
+def unit_property(name):
+    done = subprocess.run([SYSTEMCTL, "show", "-p", name, "--value", UNIT],
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
     return done.stdout.decode().strip()
 
 
+def unit_state():
+    return unit_property("ActiveState")
+
+
+def deploy_id(value):
+    if not isinstance(value, str) or not DEPLOY_ID.match(value):
+        refuse("BAD_REQUEST", "deploy id is malformed")
+    return value
+
+
+def lock_dir():
+    """Root-owned 0700, never a symbolic link; /run/lock is writable by others."""
+    os.makedirs(LOCK_DIR, mode=0o700, exist_ok=True)
+    info = os.lstat(LOCK_DIR)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        refuse("LOCK_UNSAFE", "the lock directory is not private to root")
+
+
+def open_lock(path):
+    return os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+
+
 def lock_free(path):
-    handle = open(path, "a")
+    descriptor = open_lock(path)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return False
     finally:
-        handle.close()
+        os.close(descriptor)
     return True
 
 
 def start(payload):
     request = payload["request"]
+    identifier = deploy_id(request.get("deployId"))
     os.makedirs(ROOT, mode=0o700, exist_ok=True)
     for directory in (RESULTS, TMP):
         os.makedirs(directory, mode=0o700, exist_ok=True)
-    gate = open(START_LOCK, "a")
+    lock_dir()
+    gate = open_lock(START_LOCK)
     try:
         fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         refuse("LOCK_HELD", "another preview command is starting a run")
     state = unit_state()
-    if state in BUSY:
-        refuse("LOCK_HELD", "lolly-preview-deploy.service is " + state)
+    if state in BUSY or unit_property("Job"):
+        refuse("LOCK_HELD", "lolly-preview-deploy.service is " + (state if state in BUSY else "queued"))
     if not lock_free(LOCK):
         refuse("LOCK_HELD", "the node lock is held by a manual change")
-    if os.path.exists(os.path.join(RESULTS, request["deployId"] + ".json")):
+    if os.path.exists(os.path.join(RESULTS, identifier + ".json")):
         refuse("DUPLICATE_RUN", "this deploy id already ran")
+    previous_request = RUN + "/request.json"
+    if os.path.exists(previous_request):
+        # Never delete a run's request: keep it beside its result for the record.
+        with open(previous_request) as handle:
+            earlier = deploy_id(json.load(handle).get("deployId"))
+        shutil.copyfile(previous_request, os.path.join(RESULTS, earlier + ".request.json"))
     if os.path.isdir(RUN):
         shutil.rmtree(RUN)
     os.makedirs(RUN, mode=0o700)
@@ -108,11 +143,16 @@ def start(payload):
     subprocess.run([SYSTEMCTL, "daemon-reload"], check=True, timeout=60)
     subprocess.run([SYSTEMCTL, "reset-failed", UNIT], stderr=subprocess.DEVNULL, timeout=30)
     subprocess.run([SYSTEMCTL, "start", "--no-block", UNIT], check=True, timeout=60)
-    out({"result": "STARTED", "deployId": request["deployId"]})
+    deadline = time.monotonic() + 30
+    while unit_state() == "inactive" and not os.path.exists(os.path.join(RESULTS, identifier + ".json")):
+        if time.monotonic() > deadline:
+            refuse("NOT_STARTED", "the unit did not start within 30 seconds; inspect with status")
+        time.sleep(0.5)
+    out({"result": "STARTED", "deployId": identifier})
 
 
 def poll(payload):
-    deploy_id, offset = payload["deployId"], int(payload.get("offset", 0))
+    identifier, offset = deploy_id(payload.get("deployId")), int(payload.get("offset", 0))
     lines, size = [], offset
     progress = RUN + "/progress.jsonl"
     current = None
@@ -120,14 +160,14 @@ def poll(payload):
     if os.path.exists(request_path):
         with open(request_path) as handle:
             current = json.load(handle).get("deployId")
-    if current == deploy_id and os.path.exists(progress):
+    if current == identifier and os.path.exists(progress):
         with open(progress, "rb") as handle:
             handle.seek(offset)
             chunk = handle.read(262144)
         size = offset + len(chunk)
         lines = [line for line in chunk.decode("utf-8", "replace").splitlines() if line]
     result = None
-    result_path = os.path.join(RESULTS, deploy_id + ".json")
+    result_path = os.path.join(RESULTS, identifier + ".json")
     if os.path.exists(result_path):
         with open(result_path) as handle:
             result = json.load(handle)

@@ -2,9 +2,9 @@
 """Node side of the preview deploy command. Runs as root inside lolly-preview-deploy.service.
 
 Only these changes are in the code path: pull, pin and unpin images of the
-anchored package; the target Deployment's image (through Work's app-update.py),
-its metadata annotations, and once its 3.6 layout. Nothing here touches Secrets,
-PVCs, Postgres, the edge or DNS.
+anchored package (only ones this command pulled or pinned itself); the target
+Deployment's image (through Work's app-update.py), its metadata annotations, and
+once its 3.6 layout. Nothing here touches Secrets, PVCs, Postgres, the edge or DNS.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -26,11 +27,16 @@ from preview_common import (DEPLOY_ID, HEX64, SHA, Refusal, compact, compact_dig
                             strict_json, utc_stamp)
 from preview_expect import format_lowering
 
-PATHS = {"run": A.NODE_RUN_DIR, "results": A.NODE_RESULTS_DIR, "lock": A.NODE_LOCK,
-         "imagefs": A.NODE_IMAGE_FILESYSTEM, "systemctl": A.NODE_SYSTEMCTL}
+PATHS = {"run": A.NODE_RUN_DIR, "results": A.NODE_RESULTS_DIR, "lock": A.NODE_LOCK, "lockDir": A.NODE_LOCK_DIR,
+         "imagefs": A.NODE_IMAGE_FILESYSTEM, "systemctl": A.NODE_SYSTEMCTL, "armed": A.NODE_RETENTION_ARMED,
+         "procStatus": "/proc/self/status", "procAttr": "/proc/self/attr/current"}
 MIB = 2 ** 20
-EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "ABORTED": 1,
-        "REFUSED": 1, "STOPPED": 1, "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2, "ROLLBACK_UNHEALTHY": 3}
+EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "SELFTEST_OK": 0,
+        "ABORTED": 1, "REFUSED": 1, "STOPPED": 1, "SELFTEST_FAILED": 1, "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2,
+        "ROLLBACK_UNHEALTHY": 3}
+SWITCH_ATTEMPTS = 5
+SLEEP = time.sleep
+CLOCK = time.monotonic
 
 
 def load_app_update(path):
@@ -41,8 +47,8 @@ def load_app_update(path):
 
 
 def filesystem_bytes(path):
-    stat = os.statvfs(path)
-    return stat.f_blocks * stat.f_frsize, stat.f_bavail * stat.f_frsize
+    stat_ = os.statvfs(path)
+    return stat_.f_blocks * stat_.f_frsize, stat_.f_bavail * stat_.f_frsize
 
 
 def key(name):
@@ -51,7 +57,7 @@ def key(name):
 
 def _atomic_write(path, text):
     temporary = path + ".tmp"
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as out:
         out.write(text)
     os.replace(temporary, path)
@@ -60,6 +66,11 @@ def _atomic_write(path, text):
 def _number(value, low, high, label):
     require(type(value) in (int, float) and low <= value <= high, "BAD_REQUEST", f"{label} out of range")
     return value
+
+
+def anchored_image(image, anchors):
+    """repository@sha256:<64 hex> of the anchored package, nothing else (review S-L1)."""
+    return isinstance(image, str) and re.fullmatch(re.escape(anchors["imageRepository"]) + r"@sha256:[0-9a-f]{64}", image) is not None
 
 
 def validate_expect(expect):
@@ -83,7 +94,7 @@ def validate_expect(expect):
 def validate_request(request, au):
     require_python()
     require(isinstance(request, dict) and request.get("version") == 1, "BAD_REQUEST", "unsupported request")
-    require(request.get("kind") in ("deploy", "rollback", "convert", "gc", "read"), "BAD_REQUEST", "unknown kind")
+    require(request.get("kind") in ("deploy", "rollback", "convert", "gc", "selftest", "read"), "BAD_REQUEST", "unknown kind")
     anchors = A.site_anchors(request.get("site"))
     require(isinstance(request.get("deployId"), str) and DEPLOY_ID.fullmatch(request["deployId"]) is not None,
             "BAD_REQUEST", "deploy id is malformed")
@@ -93,14 +104,14 @@ def validate_request(request, au):
             "BAD_REQUEST", "the node target owns exactly the anchored component over local kubectl")
     component = target["components"][anchors["component"]]
     require(component["namespace"] == anchors["namespace"] and component["deployment"] == anchors["deployment"]
-            and component["container"] == anchors["container"] and not component.get("healthURLs"),
-            "BAD_REQUEST", "the target is not the anchored Deployment")
-    require(isinstance(request.get("k3s"), str) and request["k3s"].startswith("/") and ".." not in request["k3s"],
-            "BAD_REQUEST", "k3s must be an absolute path")
+            and component["container"] == anchors["container"] and component.get("requiredLabels") == anchors["requiredLabels"]
+            and not component.get("healthURLs"), "BAD_REQUEST", "the target is not the anchored Deployment")
+    require(isinstance(request.get("k3s"), str) and request["k3s"].startswith("/") and ".." not in request["k3s"]
+            and target["transport"]["kubectl"] == [request["k3s"], "kubectl"], "BAD_REQUEST", "k3s must be one absolute path")
     limits = request.get("limits")
     require(isinstance(limits, dict), "BAD_REQUEST", "limits are missing")
-    _number(limits.get("rolloutTimeoutSeconds"), 30, 1800, "rollout timeout")
-    _number(limits.get("watchMinutes"), 0, 60, "watch minutes")
+    _number(limits.get("rolloutTimeoutSeconds"), 30, A.MAX_ROLLOUT_SECONDS, "rollout timeout")
+    _number(limits.get("watchMinutes"), 0, A.MAX_WATCH_MINUTES, "watch minutes")
     _number(limits.get("watchIntervalSeconds"), 1, 300, "watch interval")
     _number(limits.get("watchFailures"), 1, 20, "watch failures")
     _number(limits.get("memoryFraction"), 0.1, 1.0, "memory fraction")
@@ -116,8 +127,7 @@ def validate_request(request, au):
         release = request.get("release")
         require(isinstance(release, dict) and set(release) == {"source", "image", "ciRun", "formats", "expect"},
                 "BAD_REQUEST", "release is malformed")
-        require(re.fullmatch(re.escape(anchors["imageRepository"]) + r"@sha256:[0-9a-f]{64}", release["image"] or "") is not None,
-                "BAD_REQUEST", "release image is not the anchored package by digest")
+        require(anchored_image(release["image"], anchors), "BAD_REQUEST", "release image is not the anchored package by digest")
         require(SHA.fullmatch(release["source"]) is not None and re.fullmatch(r"[1-9][0-9]{0,15}", release["ciRun"]) is not None,
                 "BAD_REQUEST", "release source or run")
         require(isinstance(release["formats"], dict), "BAD_REQUEST", "release formats")
@@ -126,7 +136,8 @@ def validate_request(request, au):
     if request["kind"] == "convert":
         plan = request.get("conversion")
         require(isinstance(plan, dict) and isinstance(plan.get("patch"), list) and plan.get("deployId") == request["deployId"]
-                and plan.get("tool") == request["tool"], "BAD_REQUEST", "conversion plan missing, or made by another run or tool")
+                and plan.get("tool") == request["tool"] and isinstance(plan.get("annotations"), dict),
+                "BAD_REQUEST", "conversion plan missing, or made by another run or tool")
     if request["kind"] == "rollback":
         require(isinstance(request.get("rollbackTo"), str) and SHA.fullmatch(request["rollbackTo"]) is not None,
                 "BAD_REQUEST", "rollback target")
@@ -187,13 +198,32 @@ class Runner:
         require(done.returncode == 0, "NODE_COMMAND", f"k3s {' '.join(args[:2])} exited {done.returncode}")
         return done.stdout.decode("utf-8", "replace")
 
-    def pods(self, value):
+    def selector(self, value):
         labels = value["spec"]["selector"]["matchLabels"]
-        selector = ",".join(f"{name}={labels[name]}" for name in sorted(labels))
-        data = json.loads(self.kube.run(["get", "pods", "--namespace", self.anchors["namespace"], "-l", selector, "-o", "json"]))
-        return [pod for pod in data.get("items", []) if not pod["metadata"].get("deletionTimestamp")]
+        return ",".join(f"{name}={labels[name]}" for name in sorted(labels))
+
+    def current_replicaset(self, value):
+        """The ReplicaSet of the Deployment's current revision."""
+        data = json.loads(self.kube.run(["get", "replicasets", "--namespace", self.anchors["namespace"], "-l", self.selector(value),
+                                         "-o", "json"]))
+        revision = (value["metadata"].get("annotations") or {}).get("deployment.kubernetes.io/revision")
+        owned = [item for item in data.get("items", []) if value["metadata"]["uid"] in
+                 {owner.get("uid") for owner in item["metadata"].get("ownerReferences", [])}
+                 and (item["metadata"].get("annotations") or {}).get("deployment.kubernetes.io/revision") == revision]
+        return owned[0]["metadata"]["uid"] if len(owned) == 1 else None
+
+    def pods(self, value):
+        """Running or Pending Pods of the current ReplicaSet only (review C-M3)."""
+        current = self.current_replicaset(value)
+        data = json.loads(self.kube.run(["get", "pods", "--namespace", self.anchors["namespace"], "-l", self.selector(value),
+                                         "-o", "json"]))
+        return [pod for pod in data.get("items", []) if not pod["metadata"].get("deletionTimestamp")
+                and pod.get("status", {}).get("phase") in ("Running", "Pending")
+                and current in {owner.get("uid") for owner in pod["metadata"].get("ownerReferences", [])}]
 
     def working_set(self, container_id):
+        """The kubelet's working set: containerd reports usage minus inactive_file, so page cache from
+        model reads does not count (review C-L6). Never usageBytes."""
         data = json.loads(self.k3s_run(["crictl", "stats", "-o", "json", "--id", container_id]))
         stats = data.get("stats") or []
         if len(stats) != 1:
@@ -206,7 +236,7 @@ class Runner:
             value, index = self.deployment()
             pods = self.pods(value)
             if len(pods) != 1:
-                return False, f"{len(pods)} live Pods"
+                return False, f"{len(pods)} running Pods in the current ReplicaSet"
             pod = pods[0]
             containers = [c for c in pod["spec"]["containers"] if c["name"] == self.anchors["container"]]
             statuses = [c for c in pod.get("status", {}).get("containerStatuses", []) if c.get("name") == self.anchors["container"]]
@@ -228,12 +258,12 @@ class Runner:
                     return False, f"working set {used // MIB} MiB is at or above {int(self.limits['memoryFraction'] * 100)}% of {limit // MIB} MiB"
                 detail += f"; working set {used // MIB} MiB of {limit // MIB} MiB"
             return True, detail
-        except (Refusal, ValueError, KeyError, TypeError) as exc:
+        except (Refusal, self.au.Refusal, ValueError, KeyError, TypeError) as exc:
             return False, "pod check failed: " + (exc.code if isinstance(exc, Refusal) else type(exc).__name__)
 
     # Writes --------------------------------------------------------------
-    def annotate(self, values, expect_image=None, attempts=3):
-        """Guarded metadata patch: UID, resourceVersion and (optionally) the current image are tested."""
+    def annotate(self, values, expect_image=None, attempts=5):
+        """Guarded metadata patch: UID, resourceVersion and the current image are tested; re-read on conflict."""
         last = None
         for _ in range(attempts):
             value, index = self.deployment()
@@ -245,8 +275,9 @@ class Runner:
                      {"op": "test", "path": f"/spec/template/spec/containers/{index}/image", "value": self.image_of(value, index)}] + ops
             try:
                 result = self.kube.patch(self.component, patch, False)
-            except Exception as exc:  # a conflict, re-read and try again
+            except Exception as exc:  # a conflict: re-read and try again
                 last = exc
+                SLEEP(1)
                 continue
             require(result["metadata"]["uid"] == value["metadata"]["uid"]
                     and compact_digest(result["spec"]) == compact_digest(value["spec"]), "ANNOTATION_GUARD",
@@ -261,46 +292,88 @@ class Runner:
         require(above >= need, "LOW_CAPACITY", f"{above // MIB} MiB above the image-GC reserve, {need // MIB} MiB needed; run gc")
         return above
 
-    def image_present(self, image):
+    def inspect(self, image):
         try:
             data = json.loads(self.k3s_run(["crictl", "inspecti", "-o", "json", image]))
         except (Refusal, ValueError):
-            return False
-        return image in ((data.get("status") or {}).get("repoDigests") or [])
+            return None
+        status = data.get("status") or {}
+        return status if image in (status.get("repoDigests") or []) else None
 
-    def containerd_refs(self, image):
-        """Every containerd name whose manifest digest is this image's digest (offline imports carry tags)."""
-        digest = image.partition("@")[2]
-        refs = []
+    def containerd_refs(self):
+        """ref -> (manifest digest, labels) for every image name in the k8s.io namespace."""
+        refs = {}
         for line in self.k3s_run(["ctr", "-n", "k8s.io", "images", "ls"]).splitlines()[1:]:
             columns = line.split()
-            if len(columns) >= 3 and columns[2] == digest and columns[0].startswith(self.anchors["imageRepository"]):
-                refs.append(columns[0])
+            if len(columns) >= 3:
+                labels = {}
+                if len(columns) >= 6 and columns[-1] != "-":
+                    for pair in columns[-1].split(","):
+                        name, _, value = pair.partition("=")
+                        labels[name] = value
+                refs[columns[0]] = (columns[2], labels)
         return refs
 
-    def set_pin(self, image, pinned):
-        refs = self.containerd_refs(image)
-        require(bool(refs), "PIN_FAILED", "containerd holds no name for the image")
-        for ref in refs:
-            self.k3s_run(["ctr", "-n", "k8s.io", "images", "label", ref,
-                          A.PINNED_LABEL if pinned else A.PINNED_LABEL.split("=")[0] + "="])
+    def label(self, ref, label, on=True):
+        name, _, value = label.partition("=")
+        self.k3s_run(["ctr", "-n", "k8s.io", "images", "label", ref, f"{name}={value if on else ''}"])
 
-    def ensure_image(self, image):
-        if not self.image_present(image):
+    def ensure_image(self, image, need):
+        """Pull by digest when missing (after a capacity check), then pin. An image another
+        procedure pinned keeps that pin untouched; pins are read back (review C-M6, C-L4, S-M1)."""
+        require(anchored_image(image, self.anchors), "BAD_IMAGE", "not the anchored package by digest")
+        if self.inspect(image) is None:
+            self.capacity(need)
             self.log("pull", image=image)
-            self.k3s_run(["crictl", "pull", image], timeout=900)
-            require(self.image_present(image), "PULL_FAILED", "the image is not present after the pull")
-        self.set_pin(image, True)
+            self.k3s_run(["crictl", "pull", image], timeout=A.PULL_TIMEOUT_SECONDS)
+            require(self.inspect(image) is not None, "PULL_FAILED", "the image is not present after the pull")
+            self.label(image, A.PULLED_LABEL)
+        refs = self.containerd_refs()
+        require(image in refs, "PIN_FAILED", "containerd holds no digest name for the image")
+        if refs[image][1].get("io.cri-containerd.pinned") != "pinned":
+            self.label(image, A.PINNED_LABEL)
+            self.label(image, A.OWN_PIN_LABEL)
+        require((self.inspect(image) or {}).get("pinned") is True, "PIN_FAILED", "the pin did not read back")
+
+    def wait_rollout(self, image):
+        self.kube.rollout(self.component, int(self.limits["rolloutTimeoutSeconds"]))
+        value, index = self.deployment()
+        require(self.image_of(value, index) == image and self.ready(value), "NOT_READY", "the rollout did not become Ready")
 
     def switch_image(self, from_image, to_image):
-        """Work's own planner and guarded patch: tests UID, resourceVersion, container and current image."""
-        release = {"version": 1, "updates": [{"component": self.anchors["component"], "expectedImage": from_image, "image": to_image}]}
-        plan = self.au.make_plan(self.target, release, self.kube)
-        if not plan["updates"]:
-            return "NO_CHANGE"
-        result = self.au.apply_plan(self.target, plan, self.au.digest(plan), self.kube,
-                                    timeout=int(self.limits["rolloutTimeoutSeconds"]), health=lambda url: None)
-        return result["result"]
+        """Work's own planner and guarded patch, re-planned while nothing has been applied (review C-H1).
+
+        A status update moves the Deployment's resourceVersion, and app-update.py then
+        refuses before it patches. That is safe to retry: every attempt re-reads, and the
+        UID and expectedImage guards still hold. Raises SWITCH_NOT_APPLIED when the image
+        never changed.
+        """
+        last = "no attempt"
+        for _ in range(SWITCH_ATTEMPTS):
+            value, index = self.deployment()
+            current = self.image_of(value, index)
+            if current == to_image:
+                return self.wait_rollout(to_image)  # an earlier attempt committed
+            require(current == from_image, "STATE_CHANGED", "the live image is neither the old nor the new one")
+            release = {"version": 1, "updates": [{"component": self.anchors["component"], "expectedImage": from_image,
+                                                  "image": to_image}]}
+            try:
+                plan = self.au.make_plan(self.target, release, self.kube)
+                self.au.apply_plan(self.target, plan, self.au.digest(plan), self.kube,
+                                   timeout=int(self.limits["rolloutTimeoutSeconds"]), health=lambda url: None)
+                return None
+            except self.au.ApplyFailure as exc:
+                if exc.applied:
+                    raise  # patched, then the rollout failed: the caller rolls back
+                last = str(exc)
+            except self.au.Refusal as exc:
+                last = str(exc)
+            self.log("switch-retry", reason=last[:200])
+            SLEEP(2)
+        value, index = self.deployment()
+        if self.image_of(value, index) == to_image:
+            return self.wait_rollout(to_image)
+        raise Refusal("SWITCH_NOT_APPLIED", f"the image was not changed after {SWITCH_ATTEMPTS} attempts: {last[:200]}")
 
     # Results -------------------------------------------------------------
     def finish(self, result, **fields):
@@ -308,7 +381,7 @@ class Runner:
                   "result": result, "finished": utc_stamp(), **fields}
         os.makedirs(PATHS["results"], mode=0o700, exist_ok=True)
         _atomic_write(os.path.join(PATHS["results"], self.request["deployId"] + ".json"), json.dumps(record, sort_keys=True))
-        self.log("result", **{k: v for k, v in record.items() if k != "checks"})
+        self.log("result", **{k: v for k, v in record.items() if k not in ("checks", "rollbackChecks")})
         return EXIT.get(result, 1)
 
     def hold_check(self, phase):
@@ -324,32 +397,40 @@ class Runner:
             return None
 
     def previous_record(self, value, index):
-        """What the live release is, from the annotations the command wrote when it went live."""
-        record = {"source": self.ann(value, "source"), "image": self.image_of(value, index),
-                  "ciRun": self.ann(value, "ci-run"), "formats": self.ann_json(value, "formats"), "expect": self.expect_of(value)}
-        require(record["source"] and SHA.fullmatch(record["source"]) is not None and record["expect"] is not None
-                and record["expect"]["source"] == record["source"], "NO_PREVIOUS_RECORD",
-                "the live release carries no preview records; run the 3.6 conversion plan first")
+        """What the live release is, from the records the command wrote when it went live.
+
+        The records must describe the image that is live: same image annotation, a
+        settled phase, and expectations for the recorded source (review C-H2).
+        """
+        live = self.image_of(value, index)
+        phase = self.ann(value, "phase")
+        record = {"source": self.ann(value, "source"), "image": live, "ciRun": self.ann(value, "ci-run"),
+                  "formats": self.ann_json(value, "formats"), "expect": self.expect_of(value)}
+        require(record["source"] and SHA.fullmatch(record["source"]) is not None and record["expect"] is not None,
+                "NO_PREVIOUS_RECORD", "the live release carries no preview records; run the 3.6 conversion plan first")
+        require(self.ann(value, "image") == live and phase in A.SETTLED_PHASES and record["expect"]["source"] == record["source"],
+                "RECORDS_STALE", f"the preview records do not describe the live image (phase {phase}); inspect with status")
         return record
 
-    def receipt_files(self, expect):
-        """The served receipt's file map (best effort, used only to find newly added /info pages)."""
-        try:
-            response = S.FETCH(self.anchors["origin"] + "/release-frontend.sig.json")
-            if response.status == 200:
-                from preview_receipt import verify_frontend_receipt
-                return verify_frontend_receipt(response.body, self.pin, expect["source"], self.anchors["receiptTarget"], expect["profile"])
-        except Refusal:
-            return None
-        return None
-
-    def run_smoke(self, expect, image, extra_pages=None, exact_headers=True):
+    def run_smoke(self, expect, image, extra_pages=None, exact_headers=True, edge_baseline=None):
         S.check_dns(self.anchors, self.limits["edgeAddress"])
         checks, files = S.smoke(expect, self.anchors, self.pin, pod_check=lambda memory: self.pod_check(image, memory),
-                                extra_pages=extra_pages, exact_headers=exact_headers)
+                                extra_pages=extra_pages, exact_headers=exact_headers, edge_baseline=edge_baseline)
         for item in checks.items:
             self.log("smoke", **item)
         return checks, files
+
+    def live_smoke(self, expect):
+        """Before writing `switching`: DNS, and the live build still serves its signed bytes (review C-M4)."""
+        S.check_dns(self.anchors, self.limits["edgeAddress"])
+        checks, files, edge = S.light_smoke(expect, self.anchors, self.pin)
+        for item in checks.items:
+            self.log("live-smoke", **item)
+        if not checks.ok and not self.request["clearHold"]:
+            raise Refusal("LIVE_SMOKE_FAILED", "the live build does not pass its own smoke (" +
+                          ", ".join(i["check"] for i in checks.failures()) + "); its rollback would not be safe. "
+                          "Inspect it, or pass --clear-hold")
+        return files, edge
 
     def watch(self, index_sha, image):
         return S.watch(index_sha, self.anchors, lambda memory: self.pod_check(image, memory),
@@ -360,9 +441,12 @@ class Runner:
     def run_deploy(self):
         release = self.request["release"]
         value, index = self.deployment()
-        self.hold_check(self.ann(value, "phase"))
+        phase = self.ann(value, "phase")
+        self.hold_check(phase)
         live_image = self.image_of(value, index)
         if live_image == release["image"]:
+            require(phase == "accepted" and self.ann(value, "image") == live_image, "RECORDS_STALE",
+                    f"this build is live but its phase is {phase}; inspect with status")
             return self.finish("ALREADY_LIVE", image=live_image, source=self.ann(value, "source"))
         require(L.is_converted(value, index, self.anchors), "NOT_CONVERTED", "the Deployment still mounts the claim root; run the 3.6 conversion")
         require(L.models_release(value, index, self.anchors) == self.request["modelsRelease"], "MODELS_CHANGED",
@@ -370,11 +454,11 @@ class Runner:
         require(self.ready(value), "NOT_READY", "the Deployment is not reconciled and Ready")
         previous = self.previous_record(value, index)
         require(previous["source"] == self.request.get("liveSource"), "STATE_CHANGED", "the live release changed since the command read it")
-        need = 0 if self.image_present(release["image"]) else int(self.limits["needBytes"])
-        self.capacity(need)
-        self.ensure_image(release["image"])
-        self.ensure_image(live_image)  # the rollback target stays pinned
-        old_files = self.receipt_files(previous["expect"])
+        old_files, edge = self.live_smoke(previous["expect"])
+        previous["edge"] = edge
+        previous["prior"] = self.ann(value, "previous")  # restored if the switch aborts
+        self.ensure_image(release["image"], int(self.limits["needBytes"]))
+        self.ensure_image(live_image, int(self.limits["needBytes"]))  # the rollback target stays pinned
         added = lambda files: S.added_info_pages(files, old_files, int(self.limits["maxAddedPages"]))
         deploys = int(self.ann(value, "deploys") or "0")
         self.annotate({"phase": "switching", "deploy-id": self.request["deployId"], "previous": compact(previous),
@@ -382,14 +466,21 @@ class Runner:
         self.log("phase", phase="switching")
         try:
             self.switch_image(live_image, release["image"])
-            self.annotate({"phase": "switched-unverified", "source": release["source"], "image": release["image"],
-                           "ci-run": release["ciRun"], "tool": self.request["tool"], "formats": compact(release["formats"]),
-                           "expect": compact(release["expect"]), "updated": utc_stamp()}, expect_image=release["image"])
-            self.log("phase", phase="switched-unverified")
-        except (Refusal, self.au.Refusal) as exc:
+        except Refusal as exc:
+            if exc.code == "SWITCH_NOT_APPLIED":
+                self.annotate({"phase": "aborted", "previous": previous["prior"], "reason": exc.message[:500],
+                               "updated": utc_stamp()}, expect_image=live_image)
+                return self.finish("ABORTED", reason=exc.message, image=live_image)
+            return self.restore(previous, "ROLLOUT_FAILED: " + str(exc)[:300], watch=False)
+        except self.au.Refusal as exc:
             return self.restore(previous, "ROLLOUT_FAILED: " + str(exc)[:300], watch=False)
         try:  # from here on, any refusal rolls back
-            checks, files = self.run_smoke(release["expect"], release["image"], extra_pages=added)
+            self.annotate({"phase": "switched-unverified", "source": release["source"], "image": release["image"],
+                           "ci-run": release["ciRun"], "tool": self.request["tool"], "formats": compact(release["formats"]),
+                           "expect": compact(release["expect"]), "updated": utc_stamp()},
+                          expect_image=release["image"])
+            self.log("phase", phase="switched-unverified")
+            checks, files = self.run_smoke(release["expect"], release["image"], extra_pages=added, edge_baseline=edge)
             if self.request["drillFailSmoke"]:
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
@@ -401,7 +492,7 @@ class Runner:
             self.annotate({"phase": "accepted", "deploys": str(deploys + 1), "updated": utc_stamp()}, expect_image=release["image"])
         except (Refusal, self.au.Refusal) as exc:
             return self.restore(previous, "UNVERIFIED: " + str(exc)[:300], watch=False)
-        retention = self.retain_images()
+        retention = self.retain_images(execute=os.path.exists(PATHS["armed"]))
         return self.finish("LIVE", source=release["source"], image=release["image"], previous=previous["image"],
                            checks=checks.items, retention=retention)
 
@@ -410,28 +501,30 @@ class Runner:
         self.log("rollback", reason=reason)
         with contextlib.suppress(Refusal):
             self.annotate({"phase": "rolling-back", "reason": reason[:500], "updated": utc_stamp()})
+        back = None
         try:
+            require(anchored_image(previous.get("image"), self.anchors), "BAD_IMAGE", "the recorded previous image is not the anchored package")
             value, index = self.deployment()
             current = self.image_of(value, index)
             if current != previous["image"]:
-                self.ensure_image(previous["image"])
+                self.ensure_image(previous["image"], int(self.limits["needBytes"]))
                 self.switch_image(current, previous["image"])
-            back, files = self.run_smoke(previous["expect"], previous["image"])
+            back, files = self.run_smoke(previous["expect"], previous["image"], edge_baseline=previous.get("edge"))
             problem = None if back.ok else "smoke of the previous build failed: " + ", ".join(i["check"] for i in back.failures())
             if problem is None and watch:
                 problem = self.watch(files["index.html"], previous["image"])
         except (Refusal, self.au.Refusal) as exc:
-            back, problem = None, str(exc)[:300]
+            problem = str(exc)[:300]
         if problem:
             with contextlib.suppress(Refusal):
                 self.annotate({"phase": "rollback-unhealthy", "reason": (reason + " / " + problem)[:500], "updated": utc_stamp()})
             return self.finish("ROLLBACK_UNHEALTHY", reason=reason, problem=problem, checks=checks,
                                rollbackChecks=back.items if back else None)
+        values = {"phase": "rolled-back", "source": previous["source"], "image": previous["image"],
+                  "ci-run": previous["ciRun"], "formats": compact(previous["formats"]) if previous["formats"] else None,
+                  "expect": compact(previous["expect"]), "previous": None, "reason": reason[:500], "updated": utc_stamp()}
         try:
-            self.annotate({"phase": "rolled-back", "source": previous["source"], "image": previous["image"],
-                           "ci-run": previous["ciRun"], "formats": compact(previous["formats"]) if previous["formats"] else None,
-                           "expect": compact(previous["expect"]), "previous": None, "reason": reason[:500],
-                           "updated": utc_stamp()}, expect_image=previous["image"])
+            self.annotate(values, expect_image=previous["image"])
         except Refusal as exc:  # rolled back and healthy, but the phase still says rolling-back: status shows it
             return self.finish("ROLLED_BACK", reason=reason, source=previous["source"], image=previous["image"],
                                problem="phase annotation not written: " + exc.code, checks=checks, rollbackChecks=back.items)
@@ -445,16 +538,25 @@ class Runner:
         previous = self.ann_json(value, "previous")
         require(isinstance(previous, dict) and previous.get("image") and previous.get("expect"), "NO_PREVIOUS",
                 "no recorded previous build; deploy a build instead")
+        require(anchored_image(previous["image"], self.anchors), "BAD_IMAGE", "the recorded previous image is not the anchored package")
         require(previous.get("source") == self.request.get("rollbackTo"), "STATE_CHANGED", "the recorded previous build changed")
         validate_expect(previous["expect"])
         lowering = format_lowering(self.ann_json(value, "formats"), previous.get("formats"))
         require(not lowering, "FORMAT_LOWERING", "the rollback would lower stored formats (" + ", ".join(lowering) +
                 "); roll forward instead")
         require(L.is_converted(value, index, self.anchors), "NOT_CONVERTED", "the Deployment is not on the image layout")
+        self.ensure_image(previous["image"], int(self.limits["needBytes"]))  # refuse here, before anything is marked
         self.annotate({"deploy-id": self.request["deployId"], "updated": utc_stamp()})
         return self.restore(previous, "MANUAL", watch=True)
 
     # Conversion (PROPOSAL 3.6) -------------------------------------------
+    def conversion_now(self, value, plan):
+        """Recompute the plan from live state; it must equal the reviewed plan except for the resourceVersion (review C-M9)."""
+        current = L.conversion_plan(value, self.anchors, plan["annotations"])
+        require(L.comparable_plan(current) == L.comparable_plan(plan), "PLAN_MISMATCH",
+                "the live Deployment no longer gives the reviewed plan; make and review a new plan")
+        return current
+
     def run_convert(self):
         plan, release = self.request["conversion"], self.request["release"]
         value, index = self.deployment()
@@ -462,24 +564,36 @@ class Runner:
             return self.finish("ALREADY_CONVERTED", image=self.image_of(value, index))
         self.hold_check(self.ann(value, "phase"))
         require(self.ready(value), "NOT_READY", "the Deployment is not reconciled and Ready")
-        require(value["metadata"]["uid"] == plan["deploymentUID"] and value["metadata"]["resourceVersion"] == plan["resourceVersion"]
-                and compact_digest(value["spec"]) == plan["beforeSpecSha256"], "STATE_CHANGED",
-                "the Deployment changed since the plan was made; make and review a new plan")
         require(self.image_of(value, index) == plan["image"] == release["image"], "IMAGE_DIFFERS", "the conversion keeps the live image")
-        self.ensure_image(release["image"])
-        dry = self.kube.patch(self.component, plan["patch"], True)
-        L.guard_layout_result(value, dry, index, plan["after"])
+        self.conversion_now(value, plan)
+        S.check_dns(self.anchors, self.limits["edgeAddress"])
+        edge = S.observed_edge_headers(S.FETCH(self.anchors["origin"] + "/"))  # the edge owns these (review C-M2)
+        self.ensure_image(release["image"], int(self.limits["needBytes"]))
         self.log("phase", phase="converting")
-        try:
-            result = self.kube.patch(self.component, plan["patch"], False)
-            L.guard_layout_result(value, result, index, plan["after"])
+        applied, last = False, None
+        for _ in range(SWITCH_ATTEMPTS):
+            value, index = self.deployment()
+            if L.is_converted(value, index, self.anchors):
+                applied = True
+                break
+            current = self.conversion_now(value, plan)
+            try:
+                dry = self.kube.patch(self.component, current["patch"], True)
+                L.guard_layout_result(value, dry, index, plan["after"])
+                result = self.kube.patch(self.component, current["patch"], False)
+                L.guard_layout_result(value, result, index, plan["after"])
+                applied = True
+                break
+            except (Refusal, self.au.Refusal) as exc:  # usually a moved resourceVersion: re-read and re-plan
+                last = exc
+                SLEEP(2)
+        if not applied:
+            return self.finish("ABORTED", reason="the conversion patch was not applied: " + str(last)[:300])
+        try:  # from here on, any refusal restores the claim layout
             self.kube.rollout(self.component, int(self.limits["rolloutTimeoutSeconds"]))
             value, index = self.deployment()
             require(self.ready(value) and L.is_converted(value, index, self.anchors), "NOT_READY", "the converted Pod is not Ready")
-        except (Refusal, self.au.Refusal) as exc:
-            return self.revert_conversion(plan, "ROLLOUT_FAILED: " + str(exc)[:300])
-        try:  # from here on, any refusal restores the claim layout
-            checks, files = self.run_smoke(release["expect"], release["image"])
+            checks, files = self.run_smoke(release["expect"], release["image"], edge_baseline=edge)
             if self.request["drillFailSmoke"]:
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
@@ -493,24 +607,33 @@ class Runner:
         return self.finish("CONVERTED", source=release["source"], image=release["image"], checks=checks.items)
 
     def revert_conversion(self, plan, reason, checks=None):
-        """Put the claim-served layout back exactly. Its smoke skips the exact header check, because the
-        old layout serves the ConfigMap's headers; that difference is why the conversion exists."""
+        """Put the claim-served layout back exactly, rebuilding the inverse patch after a failed test op.
+        Its smoke skips the exact header checks: the old layout serves the ConfigMap's headers."""
         self.log("rollback", reason=reason)
+        back, problem = None, None
         try:
-            value, index = self.deployment()
-            if L.is_converted(value, index, self.anchors):
+            for _ in range(SWITCH_ATTEMPTS):
+                value, index = self.deployment()
+                if not L.is_converted(value, index, self.anchors):
+                    break
                 patch = L.inverse_conversion_patch(value, plan, {key("phase"): "rolling-back", key("layout"): "claim-root",
                                                                  key("reason"): reason[:500]})
-                dry = self.kube.patch(self.component, patch, True)
-                L.guard_layout_result(value, dry, index, plan["before"])
-                result = self.kube.patch(self.component, patch, False)
-                L.guard_layout_result(value, result, index, plan["before"])
-                self.kube.rollout(self.component, int(self.limits["rolloutTimeoutSeconds"]))
+                try:
+                    dry = self.kube.patch(self.component, patch, True)
+                    L.guard_layout_result(value, dry, index, plan["before"])
+                    result = self.kube.patch(self.component, patch, False)
+                    L.guard_layout_result(value, result, index, plan["before"])
+                    break
+                except (Refusal, self.au.Refusal):
+                    SLEEP(2)
+            value, index = self.deployment()
+            require(not L.is_converted(value, index, self.anchors), "REVERT_NOT_APPLIED", "the claim layout could not be restored")
+            self.kube.rollout(self.component, int(self.limits["rolloutTimeoutSeconds"]))
             release = self.request["release"]
             back, _ = self.run_smoke(release["expect"], release["image"], exact_headers=False)
             problem = None if back.ok else "smoke after the revert failed: " + ", ".join(i["check"] for i in back.failures())
         except (Refusal, self.au.Refusal) as exc:
-            back, problem = None, str(exc)[:300]
+            problem = str(exc)[:300]
         if problem:
             with contextlib.suppress(Refusal):
                 self.annotate({"phase": "rollback-unhealthy", "reason": (reason + " / " + problem)[:500]})
@@ -520,65 +643,140 @@ class Runner:
 
     # Retention -----------------------------------------------------------
     def node_images(self):
+        """Image ID -> {refs, size, pinned} from CRI, for every image on the node."""
         data = json.loads(self.k3s_run(["crictl", "images", "-o", "json"]))
-        prefix = self.anchors["imageRepository"] + "@"
-        found = {}
+        images = {}
         for image in data.get("images", []):
-            for digest in image.get("repoDigests") or []:
-                if isinstance(digest, str) and digest.startswith(prefix):
-                    found[digest] = {"id": image.get("id"), "size": int(image.get("size") or 0), "pinned": bool(image.get("pinned"))}
-        return found
+            if isinstance(image.get("id"), str):
+                images[image["id"]] = {"refs": list(image.get("repoDigests") or []) + list(image.get("repoTags") or []),
+                                       "size": int(image.get("size") or 0), "pinned": bool(image.get("pinned"))}
+        return images
 
     def image_plan(self):
-        """Keep the live image and the newest N previous ones of this Deployment; never touch an image in use."""
+        """Keep, by image ID, the live image and the newest N previous ones of this Deployment, and
+        everything any Pod runs. Remove only images this command pulled itself, by their exact
+        repo@digest, when no other name or foreign pin holds them (review S-M1, C-M5)."""
         value, index = self.deployment()
         uid = value["metadata"]["uid"]
+        images = self.node_images()
+        by_ref = {ref: image_id for image_id, image in images.items() for ref in image["refs"]}
+
+        def resolve(reference):
+            if isinstance(reference, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", reference) and reference in images:
+                return reference
+            return by_ref.get(reference)
         everything = json.loads(self.kube.run(["get", "pods,replicasets", "--all-namespaces", "-o", "json"]))
         in_use, history = set(), []
         for item in everything.get("items", []):
-            spec = item.get("spec", {})
-            template = spec.get("template", {}).get("spec") if item.get("kind") == "ReplicaSet" else spec
-            images = {c.get("image") for kind in ("containers", "initContainers") for c in (template or {}).get(kind, [])}
-            owners = {o.get("uid") for o in item.get("metadata", {}).get("ownerReferences", [])}
-            if item.get("kind") == "ReplicaSet" and uid in owners:
+            if item.get("kind") == "Pod":
+                for status in item.get("status", {}).get("containerStatuses", []) + item.get("status", {}).get("initContainerStatuses", []):
+                    in_use.add(resolve(status.get("imageID")))
+                    in_use.add(resolve(status.get("image")))
+                for container in item.get("spec", {}).get("containers", []) + item.get("spec", {}).get("initContainers", []):
+                    in_use.add(resolve(container.get("image")))
+                continue
+            template = item.get("spec", {}).get("template", {}).get("spec", {})
+            refs = [c.get("image") for kind in ("containers", "initContainers") for c in template.get(kind, [])]
+            if uid in {owner.get("uid") for owner in item.get("metadata", {}).get("ownerReferences", [])}:
                 revision = int((item["metadata"].get("annotations") or {}).get("deployment.kubernetes.io/revision", "0"))
-                history.append((revision, images))
+                history.append((revision, refs))
             else:
-                in_use |= images
-        keep, ordered = [self.image_of(value, index)], []
-        for _, images in sorted(history, key=lambda entry: entry[0], reverse=True):
-            ordered += sorted(images)
-        for image in ordered:
-            if image not in keep and image.startswith(self.anchors["imageRepository"] + "@") and \
-                    len(keep) < 1 + int(self.limits["retainPreviousImages"]):
-                keep.append(image)
+                in_use |= {resolve(ref) for ref in refs}
+        keep_refs = [self.image_of(value, index)]
+        for _, refs in sorted(history, key=lambda entry: entry[0], reverse=True):
+            for ref in sorted(refs):
+                if ref not in keep_refs and anchored_image(ref, self.anchors) and len(keep_refs) < 1 + int(self.limits["retainPreviousImages"]):
+                    keep_refs.append(ref)
         previous = self.ann_json(value, "previous")
-        if isinstance(previous, dict) and isinstance(previous.get("image"), str) and previous["image"] not in keep:
-            keep.append(previous["image"])
-        present = self.node_images()
-        remove = sorted(image for image in present if image not in keep and image not in in_use)
-        return {"keep": keep, "remove": remove, "present": present}
+        if isinstance(previous, dict) and anchored_image(previous.get("image"), self.anchors) and previous["image"] not in keep_refs:
+            keep_refs.append(previous["image"])
+        keep = {resolve(ref) for ref in keep_refs} - {None}
+        containerd = self.containerd_refs()
+        remove, foreign = [], []
+        for image_id, image in sorted(images.items()):
+            ours = [ref for ref in image["refs"] if anchored_image(ref, self.anchors)
+                    and containerd.get(ref, (None, {}))[1].get(A.PULLED_LABEL.split("=")[0]) == "true"]
+            if image_id in keep or image_id in in_use or not ours:
+                continue
+            others = [ref for ref in image["refs"] if ref not in ours]
+            pinned_by_others = any(labels.get("io.cri-containerd.pinned") == "pinned"
+                                   and labels.get(A.OWN_PIN_LABEL.split("=")[0]) != "true"
+                                   for ref, (_, labels) in containerd.items() if by_ref.get(ref) == image_id)
+            if others or pinned_by_others or len(ours) != 1:
+                foreign.append(ours[0])
+                continue
+            remove.append({"ref": ours[0], "id": image_id, "size": image["size"]})
+        return {"keep": keep_refs, "keepIds": sorted(keep), "remove": remove, "untouched": sorted(foreign)}
 
-    def retain_images(self, execute=True):
+    def retain_images(self, execute):
+        """Pin what is kept; remove only when execute (gc --execute, or after gc has been armed)."""
         try:
             plan = self.image_plan()
-            for image in plan["keep"]:
-                if image in plan["present"]:
-                    self.set_pin(image, True)
+            for ref in plan["keep"]:
+                if self.inspect(ref) is not None:
+                    self.ensure_image(ref, 0)
             removed = []
             if execute:
-                for image in plan["remove"]:
-                    self.set_pin(image, False)
-                    self.k3s_run(["crictl", "rmi", plan["present"][image]["id"]])
-                    removed.append(image)
-            return {"kept": plan["keep"], "removed": removed}
+                containerd = self.containerd_refs()
+                for item in plan["remove"]:
+                    if containerd.get(item["ref"], (None, {}))[1].get(A.OWN_PIN_LABEL.split("=")[0]) == "true":
+                        self.label(item["ref"], A.PINNED_LABEL, on=False)
+                        self.label(item["ref"], A.OWN_PIN_LABEL, on=False)
+                    self.k3s_run(["crictl", "rmi", item["ref"]])
+                    removed.append(item["ref"])
+            return {"kept": plan["keep"], "removed": removed,
+                    "removable": [item["ref"] for item in plan["remove"]] if not execute else [],
+                    "untouched": plan["untouched"]}
         except (Refusal, ValueError, KeyError) as exc:
             self.log("retention-skipped", reason=exc.code if isinstance(exc, Refusal) else type(exc).__name__)
             return {"skipped": True}
 
     def run_gc(self):
         retention = self.retain_images(execute=True)
+        if not retention.get("skipped"):
+            with open(PATHS["armed"], "w") as handle:  # later deploys may now apply retention themselves
+                handle.write(utc_stamp() + "\n")
         return self.finish("GC_DONE", retention=retention)
+
+    # Selftest (review C-M7) ----------------------------------------------
+    def run_selftest(self):
+        """Read-only. Proves the unit's sandbox can run every tool the real runs need."""
+        checks = S.Checks()
+
+        def attempt(name, function):
+            try:
+                detail = function()
+                checks.record(name, True, detail or "ok")
+            except (Refusal, self.au.Refusal, OSError, ValueError, KeyError) as exc:
+                checks.record(name, False, getattr(exc, "code", type(exc).__name__))
+        attempt("python", lambda: f"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}")
+
+        def no_new_privileges():
+            with open(PATHS["procStatus"]) as handle:
+                flag = [line.split()[-1] for line in handle if line.startswith("NoNewPrivs:")]
+            require(flag == ["1"], "SELFTEST", "NoNewPrivileges is not in force")
+            return "NoNewPrivs 1"
+        attempt("no new privileges", no_new_privileges)
+
+        def selinux():
+            with open(PATHS["procAttr"]) as handle:
+                return handle.read().strip("\x00\n")
+        attempt("selinux context", selinux)
+        attempt("kubectl identity", lambda: "Deployment " + self.deployment()[0]["metadata"]["uid"])
+        attempt("crictl", lambda: self.k3s_run(["crictl", "version"]).splitlines()[0][:80])
+        attempt("ctr", lambda: f"{len(self.containerd_refs())} image names")
+        attempt("pins readable", lambda: f"{sum(1 for image in self.node_images().values() if image['pinned'])} pinned images")
+        attempt("capacity", lambda: f"{self.capacity(0) // MIB} MiB above the image-GC reserve")
+        attempt("dns", lambda: S.check_dns(self.anchors, self.limits["edgeAddress"]))
+
+        def https():
+            response = S.FETCH(self.anchors["origin"] + "/healthz")
+            require(response.status == 200, "SELFTEST", f"HTTP {response.status}")
+            return "TLS verified; /healthz 200"
+        attempt("https", https)
+        for item in checks.items:
+            self.log("selftest", **item)
+        return self.finish("SELFTEST_OK" if checks.ok else "SELFTEST_FAILED", checks=checks.items)
 
     # ExecStopPost --------------------------------------------------------
     def stop_post(self, environment):
@@ -590,6 +788,8 @@ class Runner:
                 outcome = json.load(handle).get("result")
             if outcome in ("ROLLED_BACK", "ROLLBACK_UNHEALTHY", "CONVERSION_REVERTED"):
                 return 0  # the run already made its one rollback attempt
+        if self.request["kind"] in ("gc", "selftest"):
+            return 0 if finished else self.finish("STOPPED", reason="unit stopped")
         stopped = {name: environment.get(name) for name in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")}
         reason = "UNIT_STOPPED " + compact(stopped)
         try:
@@ -607,31 +807,40 @@ class Runner:
         if not isinstance(previous, dict) or not previous.get("image"):
             return self.finish("STOPPED", reason=reason, phase=phase, problem="no recorded previous build")
         if phase == "switching" and self.image_of(value, index) == previous["image"]:
-            self.annotate({"phase": "aborted", "reason": reason[:500]}, expect_image=previous["image"])
+            self.annotate({"phase": "aborted", "previous": previous.get("prior"), "reason": reason[:500]},
+                          expect_image=previous["image"])
             return self.finish("ABORTED", reason=reason)
         return self.restore(previous, reason, watch=False)
+
+
+def secure_lock_dir(path):
+    """A root-owned 0700 directory that is not a symbolic link (review S-L4)."""
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    info = os.lstat(path)
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid() and not (info.st_mode & 0o077),
+            "LOCK_UNSAFE", "the lock directory is not a private directory of this user")
 
 
 @contextlib.contextmanager
 def node_lock(path, wait_seconds=0):
     """The node lock every preview change takes (the unit, and manual work under flock)."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    handle = open(path, "a")
+    secure_lock_dir(os.path.dirname(path))
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     deadline = time.monotonic() + wait_seconds
     while True:
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
         except OSError:
             if time.monotonic() >= deadline:
-                handle.close()
+                os.close(fd)
                 raise Refusal("LOCK_HELD", "another preview change holds the node lock")
             time.sleep(2)
     try:
         yield
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def progress_logger(path):
@@ -639,8 +848,10 @@ def progress_logger(path):
         line = json.dumps({"t": utc_stamp(), "event": event, **fields}, sort_keys=True)
         print(line, flush=True)
         if path:
-            with open(path, "a") as out:
-                out.write(line + "\n")
+            with contextlib.suppress(OSError):
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "a") as out:
+                    out.write(line + "\n")
     return log
 
 
@@ -661,8 +872,8 @@ def main(argv, app_update_path, environment=None):
         with node_lock(PATHS["lock"], wait_seconds=60 if argv[0] == "stop-post" else 0):
             if argv[0] == "stop-post":
                 return runner.stop_post(environment)
-            handler = {"deploy": runner.run_deploy, "rollback": runner.run_rollback,
-                       "convert": runner.run_convert, "gc": runner.run_gc}[request["kind"]]
+            handler = {"deploy": runner.run_deploy, "rollback": runner.run_rollback, "convert": runner.run_convert,
+                       "gc": runner.run_gc, "selftest": runner.run_selftest}[request["kind"]]
             return handler()
     except Refusal as exc:
         if argv[0] == "stop-post":
@@ -682,7 +893,7 @@ def read(query, au):
     value, index = runner.deployment()
     if query["op"] == "status":
         annotations = {name[len(A.ANNOTATION_PREFIX):]: text for name, text in (value["metadata"].get("annotations") or {}).items()
-                       if name.startswith(A.ANNOTATION_PREFIX) and name[len(A.ANNOTATION_PREFIX):] not in ("expect",)}
+                       if name.startswith(A.ANNOTATION_PREFIX)}
         pods = []
         for pod in runner.pods(value):
             statuses = pod.get("status", {}).get("containerStatuses", [])
@@ -691,7 +902,7 @@ def read(query, au):
                          "ready": all(s.get("ready") for s in statuses) and bool(statuses)})
         unit = subprocess.run([PATHS["systemctl"], "show", "-p", "ActiveState", "--value", A.NODE_UNIT],
                               capture_output=True, timeout=20, check=False).stdout.decode().strip()
-        results = sorted(name for name in os.listdir(PATHS["results"]) if name.endswith(".json")) \
+        results = sorted(name for name in os.listdir(PATHS["results"]) if name.endswith(".json") and not name.endswith(".request.json")) \
             if os.path.isdir(PATHS["results"]) else []
         last = None
         if results:
@@ -718,9 +929,10 @@ def read(query, au):
         return {"checks": checks.items, "ok": checks.ok}
     plan = runner.image_plan()
     claims = gc_claims(runner, value, query.get("legacyClaims") or [])
-    return {"images": {"keep": plan["keep"], "remove": plan["remove"],
-                       "removeBytes": sum(plan["present"][image]["size"] for image in plan["remove"])},
-            "claims": claims, "deploysSinceConversion": int(runner.ann(value, "deploys") or "0")}
+    return {"images": {"keep": plan["keep"], "remove": [item["ref"] for item in plan["remove"]],
+                       "removeBytes": sum(item["size"] for item in plan["remove"]), "untouched": plan["untouched"]},
+            "claims": claims, "deploysSinceConversion": int(runner.ann(value, "deploys") or "0"),
+            "retentionArmed": os.path.exists(PATHS["armed"])}
 
 
 def gc_claims(runner, deployment, legacy):
@@ -753,6 +965,8 @@ def gc_claims(runner, deployment, legacy):
         reasons = []
         if metadata["name"] in mounted:
             reasons.append("mounted by a Pod")
+        if referenced.get(metadata["name"]):
+            reasons.append("referenced by a retained ReplicaSet or StatefulSet (a rollback point)")
         if any(owner.get("kind") == "StatefulSet" for owner in metadata.get("ownerReferences", [])) or \
                 re.search(r"postgres|database|durable", " ".join(f"{k}={v}" for k, v in labels.items()) + metadata["name"]):
             reasons.append("durable or StatefulSet claim")
