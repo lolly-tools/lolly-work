@@ -17,8 +17,8 @@
         {
           "slug": "status",
           "path": "status.md",
-          "title": "Work status and roadmap",
-          "summary": "What is built, what is pending, and the honest gaps before go-live."
+          "title": "What Lolly Work does today",
+          "summary": "What Lolly Work 1.1.2 does today, what to check on your own systems before relying on it, and what is not built yet."
         }
       ]
     },
@@ -30,26 +30,32 @@
         {
           "slug": "document-agents",
           "path": "document-agents.md",
-          "title": "Invite an agent to a document",
-          "summary": "Invite MCP agents under your identity, with document access, expiry, live collaboration and revocation."
+          "title": "Invite an agent",
+          "summary": "Let an AI agent read or edit a shared document or project under your identity, for a period you choose, with every call recorded."
+        },
+        {
+          "slug": "automation-api",
+          "path": "automation-api.md",
+          "title": "Automate with the Work API",
+          "summary": "Render on-brand files from a script: a token, discovery, the effective schema, the document verbs, jobs, callbacks and batches."
         },
         {
           "slug": "api",
           "path": "api.md",
-          "title": "Lolly Work API",
-          "summary": "Every route the console and CLI use, with the action each one requires."
+          "title": "Lolly Work API reference",
+          "summary": "The routes the console, the lw CLI and the apps call, grouped by job, with who may call each one."
         },
         {
           "slug": "cli",
           "path": "cli.md",
-          "title": "lw CLI: administer an instance",
-          "summary": "Command reference for the admin CLI."
+          "title": "lw CLI: administer Lolly Work",
+          "summary": "Every lw command for running a Lolly Work instance: people, sources, catalog, renders, audit and governance."
         },
         {
           "slug": "resumable-uploads",
           "path": "resumable-uploads.md",
-          "title": "Resumable uploads",
-          "summary": "Decision record: the parts protocol over tus, its resume report, and the scopes that share it."
+          "title": "Upload large files",
+          "summary": "Send large files to Lolly Work in parts that survive a dropped connection: turn scoped uploads on, use lw upload or the API, and know the limits."
         }
       ]
     },
@@ -61,8 +67,8 @@
         {
           "slug": "identity",
           "path": "identity.md",
-          "title": "Identity and sessions",
-          "summary": "OIDC SSO, group mapping, member and guest sessions, the dev provider."
+          "title": "Sign-in and sessions",
+          "summary": "Choose how colleagues sign in, decide who gets in, set session length and renewal, link several sign-ins to one person, and end access."
         },
         {
           "slug": "account-lifecycle",
@@ -71,16 +77,22 @@
           "summary": "Owner metadata exports, scoped offboarding, documented limits and review of shared content."
         },
         {
+          "slug": "invitations",
+          "path": "invitations.md",
+          "title": "Invite people and handle requests",
+          "summary": "Invite people to the workspace or a project, send invite links, set passwords from a link, and answer requests to join and for access."
+        },
+        {
           "slug": "design-system-administration",
           "path": "design-system-administration.md",
           "title": "Design-system administration",
-          "summary": "Inspect sources, review replacements and retirement, and manage durable connect downloads."
+          "summary": "Choose which design system a deployment serves, preview and apply a switch or retirement, manage connect downloads and connect brand rules to tools."
         },
         {
           "slug": "permissions",
           "path": "permissions.md",
           "title": "Roles and grants",
-          "summary": "The seven roles, every action they carry, and deny-wins fine-grained grants."
+          "summary": "The seven roles, every action they carry and the deny-wins grants that adjust them, with owner-only powers and guests."
         },
         {
           "slug": "governance",
@@ -92,43 +104,49 @@
           "slug": "catalog",
           "path": "catalog.md",
           "title": "Catalog and content",
-          "summary": "Brand packs, catalog providers, exposure slices, expiry and stop-sharing."
+          "summary": "Brand packs, member submissions, metadata fields, collections, versions, expiry and holds, and read-only DAM providers."
         },
         {
           "slug": "file-preview",
           "path": "file-preview.md",
           "title": "Asset previews",
-          "summary": "Supported formats, preview conversion and render-worker configuration."
+          "summary": "Disposable PDF previews of EPS, EMF and WMF files in the asset viewer, and how the render worker converts them safely."
         },
         {
           "slug": "offboarding",
           "path": "offboarding.md",
-          "title": "Off-boarding a DAM",
-          "summary": "Leaving a DAM: pin early, the Canto/Image Relay fork, and per-vendor exit readiness."
+          "title": "Leave a DAM",
+          "summary": "Leave a DAM vendor without losing assets or links: pin early, pick the Canto or Image Relay driver, check readiness by kind, then cut over."
         },
         {
           "slug": "approvals",
           "path": "approvals.md",
           "title": "Approvals",
-          "summary": "Chains, separation of duties, and what an approval can gate."
+          "summary": "Approval chains, separation of duties and what an approval can gate, including review of a frozen set of source files."
         },
         {
           "slug": "sharing",
           "path": "sharing.md",
-          "title": "Rendering and sharing",
-          "summary": "Server renders, signed links, guest sessions, watermarks, provenance."
+          "title": "Share renders and links",
+          "summary": "Signed links that expire and can be turned off, guest and password links, links to library assets and collections, server renders and provenance."
+        },
+        {
+          "slug": "team-projects",
+          "path": "team-projects.md",
+          "title": "Team projects",
+          "summary": "Who sees a team project, what each project role allows, saving from Lolly, shared files and subfolders, and saving conflicts."
         },
         {
           "slug": "renders",
           "path": "renders.md",
-          "title": "Recover and inspect render jobs",
-          "summary": "Persistent renders and batches, individual row recovery, output manifests, partial execution evidence, and API/CLI access."
+          "title": "Render jobs and batches",
+          "summary": "Durable render jobs and batches that recover after a restart, file checks, execution evidence and render identity, and production still checks."
         },
         {
           "slug": "delivery",
           "path": "delivery.md",
           "title": "Organisation delivery destinations",
-          "summary": "Fixed organization destinations, durable receipts, S3/WebDAV/signed-HTTPS adapters, automation output references, retries, and the personal/organization boundary."
+          "summary": "Send finished exports to fixed organisation destinations: S3, WebDAV, signed HTTPS, Brandfolder or Cloudinary, with receipts, retries and optional approval."
         },
         {
           "slug": "ai-policy",
@@ -139,8 +157,8 @@
         {
           "slug": "provider-guides",
           "path": "providers/README.md",
-          "title": "Provider guides",
-          "summary": "The shared skeleton every guide follows, the OAuth onboarding, and which drivers are fixture-verified only."
+          "title": "Connect an asset source",
+          "summary": "Bring files from a drive, bucket, repository or DAM into the Lolly Work catalog: choose a source, connect it in four steps and see what each one supports."
         },
         {
           "slug": "provider-webdav",
@@ -152,13 +170,13 @@
           "slug": "provider-s3",
           "path": "providers/s3.md",
           "title": "S3 / S3-compatible",
-          "summary": "AWS S3, MinIO, Ceph RGW: a private bucket federated read-only, zero-dependency SigV4."
+          "summary": "AWS S3, MinIO or Ceph RGW: a private bucket federated read-only, every request freshly signed."
         },
         {
           "slug": "provider-git",
           "path": "providers/git.md",
           "title": "Git raw manifest",
-          "summary": "The GitOps-native source: a catalog manifest under version control, served over raw HTTP."
+          "summary": "A catalog manifest kept in a git repository and read over raw HTTP from the branch you choose."
         },
         {
           "slug": "provider-brandfolder",
@@ -176,7 +194,7 @@
           "slug": "provider-imagerelay",
           "path": "providers/imagerelay.md",
           "title": "Image Relay",
-          "summary": "Read-only federation, plus the off-boarding path now that Canto owns the platform."
+          "summary": "Read-only federation with mapped expiry, and which driver to leave through after a move to Canto."
         },
         {
           "slug": "provider-canto",
@@ -188,7 +206,7 @@
           "slug": "provider-acquia-dam",
           "path": "providers/acquia-dam.md",
           "title": "Acquia DAM / Widen",
-          "summary": "Governance-rich enterprise DAM: native availability and approval, no custom-field mapping."
+          "summary": "Widen's own release and expiry dates and approval statuses, with no custom-field mapping."
         },
         {
           "slug": "provider-intelligencebank",
@@ -212,7 +230,7 @@
           "slug": "provider-penpot",
           "path": "providers/penpot.md",
           "title": "Penpot",
-          "summary": "An open, self-hostable design-system source: token feed plus curated component export."
+          "summary": "Design tokens from a Penpot you host feed a Work design system; boards are imported one at a time."
         },
         {
           "slug": "provider-dropbox",
@@ -233,6 +251,12 @@
           "summary": "A SharePoint library or OneDrive federated read-only through Microsoft Graph."
         },
         {
+          "slug": "provider-tenant-check",
+          "path": "providers/tenant-check.md",
+          "title": "Check a source on your own tenant",
+          "summary": "Before you rely on a source built from vendor documentation, confirm its fields, its original files and who sees them on your own tenant."
+        },
+        {
           "slug": "project-portability",
           "path": "project-portability.md",
           "title": "Preview a project transfer",
@@ -248,80 +272,86 @@
         {
           "slug": "self-host",
           "path": "self-host.md",
-          "title": "Run your own server",
-          "summary": "Release downloads and installation paths for YunoHost, Linux, macOS, Windows and Kubernetes."
+          "title": "Run Lolly Work",
+          "summary": "Pick the path that matches what you have: the public demo, a trial on your computer, one Linux server, YunoHost or Kubernetes. Downloads and checksums for the current release."
         },
         {
           "slug": "release-1-1-2",
           "path": "release-1-1-2.md",
           "title": "Release 1.1.2",
-          "summary": "Work 1.1.2 paired with Lolly 1.1.2: matched components, what Lolly 1.1.2 needs from Work, changes since 1.1.1, migrations and qualification."
+          "summary": "The current release: Work 1.1.2 paired with Lolly 1.1.2, what Lolly 1.1.2 needs from Work, changes since 1.1.1, migrations, images and YunoHost packaging."
         },
         {
-          "slug": "release-1-1-1",
-          "path": "release-1-1-1.md",
-          "title": "Release 1.1.1",
-          "summary": "Work 1.1.1 paired with Lolly 1.1.1: matched components, changes since 1.1.0, migrations and qualification."
-        },
-        {
-          "slug": "release-1-1-0",
-          "path": "release-1-1-0.md",
-          "title": "Release 1.1.0 (historical record)",
-          "summary": "Shared Lolly and Work release candidate, matched component versions, qualification, migration and rollback."
+          "slug": "past-releases",
+          "path": "past-releases.md",
+          "title": "Past releases",
+          "summary": "Work 1.1.1 and 1.1.0 kept as a record: matched components, changes, migrations, image digests and YunoHost packaging."
         },
         {
           "slug": "overview",
           "path": "overview.md",
           "title": "Lolly Work architecture",
-          "summary": "The control plane in one page: what it serves, the two-repo shape, and the trust model."
+          "summary": "Lolly Work in one page: what stays on the device, what the server holds and serves, the two codebases and the trust model."
         },
         {
           "slug": "install",
           "path": "install.md",
           "title": "Install Lolly Work",
-          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
+          "summary": "From a source checkout to a running instance on one server: try it locally, make it yours, add PostgreSQL and secrets, then run it with Compose, systemd or YunoHost."
+        },
+        {
+          "slug": "ready-made-package",
+          "path": "ready-made-package.md",
+          "title": "Install the ready-made package",
+          "summary": "One Docker Compose folder with Work, PostgreSQL, the matching web app and automatic HTTPS, for a fresh VM, UpCloud or Dokploy, with backup, restore and update steps."
+        },
+        {
+          "slug": "platform-deployment",
+          "path": "platform-deployment.md",
+          "title": "Install on Kubernetes",
+          "summary": "Try Lolly Work on a cluster in one command, then install it for production with Helm on K3s, RKE2 or Rancher, and prepare new SLES or openSUSE Leap hosts."
         },
         {
           "slug": "official-installations",
           "path": "official-installations.md",
           "title": "Official installation routes",
-          "summary": "Project-owned images, Helm/Rancher, European clouds, YunoHost and neutral VM/Dokploy packages, with publication and qualification status."
+          "summary": "Which project packages exist, what each has passed, how to verify release signatures, and how to mirror every download for a restricted network."
         },
         {
           "slug": "enterprise-identity",
           "path": "enterprise-identity.md",
           "title": "Set up enterprise identity",
-          "summary": "Managed SSO registration, admission, optional MFA, SCIM offboarding, logout, upgrades and credential rotation."
+          "summary": "Connect an enterprise identity provider with logout and optional assurance, qualify it, operate it, and mint SCIM and service tokens."
+        },
+        {
+          "slug": "identity-providers",
+          "path": "identity-providers.md",
+          "title": "Sign-in provider recipes",
+          "summary": "Configure Google, Entra ID, Okta, Keycloak, Auth0, GitHub or a SAML broker, several providers at once, and reverse-proxy sign-in."
         },
         {
           "slug": "customer-setup",
           "path": "customer-setup.md",
           "title": "Configure your first Work instance",
-          "summary": "An illustrated six-step journey through deployment, owner identity, SCIM, assets and a checked sample, with configuration apply and recovery."
+          "summary": "A six-step walk through Customer setup: deployment, owner identity, SCIM, assets and a checked sample, then applying the generated configuration."
         },
         {
           "slug": "deployment",
           "path": "deployment.md",
-          "title": "Lolly Work deployment options",
-          "summary": "Helm/Rancher, Compose, Vercel, air-gap: what each path carries and what it doesn't."
+          "title": "How a Work deployment fits together",
+          "summary": "The parts every Lolly Work deployment runs, which ones you can leave out, the two ways to render, the Helm values to know and offline operation."
         },
         {
           "slug": "cloud-deployment",
           "path": "cloud-deployment.md",
-          "title": "UpCloud, Evroc and fewer hosting services",
-          "summary": "Two cloud targets, OpenTofu/Terraform, private VM boundaries, database restore and public-host migration."
-        },
-        {
-          "slug": "platform-deployment",
-          "path": "platform-deployment.md",
-          "title": "Deploy with your platform team",
-          "summary": "Reader, operator and developer paths for SUSE hosts, K3s/RKE2, Ansible/Salt, OCI builds and cloud or on-premises deployment."
+          "title": "Run Work on UpCloud or Evroc",
+          "summary": "What the OpenTofu and Terraform modules create, how the two providers differ, moving a PostgreSQL database safely, and capacity and recovery checks."
         },
         {
           "slug": "wasm-deployment",
           "path": "wasm-deployment.md",
           "title": "WebAssembly and Kubewarden choices",
-          "summary": "Optional policy and component hosting tracks, current WASI compatibility, runtime qualification and bounded worker canaries."
+          "summary": "Optional WebAssembly tracks: evaluating Kubewarden admission policies and preparing a component host. A normal install needs neither."
         },
         {
           "slug": "configuration",
@@ -333,67 +363,13 @@
           "slug": "c2pa",
           "path": "c2pa.md",
           "title": "Configure Work export signing",
-          "summary": "Give this deploy a signing identity so exports carry a verifiable credential."
-        },
-        {
-          "slug": "provider-cloudinary-live-verify",
-          "path": "providers/cloudinary-live-verify.md",
-          "title": "Cloudinary tenant verification",
-          "summary": "Qualify access, original fidelity, paging and costs on the organisation tenant."
-        },
-        {
-          "slug": "provider-orange-logic-live-verify",
-          "path": "providers/orange-logic-live-verify.md",
-          "title": "Orange Logic tenant verification",
-          "summary": "Qualify scoped discovery and permitted renditions without claiming original migration."
-        },
-        {
-          "slug": "provider-webdav-live-verify",
-          "path": "providers/webdav-live-verify.md",
-          "title": "WebDAV live-verify runbook",
-          "summary": "The server-day checklist for the WebDAV driver's unconfirmed URL templates and property names."
-        },
-        {
-          "slug": "provider-canto-live-verify",
-          "path": "providers/canto-live-verify.md",
-          "title": "Canto live-verify runbook",
-          "summary": "The tenant-day checklist that turns the fixture-verified Canto driver into a confirmed one."
-        },
-        {
-          "slug": "provider-imagerelay-live-verify",
-          "path": "providers/imagerelay-live-verify.md",
-          "title": "Image Relay live-verify runbook",
-          "summary": "The tenant-day checklist for the Image Relay driver's unconfirmed endpoints and fields."
-        },
-        {
-          "slug": "provider-intelligencebank-live-verify",
-          "path": "providers/intelligencebank-live-verify.md",
-          "title": "IntelligenceBank live-verify runbook",
-          "summary": "The tenant-day checklist for the IntelligenceBank v3 driver's unconfirmed endpoints and fields."
-        },
-        {
-          "slug": "provider-acquia-dam-live-verify",
-          "path": "providers/acquia-dam-live-verify.md",
-          "title": "Acquia DAM live-verify runbook",
-          "summary": "The tenant-day checklist for the Widen v2 driver's unconfirmed endpoints and fields."
+          "summary": "Give a deployment a signing identity so server exports carry a verifiable Content Credential: a self-made root in one command, or your organisation's CA."
         },
         {
           "slug": "operations",
           "path": "operations.md",
-          "title": "Operations runbook",
-          "summary": "Migrations, collaboration drain, backup, rate limits, metrics, guarded upgrades and engine pin."
-        },
-        {
-          "slug": "frontend-updates",
-          "path": "frontend-updates.md",
-          "title": "Fast frontend updates",
-          "summary": "Qualified source updates with reused runtimes, private shell publication, public root and validator maps, and accepted baselines."
-        },
-        {
-          "slug": "public-model-proof-reuse",
-          "path": "public-model-proof-reuse.md",
-          "title": "Public model verification reuse",
-          "summary": "Bounded verification reuse for an unchanged serving process, invalidation rules, and measured release timings."
+          "title": "Keep Lolly Work running",
+          "summary": "Upgrades, backups and restores, secret rotation, health and storage alerts, rate limits, scan hooks, notifications and SIEM forwarding, in the order the jobs come round."
         },
         {
           "slug": "instance-pack-production",
@@ -404,20 +380,14 @@
         {
           "slug": "production-readiness",
           "path": "production-readiness.md",
-          "title": "Production evidence",
-          "summary": "Read-only configuration checks, staging probes and the evidence still needed before production."
-        },
-        {
-          "slug": "application-release-classification",
-          "path": "application-release-classification.md",
-          "title": "Application release classification",
-          "summary": "Advisory Git comparison for web-shell changes, conservative shared-source boundaries and required release qualification."
+          "title": "Check a deployment before production",
+          "summary": "Run the read-only checker against your configuration or rendered manifests, read its results, and add the evidence only you can supply."
         },
         {
           "slug": "shell-deployment-workflow",
           "path": "shell-deployment-workflow.md",
           "title": "Shell deployment workflow",
-          "summary": "Qualified main CI requests, reusable prepared artifacts and guarded publication with resumable successful phases."
+          "summary": "Publish a qualified Lolly web app build to a private Work instance without rebuilding its image: prepare the request, then run and resume the deployment."
         },
         {
           "slug": "telemetry",
@@ -441,7 +411,7 @@
         {
           "slug": "security-platform",
           "path": "security-platform.md",
-          "title": "Where work happens and what crosses the network",
+          "title": "Lolly Work security overview",
           "summary": "Local work, connected services and the boundaries operators control."
         },
         {
