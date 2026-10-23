@@ -49,3 +49,16 @@ pnpm run check:code-comments
 Run `pnpm console:check` as well when the admin console changes, and commit the
 rebuilt `console/index.html` from `pnpm console:build`. Set `LW_TEST_DATABASE_URL`
 to a disposable Postgres database to include the Postgres store conformance tests.
+
+## Pull request checks
+
+Every pull request runs one workflow, PR qualification
+(`.github/workflows/pr-qualification.yml`), and its `required` job is the check
+that must pass. It always runs CI and Source checks. Deployment qualification,
+Helm qualification and CI's render-worker image leg run when the pull request
+changes their inputs, as listed in `scripts/ci-change-scope.ts`. The copy of that
+list on the base branch decides, so a change to it takes effect after it merges.
+A change under `.github/` or to the root dependency manifests runs everything.
+
+Pushes to `main`, `v*` tags, a nightly schedule and manual runs start each
+workflow directly and always run it in full.

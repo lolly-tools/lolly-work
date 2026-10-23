@@ -1,0 +1,132 @@
+# SPDX-License-Identifier: MPL-2.0
+# Pull request qualification: one workflow, and one aggregate check, `required`,
+# for every pull request.
+#
+# Pull requests start CI, Source checks, Deployment qualification and Helm
+# qualification from here instead of through their own triggers, so `required`
+# can `needs:` all of them. `change scope` reads the pull request's changed paths
+# with the policy committed on its base (scripts/ci-change-scope.ts) and selects
+# the path-scoped suites:
+#   - CI's render-worker image leg, when worker, engine pin or server inputs change;
+#   - Deployment qualification, when the cloud modules, YunoHost package or the
+#     backup drill change;
+#   - Helm qualification, when chart, Compose, marketplace or server inputs change.
+# A workflow, root dependency manifest or scope policy change selects every suite.
+#
+# Pushes to main, v* tags, the nightly schedule and manual runs still start each
+# workflow directly and run it in full. Release preparation and chart
+# publication read those main push runs, so their job names and contents do not
+# change here.
+#
+# SUSE container qualification and Admission service qualification keep their
+# own path-filtered pull request triggers and are not part of `required`.
+name: PR qualification
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: change scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      render_worker: ${{ steps.scope.outputs.render_worker }}
+      deployment: ${{ steps.scope.outputs.deployment }}
+      helm: ${{ steps.scope.outputs.helm }}
+    steps:
+      # The pull request merge commit: its first parent is the base commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.11.1'
+          package-manager-cache: false
+      - name: Select suites with the base commit's policy
+        id: scope
+        run: |
+          set -euo pipefail
+          base=$(git rev-parse HEAD^1)
+          echo "Base $base, merge $(git rev-parse HEAD)"
+          if git cat-file -e "$base:scripts/ci-change-scope.ts" 2>/dev/null; then
+            git show "$base:scripts/ci-change-scope.ts" > "$RUNNER_TEMP/ci-change-scope.mts"
+            git diff --name-only --no-renames -z "$base" HEAD | node "$RUNNER_TEMP/ci-change-scope.mts" > "$RUNNER_TEMP/scope.txt"
+          else
+            echo 'The base commit has no scope policy, so every suite runs.'
+            printf 'render_worker=true\ndeployment=true\nhelm=true\n' > "$RUNNER_TEMP/scope.txt"
+          fi
+          cat "$RUNNER_TEMP/scope.txt"
+          cat "$RUNNER_TEMP/scope.txt" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: CI
+    needs: scope
+    uses: ./.github/workflows/ci.yml
+    with:
+      render_worker: ${{ needs.scope.outputs.render_worker }}
+
+  source-checks:
+    name: Source checks
+    uses: ./.github/workflows/source-checks.yml
+
+  deployment:
+    name: Deployment qualification
+    needs: scope
+    if: needs.scope.outputs.deployment == 'true'
+    uses: ./.github/workflows/deployment-qualification.yml
+
+  helm:
+    name: Helm qualification
+    needs: scope
+    if: needs.scope.outputs.helm == 'true'
+    uses: ./.github/workflows/helm-qualification.yml
+
+  # The one check to require on main. A suite the scope left out must report
+  # skipped; everything else must succeed. A failed, cancelled or unexpectedly
+  # skipped job fails this check, and so does a scope that did not finish.
+  required:
+    name: required
+    if: always()
+    needs: [scope, ci, source-checks, deployment, helm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected suite to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['NEEDS'])
+          always = ['scope', 'ci', 'source-checks']
+          scoped = ['deployment', 'helm']
+          failures = []
+          if sorted(needs) != sorted(always + scoped):
+              failures.append('required needs exactly ' + ', '.join(always + scoped) + '; found ' + ', '.join(sorted(needs)))
+          scope = needs.get('scope') or {}
+          selected = scope.get('outputs') or {}
+          for job in always + scoped:
+              result = (needs.get(job) or {}).get('result')
+              expected = 'success'
+              if job in scoped:
+                  choice = selected.get(job)
+                  if choice not in ('true', 'false'):
+                      failures.append(job + ': the scope gave no decision')
+                      continue
+                  expected = 'success' if choice == 'true' else 'skipped'
+              print(job + ': ' + str(result) + ' (expected ' + expected + ')')
+              if result != expected:
+                  failures.append(job + ' is ' + str(result) + ', expected ' + expected)
+          if failures:
+              raise SystemExit('Pull request qualification failed:\n  ' + '\n  '.join(failures))
+          print('Every selected suite passed.')
+          PY
