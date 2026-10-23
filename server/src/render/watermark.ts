@@ -14,7 +14,26 @@
  * NOT built here - this compositor only knows "watermark now" vs "don't".
  */
 
+import type { ToolOverlay } from '../policy/overlay.ts';
+
 const PATTERN_ID = 'lw-preview-watermark';
+
+/** The values an overlay's `enforce.watermark` may hold. */
+export type WatermarkPolicy = NonNullable<NonNullable<ToolOverlay['enforce']>['watermark']>;
+
+/**
+ * Decide whether one render carries the PREVIEW mark.
+ *
+ * `never` is the tool owner's explicit rule and wins over everything, including
+ * a caller that asks for the preview mark. `always` marks every render. With no
+ * rule, or with `until-approved` (not linked to approval state yet, see the TODO
+ * above), only a caller asking for the preview mark gets one.
+ */
+export function shouldWatermark(policy: WatermarkPolicy | undefined, previewRequested: boolean): boolean {
+  if (policy === 'never') return false;
+  if (policy === 'always') return true;
+  return previewRequested;
+}
 
 /** Escape the little we inject into attributes/markup (defensive; inputs are static). */
 function esc(s: string): string {

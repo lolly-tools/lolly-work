@@ -3076,13 +3076,13 @@ function providerRow(p, panels) {
 // git driver is any git host, the s3 driver is any SigV4 store). Proprietary
 // SaaS sources follow, plainly labelled.
 const PROVIDER_INTEGRATIONS = [
-  { kind: 'git', name: 'Git repository', blurb: 'Sync design assets from any git host (Forgejo, Gitea, GitLab, Codeberg, GitHub) through a repository manifest.', options: '{"repo": "org/brand", "ref": "main"}' },
+  { kind: 'git', name: 'Git repository', blurb: 'Sync design assets from any git host (Forgejo, Gitea, GitLab, Codeberg, GitHub) through a repository manifest.', options: '{"rawBase": "https://git.your-host.example/org/brand/raw/branch/main", "manifestPath": "lolly-catalog.json"}' },
   { kind: 's3', name: 'S3-compatible storage', blurb: 'Federate a bucket from any S3-compatible object store — MinIO, Ceph, Garage, Mulga Spinifex S3, or a public cloud.', options: '{"bucket": "…", "prefix": "brand/", "endpoint": "https://s3.your-host.example", "region": "us-east-1"}' },
   { kind: 'webdav', name: 'WebDAV storage', blurb: 'Any WebDAV server the org runs — Nextcloud, ownCloud, Apache mod_dav — federated read-only over the open protocol.', options: '{"baseUrl": "https://cloud.your-host.example", "flavor": "nextcloud", "root": "Brand"}' },
   { kind: 'penpot', name: 'Penpot', blurb: 'Open, self-hostable design tool — federate your design tokens (DTCG) so /design and brand themes inherit from Penpot, and search-and-import boards as catalog media.', options: '{"baseUrl": "https://design.your-host.example", "teamId": "…"}', mapping: '{"typeMap": {"tokens": "tokens", "board": "image"}, "defaultType": "image"}' },
   { kind: 'gdrive', name: 'Google Drive', blurb: 'Pull a shared Drive folder into the catalog.', options: '{"folderId": "…"}' },
   { kind: 'dropbox', name: 'Dropbox', blurb: 'Mirror a Dropbox folder of approved assets.', options: '{"path": "/Brand"}' },
-  { kind: 'o365', name: 'Microsoft 365 / SharePoint', blurb: 'Read a SharePoint library or OneDrive path.', options: '{"driveId": "…", "path": "/Brand"}' },
+  { kind: 'o365', name: 'Microsoft 365 / SharePoint', blurb: 'Read a SharePoint library or OneDrive path.', options: '{"driveId": "…", "itemPath": "Brand/Approved"}' },
   { kind: 'brandfolder', name: 'Brandfolder', blurb: 'Connect a Brandfolder DAM as a read-only source.', options: '{"brandfolderId": "…"}' },
   { kind: 'optimizely-cmp', name: 'Optimizely CMP', blurb: 'Optimizely CMP web DAM — federate read-only, and optionally publish lolly-made media back out.', options: '{"publish": true}' },
   { kind: 'imagerelay', name: 'Image Relay', blurb: 'Image Relay DAM — read-only, with the exit path (materialize → cut over) for off-boarding.', options: '{"folderId": "…", "recursive": true}' },
