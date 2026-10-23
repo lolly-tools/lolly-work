@@ -2,8 +2,8 @@
 
 > **Production changed on 7 October 2026.** lolly.ing and lolly.tools now run
 > on UpCloud/K3s with PostgreSQL 18.6 on that host. Read
-> [current hosted production](../../docs/deployment.md#current-hosted-production)
-> and the reviewed instance deployment handoff before selecting a target.
+> the reviewed instance deployment handoff before selecting a target;
+> [Single VM with Caddy](../../docs/deployment.md#single-vm-with-caddy) describes this kit.
 > This kit supports separately configured VM instances; its lolly.ing commands,
 > paths and migration steps below describe the former deployment. Do not run
 > its push, secret rotation, service restart or DNS rollback steps against either
@@ -57,7 +57,7 @@ supply provider-pinned OpenTofu/Terraform modules and network tests. This host
 provisioning kit remains openSUSE-specific; the Evroc runbook describes the image
 and real-boot qualification still required. The optional
 `postgres.compose.yml` is for new databases or an explicit migration; it is never
-selected by `push.sh`. Follow the [database migration guide](../../docs/cloud-deployment.md#database-migration)
+selected by `push.sh`. Follow the [database migration guide](../../docs/cloud-deployment.md#move-a-postgresql-database)
 before adding it. `postgres-backup.sh` provides a verified logical dump and an
 empty-database restore for that rehearsal.
 
@@ -67,7 +67,7 @@ The same signed shell documentation must be available without sign-in on the
 public Lolly host and a private native Work host, on both UpCloud and Evroc.
 Native Caddy routing is unchanged: the Work server resolves public docs within
 the mounted signed release before its app fallback. See the
-[documentation contract](../../docs/cloud-deployment.md#public-documentation-on-both-deployment-types).
+[documentation contract](../../docs/cloud-deployment.md#what-your-instance-serves-at-info).
 
 At a candidate origin, check GET and HEAD for `/info/`,
 `/info/operate/deployment.html`, `/docs/operate/deployment` and `/robots.txt`.

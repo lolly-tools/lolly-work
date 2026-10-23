@@ -581,7 +581,13 @@ test('the runbook puts openSUSE on the server through Debian, works as sles, and
     assert.match(line, /bootstrap-opensuse\.sh/, `root only for the bootstrap: ${line}`);
   }
   assert.ok(!/ubuntu/i.test(readme), 'no Ubuntu left in the runbook');
+  // The docs page describes the kit in brief and leaves its scripts to this
+  // runbook, so it names the runbook, an openSUSE provisioner and no Ubuntu host.
   const docs = readFileSync(join(VM, '..', '..', 'docs', 'deployment.md'), 'utf8');
-  const vm = docs.slice(docs.indexOf('## Single VM with Caddy'), docs.indexOf('## Vercel'));
-  assert.ok(vm.includes('bootstrap-opensuse.sh') && !/ubuntu/i.test(vm), 'docs/deployment.md describes the openSUSE kit');
+  const start = docs.indexOf('## Single VM with Caddy');
+  const end = docs.indexOf('\n## ', start + 1);
+  const vm = docs.slice(start, end < 0 ? undefined : end);
+  assert.ok(start >= 0 && vm.includes('`deploy/vm/README.md`'), 'docs/deployment.md points the VM kit at its runbook');
+  assert.match(docs, /host provisioner supports openSUSE/, 'docs/deployment.md describes the openSUSE kit');
+  assert.ok(!/ubuntu/i.test(docs), 'docs/deployment.md names no Ubuntu host');
 });

@@ -15,7 +15,7 @@ blocks package/schema/script errors and reports catalog registration and working
 status separately, since those belong to publishing the mirror. Repository
 contracts also exercise SSO/LDAP role mapping and rendered configuration. A real
 Linux `package_check` run establishes installation/upgrade/backup/restore results;
-see the [cloud deployment guide](../../docs/cloud-deployment.md#yunohost-qualification).
+see the [YunoHost package checks](../../docs/official-installations.md#yunohost-package-checks).
 
 The `1.1.1~ynh1` package is a beta test candidate. Its server is Work 1.1.1,
 archived from `c2036a85c53c76bd8b7917a05aef41268103e2b3` and released as tag

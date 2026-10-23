@@ -88,7 +88,7 @@ policy independently rather than inferring it from the module.
 Use a reviewed external PostgreSQL service or the optional
 [local PostgreSQL override](../vm/postgres.compose.yml) after a real restore and
 capacity rehearsal. No Evroc managed PostgreSQL product is assumed by this module.
-The [database migration procedure](../../docs/cloud-deployment.md#database-migration)
+The [database migration procedure](../../docs/cloud-deployment.md#move-a-postgresql-database)
 is identical across providers. Keep logical backups independently of the VM.
 
 Evroc's object storage has a documented S3 compatibility matrix. Qualify the exact

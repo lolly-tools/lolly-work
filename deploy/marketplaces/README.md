@@ -45,7 +45,7 @@ No external IdP or mail service is needed. Keep that link private; it grants an
 operator-authorized account and does not verify mailbox ownership. Organisation
 OIDC remains available through `LOLLY_AUTH_MODE=oidc` and its issuer/client values.
 
-Operator recipes live in [the installation guide](../../docs/install.md#10-official-neutral-package).
+Operator recipes live in [the ready-made package guide](../../docs/ready-made-package.md).
 The [reference qualification](QUALIFICATION.md) records the tested UpCloud target,
 package hashes, reboot/restore outcomes and remaining acceptance limits.
 The [installation directory](../../docs/official-installations.md) records what

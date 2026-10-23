@@ -12,7 +12,7 @@ subscription.
 
 | Your starting point | Next action |
 |---|---|
-| Existing Rancher-managed K3s/RKE2 or other Kubernetes | Use the [Work installation guide](../../docs/install.md#7b-production), existing Secrets and your reviewed ingress/storage policies |
+| Existing Rancher-managed K3s/RKE2 or other Kubernetes | Use the [Work Kubernetes installation guide](../../docs/platform-deployment.md#install-for-production), existing Secrets and your reviewed ingress/storage policies |
 | Fresh SLES/Leap VM on UpCloud or evroc | Run the host gate, then the [pinned K3s operator workflow](K3S-OPERATOR.md) and the Work Helm installation |
 | Fresh SLES/Leap on another cloud or on-premises | Run the host gate, use your platform team's qualified cluster installation, then the same Helm release |
 | Build images with Podman | Use the rootless image-build workflow below; deploy those images through your selected Kubernetes runtime |
@@ -76,7 +76,7 @@ storage, a cluster or Lolly itself. The handoff continues:
    service deployment; Work's job store needs PostgreSQL, not Redis.
 6. Render and review the Work Helm chart with `values-small-suse.yaml` before
    installation. Use [SMALL-SUSE.md](../helm/SMALL-SUSE.md) and
-   [install section 7b](../../docs/install.md#7b-production) for the application
+   [Install for production](../../docs/platform-deployment.md#install-for-production) for the application
    owner, immutable images, migrations and ingress. Work's writable collaboration
    owner remains one replica; this does not provide application HA.
 7. Verify owner sign-in, invited viewers/editors, shared upload bytes on a second

@@ -10,7 +10,7 @@ Start with the [deployment guide](../../docs/cloud-deployment.md). The existing
 qualified application release after the server exists.
 
 For a fresh neutral instance, follow the
-[official package recipe](../../docs/install.md#10-official-neutral-package) after
+[ready-made package guide](../../docs/ready-made-package.md) after
 host preparation. It consumes public immutable images and the matched neutral
 shell, with its own PostgreSQL and installation secrets. Keep this target separate
 from existing deployments. Record actual install, identity, reboot, upgrade and
@@ -120,7 +120,7 @@ UpCloud managed PostgreSQL is an available target for an operator-reviewed migra
 An optional [local PostgreSQL override](../vm/postgres.compose.yml) is also provided
 for a new instance or a migration rehearsal. Neither option is enabled by this module.
 
-Read the [database migration and restore procedure](../../docs/cloud-deployment.md#database-migration)
+Read the [database migration and restore procedure](../../docs/cloud-deployment.md#move-a-postgresql-database)
 before adding the override: it changes the server's database URL to the local service.
 Keep the existing connection and a verified backup until application acceptance is
 complete. A local disk snapshot alone does not replace a tested, independent backup.

@@ -69,7 +69,7 @@ helm template lolly-work deploy/helm \
 ```
 
 Inspect the generated manifests, then use the production installation procedure
-in [install.md](../../docs/install.md#7b-production). Keep the rendered file
+in [Install for production](../../docs/platform-deployment.md#install-for-production). Keep the rendered file
 private: chart-managed Secrets appear in the output. Prefer existing Secret
 references for production. The profile keeps the render worker disabled until
 you enable it and supply its shell origin and matching render credential.
@@ -93,7 +93,7 @@ The public repository has a separate `deploy/helm/profiles/lean.yaml` for its
 static web shell and optional MCP/CA. It does not install Work, a database,
 collaboration relay, Penpot or model hosting. Preserve public route parity and
 private-data boundaries before moving lolly.tools. See the
-[cloud cutover guide](../../docs/cloud-deployment.md#public-shell-cutover).
+[guide to moving the public host](https://github.com/lolly-tools/lolly/blob/main/scripts/README.md#public-documentation-routes-and-moving-the-public-host).
 
 ## Preferred SUSE image sources
 
@@ -212,7 +212,7 @@ for its deployment and TLS contract. After reviewing the pinned chart, install
 it into a rehearsal namespace, create the Work connection-URL Secret and point
 `database.existingSecret`/`database.existingSecretKey` at that value. Test
 migrations, uploaded asset bytes, shared editing and the
-[backup/restore procedure](../../docs/cloud-deployment.md#database-migration)
+[backup/restore procedure](../../docs/cloud-deployment.md#move-a-postgresql-database)
 before migrating existing records. PostgreSQL major-version changes need their
 own compatibility and restore checks. Record measured recovery time before
 choosing the production outage window.

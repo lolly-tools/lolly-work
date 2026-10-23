@@ -17,7 +17,7 @@ sources, builds fresh application assets with the maintained Vite configuration,
 reuses verified unchanged content and retains old lazy-loaded chunks. It does
 not relabel the running image as a newer backend release.
 
-Start with the shared [frontend update guide](../../docs/frontend-updates.md)
+Start with the shared [frontend update guide](https://github.com/lolly-tools/lolly/blob/main/scripts/README.md#update-the-web-app-without-rebuilding-its-image)
 for the source, CI, accepted baseline and private/public path selection.
 For public sites using full SHA validator maps, prepare the
 [complete static root and map together](PLAN300-PUBLIC-FULL-ROOT.md). Local

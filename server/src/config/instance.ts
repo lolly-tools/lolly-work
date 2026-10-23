@@ -1337,7 +1337,7 @@ export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxy
     const v = env[cfg.proxyAuth.secretRef];
     if (v) secrets.proxyAuth = v;
     else if (prod) {
-      throw new Error(`${cfg.proxyAuth.secretRef} is required in production when proxyAuth is enabled - the reverse proxy must inject the same value as x-lw-proxy-auth. See docs/identity.md.`);
+      throw new Error(`${cfg.proxyAuth.secretRef} is required in production when proxyAuth is enabled - the reverse proxy must inject the same value as x-lw-proxy-auth. See docs/identity-providers.md#reverse-proxy-sign-in.`);
     } else {
       console.warn(`[lolly-work] WARNING — proxyAuth is enabled but ${cfg.proxyAuth.secretRef} is not set; every /api/auth/proxy sign-in will be refused.`);
     }

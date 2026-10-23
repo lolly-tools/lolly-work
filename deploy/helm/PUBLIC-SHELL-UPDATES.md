@@ -13,7 +13,7 @@ mount, and serves the neutral `lolly-start` catalog. A private artifact or runti
 receipt cannot qualify a public update.
 
 The maintained producer, offline planner, stager and publisher are available.
-Start with the [ordinary frontend update guide](../../docs/frontend-updates.md)
+Start with the [ordinary frontend update guide](https://github.com/lolly-tools/lolly/blob/main/scripts/README.md#update-the-web-app-without-rebuilding-its-image)
 for the developer/operator handoff, then follow
 [public staging and promotion](PUBLIC-SHELL-PROMOTION.md). The two preparation
 commands below make no cluster calls or deployment changes and do not authenticate
