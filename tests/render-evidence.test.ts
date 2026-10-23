@@ -8,6 +8,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { renderTool, type RenderDeps, type RenderRequest } from '../server/src/render/pipeline.ts';
 import { normalizeParams, renderCacheKey } from '../server/src/render/cache-key.ts';
 import { createAssetObserver, evidenceHash } from '../server/src/render/evidence.ts';
+import { shouldWatermark, type WatermarkPolicy } from '../server/src/render/watermark.ts';
 import { sha256Hex } from '../server/src/lib/crypto.ts';
 import { queryFromInputs } from '../server/src/automation/verbs.ts';
 import type { AssetRef } from '../server/src/render/contract.ts';
@@ -88,6 +89,32 @@ test('watermark, dimensions and same-version source edits produce distinct cache
   const edited = await f.render();
   assert.notEqual(clean.cacheKey, edited.cacheKey);
   assert.match(Buffer.from(edited.bytes).toString(), /data-revision="2"/);
+});
+
+test('an overlay watermark "never" turns the preview mark off, even when the caller asks for one', async (t) => {
+  const f = await fixture(t);
+  const withPolicy = (watermark: WatermarkPolicy) => new Map([['receipt-card', { toolId: 'receipt-card', version: 1, enforce: { watermark } }]]);
+  const marked = (bytes: Uint8Array) => /lw-preview-watermark/.test(Buffer.from(bytes).toString());
+
+  const never = await f.render({ watermarkPreview: true, overlays: withPolicy('never') }, { captureEvidence: true });
+  assert.equal(marked(never.bytes), false, 'never wins over a requested preview mark');
+  assert.equal(never.evidence!.context.watermark, false, 'the receipt records the render as unmarked');
+
+  const unset = await f.render({ watermarkPreview: true }, { captureEvidence: true });
+  assert.equal(marked(unset.bytes), true, 'with no rule the requested preview mark applies');
+  assert.notEqual(never.cacheKey, unset.cacheKey, 'never and no rule cannot share a cached output');
+
+  const always = await f.render({ overlays: withPolicy('always') });
+  assert.equal(marked(always.bytes), true, 'always marks a render nobody asked to mark');
+  assert.equal(marked((await f.render({ watermarkPreview: true, overlays: withPolicy('until-approved') })).bytes), true,
+    'until-approved is not linked to approval state yet, so it behaves like no rule');
+
+  for (const preview of [false, true]) {
+    assert.equal(shouldWatermark('never', preview), false);
+    assert.equal(shouldWatermark('always', preview), true);
+    assert.equal(shouldWatermark('until-approved', preview), preview);
+    assert.equal(shouldWatermark(undefined, preview), preview);
+  }
 });
 
 test('fresh receipts record actual catalog bytes, effective profile and loaded sources without backfilling cached bytes', async (t) => {

@@ -274,17 +274,46 @@ test('every driver declares its authKind, and CLI consent flows stay within the 
   }
 });
 
-test('the console offers a connect card for every provider kind', () => {
-  // PROVIDER_INTEGRATIONS was the one surface outside the lockstep contract:
-  // webdav and canto shipped as kinds while the console offered no card
-  // (plans/34 task 1). The card list now mirrors PROVIDER_KINDS exactly.
+/** The console's connect cards: each kind with the options hint its panel shows.
+ *  Every card is one line of PROVIDER_INTEGRATIONS in console/app.js. */
+function consoleCards(): Array<{ kind: string; options: string | undefined }> {
   const consoleSrc = readFileSync(join(REPO, 'console', 'app.js'), 'utf8');
   const at = consoleSrc.indexOf('const PROVIDER_INTEGRATIONS = [');
   assert.ok(at > 0, 'console/app.js declares PROVIDER_INTEGRATIONS');
   const end = consoleSrc.indexOf('\n];', at);
   assert.ok(end > at, 'the PROVIDER_INTEGRATIONS array closes');
-  const cards = [...consoleSrc.slice(at, end).matchAll(/\{ kind: '([a-z0-9-]+)'/g)].map((m) => m[1]!);
+  return consoleSrc.slice(at, end).split('\n').flatMap((line) => {
+    const kind = /\{ kind: '([a-z0-9-]+)'/.exec(line)?.[1];
+    return kind ? [{ kind, options: /\boptions: '([^'\n]*)'/.exec(line)?.[1] }] : [];
+  });
+}
+
+test('the console offers a connect card for every provider kind', () => {
+  // PROVIDER_INTEGRATIONS was the one surface outside the lockstep contract:
+  // webdav and canto shipped as kinds while the console offered no card
+  // (plans/34 task 1). The card list now mirrors PROVIDER_KINDS exactly.
+  const cards = consoleCards().map((c) => c.kind);
   assert.deepEqual([...cards].sort(), [...PROVIDER_KINDS].sort(), 'PROVIDER_INTEGRATIONS covers every provider kind exactly once');
+});
+
+test('each console connect card suggests options its driver reads', () => {
+  // The git card once suggested {repo, ref} while the driver needs rawBase, and
+  // the o365 card suggested path while the driver reads itemPath. An operator who
+  // copies the hint must get a source the driver can build and scope.
+  for (const { kind, options } of consoleCards()) {
+    assert.ok(options !== undefined, `the ${kind} card carries an options hint`);
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(options) as Record<string, unknown>; } catch { assert.fail(`the ${kind} card's options hint is not valid JSON: ${options}`); }
+    if (kind !== 'mock') {
+      const allowed = OPTION_ALLOWLIST[kind];
+      assert.ok(allowed, `OPTION_ALLOWLIST has an entry for ${kind}`);
+      for (const key of Object.keys(parsed)) {
+        assert.ok(allowed.includes(key), `the ${kind} card suggests options.${key}, which the driver does not read (it reads ${allowed.join(', ')})`);
+      }
+    }
+    assert.doesNotThrow(() => createProvider({ id: 't', kind, options: parsed } as unknown as ProviderRecord, undefined),
+      `the ${kind} driver can be built from the card's options hint`);
+  }
 });
 
 test('every DAM kind is documented on both axes - guide and off-boarding', () => {

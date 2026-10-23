@@ -32,7 +32,7 @@ import { renderCacheKey } from './cache-key.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 import { createAssetObserver, effectivePolicySha256, evidenceHash, finishRenderEvidence, type RenderEvidence } from './evidence.ts';
 import { inspectOutput, outputVerificationProblems, OutputVerificationError, parseOutputVerification, verificationTarget, type OutputVerification } from './output-inspection.ts';
-import { applyPreviewWatermark } from './watermark.ts';
+import { applyPreviewWatermark, shouldWatermark } from './watermark.ts';
 import { withRenderHost } from './host.ts';
 import { createVmHookExecutor } from './vm-hooks.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
@@ -135,7 +135,8 @@ export interface RenderRequest {
   profile: Profile;
   /** All tool overlays (the policy version hashes the full set; the tool's own is derived). */
   overlays: Map<string, ToolOverlay>;
-  /** Force the preview watermark (link/preview contexts) regardless of overlay. */
+  /** Ask for the preview watermark (link/preview contexts). A tool overlay with
+   *  `enforce.watermark: 'never'` still turns it off. */
   watermarkPreview?: boolean;
 }
 
@@ -304,7 +305,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const policyVersion = policyVersionOf(req.overlays, {});
   files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   const sourceHash = evidenceHash(files);
-  const watermark = req.watermarkPreview === true || overlay?.enforce?.watermark === 'always';
+  const watermark = shouldWatermark(overlay?.enforce?.watermark, req.watermarkPreview === true);
   const pxW = toPx(engine, st.width, st.unit, st.dpi);
   const pxH = toPx(engine, st.height, st.unit, st.dpi);
   const context: RenderEvidence['context'] = {
