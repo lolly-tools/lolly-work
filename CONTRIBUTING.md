@@ -36,6 +36,19 @@ If it reports a file, take it out of the listed commits with
 `tests/no-tracked-plans.test.ts` fails CI while any `plans/` file is tracked, so
 a push that skipped the hook still cannot merge.
 
+## Provider live-verify runbooks
+
+A provider driver whose field names come from the vendor's public documentation
+has a live-verify runbook beside it, in
+[`server/src/catalog/providers/live-verify/`](server/src/catalog/providers/live-verify/).
+Follow the runbook for that kind when you change the driver or confirm it against
+a real tenant. The driver's header comment and its live-verify errors name the
+file, and `tests/provider-config-contract.test.ts` checks that every driver with a
+shape report has one. Operators run the same pass from
+[Check a source on your own tenant](docs/providers/tenant-check.md). Edit the
+runbooks here; the guides under `docs/` are generated from the Lolly repository
+(see [`docs/README.md`](docs/README.md)).
+
 ## Before you open a pull request
 
 ```sh

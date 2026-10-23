@@ -8,7 +8,8 @@
  *   - a guide only claims publish-out for a kind whose driver supports it;
  *   - every DAM kind is covered on both documentation axes (plans/32 §7);
  *   - every `lw …` command the docs instruct exists in the CLI (plans/33 §7 task 2);
- *   - every driver hardened for tenant day has its live-verify runbook;
+ *   - every driver hardened for tenant day has its maintainer runbook beside it,
+ *     and its guide and the off-boarding page send operators to the tenant check;
  *   - parseConfig rejects the documented failure modes.
  */
 import { test } from 'node:test';
@@ -26,7 +27,13 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DOCS_ROOT = join(REPO, 'docs');
 const DOCS = join(DOCS_ROOT, 'providers');
 const DRIVERS = join(REPO, 'server', 'src', 'catalog', 'providers');
+// The live-verify runbooks are contributor material, kept beside the drivers they
+// verify rather than in the pinned docs bundle. Operators run the same pass from
+// the bundle's tenant check page.
+const RUNBOOK_DIR = 'server/src/catalog/providers/live-verify';
+const RUNBOOKS = join(REPO, RUNBOOK_DIR);
 const PLAYBOOK = join(DOCS_ROOT, 'offboarding.md');
+const TENANT_CHECK = join(DOCS, 'tenant-check.md');
 const CLI_SRC = readFileSync(join(REPO, 'cli', 'lw.ts'), 'utf8');
 const KINDS = PROVIDER_KINDS.filter((k) => k !== 'mock');
 
@@ -178,11 +185,20 @@ function oauthFlowKinds(src: string): string[] {
   return [...src.slice(at, end).matchAll(/kind === '([a-z0-9-]+)'/g)].map((m) => m[1]!);
 }
 
-/** Guides plus the live-verify runbooks: every page that carries a kind. */
-const kindPages = (): Array<{ kind: string; file: string }> => [
-  ...KINDS.map((kind) => ({ kind, file: `${kind}.md` })),
+/** The maintainer runbooks, one per hardened driver, named by repository path. */
+const runbookPages = (): Array<{ kind: string; file: string; path: string }> =>
+  readdirSync(RUNBOOKS).filter((f) => f.endsWith('.md'))
+    .map((f) => ({ kind: f.slice(0, -'.md'.length), file: `${RUNBOOK_DIR}/${f}`, path: join(RUNBOOKS, f) }));
+
+/** Guides plus the runbooks: every page that carries a kind, named by repository
+ *  path. The bundle still carries generated copies of the runbooks
+ *  (docs/providers/<kind>-live-verify.md) until the canonical source drops them;
+ *  while it does, they are checked like the maintained ones. */
+const kindPages = (): Array<{ kind: string; file: string; path: string }> => [
+  ...KINDS.map((kind) => ({ kind, file: `docs/providers/${kind}.md`, path: join(DOCS, `${kind}.md`) })),
+  ...runbookPages(),
   ...readdirSync(DOCS).filter((f) => f.endsWith('-live-verify.md'))
-    .map((file) => ({ kind: file.slice(0, -'-live-verify.md'.length), file })),
+    .map((f) => ({ kind: f.slice(0, -'-live-verify.md'.length), file: `docs/providers/${f}`, path: join(DOCS, f) })),
 ];
 
 /** EVERY published page, not only the provider ones: the same class of bug hides
@@ -195,6 +211,12 @@ function allDocPages(dir = DOCS_ROOT, prefix = ''): Array<{ file: string; path: 
     else if (e.name.endsWith('.md')) out.push({ file: `${prefix}${e.name}`, path: join(dir, e.name) });
   }
   return out;
+}
+
+/** Every page a reader can follow a command from: the docs tree plus the
+ *  runbooks beside the drivers. `file` is the repository path. */
+function commandPages(): Array<{ file: string; path: string }> {
+  return [...allDocPages().map(({ file, path }) => ({ file: `docs/${file}`, path })), ...runbookPages()];
 }
 
 /** Which kind each provider id in a page belongs to, learned from the page's own
@@ -333,17 +355,18 @@ test('every `lw …` command the docs instruct exists in cli/lw.ts', () => {
   // The usage line is what an operator sees after a typo, so a verb missing
   // from it is the same bug from the other side (`preview` was, for nine guides).
   assert.deepEqual([...usage].sort(), [...providers].sort(), 'the providers usage line lists exactly the sub-verbs the switch handles');
-  const pages = allDocPages();
+  const pages = commandPages();
   assert.ok(pages.length > KINDS.length, 'walked the whole docs tree, not just the provider guides');
+  assert.ok(pages.some(({ file }) => file.startsWith(RUNBOOK_DIR)), 'walked the maintainer runbooks too');
   for (const { file, path } of pages) {
     for (const { line, text } of lwCommands(readFileSync(path, 'utf8'))) {
       const { verb, sub } = verbPath(text);
       for (const v of verb) {
-        assert.ok(top.has(v), `docs/${file}:${line} documents "lw ${v}", which no case in cli/lw.ts handles - it falls through to the usage text: ${text}`);
+        assert.ok(top.has(v), `${file}:${line} documents "lw ${v}", which no case in cli/lw.ts handles - it falls through to the usage text: ${text}`);
       }
       if (!verb.includes('providers')) continue;
       for (const s of sub) {
-        assert.ok(providers.has(s), `docs/${file}:${line} documents "lw providers ${s}", which the providers switch in cli/lw.ts does not handle - it falls through to the usage text: ${text}`);
+        assert.ok(providers.has(s), `${file}:${line} documents "lw providers ${s}", which the providers switch in cli/lw.ts does not handle - it falls through to the usage text: ${text}`);
       }
     }
   }
@@ -361,10 +384,10 @@ test('no page instructs `lw providers auth` for a kind the CLI cannot drive', ()
   // the `--kind` on the same page's own `lw providers add` line - which is what
   // catches a walkthrough like catalog.md running `auth` against a bearer key.
   const byFile = new Map(kindPages().map((p) => [p.file, p.kind]));
-  for (const { file, path } of allDocPages()) {
+  for (const { file, path } of commandPages()) {
     const md = readFileSync(path, 'utf8');
     const declaredKinds = kindsById(md);
-    const pageKind = byFile.get(file.startsWith('providers/') ? file.slice('providers/'.length) : file);
+    const pageKind = byFile.get(file);
     for (const { line, text } of lwCommands(md)) {
       const { verb, sub, arg } = verbPath(text);
       // A bare `lw providers auth` is a reference (the guides for the pending
@@ -373,7 +396,7 @@ test('no page instructs `lw providers auth` for a kind the CLI cannot drive', ()
       if (!verb.includes('providers') || !sub.includes('auth') || !arg[0]) continue;
       const kind = declaredKinds.get(arg[0]) ?? pageKind;
       if (!kind) continue; // no kind is knowable from the page: nothing to check against
-      assert.ok(flowKinds.includes(kind), `docs/${file}:${line} instructs "lw providers auth" but no consent flow is registered for kind ${kind} (oauthFlowFor handles ${flowKinds.join(', ')}) - it exits with a refusal. Capture the sealed blob with "lw providers credential <id>" instead: ${text}`);
+      assert.ok(flowKinds.includes(kind), `${file}:${line} instructs "lw providers auth" but no consent flow is registered for kind ${kind} (oauthFlowFor handles ${flowKinds.join(', ')}) - it exits with a refusal. Capture the sealed blob with "lw providers credential <id>" instead: ${text}`);
     }
   }
 });
@@ -390,15 +413,14 @@ test('no guide sends a pending OAuth kind to the consent-flow section, and no an
   assert.ok(readme.includes('### Kinds with a registered consent flow'), 'the consent-flow section exists');
   assert.ok(readme.includes('### Kinds whose consent flow is not registered'), 'and the section for the kinds without one');
 
-  for (const { kind, file } of kindPages()) {
-    const path = join(DOCS, file);
+  for (const { kind, file, path } of kindPages()) {
     if (!existsSync(path)) continue;
     const md = readFileSync(path, 'utf8');
     if (md.includes(CONSENT)) {
-      assert.ok(flowKinds.includes(kind), `providers/${file} links the consent-flow section, but no flow is registered for kind ${kind} - that section's only instruction is \`lw providers auth\`, which refuses here. Link ${PENDING} instead.`);
+      assert.ok(flowKinds.includes(kind), `${file} links the consent-flow section, but no flow is registered for kind ${kind} - that section's only instruction is \`lw providers auth\`, which refuses here. Link ${PENDING} instead.`);
     }
     if (md.includes(PENDING)) {
-      assert.ok(!flowKinds.includes(kind), `providers/${file} is a kind with a registered consent flow but links the section for the kinds without one`);
+      assert.ok(!flowKinds.includes(kind), `${file} is a kind with a registered consent flow but links the section for the kinds without one`);
     }
   }
 
@@ -406,22 +428,28 @@ test('no guide sends a pending OAuth kind to the consent-flow section, and no an
   // renamed section otherwise scrolls the reader to the top of the page.
   const slugs = new Set([...readme.matchAll(/^#{2,4} (.+)$/gm)]
     .map((m) => (m[1] as string).toLowerCase().replace(/[^a-z0-9 -]/g, '').trim().replace(/\s+/g, '-')));
-  for (const { file, path } of allDocPages()) {
-    if (!file.startsWith('providers/')) continue;
+  for (const { file, path } of commandPages()) {
+    if (!file.startsWith('docs/providers/') && !file.startsWith(RUNBOOK_DIR)) continue;
     for (const m of readFileSync(path, 'utf8').matchAll(/README\.md#([a-z0-9-]+)/g)) {
-      assert.ok(slugs.has(m[1] as string), `docs/${file} links providers/README.md#${m[1]}, which is not a heading there`);
+      assert.ok(slugs.has(m[1] as string), `${file} links providers/README.md#${m[1]}, which is not a heading there`);
     }
   }
 });
 
-test('every driver hardened for tenant day has its live-verify runbook', () => {
+test('every driver hardened for tenant day has its maintainer runbook and an operator check', () => {
   // plans/33 hardens the live-verify-pending DAM drivers: each grows a
-  // `sampleShape` report and errors that print "See docs/providers/<kind>-live-
-  // verify.md". Those pointers must land on a page that exists - they are read
-  // on the worst day. Drivers carrying live-verify debt with no tenant-day pass
-  // scheduled (penpot, optimizely-cmp) promise no page, and this asserts they
-  // promise none, so a new promise cannot land without its runbook.
+  // `sampleShape` report and errors that print "See server/src/catalog/
+  // providers/live-verify/<kind>.md". Those pointers must land on a runbook that
+  // exists - they are read on the worst day. The runbooks are contributor
+  // material beside the drivers; operators run the same pass from the bundle's
+  // tenant check, which each guide and the off-boarding page link instead.
+  // Drivers carrying live-verify debt with no tenant-day pass scheduled (penpot,
+  // optimizely-cmp) promise no runbook, and this asserts they promise none, so a
+  // new promise cannot land without its runbook.
   const playbook = readFileSync(PLAYBOOK, 'utf8');
+  assert.ok(existsSync(TENANT_CHECK), 'docs/providers/tenant-check.md exists');
+  const tenantCheck = readFileSync(TENANT_CHECK, 'utf8');
+  assert.ok(playbook.includes('(providers/tenant-check.md'), 'offboarding.md links the tenant check');
   const promised: string[] = [];
   for (const f of readdirSync(DRIVERS).filter((n) => n.endsWith('.ts'))) {
     const src = readFileSync(join(DRIVERS, f), 'utf8');
@@ -431,20 +459,20 @@ test('every driver hardened for tenant day has its live-verify runbook', () => {
       continue;
     }
     const kind = f.slice(0, -3);
-    const page = `${kind}-live-verify.md`;
+    const runbook = `live-verify/${kind}.md`;
     if (!/async sampleShape\(/.test(src)) {
-      assert.ok(!header.includes(page), `${f} header points at ${page} but the driver has no sampleShape - either harden it or drop the pointer`);
+      assert.ok(!header.includes(runbook), `${f} header points at ${runbook} but the driver has no sampleShape - either harden it or drop the pointer`);
       continue;
     }
-    promised.push(page);
-    assert.ok(existsSync(join(DOCS, page)), `${f} carries LIVE-VERIFY debt and a shape report, so docs/providers/${page} must exist - its errors send the operator there`);
-    assert.ok(header.includes(page), `${f} header must name docs/providers/${page}`);
-    assert.ok(guide(kind).includes(`(${page})`), `${kind}.md does not link its live-verify runbook ${page}`);
-    assert.ok(playbook.includes(`providers/${page}`), `offboarding.md does not link providers/${page}`);
+    promised.push(`${kind}.md`);
+    assert.ok(existsSync(join(DRIVERS, runbook)), `${f} carries LIVE-VERIFY debt and a shape report, so ${RUNBOOK_DIR}/${kind}.md must exist - its errors send the reader there`);
+    assert.ok(header.includes(runbook), `${f} header must name ${runbook}`);
+    assert.match(guide(kind), /\]\(tenant-check\.md(#[a-z0-9-]+)?\)/, `${kind}.md does not send operators to the tenant check`);
+    assert.ok(tenantCheck.includes(`](${kind}.md)`), `tenant-check.md does not list ${kind}`);
   }
   assert.ok(promised.length >= 4, `expected the plans/33 DAM drivers to promise runbooks, got ${promised.length}`);
-  for (const f of readdirSync(DOCS).filter((n) => n.endsWith('-live-verify.md'))) {
-    assert.ok(promised.includes(f), `docs/providers/${f} belongs to no driver that promises it - a renamed page leaves the driver's own error pointing nowhere`);
+  for (const f of readdirSync(RUNBOOKS).filter((n) => n.endsWith('.md'))) {
+    assert.ok(promised.includes(f), `${RUNBOOK_DIR}/${f} belongs to no driver that promises it - a renamed runbook leaves the driver's own error pointing nowhere`);
   }
 });
 

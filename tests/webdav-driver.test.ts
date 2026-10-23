@@ -430,7 +430,7 @@ test('a page whose every resource sits outside the files root names the URL temp
   const msg = err?.message ?? '';
   assert.match(msg, /none of the 2 resource\(s\) PROPFIND returned sit under the files root/);
   assert.ok(msg.includes('fix NEXTCLOUD_FILES_PATH (or options.username / options.root) in server/src/catalog/providers/webdav.ts'), msg);
-  assert.ok(msg.includes('docs/providers/webdav-live-verify.md'), msg);
+  assert.ok(msg.includes('server/src/catalog/providers/live-verify/webdav.md'), msg);
 });
 
 /**
@@ -534,7 +534,7 @@ test('a malformed body throws the self-diagnosing error, naming the assumption a
     assert.ok(msg.startsWith('webdav '), msg);
     assert.ok(msg.includes('(live-verify: '), msg);
     assert.ok(msg.includes(`fix ${c.constant} in server/src/catalog/providers/webdav.ts`), msg);
-    assert.ok(msg.includes('docs/providers/webdav-live-verify.md'), msg);
+    assert.ok(msg.includes('server/src/catalog/providers/live-verify/webdav.md'), msg);
   }
 });
 

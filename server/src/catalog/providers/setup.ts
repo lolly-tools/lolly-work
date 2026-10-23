@@ -23,7 +23,7 @@ export const WEBDAV_SETUP = {
   limits: [
     'WebDAV has no approval status. Restrict the root to a folder containing approved assets.',
     'Availability dates apply only when your server exposes the named custom DAV properties.',
-    'This driver has fixture coverage. Complete the live-verify runbook against your server for customer acceptance.',
+    'This driver has fixture coverage. Run the tenant check against your server for customer acceptance.',
   ],
   fields: [
     { path: 'options.flavor', label: 'Server type', type: 'select', choices: ['nextcloud', 'generic'], default: 'nextcloud', help: 'Nextcloud builds its files URL. Generic uses the DAV mount URL you enter.' },
@@ -54,7 +54,7 @@ export const GDRIVE_SETUP = {
     'Expose one curated folder of approved files. Subfolders and native Google Docs, Sheets and Slides are skipped.',
     'Google Drive supplies no approval status or availability dates to this driver.',
     'Read-only consent can access the connected account’s Drive. The catalog exposes only the configured folder; use an account with suitably limited access.',
-    'Fixture coverage is not customer acceptance. Complete the live-verify runbook against your Google Workspace.',
+    'Fixture coverage is not customer acceptance. Run the tenant check against your Google Workspace.',
   ],
   fields: [
     { path: 'options.folderId', label: 'Folder id', type: 'text', required: true, help: 'Copy the id after /folders/ in the Drive folder URL, not the entire share link. My Drive and shared drive folders are supported.' },

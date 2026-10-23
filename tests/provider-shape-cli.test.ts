@@ -181,7 +181,7 @@ test('a tenant whose listing would break still gets the report that diagnoses it
     const plain = await lw(['providers', 'preview', '--kind', 'canto', '--options', JSON.stringify({ tenant: 'acme', minGapMs: 0 })], `${CRED}\n`);
     assert.match(plain.stdout, /listing FAILED: canto list response carried no record array/);
     assert.match(plain.stdout, /fix LIST_ENVELOPE_KEYS in server\/src\/catalog\/providers\/canto\.ts/);
-    assert.match(plain.stdout, /docs\/providers\/canto-live-verify\.md/);
+    assert.match(plain.stdout, /server\/src\/catalog\/providers\/live-verify\/canto\.md/);
 
     const r = await lw(['providers', 'preview', '--kind', 'canto', '--shape', '--options', JSON.stringify({ tenant: 'acme', minGapMs: 0 })], `${CRED}\n`);
     assert.equal(r.code, 0, r.stderr);

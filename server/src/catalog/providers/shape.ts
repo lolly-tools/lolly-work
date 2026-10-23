@@ -368,7 +368,7 @@ export interface LiveVerifyDiagnosis {
 /**
  * The message a wrong guess prints on the worst day: which assumption broke,
  * the command that shows the real structure, the constant to edit, and the
- * runbook page for this kind. The kind leads without punctuation so the
+ * maintainer runbook for this kind, kept beside the drivers in live-verify/. The kind leads without punctuation so the
  * existing `<kind> <what> <status>` error voice of these drivers is unchanged.
  */
 export function liveVerifyMessage(d: LiveVerifyDiagnosis): string {
@@ -376,7 +376,7 @@ export function liveVerifyMessage(d: LiveVerifyDiagnosis): string {
   return `${d.kind} ${d.problem} (live-verify: ${d.assumption}${tried}). `
     + `Run \`lw providers preview --kind ${d.kind} --shape\` to see what the tenant actually returned, `
     + `then fix ${d.constant} in server/src/catalog/providers/${d.kind}.ts. `
-    + `See docs/providers/${d.kind}-live-verify.md.`;
+    + `See server/src/catalog/providers/live-verify/${d.kind}.md.`;
 }
 
 export function liveVerifyError(d: LiveVerifyDiagnosis): Error {

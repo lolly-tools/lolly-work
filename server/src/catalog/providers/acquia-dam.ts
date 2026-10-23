@@ -20,7 +20,7 @@
  * edit here and nowhere else. `sampleShape` reports what the tenant actually
  * returned (key names and types, never values) and diffs it against those
  * constants. Each failure that depends on a guess names the assumption, the
- * constant, and docs/providers/acquia-dam-live-verify.md.
+ * constant, and the runbook live-verify/acquia-dam.md.
  */
 import {
   buildDetailShapeReport, buildShapeReport, findRecordArray, firstArray, firstId, firstNumber,

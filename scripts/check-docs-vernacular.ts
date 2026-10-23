@@ -12,7 +12,7 @@
  *   node scripts/check-docs-vernacular.ts
  *
  * Scope: the ENGLISH sources only (docs/*.md, docs/site/*, the figure HTML,
- * README.md). Locale twins are generated from these by the translate pipeline,
+ * README.md, and the provider live-verify runbooks beside the drivers). Locale twins are generated from these by the translate pipeline,
  * which carries its own punctuation rules.
  *
  * Two ban layers, both deterministic:
@@ -242,6 +242,13 @@ function targets(): string[] {
   if (existsSync(join(ROOT, 'docs/providers'))) {
     for (const f of readdirSync(join(ROOT, 'docs/providers'))) {
       if (f.endsWith('.md')) out.push(`docs/providers/${f}`);
+    }
+  }
+  // The provider live-verify runbooks, kept beside the drivers they verify.
+  const runbooks = 'server/src/catalog/providers/live-verify';
+  if (existsSync(join(ROOT, runbooks))) {
+    for (const f of readdirSync(join(ROOT, runbooks))) {
+      if (f.endsWith('.md')) out.push(`${runbooks}/${f}`);
     }
   }
   return out.sort();

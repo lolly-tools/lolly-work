@@ -27,7 +27,7 @@
  * one-line edit here and nowhere else. `sampleShape` reports what the tenant
  * actually returned (key names and types, never values) and diffs it against
  * those constants. Each failure that depends on a guess names the assumption,
- * the constant, and docs/providers/imagerelay-live-verify.md.
+ * the constant, and the runbook live-verify/imagerelay.md.
  */
 import { getAccessToken, parseOAuthCredential } from './oauth.ts';
 import {

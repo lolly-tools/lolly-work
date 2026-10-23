@@ -91,7 +91,7 @@
  * one-line edit here and nowhere else. `sampleShape` reports what the server
  * actually returned (property names and value types, never values) and diffs it
  * against those constants. Each failure that depends on a guess names the
- * assumption, the constant, and docs/providers/webdav-live-verify.md.
+ * assumption, the constant, and the runbook live-verify/webdav.md.
  */
 import {
   buildShapeReport, firstString, liveVerifyError, liveVerifyMessage,

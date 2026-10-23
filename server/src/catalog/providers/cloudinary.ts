@@ -2,7 +2,7 @@
  * Cloudinary read-only source (plans/81), using documented Search/Admin and
  * asset-ID download APIs. No SDK, transformation, upload or AI execution.
  * LIVE-VERIFY: regional API, Search entitlement, metadata mapping, private/raw
- * downloads and byte fidelity. See docs/providers/cloudinary-live-verify.md.
+ * downloads and byte fidelity. See the runbook live-verify/cloudinary.md.
  */
 import { createHash } from 'node:crypto';
 import { assertDamExposure, createDamHttp, DamHttpError, damDate, damLimit, damNumber, damRecord, damString } from './dam-http.ts';

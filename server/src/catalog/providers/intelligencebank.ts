@@ -27,7 +27,7 @@
  * edit here and nowhere else. `sampleShape` reports what the tenant actually
  * returned (key names and types, never values) and diffs it against those
  * constants. Each failure that depends on a guess names the assumption, the
- * constant, and docs/providers/intelligencebank-live-verify.md.
+ * constant, and the runbook live-verify/intelligencebank.md.
  */
 import { sha256Hex } from '../../lib/crypto.ts';
 import {
