@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: MPL-2.0
+# One preview deploy run on the K3s node. The preview deploy command installs
+# this file as a runtime unit (/run/systemd/system, gone after a reboot) from its
+# lock-pinned bundle and starts it detached, so a dropped SSH or Wi-Fi link
+# cannot stop a run halfway.
+#
+# The unit is the node lock: the command refuses to start while it is active,
+# and the runner also holds /run/lock/lolly-preview-deploy.lock for its whole
+# life. Manual changes to a preview take that same lock with flock(1).
+#
+# ExecStopPost runs after every stop: a normal exit, a crash, RuntimeMaxSec or a
+# systemctl stop. When the Deployment's phase annotation still says the switch
+# is unverified for this run, it rolls back to the recorded previous image.
+# There is no [Install] section: the unit never starts at boot.
+
+[Unit]
+Description=Lolly preview deploy run (one at a time; this unit is the node lock)
+After=k3s.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -I -B /var/lib/lolly-preview/run/tool/node/node_runner.py run /var/lib/lolly-preview/run/request.json
+ExecStopPost=/usr/bin/python3 -I -B /var/lib/lolly-preview/run/tool/node/node_runner.py stop-post /var/lib/lolly-preview/run/request.json
+Restart=no
+RuntimeMaxSec=1800
+TimeoutStopSec=600
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+SyslogIdentifier=lolly-preview-deploy
+StandardOutput=journal
+StandardError=journal
