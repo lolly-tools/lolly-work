@@ -65,7 +65,7 @@
  * guess is a one-line edit here and nowhere else. `sampleShape` reports what
  * the tenant actually returned (key names and types, never values) and diffs it
  * against those constants. Each failure that depends on a guess names the
- * assumption, the constant, and docs/providers/canto-live-verify.md.
+ * assumption, the constant, and the runbook live-verify/canto.md.
  */
 import { getAccessToken, parseOAuthCredential } from './oauth.ts';
 import {

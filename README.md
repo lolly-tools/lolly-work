@@ -11,8 +11,8 @@ just config + a pack mount.
 
 The [1.1.2 release](docs/release-1-1-2.md) records the matched Lolly source,
 component versions, migrations and the checks required before publication. The
-[1.1.1](docs/release-1-1-1.md) and [1.1.0](docs/release-1-1-0.md) releases keep
-their own records.
+[1.1.1](docs/past-releases.md#111) and [1.1.0](docs/past-releases.md#110) releases keep
+their own records in [past releases](docs/past-releases.md).
 
 The default server and render-worker containers use Node 26.12.0. CI checks Node 26;
 the SUSE BCI and admission images retain their separately qualified Node 24 base.
@@ -34,10 +34,10 @@ A running web UI + CLI, dead easy. The one install guide is
 - **Deploy for real** - self-hosted: single host
   ([Compose](docs/install.md#5-container-compose) /
   [systemd](docs/install.md#6-bare-metal-systemd)) or
-  [Kubernetes/Helm](docs/install.md#7-kubernetes-helm).
+  [Kubernetes/Helm](docs/platform-deployment.md).
   **The safest, most sovereign path is the SUSE stack** - **SLES + SUSE Rancher Prime** (paid) or
   **openSUSE Leap + Rancher Community** (free): SUSE's reproducible builds + governed EU (Prague)
-  supply chain, air-gappable, no US hyperscaler (`docs/deployment.md` → *Sovereignty*).
+  supply chain, air-gappable, no US hyperscaler (`docs/deployment.md` → *Hosting and operating-system choices*).
 
 The hosted demo runs on UpCloud in Frankfurt, on openSUSE Leap and K3s, in a
 separate evaluation namespace. Its sample data resets on restart; it is never the

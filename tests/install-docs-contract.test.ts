@@ -1,17 +1,23 @@
 /**
- * Install-surface contract. There is exactly ONE install guide, docs/install.md,
- * because only docs/ reaches the console at /admin#/docs and because a second
- * copy at the repo root drifted the moment it existed (it shipped a different
- * recommended cluster on-ramp and a different Helm command than the docs copy).
- * Root INSTALL.md is a pointer, and this test is what keeps it one:
+ * Install-surface contract. Every install command has exactly ONE home in docs/:
+ * docs/install.md for the source and single-server paths, and
+ * docs/platform-deployment.md for Kubernetes. Only docs/ reaches the console at
+ * /admin#/docs, and a second copy at the repo root drifted the moment it existed
+ * (it shipped a different recommended cluster on-ramp and a different Helm
+ * command than the docs copy). Root INSTALL.md is a pointer, and this test is
+ * what keeps it one:
  *   - INSTALL.md stays short and links docs/install.md;
  *   - INSTALL.md carries no shape-specific install recipe of its own;
  *   - docs/deployment.md keeps no second copy of the install commands either,
  *     which is where the SECOND drift landed (its eval command lacked the image
- *     override that makes the eval install work at all);
+ *     override that makes the eval install work at all), and the two install
+ *     pages do not copy each other's commands;
  *   - docs.json lists install and nothing it lists is missing from disk;
  *   - every .md under docs/, subdirectories included, has a docs.json entry, so
- *     a page cannot be added without a console home;
+ *     a page cannot be added without a console home. The one exception is the
+ *     generated copy of a live-verify runbook, which the bundle carries until
+ *     the canonical source drops it; the maintained runbook sits beside its
+ *     driver in server/src/catalog/providers/live-verify/;
  *   - the config file the guide tells a first-timer to copy actually parses and
  *     points its pack at a directory that exists;
  *   - the commands the guide hands a first-timer agree with the artifacts they
@@ -37,7 +43,9 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DOCS = join(REPO, 'docs');
 const ROOT_INSTALL = readFileSync(join(REPO, 'INSTALL.md'), 'utf8');
 const CANONICAL = readFileSync(join(DOCS, 'install.md'), 'utf8');
+const KUBERNETES = readFileSync(join(DOCS, 'platform-deployment.md'), 'utf8');
 const DEPLOYMENT = readFileSync(join(DOCS, 'deployment.md'), 'utf8');
+const RUNBOOKS = join(REPO, 'server/src/catalog/providers/live-verify');
 
 interface Manifest {
   sections: Array<{ id: string; docs: Array<{ slug: string; title: string; path?: string }> }>;
@@ -79,11 +87,18 @@ test('deployment.md describes the shapes and keeps no second copy of the command
   // package. One home per command; deployment.md links into it.
   // Anchored at line start: that is how a runnable command appears in a fence,
   // and it leaves prose free to NAME the command it is linking to.
-  for (const command of [/^\s*helm (install|upgrade) /m, /^\s*docker compose up/m, /^\s*kubectl create secret/m]) {
-    assert.ok(!command.test(DEPLOYMENT), `docs/deployment.md must not carry its own ${command} recipe; link install.md instead`);
-    assert.match(CANONICAL, command, `docs/install.md is the one home for ${command}`);
+  const homes: Array<{ command: RegExp; home: string; text: string; other: string; otherText: string }> = [
+    { command: /^\s*helm (install|upgrade) /m, home: 'platform-deployment.md', text: KUBERNETES, other: 'install.md', otherText: CANONICAL },
+    { command: /^\s*kubectl create secret/m, home: 'platform-deployment.md', text: KUBERNETES, other: 'install.md', otherText: CANONICAL },
+    { command: /^\s*docker compose up/m, home: 'install.md', text: CANONICAL, other: 'platform-deployment.md', otherText: KUBERNETES },
+  ];
+  for (const { command, home, text, other, otherText } of homes) {
+    assert.ok(!command.test(DEPLOYMENT), `docs/deployment.md must not carry its own ${command} recipe; link ${home} instead`);
+    assert.match(text, command, `docs/${home} is the one home for ${command}`);
+    assert.ok(!command.test(otherText), `docs/${other} must not carry its own ${command} recipe; link ${home} instead`);
   }
-  assert.match(DEPLOYMENT, /install\.md#/, 'deployment.md links into the install guide sections');
+  assert.match(DEPLOYMENT, /\binstall\.md#/, 'deployment.md links into the install guide sections');
+  assert.match(DEPLOYMENT, /platform-deployment\.md#/, 'deployment.md links into the Kubernetes guide sections');
 });
 
 test('the canonical guide covers the whole first-deploy arc', () => {
@@ -117,7 +132,17 @@ test('docs.json and docs/ agree in both directions', () => {
     assert.ok(existsSync(join(DOCS, docPath(d))), `docs.json lists ${d.slug} but docs/${docPath(d)} is missing`);
   }
   const served = new Set(entries.map(docPath));
+  // A generated runbook copy is retired, not a page: its maintained runbook must
+  // exist beside the driver, and the console must not list the copy.
+  const retired = (f: string): boolean => {
+    const m = /^providers\/([a-z0-9-]+)-live-verify\.md$/.exec(f);
+    return Boolean(m && existsSync(join(RUNBOOKS, `${m[1]}.md`)));
+  };
   for (const f of docMarkdown()) {
+    if (retired(f)) {
+      assert.ok(!served.has(f), `docs/${f} is a retired runbook copy, so docs.json must not list it`);
+      continue;
+    }
     assert.ok(served.has(f), `docs/${f} has no docs.json entry, so it gets no console page`);
   }
 });
@@ -143,9 +168,10 @@ test('the Helm eval install can complete the guide it is pointed at', () => {
   const baseUrl = /baseUrl:\s*"([^"]+)"/.exec(evalValues)?.[1];
   assert.ok(baseUrl?.startsWith('http://'), `values-eval.yaml baseUrl must be http: for the TLS-free eval, got ${baseUrl}`);
   // Every dev address the eval verification ladder uses must exist in the file.
-  for (const m of CANONICAL.matchAll(/email=([a-z0-9.@-]+@eval\.example)/g)) {
-    const address = m[1] ?? '';
-    assert.ok(evalValues.includes(address), `install.md signs in as ${address}, which values-eval.yaml does not ship`);
+  const addresses = [...KUBERNETES.matchAll(/email=([a-z0-9.@-]+@eval\.example)/g)].map((m) => m[1] ?? '');
+  assert.ok(addresses.length, 'platform-deployment.md signs in to the evaluation install');
+  for (const address of addresses) {
+    assert.ok(evalValues.includes(address), `platform-deployment.md signs in as ${address}, which values-eval.yaml does not ship`);
   }
 });
 
@@ -156,10 +182,10 @@ test('the documented port-forward names a port the chart actually creates', () =
     readFileSync(join(REPO, 'deploy/helm/values.yaml'), 'utf8').split('\nservice:')[1] ?? '',
   )?.[1];
   assert.ok(port, 'deploy/helm/values.yaml declares service.port');
-  const forwards = [...CANONICAL.matchAll(/port-forward[^\n]*?\s(\d+):(\d+)/g)];
-  assert.ok(forwards.length, 'install.md shows how to reach the cluster install');
+  const forwards = [...KUBERNETES.matchAll(/port-forward[^\n]*?\s(\d+):(\d+)/g)];
+  assert.ok(forwards.length, 'platform-deployment.md shows how to reach the cluster install');
   for (const f of forwards) {
-    assert.equal(f[2], port, `install.md forwards to service port ${f[2]}, but the chart's Service listens on ${port}`);
+    assert.equal(f[2], port, `platform-deployment.md forwards to service port ${f[2]}, but the chart's Service listens on ${port}`);
   }
 });
 

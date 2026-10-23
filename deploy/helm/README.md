@@ -11,7 +11,7 @@ high availability. The optional Chromium worker is disabled by default.
 
 Use the [official installation directory](https://github.com/lolly-tools/lolly-work/blob/main/docs/official-installations.md)
 for publication status, immutable release pins and platform qualification.
-Follow the [installation guide](https://github.com/lolly-tools/lolly-work/blob/main/docs/install.md#7-kubernetes-helm)
+Follow the [Kubernetes installation guide](https://github.com/lolly-tools/lolly-work/blob/main/docs/platform-deployment.md#install-for-production)
 for secrets, database, real owner sign-in, ingress and verification. The default
 installation serves `/admin` and the API. Add a matched shell and neutral/own pack
 to serve the complete Lolly application at `/`.

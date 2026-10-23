@@ -46,7 +46,7 @@ function namesItsRemedy(message: string, kind: string, constant: string): void {
   assert.ok(message.includes('(live-verify: '), `does not name the assumption: ${message}`);
   assert.ok(message.includes(`lw providers preview --kind ${kind} --shape`), `does not name the diagnostic: ${message}`);
   assert.ok(message.includes(`fix ${constant} in server/src/catalog/providers/${kind}.ts`), `does not name the constant: ${message}`);
-  assert.ok(message.includes(`docs/providers/${kind}-live-verify.md`), `does not name the runbook: ${message}`);
+  assert.ok(message.includes(`server/src/catalog/providers/live-verify/${kind}.md`), `does not name the runbook: ${message}`);
 }
 
 const collect = async (fn: () => Promise<unknown>): Promise<string> => {

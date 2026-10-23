@@ -4,7 +4,7 @@
 > the public lolly.work evaluation demo run on UpCloud/K3s. The private
 > workspace uses PostgreSQL on that host; the demo uses a separate, ephemeral
 > memory store. Vercel is no longer their
-> production or rollback target. See [current hosted production](../../docs/deployment.md#current-hosted-production).
+> production or rollback target. See [the install shapes](../../docs/deployment.md#the-install-shapes).
 > This repository's CI no longer deploys to Vercel on pushes to main. The
 > adapter and packaging checks below remain available for an explicitly chosen
 > generic Vercel instance. Vercel project Git integrations must be disabled

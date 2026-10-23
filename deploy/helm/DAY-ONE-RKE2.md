@@ -9,7 +9,7 @@ matrix. Current lolly.ing and lolly.tools run on UpCloud/K3s; their reviewed
 instance handoff is separate from these generic commands. A new installation
 does not require Vercel. Start with the
 [platform-team workflow](../suse/PLATFORM-TEAMS.md) and
-[production installation](../../docs/install.md#7b-production).
+[production installation](../../docs/platform-deployment.md#install-for-production).
 
 ## Existing source and container checks
 

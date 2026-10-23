@@ -2,7 +2,7 @@
  * Orange Logic public Search v4 source (plans/81). Returned files are permitted
  * renditions, never protected originals. Missing formats are not generated.
  * LIVE-VERIFY: tenant fields, OAuth, scoped pagination, format substitutions
- * and storage origins. See docs/providers/orange-logic-live-verify.md.
+ * and storage origins. See the runbook live-verify/orange-logic.md.
  */
 import { createHash } from 'node:crypto';
 import { assertDamExposure, createDamHttp, DamHttpError, damDate, damLimit, damNumber, damOrigin, damRecord, damString } from './dam-http.ts';

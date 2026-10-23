@@ -4,7 +4,7 @@
 #   helm install lolly-work deploy/helm -f deploy/helm/values-eval.yaml
 #
 # (release name lolly-work on purpose: Helm prefixes objects with it, so the
-# Service lands on lolly-work and docs/install.md's verify commands just work)
+# Service lands on lolly-work and docs/platform-deployment.md's verify commands just work)
 #
 # gives a complete governed demo on any conformant cluster (verified on k3s and
 # designed for RKE2 — both Rancher-managed) with ZERO prerequisites: no
@@ -19,7 +19,7 @@
 #   - secrets below are eval-grade literals so install is one command; a real
 #     deploy uses `existingSecret` and openssl-minted values (values.yaml top)
 #
-# The production path is the DEFAULT values.yaml + docs/deployment.md.
+# The production path is the DEFAULT values.yaml + docs/platform-deployment.md.
 # ══════════════════════════════════════════════════════════════════════════════
 
 # One replica: the memory store is per-process, and the current combined
@@ -32,7 +32,7 @@ replicaCount: 1
 # Start a separate reviewed production release from the default chart and your
 # environment values, with real identity, dev=false, mode=production, fresh
 # existing Secrets, durable storage, TLS and the reviewed migration hook.
-# See docs/install.md section 7b. Do not merge this file into that release.
+# See docs/platform-deployment.md, Install for production. Do not merge this file into that release.
 
 secrets:
   # Eval-grade, deliberately unremarkable. Rotate into existingSecret for

@@ -4,7 +4,7 @@ This adapter uploads and qualifies a complete static site on one fresh claim,
 then changes the site's root claim and three release annotations. It reuses
 the accepted native image, configuration, models, storage class and resource
 limits. It does not reprovision the cluster or rebuild unchanged native
-dependencies. The [shared update guide](../../docs/frontend-updates.md) keeps
+dependencies. The [shared update guide](https://github.com/lolly-tools/lolly/blob/main/scripts/README.md#update-the-web-app-without-rebuilding-its-image) keeps
 the existing private three-command route and explains when a new image or
 signed catalog release is required.
 

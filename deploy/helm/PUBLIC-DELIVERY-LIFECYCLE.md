@@ -16,7 +16,7 @@ commands for the declared managed K3s layout. Registration and its first real
 native acceptance remain release requirements; the existing five-path hold
 stays in place.
 
-Use the [shared update guide](../../docs/frontend-updates.md) to choose between
+Use the [shared update guide](https://github.com/lolly-tools/lolly/blob/main/scripts/README.md#update-the-web-app-without-rebuilding-its-image) to choose between
 a frontend update and a new matched image/catalog release. Read
 [complete-root assembly](PLAN300-PUBLIC-FULL-ROOT.md) for the physical producer.
 Changes to signed tools, asset metadata, served docs, native dependencies or

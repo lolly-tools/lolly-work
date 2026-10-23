@@ -129,7 +129,7 @@ export async function createSetupWizard({ el, field, api }) {
         const result = await api('/api/v1/system/setup/account-test', { method: 'POST', body: { sub: subject.value } });
         correlation.replaceChildren(el('p', {}, accountText(result.account)), el('p', { class: 'sub' }, result.note));
       })), correlation, el('p', {}, 'Sign in as that person, confirm the same account ID, then change groups and disable it through SCIM. Group changes apply to active sessions; disabling revokes access.')),
-    el('p', {}, el('a', { href: '#/docs?doc=identity' }, 'Identity and SCIM reference')));
+    el('p', {}, el('a', { href: '#/docs?doc=enterprise-identity&anchor=scim-provisioning' }, 'Identity and SCIM reference')));
   panels[3].append(el('p', {}, 'Mount a compatible customer pack, then inspect its source and tools. Configuration changes to the pack path apply after deployment and restart.'),
     input('pack', 'Mounted pack path', 'Use an extracted pack containing tools/ and catalog/, or a supported profile source. Run inspect:pack on the deployed files.'),
     card('Installed pack', el('p', {}, `Engine ${report.pack.engine}; source ${report.pack.source ?? 'unavailable'}; ${report.pack.compatible ? 'compatible' : 'needs attention'}.`),
