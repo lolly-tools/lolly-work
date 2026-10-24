@@ -93,6 +93,17 @@ test('the allowlist: new tables, safe new columns, indexes on new tables, commen
   }
 });
 
+test('DEFAULT NULL stays additive on a nullable column and a real default makes NOT NULL additive', () => {
+  assert.equal(classOf('alter table users add column age int default null;'), 'additive');
+  assert.equal(classOf("alter table users add column age int not null default 0;"), 'additive');
+  assert.equal(classOf("alter table users add column age int default 0 not null;"), 'additive');
+});
+
+test('serial is fine in a table the same file creates, not as a new column', () => {
+  assert.equal(classOf('create table a (n bigserial primary key);'), 'additive');
+  assert.equal(classOf("alter table users add column n int default 'x'::serial;"), 'maintenance');
+});
+
 test('anything off the allowlist is maintenance', () => {
   const maintenance: Record<string, string> = {
     // tables
@@ -120,6 +131,15 @@ test('anything off the allowlist is maintenance', () => {
     'fk table level default': 'create table a (u text, foreign key (u) references users(id));',
     // columns on existing tables
     'not null without default': 'alter table users add column age int not null;',
+    'not null default null': 'alter table users add column age int not null default null;',
+    'default null not null': 'alter table users add column age int default null not null;',
+    'not null default null cast': 'alter table users add column age text not null default null::text;',
+    'serial': 'alter table users add column n serial;',
+    'bigserial': 'alter table users add column n bigserial;',
+    'smallserial': 'alter table users add column n smallserial;',
+    'serial2': 'alter table users add column n serial2;',
+    'serial4': 'alter table users add column n serial4;',
+    'serial8': 'alter table users add column n serial8;',
     'volatile default': 'alter table users add column seen timestamptz default now();',
     'expression default': "alter table users add column x int default 1 + 1;",
     'function default': "alter table users add column x text default gen_random_uuid()::text;",

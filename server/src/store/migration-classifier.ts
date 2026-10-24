@@ -333,10 +333,18 @@ const COLUMN_STOP = new Set(['constraint', 'not', 'null', 'default', 'primary', 
 /** Words a column type may not contain. */
 const TYPE_STOP = new Set([...COLUMN_STOP, 'as', 'on', 'using']);
 
-function columnType(cursor: Cursor, stopAt: (t: Token) => boolean): void {
+/** The serial family expands to an integer column with a volatile nextval() default and an owned sequence. */
+const SERIAL_TYPES = new Set(['serial', 'bigserial', 'smallserial', 'serial2', 'serial4', 'serial8']);
+
+/** `noSerial` is set for ADD COLUMN on an existing table and for casts. A serial column in a table created
+ *  by the same file is safe: the table is empty, so there is nothing to rewrite. */
+function columnType(cursor: Cursor, stopAt: (t: Token) => boolean, noSerial = false): void {
   let any = false;
   while (!cursor.done && !stopAt(cursor.peek()!)) {
     const t = cursor.peek()!;
+    if (noSerial && t.kind === 'word' && SERIAL_TYPES.has(t.value)) {
+      throw new Maintenance(`${t.value} implies a volatile nextval default, a table rewrite and a new sequence`);
+    }
     if (t.kind === 'word' && !TYPE_STOP.has(t.value)) { cursor.i++; any = true; continue; }
     if (t.kind === 'quoted') { cursor.i++; any = true; continue; }
     if (t.kind === 'punct' && t.value === '.') { cursor.i++; continue; }
@@ -383,7 +391,7 @@ function isConstant(tokens: Token[]): boolean {
   while (!c.done) {
     if (!c.acceptPunct('::')) return false;
     try {
-      columnType(c, t => t.kind === 'punct' && t.value === '::');
+      columnType(c, t => t.kind === 'punct' && t.value === '::', true);
     } catch {
       return false;
     }
@@ -501,8 +509,9 @@ function columnConstraints(cursor: Cursor, opts: { constantDefaultOnly: boolean 
     if (cursor.acceptWord('null')) continue;
     if (cursor.acceptWord('default')) {
       const expr = expressionTokens(cursor, COLUMN_STOP);
-      out.constantDefault = isConstant(expr);
-      if (opts.constantDefaultOnly && !out.constantDefault) throw new Maintenance('ADD COLUMN with a default that is not a constant');
+      // DEFAULT NULL is no default: it cannot back-fill existing rows of a NOT NULL column.
+      out.constantDefault = isConstant(expr) && !(expr[0].kind === 'word' && expr[0].value === 'null');
+      if (opts.constantDefaultOnly && !isConstant(expr)) throw new Maintenance('ADD COLUMN with a default that is not a constant');
       continue;
     }
     if (cursor.acceptWord('primary', 'key')) { strict('PRIMARY KEY'); out.nullable = false; continue; }
@@ -556,7 +565,7 @@ function alterTable(cursor: Cursor): void {
       || c.isWord('exclude')) throw new Maintenance('ALTER TABLE ADD CONSTRAINT');
     c.acceptWord('if', 'not', 'exists');
     identifier(c, 'a column name');
-    columnType(c, t => t.kind === 'word' && COLUMN_STOP.has(t.value));
+    columnType(c, t => t.kind === 'word' && COLUMN_STOP.has(t.value), true);
     columnConstraints(c, { constantDefaultOnly: true });
   }
 }

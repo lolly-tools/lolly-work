@@ -82,6 +82,11 @@ test fails until you do, so a change of class is always visible in review.
 print, and the runner refuses before any DDL unless the pending set matches.
 Unset, the runner behaves as before.
 
+Deploys must use the `sha256:` manifest form. A list of names only checks which
+files are pending, so it does not bind the run to the reviewed file contents.
+An empty value refuses every boot, so never set `LW_MIGRATE_EXPECT` to `""` on
+a long-lived Pod; unset it, or use `none`.
+
 ## Before you open a pull request
 
 ```sh
