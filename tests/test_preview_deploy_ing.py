@@ -318,7 +318,7 @@ class IngEndToEnd(unittest.TestCase):
             "FAKE_REHEARSAL_STATE": str(self.rehearsal_path)})
         self.environ.start()
         for name in ("FAKE_CRASH_PHASE", "FAKE_CHECK_TARGET", "FAKE_SSH_DOWN", "FAKE_START_REPLY_LOST", "FAKE_UNIT_NEVER_STARTS",
-                     "FAKE_CRASH_AFTER_SWITCH"):
+                     "FAKE_CRASH_AFTER_SWITCH", "FAKE_ING_ABORT", "FAKE_AGE_AFTER_REHEARSAL"):
             os.environ.pop(name, None)
         self.patches = [mock.patch.object(A, "ING_PUBLIC_KEY_JWK", self.key[1]), mock.patch.object(M, "SLEEP", lambda s: None),
                         mock.patch.object(M, "TOOL_ROOT", self.checkout), mock.patch.object(M, "STATE_DIR", self.state_dir)]
@@ -628,6 +628,94 @@ class IngDeploys(IngEndToEnd):
         code, events = self.cli("deploy", W_OLD)
         self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"), events)
         self.assertEqual(self.cluster()["writes"], [])
+
+
+class IngMaintenanceMarker(IngEndToEnd):
+    """A maintenance migration leaves a marker on the Deployment before it runs, and any abort keeps it."""
+
+    def run_approved(self, *argv, **env):
+        os.environ.update(env)
+        with mock.patch.object(A, "ING_MAINTENANCE_APPROVERS", ("andy",)):
+            return self.cli("deploy", *argv)
+
+    def marker(self):
+        return json.loads(self.live()[2].get("maintenance-applied") or "null")
+
+    def assert_aborted_after_migrate(self, point):
+        build = self.pending_build(IF.MAINTENANCE)
+        self.approve(1200)
+        code, events = self.run_approved(W_NEXT, FAKE_ING_ABORT=point)
+        self.assertNotEqual(code, 0, events)
+        image, _, notes = self.live()
+        self.assertEqual(image, self.old["image"])  # nothing switched, the old image runs on the new schema
+        self.assertEqual([w[1] for w in self.writes("migrate")], [[IF.MAINTENANCE]])
+        self.assertEqual((self.marker(), notes["phase"]), ([IF.MAINTENANCE], "maintenance-applied-unswitched"), (point, notes))
+        self.assertEqual(notes["maintenance-applied-set"], I.migration_set(build["migrations"]))
+        os.environ.pop("FAKE_ING_ABORT")
+        code, events = self.cli("deploy", W_NEXT)  # the next run sees the hold, not an empty pending set
+        self.assertEqual(self.done(events)["code"], "HELD_FOR_HUMAN", events)
+        code, events = self.cli("rollback", "--clear-hold")
+        self.assertEqual(self.done(events)["code"], "MAINTENANCE_NO_ROLLBACK", events)
+        self.assertEqual(self.live()[0], self.old["image"])
+        # The next deploy has nothing pending, but the marker keeps automatic rollback off.
+        self.behave(brokenSite=[build["image"]])
+        code, events = self.run_approved(W_NEXT, "--clear-hold")
+        self.assertEqual(self.done(events)["result"], "MAINTENANCE_UNVERIFIED", events)
+        image, _, notes = self.live()
+        self.assertEqual((image, notes["phase"], self.marker()), (build["image"], "maintenance-unverified", [IF.MAINTENANCE]))
+        self.assertEqual(len(self.writes("migrate")), 1)  # never migrated twice
+
+    def test_an_abort_before_the_new_config_keeps_the_marker(self):
+        self.assert_aborted_after_migrate("config")
+
+    def test_a_stale_backup_before_the_switching_phase_keeps_the_marker(self):
+        self.assert_aborted_after_migrate("backup")
+
+    def test_a_failed_switching_annotation_keeps_the_marker(self):
+        self.assert_aborted_after_migrate("annotate")
+
+    def test_a_switch_not_applied_keeps_the_marker_instead_of_writing_aborted(self):
+        self.assert_aborted_after_migrate("switch")
+
+    def test_a_stale_backup_before_the_migrate_job_refuses_with_nothing_applied(self):
+        self.pending_build(IF.MAINTENANCE)
+        self.approve(1200)
+        code, events = self.run_approved(W_NEXT, FAKE_AGE_AFTER_REHEARSAL="2")  # fresh at the start, 2 hours old after the rehearsal
+        self.assertEqual((code, self.done(events)["code"]), (1, "BACKUP_STALE"), events)
+        self.assertEqual(self.writes("migrate"), [])
+        self.assertEqual(self.writes("patch"), [])
+        self.assertIsNone(self.marker())
+        self.assertEqual(self.live()[2]["phase"], "accepted")
+
+    def test_an_accepted_switch_that_includes_the_migrations_clears_the_marker(self):
+        build = self.pending_build(IF.MAINTENANCE)
+        self.approve(1200)
+        code, events = self.run_approved(W_NEXT, FAKE_ING_ABORT="switch")
+        self.assertEqual(self.marker(), [IF.MAINTENANCE])
+        os.environ.pop("FAKE_ING_ABORT")
+        code, events = self.run_approved(W_NEXT, "--clear-hold")
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        image, _, notes = self.live()
+        self.assertEqual((image, notes["phase"], self.marker(), notes.get("maintenance-applied-set")),
+                         (build["image"], "accepted", None, None))
+
+    def test_a_successful_maintenance_run_clears_its_own_marker(self):
+        self.pending_build(IF.MAINTENANCE)
+        self.approve(1200)
+        code, events = self.run_approved(W_NEXT)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        _, _, notes = self.live()
+        self.assertEqual((notes["phase"], notes["maintenance"], self.marker()), ("accepted", "true", None))
+
+    def test_a_rollback_rewrites_the_new_builds_migration_set(self):
+        self.pending_build(IF.ADDITIVE)
+        self.behave(brokenSite=[IF.make_ing_build(self.key, W_NEXT, "next", seq=3002, suse=S_HEAD,
+                                                  migrations=IF.BASE_MIGRATIONS + [IF.fixture_migration(IF.ADDITIVE)])["image"]])
+        code, events = self.cli("deploy", W_NEXT)
+        self.assertEqual(self.done(events)["result"], "ROLLED_BACK", events)
+        image, _, notes = self.live()
+        self.assertEqual(image, self.old["image"])
+        self.assertIsNone(notes.get("migration-set"))  # no longer describes the live image
 
 
 class IngRefusals(IngEndToEnd):

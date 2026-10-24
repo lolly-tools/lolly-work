@@ -609,6 +609,7 @@ class IngRunner(N.Runner):
         plan = I.migration_plan(release["migrations"], check, self.applied_migrations(value))
         applied = set(self.applied_migrations(value))
         maintenance_applied = set(self.applied_migrations(value, "maintenance-migrations"))
+        marked = set(self.applied_migrations(value, "maintenance-applied"))  # applied by an earlier run, never accepted
         maintenance, rehearsal = False, None
         if plan["pending"]:
             classes = self.classify(release["image"], plan["pending"])
@@ -620,6 +621,18 @@ class IngRunner(N.Runner):
                 self.backup_fresh(backup, maintenance=True)
             rehearsal = self.rehearse(backup, release["image"], live_image, plan["pending"])
             self.window_check()
+            if maintenance:
+                # The rehearsal takes time: the backup must still be fresh at the moment the schema changes (PROPOSAL 4.3).
+                self.backup_fresh(backup, maintenance=True)
+                marked |= {item["name"] for item in plan["pending"]}
+                # From here the old image may run on a non-additive schema. Record that on the Deployment (annotations
+                # only, no rollout) before anything is applied, and keep it until a switch that includes these
+                # migrations is accepted.
+                self.annotate({"phase": "maintenance-applied-unswitched", "deploy-id": self.request["deployId"],
+                               "maintenance-applied": compact(sorted(marked)),
+                               "maintenance-applied-set": I.migration_set(release["migrations"]),
+                               "reason": None, "updated": utc_stamp()}, expect_image=live_image)
+                self.log("phase", phase="maintenance-applied-unswitched", migrations=sorted(marked))
             self.migrate(release["image"], plan["pending"])
             check = self.check_db(release["image"])
             require(not I.migration_plan(release["migrations"], check, applied)["pending"], "MIGRATE_INCOMPLETE",
@@ -628,6 +641,7 @@ class IngRunner(N.Runner):
                 maintenance_applied |= {item["name"] for item in plan["pending"]}
             else:
                 applied |= {item["name"] for item in plan["pending"]}
+        hold = maintenance or bool(marked)  # a marker from an earlier run also turns automatic rollback off
         generation = self.generation_for(live_text, check, release["seq"])
         config = self.new_config(generation, live_text, release["source"])
         self.window_check()
@@ -642,12 +656,13 @@ class IngRunner(N.Runner):
             self.switch(live_image, live_config, release["image"], config, records)
         except Refusal as exc:
             if exc.code == "SWITCH_NOT_APPLIED":
-                self.annotate({"phase": "aborted", "previous": compact(previous["prior"]) if previous["prior"] else None,
+                self.annotate({"phase": "maintenance-applied-unswitched" if marked else "aborted",
+                               "previous": compact(previous["prior"]) if previous["prior"] else None,
                                "reason": exc.message[:500], "updated": utc_stamp()}, expect_image=live_image)
                 return self.finish("ABORTED", reason=exc.message, image=live_image)
-            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], maintenance)
+            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold)
         except self.au.Refusal as exc:
-            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], maintenance)
+            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold)
         self.log("phase", phase="switched-unverified")
         try:
             checks, files = self.run_smoke(I.expect_of(release), release["image"], generation)
@@ -655,13 +670,16 @@ class IngRunner(N.Runner):
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
                 return self.after_failure(previous, "SMOKE_FAILED: " + ", ".join(i["check"] for i in checks.failures()),
-                                          maintenance, checks.items)
+                                          hold, checks.items)
             reason = self.watch(files["index.html"], release["image"])
             if reason:
-                return self.after_failure(previous, "WATCH_FAILED: " + reason, maintenance, checks.items)
-            self.annotate({"phase": "accepted", "deploys": str(deploys + 1), "updated": utc_stamp()}, expect_image=release["image"])
+                return self.after_failure(previous, "WATCH_FAILED: " + reason, hold, checks.items)
+            accepted = {"phase": "accepted", "deploys": str(deploys + 1), "updated": utc_stamp()}
+            if marked and marked <= {item["name"] for item in release["migrations"]}:
+                accepted.update({"maintenance-applied": None, "maintenance-applied-set": None})  # this switch includes them
+            self.annotate(accepted, expect_image=release["image"])
         except (Refusal, self.au.Refusal) as exc:
-            return self.after_failure(previous, "UNVERIFIED: " + str(exc)[:300], maintenance)
+            return self.after_failure(previous, "UNVERIFIED: " + str(exc)[:300], hold)
         armed = os.path.exists(armed_path())
         retention = self.retain_images(execute=armed, budget=A.RETENTION_AFTER_DEPLOY_SECONDS)
         if armed:
@@ -712,7 +730,8 @@ class IngRunner(N.Runner):
         values = {"phase": "rolled-back", "source": previous["source"], "image": previous["image"], "ci-run": previous.get("ciRun"),
                   "formats": compact(previous["formats"]) if previous.get("formats") else None,
                   "expect": compact(previous["expect"]), "config": config, "generation": str(generation), "previous": None,
-                  "maintenance": None, "reason": reason[:500], "updated": utc_stamp()}
+                  "maintenance": None, "migration-set": None,  # the new build's set no longer describes the live image
+                  "reason": reason[:500], "updated": utc_stamp()}
         try:
             self.annotate(values, expect_image=previous["image"])
         except Refusal as exc:
@@ -727,6 +746,9 @@ class IngRunner(N.Runner):
         self.hold_check(self.ann(value, "phase"))
         require(self.ann(value, "maintenance") != "true", "MAINTENANCE_NO_ROLLBACK",
                 "the live build ran a maintenance migration; a rollback would need a restore, which Andy decides")
+        require(not self.applied_migrations(value, "maintenance-applied"), "MAINTENANCE_NO_ROLLBACK",
+                "a maintenance migration was applied and no accepted switch includes it yet; every earlier image is older "
+                "than that schema, so a rollback would need a restore, which Andy decides")
         previous = self.ann_json(value, "previous")
         require(isinstance(previous, dict) and previous.get("image") and previous.get("expect"), "NO_PREVIOUS",
                 "no recorded previous build; deploy a build instead")
@@ -874,8 +896,13 @@ class IngRunner(N.Runner):
                 value, _ = self.deployment()
             except (Refusal, self.au.Refusal):
                 return super().stop_post(environment)
-            if (self.ann(value, "deploy-id") == self.request["deployId"] and self.ann(value, "maintenance") == "true"
-                    and self.ann(value, "phase") in ("switched-unverified",)):
+            phase = self.ann(value, "phase")
+            if (self.ann(value, "deploy-id") == self.request["deployId"] and phase in ("switching", "switched-unverified")
+                    and (self.ann(value, "maintenance") == "true" or self.applied_migrations(value, "maintenance-applied"))):
+                previous = self.ann_json(value, "previous")
+                if phase == "switching" and isinstance(previous, dict) and self.image_of(value, self.deployment()[1]) == previous.get("image"):
+                    self.annotate({"phase": "maintenance-applied-unswitched", "reason": "UNIT_STOPPED", "updated": utc_stamp()})
+                    return self.finish("ABORTED", reason="UNIT_STOPPED", note="a maintenance migration is applied and unswitched")
                 self.annotate({"phase": "maintenance-unverified", "reason": "UNIT_STOPPED", "updated": utc_stamp()})
                 return self.finish("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED",
                                    note="automatic rollback is off after a maintenance migration")

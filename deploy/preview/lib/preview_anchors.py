@@ -238,17 +238,22 @@ UNIT_STOP_TIMEOUT_SECONDS = PULL_TIMEOUT_SECONDS + MAX_ROLLOUT_SECONDS + SMOKE_B
 # template, so writing them never starts a rollout.
 ANNOTATION_PREFIX = "lolly.tools/preview-"
 PHASES = ("switching", "switched-unverified", "accepted", "rolling-back", "rolled-back",
-          "rollback-unhealthy", "aborted", "converting", "adopted-unhealthy", "maintenance-unverified")
+          "rollback-unhealthy", "aborted", "converting", "adopted-unhealthy", "maintenance-unverified",
+          "maintenance-applied-unswitched")
 UNCERTAIN_PHASES = ("switching", "switched-unverified", "rolling-back", "converting")
 # Phases that stop every later run until a human passes --clear-hold.
 # maintenance-unverified: a lolly.ing switch after a maintenance migration failed its smoke.
 # Automatic rollback is off then (PROPOSAL 4.4), because recovery would be a restore.
-HOLD_PHASES = UNCERTAIN_PHASES + ("rollback-unhealthy", "adopted-unhealthy", "maintenance-unverified")
+# maintenance-applied-unswitched: a maintenance migration ran but no switch that includes it was accepted, so the
+# old image runs on a schema it was not built for. The marker annotation stays until such a switch is accepted.
+HOLD_PHASES = UNCERTAIN_PHASES + ("rollback-unhealthy", "adopted-unhealthy", "maintenance-unverified",
+                                  "maintenance-applied-unswitched")
 # Phases whose records describe the image that is live (review C-H2). `adopt` writes
 # adopted-unhealthy when a human adopts a live build that fails its smoke (review N2).
 # A lolly.ing switch held after a maintenance migration (maintenance-unverified) also describes the
 # live image, so a forward fix can follow it with --clear-hold.
-SETTLED_PHASES = ("accepted", "rolled-back", "aborted", "adopted-unhealthy", "maintenance-unverified")
+SETTLED_PHASES = ("accepted", "rolled-back", "aborted", "adopted-unhealthy", "maintenance-unverified",
+                  "maintenance-applied-unswitched")
 # The longest a gc run takes, for the backup-window check before it starts. Removals
 # start only while a whole one still fits; the reads before them get the rest.
 GC_BUDGET_SECONDS = 900

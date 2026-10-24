@@ -777,6 +777,47 @@ def run_unit(sandbox, state_path, name):
             switched(self, *args, **kwargs)
             raise KeyboardInterrupt
         preview_ing_node.IngRunner.switch = switch
+    if os.environ.get("FAKE_ING_ABORT") or os.environ.get("FAKE_AGE_AFTER_REHEARSAL"):  # lolly.ing drills (maintenance marker)
+        import preview_ing_node
+        runner, refusal = preview_ing_node.IngRunner, preview_ing_node.Refusal
+        point = os.environ.get("FAKE_ING_ABORT")
+        migrated = []
+        migrate, backup_fresh = runner.migrate, runner.backup_fresh
+        rehearse, annotate, switch, new_config = runner.rehearse, runner.annotate, runner.switch, runner.new_config
+
+        def migrate_(self, *args, **kwargs):
+            result = migrate(self, *args, **kwargs)
+            migrated.append(True)
+            return result
+
+        def backup_fresh_(self, *args, **kwargs):
+            if point == "backup" and migrated:  # the check just before `switching`
+                raise refusal("BACKUP_STALE", "drill: stale at the switch")
+            return backup_fresh(self, *args, **kwargs)
+
+        def rehearse_(self, *args, **kwargs):
+            result = rehearse(self, *args, **kwargs)
+            hours = float(os.environ.get("FAKE_AGE_AFTER_REHEARSAL", "0"))
+            real_wall = preview_node.WALL
+            preview_node.WALL = lambda: real_wall() + hours * 3600  # the rehearsal took this long
+            return result
+
+        def annotate_(self, values, *args, **kwargs):
+            if point == "annotate" and values.get("phase") == "switching":
+                raise refusal("ANNOTATION_FAILED", "drill: could not write the switching phase")
+            return annotate(self, values, *args, **kwargs)
+
+        def switch_(self, *args, **kwargs):
+            if point == "switch":
+                raise refusal("SWITCH_NOT_APPLIED", "drill: the switch was not applied")
+            return switch(self, *args, **kwargs)
+
+        def new_config_(self, *args, **kwargs):
+            if point == "config":
+                raise refusal("CONFIG_EXISTS", "drill: config refused")
+            return new_config(self, *args, **kwargs)
+        runner.migrate, runner.backup_fresh, runner.rehearse = migrate_, backup_fresh_, rehearse_
+        runner.annotate, runner.switch, runner.new_config = annotate_, switch_, new_config_
     unit_state.write_text("active")
     environment = {"SERVICE_RESULT": "success", "EXIT_CODE": "exited", "EXIT_STATUS": "0"}
     try:
