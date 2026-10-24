@@ -660,7 +660,9 @@ class FakeClock:
 
 
 def patch_node_modules(tool_lib, sandbox, state_path):
-    """Import the node modules from a bundle directory and point them at the sandbox and fakes."""
+    """Import the node modules from a bundle directory and point them at the sandbox and fakes.
+    As on the node, only the bundle's lib is importable: the repository's lib leaves sys.path."""
+    sys.path[:] = [entry for entry in sys.path if not entry or Path(entry).resolve() != LIB.resolve()]
     if str(tool_lib) not in sys.path:
         sys.path.insert(0, str(tool_lib))
     import preview_anchors

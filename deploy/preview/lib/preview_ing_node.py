@@ -19,8 +19,6 @@ import os
 import re
 import stat
 import subprocess
-import sys
-from pathlib import Path
 
 import preview_anchors as A
 import preview_ing as I
@@ -28,6 +26,7 @@ import preview_node as N
 import preview_smoke as S
 from preview_common import DEPLOY_ID, HEX64, SHA, Refusal, compact, parse_utc, require, require_python, strict_json, utc_stamp
 from preview_expect import format_lowering
+from preview_receipt import verify_frontend_receipt
 
 key = N.key
 COOKIE_PATTERN = r"lw_session=[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]{16,3800}"
@@ -79,6 +78,10 @@ def validate_ing_request(request, au):
             and 0 < len(smoke["sub"]) <= 200 and isinstance(smoke["packAssetPath"], str) and smoke["packAssetPath"].startswith("/catalog/")
             and isinstance(smoke["pages"], list) and all(isinstance(p, str) and p.startswith("/") for p in smoke["pages"]),
             "BAD_REQUEST", "smoke settings")
+    rehearsal = request.get("rehearsal")
+    require(isinstance(rehearsal, dict) and set(rehearsal) == {"storageHost", "storageAddress"}
+            and all(isinstance(rehearsal[k], str) and 0 < len(rehearsal[k]) <= 253 for k in rehearsal), "BAD_REQUEST",
+            "rehearsal settings")
     require(type(request.get("drillFailSmoke")) is bool and type(request.get("clearHold")) is bool, "BAD_REQUEST", "flags")
     if request["kind"] in ("deploy", "convert"):
         I.validate_release(request.get("release"))
@@ -151,7 +154,7 @@ class IngRunner(N.Runner):
         return refs.get(release["image"], (None, {}))[0] == release["digest"]
 
     def ensure_image(self, release, _need=None):
-        """Import the streamed archive: its sha256 first, then the digest and DiffIDs, then pins."""
+        """Import the streamed archive: its sha256 first, then the digests and DiffIDs, then pins."""
         if not self.image_present(release):
             path = os.path.join(N.PATHS["spool"], release["archive"]["sha256"] + ".oci.tar")
             try:
@@ -188,6 +191,7 @@ class IngRunner(N.Runner):
             finally:
                 os.close(fd)
         self.verify_image(release)
+        self.drop_run_tag(release)
         with contextlib.suppress(OSError):
             os.unlink(os.path.join(N.PATHS["spool"], release["archive"]["sha256"] + ".oci.tar"))
 
@@ -199,12 +203,21 @@ class IngRunner(N.Runner):
         return data.stdout
 
     def verify_image(self, release):
+        """The name points at the manifest's digest; an index leads to its one linux/amd64 manifest; that names
+        the manifest's config; the config's DiffIDs are the manifest's. Then the pin is read back."""
         refs = self.containerd_refs()
         require(refs.get(release["image"], (None, {}))[0] == release["digest"], "IMAGE_MISMATCH",
                 "containerd holds no instance image by the manifest digest")
-        manifest = strict_json(self.content(release["digest"]).decode("utf-8"), "image manifest")
-        require((manifest.get("config") or {}).get("digest") == release["configDigest"], "IMAGE_MISMATCH",
-                "the image manifest names another config")
+        top = strict_json(self.content(release["digest"]).decode("utf-8"), "image index")
+        manifest_digest = release["digest"]
+        if isinstance(top.get("manifests"), list):
+            chosen = [m for m in top["manifests"] if isinstance(m, dict) and (m.get("platform") or {}).get("os") == "linux"
+                      and (m.get("platform") or {}).get("architecture") == "amd64"]
+            require(len(chosen) == 1, "IMAGE_MISMATCH", "the image index has no single linux/amd64 manifest")
+            manifest_digest = chosen[0].get("digest")
+            top = strict_json(self.content(manifest_digest).decode("utf-8"), "image manifest")
+        require(manifest_digest == release["manifestDigest"] and (top.get("config") or {}).get("digest") == release["configDigest"],
+                "IMAGE_MISMATCH", "the image manifest or its config differs from the build manifest")
         config = strict_json(self.content(release["configDigest"]).decode("utf-8"), "image config")
         require((config.get("rootfs") or {}).get("diff_ids") == release["diffIds"] and config.get("os") == "linux"
                 and config.get("architecture") == "amd64", "IMAGE_MISMATCH", "the image layers (DiffIDs) differ from the manifest")
@@ -213,6 +226,16 @@ class IngRunner(N.Runner):
             self.label(release["image"], A.PINNED_LABEL)
             self.label(release["image"], A.OWN_PIN_LABEL)
         require((self.inspect(release["image"]) or {}).get("pinned") is True, "PIN_FAILED", "the instance image pin did not read back")
+
+    def drop_run_tag(self, release):
+        """`ctr import --base-name` keeps the workflow's run tag beside the digest name. Remove that one name,
+        which this import made (its label says so), so retention can later remove the image by digest."""
+        tag = self.containerd_refs().get(release["refName"])
+        if tag is None:
+            return
+        require(tag[0] == release["digest"] and tag[1].get(A.PULLED_LABEL.split("=")[0]) == "true", "IMAGE_MISMATCH",
+                "the run tag names another image or was not made by this import")
+        self.k3s_run(["ctr", "--namespace", "k8s.io", "images", "rm", release["refName"]])
 
     def keep_pinned(self, image):
         """The rollback target stays pinned (by this command when nobody else pinned it)."""
@@ -259,59 +282,48 @@ class IngRunner(N.Runner):
         return I.validate_check(found)
 
     def classify(self, image, pending):
-        """The Phase 2A classifier, run from the image on exactly the pending files; no environment at all."""
-        names = [item["name"] for item in pending]
+        """Work's classifier (#207), run from the image on exactly the pending files, with no environment at all."""
         try:
-            logs, _ = self.run_job("classify", image, [*A.MIGRATION_CLASSIFIER, *("migrations/" + n for n in names)], [],
+            logs, _ = self.run_job("classify", image, [*A.MIGRATION_CLASSIFIER, ",".join(item["name"] for item in pending)], [],
                                    A.JOB_TIMEOUT_SECONDS)
         except Refusal as exc:
-            raise Refusal("CLASSIFIER_UNAVAILABLE", "the migration classifier did not run from the image (Phase 2A); "
-                          f"nothing was applied ({exc.code})") from exc
-        return I.validate_classes(I.last_json_line(logs, "kind", "lolly-migration-classes"), names)
+            raise Refusal("CLASSIFIER_UNAVAILABLE", "the migration classifier did not run from the image (it needs Work with "
+                          f"scripts/classify-migrations.ts); nothing was applied ({exc.code})") from exc
+        return I.validate_classes(I.json_document(logs), pending)
 
-    def rehearse(self, backup, image, previous_image, pending, full=False):
-        """The Phase 2A restore rehearsal driver: restore the fresh backup in its own namespace, apply the
-        pending files with the new image's runner within the lock budget, then boot the previous image
-        against the copy for one save round trip (R20 S7, R22 S4)."""
-        driver = Path(__file__).resolve().parents[1] / "phase2a" / "restore-rehearsal.py"
-        require(driver.is_file(), "REHEARSAL_UNAVAILABLE", "the Phase 2A restore rehearsal driver is not in this tool; "
-                "a run with pending migrations (or the cut-over) needs it. Nothing was applied")
-        document = {"version": 1, "kind": "lolly-restore-rehearsal", "deployId": self.request["deployId"],
-                    "namespace": A.ING["rehearsalNamespace"], "backup": backup, "image": image, "previousImage": previous_image,
-                    "migrations": [{"name": item["name"], "sha256": item["sha256"]} for item in pending],
-                    "expect": I.expect_list(pending), "lockBudgetSeconds": A.MIGRATION_LOCK_BUDGET_SECONDS, "full": full,
-                    "transport": self.target["transport"], "clusterUID": self.target["clusterUID"]}
-        path = self.write_object("rehearsal-request", document)
-        self.log("rehearsal", migrations=[item["name"] for item in pending], full=full)
+    def rehearse(self, backup, image, previous_image, pending):
+        """The restore rehearsal (deploy/preview/restore-rehearsal.py, #208) as a library: restore the fresh backup
+        in its own namespace, apply the pending files with the new image's runner within the lock budget, and boot
+        the previous image on the copy for one save round trip (R20 S7, R22 S4). This run's check-target covers it."""
         try:
-            done = subprocess.run([sys.executable, "-I", "-B", str(driver), "run", path], capture_output=True,
-                                  timeout=A.REHEARSAL_TIMEOUT_SECONDS, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise Refusal("REHEARSAL_FAILED", "the restore rehearsal did not finish") from exc
-        result = I.last_json_line(done.stdout.decode("utf-8", "replace"), "kind", "lolly-restore-rehearsal-result")
-        require(done.returncode == 0 and isinstance(result, dict) and result.get("version") == 1, "REHEARSAL_FAILED",
-                "the restore rehearsal gave no result")
-        files = result.get("files") or []
-        slow = [f.get("name") for f in files if not (isinstance(f, dict) and type(f.get("seconds")) in (int, float)
-                                                       and f["seconds"] <= A.MIGRATION_LOCK_BUDGET_SECONDS)]
-        require(result.get("result") == "PASS", "REHEARSAL_FAILED", "the rehearsal failed: " + str(result.get("reason"))[:200])
-        require(not slow and sorted(f.get("name") for f in files) == sorted(item["name"] for item in pending), "REHEARSAL_FAILED",
-                f"a migration ran over the {A.MIGRATION_LOCK_BUDGET_SECONDS} s lock budget or was not rehearsed: {slow}")
-        require(set(item["name"] for item in pending) <= set(result.get("ledger") or []), "REHEARSAL_FAILED",
-                "the rehearsed ledger lacks a pending file")
-        require(result.get("previousImageSaveRoundTrip") is True, "REHEARSAL_FAILED",
-                "the previous image could not save against the migrated copy; its rollback would not be safe")
-        return {"result": "PASS", "files": files}
+            import preview_rehearsal as RH
+        except ImportError as exc:
+            raise Refusal("REHEARSAL_UNAVAILABLE", "the restore rehearsal (lib/preview_rehearsal.py) is not in this tool; "
+                          "a run with pending migrations, and the cut-over, need it. Nothing was applied") from exc
+        settings = self.request["rehearsal"]
+        transport = self.target["transport"]
+        inputs = RH.Inputs(backup=backup["record"], pending=pending, new_image=image, previous_image=previous_image,
+                           postgres_image=A.ING["postgresImage"], storage_host=settings["storageHost"],
+                           storage_address=settings["storageAddress"], namespace=A.ING["rehearsalNamespace"],
+                           secret=A.ING["rehearsalSecret"], run_id=re.sub(r"[^a-z0-9-]", "-", self.request["deployId"].lower()),
+                           lock_budget_seconds=A.MIGRATION_LOCK_BUDGET_SECONDS, deadline_seconds=A.REHEARSAL_DEADLINE_SECONDS)
+        require(inputs.expect == I.expect_value(pending), "REHEARSAL_FAILED", "the rehearsal and this tool disagree on LW_MIGRATE_EXPECT")
+        kubectl = RH.Kubectl([*transport["kubectl"], "--kubeconfig", transport["kubeconfig"], "--context", transport["context"]])
+        self.log("rehearsal", migrations=[item["name"] for item in pending], expect=inputs.expect)
+        result = RH.Rehearsal(kubectl, inputs, sleep=N.SLEEP, monotonic=N.CLOCK).run()
+        self.log("rehearsal-result", result=result.get("result"), code=result.get("code"), teardown=result.get("teardownComplete"))
+        return I.check_rehearsal(result, pending, image, previous_image)
 
     def migrate(self, image, pending):
-        env = self.database_env() + [{"name": "LW_MIGRATE_EXPECT", "value": I.expect_list(pending)},
+        env = self.database_env() + [{"name": "LW_MIGRATE_EXPECT", "value": I.expect_value(pending)},
                                      {"name": "NODE_ENV", "value": "production"}]
         self.log("migrate", migrations=[item["name"] for item in pending])
         self.run_job("migrate", image, list(A.MIGRATION_RUNNER), env, A.MIGRATE_TIMEOUT_SECONDS)
 
     # Backup (PROPOSAL 4.3 step 4) -------------------------------------------
     def take_backup(self):
-        """A fresh off-host backup Job from the existing CronJob; returns the verified archive record."""
+        """A fresh off-host backup Job from the existing CronJob. Returns the uploader's own VERIFIED line, which
+        the restore rehearsal takes as it is, and the Job's completion time."""
         namespace, cron = self.namespace(), A.ING["backupCronJob"]
         found = self.kube.get("cronjob", cron, namespace)
         require(found["metadata"].get("name") == cron and not found["metadata"].get("deletionTimestamp"), "BACKUP_UNAVAILABLE",
@@ -322,13 +334,15 @@ class IngRunner(N.Runner):
         created = json.loads(self.kube.run(["create", "job", name, "--from=cronjob/" + cron, "--namespace", namespace, "-o", "json"]))
         logs, job = self.wait_job(name, created["metadata"]["uid"], A.ING["backupContainer"], A.BACKUP_TIMEOUT_SECONDS)
         line = I.last_json_line(logs, "status", "VERIFIED")
-        require(isinstance(line, dict) and isinstance(line.get("object"), str) and isinstance(line.get("sha256"), str)
-                and HEX64.fullmatch(line["sha256"]) and type(line.get("size")) is int and 0 < line["size"] <= A.ING["backupMaxBytes"]
-                and re.fullmatch(A.ING["backupObjectPattern"], line["object"]) is not None,
+        require(isinstance(line, dict) and set(line) == {"status", "object", "sha256", "size", "keyId"}
+                and isinstance(line["object"], str) and re.fullmatch(A.ING["backupObjectPattern"], line["object"]) is not None
+                and isinstance(line["sha256"], str) and HEX64.fullmatch(line["sha256"]) and type(line["size"]) is int
+                and 0 < line["size"] <= A.ING["backupMaxBytes"] and isinstance(line["keyId"], str)
+                and re.fullmatch(r"[0-9a-f]{16}", line["keyId"]) is not None,
                 "BACKUP_UNVERIFIED", "the backup Job did not report a verified off-host archive")
         completed = (job.get("status") or {}).get("completionTime")
         require(isinstance(completed, str), "BACKUP_UNVERIFIED", "the backup Job has no completion time")
-        return {"job": name, "object": line["object"], "sha256": line["sha256"], "size": line["size"], "completedAt": completed}
+        return {"job": name, "record": line, "completedAt": completed}
 
     def backup_fresh(self, backup, maintenance):
         limit = A.MAINTENANCE_BACKUP_MAX_AGE_SECONDS if maintenance else A.BACKUP_MAX_AGE_SECONDS
@@ -461,6 +475,17 @@ class IngRunner(N.Runner):
             directives = {part.split()[0]: part.split()[1:] for part in csp.split(";") if part.split()}
             checks.record("csp blob:", all("blob:" in directives.get(name, []) for name in ("script-src", "connect-src")),
                           "script-src and connect-src allow blob:")
+        receipt = S._get(checks, "receipt", origin + "/release-frontend.sig.json")
+        if receipt is not None:
+            try:
+                require(receipt.status == 200, "RECEIPT_INVALID", f"HTTP {receipt.status}")
+                require(hashlib.sha256(receipt.body).hexdigest() == expect["receipt"], "RECEIPT_INVALID",
+                        "the served receipt is not the build's")
+                served = verify_frontend_receipt(receipt.body, self.pin, expect["lolly"], A.ING["receiptTarget"], A.ING["receiptProfile"])
+                require(served.get("index.html") == expect["index"], "RECEIPT_INVALID", "the receipt names another index.html")
+                checks.record("receipt", True, "the shell's receipt verifies against the lolly.ing pin")
+            except Refusal as exc:
+                checks.record("receipt", False, exc.message)
         for path in self.request["smoke"]["pages"]:
             page = S._get(checks, "page " + path, origin + path)
             if page is not None:
@@ -584,20 +609,16 @@ class IngRunner(N.Runner):
         plan = I.migration_plan(release["migrations"], check, self.applied_migrations(value))
         applied = set(self.applied_migrations(value))
         maintenance_applied = set(self.applied_migrations(value, "maintenance-migrations"))
-        maintenance = False
+        maintenance, rehearsal = False, None
         if plan["pending"]:
             classes = self.classify(release["image"], plan["pending"])
-            for item in plan["pending"]:
-                found = classes[item["name"]]
-                require(found["sha256"] == item["sha256"], "MIGRATIONS_MISMATCH", f"{item['name']} differs from the manifest")
-                if found["class"] != "additive" or item["class"] != "additive":
-                    maintenance = True
+            maintenance = any(classes[item["name"]]["class"] != "additive" for item in plan["pending"])
             if maintenance:
                 require(self.request.get("maintenanceApproval") is not None, "MAINTENANCE_NOT_APPROVED",
                         "a pending migration is not on the allowlist; it needs Andy's approval in the private run "
                         f"({A.ING['maintenanceEnvironment']}). Nothing was applied")
                 self.backup_fresh(backup, maintenance=True)
-            self.rehearse(backup, release["image"], live_image, plan["pending"])
+            rehearsal = self.rehearse(backup, release["image"], live_image, plan["pending"])
             self.window_check()
             self.migrate(release["image"], plan["pending"])
             check = self.check_db(release["image"])
@@ -646,7 +667,7 @@ class IngRunner(N.Runner):
         if armed:
             retention["configMaps"] = self.retain_configs(execute=True)
         return self.finish("LIVE", source=release["source"], image=release["image"], previous=previous["image"],
-                           generation=generation, config=config, backup=backup, retention=retention,
+                           generation=generation, config=config, backup=backup, retention=retention, rehearsal=rehearsal,
                            migrations=[item["name"] for item in plan["pending"]], maintenance=maintenance, checks=checks.items)
 
     def after_failure(self, previous, reason, maintenance, checks=None):
@@ -740,13 +761,13 @@ class IngRunner(N.Runner):
         backup = self.take_backup()
         check = self.check_db(release["image"])
         migrations = I.migration_plan(release["migrations"], check, set())
-        require(not migrations["maintenance"] and not any(item["class"] != "additive" for item in migrations["pending"]),
-                "MAINTENANCE_AT_CUTOVER", "the cut-over takes allowlisted migrations only")
-        self.rehearse(backup, release["image"], live_image, migrations["pending"], full=True)  # PROPOSAL 4.8 step 1
         if migrations["pending"]:
             classes = self.classify(release["image"], migrations["pending"])
             require(all(classes[item["name"]]["class"] == "additive" for item in migrations["pending"]), "MAINTENANCE_AT_CUTOVER",
-                    "the classifier does not admit a pending migration")
+                    "the cut-over takes allowlisted migrations only")
+        # PROPOSAL 4.8 step 1: the full restore rehearsal runs once even with nothing pending.
+        rehearsal = self.rehearse(backup, release["image"], live_image, migrations["pending"])
+        if migrations["pending"]:
             self.window_check()
             self.migrate(release["image"], migrations["pending"])
             check = self.check_db(release["image"])
@@ -791,7 +812,7 @@ class IngRunner(N.Runner):
         except (Refusal, self.au.Refusal) as exc:
             return self.revert_cutover(plan, "UNVERIFIED: " + str(exc)[:300])
         return self.finish("CONVERTED", source=release["source"], image=release["image"], generation=generation, config=config,
-                           backup=backup, checks=checks.items)
+                           backup=backup, rehearsal=rehearsal, checks=checks.items)
 
     def revert_cutover(self, plan, reason, checks=None):
         """Back to the claim layout and the old image, at a higher generation again (never the old one)."""

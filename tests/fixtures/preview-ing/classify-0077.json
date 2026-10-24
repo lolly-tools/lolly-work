@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "migrations": [
+    {
+      "name": "0077_widgets.sql",
+      "sha256": "d9a0650339a357472b0746148f447f9be2efe2c4026e031e1ec04f77ac7c1e3c",
+      "class": "additive",
+      "reasons": [],
+      "statements": [
+        {
+          "index": 1,
+          "kind": "create-table",
+          "class": "additive",
+          "reason": "",
+          "excerpt": "create table if not exists widgets (id bigint primary key, name text)"
+        }
+      ]
+    }
+  ],
+  "manifest": "sha256:5ce492d55a90ba43149efb8d93b361d6e06d744a42ec78b1a734a7622cdccb89"
+}

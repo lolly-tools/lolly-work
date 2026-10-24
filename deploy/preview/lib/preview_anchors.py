@@ -54,24 +54,33 @@ TOOLS = {
 }
 
 # lolly.ing (Phase 2, PROPOSAL section 4). One private instance image holds the Work
-# server, the SUSE shell and the pack. It is built and signed in suse-lolly's private
-# CI and streamed from the Mac; no registry credential is ever on the node.
+# server, the SUSE shell and the pack. suse-lolly's private lolly-ing-preview.yml builds
+# and signs it (two approvals of lolly-ing-signing per build), and the Mac streams it to
+# the node; no registry credential is ever on the node. The deploy input is a Work commit:
+# its engine pin names the Lolly commit, and suse-lolly is built at its main head.
 ING = {
     "site": "lolly.ing",
     "repository": "lolly-tools/suse-lolly",
     "buildWorkflowFile": "lolly-ing-preview.yml",
     "buildWorkflowPath": ".github/workflows/lolly-ing-preview.yml",
-    "buildEvents": ("workflow_dispatch", "push"),
+    "buildEvents": ("workflow_dispatch",),
     "branch": "main",
+    "workRepository": "lolly-tools/lolly-work",
+    "lollyRepository": "lolly-tools/lolly",
+    "manifestKind": "lolly-ing-instance-image",
     "manifestArtifact": "lolly-ing-instance-manifest",
-    "manifestFile": "manifest.json",
+    "manifestFile": "lolly-ing-instance.manifest.json",
     "archiveArtifact": "lolly-ing-instance-archive",
-    "archiveFile": "lolly-ing-instance.oci.tar",
-    # The environment whose approval a maintenance migration needs in the same run (R20 S7).
+    # lolly-ing-instance-<run id>-<attempt>.oci.tar, written by `docker save` (OCI layout).
+    "archivePattern": r"lolly-ing-instance-{run}-{attempt}\.oci\.tar",
+    # The tag the workflow builds; ctr import --base-name keeps it, and --digests adds <name>@<digest>.
+    "refNamePattern": "docker.io/library/lolly-ing-instance:run-{run}-{attempt}",
+    # A maintenance migration needs an approval of this environment in the same run (R20 S7).
     "maintenanceEnvironment": "lolly-ing-maintenance",
+    "receiptProfile": "suse",
+    "receiptTarget": "web",
     # First-party repositories whose changes are listed before a switch (R21 R3).
-    "sourceRepositories": {"suseLolly": "lolly-tools/suse-lolly", "work": "lolly-tools/lolly-work", "lolly": "lolly-tools/lolly"},
-    # Imported with ctr --base-name and --digests, so CRI resolves <name>@sha256 with pull policy Never.
+    "sourceRepositories": {"suse": "lolly-tools/suse-lolly", "work": "lolly-tools/lolly-work", "lolly": "lolly-tools/lolly"},
     "imageName": "docker.io/library/lolly-ing-instance",
     "imageRepository": "docker.io/library/lolly-ing-instance",  # the same name, for the shared retention code
     "origin": "https://lolly.ing",
@@ -99,19 +108,25 @@ ING = {
     "backupCronJob": "lolly-postgres-offhost-backup",
     "backupContainer": "encrypt-upload-verify",
     "backupObjectPattern": r"lolly-ing/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9-]{12,16}Z-[a-f0-9]{16}\.lwbackup",
-    "backupMaxBytes": 1024 * 1024 * 1024,
-    "rehearsalNamespace": "preview-rehearsal",
+    "backupMaxBytes": 128 * 1024 * 1024,  # the restore rehearsal's own bound (#208)
+    # The restore rehearsal (deploy/preview/restore-rehearsal.py, lib/preview_rehearsal.py) runs in its own namespace.
+    "rehearsalNamespace": "lolly-restore-rehearsal",
+    "rehearsalSecret": "restore-rehearsal-backup-read",
+    # The PostgreSQL 18 image the live database runs (Work deploy/suse/appco-postgresql.lock.json).
+    "postgresImage": "dp.apps.rancher.io/containers/postgresql@sha256:24210933acadcefb3775a122818d5d3b888fe5b2687eaa5b0e0867bd82a211d6",
     "jobPodLabels": {"app.kubernetes.io/part-of": "lolly-work", "app.kubernetes.io/component": "preview-migrate",
                      "lolly.tools/managed-by": "preview-deploy"},
     "revisionHistoryLimit": 10,
 }
 
-# Phase 2A interfaces (lolly-work). The classifier and the migration runner check run
-# from the instance image; the restore rehearsal driver is locked tool code on the node.
-MIGRATION_CLASSIFIER = ("node", "scripts/classify-migrations.ts", "--json")
+# Work's migration classifier (lolly-work PR #207), run from the instance image with
+# `--only <pending>`; it prints one JSON document. The runner honours LW_MIGRATE_EXPECT.
+MIGRATION_CLASSIFIER = ("node", "scripts/classify-migrations.ts", "--json", "--only")
 MIGRATION_RUNNER = ("node", "scripts/migrate.ts")
-REHEARSAL_DRIVER = "deploy/recovery/restore-rehearsal.py"
 MIGRATION_LOCK_BUDGET_SECONDS = 30
+# Byte for byte server/src/store/migrate.ts migrationManifest and preview_rehearsal.migration_manifest.
+MIGRATION_MANIFEST_HEADER = "lolly-work migration manifest v1\n"
+REHEARSAL_DEADLINE_SECONDS = 900
 
 # lolly.ing's own catalog key (PROPOSAL 4.7). Generated at the Phase 2 cut-over; it is
 # pinned here in a reviewed change. Until then every lolly.ing run refuses.

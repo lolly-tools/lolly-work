@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
 """GitHub side of the lolly.ing preview deploy: the private suse-lolly build run.
 
-A build is bound by its run ID: workflow path, event, repository and head
-repository, branch, head commit and success (R22 S6). Its manifest and archive
-are read only from that run's own artifacts, never looked up by name across the
-repository. The only write is the workflow dispatch. Nothing here approves an
-environment gate.
+A build is bound by its run ID: workflow path, event (workflow_dispatch),
+repository and head repository, branch, head commit (the suse-lolly commit it
+built) and success (R22 S6). Its manifest and archive are read only from that
+run's own artifacts, never looked up by name across the repository. The only
+write is the workflow dispatch. Nothing here approves an environment gate.
 """
 
 from __future__ import annotations
@@ -24,10 +24,14 @@ DEPENDENCY_FILES = re.compile(r"(^|/)(package\.json|pnpm-lock\.yaml|pnpm-workspa
                               r"requirements[^/]*\.txt|Dockerfile)$")
 
 
-def ing_runs(gh, sha):
-    listing = gh.json(f"repos/{ANCHORS['repository']}/actions/workflows/{ANCHORS['buildWorkflowFile']}/runs",
-                      branch=ANCHORS["branch"], head_sha=sha, per_page=30)
-    return [run for run in listing.get("workflow_runs", []) if isinstance(run, dict) and isinstance(run.get("id"), int)]
+def ing_runs(gh, ssha=None):
+    """Dispatched runs of the private workflow on main, newest first; optionally for one suse-lolly head."""
+    params = {"branch": ANCHORS["branch"], "event": "workflow_dispatch", "per_page": 30}
+    if ssha:
+        params["head_sha"] = ssha
+    listing = gh.json(f"repos/{ANCHORS['repository']}/actions/workflows/{ANCHORS['buildWorkflowFile']}/runs", **params)
+    runs = [run for run in listing.get("workflow_runs", []) if isinstance(run, dict) and isinstance(run.get("id"), int)]
+    return sorted(runs, key=lambda run: run["id"], reverse=True)
 
 
 def _artifacts(gh, run_id):
@@ -44,31 +48,35 @@ def _artifacts(gh, run_id):
 
 
 def read_manifest(data):
-    require(len(data) <= 1024 * 1024, "MANIFEST_INVALID", "the manifest artifact is too large")
+    require(len(data) <= 4 * 1024 * 1024, "MANIFEST_INVALID", "the manifest artifact is too large")
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
         require(archive.namelist() == [ANCHORS["manifestFile"]], "MANIFEST_INVALID", "the manifest artifact holds other files")
-        require(archive.getinfo(ANCHORS["manifestFile"]).file_size <= 512 * 1024, "MANIFEST_INVALID", "the manifest is too large")
+        require(archive.getinfo(ANCHORS["manifestFile"]).file_size <= 8 * 1024 * 1024, "MANIFEST_INVALID", "the manifest is too large")
         return strict_json(archive.read(ANCHORS["manifestFile"]).decode("utf-8"), "manifest")
     except (zipfile.BadZipFile, UnicodeDecodeError, KeyError) as exc:
         raise Refusal("MANIFEST_INVALID", "the manifest artifact is not a valid zip") from exc
 
 
-def bind_ing_run(gh, run, sha):
-    """Bind one completed private run to this suse-lolly commit and return its release."""
+def bind_ing_run(gh, run, wsha):
+    """Bind one completed private run to this Work commit and return its release (R22 S6).
+
+    Workflow path, event (workflow_dispatch), repository and head repository, branch main,
+    head commit (the suse-lolly commit it built), success; then the run's own artifacts.
+    """
     require(isinstance(run.get("id"), int) and RUN_ID.fullmatch(str(run["id"])) is not None, "RUN_NOT_BOUND", "run id is malformed")
     require(run.get("path") == ANCHORS["buildWorkflowPath"], "RUN_NOT_BOUND", "run is not the lolly.ing build workflow")
-    require(run.get("event") in ANCHORS["buildEvents"], "RUN_NOT_BOUND", "run was not a push or a dispatch on main")
+    require(run.get("event") in ANCHORS["buildEvents"], "RUN_NOT_BOUND", "run was not dispatched on main")
     require(G._same_repository(run, ANCHORS["repository"]), "RUN_NOT_BOUND", "run belongs to another repository or a fork")
-    require(run.get("head_branch") == ANCHORS["branch"] and run.get("head_sha") == sha, "RUN_NOT_BOUND",
-            "run is for another branch or commit")
+    require(run.get("head_branch") == ANCHORS["branch"] and isinstance(run.get("head_sha"), str) and SHA.fullmatch(run["head_sha"]),
+            "RUN_NOT_BOUND", "run is for another branch")
     require(type(run.get("run_attempt")) is int and run["run_attempt"] >= 1, "RUN_NOT_BOUND", "run attempt is malformed")
     require(run.get("status") == "completed" and run.get("conclusion") == "success", "RUN_FAILED",
             f"run {run['id']} concluded {run.get('conclusion')!r}")
     artifacts = _artifacts(gh, run["id"])
     manifest_item = artifacts[ANCHORS["manifestArtifact"]]
-    data = gh.binary(f"repos/{ANCHORS['repository']}/actions/artifacts/{manifest_item['id']}/zip", limit=1024 * 1024)
-    release = I.validate_manifest(read_manifest(data), run, sha)
+    data = gh.binary(f"repos/{ANCHORS['repository']}/actions/artifacts/{manifest_item['id']}/zip", limit=4 * 1024 * 1024)
+    release = I.validate_manifest(read_manifest(data), run, wsha)
     archive = artifacts[ANCHORS["archiveArtifact"]]
     require(type(archive.get("size_in_bytes")) is int and 0 < archive["size_in_bytes"] <= A.ING_ARCHIVE_MAX_BYTES + 64 * 1024 ** 2,
             "RECEIPT_MISSING", "the archive artifact has no plausible size")
@@ -77,33 +85,38 @@ def bind_ing_run(gh, run, sha):
             "expiresAt": min(str(manifest_item.get("expires_at")), str(archive.get("expires_at")))}
 
 
-def latest_ing_run(gh, sha, prefer_image=None):
-    """The newest successful run for this commit that still binds; runs with expired artifacts are skipped."""
-    candidates = sorted((run for run in ing_runs(gh, sha) if run.get("status") == "completed" and run.get("conclusion") == "success"),
-                        key=lambda run: run["id"], reverse=True)
-    require(bool(candidates), "RUN_NOT_FOUND", f"no successful lolly.ing build for {sha}; use ship")
-    for run in candidates:
-        try:
-            bound = bind_ing_run(gh, run, sha)
-        except Refusal as exc:
-            if exc.code != "RECEIPT_MISSING":
-                raise
+def latest_ing_run(gh, wsha, ssha=None):
+    """The newest successful run that built this Work commit (and, when given, this suse-lolly commit) and still binds."""
+    for run in ing_runs(gh, ssha):
+        if run.get("status") != "completed" or run.get("conclusion") != "success":
             continue
-        if prefer_image is None or bound["release"]["image"] == prefer_image:
-            return bound
-    raise Refusal("RUN_NOT_FOUND", f"no live, binding lolly.ing build for {sha}" + (f" that built {prefer_image}" if prefer_image else ""))
+        try:
+            return bind_ing_run(gh, run, wsha)
+        except Refusal as exc:
+            if exc.code not in ("RECEIPT_MISSING", "MANIFEST_SOURCE"):
+                raise
+    raise Refusal("RUN_NOT_FOUND", f"no live, binding lolly.ing build of Work {wsha}" + (f" and suse-lolly {ssha}" if ssha else "")
+                  + "; use ship")
 
 
-def dispatch_ing(gh, sha):
-    """Ask the private workflow for a build of exactly this commit, on main."""
-    body = {"ref": "refs/heads/" + ANCHORS["branch"], "inputs": {"expected_source": sha}}
+def lolly_for(gh, wsha):
+    """The Lolly commit a Work commit pins: engine-pin.json generatedFrom (the workflow's gate checks the gitlink too)."""
+    pin = strict_json(gh.raw(f"repos/{ANCHORS['workRepository']}/contents/engine-pin.json?ref={wsha}").decode("utf-8"), "engine pin")
+    lsha = pin.get("generatedFrom") if isinstance(pin, dict) else None
+    require(isinstance(lsha, str) and SHA.fullmatch(lsha) is not None, "ENGINE_PIN", "Work's engine-pin.json names no Lolly commit")
+    return lsha
+
+
+def dispatch_ing(gh, lsha, wsha, ssha):
+    """Ask the private workflow for one build of exactly these three commits, on main."""
+    body = {"ref": "refs/heads/" + ANCHORS["branch"], "inputs": {"LSHA": lsha, "WSHA": wsha, "SSHA": ssha}}
     gh.post(f"repos/{ANCHORS['repository']}/actions/workflows/{ANCHORS['buildWorkflowFile']}/dispatches", body)
     return body
 
 
-def find_new_ing_run(gh, sha, known_ids, attempts=20, pause=6):
+def find_new_ing_run(gh, ssha, known_ids, attempts=20, pause=6):
     for _ in range(attempts):
-        fresh = [run for run in ing_runs(gh, sha) if run["id"] not in known_ids and run.get("event") == "workflow_dispatch"]
+        fresh = [run for run in ing_runs(gh, ssha) if run["id"] not in known_ids]
         if len(fresh) == 1:
             return fresh[0]
         require(len(fresh) <= 1, "AMBIGUOUS_RUN", "more than one new lolly.ing build appeared; bind one with deploy")
@@ -112,9 +125,10 @@ def find_new_ing_run(gh, sha, known_ids, attempts=20, pause=6):
 
 
 def maintenance_approval(gh, run_id):
-    """A maintenance migration needs Andy's approval of the maintenance environment in this same run (R20 S7)."""
+    """Andy's approval of the maintenance environment in this same run (R20 S7), or None.
+    The node refuses a pending maintenance migration without one."""
     approvals = gh.json(f"repos/{ANCHORS['repository']}/actions/runs/{int(run_id)}/approvals")
-    require(isinstance(approvals, list), "MAINTENANCE_NOT_APPROVED", "the run's approvals are unreadable")
+    require(isinstance(approvals, list), "GITHUB_FAILED", "the run's approvals are unreadable")
     for item in approvals:
         if not isinstance(item, dict) or item.get("state") != "approved":
             continue
@@ -122,8 +136,7 @@ def maintenance_approval(gh, run_id):
         login = (item.get("user") or {}).get("login")
         if ANCHORS["maintenanceEnvironment"] in names and login in A.ING_MAINTENANCE_APPROVERS:
             return {"run": str(run_id), "approver": login, "environment": ANCHORS["maintenanceEnvironment"]}
-    raise Refusal("MAINTENANCE_NOT_APPROVED", "this build carries a maintenance migration and the run shows no approval of "
-                  f"{ANCHORS['maintenanceEnvironment']} by an approver the tool pins; nothing was changed")
+    return None
 
 
 def change_list(gh, live, new):

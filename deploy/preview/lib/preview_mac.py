@@ -36,9 +36,7 @@ from preview_expect import (configure_connect_src, configured_nginx_conf, csp_de
                             models_sample, parse_connector_origins, stored_formats)
 from preview_layout import conversion_plan
 
-TOOL_PATHS = ("deploy/preview", "scripts/app-update.py", A.REHEARSAL_DRIVER)
-# Where the node finds Work's app-update.py and the Phase 2A rehearsal driver in the bundle.
-BUNDLE_NAMES = {"scripts/app-update.py": "app-update.py", A.REHEARSAL_DRIVER: "phase2a/restore-rehearsal.py"}
+TOOL_PATHS = ("deploy/preview", "scripts/app-update.py")
 LIB = Path(__file__).resolve().parent
 TOOL_ROOT = LIB.parents[2]  # <root>/deploy/preview/lib -> <root>; tests point it at their copy
 # The one private state directory (review R1). A copy elsewhere, even one whose path ends the
@@ -73,12 +71,6 @@ def tool_files(root):
     app_update = root / "scripts" / "app-update.py"
     require(app_update.is_file() and not app_update.is_symlink(), "TOOL_INVALID", "scripts/app-update.py is missing")
     entries.append(("scripts/app-update.py", app_update))
-    # Phase 2A's restore rehearsal driver runs as root on the node, so it is locked tool code
-    # too. It is optional until it lands; a lolly.ing run with pending migrations refuses without it.
-    driver = root / A.REHEARSAL_DRIVER
-    if driver.exists():
-        require(driver.is_file() and not driver.is_symlink(), "TOOL_INVALID", A.REHEARSAL_DRIVER + " is not a regular file")
-        entries.append((A.REHEARSAL_DRIVER, driver))
     return sorted(entries)
 
 
@@ -101,7 +93,7 @@ def bundle(root):
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for relative, path in tool_files(root):
-            name = BUNDLE_NAMES.get(relative) or relative[len("deploy/preview/"):]
+            name = "app-update.py" if relative == "scripts/app-update.py" else relative[len("deploy/preview/"):]
             data = path.read_bytes()
             info = tarfile.TarInfo(name)
             info.size, info.mtime, info.uid, info.gid = len(data), 0, 0, 0

@@ -1,0 +1,193 @@
+{
+  "backup": {
+    "keyId": "0123456789abcdef",
+    "object": "lolly/backups/2026-10-24T07-00-00-000Z-0123456789abcdef.lwbackup",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 161115,
+    "status": "VERIFIED"
+  },
+  "code": null,
+  "configMapDataSha256": "6e8acc1a148cedace8ec76c45a500ab8c214a7b62ffc05d09d55373a2b278b60",
+  "created": {
+    "ConfigMap": {
+      "name": "restore-rehearsal-r1",
+      "uid": "3bbb62a0-01b0-4050-a094-0a2c0afda8df"
+    },
+    "Pod": {
+      "name": "restore-rehearsal-r1",
+      "uid": "807704d8-574a-4280-b98c-14db7e5756fe"
+    }
+  },
+  "deadlineSeconds": 900,
+  "egressClosedAfterFetch": true,
+  "expect": "sha256:db1fef05789fd4f84b5eb55227e708c90dc6fc7cfa9a9ab3eef1d9a27c6c85e8",
+  "files": [
+    {
+      "name": "0077_gadgets.sql",
+      "seconds": 0.42
+    },
+    {
+      "name": "0078_widgets.sql",
+      "seconds": 0.42
+    }
+  ],
+  "finishedAt": "2026-10-24T08:35:30Z",
+  "images": {
+    "new": "docker.io/library/lolly-work@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "postgres": "dp.apps.rancher.io/containers/postgresql@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "previous": "docker.io/library/lolly-work@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "labelSweep": "found",
+  "lockBudgetOverride": false,
+  "lockBudgetSeconds": 30,
+  "namespace": "lolly-restore-rehearsal",
+  "pending": [
+    {
+      "name": "0077_gadgets.sql",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "name": "0078_widgets.sql",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "reason": null,
+  "result": "PASSED",
+  "runId": "r1",
+  "startedAt": "2026-10-24T08:35:29Z",
+  "steps": {
+    "fetch": {
+      "keyId": "0123456789abcdef",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 161115,
+      "status": "RECOVERED",
+      "step": "fetch"
+    },
+    "migrate": {
+      "applied": [
+        "0077_gadgets.sql",
+        "0078_widgets.sql"
+      ],
+      "egress": "CLOSED",
+      "exitCode": 0,
+      "status": "APPLIED",
+      "step": "migrate"
+    },
+    "previous": {
+      "egress": "CLOSED",
+      "requests": [
+        "GET /healthz 200"
+      ],
+      "savedRevision": 2,
+      "status": "ROUND_TRIP_OK",
+      "step": "previous"
+    },
+    "restore": {
+      "appliedBefore": [
+        "0001_m.sql",
+        "0002_m.sql",
+        "0003_m.sql",
+        "0004_m.sql",
+        "0005_m.sql",
+        "0006_m.sql",
+        "0007_m.sql",
+        "0008_m.sql",
+        "0009_m.sql",
+        "0010_m.sql",
+        "0011_m.sql",
+        "0012_m.sql",
+        "0013_m.sql",
+        "0014_m.sql",
+        "0015_m.sql",
+        "0016_m.sql",
+        "0017_m.sql",
+        "0018_m.sql",
+        "0019_m.sql",
+        "0020_m.sql",
+        "0021_m.sql",
+        "0022_m.sql",
+        "0023_m.sql",
+        "0024_m.sql",
+        "0025_m.sql",
+        "0026_m.sql",
+        "0027_m.sql",
+        "0028_m.sql",
+        "0029_m.sql",
+        "0030_m.sql",
+        "0031_m.sql",
+        "0032_m.sql",
+        "0033_m.sql",
+        "0034_m.sql",
+        "0035_m.sql",
+        "0036_m.sql",
+        "0037_m.sql",
+        "0038_m.sql",
+        "0039_m.sql",
+        "0040_m.sql",
+        "0041_m.sql",
+        "0042_m.sql",
+        "0043_m.sql",
+        "0044_m.sql",
+        "0045_m.sql",
+        "0046_m.sql",
+        "0047_m.sql",
+        "0048_m.sql",
+        "0049_m.sql",
+        "0050_m.sql",
+        "0051_m.sql",
+        "0052_m.sql",
+        "0053_m.sql",
+        "0054_m.sql",
+        "0055_m.sql",
+        "0056_m.sql",
+        "0057_m.sql",
+        "0058_m.sql",
+        "0059_m.sql",
+        "0060_m.sql",
+        "0061_m.sql",
+        "0062_m.sql",
+        "0063_m.sql",
+        "0064_m.sql",
+        "0065_m.sql",
+        "0066_m.sql",
+        "0067_m.sql"
+      ],
+      "archiveSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "archiveSize": 161115,
+      "database": "lolly_rehearsal",
+      "listenAddresses": "",
+      "publicTables": 79,
+      "restoreSeconds": 1,
+      "serverVersion": "180006",
+      "status": "RESTORED",
+      "step": "restore"
+    },
+    "verify": {
+      "appliedAfterCount": 69,
+      "files": [
+        {
+          "name": "0077_gadgets.sql",
+          "seconds": 0.42
+        },
+        {
+          "name": "0078_widgets.sql",
+          "seconds": 0.42
+        }
+      ],
+      "lockBudgetSeconds": 30,
+      "missing": [],
+      "status": "RECORD_OK",
+      "step": "verify",
+      "unexpected": []
+    }
+  },
+  "storage": {
+    "address": "203.0.113.7",
+    "host": "backups.example.test"
+  },
+  "teardown": {
+    "ConfigMap": "deleted",
+    "Pod": "deleted"
+  },
+  "teardownComplete": true
+}

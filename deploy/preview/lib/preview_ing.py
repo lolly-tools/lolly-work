@@ -10,7 +10,6 @@ migration set allows, and which key a build is pinned to.
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import json
 import re
@@ -18,10 +17,11 @@ import re
 import preview_anchors as A
 import preview_layout as L
 from preview_common import HEX64, SHA, Refusal, canonical_js_json, compact_digest, require, strict_json
-from preview_receipt import jwk_thumbprint, verify_p256, verify_p256_raw
+from preview_receipt import jwk_thumbprint, verify_p256_raw
 
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-MIGRATION_NAME = re.compile(r"[0-9]{4}_[a-z0-9_]{1,80}\.sql\Z")
+# The same rule as Work's runner and the restore rehearsal (server/src/store/migrate.ts).
+MIGRATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,150}\.sql\Z")
 KEY_ID = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 CLASSES = ("additive", "maintenance")
 
@@ -51,98 +51,96 @@ def boot_key_id(log_text):
     return found[0] if found else None
 
 
-# Manifest (the suse-lolly lolly-ing-preview.yml run's output) -------------------
+# Manifest (suse-lolly lolly-ing-preview.yml, PR #28) -------------------------------
 def _digest_list(values):
     return isinstance(values, list) and 0 < len(values) <= 256 and all(isinstance(v, str) and DIGEST.fullmatch(v) for v in values)
 
 
 def validate_migrations(items, label="migrations"):
+    """[{name, sha256}] in file-name order, as the workflow's `migrations` records them."""
     require(isinstance(items, list) and len(items) <= 2000, "MANIFEST_INVALID", f"{label} is not a list")
     seen = set()
     for item in items:
-        require(isinstance(item, dict) and set(item) == {"name", "sha256", "class"} and isinstance(item["name"], str)
-                and MIGRATION_NAME.fullmatch(item["name"]) and isinstance(item["sha256"], str) and HEX64.fullmatch(item["sha256"])
-                and item["class"] in CLASSES, "MANIFEST_INVALID", f"{label} entry is malformed")
+        require(isinstance(item, dict) and set(item) == {"name", "sha256"} and isinstance(item["name"], str)
+                and MIGRATION_NAME.fullmatch(item["name"]) and ".." not in item["name"] and isinstance(item["sha256"], str)
+                and HEX64.fullmatch(item["sha256"]), "MANIFEST_INVALID", f"{label} entry is malformed")
         require(item["name"] not in seen, "MANIFEST_INVALID", f"{label} names a file twice")
         seen.add(item["name"])
     return items
 
 
-def verify_ing_receipt(receipt, jwk):
-    """The release receipt the sign job wrote with the lolly.ing key. Returns its body."""
-    require(isinstance(receipt, dict) and set(receipt) == {"body", "signature"} and isinstance(receipt["body"], dict),
-            "RECEIPT_INVALID", "the lolly.ing receipt has missing or unexpected fields")
-    body = receipt["body"]
-    require(set(body) == {"kind", "version", "sources", "catalog", "files", "shellPinKeyId", "migrations", "formats"},
-            "RECEIPT_INVALID", "the lolly.ing receipt body has missing or unexpected fields")
-    require(body["kind"] == "lolly-ing-release" and body["version"] == 1, "RECEIPT_INVALID", "not a version 1 lolly.ing receipt")
-    text = receipt["signature"]
-    require(isinstance(text, str) and len(text) <= 200, "RECEIPT_INVALID", "the receipt signature is malformed")
-    try:
-        signature = base64.b64decode(text, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise Refusal("RECEIPT_INVALID", "the receipt signature is not base64") from exc
-    require(verify_p256(jwk, canonical_js_json(body).encode("utf-8"), signature), "RECEIPT_SIGNATURE",
-            "the lolly.ing receipt does not verify against the lolly.ing pin")
-    return body
+def _sha(value):
+    return isinstance(value, str) and SHA.fullmatch(value) is not None
 
 
-def validate_manifest(manifest, run, ssha):
-    """Check the manifest's shape and its binding to the run and source. Returns the normalised release."""
-    jwk, thumbprint = ing_pin()
-    require(isinstance(manifest, dict) and set(manifest) == {"kind", "version", "run", "sources", "image", "catalog", "shell",
-                                                             "receipt", "migrations", "maintenance", "boot"},
-            "MANIFEST_INVALID", "the manifest has missing or unexpected fields")
-    require(manifest["kind"] == "lolly-ing-instance-manifest" and manifest["version"] == 1, "MANIFEST_INVALID", "not a version 1 manifest")
-    require(manifest["run"] == {"id": run["id"], "attempt": run["run_attempt"]}, "MANIFEST_INVALID",
-            "the manifest names another run or attempt")
-    sources = manifest["sources"]
-    require(isinstance(sources, dict) and set(sources) == {"suseLolly", "work", "lolly"}
-            and all(isinstance(v, str) and SHA.fullmatch(v) for v in sources.values()) and sources["suseLolly"] == ssha,
-            "MANIFEST_INVALID", "the manifest sources are malformed or name another suse-lolly commit")
-    image = manifest["image"]
-    require(isinstance(image, dict) and set(image) == {"name", "digest", "configDigest", "diffIds", "platform", "archive"},
-            "MANIFEST_INVALID", "the manifest image record is malformed")
-    require(image["name"] == A.ING["imageName"] and isinstance(image["digest"], str) and DIGEST.fullmatch(image["digest"])
-            and isinstance(image["configDigest"], str) and DIGEST.fullmatch(image["configDigest"]) and _digest_list(image["diffIds"])
-            and image["platform"] == "linux/amd64", "MANIFEST_INVALID", "the image is not the anchored instance image by digest")
-    archive = image["archive"]
-    require(isinstance(archive, dict) and set(archive) == {"artifact", "file", "sha256", "bytes"}
-            and archive["artifact"] == A.ING["archiveArtifact"] and archive["file"] == A.ING["archiveFile"]
+def validate_manifest(manifest, run, wsha):
+    """Check the workflow's manifest and its binding to the run and the Work commit. Returns the release.
+
+    The manifest is unsigned; it is trusted through the run binding. The shell's signed
+    receipt is verified against the lolly.ing pin on the served site, after the switch.
+    """
+    _, thumbprint = ing_pin()
+    anchors = A.ING
+    require(isinstance(manifest, dict) and manifest.get("kind") == anchors["manifestKind"] and manifest.get("version") == 1
+            and manifest.get("site") == "lolly.ing", "MANIFEST_INVALID", "not a version 1 lolly.ing instance image manifest")
+    record = manifest.get("run")
+    require(isinstance(record, dict) and record.get("runId") == run["id"] and record.get("runAttempt") == run["run_attempt"]
+            and record.get("repository") == anchors["repository"] and record.get("event") == "workflow_dispatch"
+            and record.get("ref") == "refs/heads/" + anchors["branch"] and record.get("workflowSha") == run.get("head_sha"),
+            "MANIFEST_INVALID", "the manifest names another run, attempt, repository, event, ref or workflow commit")
+    sources = manifest.get("sources")
+    require(isinstance(sources, dict) and set(sources) == {"lolly", "work", "suse"} and all(_sha(v) for v in sources.values()),
+            "MANIFEST_INVALID", "the manifest sources are malformed")
+    require(sources["work"] == wsha, "MANIFEST_SOURCE", "the build is for another Work commit")
+    require(sources["suse"] == run.get("head_sha"), "RUN_NOT_BOUND",
+            "the run's head commit is not the suse-lolly commit it built (SSHA must be the dispatched main commit)")
+    pin = manifest.get("enginePin")
+    require(isinstance(pin, dict) and pin.get("generatedFrom") == sources["lolly"], "MANIFEST_INVALID",
+            "the image's engine pin does not name the Lolly commit")
+    image = manifest.get("image")
+    require(isinstance(image, dict), "MANIFEST_INVALID", "the manifest has no image record")
+    archive = image.get("archive")
+    name = re.fullmatch(anchors["archivePattern"].format(run=run["id"], attempt=run["run_attempt"]), str((archive or {}).get("name")))
+    require(isinstance(archive, dict) and set(archive) == {"name", "sha256", "bytes"} and name is not None
             and isinstance(archive["sha256"], str) and HEX64.fullmatch(archive["sha256"])
             and type(archive["bytes"]) is int and 0 < archive["bytes"] <= A.ING_ARCHIVE_MAX_BYTES,
-            "MANIFEST_INVALID", "the archive record is malformed")
-    catalog, shell = manifest["catalog"], manifest["shell"]
-    require(isinstance(catalog, dict) and set(catalog) == {"seq", "keyId", "indexSha256"} and type(catalog["seq"]) is int
-            and catalog["seq"] > 0 and isinstance(catalog["keyId"], str) and KEY_ID.fullmatch(catalog["keyId"])
-            and isinstance(catalog["indexSha256"], str) and HEX64.fullmatch(catalog["indexSha256"]),
-            "MANIFEST_INVALID", "the catalog record is malformed")
-    require(isinstance(shell, dict) and set(shell) == {"pinKeyId", "files", "formats"} and isinstance(shell["pinKeyId"], str)
-            and KEY_ID.fullmatch(shell["pinKeyId"]) and isinstance(shell["files"], dict) and isinstance(shell["formats"], dict)
-            and isinstance(shell["files"].get("index.html"), str) and HEX64.fullmatch(shell["files"]["index.html"]),
-            "MANIFEST_INVALID", "the shell record is malformed")
-    refuse_release_key(shell["pinKeyId"], "the build's shell pin")
-    refuse_release_key(catalog["keyId"], "the build's catalog signature")
-    require(shell["pinKeyId"] == thumbprint and catalog["keyId"] == thumbprint, "KEY_MISMATCH",
+            "MANIFEST_INVALID", "the archive record is malformed or not this run's archive")
+    ref_name = anchors["refNamePattern"].format(run=run["id"], attempt=run["run_attempt"])
+    require(all(isinstance(image.get(k), str) and DIGEST.fullmatch(image[k]) for k in ("digest", "manifestDigest", "configDigest"))
+            and _digest_list(image.get("diffIds")) and image.get("refName") == ref_name,
+            "MANIFEST_INVALID", "the image digests, DiffIDs or name are malformed")
+    shell, catalog, settings = manifest.get("shell"), manifest.get("catalog"), manifest.get("buildSettings")
+    require(isinstance(shell, dict) and isinstance(catalog, dict) and isinstance(settings, dict), "MANIFEST_INVALID",
+            "the shell, catalog or build settings record is missing")
+    keys = [shell.get("keyId"), shell.get("publicPinThumbprint"), catalog.get("keyId"), settings.get("pinThumbprint")]
+    for key_id in keys:
+        refuse_release_key(key_id, "the build")
+    require(all(key_id == thumbprint for key_id in keys), "KEY_MISMATCH",
             "the build is not pinned to and signed with the lolly.ing key the tool pins")
-    migrations = validate_migrations(manifest["migrations"])
-    require(type(manifest["maintenance"]) is bool, "MANIFEST_INVALID", "maintenance flag")
-    require(manifest["maintenance"] == any(item["class"] != "additive" for item in migrations), "MANIFEST_INVALID",
-            "the maintenance flag disagrees with the migration classes")
-    require(manifest["boot"] == {"healthz": True, "readyz": True, "shellIndex": True}, "MANIFEST_INVALID",
+    require(shell.get("profile") == A.ING["receiptProfile"] and settings.get("profile") == A.ING["receiptProfile"],
+            "MANIFEST_INVALID", "the shell is not the suse profile")
+    require(isinstance(shell.get("indexSha256"), str) and HEX64.fullmatch(shell["indexSha256"])
+            and isinstance(manifest.get("receiptSha256"), str) and HEX64.fullmatch(manifest["receiptSha256"])
+            and manifest["receiptSha256"] == shell.get("receiptSha256"), "MANIFEST_INVALID", "the shell index or receipt hash")
+    require(type(catalog.get("seq")) is int and catalog["seq"] > 0 and catalog["seq"] == shell.get("catalogSeq"),
+            "MANIFEST_INVALID", "the catalog sequence is malformed")
+    migrations = validate_migrations(manifest.get("migrations"))
+    require(bool(migrations), "MANIFEST_INVALID", "the manifest lists no migrations")
+    stored = manifest.get("storedFormats")
+    formats = stored.get("formats") if isinstance(stored, dict) and "formats" in stored else stored
+    require(isinstance(formats, dict) and all(isinstance(k, str) and (v is None or type(v) is int) for k, v in formats.items()),
+            "MANIFEST_INVALID", "the stored formats are malformed")
+    boot = manifest.get("boot")
+    require(isinstance(boot, dict) and (boot.get("readyz") or {}).get("status") == 200
+            and (boot.get("index") or {}).get("sha256") == shell["indexSha256"], "MANIFEST_INVALID",
             "the image did not boot in CI against a throwaway database")
-    body = verify_ing_receipt(manifest["receipt"], jwk)
-    require(body["sources"] == sources and body["catalog"] == {"seq": catalog["seq"], "indexSha256": catalog["indexSha256"]}
-            and body["shellPinKeyId"] == shell["pinKeyId"] and body["migrations"] == migrations
-            and body["formats"] == shell["formats"] and body["files"].get("index.html") == shell["files"]["index.html"],
-            "RECEIPT_MISMATCH", "the manifest differs from the signed lolly.ing receipt")
-    require(isinstance(body["files"], dict) and all(isinstance(k, str) and isinstance(v, str) and HEX64.fullmatch(v)
-                                                    for k, v in body["files"].items()), "RECEIPT_INVALID", "receipt file map")
-    return {"source": ssha, "work": sources["work"], "lolly": sources["lolly"], "image": image["name"] + "@" + image["digest"],
-            "digest": image["digest"], "configDigest": image["configDigest"], "diffIds": list(image["diffIds"]),
-            "archive": {"sha256": archive["sha256"], "bytes": archive["bytes"]}, "ciRun": str(run["id"]),
-            "seq": catalog["seq"], "indexSha256": shell["files"]["index.html"], "keyId": thumbprint,
-            "formats": shell["formats"], "migrations": migrations, "maintenance": manifest["maintenance"]}
+    return {"source": wsha, "suse": sources["suse"], "lolly": sources["lolly"],
+            "image": anchors["imageName"] + "@" + image["digest"], "digest": image["digest"],
+            "manifestDigest": image["manifestDigest"], "configDigest": image["configDigest"], "diffIds": list(image["diffIds"]),
+            "refName": ref_name, "archive": {"name": archive["name"], "sha256": archive["sha256"], "bytes": archive["bytes"]},
+            "ciRun": str(run["id"]), "seq": catalog["seq"], "indexSha256": shell["indexSha256"],
+            "receiptSha256": manifest["receiptSha256"], "keyId": thumbprint, "formats": dict(formats),
+            "migrations": [{"name": m["name"], "sha256": m["sha256"]} for m in migrations]}
 
 
 # Generation (R20 S16) ------------------------------------------------------------
@@ -435,7 +433,7 @@ DB_READ_SCRIPT = r"""
 const { default: pg } = await import('file:///app/node_modules/pg/lib/index.js');
 const { createHash } = await import('node:crypto');
 const { readdir, readFile } = await import('node:fs/promises');
-const names = (await readdir('/app/migrations')).filter(n => /^[0-9]{4}_[a-z0-9_]{1,80}\.sql$/.test(n)).sort();
+const names = (await readdir('/app/migrations')).filter(n => n.endsWith('.sql')).sort();  // Work's own rule
 const files = [];
 for (const name of names) files.push({ name, sha256: createHash('sha256').update(await readFile('/app/migrations/' + name)).digest('hex') });
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 15000 });
@@ -459,7 +457,7 @@ process.stdout.write(JSON.stringify({ kind: 'lolly-migrate-check', version: 1, f
 
 # Migrations (PROPOSAL 4.4; R20 S7, R22 S12; design C 6.2) -------------------------
 def validate_check(check):
-    """Output of the image's read-only migration check (Phase 2A interface)."""
+    """Output of this tool's read-only check inside the image (DB_READ_SCRIPT)."""
     require(isinstance(check, dict) and check.get("kind") == "lolly-migrate-check" and check.get("version") == 1
             and set(check) == {"kind", "version", "files", "ledger", "publicationGeneration"},
             "MIGRATION_CHECK", "the migration check output is malformed")
@@ -475,38 +473,68 @@ def validate_check(check):
     return check
 
 
-def validate_classes(output, names):
-    """Output of the classifier CLI for the pending files (Phase 2A interface): one JSON object per file."""
-    require(isinstance(output, dict) and output.get("kind") == "lolly-migration-classes" and output.get("version") == 1
-            and isinstance(output.get("files"), list), "CLASSIFIER", "the classifier output is malformed")
+def migration_manifest(files):
+    """sha256 over a fixed header and one `name<TAB>sha256` line per file in name order: Work's
+    migrationManifest (server/src/store/migrate.ts) and the rehearsal's, byte for byte."""
+    lines = "".join(f"{f['name']}\t{f['sha256']}\n" for f in sorted(files, key=lambda f: f["name"]))
+    return "sha256:" + hashlib.sha256((A.MIGRATION_MANIFEST_HEADER + lines).encode()).hexdigest()
+
+
+def expect_value(pending):
+    """LW_MIGRATE_EXPECT for the pending files: their manifest, or `none`. Never empty, never names alone."""
+    return migration_manifest(pending) if pending else "none"
+
+
+def json_document(text):
+    """The one JSON document a program printed, pretty or not, with nothing after it."""
+    text = text or ""
+    starts = [index for index, char in enumerate(text) if char == "{" and (index == 0 or text[index - 1] == "\n")]
+    for start in starts:
+        try:
+            value, end = json.JSONDecoder().raw_decode(text, start)
+        except ValueError:
+            continue
+        if not text[end:].strip():
+            return value
+    return None
+
+
+def validate_classes(output, pending):
+    """Work's classifier output (`classify-migrations.ts --json --only <pending>`, PR #207) for exactly the
+    pending files: {"version": 1, "migrations": [{name, sha256, class, reasons, statements}], "manifest"}."""
+    require(isinstance(output, dict) and output.get("version") == 1 and isinstance(output.get("migrations"), list),
+            "CLASSIFIER", "the classifier output is malformed")
     found = {}
-    for item in output["files"]:
-        require(isinstance(item, dict) and {"name", "sha256", "class"} <= set(item) and item["class"] in CLASSES
+    for item in output["migrations"]:
+        require(isinstance(item, dict) and {"name", "sha256", "class", "reasons"} <= set(item) and item["class"] in CLASSES
                 and isinstance(item["name"], str) and isinstance(item["sha256"], str), "CLASSIFIER", "a classifier entry is malformed")
         found[item["name"]] = item
-    require(set(found) == set(names), "CLASSIFIER", "the classifier did not classify exactly the pending files")
+    expected = {item["name"]: item["sha256"] for item in pending}
+    require(set(found) == set(expected) and len(found) == len(output["migrations"]), "CLASSIFIER",
+            "the classifier did not classify exactly the pending files")
+    require(all(found[name]["sha256"] == digest for name, digest in expected.items()), "MIGRATIONS_MISMATCH",
+            "the image's pending files differ from the signed manifest")
+    require(output.get("manifest") == migration_manifest(pending), "CLASSIFIER",
+            "the classifier's manifest differs from the pending set's")
     return found
 
 
 def migration_plan(manifest_migrations, check, applied_by_lane):
-    """Pending files and what they need. The database may be ahead only by names this lane applied as allowlisted."""
+    """Pending files and the database-ahead rule: the database may be ahead only by names this lane applied
+    as allowlisted. A file that sorts before an applied one is noted; the classifier decides each class."""
     validate_check(check)
     image = {item["name"]: item["sha256"] for item in check["files"]}
     recorded = {item["name"]: item["sha256"] for item in manifest_migrations}
-    require(image == recorded, "MIGRATIONS_MISMATCH", "the image's migration files differ from the signed manifest")
+    require(image == recorded, "MIGRATIONS_MISMATCH", "the image's migration files differ from the build manifest")
     ledger = set(check["ledger"])
     ahead = sorted(ledger - set(image))
     unexplained = [name for name in ahead if name not in applied_by_lane]
     require(not unexplained, "DATABASE_AHEAD", "the database holds migrations this image lacks and this lane did not apply "
             "as allowlisted: " + ", ".join(unexplained[:5]) + "; a human must look")
     pending = sorted(set(image) - ledger)
-    classes = {item["name"]: item["class"] for item in manifest_migrations}
     newest = max((name for name in ledger if name in image), default="")
-    out_of_order = [name for name in pending if name < newest]
-    maintenance = [name for name in pending if classes[name] != "additive"]  # an out-of-order file must be additive too
-    return {"pending": [{"name": name, "sha256": image[name], "class": classes[name]} for name in pending],
-            "ahead": ahead, "outOfOrder": out_of_order, "maintenance": maintenance,
-            "publicationGeneration": check["publicationGeneration"]}
+    return {"pending": [{"name": name, "sha256": image[name]} for name in pending], "ahead": ahead,
+            "outOfOrder": [name for name in pending if name < newest], "publicationGeneration": check["publicationGeneration"]}
 
 
 def migration_set(migrations):
@@ -515,9 +543,23 @@ def migration_set(migrations):
     return hashlib.sha256("\n".join(names).encode()).hexdigest()[:16]
 
 
-def expect_list(pending):
-    """LW_MIGRATE_EXPECT: the exact files the migrate Job may apply, as name:sha256 in name order."""
-    return ",".join(f"{item['name']}:{item['sha256']}" for item in sorted(pending, key=lambda item: item["name"]))
+def check_rehearsal(result, pending, image, previous_image):
+    """The restore rehearsal's result (deploy/preview/REHEARSAL.md, PR #208), checked again here."""
+    require(isinstance(result, dict), "REHEARSAL_FAILED", "the rehearsal gave no result")
+    require(result.get("teardownComplete") is True, "REHEARSAL_FAILED",
+            "the rehearsal left objects behind (teardown incomplete); clean up with restore-rehearsal.py cleanup")
+    require(result.get("result") == "PASSED", "REHEARSAL_FAILED",
+            f"the rehearsal {str(result.get('result')).lower()}: {result.get('code')} {str(result.get('reason'))[:200]}")
+    require(result.get("pending") == sorted(({"name": p["name"], "sha256": p["sha256"]} for p in pending), key=lambda p: p["name"])
+            and result.get("expect") == expect_value(pending), "REHEARSAL_FAILED", "the rehearsal ran another pending set")
+    require((result.get("images") or {}).get("new") == image and (result.get("images") or {}).get("previous") == previous_image,
+            "REHEARSAL_FAILED", "the rehearsal ran other images")
+    files = result.get("files") or []
+    require(sorted(f.get("name") for f in files if isinstance(f, dict)) == sorted(p["name"] for p in pending)
+            and all(isinstance(f, dict) and type(f.get("seconds")) in (int, float) and f["seconds"] <= A.MIGRATION_LOCK_BUDGET_SECONDS
+                    for f in files), "REHEARSAL_FAILED", "a file was not rehearsed or ran past the lock budget")
+    require(result.get("egressClosedAfterFetch") is True, "REHEARSAL_FAILED", "the rehearsal's egress did not close after fetch")
+    return {"result": "PASSED", "runId": result.get("runId"), "expect": result.get("expect"), "files": files}
 
 
 # Catalog (PROPOSAL 4.5 item 4) -------------------------------------------------------
@@ -544,22 +586,25 @@ def verify_catalog(index_bytes, envelope_bytes, jwk, thumbprint):
 
 
 # The release a run carries to the node ---------------------------------------------------
-RELEASE_KEYS = {"source", "work", "lolly", "image", "digest", "configDigest", "diffIds", "archive", "ciRun", "seq",
-                "indexSha256", "keyId", "formats", "migrations", "maintenance"}
+RELEASE_KEYS = {"source", "suse", "lolly", "image", "digest", "manifestDigest", "configDigest", "diffIds", "refName",
+                "archive", "ciRun", "seq", "indexSha256", "receiptSha256", "keyId", "formats", "migrations"}
 
 
 def validate_release(release):
     require(isinstance(release, dict) and set(release) == RELEASE_KEYS, "BAD_REQUEST", "the lolly.ing release is malformed")
-    require(all(isinstance(release[k], str) and SHA.fullmatch(release[k]) for k in ("source", "work", "lolly")), "BAD_REQUEST",
-            "release sources")
+    require(all(_sha(release[k]) for k in ("source", "suse", "lolly")), "BAD_REQUEST", "release sources")
     require(instance_image(release["image"]) and release["image"] == A.ING["imageName"] + "@" + release["digest"]
-            and DIGEST.fullmatch(release["configDigest"]) and _digest_list(release["diffIds"]), "BAD_REQUEST", "release image")
+            and all(isinstance(release[k], str) and DIGEST.fullmatch(release[k]) for k in ("manifestDigest", "configDigest"))
+            and _digest_list(release["diffIds"]) and isinstance(release["refName"], str)
+            and release["refName"].startswith(A.ING["imageName"] + ":run-"), "BAD_REQUEST", "release image")
     archive = release["archive"]
-    require(isinstance(archive, dict) and set(archive) == {"sha256", "bytes"} and HEX64.fullmatch(archive["sha256"])
-            and type(archive["bytes"]) is int and 0 < archive["bytes"] <= A.ING_ARCHIVE_MAX_BYTES, "BAD_REQUEST", "release archive")
+    require(isinstance(archive, dict) and set(archive) == {"name", "sha256", "bytes"} and isinstance(archive["sha256"], str)
+            and HEX64.fullmatch(archive["sha256"]) and type(archive["bytes"]) is int and 0 < archive["bytes"] <= A.ING_ARCHIVE_MAX_BYTES,
+            "BAD_REQUEST", "release archive")
     require(re.fullmatch(r"[1-9][0-9]{0,15}", release["ciRun"]) is not None and type(release["seq"]) is int and release["seq"] > 0
-            and HEX64.fullmatch(release["indexSha256"]) and KEY_ID.fullmatch(release["keyId"]) and isinstance(release["formats"], dict)
-            and type(release["maintenance"]) is bool, "BAD_REQUEST", "release fields")
+            and all(isinstance(release[k], str) and HEX64.fullmatch(release[k]) for k in ("indexSha256", "receiptSha256"))
+            and isinstance(release["keyId"], str) and KEY_ID.fullmatch(release["keyId"]) and isinstance(release["formats"], dict),
+            "BAD_REQUEST", "release fields")
     refuse_release_key(release["keyId"], "the release")
     validate_migrations(release["migrations"], "release migrations")
     return release
@@ -567,14 +612,14 @@ def validate_release(release):
 
 def expect_of(release):
     """What the smoke and a later rollback expect of a build. Small, so it fits the annotations."""
-    return {"source": release["source"], "index": release["indexSha256"], "keyId": release["keyId"], "seq": release["seq"],
-            "work": release["work"], "lolly": release["lolly"]}
+    return {"source": release["source"], "suse": release["suse"], "lolly": release["lolly"], "index": release["indexSha256"],
+            "receipt": release["receiptSha256"], "keyId": release["keyId"], "seq": release["seq"]}
 
 
 def validate_expect(expect):
-    require(isinstance(expect, dict) and set(expect) == {"source", "index", "keyId", "seq", "work", "lolly"}
-            and all(isinstance(expect[k], str) and SHA.fullmatch(expect[k]) for k in ("source", "work", "lolly"))
-            and isinstance(expect["index"], str) and HEX64.fullmatch(expect["index"]) and isinstance(expect["keyId"], str)
-            and KEY_ID.fullmatch(expect["keyId"]) and type(expect["seq"]) is int and expect["seq"] > 0,
-            "BAD_REQUEST", "lolly.ing expectations are malformed")
+    require(isinstance(expect, dict) and set(expect) == {"source", "suse", "lolly", "index", "receipt", "keyId", "seq"}
+            and all(_sha(expect[k]) for k in ("source", "suse", "lolly"))
+            and all(isinstance(expect[k], str) and HEX64.fullmatch(expect[k]) for k in ("index", "receipt"))
+            and isinstance(expect["keyId"], str) and KEY_ID.fullmatch(expect["keyId"]) and type(expect["seq"]) is int
+            and expect["seq"] > 0, "BAD_REQUEST", "lolly.ing expectations are malformed")
     return expect

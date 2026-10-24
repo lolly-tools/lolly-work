@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MPL-2.0
 """Operator side of the lolly.ing preview deploy (PROPOSAL section 4).
 
-Inputs are only the site and a suse-lolly main commit. The build comes from the
-bound private run, identities from check-target.py --site lolly.ing, and live
-state from the node. The archive is downloaded by run ID and streamed over the
+Inputs are only the site and a lolly-work main commit (WSHA). Its engine pin
+names the Lolly commit, and suse-lolly is built at its main head. The build comes
+from the bound private run, identities from check-target.py --site lolly.ing, and
+live state from the node. The archive is downloaded by run ID and streamed over the
 existing SSH route; no registry credential is ever on the node.
 """
 
@@ -28,7 +29,7 @@ from preview_expect import format_lowering
 
 UPLOAD_COMMAND = 'sudo -n python3 -I -c "import sys,base64;exec(base64.b64decode(sys.stdin.buffer.readline()))"'
 PROFILE_KEYS = {"version", "site", "smoke", "watch", "build", "rolloutTimeoutSeconds", "capacity", "noDeployUtc", "gc",
-                "retainPreviousImages", "retainConfigMaps"}
+                "retainPreviousImages", "retainConfigMaps", "rehearsal"}
 CHUNK = 1024 * 1024
 
 
@@ -66,6 +67,11 @@ def load_ing_profile(state_dir):
     require(isinstance(window, list) and len(window) == 2 and all(isinstance(t, str) and re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", t)
                                                                    for t in window), "PROFILE_INVALID", "noDeployUtc")
     require(isinstance(profile["gc"], dict) and set(profile["gc"]) == {"legacyClaims"}, "PROFILE_INVALID", "gc")
+    rehearsal = profile["rehearsal"]
+    require(isinstance(rehearsal, dict) and set(rehearsal) == {"storageHost", "storageAddress"}
+            and isinstance(rehearsal["storageHost"], str) and re.fullmatch(r"[a-z0-9.-]{4,253}", rehearsal["storageHost"])
+            and isinstance(rehearsal["storageAddress"], str) and re.fullmatch(r"[0-9a-f.:]{3,45}", rehearsal["storageAddress"]),
+            "PROFILE_INVALID", "rehearsal: the backup store's host name and public address")
     require(type(profile["retainPreviousImages"]) is int and 1 <= profile["retainPreviousImages"] <= 10
             and type(profile["retainConfigMaps"]) is int and 1 <= profile["retainConfigMaps"] <= 20, "PROFILE_INVALID", "retention")
     profile["_sha256"] = sha256_hex(path.read_bytes())
@@ -94,6 +100,7 @@ class IngContext(M.Context):
                    "drillFailSmoke": bool(getattr(self.args, "drill_fail_smoke", False)),
                    "clearHold": bool(getattr(self.args, "clear_hold", False)), "liveSource": None,
                    "smoke": {"sub": smoke["account"]["sub"], "packAssetPath": smoke["packAssetPath"], "pages": list(smoke["pages"])},
+                   "rehearsal": dict(profile["rehearsal"]),
                    "limits": {"rolloutTimeoutSeconds": profile["rolloutTimeoutSeconds"], "watchMinutes": watch["minutes"],
                               "watchIntervalSeconds": watch["intervalSeconds"], "watchFailures": watch["failures"],
                               "memoryFraction": smoke["memoryFraction"], "edgeAddress": identity["edgeAddress"],
@@ -135,8 +142,9 @@ def stream_archive(context, bound, release, sha):
                         limit=A.ING_ARCHIVE_MAX_BYTES + 64 * 1024 ** 2)
     try:
         with zipfile.ZipFile(local) as archive:
-            require(archive.namelist() == [anchors["archiveFile"]], "ARCHIVE_INVALID", "the archive artifact holds other files")
-            require(archive.getinfo(anchors["archiveFile"]).file_size == release["archive"]["bytes"], "ARCHIVE_MISMATCH",
+            member = release["archive"]["name"]
+            require(archive.namelist() == [member], "ARCHIVE_INVALID", "the archive artifact holds other files")
+            require(archive.getinfo(member).file_size == release["archive"]["bytes"], "ARCHIVE_MISMATCH",
                     "the archive size differs from the manifest")
             header = {"deployId": context.deploy_id("upload", sha), "sha256": release["archive"]["sha256"],
                       "bytes": release["archive"]["bytes"]}
@@ -154,9 +162,9 @@ def stream_archive(context, bound, release, sha):
                 raise Refusal("NODE_UNREACHABLE", "ssh did not start") from exc
             try:
                 process.stdin.write(base64.b64encode(program.encode()) + b"\n")
-                with archive.open(anchors["archiveFile"]) as member:
+                with archive.open(member) as stream:
                     while True:
-                        chunk = member.read(CHUNK)
+                        chunk = stream.read(CHUNK)
                         if not chunk:
                             break
                         digest.update(chunk)
@@ -217,55 +225,58 @@ def _json(text):
         return None
 
 
-def cmd_deploy(context, sha, dispatch):
+WORK_ANCHORS = {"repository": A.ING["workRepository"], "branch": "main"}
+
+
+def cmd_deploy(context, wsha, dispatch):
+    """Deploy one Work main commit. ship dispatches the private build of (its Lolly pin, it, suse-lolly's main head)."""
     anchors, gh = context.anchors, context.gh
     status = _live(context)
     require(status["deployment"]["converted"], "NOT_CONVERTED", "lolly.ing still mounts the shell and pack claims; the one-time "
             "cut-over (plan) comes first")
     require(status["smokeSession"] == "present", "SMOKE_ACCOUNT", "the smoke account's session on the node: " + status["smokeSession"])
     preview = _settled_records(status)
-    G.require_on_main(gh, anchors, sha)
-    bound = None
+    G.require_on_main(gh, WORK_ANCHORS, wsha)
     if dispatch:
+        lsha, ssha = IG.lolly_for(gh, wsha), G.branch_head(gh, anchors["repository"], anchors["branch"])
         try:
-            bound = IG.latest_ing_run(gh, sha)
-            emit("build", note="reusing a bound lolly.ing build of this commit", run=bound["run"])
+            bound = IG.latest_ing_run(gh, wsha, ssha)
+            emit("build", note="reusing a bound lolly.ing build of this Work commit and suse-lolly's main head", run=bound["run"])
         except Refusal as exc:
             if exc.code != "RUN_NOT_FOUND":
                 raise
             context.backup_window("deploy")  # never start a build whose deploy could reach the backup window
-            known = {run["id"] for run in IG.ing_runs(gh, sha)}
-            IG.dispatch_ing(gh, sha)
-            run = IG.find_new_ing_run(gh, sha, known)
-            emit("build", run=run["id"], note="the signing job waits for Andy's approval in GitHub; agents never approve it")
+            known = {run["id"] for run in IG.ing_runs(gh, ssha)}
+            IG.dispatch_ing(gh, lsha, wsha, ssha)
+            run = IG.find_new_ing_run(gh, ssha, known)
+            emit("build", run=run["id"], note="two signing jobs wait for Andy's approval in GitHub; agents never approve them")
             build = context.profile["build"]
             run = G.wait_for_run(gh, anchors, run["id"], build["pollSeconds"], build["timeoutMinutes"])
-            bound = IG.bind_ing_run(gh, run, sha)
+            bound = IG.bind_ing_run(gh, run, wsha)
     else:
-        bound = IG.latest_ing_run(gh, sha)
+        bound = IG.latest_ing_run(gh, wsha)
     release = bound["release"]
+    require(G.contains(gh, anchors["repository"], release["suse"], G.branch_head(gh, anchors["repository"], anchors["branch"]))
+            and G.contains(gh, A.ING["lollyRepository"], release["lolly"], G.branch_head(gh, A.ING["lollyRepository"], "main")),
+            "NOT_ON_MAIN", "the build's suse-lolly or Lolly commit is not on its main")
     if release["image"] == status["deployment"]["image"]:
         require(preview.get("phase") == "accepted", "RECORDS_STALE", "this build is live but its phase is " + str(preview.get("phase")))
-        emit("done", result="ALREADY_LIVE", image=release["image"], source=sha)
-        context.record("ship" if dispatch else "deploy", "ALREADY_LIVE", sha=sha, image=release["image"])
+        emit("done", result="ALREADY_LIVE", image=release["image"], source=wsha)
+        context.record("ship" if dispatch else "deploy", "ALREADY_LIVE", sha=wsha, image=release["image"])
         return 0
-    # A maintenance file already applied by an earlier approved deploy needs no new approval; the node
-    # still refuses any maintenance file that is actually pending without one.
-    applied = _json(preview.get("maintenance-migrations")) or []
-    pending_maintenance = {m["name"] for m in release["migrations"] if m["class"] != "additive"} - set(applied)
-    approval = IG.maintenance_approval(gh, bound["run"]) if pending_maintenance else None
+    approval = IG.maintenance_approval(gh, bound["run"])
     live_expect = _json(preview.get("expect")) or {}
-    IG.change_list(gh, {"suseLolly": live_expect.get("source"), "work": live_expect.get("work"), "lolly": live_expect.get("lolly")},
-                   {"suseLolly": release["source"], "work": release["work"], "lolly": release["lolly"]})
+    IG.change_list(gh, {name: live_expect.get(name) for name in ("suse", "lolly")} | {"work": live_expect.get("source")},
+                   {"suse": release["suse"], "work": release["source"], "lolly": release["lolly"]})
     context.expect_migrations = preview.get("migration-set") != I.migration_set(release["migrations"])
     context.backup_window("deploy")
     context.check_target()  # once, before the first write to the node (the archive upload)
-    intake(context, bound, release, sha)
-    request = context.request("deploy", context.deploy_id("deploy", sha), need_bytes=context.need_bytes(release),
+    intake(context, bound, release, wsha)
+    request = context.request("deploy", context.deploy_id("deploy", wsha), need_bytes=context.need_bytes(release),
                               release=release, maintenanceApproval=approval)
     request["liveSource"] = preview.get("source")
     result = context.start_and_follow(request)
-    return M._finish(context, "ship" if dispatch else "deploy", result, sha=sha, ciRun=bound["run"])
+    return M._finish(context, "ship" if dispatch else "deploy", result, sha=wsha, ciRun=bound["run"])
 
 
 def cmd_rollback(context):
@@ -307,9 +318,9 @@ def _plan_path(context, deploy_id):
 
 
 def cmd_plan(context, sha):
-    """PROPOSAL 4.8 plan mode: print the exact cut-over patch, applied once by the owner with Andy present."""
+    """PROPOSAL 4.8 plan mode for one Work commit: print the exact cut-over patch, applied once by the owner with Andy present."""
     anchors, gh = context.anchors, context.gh
-    G.require_on_main(gh, anchors, sha)
+    G.require_on_main(gh, WORK_ANCHORS, sha)
     live = context.read("plan")
     require(not live["converted"], "ALREADY_CONVERTED", "lolly.ing already runs the instance image")
     bound = IG.latest_ing_run(gh, sha)

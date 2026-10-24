@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "migrations": [
+    {
+      "name": "0077_widgets.sql",
+      "sha256": "d9a0650339a357472b0746148f447f9be2efe2c4026e031e1ec04f77ac7c1e3c",
+      "class": "additive",
+      "reasons": [],
+      "statements": [
+        {
+          "index": 1,
+          "kind": "create-table",
+          "class": "additive",
+          "reason": "",
+          "excerpt": "create table if not exists widgets (id bigint primary key, name text)"
+        }
+      ]
+    },
+    {
+      "name": "0078_widget_names.sql",
+      "sha256": "df71905269edacbc163735e9f9bb39a83b1e81112a83a6b4850f42cbda31e0c2",
+      "class": "maintenance",
+      "reasons": [
+        "statement 1: ALTER TABLE ADD CONSTRAINT"
+      ],
+      "statements": [
+        {
+          "index": 1,
+          "kind": "alter-table",
+          "class": "maintenance",
+          "reason": "ALTER TABLE ADD CONSTRAINT",
+          "excerpt": "alter table widgets add constraint widgets_name_unique unique (name)"
+        }
+      ]
+    }
+  ],
+  "manifest": "sha256:6e50f3ce57f2bbc395508df7687a94cdb295b1ae198ed721daadb416da6e20a1"
+}

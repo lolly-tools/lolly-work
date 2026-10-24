@@ -5,24 +5,29 @@ The same executables (gh, ssh, k3s, systemctl) route here when FAKE_SITE is
 lolly.ing. They model what the lolly.ing path touches: the lolly-private
 Deployment and its generation ConfigMaps, the backup CronJob and the Jobs the
 command creates, containerd import and content, Postgres's migration ledger and
-Work's catalog generation fence, the private suse-lolly run and the edge. Nothing
-real is contacted.
+Work's catalog generation fence, suse-lolly's private lolly-ing-preview.yml run
+(PR #28's manifest) and the edge. The classifier Job prints Work's real classifier
+output (PR #207, tests/fixtures/preview-ing), and the restore rehearsal runs the
+real driver (PR #208) against that PR's own fake kubectl. Nothing real is contacted.
 """
 
 from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import io
 import json
 import os
 import re
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import preview_deploy_fakes as F
 
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "preview-ing"
 ING_NAMESPACE = "lolly-private"
 ING_NAMESPACE_UID = "55555555-5555-4555-8555-555555555555"
 ING_DEPLOYMENT_UID = "66666666-6666-4666-8666-666666666666"
@@ -33,9 +38,13 @@ SMOKE_SUB = "smoke-member-1"
 SMOKE_COOKIE = "lw_session=" + "s" * 40
 PACK_ASSET = "/catalog/assets/suse/logo/primary.svg"
 SUSE_REPO = "lolly-tools/suse-lolly"
+WORK_REPO = "lolly-tools/lolly-work"
 ING_LABELS = {"app.kubernetes.io/instance": "lolly-work", "app.kubernetes.io/name": "lolly-work"}
-RELEASE_THUMBPRINT = "5zVngG6s-652_L8Zdok5PTfQ6vxdPAYfcpBWxMtzs5c"
 CRON = "lolly-postgres-offhost-backup"
+STORAGE_HOST = "backups.example.test"
+STORAGE_ADDRESS = "203.0.113.7"
+REHEARSAL_NAMESPACE = "lolly-restore-rehearsal"
+MANIFEST_HEADER = "lolly-work migration manifest v1\n"
 sha = F.sha
 
 
@@ -56,13 +65,25 @@ def sign_raw(d, message):
     return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
 
-def migration(name, cls="additive"):
+def migration(name):
     text = f"-- {name}\ncreate table if not exists t_{name[:4]} (id int);\n"
-    return {"name": name, "sha256": sha(text.encode()), "class": cls}
+    return {"name": name, "sha256": sha(text.encode())}
+
+
+def fixture_migration(name):
+    """One of the SQL files the real #207 classifier classified (fixtures/preview-ing)."""
+    return {"name": name, "sha256": sha((FIXTURES / name).read_bytes())}
 
 
 BASE_MIGRATIONS = [migration(f"{n:04d}_base_{n}.sql") for n in range(1, 4)]
+ADDITIVE = "0077_widgets.sql"       # #207: additive (create table)
+MAINTENANCE = "0078_widget_names.sql"  # #207: maintenance (ALTER TABLE ADD CONSTRAINT)
 FORMATS = {"channelMessage": 2, "indexedDb": 26, "revisionArchive": 1, "session": 4}
+
+
+def manifest_hash(files):
+    lines = "".join(f"{f['name']}\t{f['sha256']}\n" for f in sorted(files, key=lambda f: f["name"]))
+    return "sha256:" + hashlib.sha256((MANIFEST_HEADER + lines).encode()).hexdigest()
 
 
 def instance_json(generation, name="lolly.ing"):
@@ -73,35 +94,37 @@ def instance_json(generation, name="lolly.ing"):
                        "render": {"worker": {"url": "https://worker.lolly-private.svc:8791", "timeoutMs": 60000}}}, indent=2) + "\n"
 
 
-def make_ing_build(key, ssha, label, migrations=None, seq=3000, work="1" * 40, lolly="2" * 40, formats=None,
-                   shell_pin=None, receipt_key=None):
-    """One private instance build: its OCI archive, digests, served shell and signed receipt."""
+def make_ing_build(key, wsha, label, migrations=None, seq=3000, lolly="2" * 40, suse="5" * 40, formats=None,
+                   pin=None, receipt_key=None):
+    """One private instance build: its OCI layout digests, served shell, signed frontend receipt and pack."""
     from preview_common import canonical_js_json
     import preview_receipt as R
     d, jwk = key
     thumb = R.jwk_thumbprint(jwk)
     migrations = list(BASE_MIGRATIONS if migrations is None else migrations)
-    index = f"<!doctype html><title>lolly.ing {label}</title>".encode()
+    index_html = f"<!doctype html><title>lolly.ing {label}</title>".encode()
     catalog = json.dumps({"version": 1, "tools": [{"id": "qr-code"}], "label": label}).encode()
+    envelope = json.dumps({"keyId": thumb, "seq": seq, "label": label}).encode()
+    body = {"kind": "lolly-release-frontend", "version": 1, "source": lolly, "target": "web", "profile": "suse",
+            "files": {"index.html": sha(index_html), "catalog/tools/index.sig.json": sha(envelope)}}
+    body["signature"] = b64(F.sign((receipt_key or key)[0], canonical_js_json(body).encode()))
+    receipt = json.dumps(body).encode()
     diff_ids = ["sha256:" + sha(f"layer {label} {i}".encode()) for i in range(2)]
     config = json.dumps({"architecture": "amd64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": diff_ids}}, sort_keys=True).encode()
-    config_digest = "sha256:" + sha(config)
-    blob = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                       "config": {"digest": config_digest, "size": len(config)},
-                       "layers": [{"digest": "sha256:" + sha(f"blob {label} {i}".encode()), "size": 1000} for i in range(2)]},
-                      sort_keys=True).encode()
-    digest = "sha256:" + sha(blob)
-    archive = b"OCI " + blob + b"\n" + config + b"\n" + (label.encode() * 64)
-    formats = dict(FORMATS if formats is None else formats)
-    body = {"kind": "lolly-ing-release", "version": 1, "sources": {"suseLolly": ssha, "work": work, "lolly": lolly},
-            "catalog": {"seq": seq, "indexSha256": sha(catalog)}, "files": {"index.html": sha(index)},
-            "shellPinKeyId": shell_pin or thumb, "migrations": migrations, "formats": formats}
-    receipt = {"body": body, "signature": b64(F.sign((receipt_key or key)[0], canonical_js_json(body).encode()))}
-    return {"sha": ssha, "label": label, "image": ING_IMAGE + "@" + digest, "digest": digest, "configDigest": config_digest,
-            "diffIds": diff_ids, "config": b64(config), "blob": b64(blob), "archive": b64(archive), "archiveSha": sha(archive),
-            "index": b64(index), "catalog": b64(catalog), "seq": seq, "migrations": migrations, "receipt": receipt,
-            "work": work, "lolly": lolly, "formats": formats, "thumb": thumb, "shellPin": shell_pin or thumb,
-            "packDigest": sha(("pack " + label).encode())}
+    manifest = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                           "config": {"digest": "sha256:" + sha(config), "size": len(config)},
+                           "layers": [{"digest": "sha256:" + sha(f"blob {label} {i}".encode()), "size": 1000} for i in range(2)]},
+                          sort_keys=True).encode()
+    index = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+                        "manifests": [{"digest": "sha256:" + sha(manifest), "size": len(manifest),
+                                       "platform": {"os": "linux", "architecture": "amd64"}}]}, sort_keys=True).encode()
+    digest = "sha256:" + sha(index)
+    return {"sha": wsha, "label": label, "image": ING_IMAGE + "@" + digest, "digest": digest,
+            "manifestDigest": "sha256:" + sha(manifest), "configDigest": "sha256:" + sha(config), "diffIds": diff_ids,
+            "blobs": {digest: b64(index), "sha256:" + sha(manifest): b64(manifest), "sha256:" + sha(config): b64(config)},
+            "index": b64(index_html), "receipt": b64(receipt), "catalog": b64(catalog), "seq": seq, "migrations": migrations,
+            "lolly": lolly, "suse": suse, "formats": dict(FORMATS if formats is None else formats), "thumb": thumb,
+            "pin": pin or thumb, "packDigest": sha(("pack " + label).encode())}
 
 
 def legacy_build(key):
@@ -111,19 +134,38 @@ def legacy_build(key):
     return build
 
 
+def archive_bytes(build, run_id, attempt=1):
+    """Each run builds its own archive: its tag names the run, so its bytes differ."""
+    return b"OCI " + unb64(build["blobs"][build["digest"]]) + f"\nrun {run_id}-{attempt} {build['label']}\n".encode() * 8
+
+
 def ing_manifest(build, run_id, attempt=1, **overrides):
-    archive = unb64(build["archive"])
-    manifest = {"kind": "lolly-ing-instance-manifest", "version": 1, "run": {"id": run_id, "attempt": attempt},
-                "sources": {"suseLolly": build["sha"], "work": build["work"], "lolly": build["lolly"]},
-                "image": {"name": ING_IMAGE, "digest": build["digest"], "configDigest": build["configDigest"],
-                          "diffIds": build["diffIds"], "platform": "linux/amd64",
-                          "archive": {"artifact": "lolly-ing-instance-archive", "file": "lolly-ing-instance.oci.tar",
-                                      "sha256": build["archiveSha"], "bytes": len(archive)}},
-                "catalog": {"seq": build["seq"], "keyId": build["thumb"], "indexSha256": sha(unb64(build["catalog"]))},
-                "shell": {"pinKeyId": build["shellPin"], "files": {"index.html": sha(unb64(build["index"]))}, "formats": build["formats"]},
-                "receipt": build["receipt"], "migrations": build["migrations"],
-                "maintenance": any(m["class"] != "additive" for m in build["migrations"]),
-                "boot": {"healthz": True, "readyz": True, "shellIndex": True}}
+    """suse-lolly PR #28's final manifest (.github/lolly-ing-preview/tool.mjs finalManifest)."""
+    archive = archive_bytes(build, run_id, attempt)
+    index_sha = sha(unb64(build["index"]))
+    receipt_sha = sha(unb64(build["receipt"]))
+    manifest = {
+        "kind": "lolly-ing-instance-image", "version": 1, "site": "lolly.ing",
+        "run": {"repository": SUSE_REPO, "workflowRef": f"{SUSE_REPO}/.github/workflows/lolly-ing-preview.yml@refs/heads/main",
+                "workflowSha": build["suse"], "ref": "refs/heads/main", "event": "workflow_dispatch", "runId": run_id,
+                "runAttempt": attempt, "url": f"https://github.com/{SUSE_REPO}/actions/runs/{run_id}", "dispatchedBy": "agent"},
+        "sources": {"lolly": build["lolly"], "work": build["sha"], "suse": build["suse"]},
+        "ci": {"lolly": {"id": 1}, "work": {"id": 2}}, "ancestry": {}, "lollySuseGitlink": None,
+        "image": {"archive": {"name": f"lolly-ing-instance-{run_id}-{attempt}.oci.tar", "sha256": sha(archive), "bytes": len(archive)},
+                  "digest": build["digest"], "manifestDigest": build["manifestDigest"], "configDigest": build["configDigest"],
+                  "diffIds": build["diffIds"], "layers": [], "refName": f"{ING_IMAGE}:run-{run_id}-{attempt}",
+                  "workServerImageId": "sha256:" + "7" * 64, "paths": {"shell": "/app/shell", "pack": "/app/packs/lolly-ing"}},
+        "enginePin": {"generatedFrom": build["lolly"], "sha256": "8" * 64, "engine": "1.2.0", "core": "1.0.0"},
+        "shell": {"files": 10, "totalBytes": 1000, "indexSha256": index_sha, "receiptSha256": receipt_sha, "envelopeSha256": "9" * 64,
+                  "catalogSeq": build["seq"], "keyId": build["pin"], "scriptsCarryingPin": 3, "publicPinThumbprint": build["pin"],
+                  "profile": "suse"},
+        "catalog": {"seq": build["seq"], "minSeq": None, "keyId": build["pin"]},
+        "receiptSha256": receipt_sha, "custody": {}, "pack": {},
+        "migrations": build["migrations"],
+        "storedFormats": {"formats": build["formats"], "missing": []},
+        "buildSettings": {"profile": "suse", "siteUrl": "https://lolly.ing", "pinThumbprint": build["pin"]},
+        "boot": {"readyz": {"status": 200}, "index": {"sha256": index_sha}},
+    }
     manifest.update(overrides)
     return manifest
 
@@ -136,25 +178,32 @@ def zip_of(name, data):
     return b64(buffer.getvalue())
 
 
-def ing_run(run_id, ssha, event="workflow_dispatch", status="completed", conclusion="success", attempt=1,
+def ing_run(run_id, suse, event="workflow_dispatch", status="completed", conclusion="success", attempt=1,
             created="2026-10-24T05:00:00Z", repository=SUSE_REPO, path=".github/workflows/lolly-ing-preview.yml"):
-    return {"id": run_id, "path": path, "event": event, "head_branch": "main", "head_sha": ssha, "status": status,
+    return {"id": run_id, "path": path, "event": event, "head_branch": "main", "head_sha": suse, "status": status,
             "conclusion": conclusion, "run_attempt": attempt, "created_at": created,
             "repository": {"full_name": repository}, "head_repository": {"full_name": repository}}
 
 
-def ing_artifacts(gh, build, run_id, manifest=None, archive_bytes=None):
+def ing_artifacts(gh, build, run_id, manifest=None, archive=None):
     """The run's two artifacts: the manifest and the OCI archive."""
     manifest = manifest or ing_manifest(build, run_id)
-    archive = archive_bytes if archive_bytes is not None else unb64(build["archive"])
+    archive = archive if archive is not None else archive_bytes(build, run_id)
     manifest_id, archive_id = run_id * 10 + 1, run_id * 10 + 2
     gh.setdefault("artifacts", {})[str(run_id)] = [
         {"id": manifest_id, "name": "lolly-ing-instance-manifest", "expired": False, "size_in_bytes": 4000,
          "expires_at": "2026-11-20T00:00:00Z"},
         {"id": archive_id, "name": "lolly-ing-instance-archive", "expired": False, "size_in_bytes": len(archive) + 200,
          "expires_at": "2026-11-20T00:00:00Z"}]
-    gh.setdefault("zips", {})[str(manifest_id)] = zip_of("manifest.json", json.dumps(manifest))
-    gh["zips"][str(archive_id)] = zip_of("lolly-ing-instance.oci.tar", archive)
+    gh.setdefault("zips", {})[str(manifest_id)] = zip_of("lolly-ing-instance.manifest.json", json.dumps(manifest))
+    gh["zips"][str(archive_id)] = zip_of(manifest["image"]["archive"]["name"], archive)
+    gh.setdefault("enginePins", {})[build["sha"]] = build["lolly"]
+
+
+def register_archive(state, build, run_id, attempt=1):
+    """What ctr finds in this run's archive: the build, and the run tag `docker save` wrote."""
+    state.setdefault("archives", {})[sha(archive_bytes(build, run_id, attempt))] = {
+        "image": build["image"], "refName": f"{ING_IMAGE}:run-{run_id}-{attempt}"}
 
 
 # Cluster --------------------------------------------------------------------------
@@ -201,13 +250,13 @@ def ing_deployment(image, config, converted=True, annotations=None):
 def ing_annotations(build, run="800", config="lolly-ing-config-3008-aaaaaaaa", generation=3008, phase="accepted",
                     previous=None, deploys="1", migrations=None):
     import preview_common as C
-    expect = {"source": build["sha"], "index": sha(unb64(build["index"])), "keyId": build["thumb"], "seq": build["seq"],
-              "work": build["work"], "lolly": build["lolly"]}
+    expect = {"source": build["sha"], "suse": build["suse"], "lolly": build["lolly"], "index": sha(unb64(build["index"])),
+              "receipt": sha(unb64(build["receipt"])), "keyId": build["thumb"], "seq": build["seq"]}
     names = sorted(m["name"] for m in build["migrations"])
     values = {"phase": phase, "source": build["sha"], "image": build["image"], "ci-run": run, "formats": C.compact(build["formats"]),
               "expect": C.compact(expect), "config": config, "generation": str(generation), "layout": "instance-image",
               "deploys": deploys, "deploy-id": "20261024T000000Z-ing-cutover-" + build["sha"][:8],
-              "migration-set": __import__("hashlib").sha256("\n".join(names).encode()).hexdigest()[:16]}
+              "migration-set": hashlib.sha256("\n".join(names).encode()).hexdigest()[:16]}
     if previous is not None:
         values["previous"] = C.compact(previous)
     if migrations is not None:
@@ -235,12 +284,11 @@ def ing_cluster_state(builds, live, config_name, generation, converted=True, ann
         "db": {"ledger": sorted(m["name"] for m in live["migrations"]), "generation": generation, "digest": live["packDigest"]},
         "images": {},
         "content": {},
-        "archives": {b["archiveSha"]: b["image"] for b in builds.values()},
+        "archives": {},
         "builds": {b["image"]: b for b in builds.values()},
         "behaviour": {"notReady": [], "brokenSite": [], "watchFailAfter": {}, "restarts": {}, "workingSet": 300 * F.MIB,
                       "usage": 700 * F.MIB, "rvChurnRate": 0.0, "rvChurnAfterDryRun": {}, "edgeHeaders": {}, "edgeHeadersByImage": {},
-                      "transport": {}, "dnsFailures": 0, "bootKeyByImage": {}, "classes": {}, "rehearsal": "pass",
-                      "catalogKeyByImage": {}},
+                      "transport": {}, "dnsFailures": 0, "bootKeyByImage": {}, "catalogKeyByImage": {}},
         "smokeCookie": SMOKE_COOKIE,
         "ingD": str(ing_key[0]) if ing_key else None,
         "reads": 0, "fetches": {}, "writes": [],
@@ -314,6 +362,13 @@ def _check_output(state, image):
                        "publicationGeneration": state["db"]["generation"]})
 
 
+def _classifier_output(names):
+    """Work's real classifier output (#207) for exactly these files, pretty printed as the CLI prints it."""
+    key = "-".join(name[:4] for name in sorted(names))
+    path = FIXTURES / f"classify-{key}.json"
+    return path.read_text() if path.exists() else None
+
+
 def _run_job(state, manifest):
     """What the Job's container prints, after the same checks the cluster's policy would make."""
     spec = manifest["spec"]["template"]["spec"]
@@ -325,34 +380,28 @@ def _run_job(state, manifest):
         if "valueFrom" in entry:
             assert entry["valueFrom"]["secretKeyRef"]["name"] == DATABASE_SECRET and name.startswith("DATABASE_URL"), name
     command, image = container["command"], container["image"]
-    state["writes"].append(["job", manifest["metadata"]["labels"]["lolly.tools/preview-job"], sorted(env)])
+    state["writes"].append(["job", manifest["metadata"]["labels"]["lolly.tools/preview-job"], sorted(env), command[1:5]])
     if image not in state["builds"] or state["behaviour"].get("jobsFail"):
         return False, ""
     if command[:3] == ["node", "--input-type=module", "-e"]:
         assert sorted(env) == ["DATABASE_URL"], env
         return True, "connected\n" + _check_output(state, image) + "\n"
-    if command[:3] == ["node", "scripts/classify-migrations.ts", "--json"]:
+    if command[:4] == ["node", "scripts/classify-migrations.ts", "--json", "--only"]:
         assert env == {}, env
         if state["behaviour"].get("classifierMissing"):
             return False, "Cannot find module '/app/scripts/classify-migrations.ts'\n"
-        build = state["builds"][image]
-        found = {m["name"]: m for m in build["migrations"]}
-        files = []
-        for path in command[3:]:
-            name = path.split("/")[-1]
-            files.append({"name": name, "sha256": found[name]["sha256"],
-                          "class": state["behaviour"]["classes"].get(name, found[name]["class"]), "reasons": []})
-        return True, json.dumps({"kind": "lolly-migration-classes", "version": 1, "files": files}) + "\n"
+        output = _classifier_output(command[4].split(","))
+        return (output is not None), output or "no such file\n"
     if command == ["node", "scripts/migrate.ts"]:
         assert set(env) <= {"DATABASE_URL", "DATABASE_URL_UNPOOLED", "LW_MIGRATE_EXPECT", "NODE_ENV"}, env
         build = state["builds"][image]
-        pending = sorted((m for m in build["migrations"] if m["name"] not in state["db"]["ledger"]), key=lambda m: m["name"])
-        expected = ",".join(f"{m['name']}:{m['sha256']}" for m in pending)
-        if env.get("LW_MIGRATE_EXPECT", {}).get("value") != expected:
-            return False, "pending set differs from LW_MIGRATE_EXPECT\n"
+        pending = [m for m in build["migrations"] if m["name"] not in state["db"]["ledger"]]
+        expected = manifest_hash(pending) if pending else "none"
+        if env.get("LW_MIGRATE_EXPECT", {}).get("value") != expected:  # #207: the runner refuses before any DDL
+            return False, "migrate: LW_MIGRATE_EXPECT refused: the pending migrations have another manifest. Nothing was applied.\n"
         state["db"]["ledger"] = sorted(set(state["db"]["ledger"]) | {m["name"] for m in pending})
-        state["writes"].append(["migrate", [m["name"] for m in pending]])
-        return True, f"applied {len(pending)}\n"
+        state["writes"].append(["migrate", sorted(m["name"] for m in pending), env["LW_MIGRATE_EXPECT"]["value"]])
+        return True, f"applied: {', '.join(sorted(m['name'] for m in pending))}\n"
     return False, "unknown command\n"
 
 
@@ -360,37 +409,56 @@ def _now(offset_hours=0):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - offset_hours * 3600))
 
 
+def _rehearsal_call(args):
+    """Calls the restore rehearsal driver (#208) makes: its namespace, `-n`, stdin creates, version, PriorityClass."""
+    if args[:1] == ["version"] or args[:2] == ["get", "priorityclass"] or "-n" in args:
+        return True
+    if args[:2] == ["get", "namespace"] and args[2].startswith(REHEARSAL_NAMESPACE):
+        return True
+    if args[:1] == ["create"] and "-f" in args and args[args.index("-f") + 1] == "-":
+        return True
+    return args[:2] == ["delete", "--raw"] and f"/namespaces/{REHEARSAL_NAMESPACE}" in args[2]
+
+
 def k3s_ing_main(argv, out):
-    """kubectl for lolly-private and ctr import/content; crictl and ctr images ls/label fall through."""
+    """kubectl for lolly-private and ctr import, content and rm; crictl and ctr images ls/label fall through."""
     state_path = os.environ["FAKE_STATE"]
     if argv[:1] == ["kubectl"]:
         if argv[1:5] != ["--kubeconfig", F.KUBECONFIG, "--context", F.CONTEXT]:
             print("bad kubeconfig or context", file=sys.stderr)
             return 1
         args = argv[5:]
+        if _rehearsal_call(args):
+            import restore_rehearsal_fakes  # #208's own fake kubectl, with its own state (FAKE_REHEARSAL_STATE)
+            with F.state_file(state_path) as state:
+                state["writes"].append(["rehearsal-call", args[:2]])
+            return restore_rehearsal_fakes.kubectl_main(args)
         with F.state_file(state_path) as state:
             return _kubectl(state, args, out)
     if argv[:6] == ["ctr", "--namespace", "k8s.io", "images", "import", "--base-name"]:
         data = sys.stdin.buffer.read()
         with F.state_file(state_path) as state:
-            image = state["archives"].get(sha(data))
-            if image is None or state["behaviour"].get("importFails"):
+            found = state["archives"].get(sha(data))
+            if found is None or state["behaviour"].get("importFails"):
                 print("ctr: unrecognised archive", file=sys.stderr)
                 return 1
-            build = state["builds"][image]
+            build = state["builds"][found["image"]]
             labels = {}
             for index, word in enumerate(argv):
                 if word == "--label":
                     name, _, value = argv[index + 1].partition("=")
                     labels[name] = value
             assert argv[argv.index("--base-name") + 1] == ING_IMAGE and "--digests" in argv and "--no-unpack" in argv and argv[-1] == "-"
-            image_id, entry = F.image_entry(image, labels)
+            image_id, entry = F.image_entry(build["image"], labels, extra_refs=(found["refName"],))
+            entry["refs"][found["refName"]] = dict(labels)
             entry["size"] = len(data)
             state["images"][image_id] = entry
-            served = state["behaviour"].get("importedConfig", {}).get(image)
-            state["content"][build["digest"]] = build["blob"]
-            state["content"][build["configDigest"]] = served or build["config"]
-            state["writes"].append(["import", image])
+            for digest, blob in build["blobs"].items():
+                state["content"][digest] = blob
+            served = state["behaviour"].get("importedConfig", {}).get(build["image"])
+            if served:
+                state["content"][build["configDigest"]] = served
+            state["writes"].append(["import", build["image"]])
         return 0
     if argv[:5] == ["ctr", "--namespace", "k8s.io", "content", "get"]:
         with F.state_file(state_path) as state:
@@ -399,11 +467,18 @@ def k3s_ing_main(argv, out):
             return 1
         sys.stdout.buffer.write(unb64(blob))
         return 0
+    if argv[:5] == ["ctr", "--namespace", "k8s.io", "images", "rm"]:
+        with F.state_file(state_path) as state:
+            for entry in state["images"].values():
+                if argv[5] in entry["refs"]:
+                    del entry["refs"][argv[5]]
+                    state["writes"].append(["image-name-removed", argv[5]])
+                    return 0
+        return 1
     return None
 
 
 def _kubectl(state, args, out):
-    namespace = args[args.index("--namespace") + 1] if "--namespace" in args else None
     if args[:2] == ["get", "namespace"]:
         out.write(json.dumps({"metadata": {"uid": state["namespaces"][args[2]]}}))
         return 0
@@ -431,8 +506,7 @@ def _kubectl(state, args, out):
         image = state["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"]
         return 0 if state["deployment"]["status"].get("readyReplicas") == 1 and image not in state["behaviour"]["notReady"] else 1
     if args[:2] == ["get", "pods,replicasets"]:
-        pods = [dict(pod, kind="Pod") for pod in state["pods"]]
-        out.write(json.dumps({"items": pods + _rs_objects(state)}))
+        out.write(json.dumps({"items": [dict(pod, kind="Pod") for pod in state["pods"]] + _rs_objects(state)}))
         return 0
     if args[:2] == ["get", "persistentvolumeclaims"]:
         out.write(json.dumps({"items": []}))
@@ -550,8 +624,6 @@ def make_ing_fetch(state_path):
                 state["fetches"][image] = count + 1
             signed_in = cookie is not None and cookie == state["smokeCookie"]
             csp = "default-src 'self'; script-src 'self' blob: 'unsafe-eval'; connect-src 'self' blob: https://lolly.ing"
-            if image in behaviour.get("noBlob", []):
-                csp = "default-src 'self'; script-src 'self'; connect-src 'self'"
             base = [("Content-Security-Policy", csp), ("Via", "1.1 Caddy")]
             if parts.hostname == "www.lolly.ing":
                 return preview_smoke.Response(308, [("Location", "https://lolly.ing/")], b"")
@@ -570,6 +642,8 @@ def make_ing_fetch(state_path):
                 if broken or (fail_after is not None and count >= fail_after):
                     return preview_smoke.Response(500, base, b"")
                 return preview_smoke.Response(200, base, unb64(build["index"]))
+            if path == "/release-frontend.sig.json":
+                return preview_smoke.Response(200, base, unb64(behaviour.get("receiptByImage", {}).get(image) or build["receipt"]))
             if path == "/info/":
                 return preview_smoke.Response(200, base, b"info")
             if path == "/api/auth/session":
@@ -613,10 +687,10 @@ def make_ing_fetch(state_path):
 
 # Private GitHub run --------------------------------------------------------------------
 def gh_ing_route(gh, method, route, query, data, out):
-    """suse-lolly and the change-list compares. Returns None when the base fake should answer."""
+    """suse-lolly, Work's engine pin and the change-list compares. Returns None when the base fake should answer."""
     if method == "POST":
         if route == f"repos/{SUSE_REPO}/actions/workflows/lolly-ing-preview.yml/dispatches":
-            if data.get("ref") != "refs/heads/main" or set(data.get("inputs", {})) != {"expected_source"}:
+            if data.get("ref") != "refs/heads/main" or set(data.get("inputs", {})) != {"LSHA", "WSHA", "SSHA"}:
                 return 1
             run = gh.get("onDispatch")
             if run:
@@ -627,8 +701,15 @@ def gh_ing_route(gh, method, route, query, data, out):
     if route == f"repos/{SUSE_REPO}/git/ref/heads/main":
         out.write(json.dumps({"ref": "refs/heads/main", "object": {"type": "commit", "sha": gh["suseMainHead"]}}))
         return 0
+    if route == f"repos/{WORK_REPO}/contents/engine-pin.json":
+        lsha = gh.get("enginePins", {}).get(query.get("ref"))
+        if lsha is None:
+            print("gh: Not Found (HTTP 404)", file=sys.stderr)
+            return 1
+        out.write(json.dumps({"generatedFrom": lsha, "engine": {"version": "1.2.0"}}))
+        return 0
     match = re.fullmatch(r"repos/(lolly-tools/[a-z-]+)/compare/([0-9a-f]{40})\.\.\.([0-9a-f]{40})", route)
-    if match and not (match.group(1) == "lolly-tools/lolly-work" and match.group(3) == F.TOOL_MAIN):
+    if match and not (match.group(1) == WORK_REPO and match.group(3) == F.TOOL_MAIN):
         spec = match.group(2) + "..." + match.group(3)
         status = gh.get("compare", {}).get(spec, "ahead")
         body = {"status": status, "total_commits": 1,
@@ -637,7 +718,9 @@ def gh_ing_route(gh, method, route, query, data, out):
         out.write(json.dumps(body))
         return 0
     if route == f"repos/{SUSE_REPO}/actions/workflows/lolly-ing-preview.yml/runs":
-        out.write(json.dumps({"workflow_runs": [r for r in gh["ingRuns"] if r["head_sha"] == query.get("head_sha")]}))
+        runs = [r for r in gh["ingRuns"] if (not query.get("head_sha") or r["head_sha"] == query["head_sha"])
+                and (not query.get("event") or r["event"] == query["event"])]
+        out.write(json.dumps({"workflow_runs": runs}))
         return 0
     match = re.fullmatch(rf"repos/{SUSE_REPO}/actions/runs/(\d+)", route)
     if match:
@@ -663,21 +746,7 @@ def gh_ing_route(gh, method, route, query, data, out):
     return None
 
 
-# The Phase 2A restore rehearsal driver, stubbed for the test checkout ----------------------
-REHEARSAL_STUB = '''#!/usr/bin/env python3
-# Test stub of the Phase 2A restore rehearsal driver (deploy/recovery/restore-rehearsal.py).
-import json, os, sys
-assert sys.argv[1] == "run"
-request = json.load(open(sys.argv[2]))
-assert request["kind"] == "lolly-restore-rehearsal" and request["namespace"] == "preview-rehearsal"
-state_path = os.environ["FAKE_STATE"]
-state = json.load(open(state_path))
-mode = state["behaviour"].get("rehearsal", "pass")
-state["writes"].append(["rehearsal", [m["name"] for m in request["migrations"]], request["full"], request["expect"]])
-json.dump(state, open(state_path, "w"))
-files = [{"name": m["name"], "seconds": 45 if mode == "slow" else 2} for m in request["migrations"]]
-ledger = sorted(set(state["db"]["ledger"]) | {m["name"] for m in request["migrations"]})
-result = {"kind": "lolly-restore-rehearsal-result", "version": 1, "result": "FAIL" if mode == "fail" else "PASS",
-          "files": files, "ledger": ledger, "previousImageSaveRoundTrip": mode != "old-image-fails", "reason": mode}
-print(json.dumps(result))
-'''
+def rehearsal_cluster(**scenario):
+    """#208's rehearsal namespace (its own fakes), reaching the backup store at STORAGE_ADDRESS."""
+    import restore_rehearsal_fakes as RF
+    return RF.cluster(**scenario)
