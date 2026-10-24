@@ -347,7 +347,10 @@ class Shipped(unittest.TestCase):
         self.assertIn(f"ExecStopPost=/usr/bin/python3 -I -B {A.NODE_RUN_DIR}/tool/node/node_runner.py stop-post {A.NODE_RUN_DIR}/request.json", unit)
         self.assertIn(f"RuntimeMaxSec={A.UNIT_RUNTIME_MAX_SECONDS}\n", unit)
         self.assertIn(f"TimeoutStopSec={A.UNIT_STOP_TIMEOUT_SECONDS}\n", unit)
-        self.assertGreaterEqual(A.UNIT_RUNTIME_MAX_SECONDS, 2 * A.PULL_TIMEOUT_SECONDS + 2 * A.MAX_ROLLOUT_SECONDS + A.MAX_WATCH_MINUTES * 60)
+        self.assertGreaterEqual(A.UNIT_RUNTIME_MAX_SECONDS, 2 * A.PULL_TIMEOUT_SECONDS + 2 * A.MAX_ROLLOUT_SECONDS + A.MAX_WATCH_MINUTES * 60
+                                + 3 * A.SMOKE_BUDGET_SECONDS + A.RETENTION_AFTER_DEPLOY_SECONDS + 300)  # the longest deploy
+        self.assertGreater(A.CRICTL_READ_TIMEOUT_SECONDS, 2)  # crictl's own default deadline
+        self.assertLessEqual(A.REMOVE_WORST_SECONDS, min(A.RETENTION_AFTER_DEPLOY_SECONDS, A.GC_REMOVE_BUDGET_SECONDS))
         self.assertGreaterEqual(A.UNIT_STOP_TIMEOUT_SECONDS, A.PULL_TIMEOUT_SECONDS + A.MAX_ROLLOUT_SECONDS + A.SMOKE_BUDGET_SECONDS)
         self.assertNotRegex(unit, r"(?m)^\[Install\]")
         namespace = {}
@@ -585,6 +588,15 @@ class EndToEnd(unittest.TestCase):
             if write and write[0] == "rmi":
                 self.fail("a deploy removed an image: " + str(write))
 
+    def assert_crictl_deadlines(self):
+        """Every crictl call set its own deadline: crictl's default of 2 s cuts slow calls short."""
+        calls = self.cluster().get("crictlCalls", [])
+        self.assertTrue(calls)
+        expected = {"rmi": A.CRICTL_WRITE_TIMEOUT_SECONDS, "pull": A.CRICTL_WRITE_TIMEOUT_SECONDS}
+        for call in calls:
+            self.assertTrue(call["explicit"], call)
+            self.assertEqual(call["deadline"], expected.get(call["command"], A.CRICTL_READ_TIMEOUT_SECONDS), call)
+
     def result_file(self):
         results = self.sandbox / "var/lib/lolly-preview/results"
         names = sorted(p for p in results.iterdir() if not p.name.endswith(".request.json"))
@@ -658,6 +670,8 @@ class Deploys(EndToEnd):
                          ("refs/heads/main", NEW, "900"))
         checks = {item["check"]: item["ok"] for item in self.result_file()["checks"]}
         self.assertTrue(all(checks.values()), checks)
+        self.assertIn("pull", {call["command"] for call in self.cluster()["crictlCalls"]})
+        self.assert_crictl_deadlines()
         self.assertIn("page /info/new-page.html", checks)
         self.assertIn("edge headers", checks)
         new_entry, old_entry = self.node_image(self.new["image"]), self.node_image(self.old["image"])
@@ -1104,12 +1118,128 @@ class Operations(EndToEnd):
         commands = listed[0]["forAndy"]
         self.assertIn("--site lolly.tools", commands[0])
         self.assertTrue(any("images label " + foreign + " io.cri-containerd.pinned=" in c for c in commands))
-        self.assertIn("crictl rmi " + image_id, commands[-1])
+        self.assertIn("crictl --timeout 120s rmi " + image_id, commands[-1])
         live_id = next(i for i, e in self.cluster()["images"].items() if self.old["image"] in e["refs"])
         self.assertNotIn(live_id, [e["id"] for e in listed])  # the live image is kept, so it is never listed
         code, events = self.cli("gc", "--execute")
         self.assertEqual(self.done(events)["result"], "GC_DONE")
         self.assertIsNotNone(self.node_image(foreign))
+        self.assert_crictl_deadlines()
+
+    def run_for_andy(self, line):
+        """Run one printed node command line as Andy would, with a sudo that runs its arguments."""
+        sudo = Path(self.tmp.name) / "sudo-bin"
+        if not sudo.exists():
+            sudo.mkdir()
+            (sudo / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+            (sudo / "sudo").chmod(0o755)
+        environment = dict(os.environ, PATH=f"{sudo}:{os.environ['PATH']}")
+        return subprocess.run(["/bin/sh", "-c", line], capture_output=True, text=True, env=environment, check=False)
+
+    def test_printed_commands_carry_a_deadline_and_skip_an_image_already_gone(self):
+        """crictl's 2 s default deadline cut Andy's rmi of a 1.15 GB image; containerd removed it anyway."""
+        state = self.cluster()
+        foreign = F.IMAGE_REPO + "@sha256:" + "d" * 64
+        image_id, entry = F.image_entry(foreign, {"io.cri-containerd.pinned": "pinned"})
+        state["images"][image_id] = entry
+        state["behaviour"]["rmiSecondsById"] = {image_id: 300}  # longer than even the printed 120 s
+        self.set_cluster(state)
+        code, events = self.cli("gc")
+        commands = [e for e in events if e.get("event") == "gc-foreign-image"][0]["forAndy"]
+        unpin, remove = commands[2], commands[3]
+        for line in (unpin, remove):
+            self.assertIn("crictl --timeout 30s inspecti " + image_id, line)
+        before = len(self.cluster()["crictlCalls"])
+        done = self.run_for_andy(unpin)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("io.cri-containerd.pinned", self.node_image(foreign)["refs"][foreign])
+        done = self.run_for_andy(remove)
+        self.assertIn("DeadlineExceeded", done.stderr)
+        self.assertIsNone(self.node_image(foreign))  # containerd finished after crictl gave up
+        for line in (remove, unpin):  # run again: nothing to do, and it says so
+            done = self.run_for_andy(line)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("skipped: " + image_id + " is not listed", done.stdout)
+        calls = self.cluster()["crictlCalls"][before:]
+        self.assertTrue(calls and all(call["explicit"] for call in calls), calls)
+        self.assertEqual([call["deadline"] for call in calls if call["command"] == "rmi"], [120.0])
+        writes = [w for w in self.cluster()["writes"] if w and w[0] == "rmi"]
+        self.assertEqual(len(writes), 1)
+        code, events = self.cli("gc")
+        self.assertEqual([e for e in events if e.get("event") == "gc-foreign-image"], [])
+
+    def own_image(self, state, letter, **behaviour):
+        """An unused image this command pulled itself, so gc may remove it."""
+        ref = F.IMAGE_REPO + "@sha256:" + letter * 64
+        image_id, entry = F.image_entry(ref, {"lolly.tools/preview-pulled": "true", "lolly.tools/preview-pin": "true",
+                                              "io.cri-containerd.pinned": "pinned"})
+        entry["size"] = 1150 * 10 ** 6
+        state["images"][image_id] = entry
+        for name, value in behaviour.items():
+            if isinstance(state["behaviour"].get(name), dict):
+                state["behaviour"][name][image_id] = value
+            elif isinstance(state["behaviour"].get(name), list):
+                state["behaviour"][name].append(image_id)
+            else:
+                state["behaviour"][name] = [image_id] if value is True else {image_id: value}
+        return ref, image_id
+
+    def test_gc_checks_a_removal_that_outlives_crictls_deadline(self):
+        state = self.cluster()
+        at_once, at_once_id = self.own_image(state, "e", rmiSecondsById=300)
+        later, later_id = self.own_image(state, "f", rmiSecondsById=300, rmiFinishesAfterReads=3)
+        quick, _ = self.own_image(state, "9")
+        self.set_cluster(state)
+        self.cli("gc")
+        code, events = self.cli("gc", "--execute")
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (0, "GC_DONE"), events)
+        outcomes = {item["ref"]: item for item in result["retention"]["removals"]}
+        self.assertEqual({ref: item["outcome"] for ref, item in outcomes.items()},
+                         {at_once: "removed-after-error", later: "removed-after-error", quick: "removed"})
+        for ref in (at_once, later):
+            self.assertTrue(outcomes[ref]["deadlineExceeded"], outcomes[ref])
+            self.assertIn("level=fatal msg=\"error of removing image", outcomes[ref]["error"])
+            self.assertIn("DeadlineExceeded", outcomes[ref]["error"])
+            self.assertIsNone(self.node_image(ref))
+        self.assertEqual(sorted(result["retention"]["removed"]), sorted([at_once, later, quick]))
+        self.assertEqual(result["retention"]["notRemoved"], [])
+        self.assertEqual(self.records()[-1]["result"], "GC_DONE")
+        self.assertTrue((self.sandbox / "var/lib/lolly-preview/retention-armed").exists())
+        self.assert_crictl_deadlines()
+
+    def test_gc_reports_an_image_that_stays_after_a_failed_removal(self):
+        state = self.cluster()
+        stuck, stuck_id = self.own_image(state, "e", rmiStuck=True)
+        self.set_cluster(state)
+        self.cli("gc")
+        code, events = self.cli("gc", "--execute")
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (1, "GC_INCOMPLETE"), events)
+        item = result["retention"]["removals"][0]
+        self.assertEqual((item["ref"], item["id"], item["outcome"], item["deadlineExceeded"]), (stuck, stuck_id, "still-present", True))
+        self.assertEqual((result["retention"]["removed"], result["retention"]["notRemoved"]), ([], [stuck]))
+        self.assertIsNotNone(self.node_image(stuck))
+        self.assertEqual(self.records()[-1]["result"], "GC_INCOMPLETE")
+        code, events = self.cli("gc")  # still this command's own image, so the next report lists it again
+        self.assertEqual([e for e in events if e.get("event") == "gc-images"][0]["remove"], [stuck])
+
+    def test_retention_after_a_deploy_starts_a_removal_only_while_one_fits(self):
+        self.cli("gc")
+        code, events = self.cli("gc", "--execute")  # arms retention after accepted deploys
+        self.assertEqual(self.done(events)["result"], "GC_DONE")
+        state = self.cluster()
+        stuck = [self.own_image(state, letter, rmiStuck=True)[0] for letter in "cef"]
+        self.set_cluster(state)
+        code, events = self.cli("ship", NEW)
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (0, "LIVE"), events)  # retention never changes a deploy's result
+        outcomes = sorted(item["outcome"] for item in result["retention"]["removals"])
+        self.assertEqual(outcomes, ["deferred", "still-present", "still-present"])
+        self.assertEqual(sorted(result["retention"]["notRemoved"]), sorted(stuck))
+        self.assertEqual(len([w for w in self.cluster()["writes"] if w and w[0] == "rmi"]), 2)
+        for ref in stuck:
+            self.assertIsNotNone(self.node_image(ref))
 
     def test_adopt_is_the_way_forward_after_an_unhealthy_rollback(self):
         """Review N2: records re-seeded from a bound build, never by dispatching one."""

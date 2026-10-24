@@ -274,7 +274,7 @@ class Context:
         """How long a run of this kind can last on the node (review L2)."""
         rollout, watch = self.profile["rolloutTimeoutSeconds"], self.profile["watch"]["minutes"] * 60
         pull, smoke = A.PULL_TIMEOUT_SECONDS, A.SMOKE_BUDGET_SECONDS
-        return {"deploy": 2 * pull + 2 * rollout + watch + 3 * smoke + 300,
+        return {"deploy": 2 * pull + 2 * rollout + watch + 3 * smoke + A.RETENTION_AFTER_DEPLOY_SECONDS + 300,
                 "rollback": pull + rollout + watch + smoke + 300,
                 "convert": pull + 2 * rollout + watch + 2 * smoke + 300,
                 "adopt": smoke + 300, "gc": A.GC_BUDGET_SECONDS}[kind]
@@ -647,17 +647,28 @@ def cmd_adopt(context, sha):
 
 
 def foreign_commands(context, image):
-    """For Andy only, never run by the tool: check-target, a fresh report, then unpin and remove one foreign image."""
-    identity = context.identity
-    k3s = ["sudo", identity["k3s"]]
+    """For Andy only, never run by the tool: check-target, a fresh report, then unpin and remove one foreign image.
+
+    crictl's default client deadline is 2 s, too short to remove a large image, so each crictl
+    command sets its own. Each node command first checks that the image is still there, so a
+    line run again after a DeadlineExceeded skips an image containerd already removed.
+    """
+    k3s = ["sudo", context.identity["k3s"]]
+
+    def quoted(words):
+        return " ".join(shlex.quote(word) for word in words)
+    present = quoted(k3s + ["crictl", "--timeout", f"{A.CRICTL_READ_TIMEOUT_SECONDS}s", "inspecti", image["id"]]) + " >/dev/null"
+    skipped = shlex.quote(f"skipped: {image['id']} is not listed (already gone, or see the error above)")
+
+    def guarded(words, comment):
+        return f"if {present}; then {quoted(words)}; else echo {skipped}; fi   # {comment}"
     commands = ["python3 " + shlex.quote(str(context.check_target_path)) + " --site " + shlex.quote(context.site),
                 "python3 launch.py " + shlex.quote(context.site) + " gc   # the image must still be listed as unused"]
     for ref in image["pinnedRefs"]:
-        commands.append(" ".join(shlex.quote(word) for word in k3s + ["ctr", "-n", "k8s.io", "images", "label", ref,
-                                                                       "io.cri-containerd.pinned="]) +
-                        "   # only if the procedure that pinned it no longer needs it")
-    commands.append(" ".join(shlex.quote(word) for word in k3s + ["crictl", "rmi", image["id"]]) +
-                    "   # removes every name of this image")
+        commands.append(guarded(k3s + ["ctr", "-n", "k8s.io", "images", "label", ref, "io.cri-containerd.pinned="],
+                                "only if the procedure that pinned it no longer needs it"))
+    commands.append(guarded(k3s + ["crictl", "--timeout", f"{A.CRICTL_WRITE_TIMEOUT_SECONDS}s", "rmi", image["id"]],
+                            "removes every name of this image; after a DeadlineExceeded, run it again to check"))
     return commands
 
 

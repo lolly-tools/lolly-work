@@ -33,8 +33,10 @@ PATHS = {"run": A.NODE_RUN_DIR, "results": A.NODE_RESULTS_DIR, "lock": A.NODE_LO
 MIB = 2 ** 20
 EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "SELFTEST_OK": 0, "ADOPTED": 0,
         "ADOPTED_UNHEALTHY": 3,
-        "ABORTED": 1, "REFUSED": 1, "STOPPED": 1, "SELFTEST_FAILED": 1, "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2,
+        "ABORTED": 1, "REFUSED": 1, "STOPPED": 1, "SELFTEST_FAILED": 1, "GC_INCOMPLETE": 1, "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2,
         "ROLLBACK_UNHEALTHY": 3}
+# Removal outcomes whose image is gone by its ID after the attempt.
+REMOVED = ("removed", "removed-after-error")
 SWITCH_ATTEMPTS = 5
 SLEEP = time.sleep
 CLOCK = time.monotonic
@@ -68,6 +70,17 @@ def _atomic_write(path, text):
 def _number(value, low, high, label):
     require(type(value) in (int, float) and low <= value <= high, "BAD_REQUEST", f"{label} out of range")
     return value
+
+
+def crictl_args(args, deadline):
+    """crictl's global --timeout goes before the subcommand; crictl rejects it after one."""
+    return ["crictl", "--timeout", f"{int(deadline)}s", *args]
+
+
+def command_words(args):
+    """The tool and its subcommand, for messages, without crictl's deadline option."""
+    words = [word for index, word in enumerate(args) if word != "--timeout" and (index == 0 or args[index - 1] != "--timeout")]
+    return " ".join(words[:2])
 
 
 def anchored_image(image, anchors):
@@ -203,13 +216,20 @@ class Runner:
                 and status.get("readyReplicas", 0) == replicas and status.get("availableReplicas", 0) == replicas
                 and status.get("updatedReplicas", 0) == replicas and status.get("replicas", 0) == replicas)
 
-    def k3s_run(self, args, timeout=120):
+    def k3s_result(self, args, timeout):
         try:
-            done = subprocess.run([self.k3s, *args], capture_output=True, timeout=timeout, check=False)
+            return subprocess.run([self.k3s, *args], capture_output=True, timeout=timeout, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise Refusal("NODE_COMMAND", f"k3s {args[0]} failed to run") from exc
-        require(done.returncode == 0, "NODE_COMMAND", f"k3s {' '.join(args[:2])} exited {done.returncode}")
+            raise Refusal("NODE_COMMAND", f"k3s {command_words(args)} failed to run") from exc
+
+    def k3s_run(self, args, timeout=120):
+        done = self.k3s_result(args, timeout)
+        require(done.returncode == 0, "NODE_COMMAND", f"k3s {command_words(args)} exited {done.returncode}")
         return done.stdout.decode("utf-8", "replace")
+
+    def crictl(self, args, deadline=A.CRICTL_READ_TIMEOUT_SECONDS, timeout=None):
+        """crictl with an explicit client deadline. Its default of 2 s cuts slow calls short."""
+        return self.k3s_run(crictl_args(args, deadline), timeout or deadline + A.CRICTL_SLACK_SECONDS)
 
     def selector(self, value):
         labels = value["spec"]["selector"]["matchLabels"]
@@ -238,7 +258,7 @@ class Runner:
         """The kubelet's working set: containerd reports usage minus inactive_file, never usageBytes
         (review C-L6). Inactive page cache does not count; active page cache, such as model files read
         moments ago, still does, so the 80% threshold leaves room for it."""
-        data = json.loads(self.k3s_run(["crictl", "stats", "-o", "json", "--id", container_id]))
+        data = json.loads(self.crictl(["stats", "-o", "json", "--id", container_id]))
         stats = data.get("stats") or []
         if len(stats) != 1:
             return None
@@ -308,7 +328,7 @@ class Runner:
 
     def inspect(self, image):
         try:
-            data = json.loads(self.k3s_run(["crictl", "inspecti", "-o", "json", image]))
+            data = json.loads(self.crictl(["inspecti", "-o", "json", image]))
         except (Refusal, ValueError):
             return None
         status = data.get("status") or {}
@@ -339,7 +359,8 @@ class Runner:
         if self.inspect(image) is None:
             self.capacity(need)
             self.log("pull", image=image)
-            self.k3s_run(["crictl", "pull", image], timeout=A.PULL_TIMEOUT_SECONDS)
+            # --timeout covers only the connection here; the subprocess timeout bounds the pull.
+            self.crictl(["pull", image], deadline=A.CRICTL_WRITE_TIMEOUT_SECONDS, timeout=A.PULL_TIMEOUT_SECONDS)
             require(self.inspect(image) is not None, "PULL_FAILED", "the image is not present after the pull")
             self.label(image, A.PULLED_LABEL)
         refs = self.containerd_refs()
@@ -532,7 +553,7 @@ class Runner:
             self.annotate({"phase": "accepted", "deploys": str(deploys + 1), "updated": utc_stamp()}, expect_image=release["image"])
         except (Refusal, self.au.Refusal) as exc:
             return self.restore(previous, "UNVERIFIED: " + str(exc)[:300], watch=False)
-        retention = self.retain_images(execute=os.path.exists(PATHS["armed"]))
+        retention = self.retain_images(execute=os.path.exists(PATHS["armed"]), budget=A.RETENTION_AFTER_DEPLOY_SECONDS)
         return self.finish("LIVE", source=release["source"], image=release["image"], previous=previous["image"],
                            checks=checks.items, retention=retention)
 
@@ -717,7 +738,7 @@ class Runner:
     # Retention -----------------------------------------------------------
     def node_images(self):
         """Image ID -> {refs, size, pinned} from CRI, for every image on the node."""
-        data = json.loads(self.k3s_run(["crictl", "images", "-o", "json"]))
+        data = json.loads(self.crictl(["images", "-o", "json"]))
         images = {}
         for image in data.get("images", []):
             if isinstance(image.get("id"), str):
@@ -795,8 +816,36 @@ class Runner:
         return {"keep": keep_refs, "keepIds": sorted(keep), "remove": remove, "untouched": sorted(foreign),
                 "unusedForeign": unused_foreign}
 
-    def retain_images(self, execute):
-        """Pin what is kept; remove only when execute (gc --execute, or after gc has been armed)."""
+    def remove_image(self, item):
+        """crictl rmi with a long deadline, then a check by image ID. crictl can give up while
+        containerd still finishes the removal, so a failed rmi is checked, never assumed."""
+        try:
+            done = self.k3s_result(crictl_args(["rmi", item["ref"]], A.CRICTL_WRITE_TIMEOUT_SECONDS),
+                                   A.CRICTL_WRITE_TIMEOUT_SECONDS + A.CRICTL_SLACK_SECONDS)
+            if done.returncode == 0:
+                return {"outcome": "removed"}
+            lines = [line.strip() for line in done.stderr.decode("utf-8", "replace").splitlines() if line.strip()]
+            error = lines[-1] if lines else f"exit {done.returncode}"
+        except Refusal as exc:
+            error = str(exc)
+        found = {"error": error[:400], "deadlineExceeded": "DeadlineExceeded" in error}
+        self.log("remove-check", ref=item["ref"], **found)
+        started = CLOCK()
+        while True:
+            try:
+                present = item["id"] in self.node_images()
+            except (Refusal, ValueError, KeyError):
+                present = None
+            if present is False:
+                return dict(found, outcome="removed-after-error")
+            if CLOCK() - started >= A.REMOVE_VERIFY_SECONDS:
+                return dict(found, outcome="still-present" if present else "unverified")
+            SLEEP(5)
+
+    def retain_images(self, execute, budget):
+        """Pin what is kept; remove only when execute (gc --execute, or after gc has been armed).
+        A removal starts only while the budget, counted from here, still fits a whole one."""
+        started = CLOCK()
         try:
             plan = self.image_plan()
             containerd, labelled = self.containerd_refs(), False
@@ -809,16 +858,28 @@ class Runner:
                 images = self.node_images()
                 require(all(image["pinned"] for image in images.values() if set(image["refs"]) & set(plan["keep"])),
                         "PIN_FAILED", "a kept image did not stay pinned")
-            removed = []
+            removals = []
             if execute:
                 containerd = self.containerd_refs()
                 for item in plan["remove"]:
-                    if containerd.get(item["ref"], (None, {}))[1].get(A.OWN_PIN_LABEL.split("=")[0]) == "true":
-                        self.label(item["ref"], A.PINNED_LABEL, on=False)
-                        self.label(item["ref"], A.OWN_PIN_LABEL, on=False)
-                    self.k3s_run(["crictl", "rmi", item["ref"]])
-                    removed.append(item["ref"])
-            return {"kept": plan["keep"], "removed": removed,
+                    if item["ref"] not in containerd:
+                        removals.append(dict(item, outcome="already-gone"))
+                        continue
+                    if CLOCK() - started + A.REMOVE_WORST_SECONDS > budget:
+                        removals.append(dict(item, outcome="deferred"))
+                        continue
+                    try:
+                        if containerd[item["ref"]][1].get(A.OWN_PIN_LABEL.split("=")[0]) == "true":
+                            self.label(item["ref"], A.PINNED_LABEL, on=False)
+                            self.label(item["ref"], A.OWN_PIN_LABEL, on=False)
+                    except Refusal as exc:
+                        removals.append(dict(item, outcome="failed", error=exc.code))
+                        continue
+                    removals.append(dict(item, **self.remove_image(item)))
+            return {"kept": plan["keep"],
+                    "removed": [item["ref"] for item in removals if item["outcome"] in REMOVED],
+                    "notRemoved": [item["ref"] for item in removals if item["outcome"] not in REMOVED + ("already-gone",)],
+                    "removals": removals,
                     "removable": [item["ref"] for item in plan["remove"]] if not execute else [],
                     "untouched": plan["untouched"]}
         except (Refusal, ValueError, KeyError) as exc:
@@ -827,11 +888,12 @@ class Runner:
 
     def run_gc(self):
         self.window_check()
-        retention = self.retain_images(execute=True)
-        if not retention.get("skipped"):
-            with open(PATHS["armed"], "w") as handle:  # later deploys may now apply retention themselves
-                handle.write(utc_stamp() + "\n")
-        return self.finish("GC_DONE", retention=retention)
+        retention = self.retain_images(execute=True, budget=A.GC_REMOVE_BUDGET_SECONDS)
+        if retention.get("skipped"):
+            return self.finish("GC_INCOMPLETE", retention=retention)
+        with open(PATHS["armed"], "w") as handle:  # later deploys may now apply retention themselves
+            handle.write(utc_stamp() + "\n")
+        return self.finish("GC_INCOMPLETE" if retention["notRemoved"] else "GC_DONE", retention=retention)
 
     # Selftest (review C-M7) ----------------------------------------------
     def run_selftest(self):
@@ -858,7 +920,7 @@ class Runner:
                 return handle.read().strip("\x00\n")
         attempt("selinux context", selinux)
         attempt("kubectl identity", lambda: "Deployment " + self.deployment()[0]["metadata"]["uid"])
-        attempt("crictl", lambda: self.k3s_run(["crictl", "version"]).splitlines()[0][:80])
+        attempt("crictl", lambda: self.crictl(["version"]).splitlines()[0][:80])
         attempt("ctr", lambda: f"{len(self.containerd_refs())} image names")
         attempt("pins readable", lambda: f"{sum(1 for image in self.node_images().values() if image['pinned'])} pinned images")
         attempt("capacity", lambda: f"{self.capacity(0) // MIB} MiB above the image-GC reserve")

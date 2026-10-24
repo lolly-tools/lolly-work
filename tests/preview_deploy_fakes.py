@@ -368,6 +368,116 @@ def _cri_image(image_id, entry):
             "size": str(entry["size"]), "pinned": _pinned(entry)}
 
 
+# crictl (cri-tools) gives every CRI call a 2 s client deadline unless the global
+# --timeout/-t option, which must come before the subcommand, sets another. A pull has
+# no deadline. Each simulated call takes some seconds; one longer than its deadline
+# fails with DeadlineExceeded, and a removal still completes in containerd afterwards.
+CRICTL_DEFAULT_DEADLINE = 2.0
+CRICTL_READ_SECONDS = 2.5  # longer than the default, so a call without --timeout fails
+CRICTL_RMI_SECONDS = 5.0  # a 1.15 GB image took longer than 2 s on the node
+
+
+def _seconds(text):
+    found = re.fullmatch(r"(\d+(?:\.\d+)?)(ms|s|m)", text or "")
+    if not found:
+        raise ValueError(text)
+    return float(found.group(1)) * {"ms": 0.001, "s": 1.0, "m": 60.0}[found.group(2)]
+
+
+def _crictl_options(argv):
+    """(deadline, explicit, subcommand words), or an error, like urfave/cli: globals before the subcommand."""
+    deadline, explicit, index = CRICTL_DEFAULT_DEADLINE, False, 1
+    while index < len(argv) and argv[index].startswith("-"):
+        word = argv[index]
+        if word in ("--timeout", "-t") and index + 1 < len(argv):
+            value, index = argv[index + 1], index + 2
+        elif word.startswith("--timeout="):
+            value, index = word.partition("=")[2], index + 1
+        else:
+            return "flag provided but not defined: " + word
+        try:
+            seconds = _seconds(value)
+        except ValueError:
+            return "invalid value for --timeout: " + value
+        deadline, explicit = (seconds, True) if seconds > 0 else (CRICTL_DEFAULT_DEADLINE, False)
+    rest = argv[index:]
+    for word in rest[1:]:
+        if word in ("--timeout", "-t") or word.startswith("--timeout="):
+            return "flag provided but not defined: " + word
+    return deadline, explicit, rest
+
+
+def _deadline_exceeded(call, ref):
+    print(f'time="2026-10-23T18:00:00Z" level=fatal msg="{call} for \\"{ref}\\": rpc error: code = DeadlineExceeded'
+          ' desc = context deadline exceeded: stream error: stream ID 3; CANCEL; received from peer"', file=sys.stderr)
+    return 1
+
+
+def _crictl_main(state, argv, out):
+    parsed = _crictl_options(argv)
+    if isinstance(parsed, str):
+        print(parsed, file=sys.stderr)
+        return 1
+    deadline, explicit, rest = parsed
+    behaviour = state["behaviour"]
+    command = rest[0] if rest else ""
+    state.setdefault("crictlCalls", []).append({"command": command, "deadline": deadline, "explicit": explicit})
+    read_seconds = behaviour.get("crictlReadSeconds", CRICTL_READ_SECONDS)
+    if command != "pull" and read_seconds > deadline:  # a pull has no CRI deadline
+        return _deadline_exceeded("request", command)
+    pending = state.setdefault("pendingRemovals", {})
+    if command == "images":  # containerd finishes a removal crictl gave up on
+        for image_id in list(pending):
+            pending[image_id] -= 1
+            if pending[image_id] <= 0:
+                state["images"].pop(image_id, None)
+                del pending[image_id]
+    if command == "version":
+        out.write("Version:  0.1.0\nRuntimeName:  containerd\n")
+    elif command == "pull":
+        if not state["registry"].get(rest[1]):
+            return 1
+        image_id, entry = image_entry(rest[1])
+        state["images"][image_id] = entry
+        state["writes"].append(["pull", rest[1]])
+    elif command == "inspecti":
+        image_id, entry = _image_by_ref(state, rest[-1])
+        if entry is None:
+            print(f'level=fatal msg="no such image \\"{rest[-1]}\\" present"', file=sys.stderr)
+            return 1
+        out.write(json.dumps({"status": _cri_image(image_id, entry)}))
+    elif command == "images":
+        out.write(json.dumps({"images": [_cri_image(i, e) for i, e in state["images"].items()]}))
+    elif command == "stats":
+        image = state["pods"][0]["spec"]["containers"][0]["image"]
+        used = behaviour.get("workingSetByImage", {}).get(image, behaviour["workingSet"])
+        out.write(json.dumps({"stats": [{"memory": {"workingSetBytes": {"value": str(used)},
+                                                    "usageBytes": {"value": str(behaviour["usage"])}}}]}))
+    elif command == "rmi":
+        # crictl reads the image status first, then RemoveImage deletes every name of the
+        # image and does not care about pins.
+        image_id, entry = _image_by_ref(state, rest[1])
+        if entry is None or image_id in pending:
+            print(f'level=fatal msg="no such image {rest[1]}"', file=sys.stderr)
+            return 1
+        state["writes"].append(["rmi", rest[1], sorted(entry["refs"])])
+        if image_id in behaviour.get("rmiStuck", []):  # containerd never finishes this one
+            return _deadline_exceeded("error of removing image", rest[1])
+        seconds = behaviour.get("rmiSecondsById", {}).get(image_id, behaviour.get("rmiSeconds", CRICTL_RMI_SECONDS))
+        if seconds > deadline:
+            later = behaviour.get("rmiFinishesAfterReads", {}).get(image_id, 0)
+            if later:
+                pending[image_id] = later
+            else:
+                del state["images"][image_id]
+            return _deadline_exceeded("error of removing image", rest[1])
+        del state["images"][image_id]
+    else:
+        print("unsupported crictl " + command, file=sys.stderr)
+        return 1
+    return 0
+
+
 def k3s_main(argv):
     state_path = os.environ["FAKE_STATE"]
     out = sys.stdout
@@ -440,34 +550,9 @@ def k3s_main(argv):
                 return 1
         return 0
     with state_file(state_path) as state:
-        if argv[:2] == ["crictl", "version"]:
-            out.write("Version:  0.1.0\nRuntimeName:  containerd\n")
-        elif argv[:2] == ["crictl", "pull"]:
-            if not state["registry"].get(argv[2]):
-                return 1
-            image_id, entry = image_entry(argv[2])
-            state["images"][image_id] = entry
-            state["writes"].append(["pull", argv[2]])
-        elif argv[:2] == ["crictl", "inspecti"]:
-            image_id, entry = _image_by_ref(state, argv[-1])
-            if entry is None:
-                return 1
-            out.write(json.dumps({"status": _cri_image(image_id, entry)}))
-        elif argv[:2] == ["crictl", "images"]:
-            out.write(json.dumps({"images": [_cri_image(i, e) for i, e in state["images"].items()]}))
-        elif argv[:2] == ["crictl", "stats"]:
-            image = state["pods"][0]["spec"]["containers"][0]["image"]
-            used = state["behaviour"].get("workingSetByImage", {}).get(image, state["behaviour"]["workingSet"])
-            out.write(json.dumps({"stats": [{"memory": {"workingSetBytes": {"value": str(used)},
-                                                        "usageBytes": {"value": str(state["behaviour"]["usage"])}}}]}))
-        elif argv[:2] == ["crictl", "rmi"]:
-            # CRI RemoveImage deletes every name of the image and does not care about pins.
-            image_id, entry = _image_by_ref(state, argv[2])
-            if entry is None:
-                return 1
-            del state["images"][image_id]
-            state["writes"].append(["rmi", argv[2], sorted(entry["refs"])])
-        elif argv[:5] == ["ctr", "-n", "k8s.io", "images", "ls"]:
+        if argv[:1] == ["crictl"]:
+            return _crictl_main(state, argv, out)
+        if argv[:5] == ["ctr", "-n", "k8s.io", "images", "ls"]:
             lines = ["REF TYPE DIGEST SIZE PLATFORMS LABELS"]
             for image_id, entry in state["images"].items():
                 for ref, labels in entry["refs"].items():
