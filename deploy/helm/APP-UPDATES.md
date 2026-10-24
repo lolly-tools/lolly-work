@@ -526,6 +526,13 @@ produce and review a new plan. Do not use `rollout undo` against unknown revisio
 history, and do not roll back a database automatically. Database migrations,
 engine/shell/catalog compatibility changes and data-bearing changes need their
 own backup, migration and rollback review before releasing the application.
+`node scripts/classify-migrations.ts --only <pending files>` reports whether
+each pending migration is additive or needs maintenance review (see
+`CONTRIBUTING.md`, "Database migrations"). Setting `LW_MIGRATE_EXPECT` on the
+migration Job to the reviewed `sha256:` manifest makes it refuse any other pending
+set or changed file contents. Use the manifest form for deploys: a list of names is
+not bound to file contents. An empty value refuses every boot, so never set it to
+`""` on a long-lived Pod.
 
 This narrow helper does not update Helm's stored release values or a GitOps
 controller's desired image. Record the same reviewed digest in your maintained

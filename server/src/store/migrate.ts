@@ -2,6 +2,7 @@
  * Migration runner - applies migrations/*.sql in filename order, tracked in a
  * schema_migrations table, each file in its own transaction. Boring by design.
  */
+import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PG_CONNECT_TIMEOUT_MS } from './pg-options.ts';
@@ -51,6 +52,86 @@ export async function pendingAgainst(q: Queryable, dir = './migrations'): Promis
   return files.filter((f) => !done.has(f));
 }
 
+// ---------------------------------------------------------------------------
+// LW_MIGRATE_EXPECT: an optional, reviewed pending set.
+//
+// Unset, the runner applies whatever is pending (unchanged behaviour). Set, the
+// runner refuses before taking its lock or running any DDL unless the pending
+// set is exactly the expected one:
+//   none                 nothing may be pending
+//   a.sql,b.sql          exactly these files (any order; applied in file-name order)
+//   sha256:<64 hex>      exactly the files of this manifest, by name AND content
+// A set-but-empty value is refused rather than read as "anything".
+
+const MANIFEST_HEADER = 'lolly-work migration manifest v1\n';
+const MIGRATION_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$/;
+
+export type MigrateExpectation = { kind: 'names'; names: string[] } | { kind: 'manifest'; sha256: string };
+
+export interface PendingFile {
+  name: string;
+  /** sha256 of the file bytes, lower-case hex. */
+  sha256: string;
+}
+
+/** Parse LW_MIGRATE_EXPECT; undefined means no expectation. Throws on a malformed value. */
+export function parseMigrateExpect(value: string | undefined): MigrateExpectation | null {
+  if (value === undefined) return null;
+  const text = value.trim();
+  if (!text) throw new Error('LW_MIGRATE_EXPECT is set but empty. Unset it, or set "none" to expect no pending migration.');
+  if (text === 'none') return { kind: 'names', names: [] };
+  if (text.startsWith('sha256:')) {
+    if (!/^sha256:[0-9a-f]{64}$/.test(text)) throw new Error('LW_MIGRATE_EXPECT manifest must be sha256: followed by 64 lower-case hex characters.');
+    return { kind: 'manifest', sha256: text.slice('sha256:'.length) };
+  }
+  const names = text.split(',').map(name => name.trim());
+  if (names.some(name => !MIGRATION_NAME.test(name) || name.includes('..'))) {
+    throw new Error('LW_MIGRATE_EXPECT must be "none", "sha256:<64 hex>" or a comma-separated list of migration file names.');
+  }
+  if (new Set(names).size !== names.length) throw new Error('LW_MIGRATE_EXPECT names a migration twice.');
+  return { kind: 'names', names };
+}
+
+/** The manifest hash of a set of migration files: sha256 over a fixed header and
+ *  one `name<TAB>sha256` line per file, in file-name order. */
+export function migrationManifest(files: readonly PendingFile[]): string {
+  const lines = [...files].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map(file => `${file.name}\t${file.sha256}\n`).join('');
+  return 'sha256:' + createHash('sha256').update(MANIFEST_HEADER + lines).digest('hex');
+}
+
+/** Names and content hashes of the given migration files, plus their manifest. */
+export async function describeMigrations(names: readonly string[], dir = './migrations'): Promise<{ files: PendingFile[]; manifest: string }> {
+  const files: PendingFile[] = [];
+  for (const name of names) {
+    files.push({ name, sha256: createHash('sha256').update(await readFile(join(dir, name))).digest('hex') });
+  }
+  return { files, manifest: migrationManifest(files) };
+}
+
+/** Refuse unless `pending` is exactly the expected set. For a manifest, returns
+ *  each file's verified hash so the caller can run exactly those bytes. */
+export async function assertExpectedPending(expect: MigrateExpectation, pending: readonly string[], dir = './migrations'): Promise<Map<string, string> | null> {
+  const shown = (names: readonly string[]) => (!names.length ? 'none'
+    : names.length <= 10 ? names.join(', ') : `${names.slice(0, 10).join(', ')} and ${names.length - 10} more`);
+  if (expect.kind === 'names') {
+    const expected = new Set(expect.names);
+    const missing = expect.names.filter(name => !pending.includes(name)).sort();
+    const unexpected = pending.filter(name => !expected.has(name));
+    if (missing.length || unexpected.length) {
+      throw new Error(`LW_MIGRATE_EXPECT refused: the pending migrations differ from the expected list `
+        + `(expected but not pending: ${shown(missing)}; pending but not expected: ${shown(unexpected)}). Nothing was applied.`);
+    }
+    return null;
+  }
+  const { files, manifest } = await describeMigrations(pending, dir);
+  if (manifest !== `sha256:${expect.sha256}`) {
+    throw new Error(`LW_MIGRATE_EXPECT refused: the pending migrations (${shown(pending)}) have manifest ${manifest}, `
+      + `not the expected sha256:${expect.sha256}. Nothing was applied.`);
+  }
+  return new Map(files.map(file => [file.name, file.sha256]));
+}
+
 type MigrationClient = Queryable & { connect(): Promise<void>; end(): Promise<void> };
 
 async function connectClient(databaseUrl: string): Promise<MigrationClient> {
@@ -71,7 +152,12 @@ export async function pendingMigrations(databaseUrl: string, dir = './migrations
   }
 }
 
-export async function runMigrations(databaseUrl: string, dir = './migrations'): Promise<string[]> {
+/** Apply the pending migrations. When `env.LW_MIGRATE_EXPECT` is set, refuse
+ *  (before any DDL or lock) unless the pending set is exactly the expected one. */
+export async function runMigrations(databaseUrl: string, dir = './migrations',
+  env: Record<string, string | undefined> = process.env): Promise<string[]> {
+  // A malformed expectation fails before any connection is opened.
+  const expectation = parseMigrateExpect(env.LW_MIGRATE_EXPECT);
   const client = await connectClient(databaseUrl);
   const applied: string[] = [];
   // One transaction holding the migration lock. Two replicas booting together
@@ -95,6 +181,9 @@ export async function runMigrations(databaseUrl: string, dir = './migrations'): 
   try {
     // Read-only first: a current schema costs two queries and takes no lock.
     const pending = await pendingAgainst(client, dir);
+    // The loop below applies only names from `pending`, so checking it here
+    // means nothing outside the expected set is ever applied.
+    const verified = expectation ? await assertExpectedPending(expectation, pending, dir) : null;
     if (!pending.length) return applied;
     try {
       await locked(() => client.query('create table if not exists schema_migrations (name text primary key, at timestamptz not null default now())'));
@@ -102,7 +191,11 @@ export async function runMigrations(databaseUrl: string, dir = './migrations'): 
       throw new Error(`migration setup failed: ${(err as Error).message}`);
     }
     for (const file of pending) {
-      const sql = await readFile(join(dir, file), 'utf8');
+      const bytes = await readFile(join(dir, file));
+      if (verified && createHash('sha256').update(bytes).digest('hex') !== verified.get(file)) {
+        throw new Error(`migration ${file} changed after LW_MIGRATE_EXPECT was checked; it was not applied`);
+      }
+      const sql = bytes.toString('utf8');
       try {
         const ran = await locked(async () => {
           // Re-read under the lock: another replica may have applied it meanwhile.
