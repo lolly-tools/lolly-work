@@ -282,7 +282,7 @@ def cmd_deploy(context, wsha, dispatch):
 def cmd_rollback(context):
     status = _live(context)
     preview = status.get("preview", {})
-    require(preview.get("maintenance") != "true", "MAINTENANCE_NO_ROLLBACK",
+    require(preview.get("maintenance") != "true" and not _json(preview.get("maintenance-applied")), "MAINTENANCE_NO_ROLLBACK",
             "the live build ran a maintenance migration; a rollback would need a restore, which Andy decides")
     previous = _json(preview.get("previous"))
     require(isinstance(previous, dict) and previous.get("source") and previous.get("image"), "NO_PREVIOUS",
@@ -307,6 +307,7 @@ def cmd_status(context, follow=None):
          image=status["deployment"]["image"], config=status["deployment"]["config"], generation=preview.get("generation"),
          converted=status["deployment"]["converted"], ready=status["deployment"]["ready"], unit=status.get("unit"),
          pods=status.get("pods"), smokeSession=status.get("smokeSession"), maintenance=preview.get("maintenance") == "true",
+         maintenanceApplied=_json(preview.get("maintenance-applied")),
          deployId=preview.get("deploy-id"), reason=preview.get("reason"))
     return 0
 
