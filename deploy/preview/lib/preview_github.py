@@ -2,8 +2,7 @@
 """GitHub side of the preview deploy command: find, dispatch, wait for and bind one build.
 
 Every call goes through the `gh` CLI as an argument list (never a shell string).
-The only write is the candidate workflow dispatch, with the same request the
-retired main-web-preparation bot sent. Nothing here approves an environment gate.
+The only write is the preview workflow dispatch. Nothing here approves an environment gate.
 """
 
 from __future__ import annotations
@@ -130,16 +129,17 @@ def active_candidate_runs(gh, anchors):
 
 def dispatch_runs(gh, anchors, sha):
     listing = gh.json(f"repos/{anchors['repository']}/actions/workflows/{anchors['buildWorkflowFile']}/runs",
-                      event="workflow_dispatch", branch=anchors["branch"], head_sha=sha, per_page=30)
-    return [run for run in listing.get("workflow_runs", []) if isinstance(run, dict) and isinstance(run.get("id"), int)]
+                      event="workflow_dispatch", branch=anchors["branch"], per_page=100)
+    return [run for run in listing.get("workflow_runs", []) if isinstance(run, dict) and isinstance(run.get("id"), int)
+            and run.get("path") == anchors["buildWorkflowPath"] and run.get("event") == "workflow_dispatch"
+            and run.get("head_branch") == anchors["branch"]
+            and (run.get("display_title") == anchors["buildRunTitle"].format(sha=sha) if "buildRunTitle" in anchors
+                 else run.get("head_sha") == sha)]
 
 
-def dispatch_build(gh, anchors, sha, ci_run, public_jwk):
-    """Ask for the existing candidate build (L/scripts/main-web-preparation.ts:101)."""
-    pin = json.dumps({key: public_jwk[key] for key in ("kty", "crv", "x", "y")}, separators=(",", ":"))
-    body = {"ref": "refs/heads/" + anchors["branch"], "inputs": {"build_images": "true", "release_scope": "web",
-            "expected_source": sha, "ci_run": str(ci_run), "public_key_jwk": pin}}
-    require(len(json.dumps(body)) <= 2048, "DISPATCH_TOO_LARGE", "candidate request exceeds its bound")
+def dispatch_build(gh, anchors, sha):
+    """Ask the preview workflow to build this source on main."""
+    body = {"ref": "refs/heads/" + anchors["branch"], "inputs": {anchors["buildSourceInput"]: sha}}
     gh.post(f"repos/{anchors['repository']}/actions/workflows/{anchors['buildWorkflowFile']}/dispatches", body)
     return body
 
@@ -149,9 +149,9 @@ def find_new_run(gh, anchors, sha, known_ids, attempts=20, pause=6):
         fresh = [run for run in dispatch_runs(gh, anchors, sha) if run["id"] not in known_ids]
         if len(fresh) == 1:
             return fresh[0]
-        require(len(fresh) <= 1, "AMBIGUOUS_RUN", "more than one new candidate run appeared; bind one by hand with deploy")
+        require(len(fresh) <= 1, "AMBIGUOUS_RUN", "more than one new preview run appeared; bind one by hand with deploy")
         gh.sleep(pause)
-    raise Refusal("RUN_NOT_FOUND", "the dispatched candidate run did not appear")
+    raise Refusal("RUN_NOT_FOUND", "the dispatched preview run did not appear")
 
 
 def wait_for_run(gh, anchors, run_id, poll_seconds, timeout_minutes, tolerated_errors=6):
@@ -169,7 +169,7 @@ def wait_for_run(gh, anchors, run_id, poll_seconds, timeout_minutes, tolerated_e
             continue
         state = (run.get("status"), run.get("conclusion"))
         if state != last:
-            note = "waiting for a reviewer at the signing gate; Andy approves in GitHub, agents never do" \
+            note = "waiting in GitHub; agents never approve environment gates" \
                 if run.get("status") == "waiting" else None
             emit("build", run=run_id, status=run.get("status"), conclusion=run.get("conclusion"), note=note)
             last = state
@@ -229,10 +229,19 @@ def read_receipt_artifact(data, run, sha, anchors, public_jwk, thumbprint):
 def bind_run(gh, anchors, run, sha, public_jwk, thumbprint):
     """Bind a completed run to the request: workflow, event, repository, branch, commit, success, receipt."""
     require(isinstance(run.get("id"), int) and RUN_ID.fullmatch(str(run["id"])) is not None, "RUN_NOT_BOUND", "run id is malformed")
-    require(run.get("path") == anchors["buildWorkflowPath"], "RUN_NOT_BOUND", "run is not the candidate workflow")
+    require(run.get("path") == anchors["buildWorkflowPath"], "RUN_NOT_BOUND", "run is not the anchored build workflow")
     require(run.get("event") == "workflow_dispatch", "RUN_NOT_BOUND", "run was not dispatched")
     require(_same_repository(run, anchors["repository"]), "RUN_NOT_BOUND", "run belongs to another repository")
-    require(run.get("head_branch") == anchors["branch"] and run.get("head_sha") == sha, "RUN_NOT_BOUND", "run is for another branch or commit")
+    require(run.get("head_branch") == anchors["branch"], "RUN_NOT_BOUND", "run is for another branch")
+    head = run.get("head_sha")
+    require(isinstance(head, str) and SHA.fullmatch(head) is not None, "RUN_NOT_BOUND", "run head is not a commit SHA")
+    if "buildRunTitle" in anchors:
+        require(run.get("display_title") == anchors["buildRunTitle"].format(sha=sha),
+                "RUN_NOT_BOUND", "run title names another source")
+        require(head == sha or contains(gh, anchors["repository"], sha, head),
+                "RUN_NOT_BOUND", "source is not an ancestor of the dispatched main head")
+    else:
+        require(head == sha, "RUN_NOT_BOUND", "legacy run is for another commit")
     require(type(run.get("run_attempt")) is int and run["run_attempt"] >= 1, "RUN_NOT_BOUND", "run attempt is malformed")
     require(run.get("status") == "completed" and run.get("conclusion") == "success", "RUN_FAILED",
             f"run {run['id']} concluded {run.get('conclusion')!r}")
@@ -244,12 +253,12 @@ def bind_run(gh, anchors, run, sha, public_jwk, thumbprint):
     data = gh.binary(f"repos/{anchors['repository']}/actions/artifacts/{matches[0]['id']}/zip", limit=1024 * 1024)
     bound = read_receipt_artifact(data, run, sha, anchors, public_jwk, thumbprint)
     bound.update({"run": run["id"], "attempt": run["run_attempt"], "runCreatedAt": run.get("created_at"),
-                  "receiptExpiresAt": matches[0].get("expires_at")})
+                  "receiptExpiresAt": matches[0].get("expires_at"), "catalogPin": thumbprint})
     return bound
 
 
 def latest_bound_run(gh, anchors, sha, public_jwk, thumbprint, prefer_image=None):
-    """The newest successful candidate run for this commit that still binds.
+    """The newest successful build run for this commit that still binds.
 
     With prefer_image (the live image, for the conversion), only a run that built
     exactly that image is accepted, even when a newer rebuild of the commit exists.
@@ -258,7 +267,7 @@ def latest_bound_run(gh, anchors, sha, public_jwk, thumbprint, prefer_image=None
     candidates = sorted((run for run in dispatch_runs(gh, anchors, sha)
                          if run.get("status") == "completed" and run.get("conclusion") == "success"),
                         key=lambda run: run["id"], reverse=True)
-    require(bool(candidates), "RUN_NOT_FOUND", f"no successful candidate build for {sha}; use ship")
+    require(bool(candidates), "RUN_NOT_FOUND", f"no successful build for {sha}; use ship")
     skipped = []
     for run in candidates:
         try:
@@ -271,7 +280,7 @@ def latest_bound_run(gh, anchors, sha, public_jwk, thumbprint, prefer_image=None
         if prefer_image is None or bound["image"] == prefer_image:
             return bound
         skipped.append(run["id"])
-    raise Refusal("RUN_NOT_FOUND", f"no live, binding candidate run for {sha}" +
+    raise Refusal("RUN_NOT_FOUND", f"no live, binding build run for {sha}" +
                   (f" that built {prefer_image}" if prefer_image else "") + f" (looked at {len(skipped)})")
 
 
@@ -364,3 +373,13 @@ def registry_image_bytes(image, anchors, opener=None):
         return sum(layer["size"] for layer in layers) + int((document.get("config") or {}).get("size", 0))
     except (OSError, urllib.error.URLError, ValueError) as exc:
         raise Refusal("REGISTRY", "the image is not anonymously readable from the registry") from exc
+
+
+def bound_live_run(gh, sha, image):
+    """Bind the live image, including release builds from before Phase 1b."""
+    import preview_anchors as A
+    if image.startswith(A.TOOLS_LEGACY["imageRepository"] + "@"):
+        return latest_bound_run(gh, A.TOOLS_LEGACY, sha, A.RELEASE_PUBLIC_KEY_JWK,
+                                A.RELEASE_PUBLIC_KEY_THUMBPRINT, prefer_image=image)
+    pin, thumbprint = A.preview_pin()
+    return latest_bound_run(gh, A.TOOLS, sha, pin, thumbprint, prefer_image=image)
