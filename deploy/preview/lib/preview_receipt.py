@@ -129,8 +129,22 @@ def _der_signature(signature):
 def verify_p256(jwk, message, signature):
     """True when the DER ECDSA signature over SHA-256(message) verifies against the JWK."""
     try:
-        q = public_point(jwk)
         r, s = _der_signature(signature)
+    except Refusal:
+        return False
+    return _verify_rs(jwk, message, r, s)
+
+
+def verify_p256_raw(jwk, message, signature):
+    """True when the raw 64-byte r||s signature (WebCrypto's form) over SHA-256(message) verifies."""
+    if not isinstance(signature, (bytes, bytearray)) or len(signature) != 64:
+        return False
+    return _verify_rs(jwk, message, int.from_bytes(signature[:32], "big"), int.from_bytes(signature[32:], "big"))
+
+
+def _verify_rs(jwk, message, r, s):
+    try:
+        q = public_point(jwk)
     except Refusal:
         return False
     if not (1 <= r < N and 1 <= s < N):

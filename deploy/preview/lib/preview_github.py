@@ -58,6 +58,19 @@ class Gh:
     def post(self, path, body):
         self._run(["--method", "POST", path, "--input", "-"], stdin=json.dumps(body).encode(), limit=65536)
 
+    def download(self, path, destination, limit, timeout=3600):
+        """Stream a large response (an artifact zip) to a new private file; never into memory."""
+        import os
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                done = subprocess.run([self.executable, "api", path], stdout=out, stderr=subprocess.PIPE, timeout=timeout, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Refusal("GITHUB_UNAVAILABLE", "the artifact download failed or timed out") from exc
+        require(done.returncode == 0, "GITHUB_FAILED", f"gh api exited {done.returncode} for " + path.split("?")[0])
+        require(os.path.getsize(destination) <= limit, "GITHUB_FAILED", "the artifact exceeds its bound")
+        return destination
+
 
 def _same_repository(run, repository):
     return ((run.get("repository") or {}).get("full_name") == repository

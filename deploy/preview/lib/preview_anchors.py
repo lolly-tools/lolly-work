@@ -53,6 +53,92 @@ TOOLS = {
     "revisionHistoryLimit": 5,
 }
 
+# lolly.ing (Phase 2, PROPOSAL section 4). One private instance image holds the Work
+# server, the SUSE shell and the pack. suse-lolly's private lolly-ing-preview.yml builds
+# and signs it (two approvals of lolly-ing-signing per build), and the Mac streams it to
+# the node; no registry credential is ever on the node. The deploy input is a Work commit:
+# its engine pin names the Lolly commit, and suse-lolly is built at its main head.
+ING = {
+    "site": "lolly.ing",
+    "repository": "lolly-tools/suse-lolly",
+    "buildWorkflowFile": "lolly-ing-preview.yml",
+    "buildWorkflowPath": ".github/workflows/lolly-ing-preview.yml",
+    "buildEvents": ("workflow_dispatch",),
+    "branch": "main",
+    "workRepository": "lolly-tools/lolly-work",
+    "lollyRepository": "lolly-tools/lolly",
+    "manifestKind": "lolly-ing-instance-image",
+    "manifestArtifact": "lolly-ing-instance-manifest",
+    "manifestFile": "lolly-ing-instance.manifest.json",
+    "archiveArtifact": "lolly-ing-instance-archive",
+    # lolly-ing-instance-<run id>-<attempt>.oci.tar, written by `docker save` (OCI layout).
+    "archivePattern": r"lolly-ing-instance-{run}-{attempt}\.oci\.tar",
+    # The tag the workflow builds; ctr import --base-name keeps it, and --digests adds <name>@<digest>.
+    "refNamePattern": "docker.io/library/lolly-ing-instance:run-{run}-{attempt}",
+    # A maintenance migration needs an approval of this environment in the same run (R20 S7).
+    "maintenanceEnvironment": "lolly-ing-maintenance",
+    "receiptProfile": "suse",
+    "receiptTarget": "web",
+    # First-party repositories whose changes are listed before a switch (R21 R3).
+    "sourceRepositories": {"suse": "lolly-tools/suse-lolly", "work": "lolly-tools/lolly-work", "lolly": "lolly-tools/lolly"},
+    "imageName": "docker.io/library/lolly-ing-instance",
+    "imageRepository": "docker.io/library/lolly-ing-instance",  # the same name, for the shared retention code
+    "origin": "https://lolly.ing",
+    "host": "lolly.ing",
+    "wwwOrigin": "https://www.lolly.ing",
+    "instanceName": "lolly.ing",
+    "namespace": "lolly-private",
+    "deployment": "lolly-work",
+    "container": "server",
+    "component": "work",
+    "requiredLabels": {"app.kubernetes.io/instance": "lolly-work", "app.kubernetes.io/name": "lolly-work"},
+    "checkTargetDeployment": "lolly-private/lolly-work",
+    # instance.json, mounted from an immutable ConfigMap per generation.
+    "configVolume": "config",
+    "configKey": "instance.json",
+    "configMountPath": "/app/instance.json",
+    "generationPath": ("instance", "catalogPublicationGeneration"),
+    "configNamePrefix": "lolly-ing-config-",
+    # The one-time cut-over (PROPOSAL 4.8) drops these claim and pin mounts.
+    "conversionVolumes": {"pack": "persistentVolumeClaim", "shell": "persistentVolumeClaim", "engine-pin": "configMap"},
+    "conversionMountPaths": {"pack": "/app/packs/lolly-ing", "shell": "/app/shell", "engine-pin": "/app/engine-pin.json"},
+    # Volumes a Job from the instance image may copy from the server: ConfigMaps only, never a Secret.
+    "jobConfigMapVolumes": ("postgres-ca", "tmp"),
+    "databaseEnv": ("DATABASE_URL", "DATABASE_URL_UNPOOLED"),
+    "backupCronJob": "lolly-postgres-offhost-backup",
+    "backupContainer": "encrypt-upload-verify",
+    "backupObjectPattern": r"lolly-ing/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9-]{12,16}Z-[a-f0-9]{16}\.lwbackup",
+    "backupMaxBytes": 128 * 1024 * 1024,  # the restore rehearsal's own bound (#208)
+    # The restore rehearsal (deploy/preview/restore-rehearsal.py, lib/preview_rehearsal.py) runs in its own namespace.
+    "rehearsalNamespace": "lolly-restore-rehearsal",
+    "rehearsalSecret": "restore-rehearsal-backup-read",
+    # The PostgreSQL 18 image the live database runs (Work deploy/suse/appco-postgresql.lock.json).
+    "postgresImage": "dp.apps.rancher.io/containers/postgresql@sha256:24210933acadcefb3775a122818d5d3b888fe5b2687eaa5b0e0867bd82a211d6",
+    "jobPodLabels": {"app.kubernetes.io/part-of": "lolly-work", "app.kubernetes.io/component": "preview-migrate",
+                     "lolly.tools/managed-by": "preview-deploy"},
+    "revisionHistoryLimit": 10,
+}
+
+# Work's migration classifier (lolly-work PR #207), run from the instance image with
+# `--only <pending>`; it prints one JSON document. The runner honours LW_MIGRATE_EXPECT.
+MIGRATION_CLASSIFIER = ("node", "scripts/classify-migrations.ts", "--json", "--only")
+MIGRATION_RUNNER = ("node", "scripts/migrate.ts")
+MIGRATION_LOCK_BUDGET_SECONDS = 30
+# Byte for byte server/src/store/migrate.ts migrationManifest and preview_rehearsal.migration_manifest.
+MIGRATION_MANIFEST_HEADER = "lolly-work migration manifest v1\n"
+REHEARSAL_DEADLINE_SECONDS = 900
+
+# lolly.ing's own catalog key (PROPOSAL 4.7). Generated at the Phase 2 cut-over; it is
+# pinned here in a reviewed change. Until then every lolly.ing run refuses.
+ING_PUBLIC_KEY_JWK = None
+# GitHub logins whose approval in the private run admits a maintenance migration.
+# Andy's own login once agents have their own account (decision 3). Empty refuses all.
+ING_MAINTENANCE_APPROVERS = ()
+ING_ARCHIVE_MAX_BYTES = 6 * 1024 ** 3
+# The smoke account's session cookie: a root-only file on the node, never printed.
+NODE_ING_SMOKE_COOKIE = "/etc/lolly-preview/lolly.ing-smoke-session"
+NODE_SPOOL_DIR = "/var/lib/lolly-preview/spool"
+
 # Lolly's release catalog pin, LOLLY_RELEASE_PUBLIC_KEY_JWK in lolly-tools/lolly.
 # Phase 1 keeps the release key (decision 5). Phase 1b replaces this anchor with
 # the preview key in a reviewed change.
@@ -129,37 +215,50 @@ REMOVE_WORST_SECONDS = (CRICTL_WRITE_TIMEOUT_SECONDS + REMOVE_VERIFY_SECONDS + C
 # Retention after an accepted deploy starts a removal only while this budget allows a
 # whole one; images left over wait for the next deploy or gc.
 RETENTION_AFTER_DEPLOY_SECONDS = REMOVE_WORST_SECONDS + 60
-UNIT_RUNTIME_MAX_SECONDS = (2 * PULL_TIMEOUT_SECONDS + 2 * MAX_ROLLOUT_SECONDS + MAX_WATCH_MINUTES * 60 + 3 * SMOKE_BUDGET_SECONDS
-                            + RETENTION_AFTER_DEPLOY_SECONDS + 600)
+TOOLS_RUNTIME_MAX_SECONDS = (2 * PULL_TIMEOUT_SECONDS + 2 * MAX_ROLLOUT_SECONDS + MAX_WATCH_MINUTES * 60 + 3 * SMOKE_BUDGET_SECONDS
+                             + RETENTION_AFTER_DEPLOY_SECONDS + 600)
+# lolly.ing steps (PROPOSAL 4.3): import, backup, read-only checks, rehearsal, migrate Job.
+ING_IMPORT_TIMEOUT_SECONDS = 900
+JOB_TIMEOUT_SECONDS = 300
+BACKUP_TIMEOUT_SECONDS = 660
+REHEARSAL_TIMEOUT_SECONDS = 1500
+MIGRATE_TIMEOUT_SECONDS = 900
+BACKUP_MAX_AGE_SECONDS = 6 * 3600
+MAINTENANCE_BACKUP_MAX_AGE_SECONDS = 3600
+ING_ROLLBACK_SECONDS = MAX_ROLLOUT_SECONDS + SMOKE_BUDGET_SECONDS + JOB_TIMEOUT_SECONDS
+ING_MIGRATION_SECONDS = JOB_TIMEOUT_SECONDS + REHEARSAL_TIMEOUT_SECONDS + MIGRATE_TIMEOUT_SECONDS + JOB_TIMEOUT_SECONDS
+ING_RUNTIME_MAX_SECONDS = (ING_IMPORT_TIMEOUT_SECONDS + BACKUP_TIMEOUT_SECONDS + JOB_TIMEOUT_SECONDS + ING_MIGRATION_SECONDS
+                           + MAX_ROLLOUT_SECONDS + SMOKE_BUDGET_SECONDS + JOB_TIMEOUT_SECONDS + MAX_WATCH_MINUTES * 60
+                           + ING_ROLLBACK_SECONDS + RETENTION_AFTER_DEPLOY_SECONDS + 600)
+# One unit serves both sites, so it gets the longer of the two budgets.
+UNIT_RUNTIME_MAX_SECONDS = max(TOOLS_RUNTIME_MAX_SECONDS, ING_RUNTIME_MAX_SECONDS)
 UNIT_STOP_TIMEOUT_SECONDS = PULL_TIMEOUT_SECONDS + MAX_ROLLOUT_SECONDS + SMOKE_BUDGET_SECONDS + 300
 
 # Deployment metadata annotations written by the command. Metadata, not the Pod
 # template, so writing them never starts a rollout.
 ANNOTATION_PREFIX = "lolly.tools/preview-"
 PHASES = ("switching", "switched-unverified", "accepted", "rolling-back", "rolled-back",
-          "rollback-unhealthy", "aborted", "converting", "adopted-unhealthy")
+          "rollback-unhealthy", "aborted", "converting", "adopted-unhealthy", "maintenance-unverified")
 UNCERTAIN_PHASES = ("switching", "switched-unverified", "rolling-back", "converting")
 # Phases that stop every later run until a human passes --clear-hold.
-HOLD_PHASES = UNCERTAIN_PHASES + ("rollback-unhealthy", "adopted-unhealthy")
+# maintenance-unverified: a lolly.ing switch after a maintenance migration failed its smoke.
+# Automatic rollback is off then (PROPOSAL 4.4), because recovery would be a restore.
+HOLD_PHASES = UNCERTAIN_PHASES + ("rollback-unhealthy", "adopted-unhealthy", "maintenance-unverified")
 # Phases whose records describe the image that is live (review C-H2). `adopt` writes
 # adopted-unhealthy when a human adopts a live build that fails its smoke (review N2).
-SETTLED_PHASES = ("accepted", "rolled-back", "aborted", "adopted-unhealthy")
+# A lolly.ing switch held after a maintenance migration (maintenance-unverified) also describes the
+# live image, so a forward fix can follow it with --clear-hold.
+SETTLED_PHASES = ("accepted", "rolled-back", "aborted", "adopted-unhealthy", "maintenance-unverified")
 # The longest a gc run takes, for the backup-window check before it starts. Removals
 # start only while a whole one still fits; the reads before them get the rest.
 GC_BUDGET_SECONDS = 900
 GC_REMOVE_BUDGET_SECONDS = GC_BUDGET_SECONDS - 300
 
-SITES = {"lolly.tools": TOOLS, "lolly.ing": None}
-
-PHASE_2_MESSAGE = ("lolly.ing is Phase 2 of the preview fast-deploy design and is not built. "
-                   "It needs the instance image, its own catalog key, the backup and migration "
-                   "guard and the generation rule first. Nothing was changed.")
+SITES = {"lolly.tools": TOOLS, "lolly.ing": ING}
 
 
 def site_anchors(site):
     from preview_common import Refusal
     if site not in SITES:
         raise Refusal("UNKNOWN_SITE", "site must be lolly.tools or lolly.ing")
-    if SITES[site] is None:
-        raise Refusal("SITE_PHASE_2", PHASE_2_MESSAGE)
     return SITES[site]

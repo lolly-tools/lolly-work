@@ -12,6 +12,7 @@ sys.dont_write_bytecode = True
 
 import base64  # noqa: E402
 import fcntl  # noqa: E402
+import hashlib  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
@@ -32,6 +33,10 @@ UNIT_PATH = "/run/systemd/system/" + UNIT
 LOCK_DIR = "/run/lolly-preview"
 LOCK = LOCK_DIR + "/deploy.lock"
 START_LOCK = LOCK_DIR + "/start.lock"
+SPOOL = ROOT + "/spool"
+MAX_ARCHIVE = 6 * 1024 ** 3
+HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+MIB = 1024 * 1024
 SYSTEMCTL = "/usr/bin/systemctl"
 BUSY = ("active", "activating", "deactivating", "reloading", "refreshing")
 DEPLOY_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-z0-9-]{1,40}\Z")
@@ -188,6 +193,74 @@ def read(payload):
              "reason": getattr(exc, "message", "read failed")})
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def above_reserve(path):
+    """Bytes free above the image-GC reserve (total // 4 + 512 MiB) on the filesystem holding path."""
+    info = os.statvfs(path)
+    return info.f_bavail * info.f_frsize - (info.f_blocks * info.f_frsize // 4 + 512 * MIB)
+
+
+def upload(header):
+    """Receive one instance-image archive on stdin into the root-only spool (PROPOSAL 4.3 step 3).
+
+    The bytes are hashed while they are written. A wrong size or sha256 deletes the
+    partial file. The unit hashes the spooled file again before ctr imports it.
+    """
+    if sys.version_info < (3, 9):
+        refuse("NODE_PYTHON_TOO_OLD", "the node needs Python 3.9 or newer")
+    if os.geteuid() != 0:
+        refuse("NOT_ROOT", "run through sudo")
+    os.chdir("/")
+    sha, size = header.get("sha256"), header.get("bytes")
+    if not isinstance(sha, str) or not HEX64.match(sha) or type(size) is not int or not 0 < size <= MAX_ARCHIVE:
+        refuse("BAD_REQUEST", "the archive header is malformed")
+    deploy_id(header.get("deployId"))
+    os.makedirs(ROOT, mode=0o700, exist_ok=True)
+    lock_dir()
+    gate = open_lock(START_LOCK)
+    try:
+        fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        refuse("LOCK_HELD", "another preview command is starting a run")
+    if unit_state() in BUSY:
+        refuse("LOCK_HELD", "a preview run is active; upload after it ends")
+    os.makedirs(SPOOL, mode=0o700, exist_ok=True)
+    info = os.lstat(SPOOL)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        refuse("SPOOL_UNSAFE", "the spool directory is not private to root")
+    final = SPOOL + "/" + sha + ".oci.tar"
+    if os.path.lexists(final):
+        found = os.lstat(final)
+        if stat.S_ISREG(found.st_mode) and found.st_size == size:
+            out({"result": "ALREADY_UPLOADED", "sha256": sha, "bytes": size})
+            return
+        refuse("SPOOL_UNSAFE", "a spooled file of that name is not the expected archive")
+    if above_reserve(SPOOL) < 2 * size:
+        refuse("LOW_CAPACITY", "not enough space above the image-GC reserve for the archive and its import; run gc")
+    partial = SPOOL + "/" + sha + ".partial"
+    if os.path.lexists(partial):
+        os.unlink(partial)
+    descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    digest, received, stream = hashlib.sha256(), 0, sys.stdin.buffer
+    try:
+        while received <= size:
+            chunk = stream.read(min(MIB, size + 1 - received))
+            if not chunk:
+                break
+            digest.update(chunk)
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(descriptor, view):]
+            received += len(chunk)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    if received != size or digest.hexdigest() != sha:
+        os.unlink(partial)
+        refuse("ARCHIVE_MISMATCH", "the received archive does not match its manifest; it was deleted")
+    os.rename(partial, final)
+    out({"result": "UPLOADED", "sha256": sha, "bytes": size})
 
 
 def main(payload):

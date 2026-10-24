@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "migrations": [
+    {
+      "name": "0078_widget_names.sql",
+      "sha256": "df71905269edacbc163735e9f9bb39a83b1e81112a83a6b4850f42cbda31e0c2",
+      "class": "maintenance",
+      "reasons": [
+        "statement 1: ALTER TABLE ADD CONSTRAINT"
+      ],
+      "statements": [
+        {
+          "index": 1,
+          "kind": "alter-table",
+          "class": "maintenance",
+          "reason": "ALTER TABLE ADD CONSTRAINT",
+          "excerpt": "alter table widgets add constraint widgets_name_unique unique (name)"
+        }
+      ]
+    }
+  ],
+  "manifest": "sha256:a3eac1a495bdaee32722909cb5cd1df79c64a8ee46e8b39116f8615a35d6196a"
+}

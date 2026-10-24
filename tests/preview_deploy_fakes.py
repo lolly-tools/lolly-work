@@ -287,7 +287,7 @@ def apply_json_patch(document, patch):
         return parent, parts[-1]
     for op in patch:
         parent, last = walk(op["path"])
-        index = int(last) if isinstance(parent, list) else last
+        index = int(last) if isinstance(parent, list) and last != "-" else last
         if op["op"] == "test":
             if isinstance(parent, list):
                 current = parent[index]
@@ -300,7 +300,10 @@ def apply_json_patch(document, patch):
         elif op["op"] in ("add", "replace"):
             if op["op"] == "replace" and not isinstance(parent, list) and last not in parent:
                 raise ValueError("replace path missing")
-            parent[index] = copy.deepcopy(op["value"])
+            if isinstance(parent, list) and last == "-" and op["op"] == "add":
+                parent.append(copy.deepcopy(op["value"]))
+            else:
+                parent[index] = copy.deepcopy(op["value"])
         elif op["op"] == "remove":
             del parent[index]
         else:
@@ -481,6 +484,11 @@ def _crictl_main(state, argv, out):
 def k3s_main(argv):
     state_path = os.environ["FAKE_STATE"]
     out = sys.stdout
+    if os.environ.get("FAKE_SITE") == "lolly.ing":
+        import preview_deploy_ing_fakes
+        code = preview_deploy_ing_fakes.k3s_ing_main(argv, out)
+        if code is not None:
+            return code
     if argv[:1] == ["kubectl"]:
         if argv[1:5] != ["--kubeconfig", KUBECONFIG, "--context", CONTEXT]:
             print("bad kubeconfig or context", file=sys.stderr)
@@ -652,7 +660,9 @@ class FakeClock:
 
 
 def patch_node_modules(tool_lib, sandbox, state_path):
-    """Import the node modules from a bundle directory and point them at the sandbox and fakes."""
+    """Import the node modules from a bundle directory and point them at the sandbox and fakes.
+    As on the node, only the bundle's lib is importable: the repository's lib leaves sys.path."""
+    sys.path[:] = [entry for entry in sys.path if not entry or Path(entry).resolve() != LIB.resolve()]
     if str(tool_lib) not in sys.path:
         sys.path.insert(0, str(tool_lib))
     import preview_anchors
@@ -664,7 +674,10 @@ def patch_node_modules(tool_lib, sandbox, state_path):
                                "lock": f"{sandbox}/run/lolly-preview/deploy.lock", "lockDir": f"{sandbox}/run/lolly-preview",
                                "imagefs": "/", "armed": f"{sandbox}/var/lib/lolly-preview/retention-armed",
                                "systemctl": os.environ["FAKE_BIN"] + "/systemctl",
-                               "procStatus": f"{sandbox}/proc-status", "procAttr": f"{sandbox}/proc-attr"})
+                               "procStatus": f"{sandbox}/proc-status", "procAttr": f"{sandbox}/proc-attr",
+                               "spool": f"{sandbox}/var/lib/lolly-preview/spool", "smokeCookie": f"{sandbox}/smoke-session"})
+    if os.environ.get("FAKE_ING_PIN"):
+        preview_anchors.ING_PUBLIC_KEY_JWK = json.loads(os.environ["FAKE_ING_PIN"])
 
     def capacity(_path):
         data = json.loads(Path(state_path).read_text())["capacity"]
@@ -679,7 +692,11 @@ def patch_node_modules(tool_lib, sandbox, state_path):
         today = real_time.gmtime()
         stamp = calendar.timegm((today.tm_year, today.tm_mon, today.tm_mday, int(wall[:2]), int(wall[3:]), 0))
         preview_node.WALL = lambda: stamp
-    preview_smoke.FETCH = make_fetch(state_path)
+    if os.environ.get("FAKE_SITE") == "lolly.ing":
+        import preview_deploy_ing_fakes
+        preview_smoke.FETCH = preview_deploy_ing_fakes.make_ing_fetch(state_path)
+    else:
+        preview_smoke.FETCH = make_fetch(state_path)
 
     def check_dns(anchors, address):
         assert address == EDGE_ADDRESS, address
@@ -689,7 +706,7 @@ def patch_node_modules(tool_lib, sandbox, state_path):
             if state["behaviour"].get("dnsFailures", 0) > 0:
                 state["behaviour"]["dnsFailures"] -= 1
         if failing:
-            raise preview_node.Refusal("SMOKE_DNS", "lolly.tools does not resolve only to the edge address")
+            raise preview_node.Refusal("SMOKE_DNS", anchors["host"] + " does not resolve only to the edge address")
     preview_smoke.check_dns = check_dns
     return preview_node
 
@@ -751,6 +768,15 @@ def run_unit(sandbox, state_path, name):
                 raise KeyboardInterrupt
             return result
         preview_node.Runner.annotate = annotate
+    switched = None
+    if os.environ.get("FAKE_CRASH_AFTER_SWITCH"):  # lolly.ing writes its phase inside the switch patch
+        import preview_ing_node
+        switched = preview_ing_node.IngRunner.switch
+
+        def switch(self, *args, **kwargs):
+            switched(self, *args, **kwargs)
+            raise KeyboardInterrupt
+        preview_ing_node.IngRunner.switch = switch
     unit_state.write_text("active")
     environment = {"SERVICE_RESULT": "success", "EXIT_CODE": "exited", "EXIT_STATUS": "0"}
     try:
@@ -758,6 +784,8 @@ def run_unit(sandbox, state_path, name):
         environment["EXIT_STATUS"] = str(code)
     except KeyboardInterrupt:
         environment = {"SERVICE_RESULT": "signal", "EXIT_CODE": "killed", "EXIT_STATUS": "KILL"}
+    if switched is not None:
+        preview_ing_node.IngRunner.switch = switched
     if crash:
         preview_node.Runner.annotate = original
     unit_state.write_text("deactivating")
@@ -774,25 +802,18 @@ class _RootStat:
         self.st_mode, self.st_uid = real.st_mode, (0 if real.st_uid == os.getuid() else real.st_uid)
 
 
-def ssh_main(argv):
-    """Check the route flags, then run the bootstrap program as the node would, inside the sandbox."""
-    sandbox = os.environ["FAKE_SANDBOX"]
-    required = {"-oBatchMode=yes", "-oStrictHostKeyChecking=yes", "-oConnectTimeout=12"}
-    if not required <= set(argv) or f"-oUserKnownHostsFile={os.environ['FAKE_KNOWN_HOSTS']}" not in argv or \
-            argv[-1] != "sudo -n python3 -I -" or argv[argv.index("-J") + 1] != "sles@192.0.2.1" or argv[-2] != "sles@10.0.0.2":
-        print("unexpected ssh invocation", file=sys.stderr)
-        return 255
-    if os.environ.get("FAKE_SSH_DOWN"):
-        return 255
-    program = sys.stdin.read()
-    head, _, last = program.rstrip("\n").rpartition("\n")
-    payload = json.loads(base64.b64decode(re.fullmatch(r"main\(json\.loads\(base64\.b64decode\('([A-Za-z0-9+/=]*)'\)\.decode\(\)\)\)", last).group(1)))
+UPLOAD_COMMAND = 'sudo -n python3 -I -c "import sys,base64;exec(base64.b64decode(sys.stdin.buffer.readline()))"'
+
+
+def _load_bootstrap(head, sandbox):
+    """Run the bootstrap program as the node would, with its fixed paths moved into the sandbox."""
     namespace = {"__name__": "bootstrap"}
     exec(compile(head, "bootstrap.py", "exec"), namespace)
     for name, value in (("ROOT", "/var/lib/lolly-preview"), ("RUN", "/var/lib/lolly-preview/run"),
                         ("RESULTS", "/var/lib/lolly-preview/results"), ("TMP", "/var/lib/lolly-preview/tmp"),
                         ("UNIT_PATH", "/run/systemd/system/lolly-preview-deploy.service"), ("LOCK_DIR", "/run/lolly-preview"),
-                        ("LOCK", "/run/lolly-preview/deploy.lock"), ("START_LOCK", "/run/lolly-preview/start.lock")):
+                        ("LOCK", "/run/lolly-preview/deploy.lock"), ("START_LOCK", "/run/lolly-preview/start.lock"),
+                        ("SPOOL", "/var/lib/lolly-preview/spool")):
         assert namespace[name] == value, name
         namespace[name] = sandbox + value
     namespace["SYSTEMCTL"] = os.environ["FAKE_BIN"] + "/systemctl"
@@ -808,7 +829,41 @@ def ssh_main(argv):
     fake_time.monotonic = lambda: fake_time.now
     fake_time.sleep = lambda seconds: setattr(fake_time, "now", fake_time.now + seconds)
     namespace["time"] = fake_time
+
+    def above_reserve(_path):
+        data = json.loads(Path(os.environ["FAKE_STATE"]).read_text())["capacity"]
+        return data["available"] - (data["total"] // 4 + 512 * MIB)
+    namespace["above_reserve"] = above_reserve
     os.makedirs(f"{sandbox}/run/systemd/system", exist_ok=True)
+    return namespace
+
+
+def ssh_main(argv):
+    """Check the route flags, then run the bootstrap program as the node would, inside the sandbox."""
+    sandbox = os.environ["FAKE_SANDBOX"]
+    required = {"-oBatchMode=yes", "-oStrictHostKeyChecking=yes", "-oConnectTimeout=12"}
+    if not required <= set(argv) or f"-oUserKnownHostsFile={os.environ['FAKE_KNOWN_HOSTS']}" not in argv or \
+            argv[-1] not in ("sudo -n python3 -I -", UPLOAD_COMMAND) or argv[argv.index("-J") + 1] != "sles@192.0.2.1" or \
+            argv[-2] != "sles@10.0.0.2":
+        print("unexpected ssh invocation", file=sys.stderr)
+        return 255
+    if os.environ.get("FAKE_SSH_DOWN"):
+        return 255
+    if argv[-1] == UPLOAD_COMMAND:  # the program is the first stdin line; the archive follows it
+        program = base64.b64decode(sys.stdin.buffer.readline()).decode()
+        head, _, last = program.rstrip("\n").rpartition("\n")
+        header = json.loads(base64.b64decode(re.fullmatch(r"upload\(json\.loads\(base64\.b64decode\('([A-Za-z0-9+/=]*)'\)\.decode\(\)\)\)",
+                                                          last).group(1)))
+        namespace = _load_bootstrap(head, sandbox)
+        try:
+            namespace["upload"](header)
+        except SystemExit:
+            pass
+        return 0
+    program = sys.stdin.read()
+    head, _, last = program.rstrip("\n").rpartition("\n")
+    payload = json.loads(base64.b64decode(re.fullmatch(r"main\(json\.loads\(base64\.b64decode\('([A-Za-z0-9+/=]*)'\)\.decode\(\)\)\)", last).group(1)))
+    namespace = _load_bootstrap(head, sandbox)
     if payload.get("action") == "read":
         work = Path(sandbox) / "read-modules"
         if not work.exists():
@@ -872,6 +927,11 @@ def gh_main(argv):
     route = parts.path
     with state_file(state_path) as gh:
         gh["calls"].append({"method": method, "path": path, "body": data})
+        if os.environ.get("FAKE_SITE") == "lolly.ing":
+            import preview_deploy_ing_fakes
+            code = preview_deploy_ing_fakes.gh_ing_route(gh, method, route, query, data, sys.stdout)
+            if code is not None:
+                return code
         if gh.get("flaky", 0) > 0 and re.fullmatch(rf"repos/{REPO}/actions/runs/\d+", route):
             gh["flaky"] -= 1
             print("gh: Bad Gateway (HTTP 502)", file=sys.stderr)
@@ -967,7 +1027,9 @@ NODE_NAME = {node!r}
 NODE_UID = {node_uid!r}
 CLUSTER_UID = {cluster!r}
 NAMESPACE_UIDS = {{'lolly-public': {namespace!r}, 'lolly-private': '55555555-5555-4555-8555-555555555555'}}
+DEPLOYMENTS = {{'lolly-private/lolly-work': '66666666-6666-4666-8666-666666666666', 'lolly-edge/sovereign-edge': '77777777-7777-4777-8777-777777777777'}}
 SITE_DEPLOYMENTS = {{'lolly-public/sovereign-web': {deployment!r}}}
+DATABASE_SECRET = 'lolly-work-final-instance-test'
 SSH = ['ssh', '-oBatchMode=yes', '-oConnectTimeout=12', '-oStrictHostKeyChecking=yes']
 CURRENT_SSH = SSH + ['-oUserKnownHostsFile=' + {known!r}, '-J', 'sles@192.0.2.1', 'sles@10.0.0.2']
 CURRENT_READ = """
@@ -977,7 +1039,7 @@ k=[{k3s!r},'kubectl','--kubeconfig',
    '--context',{context!r}]
 """
 if __name__ == '__main__':
-    if sys.argv[1:] != ['--site', 'lolly.tools']:
+    if sys.argv[1:] not in (['--site', 'lolly.tools'], ['--site', 'lolly.ing']):
         print('FAIL: This preflight takes only --site lolly.tools|lolly.ing', file=sys.stderr)
         sys.exit(1)
     if os.environ.get('FAKE_CHECK_TARGET') == 'fail':

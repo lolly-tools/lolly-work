@@ -29,12 +29,13 @@ from preview_expect import format_lowering
 
 PATHS = {"run": A.NODE_RUN_DIR, "results": A.NODE_RESULTS_DIR, "lock": A.NODE_LOCK, "lockDir": A.NODE_LOCK_DIR,
          "imagefs": A.NODE_IMAGE_FILESYSTEM, "systemctl": A.NODE_SYSTEMCTL, "armed": A.NODE_RETENTION_ARMED,
-         "procStatus": "/proc/self/status", "procAttr": "/proc/self/attr/current"}
+         "procStatus": "/proc/self/status", "procAttr": "/proc/self/attr/current",
+         "spool": A.NODE_SPOOL_DIR, "smokeCookie": A.NODE_ING_SMOKE_COOKIE}
 MIB = 2 ** 20
 EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "SELFTEST_OK": 0, "ADOPTED": 0,
         "ADOPTED_UNHEALTHY": 3,
         "ABORTED": 1, "REFUSED": 1, "STOPPED": 1, "SELFTEST_FAILED": 1, "GC_INCOMPLETE": 1, "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2,
-        "ROLLBACK_UNHEALTHY": 3}
+        "ROLLBACK_UNHEALTHY": 3, "MAINTENANCE_UNVERIFIED": 3}
 # Removal outcomes whose image is gone by its ID after the attempt.
 REMOVED = ("removed", "removed-after-error")
 SWITCH_ATTEMPTS = 5
@@ -167,7 +168,7 @@ class Runner:
     def __init__(self, request, au, log=None):
         self.request = request
         self.au = au
-        self.anchors = validate_request(request, au)
+        self.anchors = self.validate(request, au)
         self.target = request["target"]
         self.component = self.target["components"][self.anchors["component"]]
         self.kube = au.Kubectl(self.target["transport"])
@@ -175,6 +176,10 @@ class Runner:
         self.limits = request["limits"]
         self.pin = A.RELEASE_PUBLIC_KEY_JWK
         self.log = log or (lambda event, **fields: None)
+
+    @staticmethod
+    def validate(request, au):
+        return validate_request(request, au)
 
     # Reads ---------------------------------------------------------------
     def deployment(self, full=True):
@@ -936,6 +941,10 @@ class Runner:
         return self.finish("SELFTEST_OK" if checks.ok else "SELFTEST_FAILED", checks=checks.items)
 
     # ExecStopPost --------------------------------------------------------
+    def handlers(self):
+        return {"deploy": self.run_deploy, "rollback": self.run_rollback, "convert": self.run_convert,
+                "gc": self.run_gc, "selftest": self.run_selftest, "adopt": self.run_adopt}
+
     def stop_post(self, environment):
         """Decide from the live phase, never from whether the run wrote a result."""
         result_path = os.path.join(PATHS["results"], self.request["deployId"] + ".json")
@@ -1013,6 +1022,28 @@ def progress_logger(path):
     return log
 
 
+def _refusal_result(request, mode, exc):
+    """A run refused before it could start still leaves a result, so the operator sees why (not NOT_STARTED)."""
+    if mode != "run" or not isinstance(request, dict) or not isinstance(request.get("deployId"), str) \
+            or DEPLOY_ID.fullmatch(request["deployId"]) is None:
+        return
+    path = os.path.join(PATHS["results"], request["deployId"] + ".json")
+    if os.path.exists(path):
+        return
+    os.makedirs(PATHS["results"], mode=0o700, exist_ok=True)
+    record = {"deployId": request["deployId"], "kind": str(request.get("kind"))[:20], "site": str(request.get("site"))[:20],
+              "result": "REFUSED", "code": getattr(exc, "code", "BAD_REQUEST"), "reason": str(exc)[:500], "finished": utc_stamp()}
+    _atomic_write(path, json.dumps(record, sort_keys=True))
+
+
+def runner_for(request):
+    """lolly.ing runs use its own runner (PROPOSAL section 4); everything else is lolly.tools."""
+    if isinstance(request, dict) and request.get("site") == "lolly.ing":
+        import preview_ing_node
+        return preview_ing_node.IngRunner
+    return Runner
+
+
 def main(argv, app_update_path, environment=None):
     """node_runner.py run|stop-post REQUEST"""
     environment = os.environ if environment is None else environment
@@ -1022,17 +1053,16 @@ def main(argv, app_update_path, environment=None):
         with open(argv[1]) as handle:
             request = strict_json(handle.read(), "request")
         au = load_app_update(app_update_path)
-        runner = Runner(request, au, log)
+        runner = runner_for(request)(request, au, log)
     except (Refusal, OSError) as exc:
         log("refused", code=getattr(exc, "code", "BAD_REQUEST"), reason=str(exc)[:300])
+        _refusal_result(locals().get("request"), argv[0], exc)
         return 1
     try:
         with node_lock(PATHS["lock"], wait_seconds=60 if argv[0] == "stop-post" else 0):
             if argv[0] == "stop-post":
                 return runner.stop_post(environment)
-            handler = {"deploy": runner.run_deploy, "rollback": runner.run_rollback, "convert": runner.run_convert,
-                       "gc": runner.run_gc, "selftest": runner.run_selftest, "adopt": runner.run_adopt}[request["kind"]]
-            return handler()
+            return runner.handlers()[request["kind"]]()
     except Refusal as exc:
         if argv[0] == "stop-post":
             log("stop-post-refused", code=exc.code, reason=exc.message[:300])
@@ -1045,7 +1075,11 @@ def main(argv, app_update_path, environment=None):
 # Read-only queries for status, plan and gc reports --------------------------
 def read(query, au):
     require_python()
-    require(isinstance(query, dict) and query.get("op") in ("status", "plan", "smoke", "gc"), "BAD_REQUEST", "unknown query")
+    require(isinstance(query, dict) and isinstance(query.get("request"), dict), "BAD_REQUEST", "unknown query")
+    if query["request"].get("site") == "lolly.ing":
+        import preview_ing_node
+        return preview_ing_node.read(query, au)
+    require(query.get("op") in ("status", "plan", "smoke", "gc"), "BAD_REQUEST", "unknown query")
     probe = dict(query["request"], kind="read")
     runner = Runner(probe, au)
     value, index = runner.deployment()
