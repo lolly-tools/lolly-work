@@ -49,6 +49,39 @@ shape report has one. Operators run the same pass from
 runbooks here; the guides under `docs/` are generated from the Lolly repository
 (see [`docs/README.md`](docs/README.md)).
 
+## Database migrations
+
+Migrations are the `migrations/*.sql` files, applied in file-name order, each in
+its own transaction (`server/src/store/migrate.ts`). There are no down
+migrations. Every file is classified by an allowlist
+(`server/src/store/migration-classifier.ts`):
+
+- **additive**: every statement is a `CREATE TABLE` of a new name, an
+  `ADD COLUMN` that is nullable or has a constant default, a non-unique
+  `CREATE INDEX` on a table created in the same file, or a `COMMENT`. A foreign
+  key from a new table to an existing table must say `ON DELETE CASCADE` (or
+  `ON DELETE SET NULL` on a nullable column).
+- **maintenance**: everything else, including constraints, unique indexes,
+  triggers, functions, `CREATE OR REPLACE`, `GRANT` and `REVOKE`, data changes
+  and anything the parser does not recognise.
+
+The previous release keeps working on a schema that only additive files
+changed, so a deployment can apply them without a person and still roll the
+application back. A maintenance file needs a review of its own, a fresh backup
+and a restore rehearsal before it reaches a live database. Prefer additive
+files: for example, add a nullable column in one release and its constraint in
+a later one.
+
+`node scripts/classify-migrations.ts` prints each file's class and why. When you
+add a migration, add its name and class to `tests/migration-classes.json`; the
+test fails until you do, so a change of class is always visible in review.
+
+`LW_MIGRATE_EXPECT` binds a migration run to a reviewed pending set. Set it to
+`none`, a comma-separated list of file names, or the `sha256:` manifest that
+`node scripts/migrate.ts --check --json` and `classify-migrations.ts --json --only`
+print, and the runner refuses before any DDL unless the pending set matches.
+Unset, the runner behaves as before.
+
 ## Before you open a pull request
 
 ```sh

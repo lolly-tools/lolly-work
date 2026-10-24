@@ -1541,12 +1541,13 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   case 'migrate': {
     // Local infra command: talks to the DATABASE directly, not the API base.
     const url = process.env.DATABASE_URL ?? fail('migrate needs DATABASE_URL — run it where the database is reachable (not via LW_BASE)');
-    const { runMigrations, pendingMigrations } = await import('../server/src/store/migrate.ts');
+    const { runMigrations, pendingMigrations, describeMigrations } = await import('../server/src/store/migrate.ts');
     const { fileURLToPath } = await import('node:url');
     const dir = fileURLToPath(new URL('../migrations', import.meta.url));
     if (sub === 'status' || values.check) {
       const pending = await pendingMigrations(url, dir);
-      out({ pending, current: pending.length === 0 });
+      // The manifest is the LW_MIGRATE_EXPECT value that binds a later run to exactly these files.
+      out({ pending, current: pending.length === 0, manifest: (await describeMigrations(pending, dir)).manifest });
       if (!values.json) console.log(pending.length ? `${pending.length} pending: ${pending.join(', ')}` : 'schema current');
       if (pending.length) process.exit(1);
       break;
@@ -1587,6 +1588,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   instance pack <file.lolly> host the signed instance pack cut by the OSS builder (owner)
   instance pack-rm           stop hosting the pack
   migrate [--check]          apply pending migrations (needs local DATABASE_URL; --check = status, exit 1 if pending)
+                             LW_MIGRATE_EXPECT=none|a.sql,b.sql|sha256:<manifest> refuses any other pending set
   audit retire-key --reason "…" [--expect-head <seq>:<hash>] [--dry-run]   after rotating LW_SESSION_SECRET without its old value: record a retired-key boundary (needs local DATABASE_URL + LW_SESSION_SECRET)
   c2pa init [--org N] [--out dir]   mint a C2PA signing identity (root+leaf) for real signed exports
   export [--out file]        dump governance (grants, overlays, chains, providers, flags) as canonical JSON

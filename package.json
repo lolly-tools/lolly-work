@@ -16,6 +16,7 @@
     "start": "node server/src/main.ts",
     "migrate": "node scripts/migrate.ts",
     "migrate:status": "node scripts/migrate.ts --check",
+    "migrate:classify": "node scripts/classify-migrations.ts",
     "predemo": "node scripts/console-assets.ts --check",
     "demo": "node scripts/demo.ts",
     "cli": "node cli/lw.ts",
