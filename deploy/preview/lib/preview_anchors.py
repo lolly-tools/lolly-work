@@ -111,7 +111,26 @@ PULL_TIMEOUT_SECONDS = 600
 MAX_ROLLOUT_SECONDS = 600
 MAX_WATCH_MINUTES = 15
 SMOKE_BUDGET_SECONDS = 300
-UNIT_RUNTIME_MAX_SECONDS = 2 * PULL_TIMEOUT_SECONDS + 2 * MAX_ROLLOUT_SECONDS + MAX_WATCH_MINUTES * 60 + 3 * SMOKE_BUDGET_SECONDS + 600
+# crictl gives every CRI call a client deadline of 2 s unless --timeout is set. A pull is
+# the exception: the CRI client never puts a deadline on it, so the subprocess timeout
+# above bounds it. A large image can take longer than 2 s to remove; crictl then reports
+# DeadlineExceeded while containerd finishes the removal anyway. So every crictl call
+# passes --timeout, and a failed removal is checked by image ID before it is reported.
+CRICTL_READ_TIMEOUT_SECONDS = 30
+CRICTL_WRITE_TIMEOUT_SECONDS = 120  # rmi, and the connection of a pull
+# The subprocess timeout is crictl's own deadline plus this, so crictl reports first.
+CRICTL_SLACK_SECONDS = 30
+# How long a failed removal is checked before it is reported as still present.
+REMOVE_VERIFY_SECONDS = 60
+# The longest one removal takes: crictl rmi, then the check, whose last read may start
+# just before the check ends.
+REMOVE_WORST_SECONDS = (CRICTL_WRITE_TIMEOUT_SECONDS + REMOVE_VERIFY_SECONDS + CRICTL_READ_TIMEOUT_SECONDS
+                        + 2 * CRICTL_SLACK_SECONDS)
+# Retention after an accepted deploy starts a removal only while this budget allows a
+# whole one; images left over wait for the next deploy or gc.
+RETENTION_AFTER_DEPLOY_SECONDS = REMOVE_WORST_SECONDS + 60
+UNIT_RUNTIME_MAX_SECONDS = (2 * PULL_TIMEOUT_SECONDS + 2 * MAX_ROLLOUT_SECONDS + MAX_WATCH_MINUTES * 60 + 3 * SMOKE_BUDGET_SECONDS
+                            + RETENTION_AFTER_DEPLOY_SECONDS + 600)
 UNIT_STOP_TIMEOUT_SECONDS = PULL_TIMEOUT_SECONDS + MAX_ROLLOUT_SECONDS + SMOKE_BUDGET_SECONDS + 300
 
 # Deployment metadata annotations written by the command. Metadata, not the Pod
@@ -125,8 +144,10 @@ HOLD_PHASES = UNCERTAIN_PHASES + ("rollback-unhealthy", "adopted-unhealthy")
 # Phases whose records describe the image that is live (review C-H2). `adopt` writes
 # adopted-unhealthy when a human adopts a live build that fails its smoke (review N2).
 SETTLED_PHASES = ("accepted", "rolled-back", "aborted", "adopted-unhealthy")
-# The longest a gc run takes, for the backup-window check before it starts.
+# The longest a gc run takes, for the backup-window check before it starts. Removals
+# start only while a whole one still fits; the reads before them get the rest.
 GC_BUDGET_SECONDS = 900
+GC_REMOVE_BUDGET_SECONDS = GC_BUDGET_SECONDS - 300
 
 SITES = {"lolly.tools": TOOLS, "lolly.ing": None}
 

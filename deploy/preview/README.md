@@ -251,10 +251,11 @@ roll forward.
 
 ### Time limits
 
-`RuntimeMaxSec=4800` covers two pulls (600 s each), two rollouts (600 s each), the longest allowed watch (15 minutes)
-and three smokes, with margin. `TimeoutStopSec=1800` is the separate budget for one `ExecStopPost` rollback: a pull, a
-rollout and a smoke. The request validator refuses a longer watch or rollout, and a test keeps the unit file equal to
-`preview_anchors.py`.
+`RuntimeMaxSec=5130` covers two pulls (600 s each), two rollouts (600 s each), the longest allowed watch (15 minutes),
+three smokes and the image retention after an accepted deploy (330 s), with margin. `TimeoutStopSec=1800` is the
+separate budget for one `ExecStopPost` rollback: a pull, a rollout and a smoke. The request validator refuses a longer
+watch or rollout, and a test keeps the unit file equal to `preview_anchors.py`. The backup-window check counts the same
+retention budget in a deploy's worst case.
 
 ### Selftest
 
@@ -342,6 +343,14 @@ Images follow a standing policy, decided by image ID.
     first.
 - **First run:** `gc` with no flag is a report and is recorded. `gc --execute` refuses until a report exists. The first
   `gc --execute` also arms the post-deploy retention; until then, accepted deploys pin but remove nothing.
+- **crictl deadlines:** crictl gives each call a client deadline of 2 s unless `--timeout` is set. Removing a large
+  image takes longer, so crictl then fails with `DeadlineExceeded` while containerd finishes the removal anyway. Every
+  crictl call the command makes sets `--timeout`: 120 s for `rmi` and `pull`, 30 s for reads. A pull has no CRI
+  deadline, so there the option covers only the connection; the 600 s subprocess timeout bounds the pull.
+- **Each removal is checked:** when `crictl rmi` fails, the command reads the node's images for up to 60 s and reports
+  the image by ID as `removed-after-error`, `still-present` or `unverified`, with crictl's error. An image already gone
+  before its turn is `already-gone`. A removal starts only while the run's budget still fits a whole one (270 s);
+  otherwise the image is `deferred` to the next gc. `gc --execute` ends `GC_INCOMPLETE` while any image stays.
 - **Images left by other procedures:** with about 32 GiB free and a 25 GiB reserve, the node has room for roughly one
   new build. So the report also lists every unused `lolly-web` image this command did not pull. Each entry gives its
   refs, size, pinned refs, who pinned it (`preview-deploy` or another procedure) and any old revision still naming it.
@@ -349,7 +358,10 @@ Images follow a standing policy, decided by image ID.
   1. check-target;
   2. a fresh report;
   3. unpin each pinned ref, if the procedure that pinned it no longer needs it;
-  4. `crictl rmi <image id>`, which removes every name of that image.
+  4. `crictl --timeout 120s rmi <image id>`, which removes every name of that image.
+
+  Steps 3 and 4 first run `crictl --timeout 30s inspecti <image id>` and skip the image when it is no longer listed.
+  After a `DeadlineExceeded`, run the same line again: it removes the image or reports that it is gone.
 
 Claims are never deleted by the command. `gc` lists only allowlisted claims: the profile's `gc.legacyClaims`, or claims
 labelled `lolly.tools/managed-by=preview-deploy`. It blocks a claim that:
@@ -368,7 +380,8 @@ On local-path storage a deleted claim deletes its data.
 ## Exit codes and results
 
 - `0`: LIVE, ALREADY_LIVE, CONVERTED, GC_DONE, SELFTEST_OK, ADOPTED.
-- `1`: REFUSED (with a code), ABORTED, SELFTEST_FAILED, NOT_STARTED, DETACHED, or a stop without a result.
+- `1`: REFUSED (with a code), ABORTED, SELFTEST_FAILED, GC_INCOMPLETE, NOT_STARTED, DETACHED, or a stop without a
+  result.
 - `2`: ROLLED_BACK or CONVERSION_REVERTED.
 - `3`: ROLLBACK_UNHEALTHY or ADOPTED_UNHEALTHY.
 

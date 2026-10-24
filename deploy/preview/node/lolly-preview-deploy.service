@@ -13,8 +13,9 @@
 # systemctl stop. When the Deployment's phase annotation still says the switch
 # is unverified for this run, it rolls back to the recorded previous image.
 # Time limits (preview_anchors.py): RuntimeMaxSec covers two pulls, two rollouts,
-# the longest allowed watch and three smokes with margin. TimeoutStopSec is the
-# separate budget for one ExecStopPost rollback (a pull, a rollout and a smoke).
+# the longest allowed watch, three smokes and the image retention after an
+# accepted deploy, with margin. TimeoutStopSec is the separate budget for one
+# ExecStopPost rollback (a pull, a rollout and a smoke).
 # There is no [Install] section: the unit never starts at boot.
 
 [Unit]
@@ -27,7 +28,7 @@ Type=exec
 ExecStart=/usr/bin/python3 -I -B /var/lib/lolly-preview/run/tool/node/node_runner.py run /var/lib/lolly-preview/run/request.json
 ExecStopPost=/usr/bin/python3 -I -B /var/lib/lolly-preview/run/tool/node/node_runner.py stop-post /var/lib/lolly-preview/run/request.json
 Restart=no
-RuntimeMaxSec=4800
+RuntimeMaxSec=5130
 TimeoutStopSec=1800
 KillMode=mixed
 UMask=0077
