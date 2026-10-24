@@ -39,7 +39,8 @@ EDGE_ADDRESS = "203.0.113.10"
 NAMESPACE = "lolly-public"
 DEPLOYMENT = "sovereign-web"
 REPO = "lolly-tools/lolly"
-IMAGE_REPO = "ghcr.io/lolly-tools/lolly-web"
+IMAGE_REPO = "ghcr.io/lolly-tools/lolly-web-preview"
+LEGACY_IMAGE_REPO = "ghcr.io/lolly-tools/lolly-web"
 MIB = 2 ** 20
 GIB = 2 ** 30
 
@@ -125,7 +126,7 @@ def expected_headers():
     return preview_expect.expected_headers(SECURITY_HEADERS, NGINX, CONNECTORS)
 
 
-def make_build(key, sha_, label, extra_pages=(), formats=None):
+def make_build(key, sha_, label, extra_pages=(), formats=None, image_repository=IMAGE_REPO):
     """One candidate build: its served site, signed receipt, image digest and registry manifest."""
     import gzip
     from preview_common import canonical_js_json
@@ -146,7 +147,7 @@ def make_build(key, sha_, label, extra_pages=(), formats=None):
     body["signature"] = base64.b64encode(sign(key, canonical_js_json({k: v for k, v in body.items()}).encode())).decode()
     manifest = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
                            "config": {"size": 1000}, "layers": [{"size": 40 * MIB}], "annotations": {"label": label}}).encode()
-    image = f"{IMAGE_REPO}@sha256:{sha(manifest)}"
+    image = f"{image_repository}@sha256:{sha(manifest)}"
     return {"sha": sha_, "label": label, "image": image, "manifest": base64.b64encode(manifest).decode(),
             "site": {path: base64.b64encode(data).decode() for path, data in files.items()},
             "receipt": base64.b64encode(json.dumps(body).encode()).decode(),
@@ -203,6 +204,8 @@ def preview_annotations(build, phase="accepted", previous=None, deploys="0", run
               "formats": preview_common.compact({"channelMessage": 2, "indexedDb": 26, "revisionArchive": 1, "session": 4}),
               "expect": preview_common.compact(expect_for(build)), "layout": "image-root", "deploys": deploys,
               "deploy-id": "20261023T000000Z-tools-convert-" + build["sha"][:8]}
+    if build.get("catalogPin"):
+        values["catalog-pin"] = build["catalogPin"]
     if previous is not None:
         values["previous"] = preview_common.compact(previous)
     return {"lolly.tools/preview-" + k: v for k, v in values.items()}
@@ -669,7 +672,13 @@ def patch_node_modules(tool_lib, sandbox, state_path):
     import preview_node
     import preview_smoke
     pin = json.loads(os.environ["FAKE_PIN"])
+    import preview_receipt
     preview_anchors.RELEASE_PUBLIC_KEY_JWK = pin
+    preview_anchors.RELEASE_PUBLIC_KEY_THUMBPRINT = preview_receipt.jwk_thumbprint(pin)
+    if os.environ.get("FAKE_PREVIEW_PIN"):
+        preview_pin = json.loads(os.environ["FAKE_PREVIEW_PIN"])
+        preview_anchors.PREVIEW_PUBLIC_KEY_JWK = preview_pin
+        preview_anchors.PREVIEW_PUBLIC_KEY_THUMBPRINT = preview_receipt.jwk_thumbprint(preview_pin)
     preview_node.PATHS.update({"run": f"{sandbox}/var/lib/lolly-preview/run", "results": f"{sandbox}/var/lib/lolly-preview/results",
                                "lock": f"{sandbox}/run/lolly-preview/deploy.lock", "lockDir": f"{sandbox}/run/lolly-preview",
                                "imagefs": "/", "armed": f"{sandbox}/var/lib/lolly-preview/retention-armed",
@@ -940,10 +949,10 @@ def receipt_zip(build, run_id, attempt, pin, thumbprint, **overrides):
     return base64.b64encode(buffer.getvalue()).decode()
 
 
-def run_object(run_id, sha_, path=".github/workflows/deployment-suse.yml", event="workflow_dispatch", status="completed",
+def run_object(run_id, sha_, path=".github/workflows/preview-web.yml", event="workflow_dispatch", status="completed",
                conclusion="success", attempt=1, created="2026-10-23T05:00:00Z", repository=REPO):
     return {"id": run_id, "path": path, "event": event, "head_branch": "main", "head_sha": sha_, "status": status,
-            "conclusion": conclusion, "run_attempt": attempt, "created_at": created,
+            "display_title": "Preview web " + sha_, "conclusion": conclusion, "run_attempt": attempt, "created_at": created,
             "repository": {"full_name": repository}, "head_repository": {"full_name": repository}}
 
 
@@ -978,7 +987,8 @@ def gh_main(argv):
             print("gh: Bad Gateway (HTTP 502)", file=sys.stderr)
             return 1
         if method == "POST":
-            if not route.endswith("/actions/workflows/deployment-suse.yml/dispatches") or data.get("ref") != "refs/heads/main":
+            if not route.endswith("/actions/workflows/preview-web.yml/dispatches") or data.get("ref") != "refs/heads/main" \
+                    or set(data.get("inputs", {})) != {"source"} or not re.fullmatch(r"[0-9a-f]{40}", data["inputs"]["source"]):
                 return 1
             run = gh.get("onDispatch")
             if run:
@@ -1004,10 +1014,11 @@ def gh_main(argv):
                 return 1
             sys.stdout.write(json.dumps({"status": gh["compare"].get(spec, "ahead")}))
             return 0
-        match = re.fullmatch(rf"repos/{REPO}/actions/workflows/(ci|deployment-suse)\.yml/runs", route)
+        match = re.fullmatch(rf"repos/{REPO}/actions/workflows/(ci|deployment-suse|preview-web)\.yml/runs", route)
         if match:
             runs = gh["ciRuns"] if match.group(1) == "ci" else gh["runs"]
             selected = [r for r in runs if (not query.get("head_sha") or r["head_sha"] == query["head_sha"])
+                        and r["path"] == ".github/workflows/" + match.group(1) + ".yml"
                         and (not query.get("status") or r["status"] == query["status"])]
             sys.stdout.write(json.dumps({"workflow_runs": selected}))
             return 0

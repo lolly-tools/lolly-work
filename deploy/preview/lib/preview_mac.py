@@ -223,7 +223,6 @@ class Context:
         self.profile = load_profile(self.state_dir, args.site)
         self.gh = gh or G.Gh()
         self.opener = opener
-        self.pin = A.RELEASE_PUBLIC_KEY_JWK
         self.started = utc_stamp()
 
     # Records -------------------------------------------------------------
@@ -444,7 +443,8 @@ class Context:
                 "build; check organisation and environment variables before deploying")
 
     def need_bytes(self, image):
-        compressed = G.registry_image_bytes(image, self.anchors, self.opener)
+        anchors = A.TOOLS_LEGACY if image.startswith(A.TOOLS_LEGACY["imageRepository"] + "@") else self.anchors
+        compressed = G.registry_image_bytes(image, anchors, self.opener)
         capacity = self.profile["capacity"]
         return max(int(capacity["minFreeAboveReserveBytes"]), int(capacity["imageSizeFactor"]) * compressed + GIB)
 
@@ -464,7 +464,7 @@ def _settled(status):
 def _finish(context, command, result, **fields):
     name = result.get("result", "REFUSED")
     context.record(command, name, **{k: v for k, v in result.items() if k in ("deployId", "reason", "code", "problem",
-                                                                              "source", "image", "previous")}, **fields)
+                                                                              "source", "image", "previous", "catalogPin")}, **fields)
     emit("done", **{k: v for k, v in result.items() if k not in ("checks", "rollbackChecks")})
     return RESULT_EXIT.get(name, 1)
 
@@ -492,7 +492,8 @@ def deploy_bound(context, command, sha, bound):
     if deployment["image"] == bound["image"]:
         require(preview.get("phase") == "accepted" and preview.get("image") == bound["image"], "RECORDS_STALE",
                 f"this build is live but its phase is {preview.get('phase')}; inspect with status")
-        return _finish(context, command, {"result": "ALREADY_LIVE", "image": bound["image"], "source": sha})
+        return _finish(context, command, {"result": "ALREADY_LIVE", "image": bound["image"], "source": sha,
+                                          "catalogPin": bound["catalogPin"]})
     require(deployment["converted"], "NOT_CONVERTED", "lolly.tools still serves the claim root; run the 3.6 conversion plan first")
     require(_settled(status), "RECORDS_STALE", "the preview records do not describe the live image; inspect with status")
     live_source = preview.get("source")
@@ -508,7 +509,7 @@ def deploy_bound(context, command, sha, bound):
     deploy_id = context.deploy_id("deploy", sha)
     request = context.request("deploy", deploy_id, liveSource=live_source,
                               release={"source": sha, "image": bound["image"], "ciRun": str(bound["run"]),
-                                       "formats": formats, "expect": expect})
+                                       "formats": formats, "expect": expect, "catalogPin": bound["catalogPin"]})
     request["limits"]["needBytes"] = need
     context.backup_window("deploy")
     context.check_target()
@@ -518,20 +519,20 @@ def deploy_bound(context, command, sha, bound):
 
 def cmd_ship(context, sha):
     anchors, gh = context.anchors, context.gh
-    main_sha = G.main_head(gh, anchors)
-    require(main_sha == sha, "NOT_MAIN_HEAD",
-            "Phase 1 ships only the current main head (the candidate build refuses older commits); use deploy for a built commit")
+    pin, thumbprint = A.preview_pin()
+    G.require_on_main(gh, anchors, sha)
     status = _live_state(context)
     preview = status.get("preview", {})
     if preview.get("source") == sha and _settled(status) and preview.get("phase") == "accepted":
-        return _finish(context, "ship", {"result": "ALREADY_LIVE", "source": sha, "image": status["deployment"]["image"]})
+        return _finish(context, "ship", {"result": "ALREADY_LIVE", "source": sha, "image": status["deployment"]["image"],
+                                          "catalogPin": preview.get("catalog-pin", A.RELEASE_PUBLIC_KEY_THUMBPRINT)})
     require(status["deployment"]["converted"], "NOT_CONVERTED", "run the 3.6 conversion plan first")
     # Before any build is reused or dispatched (review N2, L2).
     require(_settled(status), "RECORDS_STALE", "the preview records do not describe the live image; run adopt <sha of the "
                                                "live build> first")
     context.backup_window("deploy")
     try:  # reuse a build of this commit that still binds (review C-L7)
-        bound = G.latest_bound_run(gh, anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT)
+        bound = G.latest_bound_run(gh, anchors, sha, pin, thumbprint)
         emit("reused", run=bound["run"], image=bound["image"])
         return deploy_bound(context, "ship", sha, bound)
     except Refusal as exc:
@@ -542,19 +543,20 @@ def cmd_ship(context, sha):
     if active:
         raise Refusal("CANDIDATE_ACTIVE", f"another candidate run is active ({active[0]}); wait for it or cancel it")
     known = {run["id"] for run in G.dispatch_runs(gh, anchors, sha)}
-    G.dispatch_build(gh, anchors, sha, ci["id"], context.pin)
+    G.dispatch_build(gh, anchors, sha)
     emit("dispatched", source=sha, ciRun=ci["id"])
     run = G.find_new_run(gh, anchors, sha, known)
     run = G.wait_for_run(gh, anchors, run["id"], context.profile["build"]["pollSeconds"], context.profile["build"]["timeoutMinutes"])
-    bound = G.bind_run(gh, anchors, run, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT)
+    bound = G.bind_run(gh, anchors, run, sha, pin, thumbprint)
     emit("bound", run=bound["run"], image=bound["image"])
     return deploy_bound(context, "ship", sha, bound)
 
 
 def cmd_deploy(context, sha):
+    pin, thumbprint = A.preview_pin()
     context.backup_window("deploy")
     G.require_on_main(context.gh, context.anchors, sha)
-    bound = G.latest_bound_run(context.gh, context.anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT)
+    bound = G.latest_bound_run(context.gh, context.anchors, sha, pin, thumbprint)
     emit("bound", run=bound["run"], image=bound["image"])
     return deploy_bound(context, "deploy", sha, bound)
 
@@ -565,12 +567,16 @@ def cmd_rollback(context):
     previous = _json_or_none(preview.get("previous"))
     require(isinstance(previous, dict) and isinstance(previous.get("source"), str), "NO_PREVIOUS",
             "no recorded previous build; deploy a build instead")
-    require(isinstance(previous.get("image"), str) and previous["image"].startswith(context.anchors["imageRepository"] + "@"),
+    from preview_node import anchored_image
+    require(anchored_image(previous.get("image"), context.anchors),
             "BAD_IMAGE", "the recorded previous image is not the anchored package")
     lowering = format_lowering(_json_or_none(preview.get("formats")), previous.get("formats"))
     require(not lowering, "FORMAT_LOWERING", "rolling back would lower stored formats (" + ", ".join(lowering) +
             "); roll forward instead")
-    request = context.request("rollback", context.deploy_id("rollback", previous["source"]), rollbackTo=previous["source"])
+    catalog_pin = previous.get("catalogPin", A.RELEASE_PUBLIC_KEY_THUMBPRINT)
+    A.catalog_pin(catalog_pin)
+    request = context.request("rollback", context.deploy_id("rollback", previous["source"]),
+                              rollbackTo=previous["source"], catalogPin=catalog_pin)
     request["limits"]["needBytes"] = context.need_bytes(previous["image"])
     context.backup_window("rollback")
     context.check_target()
@@ -641,11 +647,11 @@ def cmd_adopt(context, sha):
     require(status["deployment"]["converted"], "NOT_CONVERTED", "adopt works on the image layout only")
     G.require_on_main(gh, anchors, sha)
     live_image = status["deployment"]["image"]
-    bound = G.latest_bound_run(gh, anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT, prefer_image=live_image)
+    bound = G.bound_live_run(gh, sha, live_image)
     expect, formats = context.expectations(sha, bound.get("runCreatedAt"))
     request = context.request("adopt", context.deploy_id("adopt", sha),
                               release={"source": sha, "image": bound["image"], "ciRun": str(bound["run"]),
-                                       "formats": formats, "expect": expect})
+                                       "formats": formats, "expect": expect, "catalogPin": bound["catalogPin"]})
     context.backup_window("adopt")
     context.check_target()
     result = context.start_and_follow(request)
@@ -702,13 +708,15 @@ def cmd_plan(context, sha):
     deployment = live["deployment"]
     index = [c["name"] for c in deployment["spec"]["template"]["spec"]["containers"]].index(anchors["container"])
     live_image = deployment["spec"]["template"]["spec"]["containers"][index]["image"]
-    bound = G.latest_bound_run(gh, anchors, sha, context.pin, A.RELEASE_PUBLIC_KEY_THUMBPRINT, prefer_image=live_image)
+    bound = G.bound_live_run(gh, sha, live_image)
     expect, formats = context.expectations(sha, bound.get("runCreatedAt"))
     deploy_id = context.deploy_id("convert", sha)
-    release = {"source": sha, "image": bound["image"], "ciRun": str(bound["run"]), "formats": formats, "expect": expect}
+    release = {"source": sha, "image": bound["image"], "ciRun": str(bound["run"]),
+               "formats": formats, "expect": expect, "catalogPin": bound["catalogPin"]}
     annotations = {A.ANNOTATION_PREFIX + name: value for name, value in {
         "phase": "converting", "deploy-id": deploy_id, "source": sha, "image": bound["image"], "ci-run": str(bound["run"]),
-        "tool": context.tool_hash, "formats": compact(formats), "expect": compact(expect), "layout": "image-root",
+        "catalog-pin": bound["catalogPin"], "tool": context.tool_hash, "formats": compact(formats),
+        "expect": compact(expect), "layout": "image-root",
         "deploys": "0", "previous": None, "reason": None, "updated": utc_stamp()}.items()}
     conversion = conversion_plan(deployment, anchors, annotations)
     conversion.update({"deployId": deploy_id, "tool": context.tool_hash})
@@ -723,7 +731,7 @@ def cmd_plan(context, sha):
         mounted = configmap.get("data", {}).get(name, "")
         diff += list(difflib.unified_diff(mounted.splitlines(True), text.splitlines(True),
                                           f"configmap/{configmap.get('name', '?')}/{name}", f"image@{sha[:12]}/{name}"))
-    smoke = context.read("smoke", expect=expect)
+    smoke = context.read("smoke", expect=expect, catalogPin=bound["catalogPin"])
     failing = [item for item in smoke["checks"] if not item["ok"]]
     for item in failing:
         if item["check"] in HEADER_CHECKS:
