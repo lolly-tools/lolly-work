@@ -358,7 +358,8 @@ class Shipped(unittest.TestCase):
         exec(compile(source, "bootstrap.py", "exec"), namespace)
         for name, value in (("ROOT", A.NODE_ROOT), ("RUN", A.NODE_RUN_DIR), ("RESULTS", A.NODE_RESULTS_DIR), ("TMP", A.NODE_TMP_DIR),
                             ("UNIT", A.NODE_UNIT), ("UNIT_PATH", A.NODE_UNIT_PATH), ("LOCK_DIR", A.NODE_LOCK_DIR),
-                            ("LOCK", A.NODE_LOCK), ("START_LOCK", A.NODE_START_LOCK), ("SYSTEMCTL", A.NODE_SYSTEMCTL)):
+                            ("LOCK", A.NODE_LOCK), ("START_LOCK", A.NODE_START_LOCK), ("SYSTEMCTL", A.NODE_SYSTEMCTL),
+                            ("SPOOL", A.NODE_SPOOL_DIR)):
             self.assertEqual(namespace[name], value, name)
         for bad in ("../../etc/passwd", "20261023T000000Z-x/../../y", None):
             with self.subTest(bad=bad), self.assertRaises(SystemExit):  # review S-L4
@@ -379,10 +380,17 @@ class Shipped(unittest.TestCase):
         self.assertIn("node/node_runner.py", names)
         self.assertFalse([n for n in names if "__pycache__" in n or n.startswith("/") or ".." in n])
 
-    def test_lolly_ing_is_a_refusing_stub(self):
+    def test_lolly_ing_refuses_until_its_own_key_is_pinned(self):
+        """PROPOSAL 4.7: until a reviewed change pins lolly.ing's key, every lolly.ing run refuses."""
+        import preview_ing as I
+        self.assertIs(A.site_anchors("lolly.ing"), A.ING)
+        self.assertIsNone(A.ING_PUBLIC_KEY_JWK)
         with self.assertRaises(C.Refusal) as caught:
-            A.site_anchors("lolly.ing")
-        self.assertEqual(caught.exception.code, "SITE_PHASE_2")
+            I.ing_pin()
+        self.assertEqual(caught.exception.code, "ING_KEY_NOT_PINNED")
+        with mock.patch.object(A, "ING_PUBLIC_KEY_JWK", A.RELEASE_PUBLIC_KEY_JWK), self.assertRaises(C.Refusal) as caught:
+            I.ing_pin()  # never the platform release key (R20 S1, R21 R2, R22 S1)
+        self.assertEqual(caught.exception.code, "RELEASE_KEY")
 
     def test_launcher_options_cannot_be_repeated_moved_or_abbreviated(self):
         """Review S-H1: the caller cannot override what launch.py set."""
@@ -1026,7 +1034,7 @@ class Refusals(EndToEnd):
             code = M.main(["--state-dir", str(self.state_dir), "--tool-sha256", self.tool_hash, "--checkout", str(self.checkout),
                            "--check-target", str(self.check_target_path), "lolly.ing", "ship", NEW])
         self.assertEqual(code, 1)
-        self.assertIn("SITE_PHASE_2", out.getvalue())
+        self.assertIn("ING_KEY_NOT_PINNED", out.getvalue())
         self.assertEqual(self.gh_calls(), [])
 
 

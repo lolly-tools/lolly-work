@@ -36,7 +36,9 @@ from preview_expect import (configure_connect_src, configured_nginx_conf, csp_de
                             models_sample, parse_connector_origins, stored_formats)
 from preview_layout import conversion_plan
 
-TOOL_PATHS = ("deploy/preview", "scripts/app-update.py")
+TOOL_PATHS = ("deploy/preview", "scripts/app-update.py", A.REHEARSAL_DRIVER)
+# Where the node finds Work's app-update.py and the Phase 2A rehearsal driver in the bundle.
+BUNDLE_NAMES = {"scripts/app-update.py": "app-update.py", A.REHEARSAL_DRIVER: "phase2a/restore-rehearsal.py"}
 LIB = Path(__file__).resolve().parent
 TOOL_ROOT = LIB.parents[2]  # <root>/deploy/preview/lib -> <root>; tests point it at their copy
 # The one private state directory (review R1). A copy elsewhere, even one whose path ends the
@@ -44,7 +46,8 @@ TOOL_ROOT = LIB.parents[2]  # <root>/deploy/preview/lib -> <root>; tests point i
 STATE_DIR = Path.home() / "Build" / "lolly-private" / "production" / "preview"
 BUSY = ("active", "activating", "deactivating", "reloading", "refreshing")
 RESULT_EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "SELFTEST_OK": 0,
-               "ADOPTED": 0, "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2, "ROLLBACK_UNHEALTHY": 3, "ADOPTED_UNHEALTHY": 3}
+               "ADOPTED": 0, "ROLLED_BACK": 2, "CONVERSION_REVERTED": 2, "ROLLBACK_UNHEALTHY": 3, "ADOPTED_UNHEALTHY": 3,
+               "MAINTENANCE_UNVERIFIED": 3}
 GIB = 2 ** 30
 SLEEP = time.sleep
 LAUNCHER_OPTIONS = ("--state-dir", "--tool-sha256", "--checkout", "--check-target")
@@ -70,6 +73,12 @@ def tool_files(root):
     app_update = root / "scripts" / "app-update.py"
     require(app_update.is_file() and not app_update.is_symlink(), "TOOL_INVALID", "scripts/app-update.py is missing")
     entries.append(("scripts/app-update.py", app_update))
+    # Phase 2A's restore rehearsal driver runs as root on the node, so it is locked tool code
+    # too. It is optional until it lands; a lolly.ing run with pending migrations refuses without it.
+    driver = root / A.REHEARSAL_DRIVER
+    if driver.exists():
+        require(driver.is_file() and not driver.is_symlink(), "TOOL_INVALID", A.REHEARSAL_DRIVER + " is not a regular file")
+        entries.append((A.REHEARSAL_DRIVER, driver))
     return sorted(entries)
 
 
@@ -92,7 +101,7 @@ def bundle(root):
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for relative, path in tool_files(root):
-            name = "app-update.py" if relative == "scripts/app-update.py" else relative[len("deploy/preview/"):]
+            name = BUNDLE_NAMES.get(relative) or relative[len("deploy/preview/"):]
             data = path.read_bytes()
             info = tarfile.TarInfo(name)
             info.size, info.mtime, info.uid, info.gid = len(data), 0, 0, 0
@@ -125,7 +134,7 @@ def read_lock(state_dir):
     return lock
 
 
-def load_check_target(path):
+def load_check_target(path, anchors=A.TOOLS):
     """The identities check-target.py checks, so the profile carries no identity of its own (review S-M3)."""
     spec = importlib.util.spec_from_file_location("preview_check_target", str(path))
     module = importlib.util.module_from_spec(spec)
@@ -141,16 +150,17 @@ def load_check_target(path):
             "k3s": kubectl[0], "kubeconfig": kubectl[kubectl.index("--kubeconfig") + 1],
             "context": kubectl[kubectl.index("--context") + 1],
             "nodeName": module.NODE_NAME, "nodeUID": module.NODE_UID, "clusterUID": module.CLUSTER_UID,
-            "namespaceUID": module.NAMESPACE_UIDS[A.TOOLS["namespace"]],
-            "deploymentUID": module.SITE_DEPLOYMENTS[A.TOOLS["checkTargetDeployment"]],
-            "edgeAddress": module.ADDRESS,
+            "namespaceUID": module.NAMESPACE_UIDS[anchors["namespace"]],
+            "deploymentUID": dict(module.DEPLOYMENTS, **module.SITE_DEPLOYMENTS)[anchors["checkTargetDeployment"]],
+            "edgeAddress": module.ADDRESS, "databaseSecret": module.DATABASE_SECRET,
         }
     except (AttributeError, IndexError, KeyError, ValueError, SyntaxError, TypeError, OSError) as exc:
         raise Refusal("CHECK_TARGET_IDENTITY", "check-target.py does not carry the --site identities "
                       "(apply check-target-site.patch first)") from exc
     require(len(known) == 1 and os.path.isabs(known[0]) and kubectl[1] == "kubectl" and os.path.isabs(identity["k3s"])
             and os.path.isabs(identity["kubeconfig"]) and all(re.fullmatch(r"[A-Za-z0-9_.@-]+", identity[k]) for k in ("jump", "host"))
-            and all(UID.fullmatch(str(identity[k])) for k in ("nodeUID", "clusterUID", "namespaceUID", "deploymentUID")),
+            and all(UID.fullmatch(str(identity[k])) for k in ("nodeUID", "clusterUID", "namespaceUID", "deploymentUID"))
+            and isinstance(identity["databaseSecret"], str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,252}", identity["databaseSecret"]),
             "CHECK_TARGET_IDENTITY", "check-target.py identities are malformed")
     return identity
 
@@ -162,6 +172,9 @@ PROFILE_KEYS = {"version", "site", "models", "smoke", "watch", "build", "rollout
 
 def load_profile(state_dir, site):
     """The private profile: pages, thresholds and the models release only. Identities and anchors are elsewhere."""
+    if site == "lolly.ing":
+        import preview_ing_mac
+        return preview_ing_mac.load_ing_profile(state_dir)
     path = Path(state_dir) / (site + ".json")
     require(path.is_file() and not path.is_symlink(), "PROFILE_INVALID", f"{path.name} is missing from the state dir")
     require(not (path.stat().st_mode & 0o022), "PROFILE_INVALID", "the profile must not be group or world writable")
@@ -214,7 +227,7 @@ class Context:
         require(Path(args.checkout).resolve() == Path(self.lock["checkout"]).resolve(), "TOOL_HASH_MISMATCH",
                 "the checkout differs from the locked checkout")
         self.check_target_sha256 = sha256_hex(self.check_target_path.read_bytes())
-        self.identity = load_check_target(self.check_target_path)
+        self.identity = load_check_target(self.check_target_path, self.anchors)
         self.profile = load_profile(self.state_dir, args.site)
         self.gh = gh or G.Gh()
         self.opener = opener
@@ -401,7 +414,8 @@ class Context:
 
     def deploy_id(self, kind, sha=None):
         stamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
-        return f"{stamp}-tools-{kind}" + (f"-{sha[:8]}" if sha else "")
+        tag = "ing" if self.site == "lolly.ing" else "tools"
+        return f"{stamp}-{tag}-{kind}" + (f"-{sha[:8]}" if sha else "")
 
     # Expectations --------------------------------------------------------
     def expectations(self, sha, build_created_at):
@@ -810,9 +824,15 @@ def main(argv=None, gh=None, opener=None):
     args = parser().parse_args(argv)
     context = None
     try:
-        A.site_anchors(args.site)  # lolly.ing refuses here: Phase 2 is not built
+        A.site_anchors(args.site)
         if getattr(args, "sha", None) is not None:
             require(SHA.fullmatch(args.sha) is not None, "BAD_SHA", "pass a full 40-character commit")
+        if args.site == "lolly.ing":
+            import preview_ing_mac
+            preview_ing_mac.refuse_unpinned()  # before any file, network or node is touched
+            context = preview_ing_mac.IngContext(args, gh=gh, opener=opener)
+            context.check_tool_checkout()
+            return preview_ing_mac.dispatch(context, args)
         context = Context(args, gh=gh, opener=opener)
         context.check_tool_checkout()
         if args.command == "ship":

@@ -12,10 +12,11 @@
 # ExecStopPost runs after every stop: a normal exit, a crash, RuntimeMaxSec or a
 # systemctl stop. When the Deployment's phase annotation still says the switch
 # is unverified for this run, it rolls back to the recorded previous image.
-# Time limits (preview_anchors.py): RuntimeMaxSec covers two pulls, two rollouts,
-# the longest allowed watch, three smokes and the image retention after an
-# accepted deploy, with margin. TimeoutStopSec is the separate budget for one
-# ExecStopPost rollback (a pull, a rollout and a smoke).
+# Time limits (preview_anchors.py): one unit serves both sites, so RuntimeMaxSec
+# is the longer budget: a lolly.ing run with an archive import, a backup Job,
+# read-only checks, a restore rehearsal, a migrate Job, a switch, the smoke, the
+# longest watch and one rollback, with margin. TimeoutStopSec is the separate
+# budget for one ExecStopPost rollback (a pull, a rollout and a smoke).
 # There is no [Install] section: the unit never starts at boot.
 
 [Unit]
@@ -28,7 +29,7 @@ Type=exec
 ExecStart=/usr/bin/python3 -I -B /var/lib/lolly-preview/run/tool/node/node_runner.py run /var/lib/lolly-preview/run/request.json
 ExecStopPost=/usr/bin/python3 -I -B /var/lib/lolly-preview/run/tool/node/node_runner.py stop-post /var/lib/lolly-preview/run/request.json
 Restart=no
-RuntimeMaxSec=5130
+RuntimeMaxSec=9090
 TimeoutStopSec=1800
 KillMode=mixed
 UMask=0077

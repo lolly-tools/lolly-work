@@ -46,12 +46,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def http_fetch(url, method="GET", headers=None, limit=MAX_BODY):
-    """One HTTPS request. Redirects are returned, never followed."""
+def http_fetch(url, method="GET", headers=None, limit=MAX_BODY, data=None):
+    """One HTTPS request. Redirects are returned, never followed. A cookie travels only in
+    headers the caller passes, never in the URL, and nothing here stores or prints one."""
     parts = urlsplit(url)
     require(parts.scheme == "https" and parts.hostname and not parts.username and not parts.password,
             "BAD_INPUT", "smoke URLs must be credential-free HTTPS")
-    request = urllib.request.Request(url, method=method, headers=dict(headers or {}))
+    request = urllib.request.Request(url, method=method, headers=dict(headers or {}), data=data)
     request.add_header("Accept-Encoding", "identity")
     request.add_header("User-Agent", "lolly-preview-deploy")
     opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
