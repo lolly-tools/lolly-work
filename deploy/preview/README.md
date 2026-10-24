@@ -18,6 +18,10 @@ Python 3.9 or newer, standard library only, on both the operator's Mac and the n
 - `node/bootstrap.py`: the small program sent over SSH that installs and starts a run, or answers a read.
 - Tests: `tests/test_preview_deploy.py` with fakes in `tests/preview_deploy_fakes.py`, run by Work CI through
   `tests/preview-deploy.test.ts`.
+- `restore-rehearsal.py`, `lib/preview_rehearsal.py` and the in-Pod programs in `rehearsal/`: the restore rehearsal
+  operator for lolly.ing's migrations (Phase 2). See [`REHEARSAL.md`](REHEARSAL.md). Tests:
+  `tests/test_restore_rehearsal.py` with a fake kubectl in `tests/restore_rehearsal_fakes.py`, run through
+  `tests/restore-rehearsal.test.ts`.
 
 This directory sits outside `scripts/` on purpose: `deploy/compose/Dockerfile` copies `scripts/` into every Work image,
 and preview host tooling must not ship to private deployers.
