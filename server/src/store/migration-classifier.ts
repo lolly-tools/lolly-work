@@ -510,7 +510,7 @@ function columnConstraints(cursor: Cursor, opts: { constantDefaultOnly: boolean 
     if (cursor.acceptWord('default')) {
       const expr = expressionTokens(cursor, COLUMN_STOP);
       // DEFAULT NULL is no default: it cannot back-fill existing rows of a NOT NULL column.
-      out.constantDefault = isConstant(expr) && !(expr[0].kind === 'word' && expr[0].value === 'null');
+      out.constantDefault = isConstant(expr) && !(expr[0]?.kind === 'word' && expr[0]?.value === 'null');
       if (opts.constantDefaultOnly && !isConstant(expr)) throw new Maintenance('ADD COLUMN with a default that is not a constant');
       continue;
     }
