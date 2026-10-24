@@ -12,6 +12,14 @@ Then it deletes everything it created. The lolly.ing path of the preview deploy 
 whenever migrations are pending, and once a month when nothing is. Any operator can run it by hand against their own
 cluster.
 
+> **This is a production mutation.** The lolly.ing cluster is one K3s node, so a rehearsal Pod, its 4 Gi of scratch disk
+> and a PostgreSQL server run on the production host next to the live workloads. `run` and `cleanup` refuse without
+> `--on-production-host`, run `lolly-private/production/check-target.py --site lolly.ing` first and stop if it fails,
+> and the Pod uses a PriorityClass below every live workload (`lolly-restore-rehearsal-low`, value -100, no
+> preemption) so the node evicts it first under pressure. Treat each run as a production change: name an owner, do not
+> overlap another deployment, and read `lolly-private/production/README.md` first. (`AGENTS.md` should list it under
+> the production deployment handoff; see the note at the end of this file.)
+
 Python 3.9 or newer, standard library only. It drives a kubectl-like executable (`k3s kubectl`, `kubectl`, or a test
 fake), so it runs on the node or anywhere with cluster access. It lives here, in the pinned preview tool tree, and not
 in `scripts/`, which is copied into every Work image.
@@ -44,13 +52,26 @@ its locks, and block writers, for about as long.
 
 ## Isolation
 
-- **Namespace.** Its own namespace, labelled `app.kubernetes.io/managed-by=lolly-restore-rehearsal` and enforcing the
+- **Namespace.** The name must be `lolly-restore-rehearsal` or `lolly-restore-rehearsal-<suffix>` (an allow-list, not
+  just a block-list). Its own namespace, labelled `app.kubernetes.io/managed-by=lolly-restore-rehearsal` and enforcing the
   `restricted` Pod Security level. The driver refuses the live namespaces (`lolly-private`, `lolly-public`,
   `lolly-edge`, ...) and any `kube-` namespace, and refuses a namespace without the label.
-- **Network.** A deny-all NetworkPolicy and one egress rule: TCP 443 to the backup store's addresses. The Pod has no
-  DNS (`dnsPolicy: None`); the store's name resolves from a fixed `hostAliases` entry. Before each run the driver
-  checks that the namespace holds exactly these two policies, that the egress rule is still TCP 443 to IP blocks only,
-  and that the store's address is inside it.
+- **Network.** A deny-all NetworkPolicy and one egress rule: TCP 443 to the backup store's addresses, for Pods
+  labelled `lolly.tools/rehearsal-egress=open`. The Pod has no DNS (`dnsPolicy: None`); the store's name resolves from a
+  fixed `hostAliases` entry. Before each run the driver checks that the namespace holds exactly these two policies,
+  that the egress rule is still TCP 443 to IP blocks only, and that the store's address is inside it. Neither the
+  policy CIDRs nor `--storage-address` may be RFC 1918, CGNAT (100.64.0.0/10), loopback, link-local, ULA
+  (`fc00::/7`), multicast or reserved space, and no CIDR may be wider than /24 (IPv4) or /48 (IPv6). This keeps the
+  rule from reaching the node, the pod network, the cluster API or the cloud metadata address.
+- **Egress closes after fetch.** Only `fetch` needs the network. When the driver sees `fetch` finish it removes the
+  egress label from the Pod, so only deny-all applies from then on (a label change takes effect on a running Pod). The
+  `migrate` and `previous` containers, which run the new and the previous image's code, start by waiting on a
+  downward API copy of the Pod's labels until the label is gone, then check that the store's address no longer accepts
+  a connection. They report `egress: CLOSED`, and the driver fails the run with `EGRESS_NOT_CLOSED` if the label did not
+  go, the label call failed or either report lacks it. A Pod cannot hand a volume to a second Pod without a
+  PersistentVolumeClaim, which the namespace forbids, so this design keeps one Pod and moves the network boundary
+  instead. Residual risk: `postgres` and `restore` (the pinned PostgreSQL image, no application code) run between
+  `fetch` finishing and the label going, a few seconds at most; the credential is not mounted there.
 - **Data.** Everything lives on `emptyDir` and goes with the Pod. A ResourceQuota allows one Pod and no
   PersistentVolumeClaims.
 - **Credentials.** Only the read-only backup credential, mounted into the `fetch` container alone, from the previous
@@ -59,7 +80,12 @@ its locks, and block writers, for about as long.
   `previous` server gets random throwaway secrets and an evaluation config.
 - **Teardown.** The driver deletes the Pod and then the ConfigMap by UID (`delete --raw` with `preconditions.uid`) and
   waits until each is gone, whatever the result. `cleanup` removes what a crashed run left, only objects carrying this
-  tool's labels, and never while a rehearsal Pod is running.
+  tool's labels, and never while a rehearsal Pod is running or in a namespace without the managed-by label.
+- **A create whose answer is lost.** After any error from a create, the driver lists Pods and ConfigMaps by the run
+  label and treats what it finds as created, then deletes it by UID. Teardown does one more label listing before it
+  deletes. `teardownComplete` is true only when everything created is verified gone, and, once a create was
+  attempted, only when at least one object was verified gone or the label listing succeeded and found nothing. A
+  listing that cannot be read leaves it false (`labelSweep: unreadable`) and the exit status 3.
 
 The namespace itself is not deleted per run. A per-run namespace would need the backup credential copied into it each
 time, which means the tool would hold and write a Secret. Here the operator installs the credential once, and the
@@ -78,7 +104,9 @@ namespace.
    k3s kubectl apply -f rehearsal-setup.json
    ```
 
-   Name every address the store's host resolves to. `0.0.0.0/0`, `::/0`, loopback and link-local ranges are refused.
+   Name every address the store's host resolves to. Private, CGNAT, loopback, link-local, ULA, multicast and reserved
+   ranges are refused, and so is anything wider than /24 (IPv4) or /48 (IPv6). The output also holds the cluster-scoped
+   PriorityClass the Pods use.
 
 2. Create the read-only backup credential by hand, in that namespace only. Use a storage key that can **read** the
    backup prefix and nothing else, and the backup encryption key:
@@ -96,8 +124,8 @@ namespace.
 
 ```sh
 python3 deploy/preview/restore-rehearsal.py plan  <run options>      # print the ConfigMap and Pod; contacts nothing
-python3 deploy/preview/restore-rehearsal.py run   <run options> --kubectl '["/usr/local/bin/k3s", "kubectl"]'
-python3 deploy/preview/restore-rehearsal.py cleanup --kubectl '["/usr/local/bin/k3s", "kubectl"]'
+python3 deploy/preview/restore-rehearsal.py run   <run options> --kubectl '["/usr/local/bin/k3s", "kubectl"]' --on-production-host
+python3 deploy/preview/restore-rehearsal.py cleanup --kubectl '["/usr/local/bin/k3s", "kubectl"]' --on-production-host
 ```
 
 Run options:
@@ -109,7 +137,9 @@ Run options:
 | `--new-image`, `--previous-image` | The Work images, `repository@sha256:...`. |
 | `--postgres-image` | The PostgreSQL 18 image the live database runs, by digest (`deploy/suse/appco-postgresql.lock.json` for the AppCo image). |
 | `--storage-host`, `--storage-address` | The backup store's host name and the address the Pod reaches it at. |
-| `--lock-budget` | Seconds per file, 1 to 120 (default 30). |
+| `--lock-budget` | Seconds per file, 1 to 30 (default 30). More, up to 120, needs `--allow-long-lock-budget`; the override is recorded in the result (`lockBudgetOverride`). |
+| `--on-production-host` | Required by `run` and `cleanup`. Confirms the run creates workloads on the production K3s node. |
+| `--check-target` | `lolly-private/production/check-target.py` (default `/Users/andy/Build/lolly-private/production/check-target.py`); it must sit at `lolly-private/production/check-target.py` and is run as `--site lolly.ing` before any kubectl call. |
 | `--deadline` | Seconds for the whole Pod, 120 to 3600 (default 900). |
 | `--namespace`, `--secret`, `--pull-secret`, `--run-id`, `--pgdata-size` | Defaults: `lolly-restore-rehearsal`, `restore-rehearsal-backup-read`, none, a timestamp, `4Gi`. |
 
@@ -123,6 +153,8 @@ input), `3` something it created is still present.
 
 | Code | Meaning |
 |---|---|
+| `PRODUCTION_HOST_FLAG`, `CHECK_TARGET_PATH`, `CHECK_TARGET_FAILED` | `run` or `cleanup` was refused before any kubectl call. |
+| `EGRESS_NOT_CLOSED` | The egress label could not be removed after fetch, or migrate or previous did not confirm a closed network. |
 | `KUBERNETES_TOO_OLD`, `NAMESPACE_UNSAFE`, `POLICY_DRIFT`, `STORAGE_OUTSIDE_POLICY`, `REHEARSAL_BUSY` | Refused in the read-only preflight. Nothing was created. |
 | `ADMISSION_CHANGED` | The API server's dry run changed the Pod (for example an injected container). Refused. |
 | `POD_NOT_STARTED` | The Pod never started: usually a missing credential Secret or an image not on the node. |
@@ -139,6 +171,9 @@ input), `3` something it created is still present.
 
 ## What it does not prove
 
+- Ownership and grants. The restore uses `--no-owner --no-privileges`, so every object is owned by the application role
+  and no `GRANT`/`REVOKE` from the backup is applied. A migration that depends on a different owner, a grant or a
+  default privilege, or fails because of one, behaves differently on the live database than it does here.
 - The live database's timing under load. The copy runs on the same node without other writers, so a file that locks a
   large, busy table can take longer live.
 - The live configuration. The previous image boots with an evaluation config and a development sign-in; identity
@@ -151,3 +186,10 @@ input), `3` something it created is still present.
 The in-Pod programs in `rehearsal/` read their paths from `REHEARSAL_*` variables when set (`REHEARSAL_PROGRAMS`,
 `REHEARSAL_APP`, `REHEARSAL_ARCHIVE`, `REHEARSAL_SOCKET`, `REHEARSAL_EVIDENCE`, `REHEARSAL_PGDATA`,
 `REHEARSAL_BACKUP_SECRET`), so they can be run against a local PostgreSQL and checkouts. The Pod never sets them.
+
+## Note for `AGENTS.md`
+
+Under "Production deployment handoff", add: the restore rehearsal operator (`deploy/preview/restore-rehearsal.py`)
+creates a Pod, a PostgreSQL server and 4 Gi of scratch disk on the production K3s node. Treat `run` and `cleanup` as
+production mutations: pass `--on-production-host`, run `check-target.py --site lolly.ing` immediately before, name one
+owner, and serialize it with any other change.

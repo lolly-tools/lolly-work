@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { requireClosedEgress } from './egress-gate.mjs';
 
 const PROGRAMS = process.env.REHEARSAL_PROGRAMS ?? '/programs';
 const APP = process.env.REHEARSAL_APP ?? '/app';
@@ -15,6 +16,8 @@ const EVIDENCE = process.env.REHEARSAL_EVIDENCE ?? '/evidence';
 
 const out = value => process.stdout.write(JSON.stringify({ step: 'migrate', ...value }) + '\n');
 const fail = (reason, extra = {}) => { out({ status: 'FAILED', reason, ...extra }); process.exit(1); };
+
+const egress = await requireClosedEgress(reason => fail(reason));
 
 const pending = JSON.parse(readFileSync(join(PROGRAMS, 'pending.json'), 'utf8'));
 const budget = Number(readFileSync(join(PROGRAMS, 'lock-budget-seconds'), 'utf8').trim());
@@ -65,4 +68,4 @@ if (run.error || run.status !== 0) {
 }
 const wanted = pending.map(file => file.name).sort();
 if (JSON.stringify([...applied].sort()) !== JSON.stringify(wanted)) fail('MIGRATE_FAILED: the runner applied a different set', result);
-out({ status: 'APPLIED', ...result });
+out({ status: 'APPLIED', egress, ...result });

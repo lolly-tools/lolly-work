@@ -57,6 +57,8 @@ def cluster(**scenario):
         "namespaces": {NAMESPACE: namespace},
         "networkpolicies": {NAMESPACE: policies},
         "resourcequotas": {NAMESPACE: [quota]},
+        "priorityclasses": {R.PRIORITY_CLASS: {"kind": "PriorityClass", "metadata": {"name": R.PRIORITY_CLASS},
+                                               "value": R.PRIORITY_VALUE, "globalDefault": False}},
         "objects": {NAMESPACE: {"Pod": {}, "ConfigMap": {"kube-root-ca.crt": {"kind": "ConfigMap", "metadata": {
             "name": "kube-root-ca.crt", "namespace": NAMESPACE, "uid": "root-ca"}}}, "PersistentVolumeClaim": {}}},
         "scenario": {"failAt": None, "polls": 2, **scenario},
@@ -121,10 +123,10 @@ def _reports(state, pod):
         "restore": {"step": "restore", "status": "RESTORED", "database": cm["database"], "serverVersion": "180006",
                     "listenAddresses": "", "publicTables": 79, "restoreSeconds": 1, "archiveSha256": archive["sha256"],
                     "archiveSize": archive["size"], "appliedBefore": APPLIED_BEFORE},
-        "migrate": {"step": "migrate", "status": "APPLIED", "applied": pending, "exitCode": 0},
+        "migrate": {"step": "migrate", "status": "APPLIED", "egress": "CLOSED", "applied": pending, "exitCode": 0},
         "verify": {"step": "verify", "status": verify_status, "lockBudgetSeconds": budget, "files": files,
                    "missing": [], "unexpected": [], "appliedAfterCount": len(APPLIED_BEFORE) + len(pending)},
-        "previous": {"step": "previous", "status": "ROUND_TRIP_OK", "requests": ["GET /healthz 200"], "savedRevision": 2},
+        "previous": {"step": "previous", "status": "ROUND_TRIP_OK", "egress": "CLOSED", "requests": ["GET /healthz 200"], "savedRevision": 2},
     }
     for step, change in scenario.get("reports", {}).items():
         reports[step].update(change)
@@ -186,8 +188,10 @@ def _poll(state, pod):
         return
     pod["fakePolls"] = pod.get("fakePolls", 0) + 1
     if pod["fakePolls"] <= scenario["polls"]:
+        # The first poll finds fetch running; later ones find it finished and the rest of the steps under way.
+        fetch = {"running": {}} if pod["fakePolls"] == 1 else {"terminated": {"exitCode": 0, "reason": "Completed"}}
         pod["status"] = {"phase": "Pending", "initContainerStatuses": [
-            {"name": "fetch", "state": {"running": {}}, "restartCount": 0}]}
+            {"name": "fetch", "state": fetch, "restartCount": 0}]}
         return
     if "fakeLogs" not in pod:
         _finish(state, pod)
@@ -209,6 +213,9 @@ def kubectl_main(argv):
         ns = args[args.index("-n") + 1] if "-n" in args else None
         if args[:1] == ["version"]:
             return _out({"clientVersion": {"major": "1", "minor": "33"}, "serverVersion": state["serverVersion"]})
+        if args[:2] == ["get", "priorityclass"]:
+            found = state["priorityclasses"].get(args[2])
+            return _out(found) if found else _err(f'Error from server (NotFound): priorityclasses "{args[2]}" not found')
         if args[:2] == ["get", "namespace"]:
             found = state["namespaces"].get(args[2])
             return _out(found) if found else _err(f'Error from server (NotFound): namespaces "{args[2]}" not found')
@@ -218,6 +225,18 @@ def kubectl_main(argv):
             return _out({"kind": "List", "items": state["resourcequotas"].get(ns, [])})
         if args[:2] == ["get", "pods,configmaps,persistentvolumeclaims"]:
             return _out({"kind": "List", "items": [_public(o) for o in _items(state, ns, ("Pod", "ConfigMap", "PersistentVolumeClaim"))]})
+        if args[:2] == ["get", "pods,configmaps"] and "-l" in args and scenario.get("listFails") and state.get("created_once"):
+            return _err("Error from server (Timeout): the list timed out")
+        if args[:1] == ["label"]:
+            pod = state["objects"].get(ns, {}).get("Pod", {}).get(args[2])
+            if pod is None:
+                return _err(f'Error from server (NotFound): pods "{args[2]}" not found')
+            if scenario.get("labelFails"):
+                return _err("Error from server (Forbidden): cannot patch pods")
+            for arg in args[3:]:
+                if arg.endswith("-") and not arg.startswith("-") and not scenario.get("labelSticks"):
+                    pod["metadata"]["labels"].pop(arg[:-1], None)
+            return _out(_public(pod))
         if args[:2] == ["get", "pods,configmaps"] and "-l" in args:
             wanted = dict(pair.split("=", 1) for pair in args[args.index("-l") + 1].split(","))
             return _out({"kind": "List", "items": [_public(o) for o in _items(state, ns, ("Pod", "ConfigMap"))
@@ -243,8 +262,13 @@ def kubectl_main(argv):
                 if obj["kind"] == "Pod" and scenario.get("admissionAddsContainer"):
                     result["spec"]["containers"].append({"name": "injected", "image": "example/sidecar:1"})
                 return _out(result)
+            if scenario.get("refuseCreate"):
+                return _err("Error from server (Forbidden): create refused")
             created = _with_defaults(obj)
             existing[obj["metadata"]["name"]] = created
+            state["created_once"] = True
+            if scenario.get("loseCreateResponse", {}).get(obj["kind"]):
+                return _err("Error from server (Timeout): the request timed out waiting for the response", 1)
             return _out(_public(created))
         if args[:1] == ["logs"]:
             pod = state["objects"].get(ns, {}).get("Pod", {}).get(args[1])

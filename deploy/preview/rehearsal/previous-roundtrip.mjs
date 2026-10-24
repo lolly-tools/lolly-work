@@ -12,12 +12,21 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { requireClosedEgress } from './egress-gate.mjs';
 
 const PROGRAMS = process.env.REHEARSAL_PROGRAMS ?? '/programs';
 const APP = process.env.REHEARSAL_APP ?? '/app';
 const SOCKET = process.env.REHEARSAL_SOCKET ?? '/socket';
 const PORT = Number(process.env.REHEARSAL_HTTP_PORT ?? '18990');
 const read = name => readFileSync(join(PROGRAMS, name), 'utf8').trim();
+
+let egress = 'OPEN';
+try {
+  egress = await requireClosedEgress(reason => { throw new Error(reason); });
+} catch (error) {
+  process.stdout.write(JSON.stringify({ step: 'previous', status: 'FAILED', egress, reason: String(error?.message ?? error).slice(0, 300) }) + '\n');
+  process.exit(1);
+}
 
 const database = read('database');
 const role = read('app-role');
@@ -51,7 +60,7 @@ const finish = (status, extra = {}) => {
   // The server's last lines, for a failure. Addresses are masked: they could be people's.
   const lines = log.split('\n').filter(line => line.trim()).slice(-12)
     .map(line => line.replace(/[^\s@<>"']+@[^\s@<>"']+\.[A-Za-z]{2,}/g, '<address>').slice(0, 240));
-  process.stdout.write(JSON.stringify({ step: 'previous', status, requests, elapsedMs: Date.now() - started,
+  process.stdout.write(JSON.stringify({ step: 'previous', status, egress, requests, elapsedMs: Date.now() - started,
     ...(status === 'ROUND_TRIP_OK' ? {} : { serverLog: lines }), ...extra }) + '\n');
 };
 

@@ -53,7 +53,7 @@ class Manifests(unittest.TestCase):
             self.assertNotIn(forbidden, keys)
         self.assertEqual({o["metadata"]["namespace"] for o in (self.config_map, self.pod)}, {R.NAMESPACE})
         kinds = {v["name"]: next(k for k in v if k != "name") for v in self.spec["volumes"]}
-        self.assertEqual({k for k in kinds.values()}, {"configMap", "secret", "emptyDir"})
+        self.assertEqual({k for k in kinds.values()}, {"configMap", "secret", "emptyDir", "downwardAPI"})
         self.assertEqual([n for n, k in kinds.items() if k == "secret"], ["backup"])
         backup = next(v for v in self.spec["volumes"] if v["name"] == "backup")["secret"]
         self.assertEqual(backup["secretName"], R.SECRET)
@@ -118,7 +118,11 @@ class Manifests(unittest.TestCase):
 
     def test_setup_is_deny_all_with_one_https_egress_rule(self):
         items = R.setup_manifests(R.NAMESPACE, ["203.0.113.7/32", "2001:db8::7/128"])["items"]
-        namespace, deny, egress, quota = items
+        namespace, deny, egress, quota, priority = items
+        self.assertEqual(priority["metadata"]["name"], R.PRIORITY_CLASS)
+        self.assertLess(priority["value"], 0)
+        self.assertEqual(priority["preemptionPolicy"], "Never")
+        self.assertEqual(egress["spec"]["podSelector"], {"matchLabels": {R.EGRESS_LABEL: "open"}})
         self.assertEqual(namespace["metadata"]["labels"]["pod-security.kubernetes.io/enforce"], "restricted")
         self.assertEqual(deny["spec"], {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]})
         rules = egress["spec"]["egress"]
@@ -129,10 +133,13 @@ class Manifests(unittest.TestCase):
         self.assertEqual(quota["spec"]["hard"]["pods"], "1")
         self.assertEqual(quota["spec"]["hard"]["persistentvolumeclaims"], "0")
         self.assertNotIn("Secret", {i["kind"] for i in items}, "the operator creates the credential by hand")
-        for bad in (["0.0.0.0/0"], ["::/0"], [], ["not-a-cidr"], ["10.0.0.1/24"]):
+        for bad in (["0.0.0.0/0"], ["::/0"], [], ["not-a-cidr"], ["10.0.0.1/24"], ["10.1.2.3/32"], ["172.16.4.4/32"],
+                    ["192.168.1.1/32"], ["fd00::1/128"], ["100.64.1.1/32"], ["127.0.0.1/32"], ["169.254.169.254/32"],
+                    ["fe80::1/128"], ["::1/128"], ["198.51.100.0/23"], ["2001:db8::/32"], ["8.0.0.0/8"],
+                    ["::ffff:10.0.0.1/128"], ["203.0.113.0/24", "10.0.0.0/8"]):
             with self.subTest(cidrs=bad), self.assertRaises(C.Refusal):
                 R.setup_manifests(R.NAMESPACE, bad)
-        for namespace in ("lolly-private", "kube-system", "default", "kube-anything"):
+        for namespace in ("lolly-private", "kube-system", "default", "kube-anything", "other-ns", "lolly-restore", "lolly-restore-rehearsalx"):
             with self.subTest(namespace=namespace), self.assertRaises(C.Refusal):
                 R.setup_manifests(namespace, ["203.0.113.7/32"])
 
@@ -151,6 +158,16 @@ class Manifests(unittest.TestCase):
             "pending path": dict(pending=[{"name": "../x.sql", "sha256": "1" * 64}]),
             "pending hash": dict(pending=[{"name": "0077_x.sql", "sha256": "XYZ"}]),
             "loopback store": dict(storage_address="127.0.0.1"),
+            "rfc1918 store": dict(storage_address="10.0.0.5"),
+            "rfc1918 store 172": dict(storage_address="172.20.1.1"),
+            "rfc1918 store 192": dict(storage_address="192.168.0.9"),
+            "cgnat store": dict(storage_address="100.100.1.1"),
+            "ula store": dict(storage_address="fd12:3456::1"),
+            "link-local store": dict(storage_address="169.254.169.254"),
+            "mapped private store": dict(storage_address="::ffff:10.0.0.1"),
+            "not in the allow-list": dict(namespace="lolly-restore"),
+            "allow-list lookalike": dict(namespace="lolly-restore-rehearsalx"),
+            "budget over 30 without override": dict(lock_budget_seconds=31),
             "store host": dict(storage_host="backups"),
             "budget": dict(lock_budget_seconds=121),
             "zero budget": dict(lock_budget_seconds=0),
@@ -370,6 +387,106 @@ class Runs(unittest.TestCase):
         self.assertEqual(caught.exception.code, "REHEARSAL_RUNNING")
         with self.assertRaises(C.Refusal):
             R.cleanup(R.Kubectl([str(self.kubectl)]), "lolly-private")
+        cluster["namespaces"][R.NAMESPACE]["metadata"]["labels"].pop("app.kubernetes.io/managed-by")
+        self.state.write_text(json.dumps(cluster))
+        with self.assertRaises(C.Refusal) as caught:
+            R.cleanup(R.Kubectl([str(self.kubectl)]), R.NAMESPACE, sleep=clock.sleep, monotonic=clock)
+        self.assertEqual(caught.exception.code, "NAMESPACE_UNSAFE")
+
+    def test_egress_closes_after_fetch_and_before_the_new_image_runs(self):
+        result = self.run_with()
+        self.assertEqual(result["result"], "PASSED", result.get("reason"))
+        self.assertTrue(result["egressClosedAfterFetch"])
+        state = self.assert_clean(result)
+        calls = state["calls"]
+        label = [i for i, c in enumerate(calls) if c[:2] == ["label", "pod"]]
+        self.assertEqual(len(label), 1)
+        self.assertEqual(calls[label[0]][-1], f"{R.EGRESS_LABEL}-")
+        self.assertLess(label[0], next(i for i, c in enumerate(calls) if c[:2] == ["delete", "--raw"]))
+        self.assertEqual(result["steps"]["migrate"]["egress"], "CLOSED")
+        self.assertEqual(result["steps"]["previous"]["egress"], "CLOSED")
+
+    def test_a_run_whose_egress_stays_open_or_is_unconfirmed_fails(self):
+        cases = {
+            "label sticks": F.cluster(labelSticks=True),
+            "label call fails": F.cluster(labelFails=True),
+            "migrate did not confirm": F.cluster(reports={"migrate": {"egress": "OPEN"}}),
+            "previous did not confirm": F.cluster(reports={"previous": {"egress": None}}),
+        }
+        for label, cluster in cases.items():
+            with self.subTest(label):
+                result = self.run_with(cluster)
+                self.assertEqual((result["result"], result["code"]), ("FAILED", "EGRESS_NOT_CLOSED"), result.get("reason"))
+                self.assert_clean(result)
+
+    def test_the_pod_has_a_low_priority_and_only_migrate_and_previous_read_its_labels(self):
+        _, pod = R.run_manifests(F.inputs(), R.read_programs())
+        self.assertEqual(pod["spec"]["priorityClassName"], R.PRIORITY_CLASS)
+        self.assertEqual(pod["metadata"]["labels"][R.EGRESS_LABEL], "open")
+        containers = pod["spec"]["initContainers"] + pod["spec"]["containers"]
+        self.assertEqual([c["name"] for c in containers if any(m["name"] == "podinfo" for m in c["volumeMounts"])],
+                         ["migrate", "previous"])
+        missing = F.cluster()
+        missing["priorityclasses"] = {}
+        result = self.run_with(missing)
+        self.assertEqual((result["result"], result["code"]), ("REFUSED", "KUBECTL"))
+
+    def test_ephemeral_storage_covers_the_pgdata_allowance(self):
+        for size, limit in (("4Gi", "5Gi"), ("10Gi", "11Gi")):
+            _, pod = R.run_manifests(F.inputs(pgdata_size=size), R.read_programs())
+            postgres = next(c for c in pod["spec"]["initContainers"] if c["name"] == "postgres")
+            self.assertEqual(postgres["resources"]["limits"]["ephemeral-storage"], limit)
+
+    def test_a_lock_budget_above_the_default_needs_a_recorded_override(self):
+        with self.assertRaises(C.Refusal):
+            F.inputs(lock_budget_seconds=31)
+        long = F.inputs(lock_budget_seconds=90, lock_budget_override=True)
+        self.assertTrue(long.record()["lockBudgetOverride"])
+        self.assertFalse(F.inputs(lock_budget_seconds=30, lock_budget_override=True).record()["lockBudgetOverride"])
+        self.assertFalse(F.inputs().record()["lockBudgetOverride"])
+
+    def test_policy_drift_to_private_or_wide_egress_is_refused(self):
+        ns = R.NAMESPACE
+        for cidr in ("10.0.0.0/8", "203.0.113.0/16", "192.168.4.0/24", "100.64.0.0/10"):
+            with self.subTest(cidr=cidr):
+                cluster = F.cluster()
+                cluster["networkpolicies"][ns][1]["spec"]["egress"][0]["to"].append({"ipBlock": {"cidr": cidr}})
+                result = self.run_with(cluster)
+                self.assertEqual((result["result"], result["code"]), ("REFUSED", "POLICY_DRIFT"), result.get("reason"))
+
+    def test_a_lost_create_response_is_found_by_label_and_removed(self):
+        for kind in ("Pod", "ConfigMap"):
+            with self.subTest(kind=kind):
+                result = self.run_with(F.cluster(loseCreateResponse={kind: True}))
+                self.assertEqual(result["code"], "KUBECTL")
+                self.assertEqual(result["result"], "FAILED" if kind == "Pod" else "REFUSED")
+                self.assertIn(kind, result["created"], "the object the answer never confirmed is adopted")
+                self.assertEqual(result["teardown"][kind], "deleted")
+                self.assertTrue(result["teardownComplete"])
+                self.assert_clean(result)
+
+    def test_an_unreadable_label_list_after_a_lost_create_is_not_a_complete_teardown(self):
+        result = self.run_with(F.cluster(loseCreateResponse={"ConfigMap": True}, listFails=True))
+        self.assertEqual(result["created"], {})
+        self.assertEqual(result["labelSweep"], "unreadable")
+        self.assertFalse(result["teardownComplete"], "nothing was verified gone and nothing could be listed")
+        self.assertIn("labelSweep", result["teardown"])
+
+    def test_a_refused_create_with_an_empty_label_list_is_a_complete_teardown(self):
+        result = self.run_with(F.cluster(refuseCreate=True))
+        self.assertEqual(result["created"], {})
+        self.assertEqual(result["labelSweep"], "empty")
+        self.assertTrue(result["teardownComplete"])
+
+    def test_teardown_needs_a_verified_deletion_after_a_create_was_attempted(self):
+        driver = R.Rehearsal(R.Kubectl([str(self.kubectl)]), F.inputs())
+        self.assertTrue(driver._teardown_complete({}), "no create attempted")
+        driver.create_attempted = True
+        self.assertFalse(driver._teardown_complete({}), "a create was attempted and nothing is known gone")
+        driver.sweep = "found"
+        self.assertFalse(driver._teardown_complete({}))
+        self.assertTrue(driver._teardown_complete({"Pod": "deleted"}))
+        self.assertFalse(driver._teardown_complete({"Pod": "deleted", "ConfigMap": "still present"}))
 
     def test_command_line(self):
         backup, pending = self.tmp / "backup.json", self.tmp / "pending.json"
@@ -388,15 +505,41 @@ class Runs(unittest.TestCase):
         self.assertEqual([i["kind"] for i in json.loads(plan.stdout)["items"]], ["ConfigMap", "Pod"])
         setup = cli("setup", "--egress-cidr", "203.0.113.7/32")
         self.assertEqual(setup.returncode, 0, setup.stderr)
-        self.assertEqual(len(json.loads(setup.stdout)["items"]), 4)
+        self.assertEqual(len(json.loads(setup.stdout)["items"]), 5)
+        kube = ["--kubectl", json.dumps([str(self.kubectl)])]
+        # No flag: refused before the cluster is contacted, and before check-target.
         self.state.write_text(json.dumps(F.cluster(polls=0)))
-        run = cli("run", *common, "--kubectl", json.dumps([str(self.kubectl)]))
+        bad = cli("run", *common, *kube)
+        self.assertEqual((bad.returncode, json.loads(bad.stdout)["code"]), (2, "PRODUCTION_HOST_FLAG"))
+        bad = cli("cleanup", *kube)
+        self.assertEqual((bad.returncode, json.loads(bad.stdout)["code"]), (2, "PRODUCTION_HOST_FLAG"))
+        self.assertEqual(self.cluster_state()["calls"], [])
+        # A failing check-target stops the run before any kubectl call.
+        target = self.tmp / "lolly-private" / "production" / "check-target.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("import sys\nsys.stderr.write('identity drift\\n')\nsys.exit(1)\n")
+        prod = ["--on-production-host", "--check-target", str(target)]
+        bad = cli("run", *common, *kube, *prod)
+        self.assertEqual((bad.returncode, json.loads(bad.stdout)["code"]), (2, "CHECK_TARGET_FAILED"))
+        self.assertIn("identity drift", json.loads(bad.stdout)["reason"])
+        self.assertEqual(self.cluster_state()["calls"], [])
+        # A check-target outside lolly-private/production is refused outright.
+        stray = self.tmp / "check-target.py"
+        stray.write_text("import sys\nsys.exit(0)\n")
+        bad = cli("run", *common, *kube, "--on-production-host", "--check-target", str(stray))
+        self.assertEqual(json.loads(bad.stdout)["code"], "CHECK_TARGET_PATH")
+        # It receives --site lolly.ing.
+        target.write_text("import sys\nopen(sys.argv[0] + '.args', 'w').write(' '.join(sys.argv[1:]))\nsys.exit(0)\n")
+        run = cli("run", *common, *kube, *prod)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual(json.loads(run.stdout)["result"], "PASSED")
+        self.assertEqual(Path(str(target) + ".args").read_text(), "--site lolly.ing")
         self.state.write_text(json.dumps(F.cluster(polls=0, failAt="previous")))
-        run = cli("run", *common, "--kubectl", json.dumps([str(self.kubectl)]))
+        run = cli("run", *common, *kube, *prod)
         self.assertEqual(run.returncode, 1)
-        bad = cli("run", *common, "--kubectl", "kubectl")
+        cleaned = cli("cleanup", *kube, *prod)
+        self.assertEqual(cleaned.returncode, 0, cleaned.stdout + cleaned.stderr)
+        bad = cli("run", *common, "--kubectl", "kubectl", *prod)
         self.assertEqual((bad.returncode, json.loads(bad.stdout)["code"]), (2, "BAD_INPUT"))
         bad = cli("plan", *common[:-2], "--namespace", "lolly-private")
         self.assertEqual(bad.returncode, 2)

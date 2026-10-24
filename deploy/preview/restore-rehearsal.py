@@ -7,8 +7,13 @@ and delete everything. See deploy/preview/REHEARSAL.md.
 
   restore-rehearsal.py setup --egress-cidr CIDR [...]       print the one-time namespace objects (applies nothing)
   restore-rehearsal.py plan  <run options>                  print one run's ConfigMap and Pod (contacts nothing)
-  restore-rehearsal.py run   <run options> --kubectl ARGV   run one rehearsal; print the result as JSON
-  restore-rehearsal.py cleanup --kubectl ARGV               remove what a crashed run left
+  restore-rehearsal.py run   <run options> --kubectl ARGV --on-production-host
+                                                            run one rehearsal; print the result as JSON
+  restore-rehearsal.py cleanup --kubectl ARGV --on-production-host
+                                                            remove what a crashed run left
+
+`run` and `cleanup` create or delete workloads on the production K3s node. They refuse without
+--on-production-host and run `check-target.py --site lolly.ing` first (--check-target overrides the path).
 
 Run options:
   --backup FILE            the backup uploader's VERIFIED result line (JSON)
@@ -17,7 +22,8 @@ Run options:
   --previous-image REF     the Work image live now (repository@sha256:...)
   --postgres-image REF     the PostgreSQL 18 image the live database runs (repository@sha256:...)
   --storage-host HOST      the backup store's host name, as in the backup credential
-  --storage-address IP     its address, inside the namespace's egress rule
+  --storage-address IP     its address, inside the namespace's egress rule (a public host, never private space)
+  --lock-budget SECONDS    per file, 1-30; more needs --allow-long-lock-budget (recorded in the result)
 
 Exit status: 0 passed, 1 failed, 2 refused or bad input, 3 passed or failed but
 something it created is still present.
@@ -52,7 +58,8 @@ def inputs_from(args):
                     previous_image=args.previous_image, postgres_image=args.postgres_image,
                     storage_host=args.storage_host, storage_address=args.storage_address, namespace=args.namespace,
                     secret=args.secret, run_id=args.run_id, lock_budget_seconds=args.lock_budget,
-                    deadline_seconds=args.deadline, pgdata_size=args.pgdata_size, pull_secret=args.pull_secret)
+                    deadline_seconds=args.deadline, pgdata_size=args.pgdata_size, pull_secret=args.pull_secret,
+                    lock_budget_override=args.allow_long_lock_budget)
 
 
 def kubectl_from(text):
@@ -61,6 +68,20 @@ def kubectl_from(text):
     except ValueError as exc:
         raise Refusal("BAD_INPUT", "--kubectl must be a JSON array, e.g. [\"/usr/local/bin/k3s\", \"kubectl\"]") from exc
     return R.Kubectl(argv)
+
+
+def production_flags(parser):
+    parser.add_argument("--on-production-host", action="store_true",
+                        help="confirm this creates workloads on the production K3s node")
+    parser.add_argument("--check-target", default=R.CHECK_TARGET_DEFAULT,
+                        help="lolly-private/production/check-target.py (default: %(default)s)")
+
+
+def require_production(args):
+    if not args.on_production_host:
+        raise Refusal("PRODUCTION_HOST_FLAG", f"`{args.command}` creates or deletes workloads on the production K3s node; "
+                      "pass --on-production-host to confirm")
+    return R.production_preflight(args.check_target)
 
 
 def main(argv=None):
@@ -86,11 +107,15 @@ def main(argv=None):
         p.add_argument("--lock-budget", type=int, default=R.LOCK_BUDGET_SECONDS)
         p.add_argument("--deadline", type=int, default=R.DEADLINE_SECONDS)
         p.add_argument("--pgdata-size", default="4Gi")
+        p.add_argument("--allow-long-lock-budget", action="store_true",
+                       help=f"allow --lock-budget above {R.LOCK_BUDGET_SECONDS}; the override is recorded")
         if name == "run":
             p.add_argument("--kubectl", required=True)
+            production_flags(p)
     clean = sub.add_parser("cleanup", allow_abbrev=False)
     clean.add_argument("--namespace", default=R.NAMESPACE)
     clean.add_argument("--kubectl", required=True)
+    production_flags(clean)
     args = parser.parse_args(argv)
     try:
         if args.command == "setup":
@@ -99,6 +124,7 @@ def main(argv=None):
                   "credential (storage.json, encryption-key.txt); see REHEARSAL.md.", file=sys.stderr)
             return 0
         if args.command == "cleanup":
+            require_production(args)
             print(json.dumps({"result": "CLEANED", "removed": R.cleanup(kubectl_from(args.kubectl), args.namespace)}, indent=2))
             return 0
         inputs = inputs_from(args)
@@ -106,7 +132,9 @@ def main(argv=None):
             config_map, pod = R.run_manifests(inputs, R.read_programs())
             print(json.dumps({"apiVersion": "v1", "kind": "List", "items": [config_map, pod]}, indent=2))
             return 0
+        preflight = require_production(args)
         result = R.Rehearsal(kubectl_from(args.kubectl), inputs).run()
+        result["productionPreflight"] = preflight
     except Refusal as refusal:
         print(json.dumps({"result": "REFUSED", "code": refusal.code, "reason": refusal.message}))
         return 2

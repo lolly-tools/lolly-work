@@ -19,8 +19,17 @@ One run is one Pod in a dedicated rehearsal namespace. Its containers run in ord
 6. previous (previous image): boot its server with LW_AUTO_MIGRATE=false against
    the migrated copy and make one save round trip.
 
+Egress is open only while the fetch step runs. The Pod starts with the label
+`lolly.tools/rehearsal-egress=open`, which the one egress rule selects. When the
+driver sees fetch finish it removes the label, so only the deny-all policy applies
+from then on. The migrate and previous containers (which run the new and the
+previous image's code) wait on a downward API copy of the Pod's labels, then check
+that the store's address no longer connects, before they do anything else, and
+they report `egress: CLOSED`. The driver refuses a run whose report lacks it.
+
 All data lives on emptyDir and goes with the Pod. The namespace, its deny-all
-NetworkPolicy, its one egress rule (HTTPS to the backup store) and the read-only
+NetworkPolicy, its one egress rule (HTTPS to the backup store), the low
+PriorityClass and the read-only
 backup credential are installed once by the operator (`setup_manifests`); the
 driver only checks them. It never reads a Secret, never names a PVC, never
 creates a NetworkPolicy and never touches another namespace. Every object it
@@ -39,16 +48,24 @@ import json
 import re
 import secrets
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 from preview_common import Refusal, compact, require, sha256_hex, utc_stamp
 
 PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "rehearsal"
-PROGRAM_FILES = ("fetch-archive.mjs", "postgres.sh", "restore.sh", "migrate.mjs", "verify.sh", "previous-roundtrip.mjs")
+PROGRAM_FILES = ("fetch-archive.mjs", "postgres.sh", "restore.sh", "migrate.mjs", "verify.sh", "previous-roundtrip.mjs",
+                 "egress-gate.mjs")
 
 MANAGED_BY = "lolly-restore-rehearsal"
 NAMESPACE = "lolly-restore-rehearsal"
+NAMESPACE_PREFIX = "lolly-restore-rehearsal"  # a rehearsal namespace is this name or this name plus "-suffix"
+EGRESS_LABEL = "lolly.tools/rehearsal-egress"  # on the Pod while the fetch step runs; the egress rule selects it
+PRIORITY_CLASS = "lolly-restore-rehearsal-low"
+PRIORITY_VALUE = -100
+PRODUCTION_SITE = "lolly.ing"
+CHECK_TARGET_DEFAULT = "/Users/andy/Build/lolly-private/production/check-target.py"
 COMPONENT = "restore-rehearsal"
 RUN_LABEL = "lolly.tools/rehearsal-run"
 INPUTS_ANNOTATION = "lolly.tools/rehearsal-inputs-sha256"
@@ -62,7 +79,7 @@ APP_ROLE = "lollywork"
 POSTGRES_PORT = 55432
 POSTGRES_MAJOR = 18
 LOCK_BUDGET_SECONDS = 30
-MAX_LOCK_BUDGET_SECONDS = 120  # the runner's own statement timeout
+MAX_LOCK_BUDGET_SECONDS = 120  # the runner's own statement timeout; above LOCK_BUDGET_SECONDS needs the explicit override
 DEADLINE_SECONDS = 900
 MIN_KUBERNETES_MINOR = 29  # native sidecar containers are on by default from 1.29
 TIMEOUT_LOG_LINE = "terminating connection due to transaction timeout"
@@ -127,6 +144,36 @@ def parse_pending(value):
     return sorted(({"name": i["name"], "sha256": i["sha256"]} for i in value), key=lambda i: i["name"])
 
 
+# Never a backup store or an egress target: private, shared, loopback, link-local and
+# reserved space. Wider than /24 (IPv4) or /48 (IPv6) is refused as well.
+_BLOCKED = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16",
+    "224.0.0.0/4", "240.0.0.0/4", "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8"))
+MAX_WIDTH = {4: 24, 6: 48}
+
+
+def egress_network_problem(network):
+    """Why a network may not be named in the egress rule, or None."""
+    if network.prefixlen < MAX_WIDTH[network.version]:
+        return f"is wider than /{MAX_WIDTH[network.version]}"
+    if network.version == 6 and network.network_address.ipv4_mapped is not None:
+        return "is an IPv4-mapped IPv6 range"
+    for blocked in _BLOCKED:
+        if blocked.version == network.version and network.overlaps(blocked):
+            return f"overlaps private, loopback, link-local or reserved space ({blocked})"
+    return None
+
+
+def namespace_problem(namespace):
+    if not (isinstance(namespace, str) and DNS_LABEL.match(namespace)):
+        return "is not a DNS label"
+    if namespace in FORBIDDEN_NAMESPACES or namespace.startswith("kube-"):
+        return "is a live or system namespace"
+    if namespace != NAMESPACE_PREFIX and not namespace.startswith(NAMESPACE_PREFIX + "-"):
+        return f"is not {NAMESPACE_PREFIX} or {NAMESPACE_PREFIX}-<suffix>"
+    return None
+
+
 def new_run_id(now=None):
     moment = now or datetime.datetime.now(datetime.timezone.utc)
     return moment.strftime("%Y%m%dt%H%M%Sz") + "-" + secrets.token_hex(3)
@@ -137,14 +184,14 @@ class Inputs:
 
     def __init__(self, *, backup, new_image, previous_image, postgres_image, pending, storage_host, storage_address,
                  namespace=NAMESPACE, secret=SECRET, run_id=None, lock_budget_seconds=LOCK_BUDGET_SECONDS,
-                 deadline_seconds=DEADLINE_SECONDS, pgdata_size="4Gi", pull_secret=None):
+                 deadline_seconds=DEADLINE_SECONDS, pgdata_size="4Gi", pull_secret=None, lock_budget_override=False):
         self.backup = parse_backup(backup)
         self.pending = parse_pending(pending)
         for label, image in (("new image", new_image), ("previous image", previous_image), ("PostgreSQL image", postgres_image)):
             require(isinstance(image, str) and IMAGE.match(image), "BAD_INPUT", f"the {label} must be a repository@sha256 digest")
         self.new_image, self.previous_image, self.postgres_image = new_image, previous_image, postgres_image
-        require(isinstance(namespace, str) and DNS_LABEL.match(namespace) and namespace not in FORBIDDEN_NAMESPACES
-                and not namespace.startswith("kube-"), "BAD_INPUT", f"namespace {namespace!r} may not hold a rehearsal")
+        problem = namespace_problem(namespace)
+        require(problem is None, "BAD_INPUT", f"namespace {namespace!r} may not hold a rehearsal: it {problem}")
         self.namespace = namespace
         require(isinstance(secret, str) and DNS_LABEL.match(secret), "BAD_INPUT", "backup credential Secret name")
         self.secret = secret
@@ -157,14 +204,17 @@ class Inputs:
             address = ipaddress.ip_address(storage_address)
         except (TypeError, ValueError) as exc:
             raise Refusal("BAD_INPUT", "storage address must be an IP address") from exc
-        require(not (address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified),
-                "BAD_INPUT", "storage address is not a routable host")
+        problem = egress_network_problem(ipaddress.ip_network(address))
+        require(problem is None, "BAD_INPUT", f"storage address {storage_address} is not a public host: it {problem}")
         self.storage_address = str(address)
         self.run_id = run_id or new_run_id()
         require(isinstance(self.run_id, str) and RUN_ID.match(self.run_id), "BAD_INPUT", "run id")
         require(type(lock_budget_seconds) is int and 1 <= lock_budget_seconds <= MAX_LOCK_BUDGET_SECONDS,
                 "BAD_INPUT", f"lock budget must be 1-{MAX_LOCK_BUDGET_SECONDS} seconds")
+        require(lock_budget_seconds <= LOCK_BUDGET_SECONDS or lock_budget_override is True, "BAD_INPUT",
+                f"a lock budget above {LOCK_BUDGET_SECONDS} seconds needs the explicit override (--allow-long-lock-budget)")
         self.lock_budget_seconds = lock_budget_seconds
+        self.lock_budget_override = bool(lock_budget_override) and lock_budget_seconds > LOCK_BUDGET_SECONDS
         require(type(deadline_seconds) is int and 120 <= deadline_seconds <= 3600, "BAD_INPUT", "deadline must be 120-3600 seconds")
         self.deadline_seconds = deadline_seconds
         require(isinstance(pgdata_size, str) and SIZE.match(pgdata_size), "BAD_INPUT", "pgdata size must be like 4Gi")
@@ -183,7 +233,8 @@ class Inputs:
                 "expect": self.expect, "images": {"new": self.new_image, "previous": self.previous_image,
                                                   "postgres": self.postgres_image},
                 "storage": {"host": self.storage_host, "address": self.storage_address},
-                "lockBudgetSeconds": self.lock_budget_seconds, "deadlineSeconds": self.deadline_seconds}
+                "lockBudgetSeconds": self.lock_budget_seconds, "lockBudgetOverride": self.lock_budget_override,
+                "deadlineSeconds": self.deadline_seconds}
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +250,8 @@ def labels(run_id=None):
 def setup_manifests(namespace=NAMESPACE, egress_cidrs=(), secret=SECRET):
     """The objects the operator reviews and applies once. The backup credential is
     not among them: the operator creates it by hand (see the README)."""
-    require(DNS_LABEL.match(namespace) and namespace not in FORBIDDEN_NAMESPACES and not namespace.startswith("kube-"),
-            "BAD_INPUT", f"namespace {namespace!r} may not hold a rehearsal")
+    problem = namespace_problem(namespace)
+    require(problem is None, "BAD_INPUT", f"namespace {namespace!r} may not hold a rehearsal: it {problem}")
     require(DNS_LABEL.match(secret), "BAD_INPUT", "backup credential Secret name")
     peers = []
     for cidr in egress_cidrs:
@@ -208,8 +259,8 @@ def setup_manifests(namespace=NAMESPACE, egress_cidrs=(), secret=SECRET):
             network = ipaddress.ip_network(cidr, strict=True)
         except ValueError as exc:
             raise Refusal("BAD_INPUT", f"egress CIDR {cidr!r}") from exc
-        require(network.prefixlen > 0 and not network.is_loopback and not network.is_link_local, "BAD_INPUT",
-                f"egress CIDR {cidr!r} is too wide or not routable; name the backup store's addresses")
+        problem = egress_network_problem(network)
+        require(problem is None, "BAD_INPUT", f"egress CIDR {cidr!r} {problem}; name the backup store's own public addresses")
         peers.append({"ipBlock": {"cidr": str(network)}})
     require(peers, "BAD_INPUT", "name at least one egress CIDR for the backup store")
     restricted = {"pod-security.kubernetes.io/enforce": "restricted", "pod-security.kubernetes.io/enforce-version": "latest",
@@ -222,7 +273,7 @@ def setup_manifests(namespace=NAMESPACE, egress_cidrs=(), secret=SECRET):
          "spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}},
         {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
          "metadata": {"name": EGRESS_POLICY, "namespace": namespace, "labels": labels()},
-         "spec": {"podSelector": {"matchLabels": {"app.kubernetes.io/component": COMPONENT}},
+         "spec": {"podSelector": {"matchLabels": {EGRESS_LABEL: "open"}},
                   "policyTypes": ["Ingress", "Egress"],
                   "egress": [{"to": peers, "ports": [{"protocol": "TCP", "port": 443}]}]}},
         {"apiVersion": "v1", "kind": "ResourceQuota",
@@ -230,6 +281,11 @@ def setup_manifests(namespace=NAMESPACE, egress_cidrs=(), secret=SECRET):
          "spec": {"hard": {"pods": "1", "requests.cpu": "2", "limits.cpu": "3", "requests.memory": "2Gi",
                            "limits.memory": "3Gi", "persistentvolumeclaims": "0", "services": "0",
                            "services.loadbalancers": "0", "services.nodeports": "0", "configmaps": "4", "secrets": "3"}}},
+        # Cluster-scoped. Below every workload's priority so a rehearsal Pod is the first thing evicted on the shared node.
+        {"apiVersion": "scheduling.k8s.io/v1", "kind": "PriorityClass",
+         "metadata": {"name": PRIORITY_CLASS, "labels": labels()}, "value": PRIORITY_VALUE, "globalDefault": False,
+         "preemptionPolicy": "Never",
+         "description": "Restore rehearsal Pods: below every live workload, never preempt."},
     ]}
 
 
@@ -247,9 +303,14 @@ def _security():
             "capabilities": {"drop": ["ALL"]}, "seccompProfile": {"type": "RuntimeDefault"}}
 
 
-def _resources(cpu_request, memory_request, cpu_limit, memory_limit):
+def _resources(cpu_request, memory_request, cpu_limit, memory_limit, ephemeral="256Mi"):
     return {"requests": {"cpu": cpu_request, "memory": memory_request, "ephemeral-storage": "64Mi"},
-            "limits": {"cpu": cpu_limit, "memory": memory_limit, "ephemeral-storage": "256Mi"}}
+            "limits": {"cpu": cpu_limit, "memory": memory_limit, "ephemeral-storage": ephemeral}}
+
+
+def _pgdata_ephemeral(pgdata_size):
+    """The pgdata allowance plus 1 Gi of slack for the container's own layer, logs and WAL churn."""
+    return f"{int(pgdata_size[:-2]) + 1}Gi"
 
 
 def _mount(volume, path, read_only=False):
@@ -276,7 +337,7 @@ def run_manifests(inputs, programs):
     data.update({
         "postgres-major": str(POSTGRES_MAJOR), "postgres-port": str(POSTGRES_PORT), "database": DATABASE,
         "app-role": APP_ROLE, "lock-budget-seconds": str(inputs.lock_budget_seconds),
-        "archive-sha256": inputs.backup["sha256"], "archive-size": str(inputs.backup["size"]),
+        "storage-address": inputs.storage_address, "archive-sha256": inputs.backup["sha256"], "archive-size": str(inputs.backup["size"]),
         "archive.json": compact({"object": inputs.backup["object"], "sha256": inputs.backup["sha256"],
                                  "size": inputs.backup["size"], "keyId": inputs.backup["keyId"],
                                  "storageHost": inputs.storage_host}),
@@ -284,6 +345,8 @@ def run_manifests(inputs, programs):
         "pending.txt": "".join(f"{f['name']}\n" for f in inputs.pending),
     })
     meta = {"name": inputs.name, "namespace": inputs.namespace, "labels": labels(inputs.run_id)}
+    pod_labels = dict(meta["labels"], **{EGRESS_LABEL: "open"})
+    podinfo = _mount("podinfo", "/podinfo", True)
     config_map = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": dict(meta), "immutable": True, "data": data}
     socket, evidence = _mount("socket", "/socket"), _mount("evidence", "/evidence")
     init = [
@@ -291,7 +354,8 @@ def run_manifests(inputs, programs):
                    [_mount("backup", "/run/backup", True), _mount("archive", "/archive")],
                    _resources("50m", "256Mi", "1", "768Mi")),
         dict(_container("postgres", inputs.postgres_image, ["bash", "/programs/postgres.sh"],
-                        [_mount("pgdata", "/pgdata"), socket], _resources("100m", "256Mi", "1", "1Gi")),
+                        [_mount("pgdata", "/pgdata"), socket],
+                        _resources("100m", "256Mi", "1", "1Gi", _pgdata_ephemeral(inputs.pgdata_size))),
              restartPolicy="Always",
              startupProbe={"exec": {"command": ["pg_isready", "-q", "-h", "/socket", "-p", str(POSTGRES_PORT),
                                                 "-U", "rehearsal", "-d", "postgres"]},
@@ -299,7 +363,7 @@ def run_manifests(inputs, programs):
         _container("restore", inputs.postgres_image, ["bash", "/programs/restore.sh"],
                    [_mount("archive", "/archive", True), socket, evidence], _resources("50m", "128Mi", "1", "512Mi")),
         # The live migrate Job gets exactly this environment: no server secrets.
-        _container("migrate", inputs.new_image, ["node", "/programs/migrate.mjs"], [socket, evidence],
+        _container("migrate", inputs.new_image, ["node", "/programs/migrate.mjs"], [socket, evidence, podinfo],
                    _resources("50m", "256Mi", "1", "768Mi"),
                    env=[{"name": "DATABASE_URL", "value": database_url},
                         {"name": "LW_MIGRATE_EXPECT", "value": inputs.expect},
@@ -307,17 +371,20 @@ def run_manifests(inputs, programs):
         _container("verify", inputs.postgres_image, ["bash", "/programs/verify.sh"],
                    [socket, _mount("evidence", "/evidence", True)], _resources("50m", "64Mi", "500m", "256Mi")),
     ]
-    main = [_container("previous", inputs.previous_image, ["node", "/programs/previous-roundtrip.mjs"], [socket],
+    main = [_container("previous", inputs.previous_image, ["node", "/programs/previous-roundtrip.mjs"], [socket, podinfo],
                        _resources("100m", "256Mi", "1", "1Gi"))]
     empty = lambda name, size: {"name": name, "emptyDir": {"sizeLimit": size}}  # noqa: E731
     volumes = [
         {"name": "programs", "configMap": {"name": inputs.name, "defaultMode": 0o444}},
         {"name": "backup", "secret": {"secretName": inputs.secret, "defaultMode": 0o440,
                                       "items": [{"key": key, "path": key} for key in SECRET_KEYS]}},
+        {"name": "podinfo", "downwardAPI": {"defaultMode": 0o444, "items": [
+            {"path": "labels", "fieldRef": {"fieldPath": "metadata.labels"}}]}},
         empty("archive", "256Mi"), empty("pgdata", inputs.pgdata_size), empty("socket", "8Mi"), empty("evidence", "8Mi"),
         *[empty(f"tmp-{c['name']}", "64Mi") for c in init + main],
     ]
     spec = {
+        "priorityClassName": PRIORITY_CLASS,
         "restartPolicy": "Never", "activeDeadlineSeconds": inputs.deadline_seconds, "terminationGracePeriodSeconds": 10,
         "automountServiceAccountToken": False, "enableServiceLinks": False,
         "securityContext": {"runAsNonRoot": True, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000,
@@ -330,7 +397,7 @@ def run_manifests(inputs, programs):
     }
     if inputs.pull_secret:
         spec["imagePullSecrets"] = [{"name": inputs.pull_secret}]
-    pod_meta = dict(meta, annotations={INPUTS_ANNOTATION: sha256_hex(compact(inputs.record()).encode())})
+    pod_meta = dict(meta, labels=pod_labels, annotations={INPUTS_ANNOTATION: sha256_hex(compact(inputs.record()).encode())})
     pod = {"apiVersion": "v1", "kind": "Pod", "metadata": pod_meta, "spec": spec}
     return config_map, pod
 
@@ -378,6 +445,26 @@ def includes(actual, expected):
 
 
 # ---------------------------------------------------------------------------
+# The production host
+
+def production_preflight(check_target=CHECK_TARGET_DEFAULT, site=PRODUCTION_SITE, runner=subprocess.run):
+    """The rehearsal creates workloads on the production K3s node, so the patched check-target.py runs first.
+    The path must be lolly-private/production/check-target.py, a real file and not a link."""
+    path = Path(str(check_target))
+    require(path.is_absolute() and path.name == "check-target.py" and path.parent.name == "production"
+            and path.parent.parent.name == "lolly-private", "CHECK_TARGET_PATH",
+            "check-target.py must be lolly-private/production/check-target.py")
+    require(path.is_file() and not path.is_symlink(), "CHECK_TARGET_PATH", "check-target.py is missing or a link")
+    try:
+        done = runner([sys.executable, "-I", "-B", str(path), "--site", site], capture_output=True, timeout=240, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refusal("CHECK_TARGET_FAILED", "check-target.py did not run") from exc
+    first = (done.stderr.decode("utf-8", "replace").strip().splitlines() or [""])[0][:300]
+    require(done.returncode == 0, "CHECK_TARGET_FAILED", "check-target.py --site failed: " + first)
+    return {"checkTarget": "PASS", "site": site}
+
+
+# ---------------------------------------------------------------------------
 # The run
 
 def _last_step_json(text, step):
@@ -412,6 +499,9 @@ class Rehearsal:
         self.start_timeout = start_timeout_seconds
         self.now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
         self.created = {}
+        self.create_attempted = False
+        self.sweep = None
+        self.egress_closed = False
         self.result = dict(inputs.record(), result=None, code=None, reason=None, steps={}, files=[])
 
     # Preflight: read-only. Secrets are never read.
@@ -421,6 +511,9 @@ class Rehearsal:
         require(str(version.get("major")) == "1" and minor and int(minor.group()) >= MIN_KUBERNETES_MINOR,
                 "KUBERNETES_TOO_OLD", f"native sidecar containers need Kubernetes 1.{MIN_KUBERNETES_MINOR} or newer")
         ns = self.inputs.namespace
+        priority = self.kube.json(["get", "priorityclass", PRIORITY_CLASS, "-o", "json"])
+        require(priority.get("value") == PRIORITY_VALUE and not priority.get("globalDefault"), "POLICY_DRIFT",
+                f"PriorityClass {PRIORITY_CLASS} is missing or changed; apply the `setup` output")
         namespace = self.kube.json(["get", "namespace", ns, "-o", "json"])
         ns_labels = namespace.get("metadata", {}).get("labels") or {}
         require(ns_labels.get("app.kubernetes.io/managed-by") == MANAGED_BY, "NAMESPACE_UNSAFE",
@@ -448,9 +541,9 @@ class Rehearsal:
         require(deny.get("podSelector") == {} and sorted(deny.get("policyTypes") or []) == ["Egress", "Ingress"]
                 and not deny.get("ingress") and not deny.get("egress"), "POLICY_DRIFT", f"{DENY_POLICY} is not deny-all")
         egress = by_name[EGRESS_POLICY]
-        require(egress.get("podSelector") == {"matchLabels": {"app.kubernetes.io/component": COMPONENT}}
+        require(egress.get("podSelector") == {"matchLabels": {EGRESS_LABEL: "open"}}
                 and sorted(egress.get("policyTypes") or []) == ["Egress", "Ingress"] and not egress.get("ingress"),
-                "POLICY_DRIFT", f"{EGRESS_POLICY} must select rehearsal Pods and allow no ingress")
+                "POLICY_DRIFT", f"{EGRESS_POLICY} must select only Pods labelled {EGRESS_LABEL}=open and allow no ingress")
         rules = egress.get("egress") or []
         require(len(rules) == 1, "POLICY_DRIFT", f"{EGRESS_POLICY} must have exactly one egress rule")
         ports = rules[0].get("ports") or []
@@ -462,8 +555,12 @@ class Rehearsal:
         inside = False
         for peer in peers:
             block = peer["ipBlock"]
-            network = ipaddress.ip_network(block["cidr"], strict=False)
-            require(network.prefixlen > 0, "POLICY_DRIFT", f"{EGRESS_POLICY} allows every address")
+            try:
+                network = ipaddress.ip_network(block["cidr"], strict=False)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise Refusal("POLICY_DRIFT", f"{EGRESS_POLICY} has an unreadable CIDR") from exc
+            problem = egress_network_problem(network)
+            require(problem is None, "POLICY_DRIFT", f"{EGRESS_POLICY} allows {block['cidr']}, which {problem}")
             if address.version == network.version and address in network and not any(
                     address.version == ipaddress.ip_network(e, strict=False).version and address in ipaddress.ip_network(e, strict=False)
                     for e in block.get("except") or []):
@@ -474,10 +571,31 @@ class Rehearsal:
     def _create(self, obj):
         dry = self.kube.json(["create", "--dry-run=server", "-f", "-", "-o", "json"], obj)
         require(includes(dry, obj), "ADMISSION_CHANGED", f"admission changed the {obj['kind']} the rehearsal asked for")
-        created = self.kube.json(["create", "-f", "-", "-o", "json"], obj)
-        self.created[obj["kind"]] = {"name": created["metadata"]["name"], "uid": created["metadata"]["uid"]}
+        self.create_attempted = True
+        try:
+            created = self.kube.json(["create", "-f", "-", "-o", "json"], obj)
+            self.created[obj["kind"]] = {"name": created["metadata"]["name"], "uid": created["metadata"]["uid"]}
+        except Exception:
+            # The answer may have been lost after the API server stored the object. Whatever carries this run's
+            # label is ours, and teardown deletes it by UID.
+            self._adopt()
+            raise
         require(includes(created, obj), "ADMISSION_CHANGED", f"the created {obj['kind']} differs from the request")
         return created
+
+    def _adopt(self):
+        """List the objects carrying this run's label and treat each as created. Returns True when the list was read."""
+        try:
+            found = self.kube.json(["get", "pods,configmaps", "-n", self.inputs.namespace, "-l",
+                                    f"{RUN_LABEL}={self.inputs.run_id}", "-o", "json"]).get("items") or []
+            for item in found:
+                if item.get("kind") in ("Pod", "ConfigMap") and item["metadata"].get("name") and item["metadata"].get("uid"):
+                    self.created.setdefault(item["kind"], {"name": item["metadata"]["name"], "uid": item["metadata"]["uid"]})
+        except Exception:  # noqa: BLE001 - an unreadable list is recorded, never treated as "nothing there"
+            self.sweep = "unreadable"
+            return False
+        self.sweep = "empty" if not found else "found"
+        return True
 
     def _get_pod(self):
         return self.kube.json(["get", "pod", self.inputs.name, "-n", self.inputs.namespace, "-o", "json"])
@@ -488,6 +606,7 @@ class Rehearsal:
         while True:
             pod = self._get_pod()
             phase = (pod.get("status") or {}).get("phase")
+            self._close_egress_after_fetch(pod)
             if phase in ("Succeeded", "Failed"):
                 return pod
             states = _statuses(pod).values()
@@ -499,6 +618,20 @@ class Rehearsal:
             if self.monotonic() > deadline:
                 raise Refusal("TIMEOUT", "the rehearsal Pod did not finish in time")
             self.sleep(self.poll)
+
+    def _close_egress_after_fetch(self, pod):
+        """Remove the egress label once fetch has finished, and read it back."""
+        if self.egress_closed or not _terminated(_statuses(pod).get("fetch")):
+            return
+        name, ns = self.inputs.name, self.inputs.namespace
+        try:
+            self.kube.run(["label", "pod", name, "-n", ns, f"{EGRESS_LABEL}-"])
+        except Refusal as refusal:
+            raise Refusal("EGRESS_NOT_CLOSED", "could not remove the egress label after fetch: " + refusal.message) from refusal
+        labels_now = (self._get_pod().get("metadata") or {}).get("labels") or {}
+        require(EGRESS_LABEL not in labels_now, "EGRESS_NOT_CLOSED", "the Pod still carries the egress label after fetch")
+        self.egress_closed = True
+        self.result["egressClosedAfterFetch"] = True
 
     def _logs(self, container):
         done = self.kube.call(["logs", self.inputs.name, "-n", self.inputs.namespace, "-c", container, "--tail=200"])
@@ -522,7 +655,8 @@ class Rehearsal:
                 if TIMEOUT_LOG_LINE in self._logs("postgres"):
                     raise Refusal("LOCK_BUDGET_EXCEEDED", f"a migration file ran past the {self.inputs.lock_budget_seconds} s lock budget")
                 code = str(detail).split(":")[0]
-                raise Refusal(code if code in ("MIGRATE_REFUSED", "MIGRATE_EXPECT_UNSUPPORTED", "IMAGE_FILE_MISMATCH")
+                raise Refusal(code if code in ("MIGRATE_REFUSED", "MIGRATE_EXPECT_UNSUPPORTED", "IMAGE_FILE_MISMATCH",
+                                               "EGRESS_NOT_CLOSED")
                               else "MIGRATE_FAILED", str(detail))
             if failed == "verify" and report.get("status") in ("RECORD_MISMATCH", "LOCK_BUDGET_EXCEEDED"):
                 raise Refusal(report["status"], self._verify_detail(report))
@@ -530,6 +664,7 @@ class Rehearsal:
                     "previous": "PREVIOUS_IMAGE_FAILED"}[failed]
             raise Refusal(code, f"{failed}: {detail}")
         require((pod.get("status") or {}).get("phase") == "Succeeded", "POD_FAILED", "the rehearsal Pod did not succeed")
+        require(self.egress_closed, "EGRESS_NOT_CLOSED", "the driver did not close egress after fetch")
         self._check_images(statuses)
         self._check_reports(steps)
 
@@ -563,6 +698,8 @@ class Rehearsal:
         names = [f["name"] for f in i.pending]
         require(not set(names) & set(before), "EVIDENCE_MISMATCH", "the backup already records a pending file")
         migrate = steps.get("migrate") or {}
+        require(migrate.get("egress") == "CLOSED" and (steps.get("previous") or {}).get("egress") == "CLOSED",
+                "EGRESS_NOT_CLOSED", "the migrate and previous steps did not confirm a closed network")
         require(migrate.get("status") == "APPLIED" and sorted(migrate.get("applied") or []) == names,
                 "EVIDENCE_MISMATCH", "the runner applied a different set of files")
         verify = steps.get("verify") or {}
@@ -590,6 +727,23 @@ class Rehearsal:
                                    self.sleep, self.monotonic)
         return report
 
+    def _sweep_and_teardown(self):
+        # One more look by label, so an object whose create answer was lost is never left behind.
+        if self.create_attempted:
+            self._adopt()
+        report = self.teardown()
+        if self.create_attempted and self.sweep == "unreadable":
+            report["labelSweep"] = "could not list objects by the run label"
+        return report
+
+    def _teardown_complete(self, report):
+        if not all(value == "deleted" for value in report.values()):
+            return False
+        if not self.create_attempted:
+            return True
+        # A create was attempted: either something was verified gone, or a successful label listing found nothing.
+        return bool(report) or self.sweep == "empty"
+
     def run(self):
         self.result["startedAt"] = utc_stamp(self.now())
         try:
@@ -608,11 +762,12 @@ class Rehearsal:
             self.result.update(result=stage, code="INTERNAL_ERROR", reason=f"{type(error).__name__}: {error}"[:300])
         finally:
             try:
-                self.result["teardown"] = self.teardown()
+                self.result["teardown"] = self._sweep_and_teardown()
             except Exception as error:  # noqa: BLE001
                 self.result["teardown"] = {"error": f"{type(error).__name__}: {error}"[:300]}
             self.result["created"] = self.created
-            self.result["teardownComplete"] = all(value == "deleted" for value in self.result["teardown"].values())
+            self.result["labelSweep"] = self.sweep
+            self.result["teardownComplete"] = self._teardown_complete(self.result["teardown"])
             self.result["finishedAt"] = utc_stamp(self.now())
         return self.result
 
@@ -638,7 +793,11 @@ def _delete(kube, namespace, kind, plural, name, uid, sleep, monotonic, timeout=
 def cleanup(kubectl, namespace=NAMESPACE, sleep=time.sleep, monotonic=time.monotonic):
     """Delete what a crashed run left: only Pods and ConfigMaps this tool labelled,
     by UID, and never while a rehearsal Pod is still running."""
-    require(DNS_LABEL.match(namespace) and namespace not in FORBIDDEN_NAMESPACES, "BAD_INPUT", "namespace")
+    problem = namespace_problem(namespace)
+    require(problem is None, "BAD_INPUT", f"namespace {namespace!r} may not hold a rehearsal: it {problem}")
+    ns_labels = (kubectl.json(["get", "namespace", namespace, "-o", "json"]).get("metadata") or {}).get("labels") or {}
+    require(ns_labels.get("app.kubernetes.io/managed-by") == MANAGED_BY, "NAMESPACE_UNSAFE",
+            f"namespace {namespace} is not a rehearsal namespace (label app.kubernetes.io/managed-by={MANAGED_BY})")
     found = kubectl.json(["get", "pods,configmaps", "-n", namespace, "-l",
                           f"app.kubernetes.io/managed-by={MANAGED_BY},app.kubernetes.io/component={COMPONENT}", "-o", "json"])
     items = found.get("items") or []
