@@ -432,17 +432,22 @@ class Shipped(unittest.TestCase):
         with mock.patch.object(A, "ING_PUBLIC_KEY_JWK", A.RELEASE_PUBLIC_KEY_JWK), self.assertRaises(C.Refusal) as caught:
             I.ing_pin()  # never the platform release key (R20 S1, R21 R2, R22 S1)
         self.assertEqual(caught.exception.code, "RELEASE_KEY")
-        # Review 2026-10-25: the agents' dispatch identity (decision 3) and the Secret holding lolly.ing's key are pinned
-        # by the same kind of reviewed change; until then plan, ship and deploy refuse. Andy is the only reviewer, and the
-        # suse-lolly build files the bind trusts are anchored by git blob SHA.
+        with mock.patch.object(A, "ING_PUBLIC_KEY_JWK", A.PREVIEW_PUBLIC_KEY_JWK), self.assertRaises(C.Refusal) as caught:
+            I.ing_pin()
+        self.assertEqual(caught.exception.code, "KEY_MISMATCH")
+        # Andy accepted shared-account dispatch; the signing key and second Secret still need reviewed pins.
         import preview_ing_github as IG
-        self.assertIsNone(A.ING_DISPATCH_IDENTITY)
+        self.assertEqual(A.ING_DISPATCH_IDENTITY, "ndftz")
+        self.assertIs(A.ING_ALLOW_SAME_ACCOUNT_APPROVAL, True)
+        self.assertEqual(IG.identity_anchors(), ("ndftz", ("ndftz",)))
         self.assertIsNone(A.ING_SIGNING_KEY_SECRET)
         self.assertEqual(A.ING_REVIEWERS, ("ndftz",))
-        for code, call in (("AGENT_IDENTITY", IG.identity_anchors), ("SIGNING_SECRET_NOT_PINNED", I.signing_secret)):
-            with self.assertRaises(C.Refusal) as caught:
-                call()
-            self.assertEqual(caught.exception.code, code)
+        with mock.patch.object(A, "ING_DISPATCH_IDENTITY", None), self.assertRaises(C.Refusal) as caught:
+            IG.identity_anchors()
+        self.assertEqual(caught.exception.code, "AGENT_IDENTITY")
+        with self.assertRaises(C.Refusal) as caught:
+            I.signing_secret()
+        self.assertEqual(caught.exception.code, "SIGNING_SECRET_NOT_PINNED")
         self.assertEqual(set(A.ING_BUILD_BLOBS), {".github/workflows/lolly-ing-preview.yml", ".github/lolly-ing-preview/tool.mjs",
                                                   ".github/lolly-ing-preview/instance.Dockerfile"})
         for blob in A.ING_BUILD_BLOBS.values():
