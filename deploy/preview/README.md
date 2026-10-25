@@ -1,4 +1,4 @@
-# Preview deploy command (lolly.tools Phase 1, lolly.ing Phase 2)
+# Preview deploy command (lolly.tools Phase 1b, lolly.ing Phase 2)
 
 `preview-deploy` ships one exact `main` commit of Lolly to the lolly.tools preview. It asks CI to build and sign the
 web image, puts that image on the K3s node by digest, switches the Deployment with Work's own guarded patch
@@ -98,22 +98,28 @@ Flags:
 
 ## What `ship` does
 
-1. Refuses unless the commit is `main`'s head, read as a SHA from `refs/heads/main`. Phase 1 uses the existing
-   candidate build, which itself refuses any commit that is not `main`'s head at dispatch time.
+1. Requires a reviewed preview key in `PREVIEW_PUBLIC_KEY_JWK` and `PREVIEW_PUBLIC_KEY_THUMBPRINT`.
+   Both anchors remain `None` until the owner pins Andy's new public key in a reviewed change. Until then ship and
+   deploy refuse with `PREVIEW_PIN_MISSING` before dispatch or cluster changes. A preview key equal to the release
+   key is refused. The source must be equal to or an ancestor of `main`'s head, read from `refs/heads/main`.
 2. Reads the live state:
    - It refuses while a run is active on the node, and before anything else when the live phase needs a human.
    - If this commit is live, accepted, and its records name the live image, it reports `ALREADY_LIVE` and stops.
 3. Reuses a build of this commit that still binds. Otherwise it:
    - requires a successful normal CI push run on `main` for the commit;
-   - requires no other active candidate run (it never changes the candidate workflow's concurrency);
-   - dispatches `deployment-suse.yml` on `refs/heads/main` with the same request the retired bot sent: `build_images`,
-     `release_scope=web`, `expected_source`, `ci_run` and the existing public pin.
-4. Waits for the run, tolerating brief GitHub errors. Andy approves the two signing gates in GitHub. **Agents never
-   approve an environment gate.**
+   - requires no other active preview build run;
+   - dispatches `lolly-tools/lolly`'s `.github/workflows/preview-web.yml` on `refs/heads/main` with
+     `inputs: {"source": "<40-hex sha>"}` only. It does not send `min_seq`. The workflow finds green main CI itself
+     and uses its own preview pin. The Mac still checks green CI before dispatch.
+4. Waits for the run, tolerating brief GitHub errors. **Agents never approve an environment gate.**
 5. Binds the finished run:
-   - workflow path, event `workflow_dispatch`, same repository for run and head, branch `main`, head SHA and success;
-   - the `public-candidate-web-receipts-attempt-N` artifact, with every receipt field checked by exact pattern;
-   - the image must be `ghcr.io/lolly-tools/lolly-web@sha256:...`.
+   - workflow path, event `workflow_dispatch`, same repository for run and head, branch `main` and success;
+   - exact display title `Preview web <source>`, with source equal to or an ancestor of the run's 40-hex head SHA.
+     Discovery reads up to 100 runs without filtering by head SHA, since main may advance before dispatch;
+   - the `preview-web-receipts-attempt-N` artifact, with the same five receipt files and all existing field checks;
+   - `public.jwk.json` must match the preview pin and the catalog key id must match its thumbprint. A receipt carrying
+     the release pin is refused;
+   - the image must be `ghcr.io/lolly-tools/lolly-web-preview@sha256:<64hex>`, never a tag.
 6. Requires the live records to describe the live image: same image, phase `accepted`, `rolled-back` or `aborted`.
    Otherwise `RECORDS_STALE`.
 7. Builds the smoke expectations from the commit's own files:
@@ -141,7 +147,7 @@ Flags:
     - A start whose reply is lost is uncertain, not failed. The command looks for the run by its id.
     - `status --follow ID` reattaches and records the result.
 
-`deploy <sha>` is steps 2 and 5 to 11 for the newest binding candidate run of an earlier commit.
+`deploy <sha>` is steps 1, 2 and 5 to 11 for the newest binding preview build run of an earlier commit.
 
 ## On the node
 
@@ -230,16 +236,31 @@ The rollback is one attempt:
 1. An `app-update.py` plan back to the recorded previous image, re-planned under resource-version churn like the
    switch. The image is checked to be the anchored package by digest, and it is pulled after a capacity check if it
    is missing.
-2. The smoke with the previous build's recorded expectations, and the edge headers from before the switch.
+2. The smoke with the previous build's recorded expectations and catalog pin, and the edge headers from before the
+   switch. The release package remains allowed for rollback to images deployed before Phase 1b.
 3. If that fails too, the phase becomes `rollback-unhealthy` and the result is `ROLLBACK_UNHEALTHY`. Every later run
    refuses until a human looks. The records then describe the failed new build while the old image is live, so
    `--clear-hold` alone is not enough: `ship` and `deploy` refuse `RECORDS_STALE` before any build is reused or
    dispatched. The way forward is `adopt` (below).
 
+The key follows the image. New deploy, conversion and adopt requests carry `release.catalogPin`, the catalog-key
+thumbprint. Manual rollback requests carry `catalogPin`, which must match the node's recorded rollback target.
+The node accepts only the anchored preview or release key and uses that key for the served receipt smoke, including
+the light smoke before switching. New deploys additionally require the preview key and preview package.
+
+The Deployment annotation `lolly.tools/preview-catalog-pin` records the live image's thumbprint. Before a switch it
+is copied into `catalogPin` in the `lolly.tools/preview-previous` JSON record, alongside the image digest and smoke
+expectations. Automatic rollback, including `ExecStopPost`, reads that record; manual rollback uses the same record.
+A record or live annotation with no pin is treated as release-pinned. Successful deployment, adoption, conversion and
+rollback results also include `catalogPin` in the node result and the Mac's `deploys.jsonl` audit log. Image labels
+continue to track containerd retention ownership only; they do not choose the signing key.
+
 ### Adopt
 
 `adopt <sha>` re-seeds the records for the image that is live. It never dispatches a build.
-1. It binds the candidate run of `<sha>` that built exactly the live image.
+1. It binds the run of `<sha>` that built exactly the live image. For the old `ghcr.io/lolly-tools/lolly-web` package,
+   it still uses `deployment-suse.yml`, `public-candidate-web-receipts-attempt-N`, exact head SHA and the release pin.
+   For the preview package, it uses the new workflow and preview pin. It records the bound pin with the image.
 2. It runs check-target, then a full smoke of the live image against that build's expectations, inside the unit.
 3. If the smoke passes, it writes the records with phase `accepted` (`ADOPTED`). It changes only annotations.
 4. If the smoke fails, it refuses (`ADOPT_SMOKE_FAILED`) and changes nothing.
@@ -289,11 +310,11 @@ It changes nothing. Run it before the first live run.
 
 ## One-time conversion (PROPOSAL 3.6)
 
-lolly.tools still serves a claim-mounted root with an nginx ConfigMap over the image's own files. The command refuses
-to deploy until that layout is converted, once, with the bytes that are live now.
+If lolly.tools serves a claim-mounted root with an nginx ConfigMap over the image's own files, the command refuses
+to deploy until that layout is converted, once, with the bytes that are live now. This path remains available for old images.
 
-1. `plan <live sha>` binds the candidate run that built exactly the live image, even when a newer rebuild of the
-   commit exists, and skips runs whose receipt has expired. It prints the receipt's expiry: run 39658589581 for
+1. `plan <live sha>` binds the run that built exactly the live image, using the same old-workflow compatibility as
+   adopt, even when a newer rebuild of the commit exists, and skips runs whose receipt has expired. It prints the receipt's expiry: run 39658589581 for
    4d07e5fe expires at 2026-11-05T08:25:02Z. It then prints the following.
    - **The patch:** the exact guarded patch. It removes the `public-delivery` volume and its three mounts, removes the
      `nginx` ConfigMap volume and its four mounts, sets `revisionHistoryLimit: 5` and keeps the image.
@@ -334,7 +355,7 @@ May change:
 Never touches:
 - Secrets, PVCs, Postgres, the edge, DNS, other Deployments or the Helm release;
 - pins made by other procedures;
-- any GitHub setting. It never approves an environment gate. The only GitHub write is the candidate workflow dispatch.
+- any GitHub setting. It never approves an environment gate. The only GitHub write is the preview workflow dispatch.
 
 ## Records
 
@@ -371,8 +392,9 @@ Images follow a standing policy, decided by image ID.
   before its turn is `already-gone`. A removal starts only while the run's budget still fits a whole one (270 s);
   otherwise the image is `deferred` to the next gc. `gc --execute` ends `GC_INCOMPLETE` while any image stays.
 - **Images left by other procedures:** with about 32 GiB free and a 25 GiB reserve, the node has room for roughly one
-  new build. So the report also lists every unused `lolly-web` image this command did not pull. Each entry gives its
-  refs, size, pinned refs, who pinned it (`preview-deploy` or another procedure) and any old revision still naming it.
+  new build. So the report also lists unused `lolly-web-preview` and old `lolly-web` images this command did not pull.
+  Each entry gives its refs, size, pinned refs, who pinned it (`preview-deploy` or another procedure) and any old
+  revision still naming it.
   Each entry comes with commands for Andy. The command never runs them:
   1. check-target;
   2. a fresh report;
@@ -407,8 +429,8 @@ On local-path storage a deleted claim deletes its data.
 Common refusal codes:
 - **Tool and inputs:** `BAD_ARGUMENTS`, `TOOL_NOT_LOCKED`, `TOOL_DIRTY`, `TOOL_NOT_MAIN`, `TOOL_HASH_MISMATCH`,
   `STATE_DIR_INVALID`, `CHECK_TARGET_PATH`, `CHECK_TARGET_IDENTITY`, `CHECK_TARGET_CHANGED`, `PROFILE_INVALID`.
-- **Source, build and run:** `NOT_MAIN_HEAD`, `NOT_ON_MAIN`, `CI_NOT_GREEN`, `CANDIDATE_ACTIVE`, `RUN_NOT_BOUND`,
-  `RUN_FAILED`, `RECEIPT_INVALID`, `CONNECTOR_ORIGINS_CHANGED`, `CONNECTOR_ORIGINS_UNPROVEN`, `MODELS_CHANGED`,
+- **Source, build and run:** `PREVIEW_PIN_MISSING`, `PREVIEW_PIN_INVALID`, `CATALOG_PIN_INVALID`, `NOT_ON_MAIN`,
+  `CI_NOT_GREEN`, `CANDIDATE_ACTIVE`, `RUN_NOT_BOUND`, `RUN_FAILED`, `RECEIPT_INVALID`, `CONNECTOR_ORIGINS_CHANGED`, `CONNECTOR_ORIGINS_UNPROVEN`, `MODELS_CHANGED`,
   `FORMAT_LOWERING`.
 - **Live state:** `RECORDS_STALE`, `LIVE_SMOKE_FAILED`, `BACKUP_WINDOW`, `CHECK_TARGET_FAILED`, `LOCK_HELD`,
   `HELD_FOR_HUMAN`, `NOT_CONVERTED`, `NOT_READY`, `STATE_CHANGED`, `LOW_CAPACITY`, `PIN_FAILED`, `BAD_IMAGE`,

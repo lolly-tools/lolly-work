@@ -10,19 +10,21 @@ thresholds. A changed anchor is a reviewed pull request plus a new tool lock.
 
 from __future__ import annotations
 
-# lolly.tools (Phase 1). The build is the existing candidate workflow, unchanged.
+# lolly.tools (Phase 1b). Preview builds use their own workflow, package and key.
 TOOLS = {
     "site": "lolly.tools",
     "repository": "lolly-tools/lolly",
-    "buildWorkflowFile": "deployment-suse.yml",
-    "buildWorkflowPath": ".github/workflows/deployment-suse.yml",
+    "buildWorkflowFile": "preview-web.yml",
+    "buildWorkflowPath": ".github/workflows/preview-web.yml",
     "ciWorkflowFile": "ci.yml",
     "ciWorkflowPath": ".github/workflows/ci.yml",
     "branch": "main",
-    "receiptArtifactPrefix": "public-candidate-web-receipts-attempt-",
-    "imageRepository": "ghcr.io/lolly-tools/lolly-web",
+    "buildRunTitle": "Preview web {sha}",
+    "buildSourceInput": "source",
+    "receiptArtifactPrefix": "preview-web-receipts-attempt-",
+    "imageRepository": "ghcr.io/lolly-tools/lolly-web-preview",
     "registryHost": "ghcr.io",
-    "registryName": "lolly-tools/lolly-web",
+    "registryName": "lolly-tools/lolly-web-preview",
     "profile": "lolly-demo",
     "receiptTarget": "web",
     "origin": "https://lolly.tools",
@@ -52,6 +54,14 @@ TOOLS = {
     "modelsReleaseAnnotation": "lolly.tools/models-release",
     "revisionHistoryLimit": 5,
 }
+
+# Only conversion, adoption and rollback may use the old release package.
+TOOLS_LEGACY = dict(TOOLS, buildWorkflowFile="deployment-suse.yml",
+                    buildWorkflowPath=".github/workflows/deployment-suse.yml",
+                    receiptArtifactPrefix="public-candidate-web-receipts-attempt-",
+                    imageRepository="ghcr.io/lolly-tools/lolly-web", registryName="lolly-tools/lolly-web")
+TOOLS_LEGACY.pop("buildRunTitle")
+TOOLS_LEGACY.pop("buildSourceInput")
 
 # lolly.ing (Phase 2, PROPOSAL section 4). One private instance image holds the Work
 # server, the SUSE shell and the pack. suse-lolly's private lolly-ing-preview.yml builds
@@ -140,8 +150,7 @@ NODE_ING_SMOKE_COOKIE = "/etc/lolly-preview/lolly.ing-smoke-session"
 NODE_SPOOL_DIR = "/var/lib/lolly-preview/spool"
 
 # Lolly's release catalog pin, LOLLY_RELEASE_PUBLIC_KEY_JWK in lolly-tools/lolly.
-# Phase 1 keeps the release key (decision 5). Phase 1b replaces this anchor with
-# the preview key in a reviewed change.
+# Kept for old-image rollback and for lolly.ing to refuse the release key.
 RELEASE_PUBLIC_KEY_JWK = {
     "kty": "EC",
     "crv": "P-256",
@@ -149,6 +158,40 @@ RELEASE_PUBLIC_KEY_JWK = {
     "y": "SWK6wsAVjRAad2w8MxmIkTGdgNMFHhhSNdeEqfH5cVg",
 }
 RELEASE_PUBLIC_KEY_THUMBPRINT = "5zVngG6s-652_L8Zdok5PTfQ6vxdPAYfcpBWxMtzs5c"
+
+# Andy's lolly.tools preview key (generated 2026-10-25, private half only in the
+# preview-catalog-signing environment of lolly-tools/lolly), LOLLY_PREVIEW_PUBLIC_KEY_JWK.
+PREVIEW_PUBLIC_KEY_JWK = {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "IeLSk-4i--bwu4VU0lZerw6m-RtnUN5kb1aUVBSfHnU",
+    "y": "w6mzJvJ7TogpxQMuysRzB7533aKXg45YFX-0AzKx4Jo",
+}
+PREVIEW_PUBLIC_KEY_THUMBPRINT = "X3pjltp8_C-Swm8jOpPnv29qzQ2ZtLwqORMSHgMn-lk"
+
+
+def preview_pin():
+    from preview_common import require
+    from preview_receipt import jwk_thumbprint, public_point
+    require(isinstance(PREVIEW_PUBLIC_KEY_JWK, dict) and isinstance(PREVIEW_PUBLIC_KEY_THUMBPRINT, str),
+            "PREVIEW_PIN_MISSING", "lolly.tools preview key is not pinned in the tool; nothing was changed")
+    public_point(PREVIEW_PUBLIC_KEY_JWK)
+    thumbprint = jwk_thumbprint(PREVIEW_PUBLIC_KEY_JWK)
+    require(thumbprint != RELEASE_PUBLIC_KEY_THUMBPRINT and thumbprint != jwk_thumbprint(RELEASE_PUBLIC_KEY_JWK),
+            "RELEASE_KEY", "lolly.tools preview builds need their own key, separate from the release key")
+    require(thumbprint == PREVIEW_PUBLIC_KEY_THUMBPRINT, "PREVIEW_PIN_INVALID", "preview pin thumbprint differs")
+    return PREVIEW_PUBLIC_KEY_JWK, thumbprint
+
+
+def catalog_pin(thumbprint):
+    """Resolve a recorded or requested thumbprint against the reviewed keys."""
+    from preview_common import Refusal
+    if thumbprint == RELEASE_PUBLIC_KEY_THUMBPRINT:
+        return RELEASE_PUBLIC_KEY_JWK
+    if PREVIEW_PUBLIC_KEY_THUMBPRINT is not None and thumbprint == PREVIEW_PUBLIC_KEY_THUMBPRINT:
+        return preview_pin()[0]
+    raise Refusal("CATALOG_PIN_INVALID", "catalog pin is neither anchored key")
+
 
 # Shell stored formats (R21 R7). A manual rollback that lowers one is refused.
 STORED_FORMATS = {
