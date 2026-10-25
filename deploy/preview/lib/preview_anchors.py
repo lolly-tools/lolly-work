@@ -159,9 +159,15 @@ RELEASE_PUBLIC_KEY_JWK = {
 }
 RELEASE_PUBLIC_KEY_THUMBPRINT = "5zVngG6s-652_L8Zdok5PTfQ6vxdPAYfcpBWxMtzs5c"
 
-# The owner pins Andy's new public key in a reviewed change. Until then new builds refuse.
-PREVIEW_PUBLIC_KEY_JWK = None
-PREVIEW_PUBLIC_KEY_THUMBPRINT = None
+# Andy's lolly.tools preview key (generated 2026-10-25, private half only in the
+# preview-catalog-signing environment of lolly-tools/lolly), LOLLY_PREVIEW_PUBLIC_KEY_JWK.
+PREVIEW_PUBLIC_KEY_JWK = {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "IeLSk-4i--bwu4VU0lZerw6m-RtnUN5kb1aUVBSfHnU",
+    "y": "w6mzJvJ7TogpxQMuysRzB7533aKXg45YFX-0AzKx4Jo",
+}
+PREVIEW_PUBLIC_KEY_THUMBPRINT = "X3pjltp8_C-Swm8jOpPnv29qzQ2ZtLwqORMSHgMn-lk"
 
 
 def preview_pin():
