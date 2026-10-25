@@ -209,6 +209,8 @@ class Binding(unittest.TestCase):
             "foreign image": {"web.json": dict(web, digest="ghcr.io/evil/lolly-web@sha256:" + "1" * 64)},
             "other pin": {"public.jwk.json": F.make_key()[1]},
             "unverified catalog": {"catalog.json": {"verified": False, "keyId": self.thumb, "indexSha256": "7" * 64}},
+            "release catalog key": {"catalog.json": {"verified": True, "keyId": A.RELEASE_PUBLIC_KEY_THUMBPRINT,
+                                                       "indexSha256": "7" * 64}},
             "missing boot": {"web-boot.json": None},
             "extra file": {"extra.json": {}},
         }
@@ -219,7 +221,7 @@ class Binding(unittest.TestCase):
     def test_bind_run_requires_workflow_event_repository_branch_commit_success(self):
         class StubGh:
             def json(inner, path, **params):
-                return {"artifacts": [{"id": 5, "name": "public-candidate-web-receipts-attempt-1", "expired": False,
+                return {"artifacts": [{"id": 5, "name": "preview-web-receipts-attempt-1", "expired": False,
                                        "expires_at": "2026-11-05T08:25:02Z"}]}
 
             def binary(inner, path, limit):
@@ -227,25 +229,64 @@ class Binding(unittest.TestCase):
         bound = G.bind_run(StubGh(), A.TOOLS, self.run, "b" * 40, self.pin, self.thumb)
         self.assertEqual((bound["run"], bound["receiptExpiresAt"]), (77, "2026-11-05T08:25:02Z"))
         for field, value in (("path", ".github/workflows/evil.yml"), ("event", "push"), ("head_branch", "preview"),
-                             ("head_sha", "c" * 40), ("conclusion", "failure"),
+                             ("head_sha", "invalid"), ("conclusion", "failure"),
                              ("head_repository", {"full_name": "fork/lolly"})):
             run = dict(self.run, **{field: value})
             with self.subTest(field=field), self.assertRaises(C.Refusal):
                 G.bind_run(StubGh(), A.TOOLS, run, "b" * 40, self.pin, self.thumb)
 
-    def test_dispatch_request_matches_the_retired_bot_with_a_full_ref(self):
+    def test_dispatch_request_uses_only_source_and_a_full_ref(self):
         class Recorder:
             posted = None
 
             def post(inner, path, body):
                 Recorder.posted = (path, body)
-        G.dispatch_build(Recorder(), A.TOOLS, "b" * 40, 900, self.pin)
+        G.dispatch_build(Recorder(), A.TOOLS, "b" * 40)
         path, body = Recorder.posted
-        self.assertEqual(path, "repos/lolly-tools/lolly/actions/workflows/deployment-suse.yml/dispatches")
+        self.assertEqual(path, "repos/lolly-tools/lolly/actions/workflows/preview-web.yml/dispatches")
         self.assertEqual(body["ref"], "refs/heads/main")  # review S-M2: never the bare name a tag could share
-        self.assertEqual({k: v for k, v in body["inputs"].items() if k != "public_key_jwk"},
-                         {"build_images": "true", "release_scope": "web", "expected_source": "b" * 40, "ci_run": "900"})
-        self.assertEqual(json.loads(body["inputs"]["public_key_jwk"]), self.pin)
+        self.assertEqual(body["inputs"], {"source": "b" * 40})
+
+
+    def test_run_discovery_and_binding_use_source_title_with_a_newer_main_head(self):
+        source, head = "b" * 40, "c" * 40
+        run = dict(self.run, head_sha=head)
+        calls = []
+
+        class StubGh:
+            def json(inner, path, **params):
+                calls.append((path, params))
+                if path.endswith("/runs"):
+                    wrong = dict(run, id=78, display_title="Preview web " + head)
+                    return {"workflow_runs": [wrong, run, dict(run, id=79, path="other.yml"),
+                                               dict(run, id=80, event="push"), dict(run, id=81, head_branch="other")]}
+                if "/compare/" in path:
+                    return {"status": "ahead"}
+                return {"artifacts": [{"id": 5, "name": "preview-web-receipts-attempt-1", "expired": False}]}
+
+            def binary(inner, path, limit):
+                return base64.b64decode(F.receipt_zip(self.build, 77, 1, self.pin, self.thumb))
+
+            def sleep(inner, seconds):
+                self.fail("the matching run should be found immediately")
+
+        gh = StubGh()
+        found = G.find_new_run(gh, A.TOOLS, source, set())
+        self.assertEqual(found, run)
+        self.assertEqual(calls[0][1], {"event": "workflow_dispatch", "branch": "main", "per_page": 100})
+        self.assertEqual(G.bind_run(gh, A.TOOLS, found, source, self.pin, self.thumb)["image"], self.build["image"])
+        self.assertIn((f"repos/{F.REPO}/compare/{source}...{head}", {}), calls)
+
+    def test_binding_refuses_another_title_or_a_source_outside_the_run_head(self):
+        class StubGh:
+            def json(inner, path, **params):
+                self.assertIn("/compare/", path)
+                return {"status": "diverged"}
+        for run in (dict(self.run, display_title="Preview web " + "c" * 40),
+                    dict(self.run, head_sha="c" * 40)):
+            with self.subTest(run=run), self.assertRaises(C.Refusal) as caught:
+                G.bind_run(StubGh(), A.TOOLS, run, "b" * 40, self.pin, self.thumb)
+            self.assertEqual(caught.exception.code, "RUN_NOT_BOUND")
 
 
 class Smoke(unittest.TestCase):
@@ -448,10 +489,13 @@ class EndToEnd(unittest.TestCase):
         base = Path(self.tmp.name)
         self.key, self.pin = F.make_key()
         self.thumb = R.jwk_thumbprint(self.pin)
-        self.builds = {"old": F.make_build(self.key, OLD, "old"),
+        self.release_key, self.release_pin = F.make_key()
+        self.release_thumb = R.jwk_thumbprint(self.release_pin)
+        self.builds = {"old": F.make_build(self.release_key, OLD, "old", image_repository=F.LEGACY_IMAGE_REPO),
                        "new": F.make_build(self.key, NEW, "new", extra_pages=["info/new-page.html"]),
-                       "rebuild": F.make_build(self.key, OLD, "old rebuild")}
+                       "rebuild": F.make_build(self.release_key, OLD, "old rebuild", image_repository=F.LEGACY_IMAGE_REPO)}
         self.old, self.new = self.builds["old"], self.builds["new"]
+        self.new["catalogPin"] = self.thumb
         # A clean git checkout holding exactly the tool, as launch.py would find it.
         self.checkout = base / "checkout"
         for relative, path in M.tool_files(ROOT):
@@ -491,26 +535,28 @@ class EndToEnd(unittest.TestCase):
         self.gh_path = base / "gh.json"
         self.gh = {"mainHead": NEW, "compare": {f"{OLD}...{NEW}": "ahead", f"{NEW}...{OLD}": "behind"}, "calls": [],
                    "ciRuns": [F.run_object(900, NEW, path=".github/workflows/ci.yml", event="push")],
-                   "runs": [F.run_object(800, OLD, created="2026-10-21T08:00:00Z")],
+                   "runs": [F.run_object(800, OLD, path=A.TOOLS_LEGACY["buildWorkflowPath"], created="2026-10-21T08:00:00Z")],
                    "statusSequence": {"1001": ["waiting", "completed"]}, "finalConclusion": "success",
                    "onDispatch": F.run_object(1001, NEW, status="queued", conclusion=None),
-                   "artifacts": {"1001": [{"id": 555, "name": "public-candidate-web-receipts-attempt-1", "expired": False}],
+                   "artifacts": {"1001": [{"id": 555, "name": "preview-web-receipts-attempt-1", "expired": False}],
                                  "800": [{"id": 556, "name": "public-candidate-web-receipts-attempt-1", "expired": False,
                                           "expires_at": "2026-11-05T08:25:02Z"}]},
                    "zips": {"555": F.receipt_zip(self.new, 1001, 1, self.pin, self.thumb),
-                            "556": F.receipt_zip(self.old, 800, 1, self.pin, self.thumb)},
+                            "556": F.receipt_zip(self.old, 800, 1, self.release_pin, self.release_thumb)},
                    "files": {**F.source_files(self.old), **F.source_files(self.new)},
                    "variable": {"value": F.CONNECTORS, "updated_at": "2026-10-20T04:00:00Z"}}
         self.write_gh()
         self.environ = mock.patch.dict(os.environ, {
             "PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_STATE": str(self.cluster_path), "FAKE_GH_STATE": str(self.gh_path),
-            "FAKE_SANDBOX": str(self.sandbox), "FAKE_BIN": str(self.bin), "FAKE_PIN": json.dumps(self.pin),
+            "FAKE_SANDBOX": str(self.sandbox), "FAKE_BIN": str(self.bin), "FAKE_PIN": json.dumps(self.release_pin), "FAKE_PREVIEW_PIN": json.dumps(self.pin),
             "FAKE_KNOWN_HOSTS": str(self.known_hosts)})
         self.environ.start()
         for name in ("FAKE_CRASH_PHASE", "FAKE_CHECK_TARGET", "FAKE_SSH_DOWN", "FAKE_START_REPLY_LOST", "FAKE_UNIT_NEVER_STARTS"):
             os.environ.pop(name, None)
-        self.patches = [mock.patch.object(A, "RELEASE_PUBLIC_KEY_JWK", self.pin),
-                        mock.patch.object(A, "RELEASE_PUBLIC_KEY_THUMBPRINT", self.thumb),
+        self.patches = [mock.patch.object(A, "RELEASE_PUBLIC_KEY_JWK", self.release_pin),
+                        mock.patch.object(A, "RELEASE_PUBLIC_KEY_THUMBPRINT", self.release_thumb),
+                        mock.patch.object(A, "PREVIEW_PUBLIC_KEY_JWK", self.pin),
+                        mock.patch.object(A, "PREVIEW_PUBLIC_KEY_THUMBPRINT", self.thumb),
                         mock.patch.object(M, "SLEEP", lambda seconds: None),
                         mock.patch.object(M, "TOOL_ROOT", self.checkout),
                         mock.patch.object(M, "STATE_DIR", self.state_dir)]
@@ -530,10 +576,11 @@ class EndToEnd(unittest.TestCase):
     def add_build(self, sha, label, run_id):
         """A built and bound commit that `deploy` and `adopt` can use."""
         build = F.make_build(self.key, sha, label)
+        build["catalogPin"] = self.thumb
         self.builds[label] = build
         self.gh = json.loads(self.gh_path.read_text())
         self.gh["runs"].append(F.run_object(run_id, sha))
-        self.gh["artifacts"][str(run_id)] = [{"id": run_id + 100000, "name": "public-candidate-web-receipts-attempt-1", "expired": False}]
+        self.gh["artifacts"][str(run_id)] = [{"id": run_id + 100000, "name": "preview-web-receipts-attempt-1", "expired": False}]
         self.gh["zips"][str(run_id + 100000)] = F.receipt_zip(build, run_id, 1, self.pin, self.thumb)
         self.gh["files"].update(F.source_files(build))
         self.write_gh()
@@ -655,10 +702,10 @@ class EndToEnd(unittest.TestCase):
     def converted_plan(self, rebuild_newer=False):
         self.set_cluster(F.cluster_state(self.builds, self.old, converted=False))
         if rebuild_newer:  # a newer rebuild of the same commit, with other bytes (review C-H4)
-            self.gh["runs"].append(F.run_object(850, OLD))
+            self.gh["runs"].append(F.run_object(850, OLD, path=A.TOOLS_LEGACY["buildWorkflowPath"]))
             self.gh["artifacts"]["850"] = [{"id": 557, "name": "public-candidate-web-receipts-attempt-1", "expired": False}]
-            self.gh["zips"]["557"] = F.receipt_zip(self.builds["rebuild"], 850, 1, self.pin, self.thumb)
-            self.gh["runs"].append(F.run_object(860, OLD))
+            self.gh["zips"]["557"] = F.receipt_zip(self.builds["rebuild"], 850, 1, self.release_pin, self.release_thumb)
+            self.gh["runs"].append(F.run_object(860, OLD, path=A.TOOLS_LEGACY["buildWorkflowPath"]))
             self.gh["artifacts"]["860"] = [{"id": 558, "name": "public-candidate-web-receipts-attempt-1", "expired": True}]
         self.write_gh()
         code, events = self.cli("plan", OLD)
@@ -689,8 +736,7 @@ class Deploys(EndToEnd):
         self.assertEqual(json.loads(notes["previous"])["image"], self.old["image"])
         posts = [call for call in self.gh_calls() if call["method"] == "POST"]
         self.assertEqual(len(posts), 1)
-        self.assertEqual((posts[0]["body"]["ref"], posts[0]["body"]["inputs"]["expected_source"], posts[0]["body"]["inputs"]["ci_run"]),
-                         ("refs/heads/main", NEW, "900"))
+        self.assertEqual(posts[0]["body"], {"ref": "refs/heads/main", "inputs": {"source": NEW}})
         checks = {item["check"]: item["ok"] for item in self.result_file()["checks"]}
         self.assertTrue(all(checks.values()), checks)
         self.assertIn("pull", {call["command"] for call in self.cluster()["crictlCalls"]})
@@ -707,6 +753,46 @@ class Deploys(EndToEnd):
         self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"))
         self.assertEqual(len(self.cluster()["writes"]), writes)
         self.assertEqual(len([c for c in self.gh_calls() if c["method"] == "POST"]), 1)
+
+    def test_ship_accepts_source_behind_the_dispatched_main_head(self):
+        head = "c" * 40
+        self.gh["mainHead"] = head
+        self.gh["onDispatch"]["head_sha"] = head
+        self.write_gh()
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+
+    def test_manual_rollback_of_an_old_record_uses_the_release_pin(self):
+        previous = F.old_record(self.old)
+        self.assertNotIn("catalogPin", previous)
+        self.cluster_with_previous(self.new, previous)
+        with mock.patch.object(A, "PREVIEW_PUBLIC_KEY_JWK", None), \
+                mock.patch.object(A, "PREVIEW_PUBLIC_KEY_THUMBPRINT", None), mock.patch.dict(os.environ):
+            os.environ.pop("FAKE_PREVIEW_PIN")
+            code, events = self.cli("rollback")
+        self.assertEqual((code, self.done(events)["result"]), (2, "ROLLED_BACK"), events)
+        self.assertEqual(self.live()[1]["catalog-pin"], self.release_thumb)
+        self.assertTrue(all(item["ok"] for item in self.result_file()["rollbackChecks"]))
+        self.assertEqual(self.records()[-1]["catalogPin"], self.release_thumb)
+
+    def test_manual_rollback_of_a_preview_image_uses_its_recorded_pin(self):
+        fix = self.add_build("c" * 40, "fix", 1101)
+        self.cluster_with_previous(fix, dict(F.old_record(self.new, run="1001"), catalogPin=self.thumb))
+        code, events = self.cli("rollback")
+        self.assertEqual((code, self.done(events)["result"]), (2, "ROLLED_BACK"), events)
+        self.assertEqual((self.live()[0], self.live()[1]["catalog-pin"]), (self.new["image"], self.thumb))
+        self.assertTrue(all(item["ok"] for item in self.result_file()["rollbackChecks"]))
+
+    def test_failed_watch_restores_a_preview_image_with_its_recorded_pin(self):
+        self.with_watch()
+        code, events = self.cli("ship", NEW)
+        self.assertEqual(code, 0, events)
+        fix = self.add_build("c" * 40, "fix", 1101)
+        self.behave(watchFailAfter={fix["image"]: 2})
+        code, events = self.cli("deploy", fix["sha"])
+        self.assertEqual((code, self.done(events)["result"]), (2, "ROLLED_BACK"), events)
+        self.assertEqual((self.live()[0], self.live()[1]["catalog-pin"]), (self.new["image"], self.thumb))
+        self.assertTrue(all(item["ok"] for item in self.result_file()["rollbackChecks"]))
 
     def test_ship_reuses_a_bound_build_and_tolerates_brief_github_errors(self):
         """Review C-L7."""
@@ -751,7 +837,10 @@ class Deploys(EndToEnd):
         self.assertFalse([p for p in self.patches_written() if any(op["path"].endswith("/image") and op["op"] == "replace" for op in p)])
 
     def test_deploy_of_a_built_commit_already_live_is_a_no_op(self):
-        code, events = self.cli("deploy", OLD)
+        self.gh["runs"].append(F.run_object(1001, NEW))
+        self.write_gh()
+        self.set_cluster(F.cluster_state(self.builds, self.new, annotations=F.preview_annotations(self.new, run="1001")))
+        code, events = self.cli("deploy", NEW)
         self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"))
         self.assertEqual(self.cluster()["writes"], [])
 
@@ -851,6 +940,47 @@ class Deploys(EndToEnd):
 class Refusals(EndToEnd):
     """Every refusal before a change, and the tool, profile and identity checks."""
 
+    def test_missing_preview_pin_refuses_ship_and_deploy_before_dispatch_or_node_changes(self):
+        for command in ("ship", "deploy"):
+            with self.subTest(command=command), mock.patch.object(A, "PREVIEW_PUBLIC_KEY_JWK", None), \
+                    mock.patch.object(A, "PREVIEW_PUBLIC_KEY_THUMBPRINT", None):
+                code, events = self.cli(command, NEW)
+            self.assertEqual((code, self.done(events)["code"]), (1, "PREVIEW_PIN_MISSING"), events)
+        self.assertFalse(any(call["method"] == "POST" for call in self.gh_calls()))
+        self.assertEqual(self.cluster()["writes"], [])
+
+    def test_preview_anchor_cannot_be_the_release_key(self):
+        with mock.patch.object(A, "PREVIEW_PUBLIC_KEY_JWK", self.release_pin), \
+                mock.patch.object(A, "PREVIEW_PUBLIC_KEY_THUMBPRINT", self.release_thumb):
+            code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "RELEASE_KEY"), events)
+        self.assertEqual(self.cluster()["writes"], [])
+        self.assertFalse(any(call["method"] == "POST" for call in self.gh_calls()))
+
+    def test_ship_refuses_a_receipt_carrying_the_release_pin(self):
+        self.gh["runs"].append(F.run_object(1001, NEW))
+        self.gh["zips"]["555"] = F.receipt_zip(self.new, 1001, 1, self.release_pin, self.release_thumb)
+        self.write_gh()
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "RECEIPT_INVALID"), events)
+        self.assertEqual(self.cluster()["writes"], [])
+        self.assertFalse(any(call["method"] == "POST" for call in self.gh_calls()))
+
+    def test_node_refuses_a_request_pin_outside_the_anchors(self):
+        request = M.Context.request
+        unknown = R.jwk_thumbprint(F.make_key()[1])
+
+        def tampered(context, kind, deploy_id, **extra):
+            value = request(context, kind, deploy_id, **extra)
+            if kind == "deploy":
+                value["release"]["catalogPin"] = unknown
+            return value
+
+        with mock.patch.object(M.Context, "request", tampered):
+            code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "CATALOG_PIN_INVALID"), events)
+        self.assertEqual(self.cluster()["writes"], [])
+
     def test_refusals_before_any_change(self):
         cases = [
             ("lock", lambda: (self.sandbox / "unit-state").write_text("active"), "LOCK_HELD"),
@@ -858,7 +988,7 @@ class Refusals(EndToEnd):
             ("check-target", lambda: os.environ.__setitem__("FAKE_CHECK_TARGET", "fail"), "CHECK_TARGET_FAILED"),
             ("capacity", lambda: self.set_cluster(dict(self.cluster(), capacity={"total": 100 * F.GIB, "available": 26 * F.GIB})), "LOW_CAPACITY"),
             ("pins ignored", lambda: self.behave(pinsIgnored=True), "PIN_FAILED"),
-            ("not main head", lambda: self.gh.update(mainHead="c" * 40), "NOT_MAIN_HEAD"),
+            ("not on main", lambda: self.gh["compare"].update({f"{NEW}...{NEW}": "behind"}), "NOT_ON_MAIN"),
             ("ci red", lambda: self.gh.update(ciRuns=[F.run_object(900, NEW, path=".github/workflows/ci.yml", event="push", conclusion="failure")]), "CI_NOT_GREEN"),
             ("candidate active", lambda: self.gh["runs"].append(F.run_object(990, "d" * 40, status="waiting", conclusion=None)), "CANDIDATE_ACTIVE"),
             ("build failed", lambda: self.gh.update(finalConclusion="failure"), "RUN_FAILED"),
@@ -883,9 +1013,11 @@ class Refusals(EndToEnd):
 
     def test_hold_comes_before_already_live(self):
         """Review S-M4: an unsettled phase is held even when the requested build is the live one."""
-        notes = F.preview_annotations(self.old, phase="rollback-unhealthy")
-        self.set_cluster(F.cluster_state(self.builds, self.old, annotations=notes))
-        code, events = self.cli("deploy", OLD)
+        self.gh["runs"].append(F.run_object(1001, NEW))
+        self.write_gh()
+        notes = F.preview_annotations(self.new, phase="rollback-unhealthy", run="1001")
+        self.set_cluster(F.cluster_state(self.builds, self.new, annotations=notes))
+        code, events = self.cli("deploy", NEW)
         self.assertEqual(self.done(events)["code"], "HELD_FOR_HUMAN")
 
     def test_records_that_do_not_describe_the_live_image_are_refused(self):
@@ -1287,6 +1419,14 @@ class Operations(EndToEnd):
         code, events = self.cli("deploy", "c" * 40, "--clear-hold")
         self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
         self.assertEqual(self.live()[0], fix["image"])
+
+    def test_adopt_of_an_old_live_image_works_without_a_preview_pin(self):
+        with mock.patch.object(A, "PREVIEW_PUBLIC_KEY_JWK", None), \
+                mock.patch.object(A, "PREVIEW_PUBLIC_KEY_THUMBPRINT", None), mock.patch.dict(os.environ):
+            os.environ.pop("FAKE_PREVIEW_PIN")
+            code, events = self.cli("adopt", OLD)
+        self.assertEqual((code, self.done(events)["result"]), (0, "ADOPTED"), events)
+        self.assertEqual(self.live()[1]["catalog-pin"], self.release_thumb)
 
     def test_adopt_of_a_healthy_live_build_restores_accepted_records(self):
         notes = F.preview_annotations(self.old, phase="rolling-back")

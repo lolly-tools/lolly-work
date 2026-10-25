@@ -86,7 +86,11 @@ def command_words(args):
 
 def anchored_image(image, anchors):
     """repository@sha256:<64 hex> of the anchored package, nothing else (review S-L1)."""
-    return isinstance(image, str) and re.fullmatch(re.escape(anchors["imageRepository"]) + r"@sha256:[0-9a-f]{64}", image) is not None
+    repositories = [anchors["imageRepository"]]
+    if anchors["site"] == "lolly.tools":
+        repositories.append(A.TOOLS_LEGACY["imageRepository"])
+    return isinstance(image, str) and any(re.fullmatch(re.escape(repository) + r"@sha256:[0-9a-f]{64}", image)
+                                          is not None for repository in repositories)
 
 
 def validate_expect(expect):
@@ -144,9 +148,15 @@ def validate_request(request, au):
     require(type(request.get("drillFailSmoke")) is bool and type(request.get("clearHold")) is bool, "BAD_REQUEST", "flags")
     if request["kind"] in ("deploy", "convert", "adopt"):
         release = request.get("release")
-        require(isinstance(release, dict) and set(release) == {"source", "image", "ciRun", "formats", "expect"},
+        require(isinstance(release, dict) and set(release) == {"source", "image", "ciRun", "formats", "expect", "catalogPin"},
                 "BAD_REQUEST", "release is malformed")
+        A.catalog_pin(release["catalogPin"])
         require(anchored_image(release["image"], anchors), "BAD_REQUEST", "release image is not the anchored package by digest")
+        if request["kind"] == "deploy":
+            _, thumbprint = A.preview_pin()
+            require(release["catalogPin"] == thumbprint and
+                    release["image"].startswith(anchors["imageRepository"] + "@"),
+                    "BAD_REQUEST", "new deploys require the preview package and preview key")
         require(SHA.fullmatch(release["source"]) is not None and re.fullmatch(r"[1-9][0-9]{0,15}", release["ciRun"]) is not None,
                 "BAD_REQUEST", "release source or run")
         require(isinstance(release["formats"], dict), "BAD_REQUEST", "release formats")
@@ -158,6 +168,7 @@ def validate_request(request, au):
                 and plan.get("tool") == request["tool"] and isinstance(plan.get("annotations"), dict),
                 "BAD_REQUEST", "conversion plan missing, or made by another run or tool")
     if request["kind"] == "rollback":
+        A.catalog_pin(request.get("catalogPin"))
         require(isinstance(request.get("rollbackTo"), str) and SHA.fullmatch(request["rollbackTo"]) is not None,
                 "BAD_REQUEST", "rollback target")
     require(request.get("liveSource") is None or SHA.fullmatch(request["liveSource"]) is not None, "BAD_REQUEST", "live source")
@@ -174,7 +185,6 @@ class Runner:
         self.kube = au.Kubectl(self.target["transport"])
         self.k3s = request["k3s"]
         self.limits = request["limits"]
-        self.pin = A.RELEASE_PUBLIC_KEY_JWK
         self.log = log or (lambda event, **fields: None)
 
     @staticmethod
@@ -454,7 +464,9 @@ class Runner:
         live = self.image_of(value, index)
         phase = self.ann(value, "phase")
         record = {"source": self.ann(value, "source"), "image": live, "ciRun": self.ann(value, "ci-run"),
-                  "formats": self.ann_json(value, "formats"), "expect": self.expect_of(value)}
+                  "formats": self.ann_json(value, "formats"), "expect": self.expect_of(value),
+                  "catalogPin": self.ann(value, "catalog-pin") or A.RELEASE_PUBLIC_KEY_THUMBPRINT}
+        A.catalog_pin(record["catalogPin"])
         require(record["source"] and SHA.fullmatch(record["source"]) is not None and record["expect"] is not None,
                 "NO_PREVIOUS_RECORD", "the live release carries no preview records; run the 3.6 conversion plan first")
         require(self.ann(value, "image") == live and phase in A.SETTLED_PHASES and record["expect"]["source"] == record["source"],
@@ -475,18 +487,19 @@ class Runner:
         except Refusal:
             return None
 
-    def run_smoke(self, expect, image, extra_pages=None, exact_headers=True, edge_baseline=None):
+    def run_smoke(self, expect, image, extra_pages=None, exact_headers=True, edge_baseline=None, catalog_pin=None):
         S.check_dns(self.anchors, self.limits["edgeAddress"])
-        checks, files = S.smoke(expect, self.anchors, self.pin, pod_check=lambda memory: self.pod_check(image, memory),
+        pin = A.catalog_pin(catalog_pin if catalog_pin is not None else A.RELEASE_PUBLIC_KEY_THUMBPRINT)
+        checks, files = S.smoke(expect, self.anchors, pin, pod_check=lambda memory: self.pod_check(image, memory),
                                 extra_pages=extra_pages, exact_headers=exact_headers, edge_baseline=edge_baseline)
         for item in checks.items:
             self.log("smoke", **item)
         return checks, files
 
-    def live_smoke(self, expect):
+    def live_smoke(self, expect, catalog_pin):
         """Before writing `switching`: DNS, and the live build still serves its signed bytes (review C-M4)."""
         S.check_dns(self.anchors, self.limits["edgeAddress"])
-        checks, files, edge = S.light_smoke(expect, self.anchors, self.pin)
+        checks, files, edge = S.light_smoke(expect, self.anchors, A.catalog_pin(catalog_pin))
         for item in checks.items:
             self.log("live-smoke", **item)
         if not checks.ok and not self.request["clearHold"]:
@@ -517,7 +530,7 @@ class Runner:
         require(self.ready(value), "NOT_READY", "the Deployment is not reconciled and Ready")
         previous = self.previous_record(value, index)
         require(previous["source"] == self.request.get("liveSource"), "STATE_CHANGED", "the live release changed since the command read it")
-        old_files, edge = self.live_smoke(previous["expect"])
+        old_files, edge = self.live_smoke(previous["expect"], previous["catalogPin"])
         previous["edge"] = edge
         previous["prior"] = self.prior_record(value)  # restored if the switch aborts; never nested deeper (review N1)
         self.window_check()
@@ -542,11 +555,13 @@ class Runner:
             return self.restore(previous, "ROLLOUT_FAILED: " + str(exc)[:300], watch=False)
         try:  # from here on, any refusal rolls back
             self.annotate({"phase": "switched-unverified", "source": release["source"], "image": release["image"],
-                           "ci-run": release["ciRun"], "tool": self.request["tool"], "formats": compact(release["formats"]),
+                           "ci-run": release["ciRun"], "catalog-pin": release["catalogPin"],
+                           "tool": self.request["tool"], "formats": compact(release["formats"]),
                            "expect": compact(release["expect"]), "updated": utc_stamp()},
                           expect_image=release["image"])
             self.log("phase", phase="switched-unverified")
-            checks, files = self.run_smoke(release["expect"], release["image"], extra_pages=added, edge_baseline=edge)
+            checks, files = self.run_smoke(release["expect"], release["image"], extra_pages=added,
+                                           edge_baseline=edge, catalog_pin=release["catalogPin"])
             if self.request["drillFailSmoke"]:
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
@@ -559,11 +574,13 @@ class Runner:
         except (Refusal, self.au.Refusal) as exc:
             return self.restore(previous, "UNVERIFIED: " + str(exc)[:300], watch=False)
         retention = self.retain_images(execute=os.path.exists(PATHS["armed"]), budget=A.RETENTION_AFTER_DEPLOY_SECONDS)
-        return self.finish("LIVE", source=release["source"], image=release["image"], previous=previous["image"],
-                           checks=checks.items, retention=retention)
+        return self.finish("LIVE", source=release["source"], image=release["image"], catalogPin=release["catalogPin"],
+                           previous=previous["image"], checks=checks.items, retention=retention)
 
     def restore(self, previous, reason, watch, checks=None):
         """One rollback attempt to the recorded previous build, then its own smoke. Never a second attempt."""
+        catalog_pin = previous.get("catalogPin", A.RELEASE_PUBLIC_KEY_THUMBPRINT)
+        A.catalog_pin(catalog_pin)
         self.log("rollback", reason=reason)
         with contextlib.suppress(Refusal):
             self.annotate({"phase": "rolling-back", "reason": reason[:500], "updated": utc_stamp()})
@@ -576,7 +593,7 @@ class Runner:
             if current != previous["image"]:
                 self.ensure_image(previous["image"], int(self.limits["needBytes"]))
                 self.switch_image(current, previous["image"])
-            back, files = self.run_smoke(previous["expect"], previous["image"], edge_baseline=edge)
+            back, files = self.run_smoke(previous["expect"], previous["image"], edge_baseline=edge, catalog_pin=catalog_pin)
             problem = None if back.ok else "smoke of the previous build failed: " + ", ".join(i["check"] for i in back.failures())
             if problem is None and watch:
                 problem = self.watch(files["index.html"], previous["image"])
@@ -588,14 +605,15 @@ class Runner:
             return self.finish("ROLLBACK_UNHEALTHY", reason=reason, problem=problem, checks=checks,
                                rollbackChecks=back.items if back else None)
         values = {"phase": "rolled-back", "source": previous["source"], "image": previous["image"],
-                  "ci-run": previous["ciRun"], "formats": compact(previous["formats"]) if previous["formats"] else None,
+                  "ci-run": previous["ciRun"], "catalog-pin": catalog_pin,
+                  "formats": compact(previous["formats"]) if previous["formats"] else None,
                   "expect": compact(previous["expect"]), "previous": None, "reason": reason[:500], "updated": utc_stamp()}
         try:
             self.annotate(values, expect_image=previous["image"])
         except Refusal as exc:  # rolled back and healthy, but the phase still says rolling-back: status shows it
-            return self.finish("ROLLED_BACK", reason=reason, source=previous["source"], image=previous["image"],
+            return self.finish("ROLLED_BACK", reason=reason, source=previous["source"], image=previous["image"], catalogPin=catalog_pin,
                                problem="phase annotation not written: " + exc.code, checks=checks, rollbackChecks=back.items)
-        return self.finish("ROLLED_BACK", reason=reason, source=previous["source"], image=previous["image"],
+        return self.finish("ROLLED_BACK", reason=reason, source=previous["source"], image=previous["image"], catalogPin=catalog_pin,
                            checks=checks, rollbackChecks=back.items)
 
     # Manual rollback -----------------------------------------------------
@@ -607,6 +625,8 @@ class Runner:
                 "no recorded previous build; deploy a build instead")
         require(anchored_image(previous["image"], self.anchors), "BAD_IMAGE", "the recorded previous image is not the anchored package")
         require(previous.get("source") == self.request.get("rollbackTo"), "STATE_CHANGED", "the recorded previous build changed")
+        require(previous.get("catalogPin", A.RELEASE_PUBLIC_KEY_THUMBPRINT) == self.request["catalogPin"],
+                "STATE_CHANGED", "the recorded rollback pin changed")
         validate_expect(previous["expect"])
         lowering = format_lowering(self.ann_json(value, "formats"), previous.get("formats"))
         require(not lowering, "FORMAT_LOWERING", "the rollback would lower stored formats (" + ", ".join(lowering) +
@@ -632,7 +652,8 @@ class Runner:
         require(L.is_converted(value, index, self.anchors), "NOT_CONVERTED", "the Deployment is not on the image layout")
         require(L.models_release(value, index, self.anchors) == self.request["modelsRelease"], "MODELS_CHANGED",
                 "the mounted models release is not the one the profile names")
-        checks, _ = self.run_smoke(release["expect"], release["image"], edge_baseline=self.edge_now())
+        checks, _ = self.run_smoke(release["expect"], release["image"], edge_baseline=self.edge_now(),
+                                   catalog_pin=release["catalogPin"])
         if not checks.ok and not self.request["clearHold"]:
             return self.finish("REFUSED", code="ADOPT_SMOKE_FAILED", reason="the live build fails its smoke: " +
                                ", ".join(i["check"] for i in checks.failures()) + "; deploy a fix with --clear-hold after "
@@ -640,12 +661,13 @@ class Runner:
         self.window_check()
         phase = "accepted" if checks.ok else "adopted-unhealthy"
         self.annotate({"phase": phase, "deploy-id": self.request["deployId"], "source": release["source"],
-                       "image": release["image"], "ci-run": release["ciRun"], "tool": self.request["tool"],
+                       "image": release["image"], "ci-run": release["ciRun"], "catalog-pin": release["catalogPin"],
+                       "tool": self.request["tool"],
                        "formats": compact(release["formats"]), "expect": compact(release["expect"]), "previous": None,
                        "reason": "ADOPTED" if checks.ok else "ADOPTED_UNHEALTHY", "updated": utc_stamp()},
                       expect_image=release["image"])
         return self.finish("ADOPTED" if checks.ok else "ADOPTED_UNHEALTHY", source=release["source"], image=release["image"],
-                           checks=checks.items)
+                           catalogPin=release["catalogPin"], checks=checks.items)
 
     # Conversion (PROPOSAL 3.6) -------------------------------------------
     def conversion_now(self, value, plan):
@@ -692,7 +714,8 @@ class Runner:
             self.kube.rollout(self.component, int(self.limits["rolloutTimeoutSeconds"]))
             value, index = self.deployment()
             require(self.ready(value) and L.is_converted(value, index, self.anchors), "NOT_READY", "the converted Pod is not Ready")
-            checks, files = self.run_smoke(release["expect"], release["image"], edge_baseline=edge)
+            checks, files = self.run_smoke(release["expect"], release["image"], edge_baseline=edge,
+                                           catalog_pin=release["catalogPin"])
             if self.request["drillFailSmoke"]:
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
@@ -703,7 +726,8 @@ class Runner:
             self.annotate({"phase": "accepted", "updated": utc_stamp()}, expect_image=release["image"])
         except (Refusal, self.au.Refusal) as exc:
             return self.revert_conversion(plan, "UNVERIFIED: " + str(exc)[:300])
-        return self.finish("CONVERTED", source=release["source"], image=release["image"], checks=checks.items)
+        return self.finish("CONVERTED", source=release["source"], image=release["image"],
+                           catalogPin=release["catalogPin"], checks=checks.items)
 
     def revert_conversion(self, plan, reason, checks=None):
         """Put the claim-served layout back exactly, rebuilding the inverse patch after a failed test op.
@@ -729,7 +753,8 @@ class Runner:
             require(not L.is_converted(value, index, self.anchors), "REVERT_NOT_APPLIED", "the claim layout could not be restored")
             self.kube.rollout(self.component, int(self.limits["rolloutTimeoutSeconds"]))
             release = self.request["release"]
-            back, _ = self.run_smoke(release["expect"], release["image"], exact_headers=False)
+            back, _ = self.run_smoke(release["expect"], release["image"], exact_headers=False,
+                                     catalog_pin=release["catalogPin"])
             problem = None if back.ok else "smoke after the revert failed: " + ", ".join(i["check"] for i in back.failures())
         except (Refusal, self.au.Refusal) as exc:
             problem = str(exc)[:300]
@@ -791,7 +816,9 @@ class Runner:
             keep_refs.append(previous["image"])
         keep = {resolve(ref) for ref in keep_refs} - {None}
         containerd = self.containerd_refs()
-        repository = self.anchors["imageRepository"]
+        repositories = [self.anchors["imageRepository"]]
+        if self.anchors["site"] == "lolly.tools":
+            repositories.append(A.TOOLS_LEGACY["imageRepository"])
         remove, foreign, unused_foreign = [], [], []
         for image_id, image in sorted(images.items()):
             ours = [ref for ref in image["refs"] if anchored_image(ref, self.anchors)
@@ -799,7 +826,8 @@ class Runner:
             if image_id in keep or image_id in in_use:
                 continue
             if not ours:
-                if any(ref.startswith(repository + "@") or ref.startswith(repository + ":") for ref in image["refs"]):
+                if any(ref.startswith(repository + separator) for ref in image["refs"]
+                       for repository in repositories for separator in ("@", ":")):
                     labels = {ref: containerd.get(ref, (None, {}))[1] for ref in image["refs"]}
                     pins = [ref for ref, found in labels.items() if found.get("io.cri-containerd.pinned") == "pinned"]
                     own = any(found.get(A.OWN_PIN_LABEL.split("=")[0]) == "true" for found in labels.values())
@@ -1117,7 +1145,8 @@ def read(query, au):
         return {"deployment": value, "configMaps": configmaps}
     if query["op"] == "smoke":
         expect = validate_expect(query["expect"])
-        checks, _ = runner.run_smoke(expect, runner.image_of(value, index))
+        catalog_pin = query.get("catalogPin", runner.ann(value, "catalog-pin") or A.RELEASE_PUBLIC_KEY_THUMBPRINT)
+        checks, _ = runner.run_smoke(expect, runner.image_of(value, index), catalog_pin=catalog_pin)
         return {"checks": checks.items, "ok": checks.ok}
     plan = runner.image_plan()
     claims = gc_claims(runner, value, query.get("legacyClaims") or [])
