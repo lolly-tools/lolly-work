@@ -786,6 +786,8 @@ def run_unit(sandbox, state_path, name):
         migrated = []
         migrate, backup_fresh = runner.migrate, runner.backup_fresh
         rehearse, annotate, switch, new_config = runner.rehearse, runner.annotate, runner.switch, runner.new_config
+        wait_switch = runner.wait_switch
+        cutover_stopped = []
 
         def migrate_(self, *args, **kwargs):
             result = migrate(self, *args, **kwargs)
@@ -818,8 +820,15 @@ def run_unit(sandbox, state_path, name):
             if point == "config":
                 raise refusal("CONFIG_EXISTS", "drill: config refused")
             return new_config(self, *args, **kwargs)
+
+        def wait_switch_(self, *args, **kwargs):
+            if point == "cutover-read" and not cutover_stopped:  # stop once after the cut-over patch, before smoke
+                cutover_stopped.append(True)
+                raise KeyboardInterrupt
+            return wait_switch(self, *args, **kwargs)
         runner.migrate, runner.backup_fresh, runner.rehearse = migrate_, backup_fresh_, rehearse_
         runner.annotate, runner.switch, runner.new_config = annotate_, switch_, new_config_
+        runner.wait_switch = wait_switch_
     unit_state.write_text("active")
     environment = {"SERVICE_RESULT": "success", "EXIT_CODE": "exited", "EXIT_STATUS": "0"}
     try:
@@ -833,6 +842,18 @@ def run_unit(sandbox, state_path, name):
         preview_node.Runner.annotate = original
     unit_state.write_text("deactivating")
     stop_script, stop_mode, stop_request = command(stops[0])
+    if os.environ.get("FAKE_ING_ABORT") == "cutover-read":
+        deployment = runner.deployment
+        cleanup_reads = []
+
+        def deployment_(self, *args, **kwargs):
+            failed = not cleanup_reads
+            cleanup_reads.append(failed)
+            self.log("drill-cleanup-read", failed=failed)
+            if failed:
+                raise refusal("KUBECTL_FAILED", "drill: first cleanup read failed")
+            return deployment(self, *args, **kwargs)
+        runner.deployment = deployment_
     preview_node.main([stop_mode, stop_request], app_update_path=app_update, environment=environment)
     unit_state.write_text("inactive")
     return 0

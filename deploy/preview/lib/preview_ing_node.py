@@ -90,8 +90,7 @@ def validate_ing_request(request, au):
         require(approval is None or (isinstance(approval, dict) and set(approval) == {"run", "approver", "environment"}),
                 "BAD_REQUEST", "maintenance approval")
         if approval is not None:
-            # The node checks what the approval says, not only its shape (review 2026-10-25 M3): a pinned approver,
-            # the maintenance environment and the build's own run. A hand-built or mistaken approval is refused whole.
+            # These checks only reject mismatches. Authenticity comes from the Mac-side GitHub lookup.
             require(bool(A.ING_MAINTENANCE_APPROVERS) and approval["approver"] in A.ING_MAINTENANCE_APPROVERS,
                     "MAINTENANCE_NOT_APPROVED", "the maintenance approval names an approver the tool does not pin")
             require(approval["environment"] == anchors["maintenanceEnvironment"], "MAINTENANCE_NOT_APPROVED",
@@ -894,6 +893,8 @@ class IngRunner(N.Runner):
         cutover, problem, back, generation = plan["cutover"], None, None, None
         try:
             value, index = self.deployment()
+            if self.ann(value, "maintenance") == "true" or self.applied_migrations(value, "maintenance-applied"):
+                return self.after_convert_failure(plan, reason, True, checks)
             current_config = I.config_volume(value, index)[1]
             configs = self.config_maps()
             check = self.check_db(self.request["release"]["image"])  # a Job runs the instance image only
@@ -903,6 +904,9 @@ class IngRunner(N.Runner):
             reverted = False
             for _ in range(N.SWITCH_ATTEMPTS):
                 value, index = self.deployment()
+                # Every caller and retry must respect the one-way maintenance boundary.
+                if self.ann(value, "maintenance") == "true" or self.applied_migrations(value, "maintenance-applied"):
+                    return self.after_convert_failure(plan, reason, True, checks)
                 if not I.is_converted(value, index):
                     reverted = True
                     break

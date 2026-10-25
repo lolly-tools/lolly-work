@@ -329,8 +329,17 @@ class IngRules(unittest.TestCase):
         self.assertEqual(len([c for c in gh.calls if "/contents/" in c]), 3)  # every anchored file, at the head commit
         by_reviewer = IF.ing_run(1100, S_HEAD, dispatcher=IF.REVIEWER)
         refused(self, lambda: IG.bind_ing_run(StubGh(self.build, by_reviewer), by_reviewer, W_NEW), "DISPATCHER_IDENTITY")
+        for actor, triggering_actor in ((IF.REVIEWER, IF.DISPATCHER), (IF.DISPATCHER, IF.REVIEWER)):
+            with self.subTest(actor=actor, triggering_actor=triggering_actor):
+                rerun = dict(self.run, run_attempt=2, actor={"login": actor}, triggering_actor={"login": triggering_actor})
+                gh = StubGh(self.build, rerun)
+                refused(self, lambda: IG.bind_ing_run(gh, rerun, W_NEW), "DISPATCHER_IDENTITY")
+                self.assertEqual(gh.calls, [])
         anonymous = dict(self.run)
         del anonymous["triggering_actor"]
+        refused(self, lambda: IG.bind_ing_run(StubGh(self.build, anonymous), anonymous, W_NEW), "DISPATCHER_IDENTITY")
+        anonymous = dict(self.run)
+        del anonymous["actor"]
         refused(self, lambda: IG.bind_ing_run(StubGh(self.build, anonymous), anonymous, W_NEW), "DISPATCHER_IDENTITY")
         for approvals in ([], [IF.signing_approval("someone-else")], [IF.maintenance_approval()], [IF.signing_approval(IF.DISPATCHER)],
                           [dict(IF.signing_approval(), state="rejected")]):
@@ -366,6 +375,32 @@ class IngRules(unittest.TestCase):
             refused(self, lambda: IG.require_dispatch_identity(Who(IF.DISPATCHER)), "AGENT_IDENTITY")
         with mock.patch.object(A, "ING_MAINTENANCE_APPROVERS", (IF.DISPATCHER,)):
             refused(self, lambda: IG.require_dispatch_identity(Who(IF.DISPATCHER)), "AGENT_IDENTITY")
+
+    def test_a_cutover_revert_retry_rechecks_the_maintenance_marker(self):
+        """A patch conflict must not let a retry ignore a maintenance marker in the next read."""
+        import preview_ing_node as IN
+        runner = object.__new__(IN.IngRunner)
+        runner.request = {"release": {"image": self.build["image"]}}
+        runner.au = mock.Mock(Refusal=C.Refusal)
+        runner.log, runner.annotate = mock.Mock(), mock.Mock()
+        runner.finish = mock.Mock(return_value=3)
+        runner.component, runner.kube = {}, mock.Mock()
+        value = IF.ing_deployment(self.build["image"], "cfg-3010")
+        marked = IF.ing_deployment(self.build["image"], "cfg-3010",
+                                   annotations={IN.key("maintenance-applied"): json.dumps([IF.MAINTENANCE])})
+        runner.deployment = mock.Mock(side_effect=[(value, 0), (value, 0), (marked, 0)])
+        runner.config_maps = mock.Mock(return_value={"cfg-3010": (3010, IF.instance_json(3010))})
+        runner.check_db = mock.Mock(return_value={"publicationGeneration": 3010})
+        runner.new_config = mock.Mock(return_value="cfg-3011")
+        runner.kube.patch.side_effect = C.Refusal("CONFLICT", "deployment changed")
+        plan = {"cutover": {"image": IF.LEGACY_IMAGE}, "liveSource": W_OLD}
+        with mock.patch.object(I, "revert_cutover_patch", return_value=[]) as patch, mock.patch.object(IN.N, "SLEEP"):
+            self.assertEqual(runner.revert_conversion(plan, "UNIT_STOPPED"), 3)
+        self.assertEqual(runner.deployment.call_count, 3)
+        self.assertEqual((patch.call_count, runner.kube.patch.call_count), (1, 1))
+        runner.finish.assert_called_once_with("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED", checks=None,
+                                              note="the automatic revert is off after a maintenance migration; recovery would be a restore, "
+                                                   "which Andy decides")
 
 
 class IngEndToEnd(unittest.TestCase):
@@ -930,9 +965,9 @@ class IngRefusals(IngEndToEnd):
         code, events = self.cli("deploy", W_NEW)
         self.assertEqual(self.done(events)["result"], "LIVE", events)
 
-    def test_the_node_checks_the_maintenance_approval_itself(self):
-        """Review 2026-10-25 M3: the node refuses an approval whose approver, environment or run is not the build's,
-        whatever shape the Mac sent, and refuses every approval while no approver is pinned."""
+    def test_the_node_rejects_maintenance_approval_mismatches_but_trusts_matching_fields(self):
+        """The node rejects mismatches and unpinned approvers. Matching fields still need the Mac's GitHub lookup
+        for authenticity; the node accepts fabricated fields that match."""
         for approval, why in (({"run": "1100", "approver": "x", "environment": "lolly-ing-maintenance"}, "approver"),
                               ({"run": "1100", "approver": "andy", "environment": "lolly-ing-signing"}, "environment"),
                               ({"run": "1", "approver": "andy", "environment": "lolly-ing-maintenance"}, "run")):
@@ -942,8 +977,8 @@ class IngRefusals(IngEndToEnd):
                 self.assertEqual((code, refusal["code"]), (1, "MAINTENANCE_NOT_APPROVED"), events)
                 self.assertIn(why, refusal["reason"])
                 self.assert_untouched()
-        good = {"run": "1100", "approver": "andy", "environment": "lolly-ing-maintenance"}
-        with mock.patch.object(IG, "maintenance_approval", return_value=good):
+        matching = {"run": "1100", "approver": "andy", "environment": "lolly-ing-maintenance"}
+        with mock.patch.object(IG, "maintenance_approval", return_value=matching):
             with mock.patch.object(A, "ING_MAINTENANCE_APPROVERS", ("andy",)):  # pinned on the Mac only: the node still refuses
                 code, events = self.cli("deploy", W_NEW)
                 self.assertEqual((code, self.done(events)["code"]), (1, "MAINTENANCE_NOT_APPROVED"), events)
@@ -1231,8 +1266,11 @@ class IngCutover(IngEndToEnd):
         self.assertEqual(self.cluster()["writes"], [])
 
     def test_plan_and_apply_refuse_to_run_as_a_reviewer(self):
+        plan = self.plan()
         self.update_gh(login=IF.REVIEWER)
         code, events = self.cli("plan", W_NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "AGENT_IDENTITY"), events)
+        code, events = self.apply(plan)
         self.assertEqual((code, self.done(events)["code"]), (1, "AGENT_IDENTITY"), events)
         self.assertEqual(self.cluster()["writes"], [])
 
@@ -1261,6 +1299,10 @@ class IngCutover(IngEndToEnd):
         patches = self.writes("patch")
         marker = [p for p in patches if any(op["path"].endswith("preview-maintenance-applied") for op in p[1])]
         self.assertEqual(len(marker), 2, patches)  # written before the migrate Job, cleared on acceptance
+        writes = self.cluster()["writes"]
+        migrate_job = next(w for w in self.writes("job") if w[1] == "migrate")
+        self.assertLess(writes.index(marker[0]), writes.index(migrate_job))
+        self.assertLess(writes.index(marker[0]), writes.index(self.writes("migrate")[0]))
         self.assertLess(patches.index(marker[0]), patches.index(next(p for p in patches if any("/volumes/" in op["path"] for op in p[1]))))
         image, _, notes = self.live()
         self.assertEqual((image, notes["phase"], notes["maintenance"], json.loads(notes["maintenance-migrations"]), self.signing_ref()),
@@ -1289,6 +1331,25 @@ class IngCutover(IngEndToEnd):
         self.assertEqual(self.done(events)["code"], "HELD_FOR_HUMAN", events)
         code, events = self.cli("rollback", "--clear-hold")
         self.assertEqual(self.done(events)["code"], "MAINTENANCE_NO_ROLLBACK", events)
+
+    def test_a_stopped_maintenance_cutover_with_a_transient_cleanup_read_failure_is_held(self):
+        """The first cleanup read fails after migration and cut-over. The base cleanup's next read must not allow a revert."""
+        build = self.pending_build(IF.MAINTENANCE)
+        self.approve(1200)
+        plan = self.plan_for(W_NEXT)
+        os.environ["FAKE_ING_ABORT"] = "cutover-read"
+        with self.approvers("andy"):
+            code, events = self.apply(plan)
+        self.assertEqual((code, self.done(events)["result"]), (3, "MAINTENANCE_UNVERIFIED"), events)
+        reads = [e["failed"] for e in events if e.get("event") == "drill-cleanup-read"]
+        self.assertEqual(reads[:2], [True, False], events)
+        self.assertEqual([w[1] for w in self.writes("migrate")], [[IF.MAINTENANCE]])
+        image, _, notes = self.live()
+        self.assertTrue(I.is_converted(self.cluster()["deployment"], 0))
+        self.assertEqual((image, notes["phase"], json.loads(notes["maintenance-applied"]), self.signing_ref()),
+                         (build["image"], "maintenance-unverified", [IF.MAINTENANCE], IF.ING_SIGNING_SECRET))
+        self.assertFalse([p for p in self.writes("patch") if any(op["op"] == "add" and "/volumes/" in op["path"] for op in p[1])])
+        self.assertIn("automatic revert is off", self.result_file()["note"])
 
     def test_a_stale_backup_before_a_maintenance_migration_at_the_cutover_applies_nothing(self):
         """The backup must be under 1 hour old when the schema changes, as for a maintenance deploy."""

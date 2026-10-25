@@ -149,9 +149,12 @@ def bind_ing_run(gh, run, wsha):
     # Review 2026-10-25 C1 and H1: the run was dispatched by the agents' identity (never by a reviewer), its build code
     # is the anchored one, and a pinned reviewer approved lolly-ing-signing in it.
     dispatcher, _ = identity_anchors()
-    actor = _login(run.get("triggering_actor"))
+    actor = _login(run.get("actor"))
     require(actor == dispatcher, "DISPATCHER_IDENTITY", f"run {run['id']} was dispatched by {actor}, not the pinned dispatch identity "
             f"{dispatcher}; a reviewer never dispatches a build they could approve")
+    triggering_actor = _login(run.get("triggering_actor"))
+    require(triggering_actor == dispatcher, "DISPATCHER_IDENTITY", f"run {run['id']} was started or rerun by {triggering_actor}, "
+            f"not the pinned dispatch identity {dispatcher}")
     require(run.get("status") == "completed" and run.get("conclusion") == "success", "RUN_FAILED",
             f"run {run['id']} concluded {run.get('conclusion')!r}")
     check_build_code(gh, run["head_sha"])
@@ -210,7 +213,7 @@ def find_new_ing_run(gh, ssha, known_ids, attempts=20, pause=6):
 
 def maintenance_approval(gh, run_id, dispatcher):
     """Andy's approval of the maintenance environment in this same run (R20 S7), or None.
-    The node refuses a pending maintenance migration without one, and checks the approval itself (review M3)."""
+    This GitHub lookup authenticates the approval; the node only checks its fields for mismatches (review M3)."""
     for names, login in _approvals(gh, run_id):
         if ANCHORS["maintenanceEnvironment"] in names and login in A.ING_MAINTENANCE_APPROVERS and login != dispatcher:
             return {"run": str(run_id), "approver": login, "environment": ANCHORS["maintenanceEnvironment"]}
