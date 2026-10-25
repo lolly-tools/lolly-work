@@ -59,7 +59,10 @@ and preview host tooling must not ship to private deployers.
   - the repositories and workflow paths;
   - the receipt artifact name and the image package;
   - the signing pin;
-  - the origins, resource names and required labels.
+  - the origins, resource names and required labels;
+  - for lolly.ing: who dispatches (`ING_DISPATCH_IDENTITY`) and who approves (`ING_REVIEWERS`,
+    `ING_MAINTENANCE_APPROVERS`), the git blob SHAs of suse-lolly's build files (`ING_BUILD_BLOBS`) and the name of
+    the Secret holding lolly.ing's own key (`ING_SIGNING_KEY_SECRET`). See [Identities](#identities-review-c1).
 - **Identities come from check-target.py.** These are read from the patched `check-target.py` (its `--site` change):
   - the SSH route and known-hosts file;
   - the k3s path, kubeconfig and context;
@@ -334,7 +337,8 @@ May change:
 Never touches:
 - Secrets, PVCs, Postgres, the edge, DNS, other Deployments or the Helm release;
 - pins made by other procedures;
-- any GitHub setting. It never approves an environment gate. The only GitHub write is the candidate workflow dispatch.
+- any GitHub setting. It never approves an environment gate, and for lolly.ing it refuses to run as a reviewer at all.
+  The only GitHub write is the candidate workflow dispatch.
 
 ## Records
 
@@ -414,12 +418,12 @@ Common refusal codes:
   `HELD_FOR_HUMAN`, `NOT_CONVERTED`, `NOT_READY`, `STATE_CHANGED`, `LOW_CAPACITY`, `PIN_FAILED`, `BAD_IMAGE`,
   `NOT_STARTED`, `ADOPT_SMOKE_FAILED`.
 - **Conversion and gc:** `PLAN_MISMATCH`, `PRECONVERSION_SMOKE`, `GC_REPORT_FIRST`.
-- **lolly.ing:** `ING_KEY_NOT_PINNED`, `RELEASE_KEY`, `KEY_MISMATCH`, `MANIFEST_INVALID`, `RECEIPT_SIGNATURE`,
+- **lolly.ing:** `ING_KEY_NOT_PINNED`, `AGENT_IDENTITY`, `DISPATCHER_IDENTITY`, `APPROVAL_MISSING`, `BUILD_CODE_CHANGED`,
+  `SIGNING_SECRET_NOT_PINNED`, `SIGNING_SECRET_LIVE`, `RELEASE_KEY`, `KEY_MISMATCH`, `MANIFEST_INVALID`, `RECEIPT_SIGNATURE`,
   `RECEIPT_MISMATCH`, `ARCHIVE_MISMATCH`, `ARCHIVE_MISSING`, `IMAGE_MISMATCH`, `SMOKE_ACCOUNT`, `BACKUP_UNVERIFIED`,
   `BACKUP_STALE`, `MIGRATIONS_MISMATCH`, `DATABASE_AHEAD`, `MAINTENANCE_NOT_APPROVED`, `CLASSIFIER_UNAVAILABLE`,
   `REHEARSAL_UNAVAILABLE`, `REHEARSAL_FAILED`, `MIGRATE_INCOMPLETE`, `GENERATION_UNKNOWN`, `CONFIG_GUARD`,
-  `SWITCH_GUARD`, `CUTOVER_GUARD`, `MAINTENANCE_NO_ROLLBACK`, `MAINTENANCE_AT_CUTOVER`, `PLAN_NOT_REVIEWED`,
-  `NOT_FOR_LOLLY_ING`.
+  `SWITCH_GUARD`, `CUTOVER_GUARD`, `MAINTENANCE_NO_ROLLBACK`, `PLAN_NOT_REVIEWED`, `NOT_FOR_LOLLY_ING`.
 
 ## lolly.ing (Phase 2, PROPOSAL section 4)
 
@@ -441,6 +445,32 @@ The input is one lolly-work `main` commit (WSHA). Its `engine-pin.json` names th
 is built at its `main` head (SSHA). `selftest` and `adopt` are lolly.tools only (`NOT_FOR_LOLLY_ING`): the unit's own
 selftest covers both sites, and the cut-over seeds lolly.ing's records.
 
+### Identities (review C1)
+
+The human gates are checks, not rules the tool hopes for (security review 2026-10-25, C1):
+
+- **The tool runs as the agents' identity and never as a reviewer.** `ship`, `deploy`, `plan` and `plan --apply` read
+  `gh api user` first and refuse `AGENT_IDENTITY` unless the login is `ING_DISPATCH_IDENTITY` (the machine account of
+  decision 3) and is in neither `ING_REVIEWERS` nor `ING_MAINTENANCE_APPROVERS`. So the token that dispatches a build can
+  never be the one that approves it, and a reviewer's token on the shared Mac stops the tool instead of serving as its
+  credential. `status`, `rollback` and `gc` touch no run and are not gated. Until a reviewed change pins the dispatch
+  identity, every ship, deploy and plan refuses.
+- **The run was dispatched by that identity.** A bound run's `triggering_actor` must be `ING_DISPATCH_IDENTITY`
+  (`DISPATCHER_IDENTITY` otherwise), so a reviewer's hand dispatch never binds.
+- **The run carries a pinned reviewer's approval.** `bind_ing_run` reads the run's approvals
+  (`GET /actions/runs/{id}/approvals`) and requires an `approved` entry naming `lolly-ing-signing` by a login in
+  `ING_REVIEWERS` other than the dispatcher (`APPROVAL_MISSING` otherwise). A run that passed because the environment
+  had no reviewer rule carries no such entry and is refused, so a missing or misconfigured environment is visible.
+- **The build code is anchored.** At the run's head commit, suse-lolly's `.github/workflows/lolly-ing-preview.yml`,
+  `.github/lolly-ing-preview/tool.mjs` and `.github/lolly-ing-preview/instance.Dockerfile` must be the git blobs in
+  `ING_BUILD_BLOBS` (`BUILD_CODE_CHANGED` otherwise; review H1). A change to the build is then a lolly-work PR and a new
+  tool lock, like every other anchor, and a push to suse-lolly `main` alone cannot produce a bindable image. The anchors
+  name blobs, not a commit, so unrelated suse-lolly commits (catalog, tools) need no re-anchoring.
+- The node checks a maintenance approval's substance, not only its shape: approver in `ING_MAINTENANCE_APPROVERS`,
+  environment `lolly-ing-maintenance`, run equal to the build's (`MAINTENANCE_NOT_APPROVED` otherwise; review M3).
+- A run that fails one of these checks stops `deploy <wsha>` with that code; it is not skipped in favour of an older
+  run, because each of them is a sign that a setting or a rule is wrong and a human should look.
+
 The private profile `lolly.ing.json` holds the smoke account's `sub`, one known pack asset path, the page list, the
 memory fraction, the watch, build polling, rollout timeout, capacity (`minFreeAboveReserveBytes`, `archiveFactor`), the
 backup window (`01:30`-`02:30`), the claim allowlist, the retention counts, and the backup store's host name and public
@@ -455,10 +485,12 @@ are real output of #207's classifier and #208's rehearsal, and the tests run thi
 
 - **suse-lolly PR #28, `.github/workflows/lolly-ing-preview.yml`.**
   - `ship` dispatches it on `refs/heads/main` with `LSHA`, `WSHA` and `SSHA` (main's head). Two `lolly-ing-signing`
-    jobs wait for Andy each time; agents never approve them.
+    jobs wait for Andy each time; agents never approve them, and the tool refuses to run as a reviewer.
   - The run is bound by its ID: workflow path, event `workflow_dispatch`, repository and head repository
-    `lolly-tools/suse-lolly`, branch `main`, success, and head SHA equal to `sources.suse` and `run.workflowSha`. The
-    gate refuses an `SSHA` that is not the run's own commit.
+    `lolly-tools/suse-lolly`, branch `main`, success, head SHA equal to `sources.suse` and `run.workflowSha`, dispatched
+    by `ING_DISPATCH_IDENTITY`, the anchored build blobs at that head SHA, and an approval of `lolly-ing-signing` by a
+    login in `ING_REVIEWERS` (see [Identities](#identities-review-c1)). The gate refuses an `SSHA` that is not the
+    run's own commit.
   - From that run only: `lolly-ing-instance.manifest.json` (kind `lolly-ing-instance-image`, version 1) and
     `lolly-ing-instance-<run>-<attempt>.oci.tar`.
   - The manifest's key ids (`shell.keyId`, `shell.publicPinThumbprint`, `catalog.keyId`, `buildSettings.pinThumbprint`)
@@ -471,7 +503,13 @@ are real output of #207's classifier and #208's rehearsal, and the tests run thi
     (source `LSHA`, target `web`, profile `suse`), its sha256 against `receiptSha256`, and `/` against
     `shell.indexSha256`.
   - A maintenance migration needs `MAINTENANCE=true` at dispatch and Andy's approval of `lolly-ing-maintenance` in the
-    same run, by a login in `ING_MAINTENANCE_APPROVERS`.
+    same run, by a login in `ING_MAINTENANCE_APPROVERS`. `ship` never sends `MAINTENANCE=true` (follow-up L1), so such a
+    build is dispatched by hand as the agents' identity and then bound with `deploy <wsha>` or `plan <wsha>`:
+
+    ```text
+    gh workflow run lolly-ing-preview.yml --repo lolly-tools/suse-lolly --ref main \
+      -f LSHA=<lolly sha> -f WSHA=<work sha> -f SSHA=<suse-lolly main head> -f MAINTENANCE=true
+    ```
 - **lolly-work PR #207, the migration classifier and `LW_MIGRATE_EXPECT`.**
   - A Job from the new image, with no environment, runs `node scripts/classify-migrations.ts --json --only <pending>`.
     It prints one JSON document: `{"version": 1, "migrations": [{name, sha256, class, reasons, statements}],
@@ -500,18 +538,28 @@ are real output of #207's classifier and #208's rehearsal, and the tests run thi
   transfer.
 - Before any change, Work's boot line `catalog signing on (keyId …)` in the live Pod must not name the release key.
   After the switch it must name the lolly.ing key, and the signed catalog and the shell's receipt must verify against
-  the lolly.ing pin.
-- The command never touches the Secret. Andy changes `LW_CATALOG_SIGNING_KEY` to the lolly.ing key before the cut-over.
+  the lolly.ing pin. (The cut-over itself does not run this check on the live legacy Pod, which still holds the release
+  key until the patch switches the reference.)
+- **The command never reads or writes a Secret's value.** Andy creates a second Secret (its name pinned in
+  `ING_SIGNING_KEY_SECRET` by a reviewed change) holding lolly.ing's own key under the same key name
+  `LW_CATALOG_SIGNING_KEY`, and never edits the live Secret. The cut-over patch switches the server's
+  `LW_CATALOG_SIGNING_KEY` `secretKeyRef.name` to that Secret together with the image and config, and a revert switches
+  it back, so the old image, old key and old pack return together and the reverted catalog still verifies (review H3).
+  The release key stays in the old Secret as the revert path; Andy deletes that Secret when the cut-over is settled
+  (after two image deploys, with the old claims).
 
 ### Deploy steps (PROPOSAL 4.3)
 
 On the Mac:
+0. `gh api user` is the agents' dispatch identity and no reviewer (`AGENT_IDENTITY` otherwise), before anything else.
 1. Live state from the node: no run active, no hold, the instance-image layout, records that describe the live image,
    and the smoke session file present.
-2. WSHA is on lolly-work `main`. The build is bound and its manifest checked (the contract above); its suse-lolly and
-   Lolly commits are on their `main`.
-3. The maintenance approval in the run is read, when there is one. The node refuses a pending maintenance migration
-   without it.
+2. WSHA is on lolly-work `main`. The build is bound and its manifest checked (the contract above): dispatched by the
+   agents' identity, the anchored build blobs at its suse-lolly commit, a pinned reviewer's `lolly-ing-signing` approval;
+   its suse-lolly and Lolly commits are on their `main`.
+3. The maintenance approval in the run is read, when there is one (by a pinned approver other than the dispatcher). The
+   node refuses a pending maintenance migration without it, and checks the approval's approver, environment and run
+   itself.
 4. The first-party commits and dependency files changed since the live release are printed (R21 R3).
 5. check-target `--site lolly.ing`, once, before the first write to the node.
 6. The archive is downloaded by run ID and streamed over the check-target SSH route into the node's root-only spool,
@@ -569,21 +617,42 @@ The smoke account:
 ### Cut-over (PROPOSAL 4.8)
 
 `plan <work sha>` reads the live Deployment and prints the exact patch: drop the `shell`, `pack` and `engine-pin`
-volumes and their mounts, set the instance image, and set the config to generation N. It writes the plan to
-`lolly-private/production/preview/plans/` and prints its sha256. The database row is read at apply; if it raised N, the
-apply refuses and asks for a new plan.
+volumes and their mounts, set the instance image, set the config to generation N, and point the server's
+`LW_CATALOG_SIGNING_KEY` reference at the Secret holding lolly.ing's own key (`ING_SIGNING_KEY_SECRET`; the plan refuses
+`SIGNING_SECRET_NOT_PINNED` until it is pinned, and `SIGNING_SECRET_LIVE` if the live reference already names it, because
+a revert could then restore nothing). It writes the plan to `lolly-private/production/preview/plans/` and prints its
+sha256, the image's migration files and the Secret names. The database row is read at apply; if it raised N, the apply
+refuses and asks for a new plan.
 
 `plan <sha> --apply PLAN --reviewed-plan-sha256 H` is applied once by the named owner with Andy present, after Andy has
-changed the Secret to the lolly.ing key. It takes a fresh backup and runs the full restore rehearsal even with nothing
-pending, then applies the reviewed patch. A failed smoke puts the claim layout and the old image back, with a new
-ConfigMap at a higher generation (`CONVERSION_REVERTED`). Keep the old claims until two image deploys have passed.
+created the second Secret. It takes a fresh backup, classifies any pending migrations, runs the full restore rehearsal
+even with nothing pending, applies pending migrations, then applies the reviewed patch. A failed smoke puts the claim
+layout, the old image and the old key reference back, with a new ConfigMap at a higher generation
+(`CONVERSION_REVERTED`); the old pack verifies against the old key again, so the reverted catalog answers 200. Keep the
+old claims and the old Secret until two image deploys have passed.
 
-A revert after the Secret change has a limit. Work checks the mounted pack's signed envelope with
-`instance.catalogPublicKey`, or else with the signing key's public half (`server/src/catalog/publication.ts`). The live
-`instance.json` sets no `catalogPublicKey`, so the old pack, signed with the release key, no longer verifies once the
-Secret holds the lolly.ing key, and the reverted catalog answers 503. The revert then ends `ROLLBACK_UNHEALTHY`. Recovery
-is Andy putting the previous Secret value back. The command never changes the Secret or any other `instance.json`
-field.
+**Migrations at the cut-over (review H2).** The release waiting for the cut-over is twelve migrations ahead of the live
+schema, and the classifier calls several of them `maintenance` (`0068`, `0069`, `0072`, `0075`, both `0076` files as of
+2026-10-25). The cut-over takes them under the same rules as a maintenance `deploy` (PROPOSAL 4.4), never by hand:
+
+- The classifier runs from the new image on exactly the pending files. Allowlisted (`additive`) files are rehearsed and
+  applied; a revert stays available, because the rehearsal booted the old image on the migrated copy.
+- A `maintenance` file needs Andy's `lolly-ing-maintenance` approval in the bound run (`MAINTENANCE_NOT_APPROVED`
+  otherwise, nothing applied). That run must have been dispatched with `MAINTENANCE=true` by the agents' identity (the
+  hand dispatch in the contract above), then bound with `plan <wsha>`.
+- The backup must be under 1 hour old when the schema changes: checked before the rehearsal and again after it, right
+  before the migrate Job (`BACKUP_STALE` otherwise, nothing applied).
+- The `maintenance-applied-unswitched` marker is written on the Deployment before the migrate Job and holds every later
+  run until a switch that includes those files is accepted. The accepted cut-over records `maintenance: true` and the
+  file names, so a later `rollback` refuses `MAINTENANCE_NO_ROLLBACK`.
+- **The automatic revert is off after a maintenance file.** The legacy image was not built for that schema, so a failed
+  smoke or watch, or a stopped unit, ends `MAINTENANCE_UNVERIFIED` (exit 3) with the new image live and the phase
+  `maintenance-unverified`; recovery would be a restore, which Andy decides. A retry of the cut-over after an abort needs
+  a new plan (the marker changed the annotations) and `--clear-hold`; it finds nothing pending and keeps the revert off.
+- The pending files and `LW_MIGRATE_EXPECT` are printed by the run (`rehearsal`, `migrate` lines); the classifier's
+  manifest must equal the pending set's, and the runner refuses before any DDL unless the database agrees.
+
+The command never changes a Secret's value or any `instance.json` field other than the generation.
 
 ### Retention (`gc`, decision 12)
 
@@ -601,9 +670,11 @@ field.
 
 It may import and pin the instance image, create generation ConfigMaps, create the backup Job and its own check,
 classifier and migrate Jobs, run the restore rehearsal in its own namespace, and patch the target Deployment's image,
-config ConfigMap reference and annotations. It never reads or changes a Secret, a PVC, Postgres directly, the edge or
-DNS; never execs into a Pod; never restores the live database; and never changes any `instance.json` field other than
-the generation.
+config ConfigMap reference and annotations, plus, once at the cut-over, which Secret the server's
+`LW_CATALOG_SIGNING_KEY` references (and back on a revert). It never reads or changes a Secret's value, a PVC, Postgres
+directly, the edge or DNS; never execs into a Pod; never restores the live database; and never changes any
+`instance.json` field other than the generation. The Jobs it creates consume the database Secret through the server's
+own references, by design.
 
 ## Before the first live run
 
@@ -617,10 +688,22 @@ the generation.
 - Merge in this order: lolly-work #207 (classifier and `LW_MIGRATE_EXPECT`), #208 (restore rehearsal), then this tool's
   lolly.ing change. suse-lolly #28 may merge at any time. Then re-lock with `make-tool-lock.py`; the lock's paths do not
   change.
-- suse-lolly's `lolly-ing-signing` environment (two approvals per build, prevent self-review on) and
-  `lolly-ing-maintenance` environment exist. `ING_MAINTENANCE_APPROVERS` is pinned by a reviewed lolly-work PR before
-  the first maintenance migration; while it is empty every maintenance migration is refused.
-- lolly.ing's own key generated; its public half pinned in `ING_PUBLIC_KEY_JWK` by a reviewed lolly-work PR.
+- suse-lolly's `lolly-ing-signing` environment (two approvals per build, required reviewer Andy, prevent self-review
+  on, deployments from `main` only) and `lolly-ing-maintenance` environment exist **before the first dispatch**: a
+  dispatch that names a missing environment creates it with no rules. Check with
+  `gh api repos/lolly-tools/suse-lolly/environments/lolly-ing-signing` (`protection_rules` must list `required_reviewers`).
+  `ING_MAINTENANCE_APPROVERS` is pinned by a reviewed lolly-work PR before the first maintenance migration; while it is
+  empty every maintenance migration is refused, including at the cut-over.
+- The agents' machine account (decision 3) exists and is the Mac's `gh` login; Andy's own token is not on the shared
+  Mac. Its login is pinned in `ING_DISPATCH_IDENTITY` by a reviewed lolly-work PR; until then every ship, deploy and plan
+  refuses `AGENT_IDENTITY`. `ING_REVIEWERS` names Andy.
+- lolly.ing's own key generated; its public half pinned in `ING_PUBLIC_KEY_JWK` by a reviewed lolly-work PR; its private
+  half in a **second** Secret in `lolly-private`, under key `LW_CATALOG_SIGNING_KEY`, whose name is pinned in
+  `ING_SIGNING_KEY_SECRET` by the same PR. The live Secret is never edited.
+- `ING_BUILD_BLOBS` equals the blob SHAs of suse-lolly `main`'s `.github/workflows/lolly-ing-preview.yml`,
+  `.github/lolly-ing-preview/tool.mjs` and `.github/lolly-ing-preview/instance.Dockerfile`
+  (`gh api repos/lolly-tools/suse-lolly/contents/<path>?ref=main --jq .sha`). A later change to those files is a
+  lolly-work PR that updates the anchors, then a new lock.
 - The smoke member created, with the `export.server` grant on `tool:qr-code`, and its session written to
   `/etc/lolly-preview/lolly.ing-smoke-session` (root, 0600). `lolly.ing.json` in the state directory names its `sub`
   and the backup store's `rehearsal.storageHost` and `rehearsal.storageAddress`.
@@ -629,5 +712,6 @@ the generation.
   anchored PostgreSQL image is on the node by digest.
 - The Postgres NetworkPolicy admitting the preview Job label (`app.kubernetes.io/component: preview-migrate`) in
   `lolly-private`, set up once by Andy.
-- Then `status`, `plan <work sha>`, Andy changes the Secret, the cut-over with Andy present, and a `--drill-fail-smoke`
-  deploy that must land on catalog 200 at a higher generation.
+- Then `status`, `plan <work sha>`, the cut-over with Andy present (with his `lolly-ing-maintenance` approval in the
+  bound run when a pending migration is `maintenance`), and a `--drill-fail-smoke` **deploy** afterwards that must land
+  on catalog 200 at a higher generation. Never drill the cut-over itself.

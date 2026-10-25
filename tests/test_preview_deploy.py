@@ -391,6 +391,21 @@ class Shipped(unittest.TestCase):
         with mock.patch.object(A, "ING_PUBLIC_KEY_JWK", A.RELEASE_PUBLIC_KEY_JWK), self.assertRaises(C.Refusal) as caught:
             I.ing_pin()  # never the platform release key (R20 S1, R21 R2, R22 S1)
         self.assertEqual(caught.exception.code, "RELEASE_KEY")
+        # Review 2026-10-25: the agents' dispatch identity (decision 3) and the Secret holding lolly.ing's key are pinned
+        # by the same kind of reviewed change; until then plan, ship and deploy refuse. Andy is the only reviewer, and the
+        # suse-lolly build files the bind trusts are anchored by git blob SHA.
+        import preview_ing_github as IG
+        self.assertIsNone(A.ING_DISPATCH_IDENTITY)
+        self.assertIsNone(A.ING_SIGNING_KEY_SECRET)
+        self.assertEqual(A.ING_REVIEWERS, ("ndftz",))
+        for code, call in (("AGENT_IDENTITY", IG.identity_anchors), ("SIGNING_SECRET_NOT_PINNED", I.signing_secret)):
+            with self.assertRaises(C.Refusal) as caught:
+                call()
+            self.assertEqual(caught.exception.code, code)
+        self.assertEqual(set(A.ING_BUILD_BLOBS), {".github/workflows/lolly-ing-preview.yml", ".github/lolly-ing-preview/tool.mjs",
+                                                  ".github/lolly-ing-preview/instance.Dockerfile"})
+        for blob in A.ING_BUILD_BLOBS.values():
+            self.assertRegex(blob, r"\A[0-9a-f]{40}\Z")
 
     def test_launcher_options_cannot_be_repeated_moved_or_abbreviated(self):
         """Review S-H1: the caller cannot override what launch.py set."""

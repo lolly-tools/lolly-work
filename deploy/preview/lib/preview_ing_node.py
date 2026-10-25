@@ -5,9 +5,10 @@ What it may change: the imported instance image and its pins; new generation
 ConfigMaps; one backup Job from the existing CronJob; read-only check Jobs; and,
 only with pending migrations, the classifier and migrate Jobs plus whatever the
 Phase 2A rehearsal driver creates in its own namespace. Then the target
-Deployment's image, config ConfigMap reference and annotations. It never reads
-or changes a Secret, a PVC, Postgres directly, the edge or DNS, and never execs
-into a Pod.
+Deployment's image, config ConfigMap reference and annotations, and once, at the
+cut-over, which Secret its catalog signing key reference names. It never reads
+or changes a Secret's value, a PVC, Postgres directly, the edge or DNS, and
+never execs into a Pod.
 """
 
 from __future__ import annotations
@@ -84,10 +85,19 @@ def validate_ing_request(request, au):
             "rehearsal settings")
     require(type(request.get("drillFailSmoke")) is bool and type(request.get("clearHold")) is bool, "BAD_REQUEST", "flags")
     if request["kind"] in ("deploy", "convert"):
-        I.validate_release(request.get("release"))
+        release = I.validate_release(request.get("release"))
         approval = request.get("maintenanceApproval")
         require(approval is None or (isinstance(approval, dict) and set(approval) == {"run", "approver", "environment"}),
                 "BAD_REQUEST", "maintenance approval")
+        if approval is not None:
+            # The node checks what the approval says, not only its shape (review 2026-10-25 M3): a pinned approver,
+            # the maintenance environment and the build's own run. A hand-built or mistaken approval is refused whole.
+            require(bool(A.ING_MAINTENANCE_APPROVERS) and approval["approver"] in A.ING_MAINTENANCE_APPROVERS,
+                    "MAINTENANCE_NOT_APPROVED", "the maintenance approval names an approver the tool does not pin")
+            require(approval["environment"] == anchors["maintenanceEnvironment"], "MAINTENANCE_NOT_APPROVED",
+                    "the maintenance approval is for another environment")
+            require(approval["run"] == release["ciRun"], "MAINTENANCE_NOT_APPROVED",
+                    "the maintenance approval is from another run than the build's")
     if request["kind"] == "convert":
         plan = request.get("conversion")
         require(isinstance(plan, dict) and isinstance(plan.get("cutover"), dict) and isinstance(plan["cutover"].get("patch"), list)
@@ -766,12 +776,13 @@ class IngRunner(N.Runner):
     # Cut-over (PROPOSAL 4.8) -------------------------------------------------
     def run_convert(self):
         plan, release = self.request["conversion"], self.request["release"]
+        to_secret = I.signing_secret()  # review H3: the cut-over patch also switches the signing key reference
         value, index = self.deployment()
         if I.is_converted(value, index):
             return self.finish("ALREADY_CONVERTED", image=self.image_of(value, index))
         self.hold_check(self.ann(value, "phase"))
         require(self.ready(value), "NOT_READY", "the Deployment is not reconciled and Ready")
-        require(I.comparable_cutover(I.cutover_plan(value, index, release["image"], plan["toConfig"], plan["annotations"]))
+        require(I.comparable_cutover(I.cutover_plan(value, index, release["image"], plan["toConfig"], plan["annotations"], to_secret))
                 == I.comparable_cutover(plan["cutover"]), "PLAN_MISMATCH",
                 "the live Deployment no longer gives the reviewed plan; make and review a new plan")
         live_image, live_config = self.image_of(value, index), I.config_volume(value, index)[1]
@@ -783,31 +794,53 @@ class IngRunner(N.Runner):
         backup = self.take_backup()
         check = self.check_db(release["image"])
         migrations = I.migration_plan(release["migrations"], check, set())
+        marked = set(self.applied_migrations(value, "maintenance-applied"))  # applied by an earlier attempt, never switched
+        maintenance = False
         if migrations["pending"]:
             classes = self.classify(release["image"], migrations["pending"])
-            require(all(classes[item["name"]]["class"] == "additive" for item in migrations["pending"]), "MAINTENANCE_AT_CUTOVER",
-                    "the cut-over takes allowlisted migrations only")
+            maintenance = any(classes[item["name"]]["class"] != "additive" for item in migrations["pending"])
+            if maintenance:
+                # Review 2026-10-25 H2: the cut-over takes a maintenance migration under the same rules as a deploy
+                # (PROPOSAL 4.4): Andy's approval in the run, a backup under 1 h at the moment the schema changes, the
+                # rehearsal, the marker before the migrate Job, and no automatic revert afterwards.
+                require(self.request.get("maintenanceApproval") is not None, "MAINTENANCE_NOT_APPROVED",
+                        "a pending migration is not on the allowlist; the cut-over takes it only with Andy's approval in the "
+                        f"private run ({A.ING['maintenanceEnvironment']}, dispatched with MAINTENANCE=true). Nothing was applied")
+                self.backup_fresh(backup, maintenance=True)
         # PROPOSAL 4.8 step 1: the full restore rehearsal runs once even with nothing pending.
         rehearsal = self.rehearse(backup, release["image"], live_image, migrations["pending"])
         if migrations["pending"]:
             self.window_check()
+            if maintenance:
+                self.backup_fresh(backup, maintenance=True)  # the rehearsal took time; still fresh as the schema changes
+                marked |= {item["name"] for item in migrations["pending"]}
+                # From here the old image may run on a non-additive schema and a revert is no longer a safe state.
+                # Record that on the Deployment (annotations only, no rollout) before anything is applied.
+                self.annotate({"phase": "maintenance-applied-unswitched", "deploy-id": self.request["deployId"],
+                               "maintenance-applied": compact(sorted(marked)),
+                               "maintenance-applied-set": I.migration_set(release["migrations"]),
+                               "reason": None, "updated": utc_stamp()}, expect_image=live_image)
+                self.log("phase", phase="maintenance-applied-unswitched", migrations=sorted(marked))
             self.migrate(release["image"], migrations["pending"])
             check = self.check_db(release["image"])
+            require(not I.migration_plan(release["migrations"], check, set())["pending"], "MIGRATE_INCOMPLETE",
+                    "migrations are still pending after the migrate Job")
+        hold = maintenance or bool(marked)  # a marker from an earlier attempt also turns the automatic revert off
         generation = self.generation_for(live_text, check, release["seq"])
         require(generation == plan["generation"], "PLAN_MISMATCH", f"the generation is now {generation}, the plan says "
                 f"{plan['generation']}; make and review a new plan")
         config = self.new_config(generation, live_text, release["source"])
         require(config == plan["toConfig"], "PLAN_MISMATCH", "the config name differs from the plan")
         self.window_check()
-        self.backup_fresh(backup, False)
-        self.log("phase", phase="converting", generation=generation)
+        self.backup_fresh(backup, maintenance)
+        self.log("phase", phase="converting", generation=generation, maintenance=hold)
         applied = False
         for _ in range(N.SWITCH_ATTEMPTS):
             value, index = self.deployment()
             if I.is_converted(value, index):
                 applied = True
                 break
-            current = I.cutover_plan(value, index, release["image"], config, plan["annotations"])
+            current = I.cutover_plan(value, index, release["image"], config, plan["annotations"], to_secret)
             try:
                 dry = self.kube.patch(self.component, current["patch"], True)
                 I.guard_cutover(value, dry, index, current)
@@ -819,22 +852,41 @@ class IngRunner(N.Runner):
                 self.log("switch-retry", reason=str(exc)[:200])
                 N.SLEEP(2)
         if not applied:
-            return self.finish("ABORTED", reason="the cut-over patch was not applied")
+            return self.finish("ABORTED", reason="the cut-over patch was not applied",
+                               note="a maintenance migration is applied and unswitched" if hold else None)
         try:
             self.wait_switch(release["image"], config)
             checks, files = self.run_smoke(I.expect_of(release), release["image"], generation)
             if self.request["drillFailSmoke"]:
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
-                return self.revert_cutover(plan, "SMOKE_FAILED: " + ", ".join(i["check"] for i in checks.failures()), checks.items)
+                return self.after_convert_failure(plan, "SMOKE_FAILED: " + ", ".join(i["check"] for i in checks.failures()), hold,
+                                                  checks.items)
             reason = self.watch(files["index.html"], release["image"])
             if reason:
-                return self.revert_cutover(plan, "WATCH_FAILED: " + reason, checks.items)
-            self.annotate({"phase": "accepted", "updated": utc_stamp()}, expect_image=release["image"])
+                return self.after_convert_failure(plan, "WATCH_FAILED: " + reason, hold, checks.items)
+            accepted = {"phase": "accepted", "updated": utc_stamp()}
+            if maintenance:
+                accepted.update({"maintenance": "true",
+                                 "maintenance-migrations": compact(sorted(item["name"] for item in migrations["pending"]))})
+            if marked and marked <= {item["name"] for item in release["migrations"]}:
+                accepted.update({"maintenance-applied": None, "maintenance-applied-set": None})  # this switch includes them
+            self.annotate(accepted, expect_image=release["image"])
         except (Refusal, self.au.Refusal) as exc:
-            return self.revert_cutover(plan, "UNVERIFIED: " + str(exc)[:300])
+            return self.after_convert_failure(plan, "UNVERIFIED: " + str(exc)[:300], hold)
         return self.finish("CONVERTED", source=release["source"], image=release["image"], generation=generation, config=config,
-                           backup=backup, rehearsal=rehearsal, checks=checks.items)
+                           signingKeySecret=to_secret, backup=backup, rehearsal=rehearsal,
+                           migrations=[item["name"] for item in migrations["pending"]], maintenance=maintenance, checks=checks.items)
+
+    def after_convert_failure(self, plan, reason, maintenance, checks=None):
+        """Revert the cut-over, unless a maintenance migration ran: the old image cannot run on that schema (review H2)."""
+        if maintenance:
+            with contextlib.suppress(Refusal):
+                self.annotate({"phase": "maintenance-unverified", "reason": reason[:500], "updated": utc_stamp()})
+            return self.finish("MAINTENANCE_UNVERIFIED", reason=reason, checks=checks,
+                               note="the automatic revert is off after a maintenance migration; recovery would be a restore, "
+                                    "which Andy decides")
+        return self.revert_cutover(plan, reason, checks)
 
     def revert_cutover(self, plan, reason, checks=None):
         """Back to the claim layout and the old image, at a higher generation again (never the old one)."""
@@ -891,6 +943,17 @@ class IngRunner(N.Runner):
     # ExecStopPost --------------------------------------------------------
     def stop_post(self, environment):
         """As lolly.tools, except that a switch after a maintenance migration is held, never rolled back."""
+        if self.request["kind"] == "convert":
+            try:
+                value, _ = self.deployment()
+            except (Refusal, self.au.Refusal):
+                return super().stop_post(environment)
+            # Review H2: a cut-over that applied a maintenance migration is held, never reverted (the marker says so).
+            if (self.ann(value, "deploy-id") == self.request["deployId"] and self.ann(value, "phase") == "converting"
+                    and self.applied_migrations(value, "maintenance-applied")):
+                self.annotate({"phase": "maintenance-unverified", "reason": "UNIT_STOPPED", "updated": utc_stamp()})
+                return self.finish("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED",
+                                   note="the automatic revert is off after a maintenance migration")
         if self.request["kind"] == "deploy":
             try:
                 value, _ = self.deployment()

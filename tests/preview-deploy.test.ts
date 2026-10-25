@@ -16,6 +16,7 @@ const GROUPS = [
   ['test_preview_deploy.Operations'],
   ['test_preview_deploy.Endurance'],
   ['test_preview_deploy_ing.IngDeploys'],
+  ['test_preview_deploy_ing.IngMaintenanceMarker'],
   ['test_preview_deploy_ing.IngRefusals'],
   ['test_preview_deploy_ing.IngCutover', 'test_preview_deploy_ing.IngRetention'],
 ];

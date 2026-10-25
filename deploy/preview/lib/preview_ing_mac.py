@@ -228,9 +228,16 @@ def _json(text):
 WORK_ANCHORS = {"repository": A.ING["workRepository"], "branch": "main"}
 
 
+def _bound(bound):
+    emit("build", run=bound["run"], dispatcher=bound["dispatcher"], approvedBy=bound["approver"],
+         note="bound: dispatched by the agents' identity, lolly-ing-signing approved by a pinned reviewer, build code anchored")
+    return bound
+
+
 def cmd_deploy(context, wsha, dispatch):
     """Deploy one Work main commit. ship dispatches the private build of (its Lolly pin, it, suse-lolly's main head)."""
     anchors, gh = context.anchors, context.gh
+    IG.require_dispatch_identity(gh)  # review C1: never as a reviewer, before any dispatch or bind
     status = _live(context)
     require(status["deployment"]["converted"], "NOT_CONVERTED", "lolly.ing still mounts the shell and pack claims; the one-time "
             "cut-over (plan) comes first")
@@ -255,6 +262,7 @@ def cmd_deploy(context, wsha, dispatch):
             bound = IG.bind_ing_run(gh, run, wsha)
     else:
         bound = IG.latest_ing_run(gh, wsha)
+    _bound(bound)
     release = bound["release"]
     require(G.contains(gh, anchors["repository"], release["suse"], G.branch_head(gh, anchors["repository"], anchors["branch"]))
             and G.contains(gh, A.ING["lollyRepository"], release["lolly"], G.branch_head(gh, A.ING["lollyRepository"], "main")),
@@ -264,7 +272,7 @@ def cmd_deploy(context, wsha, dispatch):
         emit("done", result="ALREADY_LIVE", image=release["image"], source=wsha)
         context.record("ship" if dispatch else "deploy", "ALREADY_LIVE", sha=wsha, image=release["image"])
         return 0
-    approval = IG.maintenance_approval(gh, bound["run"])
+    approval = IG.maintenance_approval(gh, bound["run"], bound["dispatcher"])
     live_expect = _json(preview.get("expect")) or {}
     IG.change_list(gh, {name: live_expect.get(name) for name in ("suse", "lolly")} | {"work": live_expect.get("source")},
                    {"suse": release["suse"], "work": release["source"], "lolly": release["lolly"]})
@@ -321,10 +329,12 @@ def _plan_path(context, deploy_id):
 def cmd_plan(context, sha):
     """PROPOSAL 4.8 plan mode for one Work commit: print the exact cut-over patch, applied once by the owner with Andy present."""
     anchors, gh = context.anchors, context.gh
+    IG.require_dispatch_identity(gh)
+    to_secret = I.signing_secret()
     G.require_on_main(gh, WORK_ANCHORS, sha)
     live = context.read("plan")
     require(not live["converted"], "ALREADY_CONVERTED", "lolly.ing already runs the instance image")
-    bound = IG.latest_ing_run(gh, sha)
+    bound = _bound(IG.latest_ing_run(gh, sha))
     release = bound["release"]
     value = live["deployment"]
     index = [c["name"] for c in value["spec"]["template"]["spec"]["containers"]].index(anchors["container"])
@@ -337,7 +347,7 @@ def cmd_plan(context, sha):
         "tool": context.tool_hash, "formats": compact(release["formats"]), "expect": compact(I.expect_of(release)),
         "config": to_config, "generation": str(generation), "layout": "instance-image", "deploys": "0",
         "migration-set": I.migration_set(release["migrations"]), "previous": None, "reason": None, "maintenance": None, "updated": utc_stamp()}.items()}
-    cutover = I.cutover_plan(value, index, release["image"], to_config, annotations)
+    cutover = I.cutover_plan(value, index, release["image"], to_config, annotations, to_secret)
     plan = {"version": 1, "kind": "lolly-ing-cutover", "site": "lolly.ing", "source": sha, "deployId": deploy_id,
             "tool": context.tool_hash, "createdAt": utc_stamp(), "run": bound["run"], "release": release, "generation": generation,
             "toConfig": to_config, "annotations": annotations, "cutover": cutover, "liveSource": None}
@@ -346,11 +356,20 @@ def cmd_plan(context, sha):
     write_private_new(path, text)
     digest = sha256_hex(text.encode())
     emit("cutover-plan", path=str(path), sha256=digest, image=release["image"], generation=generation, config=to_config,
+         signingKeySecret=cutover["signingKeySecret"], toSigningKeySecret=to_secret,
          removes=[v["name"] for v in cutover["volumes"]], patch=cutover["patch"],
-         note="the database generation is read at apply; if it raised N, apply refuses and asks for a new plan")
-    emit("for-andy", steps=["Change the lolly.ing Secret's LW_CATALOG_SIGNING_KEY to the lolly.ing key first (PROPOSAL 4.7); "
-                            "the command never touches Secrets.",
+         migrations=[m["name"] for m in release["migrations"]],
+         note="the database generation is read at apply; if it raised N, apply refuses and asks for a new plan. Pending "
+              "migrations are classified at apply; a maintenance file needs your lolly-ing-maintenance approval in the run")
+    emit("for-andy", steps=[f"Create Secret {to_secret} in {anchors['namespace']} holding lolly.ing's own key under "
+                            f"{A.ING['signingKeyEnv']}, the same key name as the live Secret {cutover['signingKeySecret']}. Never edit "
+                            "the live Secret: the patch switches the server's reference and a revert switches it back. The command "
+                            "never reads or writes a Secret's value.",
                             "Review the patch above.",
+                            "If a pending migration is classified maintenance at apply, the bound run must carry your "
+                            f"{A.ING['maintenanceEnvironment']} approval (dispatched with MAINTENANCE=true by the agents' identity), "
+                            "the backup must be under 1 hour old when the schema changes, and a failed smoke holds "
+                            "(MAINTENANCE_UNVERIFIED) instead of reverting.",
                             f"python3 launch.py lolly.ing plan {sha} --apply {path} --reviewed-plan-sha256 {digest}"])
     context.record("plan", "PLANNED", sha=sha, planSha256=digest, generation=generation)
     return 0
@@ -367,17 +386,22 @@ def cmd_plan_apply(context, sha, plan_path, reviewed):
     plan = strict_json(data.decode("utf-8"), "plan")
     require(isinstance(plan, dict) and plan.get("kind") == "lolly-ing-cutover" and plan.get("source") == sha
             and plan.get("tool") == context.tool_hash, "PLAN_INVALID", "the plan is for another commit or tool")
+    IG.require_dispatch_identity(gh)
+    require((plan.get("cutover") or {}).get("toSigningKeySecret") == I.signing_secret(), "PLAN_MISMATCH",
+            "the plan names another signing Secret than the tool anchors; make and review a new plan")
     status = _live(context)
     require(not status["deployment"]["converted"], "ALREADY_CONVERTED", "lolly.ing already runs the instance image")
     run = gh.json(f"repos/{anchors['repository']}/actions/runs/{int(plan['run'])}")
-    bound = IG.bind_ing_run(gh, run, sha)
+    bound = _bound(IG.bind_ing_run(gh, run, sha))
     require(bound["release"] == plan["release"], "PLAN_MISMATCH", "the bound build no longer matches the plan")
+    # Review H2: the cut-over may carry a maintenance migration under the deploy rules, so the approval travels too.
+    approval = IG.maintenance_approval(gh, bound["run"], bound["dispatcher"])
     context.expect_migrations = True
     context.backup_window("convert")
     context.check_target()
     intake(context, bound, bound["release"], sha)
     request = context.request("convert", plan["deployId"], need_bytes=context.need_bytes(bound["release"]), release=plan["release"],
-                              conversion=plan, maintenanceApproval=None)
+                              conversion=plan, maintenanceApproval=approval)
     result = context.start_and_follow(request)
     return M._finish(context, "plan --apply", result, sha=sha)
 

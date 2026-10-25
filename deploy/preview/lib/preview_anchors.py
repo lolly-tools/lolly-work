@@ -77,6 +77,10 @@ ING = {
     "refNamePattern": "docker.io/library/lolly-ing-instance:run-{run}-{attempt}",
     # A maintenance migration needs an approval of this environment in the same run (R20 S7).
     "maintenanceEnvironment": "lolly-ing-maintenance",
+    # Every build needs an approval of this environment by a login in ING_REVIEWERS (review 2026-10-25 C1).
+    "signingEnvironment": "lolly-ing-signing",
+    # The server's catalog signing key reference. The cut-over switches which Secret it names (review H3).
+    "signingKeyEnv": "LW_CATALOG_SIGNING_KEY",
     "receiptProfile": "suse",
     "receiptTarget": "web",
     # First-party repositories whose changes are listed before a switch (R21 R3).
@@ -134,6 +138,30 @@ ING_PUBLIC_KEY_JWK = None
 # GitHub logins whose approval in the private run admits a maintenance migration.
 # Andy's own login once agents have their own account (decision 3). Empty refuses all.
 ING_MAINTENANCE_APPROVERS = ()
+# Who dispatches and who approves (review 2026-10-25 C1). The tool runs `gh` as
+# ING_DISPATCH_IDENTITY, the agents' machine account (decision 3), and refuses to
+# run as any reviewer, so the token that dispatches a build can never be the one
+# that approves it. ING_REVIEWERS are the logins whose approval of lolly-ing-signing
+# admits a build; a bound run must carry one. None or empty refuses every lolly.ing
+# ship, deploy and plan until a reviewed change pins them.
+ING_DISPATCH_IDENTITY = None
+ING_REVIEWERS = ("ndftz",)
+# The Secret that holds lolly.ing's own catalog key under LW_CATALOG_SIGNING_KEY
+# (review 2026-10-25 H3). Andy creates it before the cut-over and never edits the
+# live Secret; the cut-over patch switches the server's reference to this name and
+# a revert switches it back, so the old image, old key and old pack return together.
+# The tool never reads or writes a Secret's value. None refuses plan and plan --apply.
+ING_SIGNING_KEY_SECRET = None
+# The build code the run binding trusts (review 2026-10-25 H1): git blob SHAs of the
+# suse-lolly files that build and check the instance image, read at the bound run's
+# head commit. Changing the build is a lolly-work PR and a new lock, like every other
+# anchor, so a push to suse-lolly main alone cannot produce a bindable image.
+# suse-lolly main 9996387a3c6ea5f21c0070696438123e8d3e0ca0 (PR #28), read 2026-10-25.
+ING_BUILD_BLOBS = {
+    ".github/workflows/lolly-ing-preview.yml": "ee63643f75b00a46db7accfe143defa5505dc055",
+    ".github/lolly-ing-preview/tool.mjs": "beb7b3b3e3d12b5c75a4a10607047b73a85a6c4f",
+    ".github/lolly-ing-preview/instance.Dockerfile": "29a4f38421f98f1f45f3fc4646a1eae644c9793d",
+}
 ING_ARCHIVE_MAX_BYTES = 6 * 1024 ** 3
 # The smoke account's session cookie: a root-only file on the node, never printed.
 NODE_ING_SMOKE_COOKIE = "/etc/lolly-preview/lolly.ing-smoke-session"

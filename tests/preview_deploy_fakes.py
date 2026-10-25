@@ -678,6 +678,8 @@ def patch_node_modules(tool_lib, sandbox, state_path):
                                "spool": f"{sandbox}/var/lib/lolly-preview/spool", "smokeCookie": f"{sandbox}/smoke-session"})
     if os.environ.get("FAKE_ING_PIN"):
         preview_anchors.ING_PUBLIC_KEY_JWK = json.loads(os.environ["FAKE_ING_PIN"])
+    for name, value in json.loads(os.environ.get("FAKE_ING_ANCHORS") or "{}").items():  # anchors a reviewed change pins
+        setattr(preview_anchors, name, tuple(value) if isinstance(value, list) else value)
 
     def capacity(_path):
         data = json.loads(Path(state_path).read_text())["capacity"]
