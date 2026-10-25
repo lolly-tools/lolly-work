@@ -237,15 +237,22 @@ def _bound(bound):
 def cmd_deploy(context, wsha, dispatch):
     """Deploy one Work main commit. ship dispatches the private build of (its Lolly pin, it, suse-lolly's main head)."""
     anchors, gh = context.anchors, context.gh
-    IG.require_dispatch_identity(gh)  # review C1: never as a reviewer, before any dispatch or bind
+    IG.require_dispatch_identity(gh)
     status = _live(context)
-    require(status["deployment"]["converted"], "NOT_CONVERTED", "lolly.ing still mounts the shell and pack claims; the one-time "
-            "cut-over (plan) comes first")
-    require(status["smokeSession"] == "present", "SMOKE_ACCOUNT", "the smoke account's session on the node: " + status["smokeSession"])
-    preview = _settled_records(status)
+    converted = status["deployment"]["converted"]
+    require(converted or dispatch, "NOT_CONVERTED", "lolly.ing still mounts claims; build with ship, then review its cut-over plan")
+    if converted:
+        require(status["smokeSession"] == "present", "SMOKE_ACCOUNT", "the smoke account's session on the node: " + status["smokeSession"])
+    preview = _settled_records(status) if converted else {}
     G.require_on_main(gh, WORK_ANCHORS, wsha)
     if dispatch:
         lsha, ssha = IG.lolly_for(gh, wsha), G.branch_head(gh, anchors["repository"], anchors["branch"])
+        accepted = _json(preview.get("expect")) or {}
+        if (converted and preview.get("phase") == "accepted" and preview.get("source") == wsha
+                and accepted.get("suse") == ssha and accepted.get("lolly") == lsha):
+            emit("done", result="ALREADY_LIVE", image=status["deployment"]["image"], source=wsha)
+            context.record("ship", "ALREADY_LIVE", sha=wsha, image=status["deployment"]["image"])
+            return 0
         try:
             bound = IG.latest_ing_run(gh, wsha, ssha)
             emit("build", note="reusing a bound lolly.ing build of this Work commit and suse-lolly's main head", run=bound["run"])
@@ -253,12 +260,25 @@ def cmd_deploy(context, wsha, dispatch):
             if exc.code != "RUN_NOT_FOUND":
                 raise
             context.backup_window("deploy")  # never start a build whose deploy could reach the backup window
-            known = {run["id"] for run in IG.ing_runs(gh, ssha)}
-            IG.dispatch_ing(gh, lsha, wsha, ssha)
-            run = IG.find_new_ing_run(gh, ssha, known)
-            emit("build", run=run["id"], note="two signing jobs wait for Andy's approval in GitHub; agents never approve them")
+            maintenance = bool(getattr(context.args, "maintenance", False))
+            runs = IG.ing_runs(gh, ssha)
+            active = [r for r in runs if r.get("status") in G.ACTIVE_STATES]
+            require(len(active) <= 1, "AMBIGUOUS_RUN", "more than one private preview build is active")
+            if active:
+                run = active[0]
+                require(run.get("display_title") == "lolly.ing preview " + wsha, "LOCK_HELD",
+                        "a private build for another source is active; wait for it to finish")
+                emit("build", run=run["id"], note="resuming the active private build; existing public gates are reused")
+            else:
+                known = {run["id"] for run in runs}
+                IG.dispatch_ing(gh, lsha, wsha, ssha, maintenance=maintenance)
+                run = IG.find_new_ing_run(gh, ssha, known)
+            emit("build", run=run["id"], note="public signing gates wait for Andy; agents never approve")
             build = context.profile["build"]
-            run = G.wait_for_run(gh, anchors, run["id"], build["pollSeconds"], build["timeoutMinutes"])
+            sources = {"lolly": lsha, "work": wsha, "suse": ssha}
+            dispatched = {}
+            run = G.wait_for_run(gh, anchors, run["id"], build["pollSeconds"], build["timeoutMinutes"],
+                                 progress=lambda current: IG.dispatch_pending_approvals(gh, current, sources, maintenance, dispatched))
             bound = IG.bind_ing_run(gh, run, wsha)
     else:
         bound = IG.latest_ing_run(gh, wsha)
@@ -267,12 +287,17 @@ def cmd_deploy(context, wsha, dispatch):
     require(G.contains(gh, anchors["repository"], release["suse"], G.branch_head(gh, anchors["repository"], anchors["branch"]))
             and G.contains(gh, A.ING["lollyRepository"], release["lolly"], G.branch_head(gh, A.ING["lollyRepository"], "main")),
             "NOT_ON_MAIN", "the build's suse-lolly or Lolly commit is not on its main")
+    if not converted:
+        emit("done", result="BUILT", source=wsha, image=release["image"], run=bound["run"],
+             note="Nothing deployed. Review plan <source>, then apply its exact reviewed cut-over patch with Andy present")
+        context.record("ship", "BUILT", sha=wsha, image=release["image"], ciRun=bound["run"])
+        return 0
     if release["image"] == status["deployment"]["image"]:
         require(preview.get("phase") == "accepted", "RECORDS_STALE", "this build is live but its phase is " + str(preview.get("phase")))
         emit("done", result="ALREADY_LIVE", image=release["image"], source=wsha)
         context.record("ship" if dispatch else "deploy", "ALREADY_LIVE", sha=wsha, image=release["image"])
         return 0
-    approval = IG.maintenance_approval(gh, bound["run"], bound["dispatcher"])
+    approval = IG.maintenance_approval(gh, bound)
     live_expect = _json(preview.get("expect")) or {}
     IG.change_list(gh, {name: live_expect.get(name) for name in ("suse", "lolly")} | {"work": live_expect.get("source")},
                    {"suse": release["suse"], "work": release["source"], "lolly": release["lolly"]})
@@ -395,7 +420,7 @@ def cmd_plan_apply(context, sha, plan_path, reviewed):
     bound = _bound(IG.bind_ing_run(gh, run, sha))
     require(bound["release"] == plan["release"], "PLAN_MISMATCH", "the bound build no longer matches the plan")
     # Review H2: the cut-over may carry a maintenance migration under the deploy rules, so the approval travels too.
-    approval = IG.maintenance_approval(gh, bound["run"], bound["dispatcher"])
+    approval = IG.maintenance_approval(gh, bound)
     context.expect_migrations = True
     context.backup_window("convert")
     context.check_target()

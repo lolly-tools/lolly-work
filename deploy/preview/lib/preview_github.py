@@ -154,7 +154,7 @@ def find_new_run(gh, anchors, sha, known_ids, attempts=20, pause=6):
     raise Refusal("RUN_NOT_FOUND", "the dispatched preview run did not appear")
 
 
-def wait_for_run(gh, anchors, run_id, poll_seconds, timeout_minutes, tolerated_errors=6):
+def wait_for_run(gh, anchors, run_id, poll_seconds, timeout_minutes, tolerated_errors=6, progress=None):
     deadline = time.monotonic() + timeout_minutes * 60
     last, errors = None, 0
     while True:
@@ -175,6 +175,8 @@ def wait_for_run(gh, anchors, run_id, poll_seconds, timeout_minutes, tolerated_e
             last = state
         if run.get("status") == "completed":
             return run
+        if progress is not None:
+            progress(run)
         require(time.monotonic() < deadline, "RUN_TIMEOUT", f"run {run_id} did not finish in {timeout_minutes} min")
         gh.sleep(poll_seconds)
 

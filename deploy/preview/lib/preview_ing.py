@@ -35,6 +35,8 @@ def ing_pin():
     thumbprint = jwk_thumbprint(jwk)
     require(thumbprint != A.RELEASE_PUBLIC_KEY_THUMBPRINT and thumbprint != jwk_thumbprint(A.RELEASE_PUBLIC_KEY_JWK),
             "RELEASE_KEY", "the lolly.ing pin is the platform release key; lolly.ing needs its own key")
+    require(thumbprint != A.PREVIEW_PUBLIC_KEY_THUMBPRINT, "KEY_MISMATCH",
+            "the lolly.ing key must differ from the lolly.tools preview key")
     return jwk, thumbprint
 
 
@@ -158,13 +160,19 @@ def validate_manifest(manifest, run, wsha):
     require(isinstance(boot, dict) and (boot.get("readyz") or {}).get("status") == 200
             and (boot.get("index") or {}).get("sha256") == shell["indexSha256"], "MANIFEST_INVALID",
             "the image did not boot in CI against a throwaway database")
-    return {"source": wsha, "suse": sources["suse"], "lolly": sources["lolly"],
+    require(isinstance(manifest.get("frontendInputSha256"), str) and HEX64.fullmatch(manifest["frontendInputSha256"]),
+            "MANIFEST_INVALID", "the unsigned frontend artifact hash is missing")
+    release = {"source": wsha, "suse": sources["suse"], "lolly": sources["lolly"],
             "image": anchors["imageName"] + "@" + image["digest"], "digest": image["digest"],
             "manifestDigest": image["manifestDigest"], "configDigest": image["configDigest"], "diffIds": list(image["diffIds"]),
             "refName": ref_name, "archive": {"name": archive["name"], "sha256": archive["sha256"], "bytes": archive["bytes"]},
             "ciRun": str(run["id"]), "seq": catalog["seq"], "indexSha256": shell["indexSha256"],
             "receiptSha256": manifest["receiptSha256"], "keyId": thumbprint, "formats": dict(formats),
-            "migrations": [{"name": m["name"], "sha256": m["sha256"]} for m in migrations]}
+            "migrations": [{"name": m["name"], "sha256": m["sha256"]} for m in migrations],
+            "frontendInputSha256": manifest["frontendInputSha256"], "approvals": manifest.get("approvals")}
+    from preview_approval import validate_release_approvals
+    validate_release_approvals(release, run)
+    return release
 
 
 # Generation (R20 S16) ------------------------------------------------------------
@@ -630,7 +638,8 @@ def verify_catalog(index_bytes, envelope_bytes, jwk, thumbprint):
 
 # The release a run carries to the node ---------------------------------------------------
 RELEASE_KEYS = {"source", "suse", "lolly", "image", "digest", "manifestDigest", "configDigest", "diffIds", "refName",
-                "archive", "ciRun", "seq", "indexSha256", "receiptSha256", "keyId", "formats", "migrations"}
+                "archive", "ciRun", "seq", "indexSha256", "receiptSha256", "keyId", "formats", "migrations",
+                "frontendInputSha256", "approvals"}
 
 
 def validate_release(release):
@@ -650,6 +659,10 @@ def validate_release(release):
             "BAD_REQUEST", "release fields")
     refuse_release_key(release["keyId"], "the release")
     validate_migrations(release["migrations"], "release migrations")
+    require(isinstance(release.get("frontendInputSha256"), str) and HEX64.fullmatch(release["frontendInputSha256"]),
+            "BAD_REQUEST", "the unsigned frontend artifact hash is missing")
+    from preview_approval import validate_release_approvals
+    validate_release_approvals(release)
     return release
 
 

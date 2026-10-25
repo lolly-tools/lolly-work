@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 // lolly.tools lives in test_preview_deploy.py, lolly.ing in test_preview_deploy_ing.py.
 const GROUPS = [
   ['Verifier', 'Expectations', 'Layout', 'Binding', 'Smoke', 'Shipped'].map(name => `test_preview_deploy.${name}`)
-    .concat(['test_preview_deploy_ing.IngRules']),
+    .concat(['test_preview_deploy_ing.IngRules', 'test_preview_approval.ApprovalRules']),
   ['test_preview_deploy.Deploys'],
   ['test_preview_deploy.Refusals'],
   ['test_preview_deploy.Operations'],

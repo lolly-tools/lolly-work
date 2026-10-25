@@ -50,6 +50,9 @@ DISPATCHER = "lolly-agent"
 REVIEWER = "andy"
 BUILD_BLOBS = {".github/workflows/lolly-ing-preview.yml": "a1" * 20, ".github/lolly-ing-preview/tool.mjs": "b2" * 20,
                ".github/lolly-ing-preview/instance.Dockerfile": "c3" * 20}
+APPROVAL_WORKFLOW = ".github/workflows/lolly-ing-approval.yml"
+APPROVAL_WORKFLOW_BLOB = "d4" * 20
+APPROVAL_HEAD = "e5" * 20
 # The Secret the live server's LW_CATALOG_SIGNING_KEY names before the cut-over (the release key, decision 2), and
 # the one holding lolly.ing's own key that the cut-over switches the reference to (review H3). Names only, never values.
 LEGACY_SIGNING_SECRET = "lolly-work-instance"
@@ -141,7 +144,8 @@ def make_ing_build(key, wsha, label, migrations=None, seq=3000, lolly="2" * 40, 
             "blobs": {digest: b64(index), "sha256:" + sha(manifest): b64(manifest), "sha256:" + sha(config): b64(config)},
             "index": b64(index_html), "receipt": b64(receipt), "catalog": b64(catalog), "seq": seq, "migrations": migrations,
             "lolly": lolly, "suse": suse, "formats": dict(FORMATS if formats is None else formats), "thumb": thumb,
-            "pin": pin or thumb, "packDigest": sha(("pack " + label).encode())}
+            "pin": pin or thumb, "packDigest": sha(("pack " + label).encode()),
+            "approvalIssuedAt": int(time.time()), "frontendInputSha256": sha(("unsigned " + label).encode())}
 
 
 def legacy_build(key):
@@ -184,9 +188,55 @@ def ing_manifest(build, run_id, attempt=1, **overrides):
         "storedFormats": {"formats": build["formats"], "missing": []},
         "buildSettings": {"profile": "suse", "siteUrl": "https://lolly.ing", "pinThumbprint": build["pin"]},
         "boot": {"readyz": {"status": 200}, "index": {"sha256": index_sha}},
+        "frontendInputSha256": build["frontendInputSha256"],
+        "approvals": approval_records(build, run_id, attempt),
     }
     manifest.update(overrides)
     return manifest
+
+
+def approval_request(build, run_id, stage, attempt=1, maintenance=False):
+    """The private CI request, with a deterministic nonce so repeated fixture reads agree."""
+    issued = build["approvalIssuedAt"]
+    return {"version": 1, "stage": stage,
+            "privateRun": {"repository": SUSE_REPO, "id": str(run_id), "attempt": attempt, "workflowSha": build["suse"]},
+            "sources": {"lolly": build["lolly"], "work": build["sha"], "suse": build["suse"]},
+            "pinThumbprint": build["pin"], "buildBlobs": dict(BUILD_BLOBS),
+            "migrationManifest": manifest_hash(build["migrations"])[7:], "maintenance": maintenance, "minSeq": "",
+            "artifactSha256": build["frontendInputSha256"] if stage == "final" else None,
+            "nonce": sha(f"{run_id}-{attempt}-{stage}-{build['label']}".encode()),
+            "issuedAt": issued, "expiresAt": issued + 14400}
+
+
+def approval_run_id(run_id, stage):
+    return 900000 + run_id * 2 + (1 if stage == "final" else 0)
+
+
+def approval_records(build, run_id, attempt=1, maintenance=False):
+    return {stage: {"request": approval_request(build, run_id, stage, attempt, maintenance),
+                    "run": {"id": str(approval_run_id(run_id, stage)), "attempt": 1}} for stage in ("source", "final")}
+
+
+def approval_digest(request):
+    text = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return sha(("lolly.ing approval request v1\n" + text).encode())
+
+
+def public_approval_run(request, run_id, dispatcher=DISPATCHER):
+    return {"id": int(run_id), "path": APPROVAL_WORKFLOW, "event": "workflow_dispatch", "head_branch": "main",
+            "head_sha": APPROVAL_HEAD, "status": "completed", "conclusion": "success", "run_attempt": 1,
+            "display_title": f"lolly.ing approval {request['stage']} {approval_digest(request)}",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(request["issuedAt"])),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(request["issuedAt"])),
+            "actor": {"login": dispatcher}, "triggering_actor": {"login": dispatcher},
+            "repository": {"full_name": WORK_REPO}, "head_repository": {"full_name": WORK_REPO}}
+
+
+def approval_environment(name, reviewer=REVIEWER):
+    return {"name": name, "can_admins_bypass": False,
+            "protection_rules": [{"type": "required_reviewers", "prevent_self_review": False,
+                                  "reviewers": [{"type": "User", "reviewer": {"login": reviewer}}]}],
+            "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True}}
 
 
 def zip_of(name, data):
@@ -207,7 +257,7 @@ def ing_run(run_id, suse, event="workflow_dispatch", status="completed", conclus
 
 
 def ing_artifacts(gh, build, run_id, manifest=None, archive=None):
-    """The run's two artifacts: the manifest and the OCI archive, plus the reviewer's lolly-ing-signing approval."""
+    """Private build artifacts and the independently approved public runs that authorize its signing."""
     manifest = manifest or ing_manifest(build, run_id)
     archive = archive if archive is not None else archive_bytes(build, run_id)
     manifest_id, archive_id = run_id * 10 + 1, run_id * 10 + 2
@@ -220,6 +270,22 @@ def ing_artifacts(gh, build, run_id, manifest=None, archive=None):
     gh.setdefault("zips", {})[str(manifest_id)] = zip_of("lolly-ing-instance.manifest.json", json.dumps(manifest))
     gh["zips"][str(archive_id)] = zip_of(manifest["image"]["archive"]["name"], archive)
     gh.setdefault("enginePins", {})[build["sha"]] = build["lolly"]
+    for stage, record in (manifest.get("approvals") or {}).items():
+        if not isinstance(record, dict) or not isinstance(record.get("request"), dict) or not isinstance(record.get("run"), dict):
+            continue
+        request, public_id = record["request"], record["run"].get("id")
+        if not str(public_id).isdigit():
+            continue
+        gh.setdefault("publicRuns", {})[str(public_id)] = public_approval_run(request, public_id)
+        approvals = [signing_approval()]
+        if stage == "final" and request.get("maintenance"):
+            approvals.append(maintenance_approval())
+        gh.setdefault("publicApprovals", {}).setdefault(str(public_id), approvals)
+        request_id = run_id * 10 + (3 if stage == "source" else 4)
+        gh["artifacts"][str(run_id)].append({"id": request_id,
+            "name": f"lolly-ing-approval-{stage}-request-attempt-{record['request']['privateRun']['attempt']}",
+            "expired": False, "size_in_bytes": 4000, "expires_at": "2026-11-20T00:00:00Z"})
+        gh["zips"][str(request_id)] = zip_of("request.json", json.dumps(request))
 
 
 def register_archive(state, build, run_id, attempt=1):
@@ -732,8 +798,24 @@ def make_ing_fetch(state_path):
 def gh_ing_route(gh, method, route, query, data, out):
     """suse-lolly, Work's engine pin and the change-list compares. Returns None when the base fake should answer."""
     if method == "POST":
+        if route == f"repos/{WORK_REPO}/actions/workflows/lolly-ing-approval.yml/dispatches":
+            inputs = data.get("inputs", {})
+            if data.get("ref") != "refs/heads/main" or set(inputs) != {"request_sha256", "stage", "maintenance"}:
+                return 1
+            # A fake public run exists for the exact private fixture; dispatch never manufactures approval.
+            matching = [r for r in gh.get("publicPendingRuns", {}).values()
+                        if r["display_title"] == f"lolly.ing approval {inputs['stage']} {inputs['request_sha256']}"]
+            if len(matching) != 1:
+                return 1
+            run = matching[0]
+            gh.setdefault("publicRuns", {})[str(run["id"])] = run
+            del gh["publicPendingRuns"][str(run["id"])]
+            return 0
         if route == f"repos/{SUSE_REPO}/actions/workflows/lolly-ing-preview.yml/dispatches":
-            if data.get("ref") != "refs/heads/main" or set(data.get("inputs", {})) != {"LSHA", "WSHA", "SSHA"}:
+            fields = set(data.get("inputs", {}))
+            if data.get("ref") != "refs/heads/main" or fields not in ({"LSHA", "WSHA", "SSHA"}, {"LSHA", "WSHA", "SSHA", "MAINTENANCE"}):
+                return 1
+            if "MAINTENANCE" in fields and data["inputs"]["MAINTENANCE"] is not True:
                 return 1
             run = gh.get("onDispatch")
             if run:
@@ -743,6 +825,29 @@ def gh_ing_route(gh, method, route, query, data, out):
         return None
     if route == "user":
         out.write(json.dumps({"login": gh.get("login", DISPATCHER), "type": "User"}))
+        return 0
+    if route == f"repos/{WORK_REPO}/contents/{APPROVAL_WORKFLOW}":
+        blob = gh.get("approvalWorkflowBlob", APPROVAL_WORKFLOW_BLOB)
+        out.write(json.dumps({"type": "file", "path": APPROVAL_WORKFLOW, "sha": blob, "size": 100}))
+        return 0
+    if route == f"repos/{WORK_REPO}/actions/workflows/lolly-ing-approval.yml/runs":
+        out.write(json.dumps({"workflow_runs": list(gh.get("publicRuns", {}).values())}))
+        return 0
+    match = re.fullmatch(rf"repos/{WORK_REPO}/actions/runs/(\d+)(/approvals)?", route)
+    if match:
+        item = gh.get("publicApprovals", {}) if match.group(2) else gh.get("publicRuns", {})
+        if match.group(1) not in item:
+            print("gh: Not Found (HTTP 404)", file=sys.stderr)
+            return 1
+        out.write(json.dumps(item[match.group(1)]))
+        return 0
+    match = re.fullmatch(rf"repos/{WORK_REPO}/environments/(lolly-ing-signing|lolly-ing-maintenance)(/deployment-branch-policies)?", route)
+    if match:
+        if match.group(2):
+            value = gh.get("approvalBranches", {"total_count": 1, "branch_policies": [{"name": "main", "type": "branch"}]})
+        else:
+            value = gh.get("approvalEnvironments", {}).get(match.group(1), approval_environment(match.group(1)))
+        out.write(json.dumps(value))
         return 0
     if route == f"repos/{SUSE_REPO}/git/ref/heads/main":
         out.write(json.dumps({"ref": "refs/heads/main", "object": {"type": "commit", "sha": gh["suseMainHead"]}}))

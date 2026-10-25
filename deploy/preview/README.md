@@ -5,7 +5,8 @@ web image, puts that image on the K3s node by digest, switches the Deployment wi
 (`scripts/app-update.py`), runs a smoke check, watches for a few minutes and rolls back by itself if anything fails.
 
 For lolly.ing it ships one private instance image, built for a lolly-work `main` commit by suse-lolly's private
-workflow, with a fresh backup, a migration guard, a restore rehearsal and a catalog generation rule. See
+workflow. Signing waits for approval-only runs in public lolly-work; SUSE sources, keys and artifacts stay private.
+Deployment uses a fresh backup, a migration guard, a restore rehearsal and a catalog generation rule. See
 [lolly.ing](#lollying-phase-2-proposal-section-4). Every lolly.ing command refuses until the tool pins lolly.ing's own
 catalog key.
 
@@ -24,6 +25,10 @@ Python 3.9 or newer, standard library only, on both the operator's Mac and the n
   lolly.ing archive into the node's spool.
 - lolly.ing: `lib/preview_ing.py` (rules), `lib/preview_ing_github.py` (the private run), `lib/preview_ing_mac.py` and
   `lib/preview_ing_node.py`.
+- `approval/approval.mjs`: the Node-built-in public approval verifier used by private CI; the Mac and node keep their
+  Python standard-library path. `.github/workflows/lolly-ing-approval.yml` is the public approval-only workflow.
+- `launcher-maintenance.patch`: the reviewed private-launcher allowlist update needed before `ship --maintenance`
+  can pass through an older `launch.py`. It is not applied automatically.
 - Tests: `tests/test_preview_deploy.py` and `tests/test_preview_deploy_ing.py`, with fakes in
   `tests/preview_deploy_fakes.py` and `tests/preview_deploy_ing_fakes.py`, run by Work CI through
   `tests/preview-deploy.test.ts`.
@@ -62,7 +67,8 @@ and preview host tooling must not ship to private deployers.
   - the origins, resource names and required labels;
   - for lolly.ing: who dispatches (`ING_DISPATCH_IDENTITY`) and who approves (`ING_REVIEWERS`,
     `ING_MAINTENANCE_APPROVERS`), the git blob SHAs of suse-lolly's build files (`ING_BUILD_BLOBS`) and the name of
-    the Secret holding lolly.ing's own key (`ING_SIGNING_KEY_SECRET`). See [Identities](#identities-review-c1).
+    the Secret holding lolly.ing's own key (`ING_SIGNING_KEY_SECRET`), and the public workflow/helper blobs
+    (`ING_APPROVAL`). See [Public approvals](#public-approvals-and-the-shared-account).
 - **Identities come from check-target.py.** These are read from the patched `check-target.py` (its `--site` change):
   - the SSH route and known-hosts file;
   - the k3s path, kubeconfig and context;
@@ -358,7 +364,8 @@ May change:
 Never touches:
 - Secrets, PVCs, Postgres, the edge, DNS, other Deployments or the Helm release;
 - pins made by other procedures;
-- any GitHub setting. It never approves an environment gate. The only GitHub write is the preview workflow dispatch.
+- any GitHub setting. It never approves an environment gate. Its GitHub writes are private build and public
+  approval workflow dispatches; public approval dispatches carry only a digest, stage and maintenance flag.
 
 ## Records
 
@@ -455,7 +462,7 @@ ConfigMap per catalog generation. One digest names the cohort, so a rollback is 
 ```
 launch.py lolly.ing plan <work sha>                    print the one-time cut-over patch (PROPOSAL 4.8)
 launch.py lolly.ing plan <sha> --apply PLAN --reviewed-plan-sha256 H   apply it once, the owner with Andy present
-launch.py lolly.ing ship <work sha>                    dispatch the private build, wait, then deploy
+launch.py lolly.ing ship <work sha> [--maintenance]     build and wait for public approvals; deploy only after conversion
 launch.py lolly.ing deploy <work sha>                  deploy the newest bound build of that Work commit
 launch.py lolly.ing rollback                           the recorded previous build, at a higher generation
 launch.py lolly.ing status [--follow DEPLOY_ID]
@@ -466,31 +473,64 @@ The input is one lolly-work `main` commit (WSHA). Its `engine-pin.json` names th
 is built at its `main` head (SSHA). `selftest` and `adopt` are lolly.tools only (`NOT_FOR_LOLLY_ING`): the unit's own
 selftest covers both sites, and the cut-over seeds lolly.ing's records.
 
-### Identities (review C1)
+### Public approvals and the shared account
 
-The human gates are checks, not rules the tool hopes for (security review 2026-10-25, C1):
+Andy accepted a temporary shared-account setup on 2026-10-25. `gh api user` must match the pinned
+`ING_DISPATCH_IDENTITY` (`ndftz`), and private/public runs must have that actor and triggering actor. Andy may approve
+using the same account. The explicit shared-account anchor permits the dispatcher to appear in `ING_REVIEWERS`;
+without that exception the tool refuses the overlap. **Agents never approve an environment gate.** This is a human
+checkpoint, not enforced credential separation: an agent holding the account's token technically has approval rights.
 
-- **The tool runs as the agents' identity and never as a reviewer.** `ship`, `deploy`, `plan` and `plan --apply` read
-  `gh api user` first and refuse `AGENT_IDENTITY` unless the login is `ING_DISPATCH_IDENTITY` (the machine account of
-  decision 3) and is in neither `ING_REVIEWERS` nor `ING_MAINTENANCE_APPROVERS`. So the token that dispatches a build can
-  never be the one that approves it, and a reviewer's token on the shared Mac stops the tool instead of serving as its
-  credential. `status`, `rollback` and `gc` touch no run and are not gated. Until a reviewed change pins the dispatch
-  identity, every ship, deploy and plan refuses.
-- **The run was dispatched by that identity.** A bound run's `triggering_actor` must be `ING_DISPATCH_IDENTITY`
-  (`DISPATCHER_IDENTITY` otherwise), so a reviewer's hand dispatch never binds.
-- **The run carries a pinned reviewer's approval.** `bind_ing_run` reads the run's approvals
-  (`GET /actions/runs/{id}/approvals`) and requires an `approved` entry naming `lolly-ing-signing` by a login in
-  `ING_REVIEWERS` other than the dispatcher (`APPROVAL_MISSING` otherwise). A run that passed because the environment
-  had no reviewer rule carries no such entry and is refused, so a missing or misconfigured environment is visible.
-- **The build code is anchored.** At the run's head commit, suse-lolly's `.github/workflows/lolly-ing-preview.yml`,
-  `.github/lolly-ing-preview/tool.mjs` and `.github/lolly-ing-preview/instance.Dockerfile` must be the git blobs in
-  `ING_BUILD_BLOBS` (`BUILD_CODE_CHANGED` otherwise; review H1). A change to the build is then a lolly-work PR and a new
-  tool lock, like every other anchor, and a push to suse-lolly `main` alone cannot produce a bindable image. The anchors
-  name blobs, not a commit, so unrelated suse-lolly commits (catalog, tools) need no re-anchoring.
-- The node checks a maintenance approval's substance, not only its shape: approver in `ING_MAINTENANCE_APPROVERS`,
-  environment `lolly-ing-maintenance`, run equal to the build's (`MAINTENANCE_NOT_APPROVED` otherwise; review M3).
-- A run that fails one of these checks stops `deploy <wsha>` with that code; it is not skipped in favour of an older
-  run, because each of them is a sign that a setting or a rule is wrong and a human should look.
+The public `.github/workflows/lolly-ing-approval.yml` in `lolly-tools/lolly-work` contains no signing key, private
+repository credential, SUSE checkout or SUSE artifact. GitHub Team supports its public reviewer environments:
+
+- `lolly-ing-signing`: required reviewer `ndftz`, Prevent self-review OFF, selected branch `main` only, administrative
+  bypass disabled. There are separate source-signing and final-signing approval runs.
+- `lolly-ing-maintenance`: the same rules, required in the final public run when maintenance is requested.
+
+The private suse-lolly `lolly-ing-signing` environment is a main-only holder for
+`LOLLY_ING_CATALOG_SIGNING_KEY`. It has no private reviewer gate. Separate private jobs with no signing key verify
+public approvals before either private signing job can start. The private workflow pins and verifies Work's
+`approval/approval.mjs` bytes before executing that helper; a success reported by the Mac alone cannot unlock signing.
+
+The private secret is protected by this reviewed CI software verifier and job dependency chain, not GitHub backend
+withholding based on a cross-repository approval. Private main protection and signing-workflow review are essential:
+a malicious private workflow change could remove the verifier and request the environment secret.
+
+Each private run creates two versioned requests: source signing, then final signing. They bind exact private run and
+attempt, all source commits, signing pin, build-code blobs, migration manifest, maintenance intent and sequence floor.
+The final request also binds the unsigned frontend hash. Each has a fresh random nonce and an expiry no later than
+four hours after issue. SHA-256 covers `lolly.ing approval request v1\n` plus recursively sorted compact JSON.
+
+While waiting for the private build, the Mac observes that run's exact artifacts
+`lolly-ing-approval-source-request-attempt-1` and `lolly-ing-approval-final-request-attempt-1`. Each contains only
+`request.json`. It checks and displays the private request, then dispatches the corresponding public workflow with
+only `request_sha256`, `stage` and `maintenance` (false for the source stage). Private source identifiers and request
+contents are never sent to the public workflow. Andy reviews the private summary and compares the digest before
+approving in GitHub. Public metadata still reveals the digest, stage, maintenance flag, timing and account identities.
+
+The private verifier and Mac require the exact public workflow path, reviewed workflow blob, same repository for run
+and head, main dispatch, pinned actor, success, first attempt, exact title `lolly.ing approval <stage> <digest>`, valid
+request lifetime and an actual approved entry by the pinned reviewer. They also require the configured environment
+rules above. Workflow success without the approval entry is refused. Reject, timeout, missing approval, policy drift,
+wrong stage/run/source/artifact or ambiguous matching runs stop the operation. Reruns of either workflow are refused;
+start a fresh private dispatch with fresh requests and approvals.
+
+The private manifest records `approvals.source` and `approvals.final`, each `{request, run: {id, attempt: 1}}`, and
+`frontendInputSha256` from the build job's output. Final signing and manifest assembly compare that independent hash
+with the final request. The Mac verifies the public history again when binding the build. Request expiry is checked
+at Mac binding and node intake, so an expired build needs a fresh dispatch and approvals. The node checks internal
+request/release bindings against its locked anchors; it does not independently prove GitHub approval if the Mac is
+compromised.
+
+Build code remains anchored: suse-lolly's workflow, `tool.mjs` and `instance.Dockerfile` must match `ING_BUILD_BLOBS`.
+The public workflow and CI helper must match `ING_APPROVAL`'s blobs. A changed build or gate needs reviewed source
+changes, updated anchors and a new tool lock. Unrelated SUSE catalog/tool commits need no re-anchoring when those
+build files are unchanged.
+
+The node's maintenance approval record must name a pinned approver, environment `lolly-ing-maintenance`, and the
+PUBLIC FINAL approval run (`release.approvals.final.run.id`), not the private build's `ciRun`. The final request must
+also have maintenance set. Authenticity comes from the Mac's public GitHub lookup; the node rejects field mismatches.
 
 The private profile `lolly.ing.json` holds the smoke account's `sub`, one known pack asset path, the page list, the
 memory fraction, the watch, build polling, rollout timeout, capacity (`minFreeAboveReserveBytes`, `archiveFactor`), the
@@ -504,33 +544,25 @@ Three pieces built in parallel meet here. This is the contract they share. The f
 are real output of #207's classifier and #208's rehearsal, and the tests run this tool against them and against
 #208's own fake kubectl.
 
-- **suse-lolly PR #28, `.github/workflows/lolly-ing-preview.yml`.**
-  - `ship` dispatches it on `refs/heads/main` with `LSHA`, `WSHA` and `SSHA` (main's head). Two `lolly-ing-signing`
-    jobs wait for Andy each time; agents never approve them, and the tool refuses to run as a reviewer.
-  - The run is bound by its ID: workflow path, event `workflow_dispatch`, repository and head repository
-    `lolly-tools/suse-lolly`, branch `main`, success, head SHA equal to `sources.suse` and `run.workflowSha`, dispatched
-    by `ING_DISPATCH_IDENTITY`, the anchored build blobs at that head SHA, and an approval of `lolly-ing-signing` by a
-    login in `ING_REVIEWERS` (see [Identities](#identities-review-c1)). The gate refuses an `SSHA` that is not the
-    run's own commit.
-  - From that run only: `lolly-ing-instance.manifest.json` (kind `lolly-ing-instance-image`, version 1) and
-    `lolly-ing-instance-<run>-<attempt>.oci.tar`.
+- **The private `.github/workflows/lolly-ing-preview.yml` and public approval workflow.**
+  - `ship` dispatches the private build on `refs/heads/main` with `LSHA`, `WSHA`, `SSHA` (the private main head), and
+    `MAINTENANCE=true` when `--maintenance` was requested. The private gate refuses `SSHA` unequal to its own commit.
+  - The private run is bound by ID, workflow path, `workflow_dispatch`, repository/head repository
+    `lolly-tools/suse-lolly`, main, success, first attempt, source commits, dispatcher and anchored build blobs.
+  - Both public approvals bind the exact private request as described above. The source approval unlocks source
+    signing; the final approval unlocks final signing, and also requires maintenance approval when requested.
+  - From the private build only: `lolly-ing-instance.manifest.json` (kind `lolly-ing-instance-image`, version 1) and
+    `lolly-ing-instance-<run>-<attempt>.oci.tar`. Its approvals and `frontendInputSha256` are required manifest fields.
   - The manifest's key ids (`shell.keyId`, `shell.publicPinThumbprint`, `catalog.keyId`, `buildSettings.pinThumbprint`)
-    must all be the lolly.ing pin and never the release key.
-  - The archive's sha256 is checked twice: while it streams into the node's root-only spool, and again before
-    `ctr images import --no-unpack --digests --base-name docker.io/library/lolly-ing-instance` reads that same file.
-    Then the index digest, the linux/amd64 manifest, the config and the DiffIDs are checked, and the run tag
-    (`image.refName`) the import kept is removed.
-  - After the switch the smoke verifies the shell's served `/release-frontend.sig.json` against the lolly.ing pin
-    (source `LSHA`, target `web`, profile `suse`), its sha256 against `receiptSha256`, and `/` against
-    `shell.indexSha256`.
-  - A maintenance migration needs `MAINTENANCE=true` at dispatch and Andy's approval of `lolly-ing-maintenance` in the
-    same run, by a login in `ING_MAINTENANCE_APPROVERS`. `ship` never sends `MAINTENANCE=true` (follow-up L1), so such a
-    build is dispatched by hand as the agents' identity and then bound with `deploy <wsha>` or `plan <wsha>`:
-
-    ```text
-    gh workflow run lolly-ing-preview.yml --repo lolly-tools/suse-lolly --ref main \
-      -f LSHA=<lolly sha> -f WSHA=<work sha> -f SSHA=<suse-lolly main head> -f MAINTENANCE=true
-    ```
+    must all be lolly.ing's own pin and never the release key.
+  - The archive SHA-256 is checked while streaming into the root-only spool, then again through the open descriptor
+    used by `ctr images import --no-unpack --digests --base-name docker.io/library/lolly-ing-instance`. The index,
+    linux/amd64 manifest, config and DiffIDs are read back and checked; the run tag is removed and pins are read back.
+  - After the switch, smoke verifies the served frontend receipt against the lolly.ing pin and exact Lolly source,
+    target/profile, receipt hash and signed `index.html` hash.
+  - A maintenance migration needs the final request's maintenance intent and Andy's public
+    `lolly-ing-maintenance` approval. Use `ship <wsha> --maintenance` after the launcher update below, rather than
+    hand-dispatching a private workflow that has no operator observing its approval requests.
 - **lolly-work PR #207, the migration classifier and `LW_MIGRATE_EXPECT`.**
   - A Job from the new image, with no environment, runs `node scripts/classify-migrations.ts --json --only <pending>`.
     It prints one JSON document: `{"version": 1, "migrations": [{name, sha256, class, reasons, statements}],
@@ -549,7 +581,8 @@ are real output of #207's classifier and #208's rehearsal, and the tests run thi
     check-target covers it.
   - It refuses anything but `result: PASSED` with `teardownComplete`, the same pending set and `expect`, the same
     images, every file within the budget, and `egressClosedAfterFetch`.
-  - The cut-over runs it with nothing pending (`expect: none`).
+  - The cut-over runs the full rehearsal even with nothing pending (`expect: none`); pending files are included
+    when the live ledger requires them.
 
 ### Key (PROPOSAL 4.7)
 
@@ -572,21 +605,21 @@ are real output of #207's classifier and #208's rehearsal, and the tests run thi
 ### Deploy steps (PROPOSAL 4.3)
 
 On the Mac:
-0. `gh api user` is the agents' dispatch identity and no reviewer (`AGENT_IDENTITY` otherwise), before anything else.
-1. Live state from the node: no run active, no hold, the instance-image layout, records that describe the live image,
-   and the smoke session file present.
-2. WSHA is on lolly-work `main`. The build is bound and its manifest checked (the contract above): dispatched by the
-   agents' identity, the anchored build blobs at its suse-lolly commit, a pinned reviewer's `lolly-ing-signing` approval;
-   its suse-lolly and Lolly commits are on their `main`.
-3. The maintenance approval in the run is read, when there is one (by a pinned approver other than the dispatcher). The
-   node refuses a pending maintenance migration without it, and checks the approval's approver, environment and run
-   itself.
-4. The first-party commits and dependency files changed since the live release are printed (R21 R3).
-5. check-target `--site lolly.ing`, once, before the first write to the node.
-6. The archive is downloaded by run ID and streamed over the check-target SSH route into the node's root-only spool,
-   hashed while it is written. A wrong size or sha256 deletes it (`ARCHIVE_MISMATCH`). No registry credential is ever on
-   the node.
-7. The unit starts.
+0. `gh api user` matches the pinned dispatch identity (`AGENT_IDENTITY` otherwise). Shared `ndftz` use is an explicit
+   accepted exception; the command never approves a gate.
+1. Read live state: no active node run and no hold. After conversion, require the instance-image layout, records that
+   describe the live image and a smoke session. Before conversion, `ship` may build without changing the node.
+2. WSHA is on lolly-work main. Reuse a still-binding build, or dispatch/resume its exact private build. Observe the
+   private request artifacts, validate them and dispatch only their opaque digests to the public gate. Andy approves.
+3. Bind the completed private run, anchored build code, source/pin/image facts and both public approvals. Check the
+   request lifetime and the final unsigned artifact hash. The private SUSE and Lolly sources must be on their main.
+   On an unconverted site, finish with `BUILT` and the next `plan` instruction: no archive upload or node mutation.
+4. For deployment, read any maintenance approval from the public final gate. The node will check its approver,
+   environment, run and request intent itself. Print the first-party commits and dependency files changed since live.
+5. Check the backup window, then `check-target.py --site lolly.ing` once immediately before the first node write.
+6. Download the private archive by run ID and stream it into the root-only spool, hashing it while written. A wrong
+   size or SHA-256 removes it (`ARCHIVE_MISMATCH`). No registry credential goes to the node.
+7. Start the node unit and follow its result.
 
 In the unit:
 1. Identity, hold and layout checks; the live build passes its own light smoke (`LIVE_SMOKE_FAILED` otherwise).
@@ -652,15 +685,15 @@ layout, the old image and the old key reference back, with a new ConfigMap at a 
 (`CONVERSION_REVERTED`); the old pack verifies against the old key again, so the reverted catalog answers 200. Keep the
 old claims and the old Secret until two image deploys have passed.
 
-**Migrations at the cut-over (review H2).** The release waiting for the cut-over is twelve migrations ahead of the live
-schema, and the classifier calls several of them `maintenance` (`0068`, `0069`, `0072`, `0075`, both `0076` files as of
-2026-10-25). The cut-over takes them under the same rules as a maintenance `deploy` (PROPOSAL 4.4), never by hand:
+**Migrations at the cut-over (review H2).** The earlier security review inferred pending maintenance migrations from
+source history. That was not a fresh live-ledger observation. Recheck the actual live ledger and exact candidate files
+before the cut-over; the classifier and rehearsal decide the pending set under the maintenance rules (PROPOSAL 4.4):
 
 - The classifier runs from the new image on exactly the pending files. Allowlisted (`additive`) files are rehearsed and
   applied; a revert stays available, because the rehearsal booted the old image on the migrated copy.
-- A `maintenance` file needs Andy's `lolly-ing-maintenance` approval in the bound run (`MAINTENANCE_NOT_APPROVED`
-  otherwise, nothing applied). That run must have been dispatched with `MAINTENANCE=true` by the agents' identity (the
-  hand dispatch in the contract above), then bound with `plan <wsha>`.
+- A `maintenance` file needs Andy's `lolly-ing-maintenance` approval in the bound PUBLIC FINAL run
+  (`MAINTENANCE_NOT_APPROVED` otherwise, nothing applied). Build with `ship <wsha> --maintenance` and then prepare
+  and review `plan <wsha>`; the approved final request must cover this candidate's migration manifest.
 - The backup must be under 1 hour old when the schema changes: checked before the rehearsal and again after it, right
   before the migrate Job (`BACKUP_STALE` otherwise, nothing applied).
 - The `maintenance-applied-unswitched` marker is written on the Deployment before the migrate Job and holds every later
@@ -706,33 +739,60 @@ own references, by design.
 
 ## Before the first lolly.ing run
 
-- Merge in this order: lolly-work #207 (classifier and `LW_MIGRATE_EXPECT`), #208 (restore rehearsal), then this tool's
-  lolly.ing change. suse-lolly #28 may merge at any time. Then re-lock with `make-tool-lock.py`; the lock's paths do not
-  change.
-- suse-lolly's `lolly-ing-signing` environment (two approvals per build, required reviewer Andy, prevent self-review
-  on, deployments from `main` only) and `lolly-ing-maintenance` environment exist **before the first dispatch**: a
-  dispatch that names a missing environment creates it with no rules. Check with
-  `gh api repos/lolly-tools/suse-lolly/environments/lolly-ing-signing` (`protection_rules` must list `required_reviewers`).
-  `ING_MAINTENANCE_APPROVERS` is pinned by a reviewed lolly-work PR before the first maintenance migration; while it is
-  empty every maintenance migration is refused, including at the cut-over.
-- The agents' machine account (decision 3) exists and is the Mac's `gh` login; Andy's own token is not on the shared
-  Mac. Its login is pinned in `ING_DISPATCH_IDENTITY` by a reviewed lolly-work PR; until then every ship, deploy and plan
-  refuses `AGENT_IDENTITY`. `ING_REVIEWERS` names Andy.
-- lolly.ing's own key generated; its public half pinned in `ING_PUBLIC_KEY_JWK` by a reviewed lolly-work PR; its private
-  half in a **second** Secret in `lolly-private`, under key `LW_CATALOG_SIGNING_KEY`, whose name is pinned in
-  `ING_SIGNING_KEY_SECRET` by the same PR. The live Secret is never edited.
-- `ING_BUILD_BLOBS` equals the blob SHAs of suse-lolly `main`'s `.github/workflows/lolly-ing-preview.yml`,
-  `.github/lolly-ing-preview/tool.mjs` and `.github/lolly-ing-preview/instance.Dockerfile`
-  (`gh api repos/lolly-tools/suse-lolly/contents/<path>?ref=main --jq .sha`). A later change to those files is a
-  lolly-work PR that updates the anchors, then a new lock.
-- The smoke member created, with the `export.server` grant on `tool:qr-code`, and its session written to
-  `/etc/lolly-preview/lolly.ing-smoke-session` (root, 0600). `lolly.ing.json` in the state directory names its `sub`
-  and the backup store's `rehearsal.storageHost` and `rehearsal.storageAddress`.
-- The rehearsal namespace `lolly-restore-rehearsal`, set up once with `restore-rehearsal.py setup`, and its read-only
-  backup credential Secret `restore-rehearsal-backup-read`, both by Andy (see [`REHEARSAL.md`](REHEARSAL.md)). The
-  anchored PostgreSQL image is on the node by digest.
-- The Postgres NetworkPolicy admitting the preview Job label (`app.kubernetes.io/component: preview-migrate`) in
-  `lolly-private`, set up once by Andy.
-- Then `status`, `plan <work sha>`, the cut-over with Andy present (with his `lolly-ing-maintenance` approval in the
-  bound run when a pending migration is `maintenance`), and a `--drill-fail-smoke` **deploy** afterwards that must land
-  on catalog 200 at a higher generation. Never drill the cut-over itself.
+This route is implemented for review; public/private gate setup and a real signing build have not been qualified.
+The active private launcher and pinned live tool are unchanged until the reviewed changes merge and are applied.
+
+- Merge the reviewed public workflow/helper and deploy-tool changes, then the private CI changes that pin those exact
+  public blobs. The selected Work source must contain the helper at the pinned blob. Preserve lolly.tools Phase 1b
+  when integrating the tool changes. Re-lock a merged Work main commit with `make-tool-lock.py` and add the required
+  production README entry.
+- The repository parser supports `ship --maintenance`, but an older active `launch.py` rejects that flag before the
+  tool runs. Andy reviews and applies [`launcher-maintenance.patch`](launcher-maintenance.patch) to the private
+  launcher's flag allowlist only after review/merge. No active launcher edit is made by this source change; never
+  bypass the launcher by running the tool directly.
+- In PUBLIC lolly-work, create `lolly-ing-signing` and `lolly-ing-maintenance` before the first public dispatch:
+  required reviewer `ndftz`, Prevent self-review OFF, selected branch `main` only, administrator bypass disabled.
+  Store no signing key or private repository credential in either. A missing environment can be created implicitly
+  without rules by a dispatch, so verify the configured rules first.
+- In PRIVATE suse-lolly, create a main-only `lolly-ing-signing` environment with
+  `LOLLY_ING_CATALOG_SIGNING_KEY`; this is a secret holder, not a private reviewer gate. Set repository variable
+  `LOLLY_ING_PUBLIC_KEY_JWK`. Protect main, require reviewed code and an always-running qualification check, and keep
+  default Actions permissions read-only in both repositories. Agents still never approve a gate.
+- Pin `ING_DISPATCH_IDENTITY` and reviewers to the accepted shared-account policy. Pin
+  `ING_MAINTENANCE_APPROVERS` before a maintenance run; an empty list refuses maintenance. Review the credential
+  separation exception honestly: shared credentials do not enforce a distinct human approver.
+- Generate lolly.ing's distinct key, pin its public half in `ING_PUBLIC_KEY_JWK`, and have Andy create a SECOND Secret
+  in `lolly-private` with `LW_CATALOG_SIGNING_KEY`. Pin its name in `ING_SIGNING_KEY_SECRET`. Preserve the existing live
+  Secret, which the cut-over reference switch leaves available for an additive revert.
+- Keep `ING_BUILD_BLOBS` equal to the private workflow/tool/Dockerfile blobs, and `ING_APPROVAL` equal to the public
+  workflow/helper blobs. A later code change needs reviewed anchor updates and a new tool lock.
+- Create the smoke member with no projects and one grant, `export.server` on `tool:qr-code`. Install its fresh session
+  at `/etc/lolly-preview/lolly.ing-smoke-session`, root-owned, mode 0600. The profile names its `sub`, a known pack
+  asset, and the backup store's `rehearsal.storageHost` and public `rehearsal.storageAddress`.
+- Andy sets up `lolly-restore-rehearsal`, its quota/low priority/restricted policy, and read-only backup Secret
+  `restore-rehearsal-backup-read` with the existing backup encryption key (see [`REHEARSAL.md`](REHEARSAL.md)). The
+  pinned PostgreSQL image must be on the node by digest.
+- NetworkPolicies must permit BOTH ingress to PostgreSQL FROM the preview Job labels and egress FROM those Jobs TO
+  PostgreSQL on TCP 5432, in `lolly-private`. Jobs use `app.kubernetes.io/component: preview-migrate`; preserve deny-all
+  isolation and DNS policy. The tool never configures these policies.
+- Apply the separately reviewed check-target readiness fix if accepted, so an unready lolly.ing does not block a
+  recovery command. Identity, DNS and other target checks stay required.
+
+After those prerequisites, build first and then review the exact cut-over patch:
+
+```text
+/usr/bin/python3 launch.py lolly.ing ship <work sha> --maintenance
+# Returns BUILT before conversion; Andy approves the public source/final and maintenance gates.
+/usr/bin/python3 launch.py lolly.ing plan <work sha>
+# Andy reviews the emitted file and SHA-256 before the named owner applies it with Andy present.
+/usr/bin/python3 launch.py lolly.ing plan <work sha> --apply PLAN --reviewed-plan-sha256 HASH
+```
+
+Use `--maintenance` only for the approved maintenance intent; if the live pending files are all additive, the ordinary
+build does not need a maintenance gate. A fresh ledger check, backup under the applicable age bound and a successful
+rehearsal are still required. A build is not a cut-over approval. After conversion, normal `ship` builds and deploys;
+`deploy` reuses an already bound, unexpired build.
+
+Run a `--drill-fail-smoke` DEPLOY only after a suitable post-cut-over build is ready; it must recover a working catalog
+at a higher generation. Never drill the maintenance cut-over itself. Keep the old claims and signing Secret until the
+accepted retention milestone, then let Andy decide their removal.

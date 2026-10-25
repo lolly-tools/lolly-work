@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: MPL-2.0
+# This workflow holds only an opaque digest. Signing and SUSE artifacts stay private.
+name: lolly.ing approval
+run-name: lolly.ing approval ${{ inputs.stage }} ${{ inputs.request_sha256 }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_sha256:
+        description: SHA-256 of the private approval request
+        required: true
+        type: string
+      stage:
+        description: Signing stage
+        required: true
+        type: choice
+        options: [source, final]
+      maintenance:
+        description: Also require maintenance approval for the final signing stage
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  validate:
+    name: validate the opaque request
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1 && github.actor == 'ndftz' && github.triggering_actor == 'ndftz'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Validate public inputs
+        env:
+          REQUEST_SHA256: ${{ inputs.request_sha256 }}
+          STAGE: ${{ inputs.stage }}
+          MAINTENANCE: ${{ inputs.maintenance }}
+        run: |
+          node --input-type=module - <<'JS'
+          const { REQUEST_SHA256: digest, STAGE: stage, MAINTENANCE: maintenance } = process.env;
+          if (!/^[a-f0-9]{64}$/.test(digest ?? '') || !['source', 'final'].includes(stage) ||
+              !['true', 'false'].includes(maintenance) || (stage === 'source' && maintenance !== 'false')) {
+            throw new Error('Invalid approval request');
+          }
+          console.log('The opaque request is valid. Review its private summary before approving.');
+          JS
+
+  signing:
+    name: human signing approval
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    environment: lolly-ing-signing
+    steps:
+      - name: Record completion after the human approval
+        run: echo 'The human signing gate completed. Private CI verifies its approval history.'
+
+  maintenance:
+    name: human maintenance approval
+    needs: validate
+    if: inputs.stage == 'final' && inputs.maintenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    environment: lolly-ing-maintenance
+    steps:
+      - name: Record completion after the human approval
+        run: echo 'The human maintenance gate completed. Private CI verifies its approval history.'
+
+  complete:
+    name: approval complete
+    needs: [validate, signing, maintenance]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every applicable gate
+        env:
+          VALIDATE: ${{ needs.validate.result }}
+          SIGNING: ${{ needs.signing.result }}
+          MAINTENANCE_RESULT: ${{ needs.maintenance.result }}
+          STAGE: ${{ inputs.stage }}
+          MAINTENANCE: ${{ inputs.maintenance }}
+        run: |
+          node --input-type=module - <<'JS'
+          const e = process.env;
+          const expected = e.STAGE === 'final' && e.MAINTENANCE === 'true' ? 'success' : 'skipped';
+          if (e.VALIDATE !== 'success' || e.SIGNING !== 'success' || e.MAINTENANCE_RESULT !== expected) {
+            throw new Error('An applicable approval gate did not complete');
+          }
+          JS

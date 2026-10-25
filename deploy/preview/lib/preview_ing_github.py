@@ -3,23 +3,25 @@
 
 A build is bound by its run ID: workflow path, event (workflow_dispatch),
 repository and head repository, branch, head commit (the suse-lolly commit it
-built), success, the dispatcher (the agents' identity, never a reviewer), the
-anchored build code at that commit and a pinned reviewer's approval of
-lolly-ing-signing (R22 S6; review 2026-10-25 C1, H1). Its manifest and archive
+built), success, the dispatcher, the anchored build code at that commit and
+human approval of both signing requests in the public control repository.
+The shared-account exception does not enforce identity separation. Its manifest and archive
 are read only from that run's own artifacts, never looked up by name across the
 repository. The only write is the workflow dispatch. Nothing here approves an
-environment gate, and the tool refuses to run as a reviewer at all.
+environment gate.
 """
 
 from __future__ import annotations
 
 import io
 import re
+import time
 import zipfile
 
 import preview_anchors as A
 import preview_github as G
 import preview_ing as I
+import preview_approval as P
 from preview_common import RUN_ID, SHA, Refusal, emit, require, strict_json
 
 ANCHORS = A.ING
@@ -35,24 +37,25 @@ def _login(value):
 
 
 def identity_anchors():
-    """The dispatch identity and the reviewers: pinned, well formed and distinct. Refuses until both are set."""
+    """Pinned identities, with shared-account use requiring an explicit reviewed exception."""
     dispatcher, reviewers = A.ING_DISPATCH_IDENTITY, A.ING_REVIEWERS
     require(isinstance(dispatcher, str) and LOGIN.fullmatch(dispatcher) is not None, "AGENT_IDENTITY",
             "the agents' dispatch identity (ING_DISPATCH_IDENTITY, decision 3) is not pinned in the tool yet; nothing was changed")
     require(isinstance(reviewers, tuple) and bool(reviewers) and all(isinstance(r, str) and LOGIN.fullmatch(r) for r in reviewers),
             "AGENT_IDENTITY", "no lolly.ing reviewer (ING_REVIEWERS) is pinned in the tool yet; nothing was changed")
-    require(dispatcher not in reviewers and dispatcher not in A.ING_MAINTENANCE_APPROVERS, "AGENT_IDENTITY",
-            "the anchors name the dispatch identity as a reviewer or maintenance approver; one login never does both")
+    require(A.ING_ALLOW_SAME_ACCOUNT_APPROVAL is True or
+            (dispatcher not in reviewers and dispatcher not in A.ING_MAINTENANCE_APPROVERS), "AGENT_IDENTITY",
+            "shared-account dispatch and approval need an explicit reviewed exception")
     return dispatcher, reviewers
 
 
 def require_dispatch_identity(gh):
-    """The `gh` this tool runs as is the dispatch identity and no reviewer, so the token that dispatches a build can
-    never be the one that approves it. Runs before any dispatch or bind; status, rollback and gc need no run."""
+    """Require the pinned dispatcher before dispatch or binding; never approve a gate."""
     dispatcher, reviewers = identity_anchors()
     login = _login(gh.json("user"))
     require(login is not None, "AGENT_IDENTITY", "gh api user gave no login; the tool cannot tell who it runs as")
-    require(login not in reviewers and login not in A.ING_MAINTENANCE_APPROVERS, "AGENT_IDENTITY",
+    require(A.ING_ALLOW_SAME_ACCOUNT_APPROVAL is True or
+            (login not in reviewers and login not in A.ING_MAINTENANCE_APPROVERS), "AGENT_IDENTITY",
             f"gh runs as {login}, a lolly.ing reviewer; a reviewer approves in GitHub from a device agents do not use and never "
             "runs this tool")
     require(login == dispatcher, "AGENT_IDENTITY", f"gh runs as {login}, not the pinned dispatch identity {dispatcher}")
@@ -73,30 +76,6 @@ def check_build_code(gh, head_sha):
         require(isinstance(entry, dict) and entry.get("type") == "file" and entry.get("path") == path and found == expected,
                 "BUILD_CODE_CHANGED", f"suse-lolly {head_sha[:12]} carries another {path} (blob {str(found)[:12]}; the tool anchors "
                 f"{expected[:12]}); a changed build needs a lolly-work PR and a new tool lock")
-
-
-def _approvals(gh, run_id):
-    """(environment names, approver login) for every approved entry of the run."""
-    approvals = gh.json(f"repos/{ANCHORS['repository']}/actions/runs/{int(run_id)}/approvals")
-    require(isinstance(approvals, list), "GITHUB_FAILED", "the run's approvals are unreadable")
-    found = []
-    for item in approvals:
-        if not isinstance(item, dict) or item.get("state") != "approved":
-            continue
-        names = [env.get("name") for env in item.get("environments") or [] if isinstance(env, dict)]
-        found.append((names, _login(item.get("user"))))
-    return found
-
-
-def signing_approval(gh, run_id, dispatcher):
-    """The approval of lolly-ing-signing in this run by a pinned reviewer other than the dispatcher (review C1).
-    A run that passed because the environment had no reviewer rule carries no approval and is refused."""
-    _, reviewers = identity_anchors()
-    for names, login in _approvals(gh, run_id):
-        if ANCHORS["signingEnvironment"] in names and login in reviewers and login != dispatcher:
-            return login
-    raise Refusal("APPROVAL_MISSING", f"run {run_id} carries no approval of {ANCHORS['signingEnvironment']} by a pinned reviewer "
-                  f"({', '.join(reviewers)}) other than its dispatcher; the environment's reviewer rule may be missing")
 
 
 def ing_runs(gh, ssha=None):
@@ -145,7 +124,6 @@ def bind_ing_run(gh, run, wsha):
     require(G._same_repository(run, ANCHORS["repository"]), "RUN_NOT_BOUND", "run belongs to another repository or a fork")
     require(run.get("head_branch") == ANCHORS["branch"] and isinstance(run.get("head_sha"), str) and SHA.fullmatch(run["head_sha"]),
             "RUN_NOT_BOUND", "run is for another branch")
-    require(type(run.get("run_attempt")) is int and run["run_attempt"] >= 1, "RUN_NOT_BOUND", "run attempt is malformed")
     # Review 2026-10-25 C1 and H1: the run was dispatched by the agents' identity (never by a reviewer), its build code
     # is the anchored one, and a pinned reviewer approved lolly-ing-signing in it.
     dispatcher, _ = identity_anchors()
@@ -155,19 +133,25 @@ def bind_ing_run(gh, run, wsha):
     triggering_actor = _login(run.get("triggering_actor"))
     require(triggering_actor == dispatcher, "DISPATCHER_IDENTITY", f"run {run['id']} was started or rerun by {triggering_actor}, "
             f"not the pinned dispatch identity {dispatcher}")
+    require(type(run.get("run_attempt")) is int and run["run_attempt"] == 1, "RUN_NOT_BOUND", "private reruns need a fresh dispatch")
     require(run.get("status") == "completed" and run.get("conclusion") == "success", "RUN_FAILED",
             f"run {run['id']} concluded {run.get('conclusion')!r}")
     check_build_code(gh, run["head_sha"])
-    approver = signing_approval(gh, run["id"], actor)
     artifacts = _artifacts(gh, run["id"])
     manifest_item = artifacts[ANCHORS["manifestArtifact"]]
     data = gh.binary(f"repos/{ANCHORS['repository']}/actions/artifacts/{manifest_item['id']}/zip", limit=4 * 1024 * 1024)
-    release = I.validate_manifest(read_manifest(data), run, wsha)
+    manifest = read_manifest(data)
+    release = I.validate_manifest(manifest, run, wsha)
+    P.bind_approvals(gh, manifest, run)
+    final = release["approvals"]["final"]
+    final_run = gh.json(f"repos/{A.ING_APPROVAL['repository']}/actions/runs/{int(final['run']['id'])}")
+    verified = P.verify_approval(gh, final_run, final["request"])
+    approver = verified["approver"]
     archive = artifacts[ANCHORS["archiveArtifact"]]
     require(type(archive.get("size_in_bytes")) is int and 0 < archive["size_in_bytes"] <= A.ING_ARCHIVE_MAX_BYTES + 64 * 1024 ** 2,
             "RECEIPT_MISSING", "the archive artifact has no plausible size")
     return {"release": release, "run": run["id"], "attempt": run["run_attempt"], "runCreatedAt": run.get("created_at"),
-            "dispatcher": actor, "approver": approver,
+            "dispatcher": actor, "approver": approver, "publicApproval": verified,
             "archiveArtifact": {"id": archive["id"], "bytes": archive["size_in_bytes"]},
             "expiresAt": min(str(manifest_item.get("expires_at")), str(archive.get("expires_at")))}
 
@@ -180,7 +164,7 @@ def latest_ing_run(gh, wsha, ssha=None):
         try:
             return bind_ing_run(gh, run, wsha)
         except Refusal as exc:
-            if exc.code not in ("RECEIPT_MISSING", "MANIFEST_SOURCE"):
+            if exc.code not in ("RECEIPT_MISSING", "MANIFEST_SOURCE", "APPROVAL_EXPIRED"):
                 raise
     raise Refusal("RUN_NOT_FOUND", f"no live, binding lolly.ing build of Work {wsha}" + (f" and suse-lolly {ssha}" if ssha else "")
                   + "; use ship")
@@ -194,11 +178,83 @@ def lolly_for(gh, wsha):
     return lsha
 
 
-def dispatch_ing(gh, lsha, wsha, ssha):
+def dispatch_ing(gh, lsha, wsha, ssha, maintenance=False):
     """Ask the private workflow for one build of exactly these three commits, on main."""
     body = {"ref": "refs/heads/" + ANCHORS["branch"], "inputs": {"LSHA": lsha, "WSHA": wsha, "SSHA": ssha}}
+    if maintenance:
+        body["inputs"]["MAINTENANCE"] = True
     gh.post(f"repos/{ANCHORS['repository']}/actions/workflows/{ANCHORS['buildWorkflowFile']}/dispatches", body)
     return body
+
+
+def dispatch_pending_approvals(gh, run, sources, maintenance, dispatched):
+    """Read private requests and dispatch public approval jobs. This never approves a gate."""
+    dispatcher, _ = identity_anchors()
+    require(G._same_repository(run, ANCHORS["repository"]) and run.get("event") == "workflow_dispatch"
+            and run.get("head_branch") == "main" and run.get("head_sha") == sources["suse"]
+            and type(run.get("run_attempt")) is int and run["run_attempt"] == 1
+            and _login(run.get("actor")) == dispatcher and _login(run.get("triggering_actor")) == dispatcher,
+            "RUN_NOT_BOUND", "the private build waiting for approval has another identity, source or attempt")
+    listing = gh.json(f"repos/{ANCHORS['repository']}/actions/runs/{run['id']}/artifacts", per_page=100)
+    require(listing.get("total_count", len(listing.get("artifacts", []))) <= 100, "RECEIPT_MISSING", "too many private artifacts")
+    for stage in ("source", "final"):
+        name = f"lolly-ing-approval-{stage}-request-attempt-1"
+        matches = [v for v in listing.get("artifacts", []) if isinstance(v, dict) and v.get("name") == name]
+        if not matches:
+            continue
+        require(len(matches) == 1 and matches[0].get("expired") is False and type(matches[0].get("id")) is int,
+                "APPROVAL_REQUEST", "the private signing request artifact is ambiguous or expired")
+        data = gh.binary(f"repos/{ANCHORS['repository']}/actions/artifacts/{matches[0]['id']}/zip", limit=128 * 1024)
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                require(archive.namelist() == ["request.json"] and archive.getinfo("request.json").file_size <= 65536,
+                        "APPROVAL_REQUEST", "the private request artifact contains other files")
+                request = strict_json(archive.read("request.json").decode("utf-8"), "private signing request")
+        except (zipfile.BadZipFile, UnicodeDecodeError, KeyError) as exc:
+            raise Refusal("APPROVAL_REQUEST", "the private request artifact is malformed") from exc
+        P.validate_request(request, time.time())
+        _, pin = I.ing_pin()
+        require(request["stage"] == stage and request["sources"] == sources
+                and request["privateRun"] == {"repository": ANCHORS["repository"], "id": str(run["id"]),
+                                               "attempt": 1, "workflowSha": run["head_sha"]}
+                and request["pinThumbprint"] == pin and request["buildBlobs"] == A.ING_BUILD_BLOBS
+                and request["maintenance"] is maintenance and request["minSeq"] == "", "APPROVAL_REQUEST",
+                "the private signing request differs from the dispatch intent")
+        digest = P.request_digest(request)
+        if stage in dispatched:
+            require(dispatched[stage] == digest, "APPROVAL_REQUEST", "a signing request changed after public dispatch")
+            continue
+        check_build_code(gh, run["head_sha"])
+        public = P._public_anchors()
+        for environment in P._needed_environments(request):
+            P.check_environment(gh, environment)
+        title = P.approval_title(request)
+        found = gh.json(f"repos/{public['repository']}/actions/workflows/{public['workflowFile']}/runs",
+                        event="workflow_dispatch", branch="main", per_page=100)
+        candidates = [r for r in found.get("workflow_runs", []) if isinstance(r, dict) and r.get("display_title") == title]
+        require(len(candidates) <= 1, "APPROVAL_RUN", "more than one public gate names the signing request")
+        # The private summary is intentionally printed only on the operator's Mac.
+        emit("approval-request", stage=stage, digest=digest, privateRun=run["id"], request=request,
+             note="Review the private request and matching public digest; Andy approves, agents never approve")
+        if not candidates:
+            head = G.branch_head(gh, public["repository"], "main")
+            blob = gh.json(f"repos/{public['repository']}/contents/{public['workflowPath']}", ref=head)
+            require(blob.get("type") == "file" and blob.get("path") == public["workflowPath"]
+                    and blob.get("sha") == public["workflowBlob"], "BUILD_CODE_CHANGED", "the public approval workflow changed")
+            gh.post(f"repos/{public['repository']}/actions/workflows/{public['workflowFile']}/dispatches",
+                    {"ref": "refs/heads/main", "inputs": {"request_sha256": digest, "stage": stage,
+                     "maintenance": bool(stage == "final" and maintenance)}})
+            emit("approval-dispatched", stage=stage, digest=digest, repository=public["repository"],
+                 workflow=public["workflowFile"], note="Awaiting Andy's approval in GitHub")
+        else:
+            candidate = candidates[0]
+            require(candidate.get("path") == public["workflowPath"] and G._same_repository(candidate, public["repository"])
+                    and _login(candidate.get("actor")) == dispatcher and _login(candidate.get("triggering_actor")) == dispatcher
+                    and candidate.get("run_attempt") == 1, "APPROVAL_RUN", "the existing public gate does not bind")
+            require(candidate.get("status") != "completed" or candidate.get("conclusion") == "success", "APPROVAL_MISSING",
+                    "the matching public approval failed or was rejected; make a fresh private dispatch")
+            emit("approval-waiting", stage=stage, run=candidate.get("id"), digest=digest)
+        dispatched[stage] = digest
 
 
 def find_new_ing_run(gh, ssha, known_ids, attempts=20, pause=6):
@@ -211,12 +267,15 @@ def find_new_ing_run(gh, ssha, known_ids, attempts=20, pause=6):
     raise Refusal("RUN_NOT_FOUND", "the dispatched lolly.ing build did not appear")
 
 
-def maintenance_approval(gh, run_id, dispatcher):
-    """Andy's approval of the maintenance environment in this same run (R20 S7), or None.
-    This GitHub lookup authenticates the approval; the node only checks its fields for mismatches (review M3)."""
-    for names, login in _approvals(gh, run_id):
-        if ANCHORS["maintenanceEnvironment"] in names and login in A.ING_MAINTENANCE_APPROVERS and login != dispatcher:
-            return {"run": str(run_id), "approver": login, "environment": ANCHORS["maintenanceEnvironment"]}
+def maintenance_approval(gh, bound):
+    """The already authenticated final public run carries the maintenance approval, or none."""
+    request = bound["release"]["approvals"]["final"]["request"]
+    if not request["maintenance"]:
+        return None
+    name = ANCHORS["maintenanceEnvironment"]
+    login = bound["publicApproval"]["environments"].get(name)
+    if login in A.ING_MAINTENANCE_APPROVERS:
+        return {"run": bound["publicApproval"]["run"], "approver": login, "environment": name}
     return None
 
 

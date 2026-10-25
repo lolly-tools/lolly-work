@@ -86,6 +86,8 @@ def validate_ing_request(request, au):
     require(type(request.get("drillFailSmoke")) is bool and type(request.get("clearHold")) is bool, "BAD_REQUEST", "flags")
     if request["kind"] in ("deploy", "convert"):
         release = I.validate_release(request.get("release"))
+        from preview_approval import validate_release_approvals
+        validate_release_approvals(release, now=N.WALL())
         approval = request.get("maintenanceApproval")
         require(approval is None or (isinstance(approval, dict) and set(approval) == {"run", "approver", "environment"}),
                 "BAD_REQUEST", "maintenance approval")
@@ -95,8 +97,9 @@ def validate_ing_request(request, au):
                     "MAINTENANCE_NOT_APPROVED", "the maintenance approval names an approver the tool does not pin")
             require(approval["environment"] == anchors["maintenanceEnvironment"], "MAINTENANCE_NOT_APPROVED",
                     "the maintenance approval is for another environment")
-            require(approval["run"] == release["ciRun"], "MAINTENANCE_NOT_APPROVED",
-                    "the maintenance approval is from another run than the build's")
+            require(approval["run"] == release["approvals"]["final"]["run"]["id"]
+                    and release["approvals"]["final"]["request"]["maintenance"] is True, "MAINTENANCE_NOT_APPROVED",
+                    "the maintenance approval is from another public run than the final signing request")
     if request["kind"] == "convert":
         plan = request.get("conversion")
         require(isinstance(plan, dict) and isinstance(plan.get("cutover"), dict) and isinstance(plan["cutover"].get("patch"), list)

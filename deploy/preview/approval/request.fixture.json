@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "stage": "source",
+  "privateRun": {
+    "repository": "lolly-tools/suse-lolly",
+    "id": "123456789",
+    "attempt": 1,
+    "workflowSha": "3333333333333333333333333333333333333333"
+  },
+  "sources": {
+    "lolly": "1111111111111111111111111111111111111111",
+    "work": "2222222222222222222222222222222222222222",
+    "suse": "3333333333333333333333333333333333333333"
+  },
+  "pinThumbprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "buildBlobs": {
+    ".github/workflows/lolly-ing-preview.yml": "4444444444444444444444444444444444444444",
+    ".github/lolly-ing-preview/tool.mjs": "5555555555555555555555555555555555555555",
+    ".github/lolly-ing-preview/instance.Dockerfile": "6666666666666666666666666666666666666666"
+  },
+  "migrationManifest": "7777777777777777777777777777777777777777777777777777777777777777",
+  "maintenance": false,
+  "minSeq": "",
+  "artifactSha256": null,
+  "nonce": "8888888888888888888888888888888888888888888888888888888888888888",
+  "issuedAt": 1700000000,
+  "expiresAt": 1700014400
+}

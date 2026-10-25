@@ -11,6 +11,7 @@ fake kubectl.
 """
 import base64
 import contextlib
+import copy
 import io
 import json
 import os
@@ -19,7 +20,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import zipfile
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -59,39 +62,41 @@ def pinned_anchors(key):
     C1), the Secret holding lolly.ing's key (H3) and the suse-lolly build files the bind trusts (H1)."""
     return [mock.patch.object(A, "ING_PUBLIC_KEY_JWK", key[1]), mock.patch.object(A, "ING_DISPATCH_IDENTITY", IF.DISPATCHER),
             mock.patch.object(A, "ING_REVIEWERS", (IF.REVIEWER,)), mock.patch.object(A, "ING_SIGNING_KEY_SECRET", IF.ING_SIGNING_SECRET),
-            mock.patch.object(A, "ING_BUILD_BLOBS", dict(IF.BUILD_BLOBS))]
+            mock.patch.object(A, "ING_BUILD_BLOBS", dict(IF.BUILD_BLOBS)),
+            mock.patch.object(A, "ING_APPROVAL", dict(getattr(A, "ING_APPROVAL", {}),
+                repository=IF.WORK_REPO, branch="main", workflowFile="lolly-ing-approval.yml", workflowPath=IF.APPROVAL_WORKFLOW,
+                workflowBlob=IF.APPROVAL_WORKFLOW_BLOB), create=True),
+            mock.patch.object(A, "ING_ALLOW_SAME_ACCOUNT_APPROVAL", True, create=True)]
 
 
 class StubGh:
     """Canned `gh api` answers for binding one run without the fake executables."""
 
-    def __init__(self, build, run, approvals=None, blobs=None):
+    def __init__(self, build, run, approvals=None, blobs=None, manifest=None):
         self.build, self.run = build, run
         self.approvals = [IF.signing_approval()] if approvals is None else approvals
         self.blobs = dict(IF.BUILD_BLOBS if blobs is None else blobs)
         self.calls = []
+        self.state = {"suseBlobs": self.blobs, "ingRuns": [run], "suseMainHead": run["head_sha"]}
+        IF.ing_artifacts(self.state, build, run["id"], manifest=manifest)
+        if approvals is not None:
+            for public_id in self.state["publicApprovals"]:
+                self.state["publicApprovals"][public_id] = copy.deepcopy(approvals)
 
     def json(self, path, **params):
         self.calls.append(path)
-        run_id = self.run["id"]
-        if path.startswith(SUSE_API + "contents/"):
-            relative = path[len(SUSE_API + "contents/"):]
-            if params.get("ref") != self.run["head_sha"] or relative not in self.blobs:
-                raise C.Refusal("GITHUB_NOT_FOUND", path)
-            return {"type": "file", "path": relative, "sha": self.blobs[relative]}
-        if path == f"{SUSE_API}actions/runs/{run_id}/approvals":
-            return self.approvals
-        if path == f"{SUSE_API}actions/runs/{run_id}/artifacts":
-            gh = {}
-            IF.ing_artifacts(gh, self.build, run_id)
-            return {"artifacts": gh["artifacts"][str(run_id)]}
+        out = io.StringIO()
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = IF.gh_ing_route(self.state, "GET", path, params, None, out)
+        if code == 0:
+            return json.loads(out.getvalue())
+        if code is not None:
+            raise C.Refusal("GITHUB_NOT_FOUND", path)
         raise AssertionError("unexpected gh api " + path)
 
     def binary(self, path, limit):
         self.calls.append(path)
-        gh = {}
-        IF.ing_artifacts(gh, self.build, self.run["id"])
-        return IF.unb64(gh["zips"][path.split("/")[-2]])
+        return IF.unb64(self.state["zips"][path.split("/")[-2]])
 
 
 class IngRules(unittest.TestCase):
@@ -326,7 +331,7 @@ class IngRules(unittest.TestCase):
         gh = StubGh(self.build, self.run)
         bound = IG.bind_ing_run(gh, self.run, W_NEW)
         self.assertEqual((bound["dispatcher"], bound["approver"]), (IF.DISPATCHER, IF.REVIEWER))
-        self.assertEqual(len([c for c in gh.calls if "/contents/" in c]), 3)  # every anchored file, at the head commit
+        self.assertGreaterEqual(len([c for c in gh.calls if "/contents/" in c]), 5)  # private build code plus both public gate checks
         by_reviewer = IF.ing_run(1100, S_HEAD, dispatcher=IF.REVIEWER)
         refused(self, lambda: IG.bind_ing_run(StubGh(self.build, by_reviewer), by_reviewer, W_NEW), "DISPATCHER_IDENTITY")
         for actor, triggering_actor in ((IF.REVIEWER, IF.DISPATCHER), (IF.DISPATCHER, IF.REVIEWER)):
@@ -371,10 +376,12 @@ class IngRules(unittest.TestCase):
             refused(self, lambda: IG.require_dispatch_identity(Who(IF.DISPATCHER)), "AGENT_IDENTITY")
         with mock.patch.object(A, "ING_REVIEWERS", ()):
             refused(self, lambda: IG.require_dispatch_identity(Who(IF.DISPATCHER)), "AGENT_IDENTITY")
-        with mock.patch.object(A, "ING_REVIEWERS", (IF.DISPATCHER,)):  # one login never does both
+        with mock.patch.object(A, "ING_ALLOW_SAME_ACCOUNT_APPROVAL", False), mock.patch.object(A, "ING_REVIEWERS", (IF.DISPATCHER,)):
             refused(self, lambda: IG.require_dispatch_identity(Who(IF.DISPATCHER)), "AGENT_IDENTITY")
-        with mock.patch.object(A, "ING_MAINTENANCE_APPROVERS", (IF.DISPATCHER,)):
+        with mock.patch.object(A, "ING_ALLOW_SAME_ACCOUNT_APPROVAL", False), mock.patch.object(A, "ING_MAINTENANCE_APPROVERS", (IF.DISPATCHER,)):
             refused(self, lambda: IG.require_dispatch_identity(Who(IF.DISPATCHER)), "AGENT_IDENTITY")
+        with mock.patch.object(A, "ING_REVIEWERS", (IF.DISPATCHER,)):
+            self.assertEqual(IG.require_dispatch_identity(Who(IF.DISPATCHER)), IF.DISPATCHER)
 
     def test_a_cutover_revert_retry_rechecks_the_maintenance_marker(self):
         """A patch conflict must not let a retry ignore a maintenance marker in the next read."""
@@ -475,7 +482,11 @@ class IngEndToEnd(unittest.TestCase):
             "FAKE_ING_PIN": json.dumps(self.key[1]), "FAKE_KNOWN_HOSTS": str(self.known_hosts), "FAKE_SITE": "lolly.ing",
             "FAKE_REHEARSAL_STATE": str(self.rehearsal_path),
             # The node runs in its own process and reads the bundle's anchors; these are the ones it needs pinned.
-            "FAKE_ING_ANCHORS": json.dumps({"ING_SIGNING_KEY_SECRET": IF.ING_SIGNING_SECRET})})
+            "FAKE_ING_ANCHORS": json.dumps({"ING_SIGNING_KEY_SECRET": IF.ING_SIGNING_SECRET,
+                "ING_BUILD_BLOBS": dict(IF.BUILD_BLOBS), "ING_DISPATCH_IDENTITY": IF.DISPATCHER,
+                "ING_REVIEWERS": [IF.REVIEWER], "ING_ALLOW_SAME_ACCOUNT_APPROVAL": True,
+                "ING_APPROVAL": {"repository": IF.WORK_REPO, "branch": "main", "workflowFile": "lolly-ing-approval.yml",
+                                 "workflowPath": IF.APPROVAL_WORKFLOW, "workflowBlob": IF.APPROVAL_WORKFLOW_BLOB}})})
         self.environ.start()
         for name in ("FAKE_CRASH_PHASE", "FAKE_CHECK_TARGET", "FAKE_SSH_DOWN", "FAKE_START_REPLY_LOST", "FAKE_UNIT_NEVER_STARTS",
                      "FAKE_CRASH_AFTER_SWITCH", "FAKE_ING_ABORT", "FAKE_AGE_AFTER_REHEARSAL"):
@@ -598,9 +609,17 @@ class IngEndToEnd(unittest.TestCase):
         return build
 
     def approve(self, run_id, login="andy"):
-        """Andy's lolly-ing-maintenance approval in the run, beside the signing approval every run carries."""
+        """Bind maintenance consent to this candidate and its final public signing gate."""
         self.gh = json.loads(self.gh_path.read_text())
-        self.gh["approvals"].setdefault(str(run_id), []).append(IF.maintenance_approval(login))
+        manifest_id = run_id * 10 + 1
+        with zipfile.ZipFile(io.BytesIO(IF.unb64(self.gh["zips"][str(manifest_id)]))) as archive:
+            manifest = json.loads(archive.read("lolly-ing-instance.manifest.json"))
+        image = IF.ING_IMAGE + "@" + manifest["image"]["digest"]
+        build = self.cluster()["builds"][image]
+        manifest["approvals"] = IF.approval_records(build, run_id, maintenance=True)
+        IF.ing_artifacts(self.gh, build, run_id, manifest=manifest)
+        public_id = str(IF.approval_run_id(run_id, "final"))
+        self.gh["publicApprovals"][public_id] = [IF.signing_approval(), IF.maintenance_approval(login)]
         self.write_gh()
 
     def signing_ref(self):
@@ -697,7 +716,7 @@ class IngDeploys(IngEndToEnd):
         self.approve(1200, login="someone-else")
         with self.approvers("andy"):
             code, events = self.cli("deploy", W_NEXT)
-            self.assertEqual(self.done(events)["code"], "MAINTENANCE_NOT_APPROVED")  # an approver the tool does not pin
+            self.assertEqual(self.done(events)["code"], "APPROVAL_MISSING")  # public consent by an unpinned approver never binds
             self.approve(1200)
             self.behave(brokenSite=[build["image"]])
             code, events = self.cli("deploy", W_NEXT)
@@ -794,11 +813,70 @@ class IngDeploys(IngEndToEnd):
                          [("repos/lolly-tools/suse-lolly/actions/workflows/lolly-ing-preview.yml/dispatches",
                            {"ref": "refs/heads/main", "inputs": {"LSHA": "8" * 40, "WSHA": W_NEXT, "SSHA": S_HEAD}})])
 
+    def test_ship_dispatches_only_opaque_public_requests_and_never_approves(self):
+        """The operator dispatches each signing request; the fake human approves, never the operator command."""
+        build = IF.make_ing_build(self.key, W_NEXT, "approval-dispatch", seq=3002, suse=S_HEAD)
+        state = self.cluster()
+        state["builds"][build["image"]] = build
+        IF.register_archive(state, build, 1300)
+        self.set_cluster(state)
+        self.gh = json.loads(self.gh_path.read_text())
+        self.gh["onDispatch"] = IF.ing_run(1300, S_HEAD, status="queued", conclusion=None)
+        self.gh["statusSequence"] = {"1300": ["waiting", "waiting", "completed"]}
+        IF.ing_artifacts(self.gh, build, 1300)
+        ids = [str(IF.approval_run_id(1300, stage)) for stage in ("source", "final")]
+        self.gh["publicPendingRuns"] = {public_id: self.gh["publicRuns"].pop(public_id) for public_id in ids}
+        self.write_gh()
+        code, events = self.cli("ship", W_NEXT)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        posts = [c for c in json.loads(self.gh_path.read_text())["calls"] if c["method"] == "POST"]
+        public = [p for p in posts if p["path"].startswith("repos/lolly-tools/lolly-work/")]
+        self.assertEqual(len(public), 2, posts)
+        self.assertFalse(any("pending_deployments" in p["path"] for p in posts), posts)
+        for call in public:
+            inputs = call["body"]["inputs"]
+            self.assertEqual(set(inputs), {"request_sha256", "stage", "maintenance"})
+            self.assertRegex(inputs["request_sha256"], r"^[0-9a-f]{64}$")
+            self.assertNotIn(W_NEXT, json.dumps(call["body"]))
+            self.assertNotIn(S_HEAD, json.dumps(call["body"]))
+            self.assertNotIn(build["image"], json.dumps(call["body"]))
+
+    def test_ship_resumes_an_active_private_build_without_duplicate_dispatch(self):
+        build = IF.make_ing_build(self.key, W_NEXT, "resume-private", seq=3002, suse=S_HEAD)
+        self.add_run(build, 1300, status="in_progress", conclusion=None)
+        self.gh = json.loads(self.gh_path.read_text())
+        active = next(run for run in self.gh["ingRuns"] if run["id"] == 1300)
+        active["display_title"] = "lolly.ing preview " + W_NEXT
+        self.gh["statusSequence"] = {"1300": ["in_progress", "completed"]}
+        self.write_gh()
+        code, events = self.cli("ship", W_NEXT)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        calls = json.loads(self.gh_path.read_text())["calls"]
+        self.assertEqual([call for call in calls if call["method"] == "POST"], [])
+        self.assertEqual(self.live()[0], build["image"])
+
     def test_already_live_changes_nothing(self):
         self.add_run(self.old, 1050)
         code, events = self.cli("deploy", W_OLD)
         self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"), events)
         self.assertEqual(self.cluster()["writes"], [])
+
+    def test_ship_of_the_accepted_live_build_does_not_need_fresh_signing_consent(self):
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual(self.done(events)["result"], "LIVE", events)
+        writes = self.cluster()["writes"]
+        self.gh = json.loads(self.gh_path.read_text())
+        manifest = IF.ing_manifest(self.new, 1100)
+        for item in manifest["approvals"].values():
+            item["request"].update(issuedAt=int(time.time()) - 15000, expiresAt=int(time.time()) - 600)
+        IF.ing_artifacts(self.gh, self.new, 1100, manifest=manifest)
+        before_posts = [call for call in self.gh["calls"] if call["method"] == "POST"]
+        self.write_gh()
+        code, events = self.cli("ship", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"), events)
+        self.assertEqual(self.cluster()["writes"], writes)
+        after_posts = [call for call in json.loads(self.gh_path.read_text())["calls"] if call["method"] == "POST"]
+        self.assertEqual(after_posts, before_posts)
 
 
 class IngMaintenanceMarker(IngEndToEnd):
@@ -935,6 +1013,19 @@ class IngRefusals(IngEndToEnd):
         self.assertEqual((code, self.done(events)["code"]), (1, "DISPATCHER_IDENTITY"), events)
         self.assertEqual((self.cluster()["writes"], self.spool()), ([], []))
 
+    def test_the_accepted_same_account_can_dispatch_and_receive_human_approval(self):
+        """The exception permits one pinned account, without accepting a different actor or fabricating an approval."""
+        self.gh = json.loads(self.gh_path.read_text())
+        self.gh["login"] = IF.REVIEWER
+        for run in self.gh["ingRuns"] + list(self.gh["publicRuns"].values()):
+            run.update(actor={"login": IF.REVIEWER}, triggering_actor={"login": IF.REVIEWER})
+        self.write_gh()
+        with mock.patch.object(A, "ING_DISPATCH_IDENTITY", IF.REVIEWER):
+            code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        calls = json.loads(self.gh_path.read_text())["calls"]
+        self.assertFalse([call for call in calls if call["method"] == "POST" and "pending_deployments" in call["path"]])
+
     def test_a_run_without_a_pinned_reviewers_signing_approval_is_not_bound(self):
         """Review C1: a run that passed because the environment had no reviewer rule carries no approval, and is refused
         like one approved by a login the tool does not pin."""
@@ -943,7 +1034,7 @@ class IngRefusals(IngEndToEnd):
         for approvals in ([], [IF.signing_approval("someone-else")], [IF.maintenance_approval()]):
             with self.subTest(approvals=approvals):
                 self.gh = json.loads(self.gh_path.read_text())
-                self.gh["approvals"]["1200"] = approvals
+                self.gh["publicApprovals"][str(IF.approval_run_id(1200, "final"))] = approvals
                 self.write_gh()
                 code, events = self.cli("deploy", W_NEXT)
                 self.assertEqual((code, self.done(events)["code"]), (1, "APPROVAL_MISSING"), events)
@@ -965,11 +1056,11 @@ class IngRefusals(IngEndToEnd):
         code, events = self.cli("deploy", W_NEW)
         self.assertEqual(self.done(events)["result"], "LIVE", events)
 
-    def test_the_node_rejects_maintenance_approval_mismatches_but_trusts_matching_fields(self):
-        """The node rejects mismatches and unpinned approvers. Matching fields still need the Mac's GitHub lookup
-        for authenticity; the node accepts fabricated fields that match."""
-        for approval, why in (({"run": "1100", "approver": "x", "environment": "lolly-ing-maintenance"}, "approver"),
-                              ({"run": "1100", "approver": "andy", "environment": "lolly-ing-signing"}, "environment"),
+    def test_the_node_rejects_maintenance_approval_mismatches_and_nonmaintenance_intent(self):
+        """A public run, pinned approver and candidate intent must agree; matching names alone are insufficient."""
+        final_run = str(IF.approval_run_id(1100, "final"))
+        for approval, why in (({"run": final_run, "approver": "x", "environment": "lolly-ing-maintenance"}, "approver"),
+                              ({"run": final_run, "approver": "andy", "environment": "lolly-ing-signing"}, "environment"),
                               ({"run": "1", "approver": "andy", "environment": "lolly-ing-maintenance"}, "run")):
             with self.subTest(approval=approval), mock.patch.object(IG, "maintenance_approval", return_value=approval), self.approvers("andy"):
                 code, events = self.cli("deploy", W_NEW)
@@ -977,14 +1068,15 @@ class IngRefusals(IngEndToEnd):
                 self.assertEqual((code, refusal["code"]), (1, "MAINTENANCE_NOT_APPROVED"), events)
                 self.assertIn(why, refusal["reason"])
                 self.assert_untouched()
-        matching = {"run": "1100", "approver": "andy", "environment": "lolly-ing-maintenance"}
+        matching = {"run": final_run, "approver": "andy", "environment": "lolly-ing-maintenance"}
         with mock.patch.object(IG, "maintenance_approval", return_value=matching):
             with mock.patch.object(A, "ING_MAINTENANCE_APPROVERS", ("andy",)):  # pinned on the Mac only: the node still refuses
                 code, events = self.cli("deploy", W_NEW)
                 self.assertEqual((code, self.done(events)["code"]), (1, "MAINTENANCE_NOT_APPROVED"), events)
             with self.approvers("andy"):
                 code, events = self.cli("deploy", W_NEW)
-                self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+                self.assertEqual((code, self.done(events)["code"]), (1, "MAINTENANCE_NOT_APPROVED"), events)
+                self.assert_untouched()
 
     def test_a_pushed_or_forked_run_is_not_bound(self):
         for fields, code in (({"event": "push"}, "RUN_NOT_FOUND"), ({"repository": "someone/suse-lolly"}, "RUN_NOT_BOUND")):
@@ -1172,6 +1264,32 @@ class IngRetention(IngEndToEnd):
 
 class IngCutover(IngEndToEnd):
     CONVERTED = False
+
+    def test_ship_before_cutover_builds_only_and_does_not_need_a_smoke_session(self):
+        (self.sandbox / "smoke-session").unlink()
+        code, events = self.cli("ship", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "BUILT"), events)
+        self.assertEqual(self.cluster()["writes"], [])
+        self.assertEqual(self.spool(), [])
+        self.assertFalse(I.is_converted(self.cluster()["deployment"], 0))
+        self.assertFalse([event for event in events if event.get("event") in ("archive", "check-target", "starting")])
+
+    def test_maintenance_ship_before_cutover_dispatches_the_flag_without_deploying(self):
+        build = IF.make_ing_build(self.key, W_NEXT, "maintenance-build-only", seq=3002, suse=S_HEAD)
+        manifest = IF.ing_manifest(build, 1300, approvals=IF.approval_records(build, 1300, maintenance=True))
+        self.gh = json.loads(self.gh_path.read_text())
+        self.gh["onDispatch"] = IF.ing_run(1300, S_HEAD, status="queued", conclusion=None)
+        self.gh["statusSequence"] = {"1300": ["waiting", "waiting", "completed"]}
+        IF.ing_artifacts(self.gh, build, 1300, manifest=manifest)
+        self.write_gh()
+        with self.approvers("andy"):
+            code, events = self.cli("ship", W_NEXT, "--maintenance")
+        self.assertEqual((code, self.done(events)["result"]), (0, "BUILT"), events)
+        self.assertEqual((self.cluster()["writes"], self.spool()), ([], []))
+        calls = json.loads(self.gh_path.read_text())["calls"]
+        private = [call for call in calls if call["method"] == "POST" and call["path"].startswith(SUSE_API)]
+        self.assertEqual(len(private), 1, private)
+        self.assertIs(private[0]["body"]["inputs"]["MAINTENANCE"], True)
 
     def plan_for(self, sha):
         code, events = self.cli("plan", sha)

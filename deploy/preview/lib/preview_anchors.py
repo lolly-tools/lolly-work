@@ -148,14 +148,18 @@ ING_PUBLIC_KEY_JWK = None
 # GitHub logins whose approval in the private run admits a maintenance migration.
 # Andy's own login once agents have their own account (decision 3). Empty refuses all.
 ING_MAINTENANCE_APPROVERS = ()
-# Who dispatches and who approves (review 2026-10-25 C1). The tool runs `gh` as
-# ING_DISPATCH_IDENTITY, the agents' machine account (decision 3), and refuses to
-# run as any reviewer, so the token that dispatches a build can never be the one
-# that approves it. ING_REVIEWERS are the logins whose approval of lolly-ing-signing
-# admits a build; a bound run must carry one. None or empty refuses every lolly.ing
-# ship, deploy and plan until a reviewed change pins them.
-ING_DISPATCH_IDENTITY = None
+# Andy explicitly accepted temporary shared-account dispatch and approval.
+# Agents still never approve; this setting does not enforce identity separation.
+ING_DISPATCH_IDENTITY = "ndftz"
 ING_REVIEWERS = ("ndftz",)
+ING_ALLOW_SAME_ACCOUNT_APPROVAL = True
+ING_APPROVAL = {
+    "repository": "lolly-tools/lolly-work",
+    "branch": "main",
+    "workflowFile": "lolly-ing-approval.yml",
+    "workflowPath": ".github/workflows/lolly-ing-approval.yml",
+    "workflowBlob": "a6681ace89a1992c898a43d9f8ad52cafec12ca3",
+}
 # The Secret that holds lolly.ing's own catalog key under LW_CATALOG_SIGNING_KEY
 # (review 2026-10-25 H3). Andy creates it before the cut-over and never edits the
 # live Secret; the cut-over patch switches the server's reference to this name and
@@ -166,10 +170,10 @@ ING_SIGNING_KEY_SECRET = None
 # suse-lolly files that build and check the instance image, read at the bound run's
 # head commit. Changing the build is a lolly-work PR and a new lock, like every other
 # anchor, so a push to suse-lolly main alone cannot produce a bindable image.
-# suse-lolly main 9996387a3c6ea5f21c0070696438123e8d3e0ca0 (PR #28), read 2026-10-25.
+# Private public-approval integration; the workflow also pins the public verifier bytes.
 ING_BUILD_BLOBS = {
-    ".github/workflows/lolly-ing-preview.yml": "ee63643f75b00a46db7accfe143defa5505dc055",
-    ".github/lolly-ing-preview/tool.mjs": "beb7b3b3e3d12b5c75a4a10607047b73a85a6c4f",
+    ".github/workflows/lolly-ing-preview.yml": "17e9aa8037a7d0dfe63a325a35e1652dff86d1c9",
+    ".github/lolly-ing-preview/tool.mjs": "11a0c23f7ef5df561d8681562925a75eeb571097",
     ".github/lolly-ing-preview/instance.Dockerfile": "29a4f38421f98f1f45f3fc4646a1eae644c9793d",
 }
 ING_ARCHIVE_MAX_BYTES = 6 * 1024 ** 3

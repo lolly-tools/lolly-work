@@ -1,0 +1,5 @@
+--- a/launch.py
++++ b/launch.py
+@@ -38,1 +38,1 @@
+-FLAGS = {"--drill-fail-smoke": 0, "--clear-hold": 0, "--execute": 0, "--apply": 1, "--reviewed-plan-sha256": 1, "--follow": 1}
++FLAGS = {"--drill-fail-smoke": 0, "--clear-hold": 0, "--execute": 0, "--apply": 1, "--reviewed-plan-sha256": 1, "--follow": 1, "--maintenance": 0}

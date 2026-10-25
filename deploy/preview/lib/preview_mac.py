@@ -792,6 +792,8 @@ def parser():
         s.add_argument("sha")
         s.add_argument("--drill-fail-smoke", action="store_true", help="force a smoke failure to drill the automatic rollback")
         s.add_argument("--clear-hold", action="store_true", help="proceed although the live phase needs a human")
+        if name == "ship":
+            s.add_argument("--maintenance", action="store_true", help="request human maintenance approval for a lolly.ing build")
     s = command("rollback")
     s.add_argument("--clear-hold", action="store_true")
     s = command("status")
@@ -825,6 +827,8 @@ def main(argv=None, gh=None, opener=None):
     context = None
     try:
         A.site_anchors(args.site)
+        require(not getattr(args, "maintenance", False) or args.site == "lolly.ing", "BAD_ARGUMENTS",
+                "--maintenance is only for lolly.ing ship")
         if getattr(args, "sha", None) is not None:
             require(SHA.fullmatch(args.sha) is not None, "BAD_SHA", "pass a full 40-character commit")
         if args.site == "lolly.ing":
