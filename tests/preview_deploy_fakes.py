@@ -687,6 +687,8 @@ def patch_node_modules(tool_lib, sandbox, state_path):
                                "spool": f"{sandbox}/var/lib/lolly-preview/spool", "smokeCookie": f"{sandbox}/smoke-session"})
     if os.environ.get("FAKE_ING_PIN"):
         preview_anchors.ING_PUBLIC_KEY_JWK = json.loads(os.environ["FAKE_ING_PIN"])
+    for name, value in json.loads(os.environ.get("FAKE_ING_ANCHORS") or "{}").items():  # anchors a reviewed change pins
+        setattr(preview_anchors, name, tuple(value) if isinstance(value, list) else value)
 
     def capacity(_path):
         data = json.loads(Path(state_path).read_text())["capacity"]
@@ -793,6 +795,8 @@ def run_unit(sandbox, state_path, name):
         migrated = []
         migrate, backup_fresh = runner.migrate, runner.backup_fresh
         rehearse, annotate, switch, new_config = runner.rehearse, runner.annotate, runner.switch, runner.new_config
+        take_backup, wait_switch = runner.take_backup, runner.wait_switch
+        cutover_stopped = []
 
         def migrate_(self, *args, **kwargs):
             result = migrate(self, *args, **kwargs)
@@ -808,8 +812,19 @@ def run_unit(sandbox, state_path, name):
             result = rehearse(self, *args, **kwargs)
             hours = float(os.environ.get("FAKE_AGE_AFTER_REHEARSAL", "0"))
             real_wall = preview_node.WALL
-            preview_node.WALL = lambda: real_wall() + hours * 3600  # the rehearsal took this long
+            preview_node.WALL = lambda: real_wall() + hours * 3600  # the rehearsal (or, without one, the classifier) took this long
             return result
+
+        def take_backup_(self, *args, **kwargs):
+            if point == "backup-job":
+                raise refusal("JOB_FAILED", "drill: the backup Job failed")
+            return take_backup(self, *args, **kwargs)
+
+        def wait_switch_(self, *args, **kwargs):
+            if point == "cutover-read" and not cutover_stopped:  # stop once after the cut-over patch, before smoke
+                cutover_stopped.append(True)
+                raise KeyboardInterrupt
+            return wait_switch(self, *args, **kwargs)
 
         def annotate_(self, values, *args, **kwargs):
             if point == "annotate" and values.get("phase") == "switching":
@@ -827,6 +842,7 @@ def run_unit(sandbox, state_path, name):
             return new_config(self, *args, **kwargs)
         runner.migrate, runner.backup_fresh, runner.rehearse = migrate_, backup_fresh_, rehearse_
         runner.annotate, runner.switch, runner.new_config = annotate_, switch_, new_config_
+        runner.take_backup, runner.wait_switch = take_backup_, wait_switch_
     unit_state.write_text("active")
     environment = {"SERVICE_RESULT": "success", "EXIT_CODE": "exited", "EXIT_STATUS": "0"}
     try:
@@ -840,6 +856,18 @@ def run_unit(sandbox, state_path, name):
         preview_node.Runner.annotate = original
     unit_state.write_text("deactivating")
     stop_script, stop_mode, stop_request = command(stops[0])
+    if os.environ.get("FAKE_ING_ABORT") == "cutover-read":  # the first cleanup read fails, the next one answers
+        deployment = runner.deployment
+        cleanup_reads = []
+
+        def deployment_(self, *args, **kwargs):
+            failed = not cleanup_reads
+            cleanup_reads.append(failed)
+            self.log("drill-cleanup-read", failed=failed)
+            if failed:
+                raise refusal("KUBECTL_FAILED", "drill: first cleanup read failed")
+            return deployment(self, *args, **kwargs)
+        runner.deployment = deployment_
     preview_node.main([stop_mode, stop_request], app_update_path=app_update, environment=environment)
     unit_state.write_text("inactive")
     return 0

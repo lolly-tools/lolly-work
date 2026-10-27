@@ -3,7 +3,9 @@
 
 The unit tests cover the generation rule, the generation-only config change, the
 migration guard, the build manifest of suse-lolly's lolly-ing-preview.yml (PR #28),
-the key rules and the guarded patches. They read Work's real classifier output (PR
+the key rules and the guarded patches. The end-to-end tests also cover the
+preview-grade route (Andy, 2026-10-27): the qualification rule, no approvals, every
+migration class after a verified backup, and the hold after a non-additive one. They read Work's real classifier output (PR
 #207) and real restore rehearsal results (PR #208) from tests/fixtures/preview-ing.
 The end-to-end tests drive the real command through the fake executables; the
 restore rehearsal is the real driver (lib/preview_rehearsal.py) against #208's own
@@ -232,7 +234,8 @@ class IngRules(unittest.TestCase):
     def test_cutover_plan_drops_the_claims_and_reverts_exactly(self):
         """PROPOSAL 4.8: shell, pack and engine-pin mounts go; the instance image and generation N come in."""
         before = IF.ing_deployment(IF.LEGACY_IMAGE, "cfg-3008", converted=False)
-        plan = I.cutover_plan(before, 0, self.build["image"], "cfg-3010", {"lolly.tools/preview-phase": "converting"})
+        plan = I.cutover_plan(before, 0, self.build["image"], "cfg-3010", {"lolly.tools/preview-phase": "converting"},
+                              IF.ING_SIGNING_SECRET)
         after = F.apply_json_patch(before, plan["patch"])
         self.assertTrue(I.is_converted(after, 0) and not I.is_converted(before, 0))
         I.guard_cutover(before, after, 0, plan)
@@ -244,6 +247,80 @@ class IngRules(unittest.TestCase):
         sneaky = json.loads(json.dumps(after))
         sneaky["spec"]["template"]["spec"]["containers"][0]["env"].append({"name": "X", "value": "1"})
         refused(self, lambda: I.guard_cutover(before, sneaky, 0, plan), "CUTOVER_GUARD")
+
+    def test_the_cutover_switches_the_signing_key_reference_and_the_revert_restores_it(self):
+        """Review 2026-10-25 H3: image, config and the Secret the catalog key comes from move in one patch, so a revert
+        is old image, old key and old pack together, and the reverted catalog verifies. Secret values are never read."""
+        before = IF.ing_deployment(IF.LEGACY_IMAGE, "cfg-3008", converted=False)
+        self.assertEqual(I.signing_key_env(before, 0), (5, IF.LEGACY_SIGNING_SECRET))
+        plan = I.cutover_plan(before, 0, self.build["image"], "cfg-3010", {}, IF.ING_SIGNING_SECRET)
+        self.assertEqual((plan["signingKeySecret"], plan["toSigningKeySecret"]), (IF.LEGACY_SIGNING_SECRET, IF.ING_SIGNING_SECRET))
+        ref = "/spec/template/spec/containers/0/env/5/valueFrom/secretKeyRef/name"
+        self.assertIn({"op": "test", "path": ref, "value": IF.LEGACY_SIGNING_SECRET}, plan["patch"])
+        self.assertIn({"op": "replace", "path": ref, "value": IF.ING_SIGNING_SECRET}, plan["patch"])
+        self.assertFalse([op for op in plan["patch"] if "/secrets/" in op["path"] or op["path"].startswith("/data")])
+        after = F.apply_json_patch(before, plan["patch"])
+        self.assertEqual(I.signing_key_env(after, 0)[1], IF.ING_SIGNING_SECRET)
+        env = after["spec"]["template"]["spec"]["containers"][0]["env"][5]
+        self.assertEqual(env["valueFrom"]["secretKeyRef"]["key"], "LW_CATALOG_SIGNING_KEY")  # the key name inside stays
+        I.guard_cutover(before, after, 0, plan)
+        unswitched = json.loads(json.dumps(after))
+        unswitched["spec"]["template"]["spec"]["containers"][0]["env"][5]["valueFrom"]["secretKeyRef"]["name"] = IF.LEGACY_SIGNING_SECRET
+        refused(self, lambda: I.guard_cutover(before, unswitched, 0, plan), "CUTOVER_GUARD")
+        back = F.apply_json_patch(after, I.revert_cutover_patch(after, 0, plan, "cfg-3011", {}))
+        self.assertEqual(I.signing_key_env(back, 0)[1], IF.LEGACY_SIGNING_SECRET)
+        self.assertEqual(back["spec"]["template"]["spec"]["containers"][0]["image"], IF.LEGACY_IMAGE)
+        # A live reference that already names the lolly.ing Secret leaves a revert nothing to restore: refused.
+        already = IF.ing_deployment(IF.LEGACY_IMAGE, "cfg-3008", converted=False, signing_secret=IF.ING_SIGNING_SECRET)
+        refused(self, lambda: I.cutover_plan(already, 0, self.build["image"], "cfg-3010", {}, IF.ING_SIGNING_SECRET), "SIGNING_SECRET_LIVE")
+        plain = IF.ing_deployment(IF.LEGACY_IMAGE, "cfg-3008", converted=False)
+        plain["spec"]["template"]["spec"]["containers"][0]["env"][5] = {"name": "LW_CATALOG_SIGNING_KEY", "value": "inline"}
+        refused(self, lambda: I.signing_key_env(plain, 0), "LAYOUT_UNKNOWN")
+        with mock.patch.object(A, "ING_SIGNING_KEY_SECRET", None):
+            refused(self, I.signing_secret, "SIGNING_SECRET_NOT_PINNED")
+        with mock.patch.object(A, "ING_SIGNING_KEY_SECRET", "Not_A_Name"):
+            refused(self, I.signing_secret, "SIGNING_SECRET_NOT_PINNED")
+
+    def test_a_cutover_revert_retry_rechecks_the_maintenance_marker(self):
+        """A patch conflict must not let a retry ignore a non-additive migration's marker in the next read."""
+        import preview_ing_node as IN
+        runner = object.__new__(IN.IngRunner)
+        runner.request = {"release": {"image": self.build["image"]}}
+        runner.au = mock.Mock(Refusal=C.Refusal)
+        runner.log, runner.annotate = mock.Mock(), mock.Mock()
+        runner.finish = mock.Mock(return_value=3)
+        runner.component, runner.kube = {}, mock.Mock()
+        value = IF.ing_deployment(self.build["image"], "cfg-3010")
+        restore = {"record": {"object": "lolly-ing/x.lwbackup"}, "previousImage": IF.LEGACY_IMAGE}
+        marked = IF.ing_deployment(self.build["image"], "cfg-3010",
+                                   annotations={IN.key("maintenance-applied"): json.dumps([IF.MAINTENANCE]),
+                                                IN.key("backup"): json.dumps(restore)})
+        runner.deployment = mock.Mock(side_effect=[(value, 0), (value, 0), (marked, 0)])
+        runner.config_maps = mock.Mock(return_value={"cfg-3010": (3010, IF.instance_json(3010))})
+        runner.check_db = mock.Mock(return_value={"publicationGeneration": 3010})
+        runner.new_config = mock.Mock(return_value="cfg-3011")
+        runner.kube.patch.side_effect = C.Refusal("CONFLICT", "deployment changed")
+        plan = {"cutover": {"image": IF.LEGACY_IMAGE}, "liveSource": W_OLD}
+        with mock.patch.object(I, "revert_cutover_patch", return_value=[]) as patch, mock.patch.object(IN.N, "SLEEP"):
+            self.assertEqual(runner.revert_conversion(plan, "UNIT_STOPPED"), 3)
+        self.assertEqual(runner.deployment.call_count, 3)
+        self.assertEqual((patch.call_count, runner.kube.patch.call_count), (1, 1))
+        runner.finish.assert_called_once_with("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED", checks=None, backup=restore,
+                                              note=IN.HOLD_NOTE)
+
+    def test_a_request_with_a_maintenance_approval_is_from_an_older_mac(self):
+        """The approval flow is gone (Andy 2026-10-27); the node refuses a request shaped for it rather than ignore it."""
+        source = (ROOT / "deploy/preview/lib/preview_ing_node.py").read_text()
+        self.assertIn('require("maintenanceApproval" not in request', source)
+        self.assertFalse(hasattr(A, "ING_MAINTENANCE_APPROVERS"))
+        self.assertNotIn("maintenanceEnvironment", A.ING)
+
+    def test_the_qualification_anchors(self):
+        """Work: its own full lolly-work CI. Lolly: as a lolly.tools source, full CI or a fast lane."""
+        self.assertEqual((A.ING_WORK_CI["repository"], A.ING_WORK_CI["ciWorkflowPath"]), ("lolly-tools/lolly-work", ".github/workflows/ci.yml"))
+        self.assertNotIn("fastLaneWorkflowFile", A.ING_WORK_CI)
+        for name in ("repository", "ciWorkflowFile", "ciWorkflowPath", "fastLaneWorkflowFile", "fastLaneWorkflowPath", "branch"):
+            self.assertEqual(A.ING_LOLLY_CI[name], A.TOOLS[name], name)
 
 
 class IngEndToEnd(unittest.TestCase):
@@ -307,7 +384,11 @@ class IngEndToEnd(unittest.TestCase):
         self.rehearsal_path = base / "rehearsal.json"
         self.rehearsal_path.write_text(json.dumps(IF.rehearsal_cluster()))
         self.gh_path = base / "gh.json"
-        self.gh = {"mainHead": "f" * 40, "compare": {}, "calls": [], "runs": [], "ciRuns": [], "statusSequence": {},
+        # Andy 2026-10-27: every Work commit here has its green full lolly-work CI run, and the Lolly commits the
+        # builds pin have theirs, unless a test says otherwise.
+        self.gh = {"mainHead": "f" * 40, "compare": {}, "calls": [], "runs": [], "statusSequence": {},
+                   "ciRuns": [IF.ci_run(700 + n, lsha, "lolly-tools/lolly") for n, lsha in enumerate(("2" * 40, "8" * 40))],
+                   "workCiRuns": [IF.ci_run(800 + n, wsha, IF.WORK_REPO) for n, wsha in enumerate((W_OLD, W_NEW, W_NEXT, "7" * 40))],
                    "suseMainHead": S_HEAD, "ingRuns": [], "artifacts": {}, "zips": {}, "approvals": {}, "enginePins": {}}
         self.write_gh()
         self.add_run(self.new, 1100)
@@ -315,12 +396,14 @@ class IngEndToEnd(unittest.TestCase):
             "PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_STATE": str(self.cluster_path), "FAKE_GH_STATE": str(self.gh_path),
             "FAKE_SANDBOX": str(self.sandbox), "FAKE_BIN": str(self.bin), "FAKE_PIN": json.dumps(A.RELEASE_PUBLIC_KEY_JWK),
             "FAKE_ING_PIN": json.dumps(self.key[1]), "FAKE_KNOWN_HOSTS": str(self.known_hosts), "FAKE_SITE": "lolly.ing",
-            "FAKE_REHEARSAL_STATE": str(self.rehearsal_path)})
+            "FAKE_REHEARSAL_STATE": str(self.rehearsal_path),
+            "FAKE_ING_ANCHORS": json.dumps({"ING_SIGNING_KEY_SECRET": IF.ING_SIGNING_SECRET})})
         self.environ.start()
         for name in ("FAKE_CRASH_PHASE", "FAKE_CHECK_TARGET", "FAKE_SSH_DOWN", "FAKE_START_REPLY_LOST", "FAKE_UNIT_NEVER_STARTS",
                      "FAKE_CRASH_AFTER_SWITCH", "FAKE_ING_ABORT", "FAKE_AGE_AFTER_REHEARSAL"):
             os.environ.pop(name, None)
-        self.patches = [mock.patch.object(A, "ING_PUBLIC_KEY_JWK", self.key[1]), mock.patch.object(M, "SLEEP", lambda s: None),
+        self.patches = [mock.patch.object(A, "ING_PUBLIC_KEY_JWK", self.key[1]),
+                        mock.patch.object(A, "ING_SIGNING_KEY_SECRET", IF.ING_SIGNING_SECRET), mock.patch.object(M, "SLEEP", lambda s: None),
                         mock.patch.object(M, "TOOL_ROOT", self.checkout), mock.patch.object(M, "STATE_DIR", self.state_dir)]
         for patcher in self.patches:
             patcher.start()
@@ -364,7 +447,7 @@ class IngEndToEnd(unittest.TestCase):
 
     def add_run(self, build, run_id, manifest=None, archive=None, **run_fields):
         self.gh = json.loads(self.gh_path.read_text())
-        self.gh["ingRuns"].append(IF.ing_run(run_id, build["suse"], **run_fields))
+        self.gh["ingRuns"].append(IF.ing_run(run_id, build["suse"], work=build["sha"], **run_fields))
         IF.ing_artifacts(self.gh, build, run_id, manifest=manifest, archive=archive)
         self.write_gh()
         state = self.cluster()
@@ -437,15 +520,26 @@ class IngEndToEnd(unittest.TestCase):
         self.add_run(build, run_id)
         return build
 
-    def approve(self, run_id, login="andy"):
-        self.gh = json.loads(self.gh_path.read_text())
-        self.gh["approvals"][str(run_id)] = [{"state": "approved", "environments": [{"name": "lolly-ing-maintenance"}],
-                                              "user": {"login": login}, "comment": ""}]
-        self.write_gh()
+    def without_rehearsal(self):
+        """The preview-grade default profile: no restore rehearsal; the verified backup still comes first."""
+        self.profile["rehearsal"] = None
+        path = self.state_dir / "lolly.ing.json"
+        path.write_text(json.dumps(self.profile))
+        path.chmod(0o600)
+
+    def signing_ref(self):
+        return I.signing_key_env(self.cluster()["deployment"], 0)[1]
+
+    def restore_point(self):
+        return json.loads(self.live()[2].get("backup") or "null")
+
+    def posts(self):
+        return [c for c in json.loads(self.gh_path.read_text())["calls"] if c["method"] == "POST"]
 
 
 class IngDeploys(IngEndToEnd):
-    def test_deploy_imports_backs_up_publishes_a_higher_generation_and_smokes(self):
+    def test_deploy_imports_publishes_a_higher_generation_and_smokes_with_no_backup_when_nothing_migrates(self):
+        """Andy 2026-10-27: a backup comes before every migration; a deploy that changes no schema takes none."""
         code, events = self.cli("deploy", W_NEW)
         result = self.done(events)
         self.assertEqual((code, result["result"]), (0, "LIVE"), events)
@@ -459,7 +553,8 @@ class IngDeploys(IngEndToEnd):
         new_text = state["configmaps"][config]["data"]["instance.json"]
         self.assertEqual(I.with_generation(live_text, 3010), new_text)  # only the generation changed
         self.assertEqual((state["db"]["generation"], state["db"]["digest"]), (3010, self.new["packDigest"]))  # catalog served at N
-        self.assertEqual((len(self.writes("backup")), len(self.writes("import"))), (1, 1))
+        self.assertEqual((len(self.writes("backup")), len(self.writes("import"))), (0, 1))
+        self.assertIsNone(self.restore_point())
         self.assertEqual(self.writes("image-name-removed"), [["image-name-removed", IF.ING_IMAGE + ":run-1100-1"]])
         self.assertEqual(self.spool(), [])  # the archive is deleted once imported
         imported = [e for e in state["images"].values() if self.new["image"] in e["refs"]][0]
@@ -474,7 +569,10 @@ class IngDeploys(IngEndToEnd):
         self.assertEqual(self.rehearsal_pods(), [])  # nothing pending: no rehearsal on a normal deploy
         changes = [e for e in events if e.get("event") == "change-list"]
         self.assertEqual(sorted(e["repository"] for e in changes), ["lolly-tools/lolly", "lolly-tools/lolly-work", "lolly-tools/suse-lolly"])
-        self.assertEqual([r["result"] for r in self.records()], ["LIVE"])
+        record = self.records()[-1]
+        self.assertEqual((record["result"], record["workCiRun"], record["lollyCiRun"], record["backup"]), ("LIVE", 801, 700, None))
+        self.assertNotIn("lollyLane", record)
+        self.assertFalse([c for c in json.loads(self.gh_path.read_text())["calls"] if "/approvals" in c["path"]])
         self.assert_no_secret_claim_or_exec()
 
     def test_generation_takes_the_database_row_when_it_is_highest(self):
@@ -488,12 +586,20 @@ class IngDeploys(IngEndToEnd):
         self.assertEqual((code, self.done(events)["generation"]), (0, 3021), events)
         self.assertEqual(self.cluster()["db"]["generation"], 3021)
 
-    def test_a_pending_allowlisted_migration_is_rehearsed_then_applied_with_the_manifest_form(self):
-        """#207 classifies it additive; #208's real driver rehearses it; the migrate Job carries the sha256 manifest."""
+    def test_a_pending_additive_migration_is_backed_up_rehearsed_then_applied_with_the_manifest_form(self):
+        """#207 classifies it additive; a verified backup comes first; #208's real driver rehearses it (the profile
+        configures one here); the migrate Job carries the sha256 manifest."""
         build = self.pending_build(IF.ADDITIVE)
         code, events = self.cli("deploy", W_NEXT)
         result = self.done(events)
         self.assertEqual((code, result["result"]), (0, "LIVE"), events)
+        writes = self.cluster()["writes"]
+        self.assertEqual(len(self.writes("backup")), 1)
+        self.assertLess(writes.index(self.writes("backup")[0]), writes.index(self.writes("migrate")[0]))
+        point = self.restore_point()
+        self.assertEqual((point["record"]["status"], point["migrations"], point["maintenance"], point["previousImage"],
+                          point["previousSource"]), ("VERIFIED", [IF.ADDITIVE], False, self.old["image"], W_OLD))
+        self.assertEqual(self.records()[-1]["backup"]["object"], point["record"]["object"])
         pending = [IF.fixture_migration(IF.ADDITIVE)]
         manifest = fixture("classify-0077.json")["manifest"]
         self.assertEqual(I.migration_manifest(pending), manifest)
@@ -512,44 +618,67 @@ class IngDeploys(IngEndToEnd):
         self.assertIn(IF.ADDITIVE, json.loads(notes["migrations"]))
         self.assertIsNone(notes.get("maintenance"))
 
-    def test_a_maintenance_migration_without_approval_applies_and_switches_nothing(self):
-        """#207 classifies an ADD CONSTRAINT as maintenance. It needs Andy's approval in the private run (PROPOSAL 4.4)."""
-        self.pending_build(IF.MAINTENANCE)
-        code, events = self.cli("deploy", W_NEXT)
-        self.assertEqual((code, self.done(events)["code"]), (1, "MAINTENANCE_NOT_APPROVED"), events)
-        self.assert_untouched()
-        self.assertEqual((self.rehearsal_pods(), self.writes("configmap")), ([], []))
-
-    def test_a_maintenance_migration_with_approval_is_held_not_rolled_back(self):
-        """Automatic rollback is off after a maintenance migration: recovery would be a restore."""
+    def test_a_maintenance_migration_needs_no_approval_and_takes_a_verified_backup_first(self):
+        """#207 classifies an ADD CONSTRAINT as maintenance. Andy 2026-10-27: every class is applied, backup first;
+        nothing asks for or reads an approval."""
         build = self.pending_build(IF.MAINTENANCE)
-        self.approve(1200, login="someone-else")
-        with mock.patch.object(A, "ING_MAINTENANCE_APPROVERS", ("andy",)):
-            code, events = self.cli("deploy", W_NEXT)
-            self.assertEqual(self.done(events)["code"], "MAINTENANCE_NOT_APPROVED")  # an approver the tool does not pin
-            self.approve(1200)
-            self.behave(brokenSite=[build["image"]])
-            code, events = self.cli("deploy", W_NEXT)
+        code, events = self.cli("deploy", W_NEXT)
+        result = self.done(events)
+        self.assertEqual((code, result["result"], result["maintenance"], result["migrations"]), (0, "LIVE", True, [IF.MAINTENANCE]), events)
+        writes = self.cluster()["writes"]
+        self.assertLess(writes.index(self.writes("backup")[0]), writes.index(self.writes("migrate")[0]))
+        marker = [w for w in self.writes("patch") if any(op["path"].endswith("preview-maintenance-applied") for op in w[1])]
+        self.assertLess(writes.index(marker[0]), writes.index(self.writes("migrate")[0]))  # the hold marker precedes the schema change
+        image, _, notes = self.live()
+        self.assertEqual((image, notes["phase"], notes["maintenance"], notes.get("maintenance-applied")),
+                         (build["image"], "accepted", "true", None))
+        self.assertEqual(self.restore_point()["maintenance"], True)
+        self.assertFalse([c for c in json.loads(self.gh_path.read_text())["calls"] if "/approvals" in c["path"]])
+
+    def test_a_failed_switch_after_a_maintenance_migration_is_held_with_its_restore_point(self):
+        """Automatic rollback is off after a non-additive migration: the rollback is the backup plus the previous image,
+        by the runbook, or a forward fix. The result and status name the backup to restore."""
+        build = self.pending_build(IF.MAINTENANCE)
+        self.behave(brokenSite=[build["image"]])
+        code, events = self.cli("deploy", W_NEXT)
         result = self.done(events)
         self.assertEqual((code, result["result"]), (3, "MAINTENANCE_UNVERIFIED"), events)
+        self.assertEqual((result["backup"]["previousImage"], result["backup"]["record"]["status"]), (self.old["image"], "VERIFIED"))
+        self.assertIn("runbook", result["note"])
         image, _, notes = self.live()
         self.assertEqual((image, notes["phase"], notes["maintenance"]), (build["image"], "maintenance-unverified", "true"))
         self.assertEqual([w[1] for w in self.writes("migrate")], [[IF.MAINTENANCE]])
+        code, events = self.cli("status")
+        status = [e for e in events if e.get("event") == "status"][0]
+        self.assertEqual((status["backup"]["previousImage"], status["backup"]["migrations"]), (self.old["image"], [IF.MAINTENANCE]))
         code, events = self.cli("deploy", W_NEW)
         self.assertEqual(self.done(events)["code"], "HELD_FOR_HUMAN")
         code, events = self.cli("rollback", "--clear-hold")
-        self.assertEqual(self.done(events)["code"], "MAINTENANCE_NO_ROLLBACK")
+        refusal = self.done(events)
+        self.assertEqual(refusal["code"], "MAINTENANCE_NO_ROLLBACK")
+        self.assertIn("backup", refusal["reason"])
         self.assertEqual(self.live()[0], build["image"])
         code, events = self.cli("deploy", W_NEW, "--clear-hold")  # an image without that migration: the database is ahead
         self.assertEqual(self.done(events)["code"], "DATABASE_AHEAD")
         fix = IF.make_ing_build(self.key, "7" * 40, "fix", seq=3003, suse=S_HEAD, migrations=build["migrations"])
         self.add_run(fix, 1300)
         self.behave(brokenSite=[])
-        code, events = self.cli("deploy", "7" * 40, "--clear-hold")  # the forward fix: nothing pending, so no new approval
+        code, events = self.cli("deploy", "7" * 40, "--clear-hold")  # the forward fix: nothing pending, so no new backup
         self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
         image, _, notes = self.live()
         self.assertEqual((image, notes.get("maintenance"), json.loads(notes["maintenance-migrations"])),
                          (fix["image"], None, [IF.MAINTENANCE]))
+
+    def test_without_a_rehearsal_a_migration_still_takes_the_verified_backup_first(self):
+        """The preview-grade profile sets no rehearsal: no rehearsal Pod, but the backup still precedes the migrate Job."""
+        self.without_rehearsal()
+        build = self.pending_build(IF.ADDITIVE)
+        code, events = self.cli("deploy", W_NEXT)
+        result = self.done(events)
+        self.assertEqual((code, result["result"], result["rehearsal"]), (0, "LIVE", None), events)
+        self.assertEqual((self.rehearsal_pods(), len(self.writes("backup"))), ([], 1))
+        self.assertEqual(self.writes("migrate"), [["migrate", [IF.ADDITIVE], fixture("classify-0077.json")["manifest"]]])
+        self.assertEqual((self.live()[0], self.restore_point()["migrations"]), (build["image"], [IF.ADDITIVE]))
 
     def test_an_image_without_the_classifier_applies_nothing(self):
         self.pending_build(IF.ADDITIVE)
@@ -629,22 +758,107 @@ class IngDeploys(IngEndToEnd):
         self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"), events)
         self.assertEqual(self.cluster()["writes"], [])
 
+    def test_ship_of_the_accepted_live_sources_is_already_live_before_any_build(self):
+        """Same Work commit, same suse-lolly head, same Lolly pin: nothing to build, nothing to qualify."""
+        self.update_gh(enginePins={W_OLD: self.old["lolly"]}, workCiRuns=[])
+        code, events = self.cli("ship", W_OLD)
+        self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"), events)
+        self.assertEqual((self.posts(), self.cluster()["writes"]), ([], []))
+
+    def test_ship_refuses_until_the_sources_qualify_and_dispatches_nothing(self):
+        """Andy 2026-10-27: green full lolly-work CI for the Work commit, and a qualified Lolly commit. The refusal is
+        CI_PENDING while a run is going (auto-ship retries) and CI_NOT_GREEN once one failed."""
+        cases = (("Work CI still running", {"workCiRuns": [IF.ci_run(802, W_NEXT, IF.WORK_REPO, status="in_progress", conclusion=None)]},
+                  "CI_PENDING", "lolly-work"),
+                 ("Work CI failed", {"workCiRuns": [IF.ci_run(802, W_NEXT, IF.WORK_REPO, conclusion="failure")]}, "CI_NOT_GREEN", "lolly-work"),
+                 ("Work CI cancelled by a newer push", {"workCiRuns": [IF.ci_run(802, W_NEXT, IF.WORK_REPO, conclusion="cancelled")]},
+                  "CI_NOT_GREEN", "lolly-work"),
+                 ("Lolly CI failed", {"ciRuns": [IF.ci_run(701, "8" * 40, "lolly-tools/lolly", conclusion="failure")],
+                                      "workCiRuns": [IF.ci_run(802, W_NEXT, IF.WORK_REPO)]}, "CI_NOT_GREEN", "engine pin"))
+        for name, change, code_name, where in cases:
+            with self.subTest(name=name):
+                self.update_gh(enginePins={W_NEXT: "8" * 40}, calls=[], **change)
+                code, events = self.cli("ship", W_NEXT)
+                refusal = self.done(events)
+                self.assertEqual((code, refusal["code"]), (1, code_name), events)
+                self.assertIn(where, refusal["reason"])
+                self.assertEqual((self.posts(), self.cluster()["writes"]), ([], []))
+
+    def test_a_lolly_source_on_a_fast_lane_qualifies_as_it_does_for_lolly_tools(self):
+        """The Lolly commit has no full CI run of its own yet, but differs from a green ancestor only in docs and its
+        docs lane job passed: it qualifies, and the record says which lane."""
+        lane_lsha, base = "ab" * 20, "cd" * 20
+        files = {"docs/using.md": "# Using\n", "engine/src/runtime.ts": "runtime\n"}
+        old_root, old_trees = F.git_trees(files)
+        new_root, new_trees = F.git_trees(dict(files, **{"docs/using.md": "# Using Lolly\n"}))
+        self.update_gh(commits={base: {"tree": old_root, "parents": []}, lane_lsha: {"tree": new_root, "parents": [base]}},
+                       trees={**old_trees, **new_trees},
+                       ciRuns=[IF.ci_run(650, base, "lolly-tools/lolly"),
+                               IF.ci_run(651, lane_lsha, "lolly-tools/lolly", status="in_progress", conclusion=None)],
+                       fastRuns=[F.run_object(1350, lane_lsha, path=".github/workflows/fast-lanes.yml", event="push")],
+                       jobs={"1350": [{"id": 13500, "run_id": 1350, "head_sha": lane_lsha, "name": "docs lane", "status": "completed",
+                                       "conclusion": "success"}]})
+        build = IF.make_ing_build(self.key, W_NEXT, "lane", seq=3002, suse=S_HEAD, lolly=lane_lsha)
+        self.add_run(build, 1200)
+        code, events = self.cli("deploy", W_NEXT)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        record = self.records()[-1]
+        self.assertEqual((record["lollyLane"], record["lollyLaneBase"], record["lollyCiRun"], record["lollyLaneRun"], record["workCiRun"]),
+                         ("docs", base, 650, 1350, 802))
+        self.update_gh(jobs={})  # without its lane job the same source does not qualify yet
+        code, events = self.cli("deploy", W_NEXT)
+        self.assertEqual(self.done(events)["result"], "ALREADY_LIVE", events)  # already live: nothing to qualify again
+        self.cli("rollback")
+        code, events = self.cli("deploy", W_NEXT)
+        self.assertEqual((code, self.done(events)["code"]), (1, "CI_PENDING"), events)
+
+    def test_ship_resumes_an_active_build_of_the_same_source_and_refuses_while_another_builds(self):
+        """A ship that lost its wait (auto-ship restarted, the Mac slept) resumes the build instead of dispatching again."""
+        build = IF.make_ing_build(self.key, W_NEXT, "resumed", seq=3002, suse=S_HEAD, lolly="8" * 40)
+        state = self.cluster()
+        state["builds"][build["image"]] = build
+        IF.register_archive(state, build, 1300)
+        self.set_cluster(state)
+        self.gh = json.loads(self.gh_path.read_text())
+        self.gh["ingRuns"].append(IF.ing_run(1300, S_HEAD, status="in_progress", conclusion=None, work=W_NEXT))
+        self.gh["statusSequence"] = {"1300": ["in_progress", "completed"]}
+        IF.ing_artifacts(self.gh, build, 1300)
+        self.write_gh()
+        other = dict(IF.ing_run(1250, S_HEAD, status="queued", conclusion=None, work=W_NEW))
+        self.update_gh(ingRuns=json.loads(self.gh_path.read_text())["ingRuns"] + [other])
+        code, events = self.cli("ship", W_NEXT)
+        self.assertEqual((code, self.done(events)["code"]), (1, "CANDIDATE_ACTIVE"), events)
+        self.assertEqual((self.posts(), self.cluster()["writes"]), ([], []))
+        self.update_gh(ingRuns=[run for run in json.loads(self.gh_path.read_text())["ingRuns"] if run["id"] != 1250])
+        code, events = self.cli("ship", W_NEXT)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.posts(), [])
+        self.assertTrue([e for e in events if e.get("event") == "build" and e.get("run") == 1300])
+
+    def test_a_run_with_a_malformed_manifest_is_skipped_for_an_older_run_that_binds(self):
+        """Review L2: one bad run on main does not block deploy; it is reported and skipped."""
+        bad = IF.ing_manifest(self.new, 1150)
+        bad["kind"] = "something-else"
+        self.add_run(self.new, 1150, manifest=bad)
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual([(e["run"], e["code"]) for e in events if e.get("event") == "build-skipped"], [(1150, "MANIFEST_INVALID")])
+        self.assertEqual(self.records()[-1]["ciRun"], 1100)
+
 
 class IngMaintenanceMarker(IngEndToEnd):
     """A maintenance migration leaves a marker on the Deployment before it runs, and any abort keeps it."""
 
-    def run_approved(self, *argv, **env):
+    def run_deploy(self, *argv, **env):
         os.environ.update(env)
-        with mock.patch.object(A, "ING_MAINTENANCE_APPROVERS", ("andy",)):
-            return self.cli("deploy", *argv)
+        return self.cli("deploy", *argv)
 
     def marker(self):
         return json.loads(self.live()[2].get("maintenance-applied") or "null")
 
     def assert_aborted_after_migrate(self, point):
         build = self.pending_build(IF.MAINTENANCE)
-        self.approve(1200)
-        code, events = self.run_approved(W_NEXT, FAKE_ING_ABORT=point)
+        code, events = self.run_deploy(W_NEXT, FAKE_ING_ABORT=point)
         self.assertNotEqual(code, 0, events)
         image, _, notes = self.live()
         self.assertEqual(image, self.old["image"])  # nothing switched, the old image runs on the new schema
@@ -659,7 +873,7 @@ class IngMaintenanceMarker(IngEndToEnd):
         self.assertEqual(self.live()[0], self.old["image"])
         # The next deploy has nothing pending, but the marker keeps automatic rollback off.
         self.behave(brokenSite=[build["image"]])
-        code, events = self.run_approved(W_NEXT, "--clear-hold")
+        code, events = self.run_deploy(W_NEXT, "--clear-hold")
         self.assertEqual(self.done(events)["result"], "MAINTENANCE_UNVERIFIED", events)
         image, _, notes = self.live()
         self.assertEqual((image, notes["phase"], self.marker()), (build["image"], "maintenance-unverified", [IF.MAINTENANCE]))
@@ -668,9 +882,6 @@ class IngMaintenanceMarker(IngEndToEnd):
     def test_an_abort_before_the_new_config_keeps_the_marker(self):
         self.assert_aborted_after_migrate("config")
 
-    def test_a_stale_backup_before_the_switching_phase_keeps_the_marker(self):
-        self.assert_aborted_after_migrate("backup")
-
     def test_a_failed_switching_annotation_keeps_the_marker(self):
         self.assert_aborted_after_migrate("annotate")
 
@@ -678,22 +889,27 @@ class IngMaintenanceMarker(IngEndToEnd):
         self.assert_aborted_after_migrate("switch")
 
     def test_a_stale_backup_before_the_migrate_job_refuses_with_nothing_applied(self):
-        self.pending_build(IF.MAINTENANCE)
-        self.approve(1200)
-        code, events = self.run_approved(W_NEXT, FAKE_AGE_AFTER_REHEARSAL="2")  # fresh at the start, 2 hours old after the rehearsal
-        self.assertEqual((code, self.done(events)["code"]), (1, "BACKUP_STALE"), events)
-        self.assertEqual(self.writes("migrate"), [])
-        self.assertEqual(self.writes("patch"), [])
-        self.assertIsNone(self.marker())
-        self.assertEqual(self.live()[2]["phase"], "accepted")
+        """Every class: the backup must be under an hour old when the schema changes."""
+        for name in (IF.MAINTENANCE, IF.ADDITIVE):
+            with self.subTest(name=name):
+                self.tearDown()
+                self.setUp()
+                self.pending_build(name)
+                code, events = self.run_deploy(W_NEXT, FAKE_AGE_AFTER_REHEARSAL="2")  # fresh at the start, 2 hours old after the rehearsal
+                self.assertEqual((code, self.done(events)["code"]), (1, "BACKUP_STALE"), events)
+                self.assertEqual(self.writes("migrate"), [])
+                self.assertEqual(self.writes("patch"), [])
+                self.assertIsNone(self.marker())
+                self.assertIsNone(self.restore_point())
+                self.assertEqual(self.live()[2]["phase"], "accepted")
+                os.environ.pop("FAKE_AGE_AFTER_REHEARSAL", None)
 
     def test_an_accepted_switch_that_includes_the_migrations_clears_the_marker(self):
         build = self.pending_build(IF.MAINTENANCE)
-        self.approve(1200)
-        code, events = self.run_approved(W_NEXT, FAKE_ING_ABORT="switch")
+        code, events = self.run_deploy(W_NEXT, FAKE_ING_ABORT="switch")
         self.assertEqual(self.marker(), [IF.MAINTENANCE])
         os.environ.pop("FAKE_ING_ABORT")
-        code, events = self.run_approved(W_NEXT, "--clear-hold")
+        code, events = self.run_deploy(W_NEXT, "--clear-hold")
         self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
         image, _, notes = self.live()
         self.assertEqual((image, notes["phase"], self.marker(), notes.get("maintenance-applied-set")),
@@ -701,8 +917,7 @@ class IngMaintenanceMarker(IngEndToEnd):
 
     def test_a_successful_maintenance_run_clears_its_own_marker(self):
         self.pending_build(IF.MAINTENANCE)
-        self.approve(1200)
-        code, events = self.run_approved(W_NEXT)
+        code, events = self.run_deploy(W_NEXT)
         self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
         _, _, notes = self.live()
         self.assertEqual((notes["phase"], notes["maintenance"], self.marker()), ("accepted", "true", None))
@@ -735,7 +950,8 @@ class IngRefusals(IngEndToEnd):
         self.gh["ingRuns"][-1]["head_sha"] = S_HEAD
         self.write_gh()
         code, events = self.cli("deploy", W_NEXT)
-        self.assertEqual((code, self.done(events)["code"]), (1, "MANIFEST_INVALID"), events)
+        self.assertEqual((code, self.done(events)["code"]), (1, "RUN_NOT_FOUND"), events)  # not bound; skipped and reported (L2)
+        self.assertEqual([(e["run"], e["code"]) for e in events if e.get("event") == "build-skipped"], [(1200, "MANIFEST_INVALID")])
         self.assertEqual(self.cluster()["writes"], [])
 
     def test_a_pushed_or_forked_run_is_not_bound(self):
@@ -788,17 +1004,24 @@ class IngRefusals(IngEndToEnd):
         self.assertEqual((code, self.done(events)["code"]), (1, "DATABASE_AHEAD"), events)
         self.assert_untouched()
 
-    def test_a_stale_backup_stops_before_the_switch(self):
-        self.behave(backupAgeHours=7)
-        code, events = self.cli("deploy", W_NEW)
+    def test_a_stale_backup_stops_before_the_migration(self):
+        self.pending_build(IF.ADDITIVE)
+        self.behave(backupAgeHours=2)
+        code, events = self.cli("deploy", W_NEXT)
         self.assertEqual((code, self.done(events)["code"]), (1, "BACKUP_STALE"), events)
         self.assert_untouched()
+        self.assertIsNone(self.restore_point())
 
-    def test_a_failed_backup_stops_everything(self):
+    def test_a_failed_backup_stops_a_migrating_deploy_and_does_not_touch_one_that_changes_no_schema(self):
         self.behave(backupFails=True)
-        code, events = self.cli("deploy", W_NEW)
+        self.pending_build(IF.MAINTENANCE)
+        code, events = self.cli("deploy", W_NEXT)
         self.assertEqual((code, self.done(events)["code"]), (1, "JOB_FAILED"), events)
         self.assert_untouched()
+        self.assertEqual(([j[1] for j in self.writes("job")], self.restore_point()), (["check"], None))
+        code, events = self.cli("deploy", W_NEW)  # nothing pending: no backup Job at all
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(len(self.writes("backup")), 1)  # only the migrating attempt's
 
     def test_a_tampered_archive_is_refused_before_import(self):
         """R22 S11: the archive's sha256 is checked against the manifest before ctr imports it."""
@@ -925,10 +1148,45 @@ class IngRetention(IngEndToEnd):
 class IngCutover(IngEndToEnd):
     CONVERTED = False
 
-    def plan(self):
-        code, events = self.cli("plan", W_NEW)
+    def plan_for(self, sha):
+        code, events = self.cli("plan", sha)
         self.assertEqual(code, 0, events)
-        return [e for e in events if e.get("event") == "cutover-plan"][0]
+        return dict([e for e in events if e.get("event") == "cutover-plan"][0], source=sha)
+
+    def plan(self):
+        return self.plan_for(W_NEW)
+
+    def apply(self, plan, *flags):
+        return self.cli("plan", plan.get("source", W_NEW), "--apply", plan["path"], "--reviewed-plan-sha256", plan["sha256"], *flags)
+
+    def assert_no_secret_touched(self):
+        """The cut-over moves a Secret reference in the Deployment; it never reads, writes or lists a Secret."""
+        for write in self.cluster()["writes"]:
+            self.assertNotEqual(write[0], "secret", write)
+            if write[0] == "patch":
+                for op in write[1]:
+                    self.assertFalse(op["path"].startswith("/data") or "/secrets/" in op["path"], op)
+                    if "secretKeyRef" in op["path"]:
+                        self.assertTrue(op["path"].endswith("/valueFrom/secretKeyRef/name"), op)
+
+    def test_ship_before_cutover_builds_only_and_does_not_need_a_smoke_session(self):
+        """The first build exists before the cut-over plan: ship builds and stops at BUILT, touching nothing on the node."""
+        (self.sandbox / "smoke-session").unlink()
+        build = IF.make_ing_build(self.key, W_NEXT, "first", seq=3002, suse=S_HEAD, lolly="8" * 40)
+        self.gh = json.loads(self.gh_path.read_text())
+        self.gh["onDispatch"] = IF.ing_run(1300, S_HEAD, status="queued", conclusion=None)
+        self.gh["statusSequence"] = {"1300": ["in_progress", "completed"]}
+        IF.ing_artifacts(self.gh, build, 1300)
+        self.write_gh()
+        code, events = self.cli("ship", W_NEXT)
+        result = self.done(events)
+        self.assertEqual((code, result["result"], result["run"]), (0, "BUILT", 1300), events)
+        self.assertEqual((self.cluster()["writes"], self.spool()), ([], []))
+        self.assertFalse(I.is_converted(self.cluster()["deployment"], 0))
+        self.assertFalse([event for event in events if event.get("event") in ("archive", "check-target", "starting")])
+        self.assertEqual(len(self.posts()), 1)
+        code, events = self.cli("deploy", W_NEXT)
+        self.assertEqual(self.done(events)["code"], "NOT_CONVERTED", events)
 
     def test_plan_prints_the_exact_patch_and_changes_nothing(self):
         plan = self.plan()
@@ -945,32 +1203,153 @@ class IngCutover(IngEndToEnd):
         self.assertEqual((code, self.done(events)["code"]), (1, "PLAN_NOT_REVIEWED"))
         self.assertEqual(self.cluster()["writes"], [])
 
-    def test_apply_converts_after_a_full_rehearsal(self):
-        """PROPOSAL 4.8: fresh backup, a full restore rehearsal with nothing pending (#208), then the reviewed patch once."""
+    def test_plan_needs_qualified_sources(self):
+        self.update_gh(workCiRuns=[])
+        code, events = self.cli("plan", W_NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "CI_NOT_GREEN"), events)
+
+    def test_apply_converts_after_a_backup_and_a_full_rehearsal(self):
+        """PROPOSAL 4.8: fresh backup, a full restore rehearsal with nothing pending (#208), then the reviewed patch once.
+        Review H3: the same patch points the catalog key at lolly.ing's own Secret, so Work boots with the lolly.ing key."""
         plan = self.plan()
-        code, events = self.cli("plan", W_NEW, "--apply", plan["path"], "--reviewed-plan-sha256", plan["sha256"])
+        self.assertEqual((plan["signingKeySecret"], plan["toSigningKeySecret"]), (IF.LEGACY_SIGNING_SECRET, IF.ING_SIGNING_SECRET))
+        self.assertEqual(self.signing_ref(), IF.LEGACY_SIGNING_SECRET)
+        code, events = self.apply(plan)
         result = self.done(events)
         self.assertEqual((code, result["result"]), (0, "CONVERTED"), events)
         self.assertTrue(I.is_converted(self.cluster()["deployment"], 0))
         image, config, notes = self.live()
         self.assertEqual((image, config, notes["phase"], notes["generation"]), (self.new["image"], plan["config"], "accepted", "3010"))
+        self.assertEqual((self.signing_ref(), result["signingKeySecret"]), (IF.ING_SIGNING_SECRET, IF.ING_SIGNING_SECRET))
+        checks = {item["check"]: item["ok"] for item in self.result_file()["checks"]}
+        self.assertTrue(checks["signing key"] and checks["signed catalog"], checks)  # the lolly.ing key, from the new Secret
         rehearsal = self.result_file()["rehearsal"]
         self.assertEqual((rehearsal["result"], rehearsal["expect"], rehearsal["files"]), ("PASSED", "none", []))
-        self.assertEqual(self.cluster()["db"]["generation"], 3010)
+        self.assertEqual((self.cluster()["db"]["generation"], len(self.writes("backup"))), (3010, 1))
+        self.assertEqual(self.records()[-1]["backup"]["status"], "VERIFIED")
+        self.assertIsNone(notes.get("maintenance"))
+        self.assert_no_secret_touched()
         code, events = self.cli("plan", W_NEW)
         self.assertEqual(self.done(events)["code"], "ALREADY_CONVERTED")
 
-    def test_a_failed_cutover_returns_to_the_claims_at_a_higher_generation(self):
+    def test_apply_without_a_rehearsal_still_takes_the_backup(self):
+        self.without_rehearsal()
         plan = self.plan()
-        code, events = self.cli("plan", W_NEW, "--apply", plan["path"], "--reviewed-plan-sha256", plan["sha256"], "--drill-fail-smoke")
+        code, events = self.apply(plan)
+        result = self.done(events)
+        self.assertEqual((code, result["result"], result["rehearsal"]), (0, "CONVERTED", None), events)
+        self.assertEqual((self.rehearsal_pods(), len(self.writes("backup"))), ([], 1))
+
+    def test_a_failed_cutover_returns_to_the_claims_at_a_higher_generation(self):
+        """Review H3: the revert restores the old image, the old key reference and the old pack together, so the
+        reverted catalog verifies and answers 200 instead of the 503 a Secret left pointing at the new key would give."""
+        plan = self.plan()
+        code, events = self.apply(plan, "--drill-fail-smoke")
         result = self.done(events)
         self.assertEqual((code, result["result"]), (2, "CONVERSION_REVERTED"), events)
         self.assertFalse(I.is_converted(self.cluster()["deployment"], 0))
         image, config, _ = self.live()
-        self.assertEqual((image, result["generation"]), (IF.LEGACY_IMAGE, 3011))
+        self.assertEqual((image, result["generation"], self.signing_ref()), (IF.LEGACY_IMAGE, 3011, IF.LEGACY_SIGNING_SECRET))
         self.assertEqual(I.config_generation(self.cluster()["configmaps"][config]["data"]["instance.json"]), 3011)
         back = {item["check"]: item["ok"] for item in self.result_file()["rollbackChecks"]}
         self.assertTrue(back["signed catalog"] and back["generation"], back)
+        self.assert_no_secret_touched()
+
+    def test_plan_refuses_until_the_signing_secret_is_pinned(self):
+        with mock.patch.object(A, "ING_SIGNING_KEY_SECRET", None):
+            code, events = self.cli("plan", W_NEW)
+            self.assertEqual((code, self.done(events)["code"]), (1, "SIGNING_SECRET_NOT_PINNED"), events)
+        plan = self.plan()
+        with mock.patch.object(A, "ING_SIGNING_KEY_SECRET", "another-secret"):  # the plan was made for another anchor
+            code, events = self.apply(plan)
+            self.assertEqual((code, self.done(events)["code"]), (1, "PLAN_MISMATCH"), events)
+        self.assertEqual(self.cluster()["writes"], [])
+
+    # Review 2026-10-25 H2, resolved by Andy's 2026-10-27 choice: the waiting release carries maintenance migrations,
+    # and the cut-over takes them after the verified backup, with no approval.
+    def test_a_maintenance_migration_at_the_cutover_is_backed_up_marked_applied_and_accepted(self):
+        build = self.pending_build(IF.MAINTENANCE)
+        plan = self.plan_for(W_NEXT)
+        code, events = self.apply(plan)
+        result = self.done(events)
+        self.assertEqual((code, result["result"], result["maintenance"], result["migrations"]), (0, "CONVERTED", True, [IF.MAINTENANCE]),
+                         events)
+        manifest = fixture("classify-0078.json")["manifest"]
+        self.assertEqual(self.writes("migrate"), [["migrate", [IF.MAINTENANCE], manifest]])
+        writes, patches = self.cluster()["writes"], self.writes("patch")
+        marker = [p for p in patches if any(op["path"].endswith("preview-maintenance-applied") for op in p[1])]
+        self.assertEqual(len(marker), 2, patches)  # written before the migrate Job, cleared on acceptance
+        migrate_job = next(w for w in self.writes("job") if w[1] == "migrate")
+        self.assertLess(writes.index(self.writes("backup")[0]), writes.index(marker[0]))
+        self.assertLess(writes.index(marker[0]), writes.index(migrate_job))
+        self.assertLess(patches.index(marker[0]), patches.index(next(p for p in patches if any("/volumes/" in op["path"] for op in p[1]))))
+        image, _, notes = self.live()
+        self.assertEqual((image, notes["phase"], notes["maintenance"], json.loads(notes["maintenance-migrations"]), self.signing_ref()),
+                         (build["image"], "accepted", "true", [IF.MAINTENANCE], IF.ING_SIGNING_SECRET))
+        self.assertIsNone(notes.get("maintenance-applied"))
+        self.assertEqual(self.restore_point()["previousImage"], IF.LEGACY_IMAGE)
+        code, events = self.cli("rollback")
+        self.assertEqual(self.done(events)["code"], "MAINTENANCE_NO_ROLLBACK", events)
+        self.assertEqual(self.live()[0], build["image"])
+
+    def test_a_failed_smoke_after_a_maintenance_cutover_is_held_not_reverted(self):
+        """The legacy image cannot be trusted on the new schema, so the automatic revert is off: MAINTENANCE_UNVERIFIED (exit 3),
+        and the result names the backup to restore with the old layout."""
+        build = self.pending_build(IF.MAINTENANCE)
+        plan = self.plan_for(W_NEXT)
+        self.behave(brokenSite=[build["image"]])
+        code, events = self.apply(plan)
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (3, "MAINTENANCE_UNVERIFIED"), events)
+        self.assertEqual(result["backup"]["previousImage"], IF.LEGACY_IMAGE)
+        image, _, notes = self.live()
+        self.assertTrue(I.is_converted(self.cluster()["deployment"], 0))
+        self.assertEqual((image, notes["phase"], json.loads(notes["maintenance-applied"]), self.signing_ref()),
+                         (build["image"], "maintenance-unverified", [IF.MAINTENANCE], IF.ING_SIGNING_SECRET))
+        self.assertFalse([p for p in self.writes("patch") if any(op["op"] == "add" and "/volumes/" in op["path"] for op in p[1])])
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual(self.done(events)["code"], "HELD_FOR_HUMAN", events)
+        code, events = self.cli("rollback", "--clear-hold")
+        self.assertEqual(self.done(events)["code"], "MAINTENANCE_NO_ROLLBACK", events)
+
+    def test_a_stopped_maintenance_cutover_with_a_transient_cleanup_read_failure_is_held(self):
+        """The first cleanup read fails after migration and cut-over. The base cleanup's next read must not allow a revert."""
+        build = self.pending_build(IF.MAINTENANCE)
+        plan = self.plan_for(W_NEXT)
+        os.environ["FAKE_ING_ABORT"] = "cutover-read"
+        code, events = self.apply(plan)
+        self.assertEqual((code, self.done(events)["result"]), (3, "MAINTENANCE_UNVERIFIED"), events)
+        reads = [e["failed"] for e in events if e.get("event") == "drill-cleanup-read"]
+        self.assertEqual(reads[:2], [True, False], events)
+        self.assertEqual([w[1] for w in self.writes("migrate")], [[IF.MAINTENANCE]])
+        image, _, notes = self.live()
+        self.assertTrue(I.is_converted(self.cluster()["deployment"], 0))
+        self.assertEqual((image, notes["phase"], json.loads(notes["maintenance-applied"]), self.signing_ref()),
+                         (build["image"], "maintenance-unverified", [IF.MAINTENANCE], IF.ING_SIGNING_SECRET))
+        self.assertFalse([p for p in self.writes("patch") if any(op["op"] == "add" and "/volumes/" in op["path"] for op in p[1])])
+        self.assertIn("automatic rollback is off", self.result_file()["note"])
+
+    def test_a_stale_backup_before_a_migration_at_the_cutover_applies_nothing(self):
+        """The backup must be under 1 hour old when the schema changes, as for a deploy."""
+        self.pending_build(IF.MAINTENANCE)
+        plan = self.plan_for(W_NEXT)
+        os.environ["FAKE_AGE_AFTER_REHEARSAL"] = "2"
+        code, events = self.apply(plan)
+        self.assertEqual((code, self.done(events)["code"]), (1, "BACKUP_STALE"), events)
+        self.assertEqual((self.writes("migrate"), self.writes("patch")), ([], []))
+        self.assertFalse(I.is_converted(self.cluster()["deployment"], 0))
+        self.assertIsNone(self.live()[2].get("maintenance-applied"))
+
+    def test_an_additive_migration_at_the_cutover_still_reverts(self):
+        """Additive migrations keep the automatic revert: the old image runs beside them."""
+        self.pending_build(IF.ADDITIVE)
+        plan = self.plan_for(W_NEXT)
+        code, events = self.apply(plan, "--drill-fail-smoke")
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (2, "CONVERSION_REVERTED"), events)
+        self.assertEqual(self.writes("migrate"), [["migrate", [IF.ADDITIVE], fixture("classify-0077.json")["manifest"]]])
+        self.assertEqual((self.live()[0], self.signing_ref()), (IF.LEGACY_IMAGE, IF.LEGACY_SIGNING_SECRET))
+        self.assertFalse([p for p in self.writes("patch") if any(op["path"].endswith("preview-maintenance-applied") for op in p[1])])
 
 
 if __name__ == "__main__":

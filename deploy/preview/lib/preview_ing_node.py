@@ -2,12 +2,15 @@
 """Node side of the lolly.ing preview deploy (PROPOSAL 4.3 to 4.8). Runs as root inside the unit.
 
 What it may change: the imported instance image and its pins; new generation
-ConfigMaps; one backup Job from the existing CronJob; read-only check Jobs; and,
-only with pending migrations, the classifier and migrate Jobs plus whatever the
-Phase 2A rehearsal driver creates in its own namespace. Then the target
-Deployment's image, config ConfigMap reference and annotations. It never reads
-or changes a Secret, a PVC, Postgres directly, the edge or DNS, and never execs
-into a Pod.
+ConfigMaps; read-only check Jobs; and, only with pending migrations (or at the
+cut-over), one backup Job from the existing CronJob, the classifier and migrate
+Jobs, plus whatever the restore rehearsal driver creates in its own namespace
+when the profile configures one. Then the target Deployment's image, config
+ConfigMap reference and annotations, and once, at the cut-over, which Secret its
+catalog signing key reference names. It never reads or changes a Secret's value,
+a PVC, Postgres directly, the edge or DNS, never execs into a Pod, and never
+restores the live database: after a non-additive migration a failed switch is
+held, and the restore is a human step (the lolly.ing runbook).
 """
 
 from __future__ import annotations
@@ -29,6 +32,11 @@ from preview_expect import format_lowering
 from preview_receipt import verify_frontend_receipt
 
 key = N.key
+# What a held run tells the operator. The tool never restores the live database itself: a restore drops every write
+# since the backup, and it is run by hand from the lolly.ing runbook.
+HOLD_NOTE = ("automatic rollback is off after a non-additive migration. Recover with a forward fix (deploy <fix> "
+             "--clear-hold), or roll back by restoring this run's backup (status: backup) with its previous image, by the "
+             "lolly.ing runbook")
 COOKIE_PATTERN = r"lw_session=[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]{16,3800}"
 ACCOUNT_ROLES = ("member",)  # least privilege that can still render one QR code with a grant
 
@@ -79,15 +87,14 @@ def validate_ing_request(request, au):
             and isinstance(smoke["pages"], list) and all(isinstance(p, str) and p.startswith("/") for p in smoke["pages"]),
             "BAD_REQUEST", "smoke settings")
     rehearsal = request.get("rehearsal")
-    require(isinstance(rehearsal, dict) and set(rehearsal) == {"storageHost", "storageAddress"}
-            and all(isinstance(rehearsal[k], str) and 0 < len(rehearsal[k]) <= 253 for k in rehearsal), "BAD_REQUEST",
+    require(rehearsal is None or (isinstance(rehearsal, dict) and set(rehearsal) == {"storageHost", "storageAddress"}
+            and all(isinstance(rehearsal[k], str) and 0 < len(rehearsal[k]) <= 253 for k in rehearsal)), "BAD_REQUEST",
             "rehearsal settings")
     require(type(request.get("drillFailSmoke")) is bool and type(request.get("clearHold")) is bool, "BAD_REQUEST", "flags")
+    # The maintenance approval flow is gone (Andy, 2026-10-27); a request that still carries one is from an older Mac.
+    require("maintenanceApproval" not in request, "BAD_REQUEST", "maintenance approvals are no longer part of a request")
     if request["kind"] in ("deploy", "convert"):
         I.validate_release(request.get("release"))
-        approval = request.get("maintenanceApproval")
-        require(approval is None or (isinstance(approval, dict) and set(approval) == {"run", "approver", "environment"}),
-                "BAD_REQUEST", "maintenance approval")
     if request["kind"] == "convert":
         plan = request.get("conversion")
         require(isinstance(plan, dict) and isinstance(plan.get("cutover"), dict) and isinstance(plan["cutover"].get("patch"), list)
@@ -294,7 +301,11 @@ class IngRunner(N.Runner):
     def rehearse(self, backup, image, previous_image, pending):
         """The restore rehearsal (deploy/preview/restore-rehearsal.py, #208) as a library: restore the fresh backup
         in its own namespace, apply the pending files with the new image's runner within the lock budget, and boot
-        the previous image on the copy for one save round trip (R20 S7, R22 S4). This run's check-target covers it."""
+        the previous image on the copy for one save round trip (R20 S7, R22 S4). This run's check-target covers it.
+        Optional on the preview-grade route: None when the profile configures no rehearsal."""
+        if self.request.get("rehearsal") is None:
+            self.log("rehearsal", skipped=True, note="the profile configures no restore rehearsal; the verified backup comes first")
+            return None
         try:
             import preview_rehearsal as RH
         except ImportError as exc:
@@ -344,11 +355,20 @@ class IngRunner(N.Runner):
         require(isinstance(completed, str), "BACKUP_UNVERIFIED", "the backup Job has no completion time")
         return {"job": name, "record": line, "completedAt": completed}
 
-    def backup_fresh(self, backup, maintenance):
-        limit = A.MAINTENANCE_BACKUP_MAX_AGE_SECONDS if maintenance else A.BACKUP_MAX_AGE_SECONDS
+    def backup_fresh(self, backup):
+        """The verified backup is under an hour old at the moment the schema changes (Andy 2026-10-27)."""
+        limit = A.BACKUP_MAX_AGE_SECONDS
         age = N.WALL() - parse_utc(backup["completedAt"]).timestamp()
-        require(age < limit, "BACKUP_STALE", f"the fresh backup is {int(age // 60)} minutes old at the switch; "
-                f"the limit is {limit // 60}. Nothing was switched")
+        require(age < limit, "BACKUP_STALE", f"the verified backup is {int(age // 60)} minutes old before the migration; "
+                f"the limit is {limit // 60}. Nothing was migrated or switched")
+
+    def restore_point(self, backup, previous_image, previous_source, previous_config, pending, maintenance):
+        """What a rollback after this migration restores (Andy 2026-10-27: the backup plus the previous image). Written to
+        the Deployment before the migrate Job and shown by status; the runbook reads it. The tool never restores it."""
+        return {"record": backup["record"], "job": backup["job"], "completedAt": backup["completedAt"],
+                "deployId": self.request["deployId"], "migrations": sorted(item["name"] for item in pending),
+                "maintenance": maintenance, "previousImage": previous_image, "previousSource": previous_source,
+                "previousConfig": previous_config}
 
     # Generation and config (PROPOSAL 4.3 step 7) ------------------------------
     def new_config(self, generation, live_text, source):
@@ -603,36 +623,35 @@ class IngRunner(N.Runner):
         self.window_check()
         self.keep_pinned(live_image)
         self.ensure_image(release)
-        self.window_check()
-        backup = self.take_backup()
         check = self.check_db(release["image"])
         plan = I.migration_plan(release["migrations"], check, self.applied_migrations(value))
         applied = set(self.applied_migrations(value))
         maintenance_applied = set(self.applied_migrations(value, "maintenance-migrations"))
         marked = set(self.applied_migrations(value, "maintenance-applied"))  # applied by an earlier run, never accepted
-        maintenance, rehearsal = False, None
+        maintenance, rehearsal, backup, restore = False, None, None, None
         if plan["pending"]:
+            # Andy 2026-10-27: every migration class is applied, and a verified backup comes first. Nothing pending,
+            # nothing to back up: the daily backup and the previous image cover a deploy that changes no schema.
+            self.window_check()
+            backup = self.take_backup()
             classes = self.classify(release["image"], plan["pending"])
             maintenance = any(classes[item["name"]]["class"] != "additive" for item in plan["pending"])
-            if maintenance:
-                require(self.request.get("maintenanceApproval") is not None, "MAINTENANCE_NOT_APPROVED",
-                        "a pending migration is not on the allowlist; it needs Andy's approval in the private run "
-                        f"({A.ING['maintenanceEnvironment']}). Nothing was applied")
-                self.backup_fresh(backup, maintenance=True)
             rehearsal = self.rehearse(backup, release["image"], live_image, plan["pending"])
             self.window_check()
+            self.backup_fresh(backup)  # the rehearsal takes time: the backup must still be fresh as the schema changes
+            restore = self.restore_point(backup, live_image, previous["source"], live_config, plan["pending"], maintenance)
+            values = {"backup": compact(restore), "updated": utc_stamp()}
             if maintenance:
-                # The rehearsal takes time: the backup must still be fresh at the moment the schema changes (PROPOSAL 4.3).
-                self.backup_fresh(backup, maintenance=True)
-                marked |= {item["name"] for item in plan["pending"]}
                 # From here the old image may run on a non-additive schema. Record that on the Deployment (annotations
                 # only, no rollout) before anything is applied, and keep it until a switch that includes these
                 # migrations is accepted.
-                self.annotate({"phase": "maintenance-applied-unswitched", "deploy-id": self.request["deployId"],
+                marked |= {item["name"] for item in plan["pending"]}
+                values.update({"phase": "maintenance-applied-unswitched", "deploy-id": self.request["deployId"],
                                "maintenance-applied": compact(sorted(marked)),
-                               "maintenance-applied-set": I.migration_set(release["migrations"]),
-                               "reason": None, "updated": utc_stamp()}, expect_image=live_image)
-                self.log("phase", phase="maintenance-applied-unswitched", migrations=sorted(marked))
+                               "maintenance-applied-set": I.migration_set(release["migrations"]), "reason": None})
+            self.annotate(values, expect_image=live_image)
+            self.log("restore-point", backup=backup["record"]["object"], maintenance=maintenance,
+                     migrations=[item["name"] for item in plan["pending"]])
             self.migrate(release["image"], plan["pending"])
             check = self.check_db(release["image"])
             require(not I.migration_plan(release["migrations"], check, applied)["pending"], "MIGRATE_INCOMPLETE",
@@ -645,7 +664,6 @@ class IngRunner(N.Runner):
         generation = self.generation_for(live_text, check, release["seq"])
         config = self.new_config(generation, live_text, release["source"])
         self.window_check()
-        self.backup_fresh(backup, maintenance)
         deploys = int(self.ann(value, "deploys") or "0")
         self.annotate({"phase": "switching", "deploy-id": self.request["deployId"], "previous": compact(previous),
                        "reason": None, "updated": utc_stamp()}, expect_image=live_image)
@@ -659,10 +677,10 @@ class IngRunner(N.Runner):
                 self.annotate({"phase": "maintenance-applied-unswitched" if marked else "aborted",
                                "previous": compact(previous["prior"]) if previous["prior"] else None,
                                "reason": exc.message[:500], "updated": utc_stamp()}, expect_image=live_image)
-                return self.finish("ABORTED", reason=exc.message, image=live_image)
-            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold)
+                return self.finish("ABORTED", reason=exc.message, image=live_image, backup=restore)
+            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold, restore=restore)
         except self.au.Refusal as exc:
-            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold)
+            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold, restore=restore)
         self.log("phase", phase="switched-unverified")
         try:
             checks, files = self.run_smoke(I.expect_of(release), release["image"], generation)
@@ -670,37 +688,37 @@ class IngRunner(N.Runner):
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
                 return self.after_failure(previous, "SMOKE_FAILED: " + ", ".join(i["check"] for i in checks.failures()),
-                                          hold, checks.items)
+                                          hold, checks.items, restore=restore)
             reason = self.watch(files["index.html"], release["image"])
             if reason:
-                return self.after_failure(previous, "WATCH_FAILED: " + reason, hold, checks.items)
+                return self.after_failure(previous, "WATCH_FAILED: " + reason, hold, checks.items, restore=restore)
             accepted = {"phase": "accepted", "deploys": str(deploys + 1), "updated": utc_stamp()}
             if marked and marked <= {item["name"] for item in release["migrations"]}:
                 accepted.update({"maintenance-applied": None, "maintenance-applied-set": None})  # this switch includes them
             self.annotate(accepted, expect_image=release["image"])
         except (Refusal, self.au.Refusal) as exc:
-            return self.after_failure(previous, "UNVERIFIED: " + str(exc)[:300], hold)
+            return self.after_failure(previous, "UNVERIFIED: " + str(exc)[:300], hold, restore=restore)
         armed = os.path.exists(armed_path())
         retention = self.retain_images(execute=armed, budget=A.RETENTION_AFTER_DEPLOY_SECONDS)
         if armed:
             retention["configMaps"] = self.retain_configs(execute=True)
         return self.finish("LIVE", source=release["source"], image=release["image"], previous=previous["image"],
-                           generation=generation, config=config, backup=backup, retention=retention, rehearsal=rehearsal,
+                           generation=generation, config=config, backup=restore, retention=retention, rehearsal=rehearsal,
                            migrations=[item["name"] for item in plan["pending"]], maintenance=maintenance, checks=checks.items)
 
-    def after_failure(self, previous, reason, maintenance, checks=None):
-        """Roll back by one forward publication, unless a maintenance migration ran (PROPOSAL 4.4, 4.6)."""
+    def after_failure(self, previous, reason, maintenance, checks=None, restore=None):
+        """Roll back by one forward publication, unless a non-additive migration ran (PROPOSAL 4.4, 4.6). Then the
+        previous image alone is not a safe state: the run holds, and the rollback is the backup plus that image."""
         if maintenance:
             with contextlib.suppress(Refusal):
                 self.annotate({"phase": "maintenance-unverified", "reason": reason[:500], "updated": utc_stamp()})
-            return self.finish("MAINTENANCE_UNVERIFIED", reason=reason, checks=checks,
-                               note="automatic rollback is off after a maintenance migration; recovery would be a restore, "
-                                    "which Andy decides")
-        return self.restore(previous, reason, watch=False, checks=checks)
+            return self.finish("MAINTENANCE_UNVERIFIED", reason=reason, checks=checks, backup=restore, note=HOLD_NOTE)
+        return self.restore(previous, reason, watch=False, checks=checks, backup=restore)
 
-    def restore(self, previous, reason, watch, checks=None):
+    def restore(self, previous, reason, watch, checks=None, backup=None):
         """The previous image (still pinned) plus a NEW config at a higher generation; never rollout undo.
-        The database stays (PROPOSAL 4.6)."""
+        The database stays (PROPOSAL 4.6): after nothing or only additive migrations the previous image runs on it.
+        backup is this run's restore point, reported when the rollback itself fails."""
         self.log("rollback", reason=reason)
         with contextlib.suppress(Refusal):
             self.annotate({"phase": "rolling-back", "reason": reason[:500], "updated": utc_stamp()})
@@ -726,7 +744,8 @@ class IngRunner(N.Runner):
             with contextlib.suppress(Refusal):
                 self.annotate({"phase": "rollback-unhealthy", "reason": (reason + " / " + problem)[:500], "updated": utc_stamp()})
             return self.finish("ROLLBACK_UNHEALTHY", reason=reason, problem=problem, checks=checks,
-                               rollbackChecks=back.items if back else None, generation=generation)
+                               rollbackChecks=back.items if back else None, generation=generation, backup=backup,
+                               note=HOLD_NOTE if backup else None)
         values = {"phase": "rolled-back", "source": previous["source"], "image": previous["image"], "ci-run": previous.get("ciRun"),
                   "formats": compact(previous["formats"]) if previous.get("formats") else None,
                   "expect": compact(previous["expect"]), "config": config, "generation": str(generation), "previous": None,
@@ -766,12 +785,13 @@ class IngRunner(N.Runner):
     # Cut-over (PROPOSAL 4.8) -------------------------------------------------
     def run_convert(self):
         plan, release = self.request["conversion"], self.request["release"]
+        to_secret = I.signing_secret()  # review H3: the cut-over patch also switches the signing key reference
         value, index = self.deployment()
         if I.is_converted(value, index):
             return self.finish("ALREADY_CONVERTED", image=self.image_of(value, index))
         self.hold_check(self.ann(value, "phase"))
         require(self.ready(value), "NOT_READY", "the Deployment is not reconciled and Ready")
-        require(I.comparable_cutover(I.cutover_plan(value, index, release["image"], plan["toConfig"], plan["annotations"]))
+        require(I.comparable_cutover(I.cutover_plan(value, index, release["image"], plan["toConfig"], plan["annotations"], to_secret))
                 == I.comparable_cutover(plan["cutover"]), "PLAN_MISMATCH",
                 "the live Deployment no longer gives the reviewed plan; make and review a new plan")
         live_image, live_config = self.image_of(value, index), I.config_volume(value, index)[1]
@@ -780,34 +800,52 @@ class IngRunner(N.Runner):
         self.window_check()
         self.keep_pinned(live_image)
         self.ensure_image(release)
-        backup = self.take_backup()
+        backup = self.take_backup()  # the cut-over always takes one, migrations or not
         check = self.check_db(release["image"])
         migrations = I.migration_plan(release["migrations"], check, set())
+        marked = set(self.applied_migrations(value, "maintenance-applied"))  # applied by an earlier attempt, never switched
+        maintenance, restore = False, None
         if migrations["pending"]:
+            # Review 2026-10-25 H2, resolved by Andy's 2026-10-27 choice: the cut-over takes every migration class, after
+            # the verified backup, with no approval. A non-additive one turns the automatic revert off afterwards.
             classes = self.classify(release["image"], migrations["pending"])
-            require(all(classes[item["name"]]["class"] == "additive" for item in migrations["pending"]), "MAINTENANCE_AT_CUTOVER",
-                    "the cut-over takes allowlisted migrations only")
-        # PROPOSAL 4.8 step 1: the full restore rehearsal runs once even with nothing pending.
+            maintenance = any(classes[item["name"]]["class"] != "additive" for item in migrations["pending"])
+        # PROPOSAL 4.8 step 1: the restore rehearsal runs once even with nothing pending, when the profile configures one.
         rehearsal = self.rehearse(backup, release["image"], live_image, migrations["pending"])
         if migrations["pending"]:
             self.window_check()
+            self.backup_fresh(backup)  # the rehearsal took time; still fresh as the schema changes
+            restore = self.restore_point(backup, live_image, plan["liveSource"], live_config, migrations["pending"], maintenance)
+            values = {"backup": compact(restore), "updated": utc_stamp()}
+            if maintenance:
+                # From here the old image may run on a non-additive schema and a revert is no longer a safe state.
+                # Record that on the Deployment (annotations only, no rollout) before anything is applied.
+                marked |= {item["name"] for item in migrations["pending"]}
+                values.update({"phase": "maintenance-applied-unswitched", "deploy-id": self.request["deployId"],
+                               "maintenance-applied": compact(sorted(marked)),
+                               "maintenance-applied-set": I.migration_set(release["migrations"]), "reason": None})
+            self.annotate(values, expect_image=live_image)
+            self.log("restore-point", backup=backup["record"]["object"], maintenance=maintenance,
+                     migrations=[item["name"] for item in migrations["pending"]])
             self.migrate(release["image"], migrations["pending"])
             check = self.check_db(release["image"])
+            require(not I.migration_plan(release["migrations"], check, set())["pending"], "MIGRATE_INCOMPLETE",
+                    "migrations are still pending after the migrate Job")
+        hold = maintenance or bool(marked)  # a marker from an earlier attempt also turns the automatic revert off
         generation = self.generation_for(live_text, check, release["seq"])
         require(generation == plan["generation"], "PLAN_MISMATCH", f"the generation is now {generation}, the plan says "
                 f"{plan['generation']}; make and review a new plan")
         config = self.new_config(generation, live_text, release["source"])
         require(config == plan["toConfig"], "PLAN_MISMATCH", "the config name differs from the plan")
         self.window_check()
-        self.backup_fresh(backup, False)
-        self.log("phase", phase="converting", generation=generation)
+        self.log("phase", phase="converting", generation=generation, maintenance=hold)
         applied = False
         for _ in range(N.SWITCH_ATTEMPTS):
             value, index = self.deployment()
             if I.is_converted(value, index):
                 applied = True
                 break
-            current = I.cutover_plan(value, index, release["image"], config, plan["annotations"])
+            current = I.cutover_plan(value, index, release["image"], config, plan["annotations"], to_secret)
             try:
                 dry = self.kube.patch(self.component, current["patch"], True)
                 I.guard_cutover(value, dry, index, current)
@@ -819,22 +857,43 @@ class IngRunner(N.Runner):
                 self.log("switch-retry", reason=str(exc)[:200])
                 N.SLEEP(2)
         if not applied:
-            return self.finish("ABORTED", reason="the cut-over patch was not applied")
+            return self.finish("ABORTED", reason="the cut-over patch was not applied", backup=restore,
+                               note="a non-additive migration is applied and unswitched" if hold else None)
         try:
             self.wait_switch(release["image"], config)
             checks, files = self.run_smoke(I.expect_of(release), release["image"], generation)
             if self.request["drillFailSmoke"]:
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
-                return self.revert_cutover(plan, "SMOKE_FAILED: " + ", ".join(i["check"] for i in checks.failures()), checks.items)
+                return self.after_convert_failure(plan, "SMOKE_FAILED: " + ", ".join(i["check"] for i in checks.failures()), hold,
+                                                  checks.items, restore=restore)
             reason = self.watch(files["index.html"], release["image"])
             if reason:
-                return self.revert_cutover(plan, "WATCH_FAILED: " + reason, checks.items)
-            self.annotate({"phase": "accepted", "updated": utc_stamp()}, expect_image=release["image"])
+                return self.after_convert_failure(plan, "WATCH_FAILED: " + reason, hold, checks.items, restore=restore)
+            accepted = {"phase": "accepted", "updated": utc_stamp()}
+            if maintenance:
+                accepted.update({"maintenance": "true",
+                                 "maintenance-migrations": compact(sorted(item["name"] for item in migrations["pending"]))})
+            elif migrations["pending"]:
+                accepted["migrations"] = compact(sorted(item["name"] for item in migrations["pending"]))
+            if marked and marked <= {item["name"] for item in release["migrations"]}:
+                accepted.update({"maintenance-applied": None, "maintenance-applied-set": None})  # this switch includes them
+            self.annotate(accepted, expect_image=release["image"])
         except (Refusal, self.au.Refusal) as exc:
-            return self.revert_cutover(plan, "UNVERIFIED: " + str(exc)[:300])
+            return self.after_convert_failure(plan, "UNVERIFIED: " + str(exc)[:300], hold, restore=restore)
         return self.finish("CONVERTED", source=release["source"], image=release["image"], generation=generation, config=config,
-                           backup=backup, rehearsal=rehearsal, checks=checks.items)
+                           signingKeySecret=to_secret, backup=restore or {"record": backup["record"], "job": backup["job"],
+                                                                          "completedAt": backup["completedAt"]},
+                           rehearsal=rehearsal, migrations=[item["name"] for item in migrations["pending"]],
+                           maintenance=maintenance, checks=checks.items)
+
+    def after_convert_failure(self, plan, reason, maintenance, checks=None, restore=None):
+        """Revert the cut-over, unless a non-additive migration ran: the old image cannot be trusted on that schema."""
+        if maintenance:
+            with contextlib.suppress(Refusal):
+                self.annotate({"phase": "maintenance-unverified", "reason": reason[:500], "updated": utc_stamp()})
+            return self.finish("MAINTENANCE_UNVERIFIED", reason=reason, checks=checks, backup=restore, note=HOLD_NOTE)
+        return self.revert_cutover(plan, reason, checks)
 
     def revert_cutover(self, plan, reason, checks=None):
         """Back to the claim layout and the old image, at a higher generation again (never the old one)."""
@@ -842,6 +901,8 @@ class IngRunner(N.Runner):
         cutover, problem, back, generation = plan["cutover"], None, None, None
         try:
             value, index = self.deployment()
+            if self.ann(value, "maintenance") == "true" or self.applied_migrations(value, "maintenance-applied"):
+                return self.after_convert_failure(plan, reason, True, checks, restore=self.ann_json(value, "backup"))
             current_config = I.config_volume(value, index)[1]
             configs = self.config_maps()
             check = self.check_db(self.request["release"]["image"])  # a Job runs the instance image only
@@ -851,6 +912,9 @@ class IngRunner(N.Runner):
             reverted = False
             for _ in range(N.SWITCH_ATTEMPTS):
                 value, index = self.deployment()
+                # Every caller and retry respects the one-way boundary a non-additive migration draws.
+                if self.ann(value, "maintenance") == "true" or self.applied_migrations(value, "maintenance-applied"):
+                    return self.after_convert_failure(plan, reason, True, checks, restore=self.ann_json(value, "backup"))
                 if not I.is_converted(value, index):
                     reverted = True
                     break
@@ -890,7 +954,17 @@ class IngRunner(N.Runner):
 
     # ExecStopPost --------------------------------------------------------
     def stop_post(self, environment):
-        """As lolly.tools, except that a switch after a maintenance migration is held, never rolled back."""
+        """As lolly.tools, except that a switch after a non-additive migration is held, never rolled back."""
+        if self.request["kind"] == "convert":
+            try:
+                value, _ = self.deployment()
+            except (Refusal, self.au.Refusal):
+                return super().stop_post(environment)  # its revert re-reads and rechecks the marker (revert_cutover)
+            if (self.ann(value, "deploy-id") == self.request["deployId"] and self.ann(value, "phase") == "converting"
+                    and self.applied_migrations(value, "maintenance-applied")):
+                self.annotate({"phase": "maintenance-unverified", "reason": "UNIT_STOPPED", "updated": utc_stamp()})
+                return self.finish("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED", backup=self.ann_json(value, "backup"),
+                                   note=HOLD_NOTE)
         if self.request["kind"] == "deploy":
             try:
                 value, _ = self.deployment()
@@ -902,10 +976,11 @@ class IngRunner(N.Runner):
                 previous = self.ann_json(value, "previous")
                 if phase == "switching" and isinstance(previous, dict) and self.image_of(value, self.deployment()[1]) == previous.get("image"):
                     self.annotate({"phase": "maintenance-applied-unswitched", "reason": "UNIT_STOPPED", "updated": utc_stamp()})
-                    return self.finish("ABORTED", reason="UNIT_STOPPED", note="a maintenance migration is applied and unswitched")
+                    return self.finish("ABORTED", reason="UNIT_STOPPED", backup=self.ann_json(value, "backup"),
+                                       note="a non-additive migration is applied and unswitched")
                 self.annotate({"phase": "maintenance-unverified", "reason": "UNIT_STOPPED", "updated": utc_stamp()})
-                return self.finish("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED",
-                                   note="automatic rollback is off after a maintenance migration")
+                return self.finish("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED", backup=self.ann_json(value, "backup"),
+                                   note=HOLD_NOTE)
         return super().stop_post(environment)
 
     def revert_conversion(self, plan, reason, checks=None):

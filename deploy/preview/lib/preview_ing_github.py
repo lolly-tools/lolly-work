@@ -5,7 +5,10 @@ A build is bound by its run ID: workflow path, event (workflow_dispatch),
 repository and head repository, branch, head commit (the suse-lolly commit it
 built) and success (R22 S6). Its manifest and archive are read only from that
 run's own artifacts, never looked up by name across the repository. The only
-write is the workflow dispatch. Nothing here approves an environment gate.
+write is the workflow dispatch. The signing environment has no reviewer (Andy,
+2026-10-27), so what lets a build happen is the qualification rule in
+`qualify`: green full CI for the Work commit, and for the Lolly commit it pins
+either its own full CI or a fast lane above one.
 """
 
 from __future__ import annotations
@@ -86,15 +89,18 @@ def bind_ing_run(gh, run, wsha):
 
 
 def latest_ing_run(gh, wsha, ssha=None):
-    """The newest successful run that built this Work commit (and, when given, this suse-lolly commit) and still binds."""
+    """The newest successful run that built this Work commit (and, when given, this suse-lolly commit) and still binds.
+    A run with expired artifacts, another Work commit or a malformed manifest is skipped and reported (review L2)."""
     for run in ing_runs(gh, ssha):
         if run.get("status") != "completed" or run.get("conclusion") != "success":
             continue
         try:
             return bind_ing_run(gh, run, wsha)
         except Refusal as exc:
-            if exc.code not in ("RECEIPT_MISSING", "MANIFEST_SOURCE"):
+            if exc.code not in ("RECEIPT_MISSING", "MANIFEST_SOURCE", "MANIFEST_INVALID"):
                 raise
+            if exc.code == "MANIFEST_INVALID":
+                emit("build-skipped", run=run["id"], code=exc.code, reason=exc.message[:200])
     raise Refusal("RUN_NOT_FOUND", f"no live, binding lolly.ing build of Work {wsha}" + (f" and suse-lolly {ssha}" if ssha else "")
                   + "; use ship")
 
@@ -114,6 +120,52 @@ def dispatch_ing(gh, lsha, wsha, ssha):
     return body
 
 
+def active_ing_runs(gh):
+    """Private builds that are queued, running or waiting, for any source."""
+    return [run for run in ing_runs(gh) if run.get("status") in G.ACTIVE_STATES]
+
+
+def resume_or_dispatch(gh, lsha, wsha, ssha):
+    """The run to wait for: an active build of exactly this Work commit and suse-lolly head, or a new dispatch.
+    An active build of anything else refuses CANDIDATE_ACTIVE, so two ships never queue builds behind each other."""
+    title = ANCHORS["buildRunTitle"].format(sha=wsha)
+    active = active_ing_runs(gh)
+    same = [run for run in active if run.get("display_title") == title and run.get("head_sha") == ssha]
+    others = [run for run in active if run not in same]
+    require(not others, "CANDIDATE_ACTIVE", f"another lolly.ing build is active (run {others[0]['id'] if others else ''}); "
+            "wait for it to finish")
+    if same:
+        run = max(same, key=lambda r: r["id"])
+        emit("build", run=run["id"], note="resuming the active private build of this Work commit; nothing new was dispatched")
+        return run
+    known = {run["id"] for run in ing_runs(gh, ssha)}
+    dispatch_ing(gh, lsha, wsha, ssha)
+    run = find_new_ing_run(gh, ssha, known)
+    emit("dispatched", run=run["id"], lolly=lsha, work=wsha, suse=ssha,
+         note="the build signs in lolly-ing-signing with no reviewer; nothing waits for an approval")
+    return run
+
+
+def qualify(gh, wsha, lsha):
+    """Andy 2026-10-27: the Work commit needs its own successful full lolly-work CI push run on main, and the Lolly
+    commit its engine pin names qualifies as a lolly.tools source does (its own full CI run, or a fast lane above one).
+    suse-lolly's main head needs no CI of its own: the build validates, signs and boots its catalog, and the deploy
+    smoke checks it again. Refuses CI_PENDING (retry later) or CI_NOT_GREEN."""
+    try:
+        work = G.green_ci_run(gh, A.ING_WORK_CI, wsha)
+    except Refusal as exc:
+        raise Refusal(exc.code, "lolly-work: " + exc.message) from exc
+    try:
+        lolly = G.qualified_ci(gh, A.ING_LOLLY_CI, lsha)
+    except Refusal as exc:
+        raise Refusal(exc.code, f"Lolly {lsha[:12]} (Work's engine pin): " + exc.message) from exc
+    fields = {"workCiRun": work["id"], "lollyCiRun": lolly["id"]}
+    if lolly["lane"] != "full":
+        fields.update(lollyLane=lolly["lane"], lollyLaneBase=lolly["base"], lollyLaneRun=lolly["fastRun"])
+    emit("qualified", work=wsha, lolly=lsha, **fields)
+    return fields
+
+
 def find_new_ing_run(gh, ssha, known_ids, attempts=20, pause=6):
     for _ in range(attempts):
         fresh = [run for run in ing_runs(gh, ssha) if run["id"] not in known_ids]
@@ -122,21 +174,6 @@ def find_new_ing_run(gh, ssha, known_ids, attempts=20, pause=6):
         require(len(fresh) <= 1, "AMBIGUOUS_RUN", "more than one new lolly.ing build appeared; bind one with deploy")
         gh.sleep(pause)
     raise Refusal("RUN_NOT_FOUND", "the dispatched lolly.ing build did not appear")
-
-
-def maintenance_approval(gh, run_id):
-    """Andy's approval of the maintenance environment in this same run (R20 S7), or None.
-    The node refuses a pending maintenance migration without one."""
-    approvals = gh.json(f"repos/{ANCHORS['repository']}/actions/runs/{int(run_id)}/approvals")
-    require(isinstance(approvals, list), "GITHUB_FAILED", "the run's approvals are unreadable")
-    for item in approvals:
-        if not isinstance(item, dict) or item.get("state") != "approved":
-            continue
-        names = [env.get("name") for env in item.get("environments") or [] if isinstance(env, dict)]
-        login = (item.get("user") or {}).get("login")
-        if ANCHORS["maintenanceEnvironment"] in names and login in A.ING_MAINTENANCE_APPROVERS:
-            return {"run": str(run_id), "approver": login, "environment": ANCHORS["maintenanceEnvironment"]}
-    return None
 
 
 def change_list(gh, live, new):
