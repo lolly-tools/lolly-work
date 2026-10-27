@@ -279,6 +279,54 @@ class Cohort(unittest.TestCase):
         for change in (lambda v: v["jobs"].pop(), lambda v: v["jobs"][0].update({"conclusion": "failure"}), lambda v: v["jobs"][1].update({"name": v["jobs"][0]["name"]}), lambda v: v["jobs"][0].update({"run_attempt": 2})):
             self.evidence["work"]["ciJobs"] = copy.deepcopy(original); self.patch(self.evidence["work"], "ciJobs", change); self.refused()
 
+    def lolly_ci(self, names):
+        run = self.runs["lolly"]
+        return {"total_count": len(names), "jobs": [{"id": i + 1, "run_id": run["id"], "run_attempt": 1, "head_sha": self.sources["lolly"], "name": name,
+                                                    "status": "completed", "conclusion": "success"} for i, name in enumerate(names)]}
+
+    def check_lolly_ci(self, names):
+        jobs = self.lolly_ci(names)
+        m.paired.jobs_record(jobs, self.runs["lolly"], allow_shell_skip=True, required_names=m.lolly_jobs(jobs))
+
+    def test_lolly_ci_accepts_four_and_eight_browser_partitions_by_the_run_shape(self):
+        four, eight = m.LOLLY_BASE_JOBS + m.lolly_browser_partitions(4), m.LOLLY_BASE_JOBS + m.lolly_browser_partitions(8)
+        self.assertEqual(m.LOLLY_JOBS, eight)
+        self.assertEqual(m.lolly_browser_partitions(4), tuple(f"test (browser {n}/4)" for n in range(1, 5)))
+        for names in (four, eight):
+            self.check_lolly_ci(names)
+            self.assertEqual(m.lolly_jobs(self.lolly_ci(names)), names)
+        # A run before lolly-tools/lolly#569 prepares end to end, as the eight-partition fixture does.
+        self.evidence["lolly"]["ciJobs"] = self.file("lolly-four-jobs", self.lolly_ci(four))
+        result, _ = self.prepare()
+        self.assertEqual(result["status"], m.STATUS)
+
+    def test_lolly_ci_missing_any_partition_of_its_shape_refuses(self):
+        for count in (8, 4):
+            names = m.LOLLY_BASE_JOBS + m.lolly_browser_partitions(count)
+            for missing in m.lolly_browser_partitions(count):
+                with self.assertRaisesRegex(m.Refusal, "Missing or duplicate required CI job"):
+                    self.check_lolly_ci([name for name in names if name != missing])
+        # No partitions listed at all is held to the eight-partition shape.
+        self.assertEqual(m.lolly_jobs(self.lolly_ci(m.LOLLY_BASE_JOBS)), m.LOLLY_JOBS)
+        with self.assertRaisesRegex(m.Refusal, "Missing or duplicate required CI job"):
+            self.check_lolly_ci(m.LOLLY_BASE_JOBS)
+        # A failed partition refuses in either shape, as any failed job does.
+        for count in (8, 4):
+            jobs = self.lolly_ci(m.LOLLY_BASE_JOBS + m.lolly_browser_partitions(count))
+            jobs["jobs"][-1]["conclusion"] = "failure"
+            with self.assertRaisesRegex(m.Refusal, "did not qualify"):
+                m.paired.jobs_record(jobs, self.runs["lolly"], allow_shell_skip=True, required_names=m.lolly_jobs(jobs))
+        # End to end: a run missing one of its eight partitions is refused.
+        self.evidence["lolly"]["ciJobs"] = self.file("lolly-seven-jobs", self.lolly_ci(m.LOLLY_JOBS[:-1]))
+        self.refused()
+
+    def test_lolly_ci_with_partitions_of_both_shapes_refuses(self):
+        mixed = m.LOLLY_BASE_JOBS + m.lolly_browser_partitions(8) + ("test (browser 1/4)",)
+        with self.assertRaisesRegex(m.Refusal, "more than one shape"):
+            self.check_lolly_ci(mixed)
+        self.evidence["lolly"]["ciJobs"] = self.file("lolly-mixed-jobs", self.lolly_ci(mixed))
+        self.refused()
+
     def test_bool_ci_attempt_refuses(self):
         self.patch(self.evidence["work"], "ciRun", lambda v: v.update({"run_attempt": True})); self.refused()
 
