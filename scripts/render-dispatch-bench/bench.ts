@@ -118,7 +118,7 @@ function restarts(): Record<string, number> {
     .map((p) => [p.metadata.name, (p.status.containerStatuses ?? []).reduce((n, c) => n + c.restartCount, 0)]));
 }
 
-interface RunRecord { corpus: string; workers: number; mode: string; load: Load; rate: number | null; jobs: number; summary: Record<string, Summary>; refused: number; metricsPeaks: Record<string, number>; metricsCounters: Record<string, number>; errorsSeen: Record<string, number>; restarts: Record<string, number> }
+interface RunRecord { corpus: string; slots?: number; workers: number; mode: string; load: Load; rate: number | null; jobs: number; summary: Record<string, Summary>; refused: number; metricsPeaks: Record<string, number>; metricsCounters: Record<string, number>; errorsSeen: Record<string, number>; restarts: Record<string, number> }
 const recordsFile = join(out, 'runs.json');
 const records: RunRecord[] = existsSync(recordsFile) ? JSON.parse(readFileSync(recordsFile, 'utf8')) : [];
 const save = () => writeFileSync(recordsFile, JSON.stringify(records, null, 2));
@@ -136,7 +136,7 @@ for (const workers of workerCounts) {
     say('warm-up');
     runPlan(`warm-${corpusName}-${mode}-${workers}`, Math.max(16, 2 * workers * slots), null, workImage);
     for (const load of loads) {
-      const same = (r: RunRecord) => r.corpus === corpusName && r.workers === workers;
+      const same = (r: RunRecord) => r.corpus === corpusName && r.workers === workers && (r.slots ?? 4) === slots;
       if (records.some((r) => same(r) && r.mode === mode && r.load === load)) { say(`skip ${corpusName}/${mode}/${workers}/${load}: recorded`); continue; }
       const pushSat = records.find((r) => same(r) && r.mode === 'push' && r.load === 'saturation');
       capacity = pushSat?.summary.all?.throughput ?? capacity;
@@ -145,10 +145,11 @@ for (const workers of workerCounts) {
       const count = load === 'saturation' ? Math.max(80, burstPerSlot * workers * slots) : load === 'medium' ? mediumJobs : lightJobs;
       psql('truncate renders cascade');
       say(`run ${corpusName}/${mode}/${workers}/${load}: ${count} renders${rate ? ` at ${rate}/s` : ' at once'}`);
-      const result = runPlan(`${corpusName}-${mode}-${workers}-${load}`, count, rate, workImage);
-      writeFileSync(join(out, `raw-${corpusName}-${mode}-${workers}-${load}.json`), JSON.stringify(result));
+      const tag = `${corpusName}-${mode}-${workers}${slots === 4 ? '' : `x${slots}`}-${load}`;
+      const result = runPlan(tag, count, rate, workImage);
+      writeFileSync(join(out, `raw-${tag}.json`), JSON.stringify(result));
       const summary = summariseByPool(result.rows);
-      records.push({ corpus: corpusName, workers, mode, load, rate, jobs: count, summary, refused: result.refused.length,
+      records.push({ corpus: corpusName, slots, workers, mode, load, rate, jobs: count, summary, refused: result.refused.length,
         metricsPeaks: result.metricsPeaks, metricsCounters: result.metricsCounters, errorsSeen: result.errorsSeen ?? {}, restarts: restarts() });
       save();
       const a = summary.all!;

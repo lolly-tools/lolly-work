@@ -36,7 +36,7 @@ test('percentiles are nearest-rank and summaries count only settled successes fo
     ({ id, pool, entry: 'e', state, attempt, createdAt: created, finishedAt: finished, errorCode });
   const rows = [row('a', 'tier-a', 0, 1000), row('b', 'tier-b', 0, 3000, 'succeeded', 2), row('c', 'tier-b', 1000, 2000, 'failed', 3, 'RENDER_BUSY')];
   const all = summarise(rows);
-  assert.deepEqual({ ...all }, { renders: 3, succeeded: 2, failed: 1, p50: 1, p95: 3, p99: 3, mean: 2, throughput: 0.667, retries: 3, errors: { RENDER_BUSY: 1 } });
+  assert.deepEqual({ ...all }, { renders: 3, succeeded: 2, failed: 1, p50: 1, p95: 3, p99: 3, mean: 2, throughput: 0.667, completion: 0.667, retries: 3, errors: { RENDER_BUSY: 1 } });
   assert.deepEqual(Object.keys(summariseByPool(rows)), ['all', 'tier-a', 'tier-b']);
 });
 

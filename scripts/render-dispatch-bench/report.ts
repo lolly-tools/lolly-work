@@ -8,24 +8,32 @@
  * D5 (plan 324): pull becomes the default only where it matches push at p50
  * under light load AND beats push on p95 and throughput under saturation.
  * "Matches" here means pull's p50 is no more than 10% (or 50 ms, whichever is
- * larger) above push's; "beats" means strictly better.
+ * larger) above push's; "beats" means strictly better. Throughput counts only
+ * renders that succeeded, over the time until every render settled, and a
+ * mode that completed fewer of the burst's renders cannot win on throughput:
+ * failing work fast is not throughput.
+ *
+ * Summaries are recomputed from the raw-*.json files beside runs.json when
+ * they are there, so a change to stats.ts applies to past runs too.
  */
-import { readFileSync } from 'node:fs';
-import type { Summary } from './stats.ts';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { summariseByPool, type RenderRow, type Summary } from './stats.ts';
 
-interface RunRecord { corpus: string; workers: number; mode: string; load: string; rate: number | null; jobs: number; summary: Record<string, Summary>; refused: number; restarts: Record<string, number> }
+interface RunRecord { corpus: string; slots?: number; workers: number; mode: string; load: string; rate: number | null; jobs: number; summary: Record<string, Summary>; refused: number; restarts: Record<string, number> }
 
 export function matches(pull: number | null, push: number | null): boolean {
   if (pull === null || push === null) return false;
   return pull <= push + Math.max(0.1 * push, 0.05);
 }
 
-export function d5(records: readonly RunRecord[], corpus: string, workers: number): { light: boolean | null; p95: boolean | null; throughput: boolean | null; verdict: string } {
-  const get = (mode: string, load: string) => records.find((r) => r.corpus === corpus && r.workers === workers && r.mode === mode && r.load === load)?.summary.all;
+export function d5(records: readonly RunRecord[], corpus: string, workers: number, slots = 4): { light: boolean | null; p95: boolean | null; throughput: boolean | null; verdict: string } {
+  const get = (mode: string, load: string) => records.find((r) => r.corpus === corpus && r.workers === workers && (r.slots ?? 4) === slots && r.mode === mode && r.load === load)?.summary.all;
   const lp = get('push', 'light'), ll = get('pull', 'light'), sp = get('push', 'saturation'), sl = get('pull', 'saturation');
   const light = lp && ll ? matches(ll.p50, lp.p50) : null;
   const p95 = sp && sl && sp.p95 !== null && sl.p95 !== null ? sl.p95 < sp.p95 : null;
-  const throughput = sp && sl && sp.throughput !== null && sl.throughput !== null ? sl.throughput > sp.throughput : null;
+  const throughput = sp && sl && sp.throughput !== null && sl.throughput !== null
+    ? sl.succeeded > sp.succeeded || (sl.succeeded === sp.succeeded && sl.throughput > sp.throughput) : null;
   const verdict = light === null || p95 === null || throughput === null ? 'incomplete'
     : light && p95 && throughput ? 'pull meets D5' : 'push stays';
   return { light, p95, throughput, verdict };
@@ -37,28 +45,39 @@ export function report(records: readonly RunRecord[]): string {
   const lines: string[] = [];
   for (const corpus of [...new Set(records.map((r) => r.corpus))]) {
     lines.push(`### Corpus: ${corpus}`, '');
-    lines.push('| Workers | Load | Mode | OK / renders | Throughput (/s) | p50 (s) | p95 (s) | p99 (s) | Retries | Failures | tier-a p50 / p95 | tier-b p50 / p95 |');
+    lines.push('| Workers x slots | Load | Mode | OK / renders | Throughput (ok/s) | p50 (s) | p95 (s) | p99 (s) | Retries | Failures | tier-a p50 / p95 | tier-b p50 / p95 |');
     lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
     const order = ['light', 'medium', 'saturation'];
     const rows = records.filter((r) => r.corpus === corpus)
-      .sort((a, b) => a.workers - b.workers || order.indexOf(a.load) - order.indexOf(b.load) || a.mode.localeCompare(b.mode));
+      .sort((a, b) => a.workers - b.workers || (a.slots ?? 4) - (b.slots ?? 4) || order.indexOf(a.load) - order.indexOf(b.load) || a.mode.localeCompare(b.mode));
     for (const r of rows) {
       const a = r.summary.all!, ta = r.summary['tier-a'], tb = r.summary['tier-b'];
       const failures = Object.entries(a.errors).map(([code, n]) => `${code} ${n}`).join(', ') || '0';
-      lines.push(`| ${r.workers} | ${r.load}${r.rate ? ` (${r.rate}/s)` : ''} | ${r.mode} | ${a.succeeded} / ${a.renders} | ${fmt(a.throughput)} | ${fmt(a.p50)} | ${fmt(a.p95)} | ${fmt(a.p99)} | ${a.retries} | ${failures} | ${ta ? `${fmt(ta.p50)} / ${fmt(ta.p95)}` : '-'} | ${tb ? `${fmt(tb.p50)} / ${fmt(tb.p95)}` : '-'} |`);
+      lines.push(`| ${r.workers} x ${r.slots ?? 4} | ${r.load}${r.rate ? ` (${r.rate}/s)` : ''} | ${r.mode} | ${a.succeeded} / ${a.renders} | ${fmt(a.throughput)} | ${fmt(a.p50)} | ${fmt(a.p95)} | ${fmt(a.p99)} | ${a.retries} | ${failures} | ${ta ? `${fmt(ta.p50)} / ${fmt(ta.p95)}` : '-'} | ${tb ? `${fmt(tb.p50)} / ${fmt(tb.p95)}` : '-'} |`);
     }
-    lines.push('', '| Workers | light p50 matches | saturation p95 better | saturation throughput better | D5 |', '|---|---|---|---|---|');
-    for (const workers of [...new Set(rows.map((r) => r.workers))]) {
-      const v = d5(records, corpus, workers);
+    lines.push('', '| Workers x slots | light p50 matches | saturation p95 better | saturation throughput better | D5 |', '|---|---|---|---|---|');
+    for (const key of [...new Set(rows.map((r) => `${r.workers}x${r.slots ?? 4}`))]) {
+      const [workers, slots] = key.split('x').map(Number) as [number, number];
+      const v = d5(records, corpus, workers, slots);
       const yn = (b: boolean | null) => (b === null ? '-' : b ? 'yes' : 'no');
-      lines.push(`| ${workers} | ${yn(v.light)} | ${yn(v.p95)} | ${yn(v.throughput)} | ${v.verdict} |`);
+      lines.push(`| ${workers} x ${slots} | ${yn(v.light)} | ${yn(v.p95)} | ${yn(v.throughput)} | ${v.verdict} |`);
     }
     lines.push('');
   }
   return lines.join('\n');
 }
 
+/** Re-summarise each run from its raw rows, when the raw file is beside runs.json. */
+export function refresh(records: RunRecord[], dir: string): RunRecord[] {
+  return records.map((r) => {
+    const slots = r.slots ?? 4;
+    const raw = join(dir, `raw-${r.corpus}-${r.mode}-${r.workers}${slots === 4 ? '' : `x${slots}`}-${r.load}.json`);
+    if (!existsSync(raw)) return r;
+    return { ...r, summary: summariseByPool((JSON.parse(readFileSync(raw, 'utf8')) as { rows: RenderRow[] }).rows) };
+  });
+}
+
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  const records = process.argv.slice(2).flatMap((file) => JSON.parse(readFileSync(file, 'utf8')) as RunRecord[]);
+  const records = process.argv.slice(2).flatMap((file) => refresh(JSON.parse(readFileSync(file, 'utf8')) as RunRecord[], dirname(file)));
   console.log(report(records));
 }

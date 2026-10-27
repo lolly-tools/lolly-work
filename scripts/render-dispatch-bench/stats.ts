@@ -11,8 +11,12 @@ export interface Summary {
   renders: number; succeeded: number; failed: number;
   /** Seconds from submission (row inserted) to settlement, succeeded renders only. */
   p50: number | null; p95: number | null; p99: number | null; mean: number | null;
-  /** Succeeded renders per second over the window from the first submission to the last settlement. */
+  /** Succeeded renders per second, over the window from the first submission
+   *  until every render settled (succeeded or failed). A render that fails
+   *  fast cannot shorten the window in its own favour beyond its settle time. */
   throughput: number | null;
+  /** Share of renders that succeeded. */
+  completion: number;
   /** Attempts beyond the first, across all renders: retries after RENDER_BUSY or a worker failure. */
   retries: number;
   /** Error codes of failed renders, and of retried attempts that were recorded. */
@@ -30,7 +34,8 @@ export function summarise(rows: readonly RenderRow[]): Summary {
   const done = rows.filter((r) => r.state === 'succeeded' && r.finishedAt !== null);
   const latencies = done.map((r) => (r.finishedAt! - r.createdAt) / 1000).sort((a, b) => a - b);
   const first = rows.length ? Math.min(...rows.map((r) => r.createdAt)) : 0;
-  const last = done.length ? Math.max(...done.map((r) => r.finishedAt!)) : 0;
+  const settled = rows.filter((r) => r.finishedAt !== null);
+  const last = settled.length ? Math.max(...settled.map((r) => r.finishedAt!)) : 0;
   const errors: Record<string, number> = {};
   for (const r of rows) if (r.errorCode) errors[r.errorCode] = (errors[r.errorCode] ?? 0) + 1;
   const round = (v: number | null, digits = 3) => (v === null ? null : Number(v.toFixed(digits)));
@@ -39,6 +44,7 @@ export function summarise(rows: readonly RenderRow[]): Summary {
     p50: round(percentile(latencies, 50)), p95: round(percentile(latencies, 95)), p99: round(percentile(latencies, 99)),
     mean: round(latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : null),
     throughput: round(done.length && last > first ? done.length / ((last - first) / 1000) : null),
+    completion: round(rows.length ? done.length / rows.length : 0)!,
     retries: rows.reduce((n, r) => n + Math.max(0, r.attempt - 1), 0),
     errors,
   };
