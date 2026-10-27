@@ -246,7 +246,7 @@ def main(argv: list[str]) -> int:
     if profile == "k3s":
         ok("SELinux is enforcing and K3s runs with selinux: true", "Enforcing" in facts and "selinux: true" in facts)
     else:
-        labels = guest.run("ps -eZ -o label,comm | grep -E 'container_t:s0:c(10,c11|20,c21|30,c31) ' | awk '{print $1}' | sort -u").stdout.split()
+        labels = guest.run("ps -e -o label,comm | grep -E 'container_t:s0:c(10,c11|20,c21|30,c31) ' | awk '{print $1}' | sort -u").stdout.split()
         ok("SELinux is enforcing and each Lolly container runs as container_t with its own categories",
            "Enforcing" in facts and {label.split(":", 4)[-1] for label in labels} >= {"c10,c11", "c20,c21", "c30,c31"}, " ".join(labels))
     ok("six credentials are stored as encrypted systemd credentials", len(re.findall(r"\.cred$", facts, re.M)) == 6, facts.strip().splitlines()[-1])
