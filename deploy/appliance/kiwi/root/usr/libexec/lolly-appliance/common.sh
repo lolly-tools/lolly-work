@@ -54,8 +54,8 @@ owner_email() {
   printf '%s' "$owner"
 }
 
-release_field() { # release_field work version
-  sed -n "/\"$1\"/,/}/s/.*\"$2\": \"\([^\"]*\)\".*/\1/p" "$RELEASE" | head -n 1
+release_field() { # release_field work version: a field of one object in release.json
+  sed -n "/^  \"$1\": {/,/^  }/s/.*\"$2\": \"\([^\"]*\)\".*/\1/p" "$RELEASE" | head -n 1
 }
 
 wait_for_api() {
