@@ -50,6 +50,14 @@ had relabelled runc `k3s_root_t`. If the signed
 SUSE package script did not activate its intact policy, inspect the error and
 explicitly load only `/usr/share/selinux/packages/k3s.pp` with `semodule -X 200 -i`
 while remaining Enforcing. Do not generate a permissive policy from denied calls.
+On a fresh non-transactional Leap 16.1 host, installing `container-selinux` and
+`k3s-selinux` in one zypper transaction left the `k3s` module unloaded (the
+zypper history shows `Failed to resolve typeattributeset statement`), and
+preflight refused the host. `zypper install --force k3s-selinux` after that
+transaction loaded the module from the same signed package. On the Immutable
+image, which ships `container-selinux`, the module loaded first time, so
+installing `container-selinux` in an earlier transaction should avoid the
+problem; that order has not been tested on its own.
 Staging applies `restorecon` only to the binary, generated service and K3s data
 tree, then checks labels and Enforcing again before any first start. The upstream
 installer's skipped RPM path also skips its executable labelling, so this
@@ -316,9 +324,21 @@ The upstream installer reaches the same end differently: it detects
 enabled to start at the next boot. The pinned installer commit predates that
 variant check, and this helper skips the installer's SELinux step entirely.
 
-Measured on 2026-10-27 (Leap 16.1 Immutable RC Build 3.13, aarch64 on a local
-Lima VM): see the qualification record in the pull request that added this
-section.
+Measured on 2026-10-27 on a fresh Leap 16.1 Immutable release candidate
+(Build 3.13, `Leap_immutable-release-16.1-lp161.12.1`), aarch64, 4 vCPU and
+8 GiB in a local Lima VM, with kernel 6.12.0-160100.8, `selinux-policy-targeted`
+20260826, `container-selinux` 2.250.0, `k3s-selinux` 1.4.stable.1-160100.2.1 and
+`transactional-update` 6.1.1. The first run took 45 seconds and left snapshot 2
+pending; a repeat before the reboot was refused. After the reboot the second run
+took 12 seconds. K3s was Ready, with CoreDNS rolled out, 46 seconds after
+`systemctl enable --now k3s`, with SELinux enforcing, no AVC denials and about
+1.1 GiB of memory in use. A third run refused the existing state. After
+`transactional-update run true` and a reboot into snapshot 3 the node was Ready
+again with its configuration and unit in place. The same day a non-transactional
+Leap 16.1 Minimal VM (aarch64, same kernel and policy packages) took the single
+run: install took 7 seconds, K3s was Ready 22 seconds after start with SELinux
+enforcing and no AVC denials, and a second run refused the existing state. No
+amd64 transactional host has been through the helper yet.
 
 ## Install reviewed releases with scoped credentials
 

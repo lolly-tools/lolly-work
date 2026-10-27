@@ -317,8 +317,9 @@ PY
 }
 
 # Enforcing hosts need the SUSE k3s-selinux policy loaded before K3s is staged.
-# A transactional host can only gain it in a new snapshot, so install stages it
-# there and stops for a reboot (POLICY_STAGE); other hosts must already have it.
+# A transactional host can only gain the package in a new snapshot, so install
+# stages the policy there and stops for a reboot (POLICY_STAGE). Other hosts must
+# already have the policy installed.
 selinux_preflight() {
   SELINUX=false POLICY_STAGE=false
   if command -v getenforce >/dev/null; then
