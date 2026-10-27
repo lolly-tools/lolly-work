@@ -1,22 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Lolly appliance: Lolly Work on openSUSE Leap 16.1 Immutable, k3s profile.
+  Lolly appliance: Lolly Work on openSUSE Leap 16.1 Immutable, with two
+  runtime profiles: k3s (the default) and podman (for smaller machines).
 
   Derived from openSUSE's Leap 16.1 Immutable description (the Base flavour:
   https://src.opensuse.org/pool/Leap_immutable, branch leap-16.1-images,
   MIT licence, see ../LICENSE.kiwi). The base is kept: read-only btrfs root
   snapshots, transactional-update, health-checker, rebootmgr, SELinux
-  enforcing, Combustion and Ignition. Added: K3s and k3s-selinux, Lolly Work
-  and PostgreSQL preloaded, Cockpit with cockpit-tukit, the Lolly first-boot
-  services and a small config partition (label "ignition") that Combustion and
-  Ignition read at first boot. Removed: jeos-firstboot (the appliance boots
-  unattended), cloud-init, ModemManager, usbguard.
+  enforcing, Combustion and Ignition. Added: Lolly Work and PostgreSQL
+  preloaded, Cockpit with cockpit-tukit, cosign and the updater (lolly-update)
+  with its health-checker plugin, the Lolly first-boot services and a small
+  config partition (label "ignition") that Combustion and Ignition read at
+  first boot. The k3s profile adds K3s and k3s-selinux; the podman profile adds
+  Caddy as preloaded image, Quadlet units and cockpit-podman. Removed:
+  jeos-firstboot (the appliance boots unattended), cloud-init, ModemManager,
+  usbguard.
 
-  Build with deploy/appliance/build.sh, which generates the K3s manifests from
-  deploy/marketplaces/release.json, sets <version> to that release's Lolly
-  version (@LOLLY_VERSION@ below), fetches and verifies the pinned K3s,
-  k3s-selinux and image archives, and runs kiwi-ng. One build gives a raw disk
-  (to write to a disk or import into a cloud) and a qcow2 of the same disk.
+  Build with deploy/appliance/build.sh (profile k3s or podman), which generates
+  the K3s manifests or the Quadlet units from deploy/marketplaces/release.json,
+  sets <version> to that release's Lolly version (@LOLLY_VERSION@ below),
+  fetches and verifies the pinned K3s, k3s-selinux and image archives, and runs
+  kiwi-ng. One build gives a raw disk (to write to a disk or import into a
+  cloud) and a qcow2 of the same disk.
 
   OBS: replace the two repositories with <source path="obsrepositories:/"/> and
   provide k3s-selinux from a project; the rest builds unchanged.
@@ -25,7 +30,7 @@
     <description type="system">
         <author>Lolly Work</author>
         <contact>https://github.com/lolly-tools/lolly-work</contact>
-        <specification>Lolly Work appliance on openSUSE Leap 16.1 Immutable, k3s profile</specification>
+        <specification>Lolly Work appliance on openSUSE Leap 16.1 Immutable, k3s and podman profiles</specification>
     </description>
     <profiles>
         <profile name="platform-x86_64" description="UEFI disk for x86_64" arch="x86_64"/>
@@ -34,6 +39,12 @@
             <requires profile="platform-x86_64"/>
         </profile>
         <profile name="k3s" description="Lolly Work on K3s, aarch64" arch="aarch64">
+            <requires profile="platform-aarch64"/>
+        </profile>
+        <profile name="podman" description="Lolly Work on Podman with Quadlet, x86_64" arch="x86_64">
+            <requires profile="platform-x86_64"/>
+        </profile>
+        <profile name="podman" description="Lolly Work on Podman with Quadlet, aarch64" arch="aarch64">
             <requires profile="platform-aarch64"/>
         </profile>
     </profiles>
@@ -171,14 +182,22 @@
         <package name="zypp-excludedocs"/>
         <package name="zypp-no-multiversion"/>
         <package name="zypp-no-recommends"/>
-        <!-- k3s profile -->
-        <package name="k3s-selinux"/>
+        <!-- Lolly appliance, both profiles -->
         <package name="container-selinux"/>
         <package name="openssl"/>
         <package name="curl"/>
         <package name="tpm2.0-tools"/>
         <package name="cockpit"/>
         <package name="cockpit-tukit"/>
+        <!-- lolly-update: verifies releases keylessly with cosign -->
+        <package name="cosign"/>
+        <package name="python3-base"/>
+    </packages>
+    <packages type="image" profiles="k3s">
+        <package name="k3s-selinux"/>
+    </packages>
+    <packages type="image" profiles="podman">
+        <package name="cockpit-podman"/>
     </packages>
     <packages type="image" profiles="platform-x86_64">
         <package name="grub2-x86_64-efi"/>

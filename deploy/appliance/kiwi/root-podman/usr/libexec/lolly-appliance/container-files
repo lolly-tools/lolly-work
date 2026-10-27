@@ -1,0 +1,68 @@
+#!/bin/bash
+# SPDX-License-Identifier: MPL-2.0
+# Hand one Lolly container the files it reads as it starts, on a tmpfs.
+#
+#   container-files NAME         (ExecStartPre of lolly-NAME.service)
+#   container-files clean NAME   (ExecStopPost)
+#
+# NAME is postgres, work or caddy. systemd decrypts this machine's credentials
+# (TPM2-bound where the machine has a TPM) for the unit alone, into
+# $CREDENTIALS_DIRECTORY; this writes the ones the container needs into
+# /run/lolly/containers/NAME, owned by the container's user, readable by
+# nobody else, and labelled for that container's SELinux category pair, which
+# the unit fixes with SecurityLabelLevel. The unit bind-mounts the directory
+# read-only at /run/lolly. /run is a tmpfs, so no secret reaches the disk.
+# Podman's own secrets are not used: podman writes their values into
+# container storage under /var.
+set -euo pipefail
+. /usr/libexec/lolly-appliance/common.sh
+umask 077
+
+clean=0
+if [ "${1:-}" = clean ]; then clean=1; shift; fi
+name=${1:-}
+case $name in
+  postgres) uid=999; level=s0:c10,c11 ;;
+  work) uid=1000; level=s0:c20,c21 ;;
+  caddy) uid=65534; level=s0:c30,c31 ;;
+  *) echo "usage: container-files [clean] postgres|work|caddy" >&2; exit 2 ;;
+esac
+dir=/run/lolly/containers/$name
+if [ $clean = 1 ]; then
+  rm -rf "$dir"
+  exit 0
+fi
+: "${CREDENTIALS_DIRECTORY:?run through lolly-$name.service}"
+c=$CREDENTIALS_DIRECTORY
+
+put() { # put SOURCE TARGET: a private copy
+  install -m 0400 "$1" "$2"
+}
+
+install -d -m 0755 /run/lolly
+install -d -m 0711 /run/lolly/containers
+rm -rf "$dir"
+install -d -m 0700 "$dir"
+case $name in
+  postgres)
+    put "$c/lolly-postgres-password" "$dir/POSTGRES_PASSWORD"
+    ;;
+  work)
+    install -d -m 0700 "$dir/env"
+    printf 'postgres://lolly:%s@lolly-postgres:5432/lollywork' "$(cat "$c/lolly-postgres-password")" > "$dir/env/DATABASE_URL"
+    put "$c/lolly-session-secret" "$dir/env/LW_SESSION_SECRET"
+    put "$c/lolly-link-secret" "$dir/env/LW_LINK_SECRET"
+    put "$c/lolly-credential-secret" "$dir/env/LW_CREDENTIAL_SECRET"
+    put "$c/lolly-catalog-signing-key" "$dir/env/LW_CATALOG_SIGNING_KEY"
+    [ -s "$WORK_INSTANCE" ] || { log "$WORK_INSTANCE is missing; lolly-appliance-instance.service writes it"; exit 1; }
+    put "$WORK_INSTANCE" "$dir/instance.json"
+    ;;
+  caddy)
+    put "$TLS_DIR/appliance.crt" "$dir/appliance.crt"
+    put "$c/lolly-tls-key" "$dir/appliance.key"
+    put /usr/share/lolly-appliance/podman/Caddyfile "$dir/Caddyfile"
+    ;;
+esac
+chown -R "$uid:$uid" "$dir"
+chmod -R u=rX,go= "$dir"
+chcon -R -u system_u -r object_r -t container_file_t -l "$level" "$dir"

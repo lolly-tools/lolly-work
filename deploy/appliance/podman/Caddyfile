@@ -1,0 +1,28 @@
+# Caddy for the Lolly appliance's podman profile.
+#
+# HTTPS with this machine's own self-signed certificate (made at first boot;
+# its key is a systemd credential), for any name or address the machine is
+# reached by. A client that sends no server name, as when it uses the IP
+# address, gets the same certificate. Plain HTTP only redirects. No admin
+# endpoint, no automatic certificates and no saved configuration.
+{
+	admin off
+	persist_config off
+	auto_https off
+	http_port 8080
+	https_port 8443
+	default_sni lolly.local
+	servers {
+		# Only TCP 443 is published, so do not advertise HTTP/3.
+		protocols h1 h2
+	}
+}
+
+https:// {
+	tls /run/lolly/appliance.crt /run/lolly/appliance.key
+	reverse_proxy lolly-work:8787
+}
+
+http:// {
+	redir https://{host}{uri} permanent
+}

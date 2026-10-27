@@ -1,0 +1,12 @@
+# Works out the MTU for the Lolly container network (lolly.network) at each
+# boot, from the interface this machine reaches the outside world through.
+[Unit]
+Description=Lolly appliance: the container network's MTU
+Wants=network-online.target
+After=network-online.target
+Before=lolly-network.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/lolly-appliance/network

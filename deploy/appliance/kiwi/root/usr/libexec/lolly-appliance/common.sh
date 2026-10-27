@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: MPL-2.0
 # Shared settings and helpers for the Lolly appliance's first-boot and console
-# services. Sourced, never run.
+# services, for both runtime profiles (k3s and podman). Sourced, never run.
 
 CONF=/etc/lolly/appliance.conf
 STATE_DIR=/var/lib/lolly
 CRED_DIR=$STATE_DIR/credentials
 TLS_DIR=$STATE_DIR/tls
 INSTANCE_ENV=$STATE_DIR/instance.env
-MANIFESTS=/var/lib/rancher/k3s/server/manifests
-INSTANCE_MANIFEST=$MANIFESTS/lolly-work-instance.yaml
 RELEASE=/usr/share/lolly-appliance/release.json
-KUBECTL=(/usr/local/bin/k3s kubectl)
+UPDATE_STATE=$STATE_DIR/update/state.json
 DEFAULT_OWNER=owner@lolly.local
 EMAIL_RE='^[a-z0-9._%+-]+@[a-z0-9.-]+$'
 # Local networks that may reach Cockpit (port 9090).
@@ -18,6 +16,22 @@ COCKPIT_SOURCES_V4="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16"
 COCKPIT_SOURCES_V6="fc00::/7 fe80::/10"
 # The credentials this machine creates at first boot (systemd-creds names).
 CREDENTIALS="lolly-session-secret lolly-link-secret lolly-credential-secret lolly-postgres-password lolly-catalog-signing-key lolly-tls-key"
+
+# The runtime profile this image was built with: k3s or podman.
+PROFILE=$(sed -n 's/^  "profile": "\([a-z0-9]*\)",$/\1/p' "$RELEASE" 2>/dev/null | head -n 1)
+PROFILE=${PROFILE:-k3s}
+
+# k3s profile
+MANIFESTS=/var/lib/rancher/k3s/server/manifests
+INSTANCE_MANIFEST=$MANIFESTS/lolly-work-instance.yaml
+KUBECTL=(/usr/local/bin/k3s kubectl)
+# podman profile
+QUADLET_DIR=$STATE_DIR/quadlet
+WORK_CONFIG=/usr/share/lolly-appliance/work-config.json
+WORK_INSTANCE=$STATE_DIR/work/instance.json
+# Read inside Work's container: its secrets, one file per variable, into the
+# environment of the command that follows (container-files writes them).
+WORK_ENV='for f in /run/lolly/env/*; do export "${f##*/}=$(cat "$f")"; done'
 
 log() { echo "lolly-appliance: $*" >&2; }
 
@@ -40,8 +54,10 @@ primary_ipv4() {
   printf '%s' "$ip"
 }
 
+# This machine's IPv4 addresses, without K3s's pod and service networks or the
+# podman profile's container network.
 all_ipv4() {
-  ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -v '^10\.4[23]\.' || true
+  ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -v -e '^10\.4[23]\.' -e '^10\.89\.0\.' || true
 }
 
 owner_email() {
@@ -58,6 +74,16 @@ release_field() { # release_field work version: a field of one object in release
   sed -n "/^  \"$1\": {/,/^  }/s/.*\"$2\": \"\([^\"]*\)\".*/\1/p" "$RELEASE" | head -n 1
 }
 
+# The Lolly Work release running now: lolly-update's record once it has
+# changed anything, otherwise the release this image was built with.
+installed_version() {
+  local version=
+  if [ -r "$UPDATE_STATE" ]; then
+    version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["installed"]["version"])' "$UPDATE_STATE" 2>/dev/null || true)
+  fi
+  printf '%s' "${version:-$(release_field work version)}"
+}
+
 wait_for_api() {
   local deadline=$((SECONDS + ${1:-600}))
   until "${KUBECTL[@]}" get --raw=/readyz >/dev/null 2>&1; do
@@ -66,33 +92,55 @@ wait_for_api() {
   done
 }
 
-instance_get() { # instance_get KEY: a value the instance service worked out at boot
-  [ -r "$INSTANCE_ENV" ] && sed -n "s/^$1=//p" "$INSTANCE_ENV" | tail -n 1
+instance_get() { # instance_get KEY: a value the instance service worked out at boot (empty before)
+  [ -r "$INSTANCE_ENV" ] || return 0
+  sed -n "s/^$1=//p" "$INSTANCE_ENV" | tail -n 1
 }
 
-# Lolly Work answers /readyz with 200 through Traefik on this machine.
+# Lolly Work answers /readyz with 200 through this machine's HTTPS front
+# (Traefik on k3s, Caddy on podman).
 work_ready() {
   [ "$(curl -sk -o /dev/null -m 5 -w '%{http_code}' https://127.0.0.1/readyz 2>/dev/null)" = 200 ]
+}
+
+# work_exec CMD...: run a command in the Lolly Work server container, with the
+# same environment the server has.
+work_exec() {
+  if [ "$PROFILE" = podman ]; then
+    podman exec lolly-work /bin/sh -ec "$WORK_ENV; exec \"\$@\"" sh "$@"
+  else
+    local pod
+    # The Work pod itself: the deployment's selector also matches its migration Job.
+    pod=$("${KUBECTL[@]}" -n lolly get pod -o name --field-selector=status.phase=Running \
+      -l app.kubernetes.io/instance=lolly-work,app.kubernetes.io/component=control-plane 2>/dev/null | head -n 1)
+    [ -n "$pod" ] || { log "no running Lolly Work pod"; return 1; }
+    "${KUBECTL[@]}" -n lolly exec "$pod" -c server -- "$@"
+  fi
+}
+
+# psql_exec ARGS...: psql as the lolly user on the lollywork database, inside
+# the PostgreSQL container (local socket).
+psql_exec() {
+  if [ "$PROFILE" = podman ]; then
+    podman exec lolly-postgres psql -U lolly -d lollywork "$@"
+  else
+    "${KUBECTL[@]}" -n lolly exec lolly-postgres-0 -c postgres -- psql -U lolly -d lollywork "$@"
+  fi
 }
 
 # Whether the owner address already has a password (the setup link was used).
 owner_has_password() {
   local owner=$1 count
   [[ $owner =~ $EMAIL_RE ]] || return 1
-  count=$("${KUBECTL[@]}" -n lolly exec lolly-postgres-0 -c postgres -- \
-    psql -U lolly -d lollywork -tAc "select count(*) from password_credentials where email = '$owner'" 2>/dev/null || true)
+  count=$(psql_exec -tAc "select count(*) from password_credentials where email = '$owner'" 2>/dev/null || true)
   [ "${count//[[:space:]]/}" = 1 ]
 }
 
 # Print a fresh one-time owner setup link (Work's scripts/password-link.ts).
 # It works once, for seven days, and replaces any earlier unused link.
 issue_owner_link() {
-  local owner=$1 out pod
-  # The Work pod itself: the deployment's selector also matches its migration Job.
-  pod=$("${KUBECTL[@]}" -n lolly get pod -o name --field-selector=status.phase=Running \
-    -l app.kubernetes.io/instance=lolly-work,app.kubernetes.io/component=control-plane 2>/dev/null | head -n 1)
-  [ -n "$pod" ] || { log "no running Lolly Work pod"; return 1; }
-  out=$("${KUBECTL[@]}" -n lolly exec "$pod" -c server -- node scripts/password-link.ts --email "$owner" 2>&1) || {
+  local owner=$1 out
+  out=$(work_exec node scripts/password-link.ts --email "$owner" 2>&1) || {
     log "password-link failed: $(printf '%s' "$out" | tail -n 1)"; return 1; }
   printf '%s\n' "$out" | grep -o 'https://[^[:space:]]*' | head -n 1
 }

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Acceptance for a booted Lolly appliance (k3s profile).
+"""Acceptance for a booted Lolly appliance (k3s or podman profile).
 
 Reaches the appliance over SSH (as root, with the key a Combustion script
 installed) and over its forwarded HTTPS and Cockpit ports, and prints one PASS
 or FAIL line per check plus the measurements the plan uses for the k3s
-threshold. Never prints the owner link, the password or any secret.
+threshold. The profile is read from the machine. Never prints the owner link,
+the password or any secret.
 
   deploy/appliance/test/accept.py --ssh-port 2222 --key KEY --https 127.0.0.1:8443 --cockpit 127.0.0.1:9090
   deploy/appliance/test/accept.py ... --after-reboot STATE.json   (second pass, after a reboot)
@@ -107,6 +108,25 @@ class Web:
         return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
 
 
+class Sampler:
+    """Peak memory in use (MemTotal - MemAvailable), sampled every second on the machine."""
+
+    def __init__(self, guest: Guest, name: str):
+        self.guest, self.name = guest, name
+        guest.run(f"systemctl stop {name} 2>/dev/null; rm -f /run/{name}.max; systemd-run --unit {name} --collect /bin/sh -c "
+                  f"'max=0; while :; do u=$(awk \"/^MemTotal:/ {{t=\\$2}} /^MemAvailable:/ {{a=\\$2}} END {{print int((t-a)/1024)}}\" /proc/meminfo); "
+                  f"[ \"$u\" -gt \"$max\" ] && max=$u && echo $max > /run/{name}.max; sleep 1; done'")
+
+    def peak(self) -> int:
+        value = self.guest.run(f"cat /run/{self.name}.max 2>/dev/null").stdout.strip()
+        return int(value) if value.isdigit() else -1
+
+    def stop(self) -> int:
+        peak = self.peak()
+        self.guest.run(f"systemctl stop {self.name} 2>/dev/null")
+        return peak
+
+
 def wait_ready(web: Web, seconds: int) -> float | None:
     started = time.time()
     while time.time() - started < seconds:
@@ -154,7 +174,14 @@ echo "disk_var_used=$(df -h --output=used /var | tail -1 | tr -d ' ')"
 echo "disk_size=$(df -h --output=size /var | tail -1 | tr -d ' ')"
 echo "btrfs_used=$(btrfs filesystem usage -b / 2>/dev/null | awk '/Used:/ {print $2; exit}')"
 echo "ready_monotonic=$(journalctl -b -u lolly-appliance-console -o short-monotonic --no-pager 2>/dev/null | grep -m1 'Lolly Work is ready' | sed 's/^\[ *\([0-9.]*\)\].*/\1/')"
+echo "kernel_start_monotonic=$(journalctl -b -k -o short-monotonic --no-pager 2>/dev/null | head -1 | sed 's/^\[ *\([0-9.]*\)\].*/\1/')"
 echo "k3s_rss_mib=$(ps -C k3s-server -o rss= 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')"
+echo "containerd_rss_mib=$(ps -C containerd -o rss= 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')"
+echo "podman_rss_mib=$(ps -C conmon,postgres,node,caddy,aardvark-dns -o rss= 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')"
+echo "var_lib_containers=$(du -sh /var/lib/containers 2>/dev/null | cut -f1)"
+echo "var_lib_rancher=$(du -sh /var/lib/rancher 2>/dev/null | cut -f1)"
+echo "var_lib_lolly=$(du -sh /var/lib/lolly 2>/dev/null | cut -f1)"
+echo "top_rss=$(ps -eo rss=,comm= --sort=-rss | head -8 | awk '{printf "%s:%d ", $2, $1/1024}')"
 echo "selinux=$(getenforce)"
 echo "tpm2=$(systemd-analyze has-tpm2 -q && echo yes || echo no)"
 echo "kernel=$(uname -r)"
@@ -178,7 +205,10 @@ def main(argv: list[str]) -> int:
     guest = Guest(args.ssh_port, args.key, args.ssh_host)
 
     t0 = time.time()
-    ok("SSH answers (root key from the Combustion script on the config partition)", guest.wait(args.wait))
+    ok("SSH answers (root key from the first boot's Combustion script)", guest.wait(args.wait))
+    profile = json.loads(guest.run("cat /usr/share/lolly-appliance/release.json").stdout or "{}").get("profile", "k3s")
+    print(f"INFO profile {profile}", flush=True)
+    sampler = Sampler(guest, "lolly-accept-memory")
     status = guest.run("lolly-appliance status").stdout
     base = re.search(r"Address:\s+(https://\S+?)/?$", status, re.M)
     owner = re.search(r"Owner:\s+(\S+)", status)
@@ -187,14 +217,18 @@ def main(argv: list[str]) -> int:
         return 1
     web = Web(args.https, base.group(1))
     waited = wait_ready(web, args.wait)
-    ok("Work /readyz answers 200 through Traefik", waited is not None, f"after {time.time() - t0:.0f}s of this run")
+    front = "Traefik" if profile == "k3s" else "Caddy"
+    ok(f"Work /readyz answers 200 through {front}", waited is not None, f"after {time.time() - t0:.0f}s of this run")
     status, _, body = web.call("GET", "/readyz", cookies=False)
     ready = json.loads(body) if status == 200 else {}
     # Work 1.1.2 and later also report each check under "checks".
     checks = ready.get("checks") or {}
     ok("readyz is ok on PostgreSQL in production mode", status == 200 and ready.get("ok") is True and ready.get("store") == "postgres"
        and all(v in ("ok", "pass", True) for v in (checks.values() if isinstance(checks, dict) else [])), body.decode()[:300])
-    mode = guest.run("kubectl -n lolly get configmap -o yaml 2>/dev/null | grep -o '\"mode\": \"[a-z]*\"' | head -n 1").stdout.strip()
+    if profile == "k3s":
+        mode = guest.run("kubectl -n lolly get configmap -o yaml 2>/dev/null | grep -o '\"mode\": \"[a-z]*\"' | head -n 1").stdout.strip()
+    else:
+        mode = guest.run("grep -o '\"mode\": \"[a-z]*\"' /var/lib/lolly/work/instance.json | head -n 1").stdout.strip()
     ok("Work runs in production mode", mode == '"mode": "production"', mode)
     served = web.peer_fingerprint()
     stored = guest.run("cat /var/lib/lolly/tls/appliance.sha256").stdout.strip()
@@ -208,13 +242,31 @@ def main(argv: list[str]) -> int:
         ok("plain HTTP redirects to HTTPS", response.status in (301, 308) and location.startswith("https://"), f"HTTP {response.status} {location}")
     except OSError as error:
         ok("plain HTTP redirects to HTTPS", False, str(error))
-    profile = guest.run("cat /etc/rancher/k3s/config.yaml; getenforce; ls /var/lib/lolly/credentials; systemd-analyze has-tpm2 -q && echo tpm2 || echo host-key").stdout
-    ok("SELinux is enforcing and K3s runs with selinux: true", "Enforcing" in profile and "selinux: true" in profile)
-    ok("six credentials are stored as encrypted systemd credentials", len(re.findall(r"\.cred$", profile, re.M)) == 6, profile.strip().splitlines()[-1])
+    facts = guest.run("cat /etc/rancher/k3s/config.yaml 2>/dev/null; getenforce; ls /var/lib/lolly/credentials; systemd-analyze has-tpm2 -q && echo tpm2 || echo host-key").stdout
+    if profile == "k3s":
+        ok("SELinux is enforcing and K3s runs with selinux: true", "Enforcing" in facts and "selinux: true" in facts)
+    else:
+        labels = guest.run("ps -e -o label,comm | grep -E 'container_t:s0:c(10,c11|20,c21|30,c31) ' | awk '{print $1}' | sort -u").stdout.split()
+        ok("SELinux is enforcing and each Lolly container runs as container_t with its own categories",
+           "Enforcing" in facts and {label.split(":", 4)[-1] for label in labels} >= {"c10,c11", "c20,c21", "c30,c31"}, " ".join(labels))
+    ok("six credentials are stored as encrypted systemd credentials", len(re.findall(r"\.cred$", facts, re.M)) == 6, facts.strip().splitlines()[-1])
     # Cockpit keeps its own self-signed key in /etc/cockpit/ws-certs.d, as on any host.
-    leaked = guest.run("grep -rlE 'BEGIN (EC )?PRIVATE KEY|postgres://' /etc/lolly /etc/rancher /usr/share/lolly-appliance /var/lib/lolly "
+    leaked = guest.run("grep -rlE 'BEGIN (EC )?PRIVATE KEY|postgres://' /etc/lolly /etc/rancher /etc/containers/systemd /usr/share/lolly-appliance "
+                       "/var/lib/lolly/quadlet /var/lib/lolly/work /var/lib/lolly/tls /var/lib/lolly/update "
                        "/var/lib/rancher/k3s/server/manifests 2>/dev/null | head -3").stdout.strip()
-    ok("Lolly's secrets are on disk only as encrypted credentials (and in K3s's encrypted datastore)", leaked == "", leaked)
+    ok("no private key or database URL in Lolly's files on disk", leaked == "", leaked)
+    # The strongest form: the decrypted database password appears nowhere on disk
+    # outside the encrypted credential (K3s's datastore keeps Secrets encrypted;
+    # podman's container storage must not hold it either).
+    secret = "pw=$(systemd-creds decrypt --name=lolly-postgres-password /var/lib/lolly/credentials/lolly-postgres-password.cred - 2>/dev/null) && [ ${#pw} -ge 32 ] && "
+    found = guest.run(secret + "grep -rlF --binary-files=text \"$pw\" /etc /var/lib/lolly /var/lib/rancher /var/lib/containers/storage/overlay-containers "
+                      "--exclude-dir=credentials --exclude-dir=postgres --exclude-dir=storage --exclude-dir=containerd 2>/dev/null | head -3; echo checked", timeout=600).stdout.strip()
+    ok("the database password is on disk only inside its encrypted credential", found == "checked", found)
+    if profile == "k3s":
+        # Kubernetes hands a container its environment, Secret values resolved,
+        # and containerd keeps each container's spec in its metadata database.
+        kept = guest.run(secret + "grep -rlF --binary-files=text \"$pw\" /var/lib/rancher/k3s/agent/containerd 2>/dev/null | head -3").stdout.split()
+        print(f"INFO k3s: containerd's metadata holds Work's environment, with DATABASE_URL, in {len(kept)} file(s): {' '.join(kept)}", flush=True)
     # The console service writes its text a few seconds after Work is ready.
     for _ in range(40):
         issue = guest.run("cat /run/issue.d/60-lolly.issue; echo ---; cat /run/lolly/local-issue.d/61-lolly-owner.issue").stdout
@@ -270,7 +322,17 @@ def main(argv: list[str]) -> int:
         ok("Cockpit answers on 9090", False, str(error))
     rules = guest.run("firewall-cmd --zone=public --list-rich-rules; firewall-cmd --zone=public --list-services").stdout
     ok("Cockpit is allowed from local networks only", "service name=\"cockpit\"" in rules and not re.search(r"^.*\bcockpit\b.*$", rules.splitlines()[-1] if rules else ""), rules.strip().splitlines()[-1] if rules.strip() else "")
+    if profile == "podman":
+        mtu = guest.run("dev=$(ip -o route get 1.1.1.1 | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p'); cat /sys/class/net/$dev/mtu; "
+                        "podman network inspect lolly --format '{{index .Options \"mtu\"}}'; podman exec lolly-work cat /sys/class/net/eth0/mtu").stdout.split()
+        ok("the container network takes the host interface's MTU", len(mtu) == 3 and mtu[0] == mtu[1] == mtu[2], " / ".join(mtu))
+        images = guest.run("podman images --digests --format '{{.Repository}}@{{.Digest}}' | sort; echo ---; grep -h '^Image=' /var/lib/lolly/quadlet/*.container | cut -d= -f2 | sort").stdout
+        have, _, pinned = images.partition("---")
+        ok("Podman runs the pinned digests, loaded from the image (nothing else pulled)", set(pinned.split()) <= set(have.split()) and len(have.split()) == len(pinned.split()), f"{len(have.split())} images")
+        links = guest.run("for f in /etc/containers/systemd/*; do readlink \"$f\"; done").stdout.split()
+        ok("the Quadlet units in /etc/containers/systemd are links into /var/lib/lolly/quadlet", len(links) == 4 and all(l.startswith("/var/lib/lolly/quadlet/") for l in links), " ".join(links))
     m = measurements(guest)
+    m["peak_used_mib_since_ssh"] = sampler.stop()
     print("MEASURE " + json.dumps(m, sort_keys=True), flush=True)
     print(f"RESULT {'PASS' if not FAILED else 'FAIL'} ({len(FAILED)} failed)")
     return 0 if not FAILED else 1

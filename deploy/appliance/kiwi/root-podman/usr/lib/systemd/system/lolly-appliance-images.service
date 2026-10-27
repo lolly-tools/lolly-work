@@ -1,0 +1,14 @@
+# Loads the release images the appliance image carries into Podman's storage.
+[Unit]
+Description=Lolly appliance: load the release's container images
+After=local-fs.target
+Before=lolly-postgres.service lolly-work.service lolly-caddy.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/lolly-appliance/images
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

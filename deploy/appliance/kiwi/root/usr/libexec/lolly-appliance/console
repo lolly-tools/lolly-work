@@ -14,13 +14,18 @@ PUBLIC=/run/issue.d/60-lolly.issue
 LOCAL_DIR=/run/lolly/local-issue.d
 LOCAL=$LOCAL_DIR/61-lolly-owner.issue
 install -d -m 0755 /run/issue.d
-install -d -m 0700 /run/lolly "$LOCAL_DIR"
+install -d -m 0755 /run/lolly
+install -d -m 0700 "$LOCAL_DIR"
 
 base=$(instance_get LOLLY_BASE_URL)
 owner=$(instance_get LOLLY_OWNER_EMAIL)
 fingerprint=$(cat "$TLS_DIR/appliance.sha256" 2>/dev/null || echo unknown)
-work=$(release_field work version)
-k3s=$(release_field k3s version)
+work=$(installed_version)
+if [ "$PROFILE" = podman ]; then
+  runtime="Podman $(podman --version 2>/dev/null | awk '{print $3}')"
+else
+  runtime="K3s $(release_field k3s version)"
+fi
 cockpit_host=${base#https://}; cockpit_host=${cockpit_host%%:*}
 
 reload() { agetty --reload 2>/dev/null || true; }
@@ -31,7 +36,7 @@ public() { # public STATUS
   umask 022
   cat > "$PUBLIC.new" <<EOF
 
-  Lolly Work $work appliance (openSUSE Leap 16.1 Immutable, K3s $k3s)
+  Lolly Work $work appliance (openSUSE Leap 16.1 Immutable, $runtime)
   Lolly Work:   $base/   $1
   Certificate:  self-signed for this machine, SHA-256
                 $fingerprint

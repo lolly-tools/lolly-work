@@ -20,42 +20,34 @@ image:
 
 existingSecret: lolly-work-secrets
 
-config:
-  deployment:
-    mode: production
-    application: api
-    requireServerRendering: false
-  instance:
-    name: "Lolly Work"
-    # Replaced at first boot by the machine's own HTTPS address.
-    baseUrl: "https://lolly.invalid"
-    # The demo pack inside the server image. It is unsigned, so production
-    # mode needs an operator-provisioned publication generation.
-    pack: /app/packs/demo
-    catalogPublicationGeneration: 1
-  idp:
-    issuer: ""
-    clientId: ""
-    additional:
-      - { id: email, kind: password, label: "Email and password" }
-    # The owner's address is written at first boot.
-    admission: { emails: [], invitations: true }
-    bootstrapOwners: []
-    roleGroups: { owner: [lolly-owner], admin: [], approver: [], author: [] }
-  policy:
-    defaultAccessMode: gated
-    telemetry: "off"
-    telemetryAttribution: opt-in
-    guestLinks: { enabled: false }
-    sessionTtlHours: 12
-  render:
-    # The demo pack ships inside the image and is curated, the case this
-    # setting exists for. There is no render worker on the appliance yet.
-    allowHooksInFastPath: true
-  rateLimit:
-    enabled: true
-    # Traefik is the one proxy in front of Work.
-    trustedProxyHops: 1
+# K3s's network policy controller admits a new pod to PostgreSQL (the
+# lolly-postgres NetworkPolicy) a moment after the pod starts, and the
+# migration Job connects at once, so every attempt was refused. It now waits
+# up to 90 s for the database port, then migrates as the chart's default does.
+migrate:
+  command:
+    - sh
+    - -ec
+    - |
+      node -e '
+      const target = new URL(process.env.DATABASE_URL), net = require("node:net");
+      let tries = 0;
+      (function attempt() {
+        const socket = net.connect(Number(target.port) || 5432, target.hostname, () => { socket.end(); process.exit(0); });
+        socket.on("error", () => { if (++tries >= 90) process.exit(1); setTimeout(attempt, 1000); });
+      })();'
+      exec node scripts/migrate.ts
+
+# Lolly Work's own settings come from deploy/appliance/work-config.json, the
+# one file both profiles use (the podman profile writes it as instance.json).
+# It lists every key of the chart's default config, so Helm's merge adds
+# nothing and both profiles run the same configuration. In short: production
+# mode, the demo pack inside the image (unsigned, so an operator-provisioned
+# publication generation), email and password sign-in with gated access,
+# telemetry off, guest links off, and hooked tools allowed in the server
+# process because the demo pack is curated and there is no render worker yet.
+# This machine's address and owner are written at boot (see above).
+config: @WORK_CONFIG@
 
 # K3s's bundled Traefik serves HTTPS on 443 with the machine's own certificate
 # (lolly-https.yaml makes it Traefik's default certificate) and redirects 80.
