@@ -17,6 +17,9 @@ export interface Summary {
   throughput: number | null;
   /** Share of renders that succeeded. */
   completion: number;
+  /** p95 over every render, a failed one counting as never delivered
+   *  (Infinity, which JSON writes as null). The D5 check uses this one. */
+  p95Delivered: number | null;
   /** Attempts beyond the first, across all renders: retries after RENDER_BUSY or a worker failure. */
   retries: number;
   /** Error codes of failed renders, and of retried attempts that were recorded. */
@@ -45,6 +48,11 @@ export function summarise(rows: readonly RenderRow[]): Summary {
     mean: round(latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : null),
     throughput: round(done.length && last > first ? done.length / ((last - first) / 1000) : null),
     completion: round(rows.length ? done.length / rows.length : 0)!,
+    p95Delivered: rows.length ? (() => {
+      const all = rows.map((r) => (r.state === 'succeeded' && r.finishedAt !== null ? (r.finishedAt - r.createdAt) / 1000 : Infinity)).sort((a, b) => a - b);
+      const v = percentile(all, 95)!;
+      return Number.isFinite(v) ? round(v) : Infinity;
+    })() : null,
     retries: rows.reduce((n, r) => n + Math.max(0, r.attempt - 1), 0),
     errors,
   };

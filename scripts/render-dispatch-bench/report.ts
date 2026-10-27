@@ -3,7 +3,11 @@
  * Markdown tables and the D5 check from one or more runs.json files written by
  * bench.ts. Prints to stdout; where it goes is the caller's choice.
  *
- *   node scripts/render-dispatch-bench/report.ts <out>/runs.json [...more]
+ *   node scripts/render-dispatch-bench/report.ts <out>/runs.json [<rep2>/runs.json ...]
+ *
+ * Each runs.json is one repetition set; the D5 table counts the repetitions
+ * in which each check held, and pull meets D5 for a configuration only when
+ * every repetition holds every check.
  *
  * D5 (plan 324): pull becomes the default only where it matches push at p50
  * under light load AND beats push on p95 and throughput under saturation.
@@ -27,11 +31,15 @@ export function matches(pull: number | null, push: number | null): boolean {
   return pull <= push + Math.max(0.1 * push, 0.05);
 }
 
-export function d5(records: readonly RunRecord[], corpus: string, workers: number, slots = 4): { light: boolean | null; p95: boolean | null; throughput: boolean | null; verdict: string } {
+type Check = { light: boolean | null; p95: boolean | null; throughput: boolean | null };
+
+/** One repetition's D5 checks. p95 counts a failed render as never delivered. */
+export function d5(records: readonly RunRecord[], corpus: string, workers: number, slots = 4): Check & { verdict: string } {
   const get = (mode: string, load: string) => records.find((r) => r.corpus === corpus && r.workers === workers && (r.slots ?? 4) === slots && r.mode === mode && r.load === load)?.summary.all;
   const lp = get('push', 'light'), ll = get('pull', 'light'), sp = get('push', 'saturation'), sl = get('pull', 'saturation');
   const light = lp && ll ? matches(ll.p50, lp.p50) : null;
-  const p95 = sp && sl && sp.p95 !== null && sl.p95 !== null ? sl.p95 < sp.p95 : null;
+  const delivered = (s: Summary) => s.p95Delivered ?? Infinity;
+  const p95 = sp && sl ? delivered(sl) < delivered(sp) : null;
   const throughput = sp && sl && sp.throughput !== null && sl.throughput !== null
     ? sl.succeeded > sp.succeeded || (sl.succeeded === sp.succeeded && sl.throughput > sp.throughput) : null;
   const verdict = light === null || p95 === null || throughput === null ? 'incomplete'
@@ -39,28 +47,44 @@ export function d5(records: readonly RunRecord[], corpus: string, workers: numbe
   return { light, p95, throughput, verdict };
 }
 
+/** Across repetitions (one runs.json each): how many held. Pull "meets D5" for a
+ *  configuration only when every repetition holds every check. */
+export function d5Across(sets: readonly (readonly RunRecord[])[], corpus: string, workers: number, slots: number): string[] {
+  const checks = sets.map((set) => d5(set, corpus, workers, slots));
+  const tally = (key: keyof Check) => {
+    const known = checks.filter((c) => c[key] !== null);
+    return { held: known.filter((c) => c[key]).length, of: known.length };
+  };
+  const t = { light: tally('light'), p95: tally('p95'), throughput: tally('throughput') };
+  const all = (x: { held: number; of: number }) => x.of > 0 && x.held === x.of;
+  const verdict = !t.light.of || !t.p95.of || !t.throughput.of ? 'incomplete'
+    : all(t.light) && all(t.p95) && all(t.throughput) ? 'pull meets D5' : 'not met';
+  return [`${t.light.held}/${t.light.of}`, `${t.p95.held}/${t.p95.of}`, `${t.throughput.held}/${t.throughput.of}`, verdict];
+}
+
 const fmt = (v: number | null | undefined, unit = '') => (v === null || v === undefined ? '-' : `${v}${unit}`);
 
-export function report(records: readonly RunRecord[]): string {
+export function report(sets: readonly (readonly RunRecord[])[]): string {
+  const records = sets.flat();
   const lines: string[] = [];
   for (const corpus of [...new Set(records.map((r) => r.corpus))]) {
     lines.push(`### Corpus: ${corpus}`, '');
-    lines.push('| Workers x slots | Load | Mode | OK / renders | Throughput (ok/s) | p50 (s) | p95 (s) | p99 (s) | Retries | Failures | tier-a p50 / p95 | tier-b p50 / p95 |');
-    lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
+    lines.push('| Workers x slots | Load | Mode | OK / renders | Throughput (ok/s) | p50 (s) | p95 (s) | p99 (s) | p95 incl. failures (s) | Retries | Failures | tier-a p50 / p95 | tier-b p50 / p95 |');
+    lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
     const order = ['light', 'medium', 'saturation'];
     const rows = records.filter((r) => r.corpus === corpus)
       .sort((a, b) => a.workers - b.workers || (a.slots ?? 4) - (b.slots ?? 4) || order.indexOf(a.load) - order.indexOf(b.load) || a.mode.localeCompare(b.mode));
     for (const r of rows) {
       const a = r.summary.all!, ta = r.summary['tier-a'], tb = r.summary['tier-b'];
       const failures = Object.entries(a.errors).map(([code, n]) => `${code} ${n}`).join(', ') || '0';
-      lines.push(`| ${r.workers} x ${r.slots ?? 4} | ${r.load}${r.rate ? ` (${r.rate}/s)` : ''} | ${r.mode} | ${a.succeeded} / ${a.renders} | ${fmt(a.throughput)} | ${fmt(a.p50)} | ${fmt(a.p95)} | ${fmt(a.p99)} | ${a.retries} | ${failures} | ${ta ? `${fmt(ta.p50)} / ${fmt(ta.p95)}` : '-'} | ${tb ? `${fmt(tb.p50)} / ${fmt(tb.p95)}` : '-'} |`);
+      const delivered = a.p95Delivered === Infinity || a.p95Delivered === null ? 'not delivered' : String(a.p95Delivered);
+      lines.push(`| ${r.workers} x ${r.slots ?? 4} | ${r.load}${r.rate ? ` (${r.rate}/s)` : ''} | ${r.mode} | ${a.succeeded} / ${a.renders} | ${fmt(a.throughput)} | ${fmt(a.p50)} | ${fmt(a.p95)} | ${fmt(a.p99)} | ${delivered} | ${a.retries} | ${failures} | ${ta ? `${fmt(ta.p50)} / ${fmt(ta.p95)}` : '-'} | ${tb ? `${fmt(tb.p50)} / ${fmt(tb.p95)}` : '-'} |`);
     }
-    lines.push('', '| Workers x slots | light p50 matches | saturation p95 better | saturation throughput better | D5 |', '|---|---|---|---|---|');
+    lines.push('', `D5 across ${sets.length} repetition set(s): how many repetitions held each check.`, '',
+      '| Workers x slots | light p50 matches | saturation p95 better (failures count as not delivered) | saturation throughput better | D5 |', '|---|---|---|---|---|');
     for (const key of [...new Set(rows.map((r) => `${r.workers}x${r.slots ?? 4}`))]) {
       const [workers, slots] = key.split('x').map(Number) as [number, number];
-      const v = d5(records, corpus, workers, slots);
-      const yn = (b: boolean | null) => (b === null ? '-' : b ? 'yes' : 'no');
-      lines.push(`| ${workers} x ${slots} | ${yn(v.light)} | ${yn(v.p95)} | ${yn(v.throughput)} | ${v.verdict} |`);
+      lines.push(`| ${workers} x ${slots} | ${d5Across(sets, corpus, workers, slots).join(' | ')} |`);
     }
     lines.push('');
   }
@@ -78,6 +102,6 @@ export function refresh(records: RunRecord[], dir: string): RunRecord[] {
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  const records = process.argv.slice(2).flatMap((file) => refresh(JSON.parse(readFileSync(file, 'utf8')) as RunRecord[], dirname(file)));
-  console.log(report(records));
+  const sets = process.argv.slice(2).map((file) => refresh(JSON.parse(readFileSync(file, 'utf8')) as RunRecord[], dirname(file)));
+  console.log(report(sets));
 }
