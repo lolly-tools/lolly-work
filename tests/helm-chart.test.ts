@@ -552,7 +552,8 @@ test('fresh-install migration hooks use an existing account and keep cleanup ord
     'the pre-install hook cannot wait for an ordinary resource Helm creates after hooks');
   assert.equal(job.spec.template.spec.automountServiceAccountToken, false);
   assert.equal(job.metadata.annotations['helm.sh/hook'], 'pre-install,pre-upgrade');
-  assert.equal(job.metadata.annotations['helm.sh/hook-delete-policy'], 'before-hook-creation');
+  assert.equal(job.metadata.annotations['helm.sh/hook-delete-policy'], 'before-hook-creation',
+    'the last migration Job and its logs stay until the next upgrade, and Helm waits for its deletion before creating the next one');
   const secret = docs.find(doc => doc?.kind === 'Secret');
   assert.ok(Number(secret.metadata.annotations['helm.sh/hook-weight']) < Number(job.metadata.annotations['helm.sh/hook-weight']));
   assert.equal(docs.filter(doc => doc?.kind === 'ServiceAccount').length, 1,
