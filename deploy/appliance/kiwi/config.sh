@@ -69,6 +69,8 @@ gawk -i inplace '$2 == "/" { sub(/ro/, "ro=vfs", $4); } { print $0 }' /etc/fstab
 if [ "$(findmnt -snT / -o SOURCE)" != "$(findmnt -snT /var -o SOURCE)" ]; then
 	gawk -i inplace '$2 == "/var" { $4 = $4",x-growpart.grow,x-systemd.growfs" } { print $0 }' /etc/fstab
 fi
+# The Combustion/Ignition config partition is read by label at first boot only.
+gawk -i inplace '$2 == "/var/lib/lolly/config-partition" { $4 = $4",noauto,nofail" } { print $0 }' /etc/fstab
 EOF
 chmod a+x /etc/fstab.script
 
@@ -106,6 +108,7 @@ done
 chmod 0700 /var/lib/rancher/k3s/server
 chmod 0755 /var/lib/rancher/k3s/agent /var/lib/rancher/k3s/agent/images
 install -d -m 0700 /var/lib/lolly
+install -d -m 0700 /var/lib/lolly/config-partition
 install -d -m 0755 /etc/lolly
 
 systemctl enable k3s.service

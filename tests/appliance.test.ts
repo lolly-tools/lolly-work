@@ -135,10 +135,11 @@ test('the image keeps the Leap 16.1 Immutable base and adds K3s, Cockpit and a c
   assert.ok(kiwi.includes('<package name="combustion &gt;= 1.2"/>'));
   assert.doesNotMatch(kiwi, /<package name="(jeos-firstboot|cloud-init|usbguard)"|apparmor/i);
   assert.equal((kiwi.match(/btrfs_root_is_readonly_snapshot="true"/g) ?? []).length, 2);
-  assert.equal((kiwi.match(/<partition name="config" size="16" partition_name="p\.lxconfig" filesystem="fat16" label="ignition"\/>/g) ?? []).length, 2);
+  assert.equal((kiwi.match(/<partition name="config" size="16" partition_name="p\.lxconfig" filesystem="fat16" label="ignition" mountpoint="\/var\/lib\/lolly\/config-partition"\/>/g) ?? []).length, 2);
   assert.equal((kiwi.match(/security=selinux selinux=1/g) ?? []).length, 2);
   const config = read('deploy/appliance/kiwi/config.sh');
   assert.match(config, /SELINUX=enforcing/);
+  assert.match(config, /config-partition" \{ \$4 = \$4",noauto,nofail" \}/);
   assert.match(config, /systemctl enable cockpit\.socket/);
   assert.match(config, /service name=\\"cockpit\\" accept/);
   assert.doesNotMatch(config, /--add-service=cockpit|--add-port=6443/);

@@ -71,8 +71,10 @@
                 <volume name="var" copy_on_write="false"/>
             </systemdisk>
             <partitions>
-                <!-- Write combustion/script or ignition/config.ign here before the first boot. -->
-                <partition name="config" size="16" partition_name="p.lxconfig" filesystem="fat16" label="ignition"/>
+                <!-- Write combustion/script or ignition/config.ign here before the first boot.
+                     KIWI needs a mount point to create the filesystem; config.sh
+                     marks it noauto, so the running system never mounts it. -->
+                <partition name="config" size="16" partition_name="p.lxconfig" filesystem="fat16" label="ignition" mountpoint="/var/lib/lolly/config-partition"/>
             </partitions>
             <size unit="G">20</size>
         </type>
@@ -112,7 +114,7 @@
                 <volume name="var" copy_on_write="false"/>
             </systemdisk>
             <partitions>
-                <partition name="config" size="16" partition_name="p.lxconfig" filesystem="fat16" label="ignition"/>
+                <partition name="config" size="16" partition_name="p.lxconfig" filesystem="fat16" label="ignition" mountpoint="/var/lib/lolly/config-partition"/>
             </partitions>
             <size unit="G">20</size>
         </type>
