@@ -959,6 +959,50 @@ def run_object(run_id, sha_, path=".github/workflows/preview-web.yml", event="wo
 TOOL_MAIN = "e" * 40
 
 
+def git_trees(files):
+    """Git tree objects for {path: text or (mode, text)}: (root tree sha, {tree sha: direct entries}).
+
+    The fake gh serves them as GitHub's trees API does, recursive listings included, so the lane code
+    reads a real-shaped history (preview_lane.tree_changes)."""
+    root = {}
+    for path, value in files.items():
+        mode, text = value if isinstance(value, tuple) else ("100644", value)
+        node, parts = root, path.split("/")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = (mode, text)
+    trees = {}
+
+    def store(node):
+        entries = []
+        for name in sorted(node):
+            value = node[name]
+            if isinstance(value, dict):
+                entries.append({"path": name, "mode": "040000", "type": "tree", "sha": store(value)})
+            else:
+                kind = "commit" if value[0] == "160000" else "blob"
+                entries.append({"path": name, "mode": value[0], "type": kind,
+                                "sha": hashlib.sha1((value[0] + value[1]).encode()).hexdigest()})
+        sha_ = hashlib.sha1(json.dumps(entries, sort_keys=True).encode()).hexdigest()
+        trees[sha_] = entries
+        return sha_
+    return store(root), trees
+
+
+def tree_listing(trees, sha_, recursive):
+    if not recursive:
+        return list(trees[sha_])
+    listing = []
+
+    def walk(tree, prefix):
+        for entry in trees[tree]:
+            listing.append(dict(entry, path=prefix + entry["path"]))
+            if entry["type"] == "tree":
+                walk(entry["sha"], prefix + entry["path"] + "/")
+    walk(sha_, "")
+    return listing
+
+
 def gh_main(argv):
     state_path = os.environ["FAKE_GH_STATE"]
     if argv[:1] != ["api"]:
@@ -1014,13 +1058,35 @@ def gh_main(argv):
                 return 1
             sys.stdout.write(json.dumps({"status": gh["compare"].get(spec, "ahead")}))
             return 0
-        match = re.fullmatch(rf"repos/{REPO}/actions/workflows/(ci|deployment-suse|preview-web)\.yml/runs", route)
+        match = re.fullmatch(rf"repos/{REPO}/actions/workflows/(ci|deployment-suse|preview-web|fast-lanes)\.yml/runs", route)
         if match:
-            runs = gh["ciRuns"] if match.group(1) == "ci" else gh["runs"]
+            if match.group(1) == "fast-lanes" and "fastRuns" not in gh:
+                print("gh: Not Found (HTTP 404)", file=sys.stderr)
+                return 1
+            runs = {"ci": gh["ciRuns"], "fast-lanes": gh.get("fastRuns", [])}.get(match.group(1), gh["runs"])
+            # GitHub's status filter takes a run status or a conclusion.
             selected = [r for r in runs if (not query.get("head_sha") or r["head_sha"] == query["head_sha"])
                         and r["path"] == ".github/workflows/" + match.group(1) + ".yml"
-                        and (not query.get("status") or r["status"] == query["status"])]
+                        and (not query.get("status") or query["status"] in (r["status"], r.get("conclusion")))]
             sys.stdout.write(json.dumps({"workflow_runs": selected}))
+            return 0
+        match = re.fullmatch(rf"repos/{REPO}/actions/runs/(\d+)/jobs", route)
+        if match:
+            if query.get("filter") != "latest":
+                print("jobs must be read with filter=latest", file=sys.stderr)
+                return 1
+            sys.stdout.write(json.dumps({"jobs": gh.get("jobs", {}).get(match.group(1), [])}))
+            return 0
+        match = re.fullmatch(rf"repos/{REPO}/git/commits/([0-9a-f]{{40}})", route)
+        if match and match.group(1) in gh.get("commits", {}):
+            commit = gh["commits"][match.group(1)]
+            sys.stdout.write(json.dumps({"sha": match.group(1), "tree": {"sha": commit["tree"]},
+                                         "parents": [{"sha": parent} for parent in commit["parents"]]}))
+            return 0
+        match = re.fullmatch(rf"repos/{REPO}/git/trees/([0-9a-f]{{40}})", route)
+        if match and match.group(1) in gh.get("trees", {}):
+            listing = tree_listing(gh["trees"], match.group(1), query.get("recursive") == "1")
+            sys.stdout.write(json.dumps({"sha": match.group(1), "tree": listing, "truncated": gh.get("truncated", False)}))
             return 0
         match = re.fullmatch(rf"repos/{REPO}/actions/runs/(\d+)", route)
         if match:

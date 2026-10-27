@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+import preview_lane
 from preview_common import HEX64, RUN_ID, SHA, Refusal, emit, parse_utc, require, sha256_hex, strict_json
 
 ACTIVE_STATES = ("queued", "in_progress", "waiting", "pending", "requested")
@@ -116,6 +117,27 @@ def green_ci_run(gh, anchors, sha):
         raise Refusal("CI_PENDING" if pending else "CI_NOT_GREEN",
                       f"no successful main CI push run for {sha}" + (" yet" if pending else ""))
     return max(good, key=lambda run: run["id"])
+
+
+def qualified_ci(gh, anchors, sha):
+    """What lets this commit ship: its own successful main CI push run, or a fast lane above one.
+
+    Returns {"id": the full CI run, "lane": "full" | "docs" | "web", "base": the commit that run tested, ...}.
+    A site without "fastLaneWorkflowFile" in its anchors (lolly.ing) only ever takes the first answer.
+    """
+    try:
+        run = green_ci_run(gh, anchors, sha)
+        return {"id": run["id"], "lane": "full", "base": sha}
+    except Refusal as exc:
+        if "fastLaneWorkflowFile" not in anchors:
+            raise
+        refusal = exc
+    try:
+        return preview_lane.qualify(gh, anchors, sha)
+    except Refusal as lane:
+        if lane.code == "CI_NOT_GREEN":  # the full run already failed: a lane never overrides that
+            raise
+        raise Refusal(refusal.code, f"{refusal.message}; no fast lane either: {lane.message}") from lane
 
 
 def active_candidate_runs(gh, anchors):

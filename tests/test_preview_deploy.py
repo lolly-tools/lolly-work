@@ -1170,6 +1170,73 @@ class Refusals(EndToEnd):
         self.assertEqual(self.gh_calls(), [])
 
 
+class LaneShips(EndToEnd):
+    """Fast deploy lanes (preview_lane.py): a docs or web shell change ships before its own full CI run finishes."""
+
+    FILES = {"docs/using.md": "# Using\n", "shells/web/src/styles/a.css": "a{}\n", "engine/src/runtime.ts": "runtime\n"}
+
+    def arrange_lane(self, changed, jobs=("docs lane",), source_status="in_progress", source_conclusion=None, workflow=True):
+        old_root, old_trees = F.git_trees(self.FILES)
+        new_root, new_trees = F.git_trees(dict(self.FILES, **changed))
+        self.gh.update(commits={OLD: {"tree": old_root, "parents": []}, NEW: {"tree": new_root, "parents": [OLD]}},
+                       trees={**old_trees, **new_trees},
+                       ciRuns=[F.run_object(899, OLD, path=".github/workflows/ci.yml", event="push"),
+                               F.run_object(900, NEW, path=".github/workflows/ci.yml", event="push", status=source_status,
+                                            conclusion=source_conclusion)],
+                       jobs={"1300": [{"id": 13000 + index, "run_id": 1300, "head_sha": NEW, "name": name, "status": "completed",
+                                       "conclusion": "success"} for index, name in enumerate(jobs)]})
+        if workflow:
+            self.gh["fastRuns"] = [F.run_object(1300, NEW, path=".github/workflows/fast-lanes.yml", event="push")]
+        self.write_gh()
+
+    def test_a_docs_change_ships_on_its_lane_job_and_records_the_lane(self):
+        self.arrange_lane({"docs/using.md": "# Using Lolly\n", "docs/work/new.md": "# New\n"})
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        dispatched = [event for event in events if event.get("event") == "dispatched"]
+        self.assertEqual([(e["ciRun"], e["lane"], e["laneBase"], e["laneRun"]) for e in dispatched], [(899, "docs", OLD, 1300)])
+        record = self.records()[-1]
+        self.assertEqual((record["result"], record["lane"], record["laneBase"], record["laneBaseCiRun"], record["laneRun"]),
+                         ("LIVE", "docs", OLD, 899, 1300))
+        self.assertEqual(self.live()[0], self.new["image"])
+        self.assertEqual(len([call for call in self.gh_calls() if call["method"] == "POST"]), 1)
+
+    def test_a_css_change_ships_on_the_web_lane_job(self):
+        self.arrange_lane({"shells/web/src/styles/a.css": "a{color:red}\n"}, jobs=("docs lane", "web lane"))
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.records()[-1]["lane"], "web")
+
+    def test_a_full_ci_run_of_its_own_needs_no_lane_and_records_none(self):
+        self.arrange_lane({"engine/src/runtime.ts": "runtime 2\n"}, jobs=(), source_status="completed", source_conclusion="success")
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertNotIn("lane", self.records()[-1])
+        self.assertFalse(any("/git/trees/" in call["path"] or "fast-lanes" in call["path"] for call in self.gh_calls()))
+
+    def test_lane_refusals_change_nothing(self):
+        cases = [
+            ("web change, docs job only", {"shells/web/src/styles/a.css": "a{color:red}\n"}, {}, "CI_PENDING", '"web lane" job'),
+            ("engine change", {"engine/src/runtime.ts": "runtime 2\n"}, {"jobs": ("docs lane", "web lane")}, "CI_PENDING",
+             "Full CI required: engine/src"),
+            ("full CI failed", {"docs/using.md": "x\n"}, {"source_status": "completed", "source_conclusion": "failure"}, "CI_NOT_GREEN",
+             "a lane never overrides"),
+            ("no lane workflow yet", {"docs/using.md": "x\n"}, {"workflow": False}, "CI_PENDING", '"docs lane" job'),
+            ("service worker", {"shells/web/public/sw.js": "sw\n"}, {"jobs": ("docs lane", "web lane")}, "CI_PENDING", "sw.js"),
+        ]
+        for name, changed, options, code_name, reason in cases:
+            with self.subTest(name=name):
+                self.tearDown()
+                self.setUp()
+                self.arrange_lane(changed, **options)
+                code, events = self.cli("ship", NEW)
+                self.assertEqual((code, self.done(events).get("code")), (1, code_name), events[-3:])
+                self.assertIn(reason, self.records()[-1]["reason"])
+                self.assertFalse(any(call["method"] == "POST" for call in self.gh_calls()))
+                self.assertEqual(self.cluster()["writes"], [])
+                self.assertEqual(self.live()[0], self.old["image"])
+
+
 class Operations(EndToEnd):
     """Manual rollback, status, gc, selftest and the one-time conversion."""
 

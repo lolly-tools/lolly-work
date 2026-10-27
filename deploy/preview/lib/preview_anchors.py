@@ -18,6 +18,10 @@ TOOLS = {
     "buildWorkflowPath": ".github/workflows/preview-web.yml",
     "ciWorkflowFile": "ci.yml",
     "ciWorkflowPath": ".github/workflows/ci.yml",
+    # Fast deploy lanes (lolly scripts/deploy-lane.ts, ported in preview_lane.py): a docs or web shell
+    # change may ship once its lane job here passed, before its own full CI run finishes.
+    "fastLaneWorkflowFile": "fast-lanes.yml",
+    "fastLaneWorkflowPath": ".github/workflows/fast-lanes.yml",
     "branch": "main",
     "buildRunTitle": "Preview web {sha}",
     "buildSourceInput": "source",
@@ -62,6 +66,8 @@ TOOLS_LEGACY = dict(TOOLS, buildWorkflowFile="deployment-suse.yml",
                     imageRepository="ghcr.io/lolly-tools/lolly-web", registryName="lolly-tools/lolly-web")
 TOOLS_LEGACY.pop("buildRunTitle")
 TOOLS_LEGACY.pop("buildSourceInput")
+TOOLS_LEGACY.pop("fastLaneWorkflowFile")
+TOOLS_LEGACY.pop("fastLaneWorkflowPath")
 
 # lolly.ing (Phase 2, PROPOSAL section 4). One private instance image holds the Work
 # server, the SUSE shell and the pack. suse-lolly's private lolly-ing-preview.yml builds
