@@ -217,6 +217,7 @@ import { accessibleNotices, listAccessibleNotices } from '../inbox/comment-notic
 import { parseClientHeader } from '../fleet/client-header.ts';
 import { verifyChain, deriveAuditMacKey, type AuditEventBody } from '../audit/chain.ts';
 import { createLogger, requestId } from '../observability/log.ts';
+import { NOOP_OTEL, type Otel, type RequestSpan } from '../observability/otel.ts';
 import { safeReturnTo } from '../iam/return-to.ts';
 import { registerPasskeyRoutes, passkeysEnabled } from '../iam/passkeys/routes.ts';
 import { csrfVerdict } from '../iam/csrf.ts';
@@ -289,6 +290,9 @@ export interface AppDeps {
   providerResolver?: ProviderResolver;
   /** Injectable metrics registry (tests pass a fresh one to assert counter deltas). */
   metrics?: Metrics;
+  /** OpenTelemetry export (observability/otel.ts). main.ts builds it from the
+   *  OTEL_* variables; unset, as on Vercel and in most tests, nothing is exported. */
+  otel?: Otel;
   /** Live collab-room snapshot for the admin console's Rooms panel
    *  (`GET /api/v1/collab/rooms`, OSS plans/100 §7, lolly-work plans/14 §6).
    *  A plain function, not a `CollabGateway` import - this module is also
@@ -347,6 +351,7 @@ export function buildApp(deps: AppDeps): App {
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
   configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
   const blobs = deps.blobs ?? createMemoryBlobStore();
+  const otel = deps.otel ?? NOOP_OTEL;
   const brand = createBrandService(deploymentConfig, store, blobs, {
     ...(productionMode(deploymentConfig) ? { inspectSource: async (source: string) => {
       const report = await inspectPack(deploymentConfig.instance.pack, { source,
@@ -374,7 +379,17 @@ export function buildApp(deps: AppDeps): App {
       return out;
     };
     const bounded = () => withRenderDeadline(run, config.render.worker.timeoutMs, args[1].signal);
-    return brand.current() ? bounded() : brand.run(bounded);
+    // A render is traced under the request that asked for it, or as its own
+    // trace when the durable runner picks it up. The tool id and format are the
+    // caller's words until the render has checked them, so a value that breaks
+    // the naming rules for tool ids and format names is left out.
+    const format = args[1].format.toLowerCase() === 'jpeg' ? 'jpg' : args[1].format.toLowerCase();
+    const traced = () => otel.span('render', {
+      ...(/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/.test(args[1].toolId) ? { 'lw.render.tool_id': args[1].toolId } : {}),
+      ...(/^[a-z0-9]{2,8}$/.test(format) ? { 'lw.render.format': format } : {}),
+      'lw.render.worker': !!args[0].worker,
+    }, bounded, { root: true });
+    return brand.current() ? traced() : brand.run(traced);
   };
   const fetchImpl = deps.fetchImpl ?? fetch;
   const providerFetch = createProviderFetch(config.network.providers, deps.fetchImpl, deps.providerResolver);
@@ -702,7 +717,7 @@ export function buildApp(deps: AppDeps): App {
   // Keyed audit MAC (audit/chain.ts): the store signs rows with it, every
   // verification here checks with it. Derived, never stored.
   const auditMacKey = deriveAuditMacKey(secrets.session);
-  const log = createLogger();
+  const log = createLogger(process.env, undefined, otel.signals.logs ? otel.log : undefined);
   const linkPasswordAttempts = createLinkPasswordAttempts();
 
   let setupMemo: { revision: string; expires: number; report: Promise<SetupReport> } | undefined;
@@ -743,12 +758,10 @@ export function buildApp(deps: AppDeps): App {
     });
   });
 
-  // Prometheus scrape endpoint (registered before auth so it can't be shadowed).
-  // Loopback-only unless LW_METRICS_TOKEN is set. Gauges are collected at scrape.
-  router.add('GET', '/metrics', async (req, res) => {
-    const gate = metricsGate(req, secrets.metricsToken, productionMode(config) || config.proxyAuth.enabled || config.rateLimit.trustedProxyHops > 0);
-    if (gate === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no route for GET /metrics');
-    if (gate === 'unauthorized') return sendError(res, 401, 'UNAUTHORIZED', 'metrics require a bearer token');
+  // The gauges are collected when they are read: by a Prometheus scrape of
+  // /metrics, and by the OTLP metric export on its interval. One function, so
+  // both carry the same series.
+  const collectGauges = async (): Promise<GaugeLine[]> => {
     const gauges: GaugeLine[] = [
       { name: 'lw_audit_chain_intact', help: 'Audit hash-chain verifies end to end (1) or is broken (0).', type: 'gauge', value: (await auditIntact()) ? 1 : 0 },
       { name: 'lw_process_uptime_seconds', help: 'Process uptime in seconds.', type: 'gauge', value: process.uptime() },
@@ -774,6 +787,19 @@ export function buildApp(deps: AppDeps): App {
         gauges.push({ name: 'lw_provider_credential_expiry_days', help: 'Days until the operator-stated credential expiry (negative = past it).', type: 'gauge', labels: { provider: p.id }, value: Math.floor((new Date(p.credentialExpiresAt).getTime() - Date.now()) / 86_400_000) });
       }
     }
+    // OTLP delivery counts, present only while export is on.
+    gauges.push(...otel.selfMetrics());
+    return gauges;
+  };
+  otel.setMetricSource(async () => [...metrics.snapshot(), ...await collectGauges()]);
+
+  // Prometheus scrape endpoint (registered before auth so it can't be shadowed).
+  // Loopback-only unless LW_METRICS_TOKEN is set. Gauges are collected at scrape.
+  router.add('GET', '/metrics', async (req, res) => {
+    const gate = metricsGate(req, secrets.metricsToken, productionMode(config) || config.proxyAuth.enabled || config.rateLimit.trustedProxyHops > 0);
+    if (gate === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no route for GET /metrics');
+    if (gate === 'unauthorized') return sendError(res, 401, 'UNAUTHORIZED', 'metrics require a bearer token');
+    const gauges = await collectGauges();
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8', 'cache-control': 'no-store' });
     res.end(metrics.renderText(gauges));
   });
@@ -11123,7 +11149,7 @@ export function buildApp(deps: AppDeps): App {
     }, secrets.session, secure, renewal.ttlSec);
   };
 
-  const app: App = async (req, res) => {
+  const handle = async (req: IncomingMessage, res: ServerResponse, span: RequestSpan | undefined): Promise<void> => {
     guardDelivery(req, res);
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
@@ -11142,6 +11168,8 @@ export function buildApp(deps: AppDeps): App {
         .catch(() => {});
     }
     let routeClass = 'unmatched';
+    // The server span (when tracing is on) carries the route label the metric uses.
+    span?.routeFrom(() => routeClass);
     // Request id: echoed on the response and on the access line, so a 5xx in
     // the logs joins to the request a person reports.
     const reqId = requestId(req.headers['x-request-id']);
@@ -11234,6 +11262,8 @@ export function buildApp(deps: AppDeps): App {
       if (!res.headersSent) sendError(res, status, err instanceof BrandError ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
     }
   };
+  // One server span per request when OTLP traces are on; otherwise the handler directly.
+  const app: App = (req, res) => otel.serve(req, res, (span) => handle(req, res, span));
   appRoutes.set(app, router.descriptions);
   return app;
 }

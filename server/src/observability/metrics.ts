@@ -24,6 +24,9 @@ export interface Metrics {
   /** Response body bytes the origin wrote, by the route's delivery class
    *  (plan 80 section 10): what a CDN in front could take off this server. */
   originBytes(deliveryClass: string, bytes: number): void;
+  /** The counters as lines, for the OTLP metric export (otel.ts): the same
+   *  names, labels and values the text exposition carries. */
+  snapshot(): GaugeLine[];
   renderText(gauges: GaugeLine[]): string;
 }
 
@@ -58,6 +61,13 @@ export function createMetrics(): Metrics {
     rateLimited: (surface) => inc('lw_rate_limited_total', 'Requests rejected by the per-IP rate limiter.', { surface }),
     notify: (channel, outcome) => inc('lw_notify_total', 'Notification deliveries by channel and outcome.', { channel, outcome }),
     originBytes: (cls, bytes) => inc('lw_origin_bytes_total', 'Response body bytes written by the origin, by delivery class.', { class: cls }, bytes),
+    snapshot() {
+      const lines: GaugeLine[] = [];
+      for (const [name, s] of counters) {
+        for (const p of s.points.values()) lines.push({ name, help: s.help, type: 'counter', labels: { ...p.labels }, value: p.value });
+      }
+      return lines;
+    },
     renderText(gauges) {
       const out: string[] = [];
       for (const [name, s] of counters) {

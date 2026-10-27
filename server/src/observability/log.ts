@@ -6,6 +6,9 @@
  * (see api/app.ts) adds the request id, route label, status and duration, so a
  * SIEM can join a 5xx to the request that produced it. Access lines are on
  * with LW_LOG_HTTP=1, or whenever the format is json.
+ *
+ * `tap` sees each record as well: the OTLP log export (otel.ts), which keeps
+ * the message and a fixed set of fields.
  */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -26,12 +29,13 @@ export function formatLine(format: 'text' | 'json', level: LogLevel, msg: string
 
 export function createLogger(env: NodeJS.ProcessEnv = process.env, sink: { out(line: string): void; err(line: string): void } = {
   out: (l) => console.log(l), err: (l) => console.error(l),
-}): Logger {
+}, tap?: (level: LogLevel, msg: string, fields: Record<string, unknown> | undefined) => void): Logger {
   const format: 'text' | 'json' = env.LW_LOG_FORMAT === 'json' ? 'json' : 'text';
   const accessLog = format === 'json' || env.LW_LOG_HTTP === '1';
   const log = ((level, msg, fields) => {
     const line = formatLine(format, level, msg, fields);
     if (level === 'error' || level === 'warn') sink.err(line); else sink.out(line);
+    tap?.(level, msg, fields);
   }) as Logger;
   Object.defineProperty(log, 'format', { value: format });
   Object.defineProperty(log, 'accessLog', { value: accessLog });
