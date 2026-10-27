@@ -188,8 +188,13 @@ def main(argv: list[str]) -> int:
     waited = wait_ready(web, args.wait)
     ok("Work /readyz answers 200 through Traefik", waited is not None, f"after {time.time() - t0:.0f}s of this run")
     status, _, body = web.call("GET", "/readyz", cookies=False)
-    checks = json.loads(body).get("checks", {}) if status == 200 else {}
-    ok("readyz checks all pass in production mode", status == 200 and all(v in ("ok", "pass", True) for v in checks.values()) if isinstance(checks, dict) else status == 200, json.dumps(checks)[:300])
+    ready = json.loads(body) if status == 200 else {}
+    # Work 1.1.2 and later also report each check under "checks".
+    checks = ready.get("checks") or {}
+    ok("readyz is ok on PostgreSQL in production mode", status == 200 and ready.get("ok") is True and ready.get("store") == "postgres"
+       and all(v in ("ok", "pass", True) for v in (checks.values() if isinstance(checks, dict) else [])), body.decode()[:300])
+    mode = guest.run("kubectl -n lolly get configmap -o yaml 2>/dev/null | grep -o '\"mode\": \"[a-z]*\"' | head -n 1").stdout.strip()
+    ok("Work runs in production mode", mode == '"mode": "production"', mode)
     served = web.peer_fingerprint()
     stored = guest.run("cat /var/lib/lolly/tls/appliance.sha256").stdout.strip()
     ok("HTTPS serves the appliance's own certificate", served == stored and bool(stored), f"SHA-256 {stored[:23]}...")
@@ -205,9 +210,16 @@ def main(argv: list[str]) -> int:
     profile = guest.run("cat /etc/rancher/k3s/config.yaml; getenforce; ls /var/lib/lolly/credentials; systemd-creds has-tpm2 -q && echo tpm2 || echo host-key").stdout
     ok("SELinux is enforcing and K3s runs with selinux: true", "Enforcing" in profile and "selinux: true" in profile)
     ok("six credentials are stored as encrypted systemd credentials", len(re.findall(r"\.cred$", profile, re.M)) == 6, profile.strip().splitlines()[-1])
-    leaked = guest.run("grep -rl 'BEGIN PRIVATE KEY' /etc /usr/share/lolly-appliance /var/lib/lolly /var/lib/rancher/k3s/server/manifests 2>/dev/null | head -3").stdout.strip()
-    ok("no private key in plain text on disk outside K3s's datastore", leaked == "", leaked)
-    issue = guest.run("cat /run/issue.d/60-lolly.issue; echo ---; cat /run/lolly/local-issue.d/61-lolly-owner.issue").stdout
+    # Cockpit keeps its own self-signed key in /etc/cockpit/ws-certs.d, as on any host.
+    leaked = guest.run("grep -rlE 'BEGIN (EC )?PRIVATE KEY|postgres://' /etc/lolly /etc/rancher /usr/share/lolly-appliance /var/lib/lolly "
+                       "/var/lib/rancher/k3s/server/manifests 2>/dev/null | head -3").stdout.strip()
+    ok("Lolly's secrets are on disk only as encrypted credentials (and in K3s's encrypted datastore)", leaked == "", leaked)
+    # The console service writes its text a few seconds after Work is ready.
+    for _ in range(40):
+        issue = guest.run("cat /run/issue.d/60-lolly.issue; echo ---; cat /run/lolly/local-issue.d/61-lolly-owner.issue").stdout
+        if "(ready)" in issue:
+            break
+        time.sleep(3)
     public, _, local = issue.partition("---")
     ok("every console shows the address and fingerprint, without the link", base.group(1) in public and stored in public and "token=" not in public)
     if not args.after_reboot:
