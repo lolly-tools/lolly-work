@@ -3,18 +3,20 @@
 """Fetch and verify everything the appliance image carries from outside the
 openSUSE repositories, so first boot needs no registry and no download.
 
-  - the K3s binary and K3s's own airgap images, checked against
-    appliance.lock.json (the sha256 sums K3s publishes with each release);
-  - the k3s-selinux RPM, checked against appliance.lock.json, into a local
-    package repository the KIWI build installs it from;
+  - k3s profile: the K3s binary and K3s's own airgap images, checked against
+    appliance.lock.json (the sha256 sums K3s publishes with each release), and
+    the k3s-selinux RPM, checked the same way, into a local package
+    repository the KIWI build installs it from;
   - each release image in the plan generate.py wrote, by digest, as an OCI
-    archive for K3s's airgap images directory.
+    archive: in K3s's airgap images directory (k3s), or in
+    /var/lib/lolly/images for `podman load` at first boot (podman).
 
 An image archive holds the release's multi-architecture index unchanged (so its
 digest is the one release.json pins) plus the manifest, config and layers for
 this one architecture; every blob is checked against its digest. K3s imports
 such partial archives (WithSkipMissing) and tags the image by that digest, so
-the pod spec's repository@sha256 reference resolves locally.
+the pod spec's repository@sha256 reference resolves locally; `podman load`
+records the same digest, so the Quadlet units' Image= pins resolve too.
 
 Standard library only. Anonymous registry access; nothing is pushed.
 
@@ -235,20 +237,21 @@ def main(argv: list[str]) -> int:
     arch, goarch = plan["arch"], plan["goarch"]
     pins = lock["k3s"]["architectures"][arch]
     try:
-        binary = download(pins["binary"]["url"], args.cache / f"k3s-{goarch}-{lock['k3s']['version']}", pins["binary"]["sha256"])
-        target = args.overlay / "usr/local/bin/k3s"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(binary, target)
-        os.chmod(target, 0o755)
-        airgap_name = pins["airgapImages"]["url"].rsplit("/", 1)[1]
-        airgap = download(pins["airgapImages"]["url"], args.cache / f"{lock['k3s']['version']}-{airgap_name}", pins["airgapImages"]["sha256"])
-        images_dir = args.overlay / "var/lib/rancher/k3s/agent/images"
-        images_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(airgap, images_dir / airgap_name)
-        selinux = lock["k3sSelinux"]
-        rpm = download(selinux["url"], args.cache / selinux["url"].rsplit("/", 1)[1], selinux["sha256"])
         args.repo.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(rpm, args.repo / rpm.name)
+        if plan.get("profile", "k3s") == "k3s":
+            binary = download(pins["binary"]["url"], args.cache / f"k3s-{goarch}-{lock['k3s']['version']}", pins["binary"]["sha256"])
+            target = args.overlay / "usr/local/bin/k3s"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(binary, target)
+            os.chmod(target, 0o755)
+            airgap_name = pins["airgapImages"]["url"].rsplit("/", 1)[1]
+            airgap = download(pins["airgapImages"]["url"], args.cache / f"{lock['k3s']['version']}-{airgap_name}", pins["airgapImages"]["sha256"])
+            images_dir = args.overlay / "var/lib/rancher/k3s/agent/images"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(airgap, images_dir / airgap_name)
+            selinux = lock["k3sSelinux"]
+            rpm = download(selinux["url"], args.cache / selinux["url"].rsplit("/", 1)[1], selinux["sha256"])
+            shutil.copyfile(rpm, args.repo / rpm.name)
         report = []
         for image in plan["images"]:
             report.append(image_archive(image, goarch, args.overlay / image["archive"], args.cache))
@@ -257,7 +260,8 @@ def main(argv: list[str]) -> int:
         return 1
     for entry in report:
         print(f"{entry['name']} {entry['digest']} ({goarch} {entry['platformDigest'][:19]}, {entry['archiveBytes'] // (1 << 20)} MiB)")
-    print(f"K3s {lock['k3s']['version']} {goarch}, airgap images and {selinux['url'].rsplit('/', 1)[1]} verified")
+    if plan.get("profile", "k3s") == "k3s":
+        print(f"K3s {lock['k3s']['version']} {goarch}, airgap images and {lock['k3sSelinux']['url'].rsplit('/', 1)[1]} verified")
     return 0
 
 

@@ -1,9 +1,14 @@
 #!/bin/bash
 # SPDX-License-Identifier: MPL-2.0
-# Every boot, before K3s: work out this machine's Lolly Work address and owner
-# and write them to lolly-work-instance.yaml, a HelmChartConfig that K3s merges
-# over the release's values. The file is rewritten only when a value changed,
-# so an ordinary reboot does not upgrade the release.
+# Every boot, before Lolly Work starts: work out this machine's Lolly Work
+# address and owner and write them where the runtime reads them.
+#   k3s:    lolly-work-instance.yaml, a HelmChartConfig that K3s merges over the
+#           release's values.
+#   podman: /var/lib/lolly/work/instance.json, Lolly Work's settings
+#           (/usr/share/lolly-appliance/work-config.json, the same as the k3s
+#           profile's) with this machine's values filled in.
+# Each file is rewritten only when a value changed, so an ordinary reboot does
+# not upgrade or restart anything.
 #
 # Settings come from /etc/lolly/appliance.conf, which Combustion or Ignition
 # can write at first boot:
@@ -50,9 +55,11 @@ fi
 
 json_escape() { local s=${1//\\/\\\\}; printf '%s' "${s//\"/\\\"}"; }
 
-next=$(mktemp "$MANIFESTS/.lolly-work-instance.XXXXXX")
-trap 'rm -f "$next"' EXIT
-cat > "$next" <<EOF
+write_helmchartconfig() {
+  local next
+  next=$(mktemp "$MANIFESTS/.lolly-work-instance.XXXXXX")
+  trap 'rm -f "$next"' EXIT
+  cat > "$next" <<EOF
 # This machine's values for Lolly Work, written at boot by
 # /usr/libexec/lolly-appliance/instance from /etc/lolly/appliance.conf.
 # Change the settings there, not here: this file is regenerated.
@@ -73,14 +80,42 @@ spec:
       }
     }
 EOF
-chmod 0644 "$next"
-if [ -f "$INSTANCE_MANIFEST" ] && cmp -s "$next" "$INSTANCE_MANIFEST"; then
-  rm -f "$next"
+  chmod 0644 "$next"
+  if [ -f "$INSTANCE_MANIFEST" ] && cmp -s "$next" "$INSTANCE_MANIFEST"; then
+    rm -f "$next"
+  else
+    mv "$next" "$INSTANCE_MANIFEST"
+    log "Lolly Work address $base, owner $owner"
+  fi
+  trap - EXIT
+}
+
+write_instance_json() {
+  install -d -m 0755 "$(dirname "$WORK_INSTANCE")"
+  # The same merge K3s makes with the HelmChartConfig above.
+  python3 -c '
+import json, os, sys
+source, target, name, base, owner = sys.argv[1:]
+config = json.load(open(source))
+config["instance"].update({"name": name, "baseUrl": base})
+config["idp"]["admission"] = {"emails": [owner], "invitations": True}
+config["idp"]["bootstrapOwners"] = [owner]
+text = json.dumps(config, indent=2) + "\n"
+if os.path.exists(target) and open(target).read() == text:
+    sys.exit(0)
+with open(target + ".new", "w") as handle:
+    handle.write(text)
+os.chmod(target + ".new", 0o644)
+os.replace(target + ".new", target)
+print(f"lolly-appliance: Lolly Work address {base}, owner {owner}", file=sys.stderr)
+' "$WORK_CONFIG" "$WORK_INSTANCE" "$name" "$base" "$owner"
+}
+
+if [ "$PROFILE" = podman ]; then
+  write_instance_json
 else
-  mv "$next" "$INSTANCE_MANIFEST"
-  log "Lolly Work address $base, owner $owner"
+  write_helmchartconfig
 fi
-trap - EXIT
 
 cat > "$INSTANCE_ENV.new" <<EOF
 LOLLY_BASE_URL=$base

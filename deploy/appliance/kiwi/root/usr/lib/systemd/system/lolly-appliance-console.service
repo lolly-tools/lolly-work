@@ -1,6 +1,6 @@
 [Unit]
 Description=Lolly appliance: show the address and owner setup link on the console
-After=lolly-appliance-secrets.service
+After=lolly-appliance-instance.service lolly-appliance-secrets.service
 Wants=lolly-appliance-secrets.service
 
 [Service]

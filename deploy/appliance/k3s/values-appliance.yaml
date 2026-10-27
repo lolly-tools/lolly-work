@@ -20,42 +20,16 @@ image:
 
 existingSecret: lolly-work-secrets
 
-config:
-  deployment:
-    mode: production
-    application: api
-    requireServerRendering: false
-  instance:
-    name: "Lolly Work"
-    # Replaced at first boot by the machine's own HTTPS address.
-    baseUrl: "https://lolly.invalid"
-    # The demo pack inside the server image. It is unsigned, so production
-    # mode needs an operator-provisioned publication generation.
-    pack: /app/packs/demo
-    catalogPublicationGeneration: 1
-  idp:
-    issuer: ""
-    clientId: ""
-    additional:
-      - { id: email, kind: password, label: "Email and password" }
-    # The owner's address is written at first boot.
-    admission: { emails: [], invitations: true }
-    bootstrapOwners: []
-    roleGroups: { owner: [lolly-owner], admin: [], approver: [], author: [] }
-  policy:
-    defaultAccessMode: gated
-    telemetry: "off"
-    telemetryAttribution: opt-in
-    guestLinks: { enabled: false }
-    sessionTtlHours: 12
-  render:
-    # The demo pack ships inside the image and is curated, the case this
-    # setting exists for. There is no render worker on the appliance yet.
-    allowHooksInFastPath: true
-  rateLimit:
-    enabled: true
-    # Traefik is the one proxy in front of Work.
-    trustedProxyHops: 1
+# Lolly Work's own settings come from deploy/appliance/work-config.json, the
+# one file both profiles use (the podman profile writes it as instance.json).
+# It lists every key of the chart's default config, so Helm's merge adds
+# nothing and both profiles run the same configuration. In short: production
+# mode, the demo pack inside the image (unsigned, so an operator-provisioned
+# publication generation), email and password sign-in with gated access,
+# telemetry off, guest links off, and hooked tools allowed in the server
+# process because the demo pack is curated and there is no render worker yet.
+# This machine's address and owner are written at boot (see above).
+config: @WORK_CONFIG@
 
 # K3s's bundled Traefik serves HTTPS on 443 with the machine's own certificate
 # (lolly-https.yaml makes it Traefik's default certificate) and redirects 80.

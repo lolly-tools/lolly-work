@@ -1,7 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: MPL-2.0
 # First boot of a Lolly appliance: create this machine's secrets and its HTTPS
-# certificate. Runs once, before K3s starts (lolly-appliance-firstboot.service).
+# certificate. Runs once, before K3s or the Lolly containers start
+# (lolly-appliance-firstboot.service).
 #
 # Every secret is generated here, on the machine, and stored as an encrypted
 # systemd credential under /var/lib/lolly/credentials: bound to the TPM2 chip
@@ -72,6 +73,13 @@ fi
 # unattended install can turn it off with LOLLY_COCKPIT=off.
 if [ "$(conf_get LOLLY_COCKPIT on)" = off ]; then
   /usr/sbin/lolly-appliance cockpit off || log "could not turn Cockpit off"
+fi
+
+# The podman profile's own directories: PostgreSQL's data (its container runs
+# as uid 999) and Lolly Work's settings.
+if [ "$PROFILE" = podman ]; then
+  install -d -m 0700 -o 999 -g 999 "$STATE_DIR/postgres"
+  install -d -m 0755 "$STATE_DIR/work"
 fi
 
 touch "$STATE_DIR/firstboot.done"

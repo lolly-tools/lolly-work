@@ -1,0 +1,968 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: MPL-2.0
+"""lolly-update: keep Lolly Work up to date on a Lolly appliance.
+
+  lolly-update status                    what runs now, the channel, and what a rollback would do
+  lolly-update check                     what the channel offers, verified, without changing anything
+  lolly-update run                       the daily timer's job: check, then apply when LOLLY_UPDATE=auto
+  lolly-update apply [--version V]       apply the channel's newest release, or release V
+  lolly-update apply --definition FILE   apply a release definition (release.json) you supply
+  lolly-update rollback                  go back to the previous release; only after an update that ran no migration
+  lolly-update rollback --restore        go back by restoring the backup taken before a migrating update
+
+Options for apply and rollback: --timeout SECONDS (how long Lolly Work may take
+to become ready, default LOLLY_UPDATE_TIMEOUT or 900); apply on k3s also takes
+--keep-chart (keep the installed chart: only for a release with no published
+chart, as an administrator's choice).
+
+Settings, in /etc/lolly/appliance.conf:
+  LOLLY_UPDATE=auto|check|off          default auto
+  LOLLY_UPDATE_CHANNEL=stable|preview  default stable (preview includes pre-releases)
+  LOLLY_UPDATE_TIMEOUT=SECONDS         default 900
+
+Releases and their verification. The channel is the version tags of
+ghcr.io/lolly-tools/lolly-work-server. Lolly Work's release workflow signs each
+release image keylessly, and the signing certificate names the workflow at
+the release's own tag, so `cosign verify` with that identity proves the digest
+is release V and no other. On the k3s profile the chart is the one published
+for V (release chart-vV), whose Sigstore bundle must name the chart
+publication workflow on main, and whose Chart.yaml must say V. Nothing is
+installed that did not verify; TLS is always verified. A definition you supply
+with --definition is your choice for the images Lolly does not publish
+(PostgreSQL, Caddy), but its Lolly Work image must still verify as its version.
+
+How an update applies. The new images are pulled by digest first. The new
+server image checks the database for pending migrations (scripts/migrate.ts
+--check). If there are any, the update says so, stops Lolly Work and takes a
+backup (pg_dump) to /var/lib/lolly/backups before anything changes, and no
+plain rollback is offered afterwards: going back means restoring that backup.
+Then the runtime switches: podman writes the new digests into the Quadlet
+units in /var/lib/lolly/quadlet and restarts them; k3s rewrites the HelmChart
+manifest, which K3s's Helm controller applies. lolly-update then waits for
+/healthz and /readyz (over HTTPS, pinned to this machine's certificate) and the
+new image actually running. If that does not happen in time, it reverts:
+restores the backup when migrations ran, puts the previous release back and
+waits for it to be ready.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import fcntl
+import gzip
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import socket
+import ssl
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+SHARE = "/usr/share/lolly-appliance"
+SUMMARY = f"{SHARE}/release.json"
+SHIPPED = f"{SHARE}/release-definition.json"
+CONF = "/etc/lolly/appliance.conf"
+LOLLY = "/var/lib/lolly"
+STATE_DIR = f"{LOLLY}/update"
+STATE = f"{STATE_DIR}/state.json"
+BACKUPS = f"{LOLLY}/backups"
+CERT_SHA = f"{LOLLY}/tls/appliance.sha256"
+NOTICE = "/run/issue.d/62-lolly-update.issue"
+LOCK = "/run/lolly-update.lock"
+KEEP_BACKUPS = 3
+
+REPOSITORY = "lolly-tools/lolly-work"
+SERVER = "ghcr.io/lolly-tools/lolly-work-server"
+ISSUER = "https://token.actions.githubusercontent.com"
+CHART_IDENTITY = f"https://github.com/{REPOSITORY}/.github/workflows/publish-helm.yml@refs/heads/main"
+CHART_MAX_BYTES = 8 << 20
+
+IMAGE_REF = re.compile(r"^(?P<repository>[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9._/-]+?)(?::(?P<tag>[A-Za-z0-9_.-]+))?@(?P<digest>sha256:[a-f0-9]{64})$")
+VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$")
+MIGRATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.sql$")
+# The images the appliance runs, by release.json field.
+FIELDS = ("serverImage", "postgresImage", "caddyImage")
+USER_AGENT = "lolly-update/1"
+# Read inside Work's container: its secrets, one file per variable.
+WORK_ENV = 'for f in /run/lolly/env/*; do export "${f##*/}=$(cat "$f")"; done'
+
+
+class UpdateError(Exception):
+    pass
+
+
+def say(message: str = "") -> None:
+    print(message, flush=True)
+
+
+def release_identity(version: str) -> str:
+    """The certificate identity of Lolly Work's release workflow at tag vVERSION."""
+    return f"https://github.com/{REPOSITORY}/.github/workflows/release.yml@refs/tags/v{version}"
+
+
+def version_key(version: str) -> tuple:
+    match = VERSION.match(version)
+    if not match:
+        raise UpdateError(f"{version!r} is not a release version")
+    major, minor, patch, pre = match.groups()
+    # A release sorts after its pre-releases; numeric identifiers before others.
+    pre_key = tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in (pre or "").split(".")) if pre else ()
+    return (int(major), int(minor), int(patch), 0 if pre else 1, pre_key)
+
+
+def pin(ref: str) -> str:
+    """repository@digest: what the units and manifests run, without the tag."""
+    match = IMAGE_REF.match(ref or "")
+    if not match:
+        raise UpdateError(f"{ref!r} is not registry/name[:tag]@sha256:<digest>")
+    return f"{match['repository']}@{match['digest']}"
+
+
+def now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def conf(key: str, default: str) -> str:
+    value = ""
+    try:
+        for line in open(CONF):
+            match = re.match(rf"^\s*{key}\s*=\s*(.*?)\s*$", line)
+            if match:
+                value = match.group(1).strip("\"'")
+    except FileNotFoundError:
+        pass
+    return value or default
+
+
+def run(command: list[str], check: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    kwargs.setdefault("capture_output", "stdout" not in kwargs)
+    kwargs.setdefault("text", True)
+    result = subprocess.run(command, **kwargs)
+    if check and result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else (result.stderr or "")
+        detail = stderr.strip().splitlines()[-3:]
+        raise UpdateError(f"{' '.join(command[:4])} failed ({result.returncode}){': ' + ' / '.join(detail) if detail else ''}")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Release definitions and state
+
+def load_definition(data: dict, source: str) -> dict:
+    if not isinstance(data, dict) or data.get("schemaVersion") != 1:
+        raise UpdateError(f"{source}: schemaVersion must be 1")
+    version = str(data.get("version", ""))
+    version_key(version)
+    definition = {"schemaVersion": 1, "version": version}
+    for field in FIELDS:
+        pin(data.get(field, ""))
+        definition[field] = data[field]
+    if pin(definition["serverImage"]).split("@")[0] != SERVER:
+        raise UpdateError(f"{source}: serverImage must be {SERVER}")
+    return definition
+
+
+def summary() -> dict:
+    return json.load(open(SUMMARY))
+
+
+def load_state() -> dict:
+    if os.path.exists(STATE):
+        return json.load(open(STATE))
+    shipped = load_definition(json.load(open(SHIPPED)), SHIPPED)
+    installed = {**shipped, "via": "image", "at": None, "migrations": [], "backup": None}
+    image = summary()
+    if image.get("profile") == "k3s" and image.get("chart"):
+        installed["chart"] = {"version": image["chart"]["version"], "sha256": image["chart"]["sha256"]}
+    return {"schemaVersion": 1, "profile": image.get("profile", "k3s"), "installed": installed, "previous": None, "history": []}
+
+
+def save_state(state: dict) -> None:
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    temporary = f"{STATE}.new"
+    with open(temporary, "w") as handle:
+        json.dump(state, handle, indent=2)
+        handle.write("\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, STATE)
+
+
+def record(state: dict, entry: dict) -> None:
+    state["history"] = (state.get("history") or [])[-19:] + [{"at": now(), **entry}]
+    save_state(state)
+
+
+def notice(lines: list[str]) -> None:
+    """A line on every console (no secrets in it)."""
+    try:
+        os.makedirs(os.path.dirname(NOTICE), exist_ok=True)
+        with open(NOTICE + ".new", "w") as handle:
+            handle.write("\n" + "\n".join(f"  {line}" for line in lines) + "\n\n")
+        os.replace(NOTICE + ".new", NOTICE)
+        subprocess.run(["agetty", "--reload"], capture_output=True)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Registry, signatures and the chart
+
+def https_context() -> ssl.SSLContext:
+    # The system's trust store, hostname checking on; never relaxed.
+    return ssl.create_default_context()
+
+
+def fetch(url: str, headers: dict | None = None, method: str = "GET", limit: int = 16 << 20):
+    if not url.startswith("https://"):
+        raise UpdateError(f"{url}: only HTTPS")
+    request = urllib.request.Request(url, method=method, headers={"User-Agent": USER_AGENT, **(headers or {})})
+    with urllib.request.urlopen(request, timeout=60, context=https_context()) as response:
+        body = response.read(limit + 1) if method != "HEAD" else b""
+        if len(body) > limit:
+            raise UpdateError(f"{url}: larger than {limit} bytes")
+        # Header names are case-insensitive; registries send them in either case.
+        return response.status, {key.lower(): value for key, value in response.headers.items()}, body
+
+
+class Registry:
+    """Anonymous reads from an OCI distribution registry."""
+
+    INDEX = ("application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json",
+             "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json")
+
+    def __init__(self, repository: str):
+        host, _, self.path = repository.partition("/")
+        self.host = {"docker.io": "registry-1.docker.io"}.get(host, host)
+        self.token = None
+
+    def call(self, path: str, method: str = "GET", accept: tuple = ()) -> tuple:
+        url = f"https://{self.host}/v2/{self.path}/{path}"
+        for _ in range(2):
+            headers = {"Accept": ", ".join(accept)} if accept else {}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+            try:
+                return fetch(url, headers, method)
+            except urllib.error.HTTPError as error:
+                if error.code == 401 and not self.token:
+                    challenge = error.headers.get("WWW-Authenticate", "")
+                    fields = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+                    if not challenge.lower().startswith("bearer") or not fields.get("realm", "").startswith("https://"):
+                        raise UpdateError(f"{self.host}: unsupported registry authentication") from error
+                    query = urllib.parse.urlencode({"service": fields.get("service", ""), "scope": f"repository:{self.path}:pull"})
+                    _, _, body = fetch(f"{fields['realm']}?{query}")
+                    token = json.loads(body)
+                    self.token = token.get("token") or token.get("access_token")
+                    continue
+                raise UpdateError(f"{url}: HTTP {error.code}") from error
+        raise UpdateError(f"{url}: not authorised")
+
+    def tags(self) -> list[str]:
+        tags, path = [], "tags/list?n=1000"
+        for _ in range(20):
+            _, headers, body = self.call(path)
+            tags += json.loads(body).get("tags") or []
+            link = re.search(r"<([^>]+)>;\s*rel=\"next\"", headers.get("link", ""))
+            if not link:
+                return tags
+            path = link.group(1).split(f"/v2/{self.path}/", 1)[-1]
+        return tags
+
+    def digest(self, tag: str) -> str:
+        _, headers, _ = self.call(f"manifests/{tag}", "HEAD", self.INDEX)
+        digest = headers.get("docker-content-digest", "")
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+            raise UpdateError(f"{self.host}/{self.path}:{tag}: no content digest")
+        return digest
+
+
+def cosign(arguments: list[str]) -> subprocess.CompletedProcess:
+    home = f"{STATE_DIR}/sigstore"
+    os.makedirs(home, mode=0o700, exist_ok=True)
+    return subprocess.run(["cosign", *arguments], capture_output=True, text=True, env={**os.environ, "HOME": home})
+
+
+def verify_image(ref: str, version: str) -> None:
+    """The image must be signed by Lolly Work's release workflow at tag vVERSION."""
+    target = pin(ref)
+    digest = target.split("@", 1)[1]
+    identity = release_identity(version)
+    result = cosign(["verify", "--certificate-identity", identity, "--certificate-oidc-issuer", ISSUER, target])
+    if result.returncode != 0:
+        reason = (result.stderr.strip().splitlines() or ["no output"])[-1]
+        raise UpdateError(f"{target} is not signed as Lolly Work {version} ({identity}): {reason}")
+    claims = json.loads(result.stdout or "[]")
+    if not claims or any(claim.get("critical", {}).get("image", {}).get("docker-manifest-digest") != digest for claim in claims):
+        raise UpdateError(f"{target}: the signature does not cover this digest")
+    say(f"Verified {target}: signed by {identity}")
+
+
+def fetch_chart(version: str, directory: str) -> dict | None:
+    """The chart published for VERSION, verified, or None when there is none yet."""
+    base = f"https://github.com/{REPOSITORY}/releases/download/chart-v{version}/"
+    try:
+        _, _, body = fetch(base + "chart-release.json", limit=1 << 16)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise UpdateError(f"chart {version}: HTTP {error.code}") from error
+    meta = json.loads(body)
+    archive = f"lolly-work-{version}.tgz"
+    if meta.get("archive") != archive or meta.get("version") != version or meta.get("appVersion") != version:
+        raise UpdateError(f"chart {version}: chart-release.json does not describe {archive} at {version}")
+    paths = {}
+    for name in (archive, archive + ".sigstore.json"):
+        _, _, data = fetch(base + name, limit=CHART_MAX_BYTES)
+        paths[name] = os.path.join(directory, name)
+        with open(paths[name], "wb") as handle:
+            handle.write(data)
+    result = cosign(["verify-blob", "--bundle", paths[archive + ".sigstore.json"], "--certificate-identity", CHART_IDENTITY,
+                     "--certificate-oidc-issuer", ISSUER, paths[archive]])
+    if result.returncode != 0:
+        raise UpdateError(f"chart {version} is not signed by {CHART_IDENTITY}: {(result.stderr.strip().splitlines() or [''])[-1]}")
+    content = open(paths[archive], "rb").read()
+    sha = hashlib.sha256(content).hexdigest()
+    if sha != meta.get("sha256"):
+        raise UpdateError(f"chart {version}: sha256 differs from chart-release.json")
+    with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as tar:
+        chart_yaml = tar.extractfile("lolly-work/Chart.yaml").read().decode()
+    if not re.search(rf"^version:\s*{re.escape(version)}\s*$", chart_yaml, re.M) or \
+            not re.search(rf"^appVersion:\s*\"?{re.escape(version)}\"?\s*$", chart_yaml, re.M):
+        raise UpdateError(f"chart {version}: Chart.yaml does not carry version and appVersion {version}")
+    say(f"Verified chart {archive} (sha256 {sha[:16]}...): signed by {CHART_IDENTITY}")
+    return {"version": version, "sha256": sha, "content": content}
+
+
+# ---------------------------------------------------------------------------
+# Health, over HTTPS pinned to this machine's own certificate
+
+def https_status(path: str) -> int:
+    expected = open(CERT_SHA).read().strip().replace(":", "").lower()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # The certificate is self-signed for this machine: it is checked by its
+    # fingerprint below instead of by a certificate authority.
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    with socket.create_connection(("127.0.0.1", 443), timeout=5) as raw:
+        with context.wrap_socket(raw, server_hostname="lolly.local") as tls:
+            if hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest() != expected:
+                raise UpdateError("the HTTPS certificate on 127.0.0.1 is not this appliance's")
+            tls.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".encode())
+            line = tls.recv(64).split(b"\r\n", 1)[0].decode(errors="replace")
+    match = re.match(r"HTTP/\d(?:\.\d)? (\d{3})", line)
+    return int(match.group(1)) if match else 0
+
+
+def lolly_ready() -> bool:
+    try:
+        return https_status("/healthz") == 200 and https_status("/readyz") == 200
+    except (OSError, UpdateError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Pending migrations
+
+def parse_pending(result: subprocess.CompletedProcess) -> list[str]:
+    """scripts/migrate.ts --check: exit 0 when current; exit 1 and
+    'pending (N): a.sql, b.sql' when migrations are pending."""
+    output = f"{result.stdout or ''}\n{result.stderr or ''}"
+    if result.returncode == 0 and "schema current" in output:
+        return []
+    match = re.search(r"pending \((\d+)\): ([^\n]+)", output)
+    if result.returncode == 1 and match:
+        names = [name.strip() for name in match.group(2).split(",")]
+        if len(names) == int(match.group(1)) and all(MIGRATION.match(name) for name in names):
+            return names
+    tail = " / ".join(output.strip().splitlines()[-3:])
+    raise UpdateError(f"could not tell whether the new release migrates the database (exit {result.returncode}): {tail}")
+
+
+# ---------------------------------------------------------------------------
+# Runtime backends
+#
+# Each backend reads the files that pin what runs (files), computes new ones
+# for a release without touching anything (render), and makes a set of files
+# take effect (put). A revert or rollback puts back the exact previous files,
+# which apply() keeps in /var/lib/lolly/update/previous.json.
+
+def changed(field: str, old: dict, new: dict) -> bool:
+    return bool(new.get(field)) and (not old.get(field) or pin(old[field]) != pin(new[field]))
+
+
+def put_text(path: str, text: str, mode: int = 0o644) -> None:
+    # A hidden temporary name: K3s reads only *.yaml, *.yml and *.json files.
+    temporary = os.path.join(os.path.dirname(path), f".{os.path.basename(path)}.new")
+    with open(temporary, "w") as handle:
+        handle.write(text)
+    os.chmod(temporary, mode)
+    os.replace(temporary, path)
+
+
+class Podman:
+    name = "podman"
+    QUADLET = f"{LOLLY}/quadlet"
+    UNITS = {"serverImage": "lolly-work", "postgresImage": "lolly-postgres", "caddyImage": "lolly-caddy"}
+
+    def files(self) -> dict:
+        return {f"{self.QUADLET}/{unit}.container": open(f"{self.QUADLET}/{unit}.container").read() for unit in self.UNITS.values()}
+
+    @classmethod
+    def pins(cls, files: dict) -> dict:
+        found = {}
+        for field, unit in cls.UNITS.items():
+            match = re.search(r"^Image=(\S+)$", files[f"{cls.QUADLET}/{unit}.container"], re.M)
+            found[field] = match.group(1) if match else None
+        return found
+
+    @classmethod
+    def render(cls, files: dict, target: dict, chart: dict | None = None) -> dict:
+        out = dict(files)
+        for field, unit in cls.UNITS.items():
+            path = f"{cls.QUADLET}/{unit}.container"
+            text, count = re.subn(r"^Image=\S+$", f"Image={pin(target[field])}", files[path], count=1, flags=re.M)
+            if count != 1:
+                raise UpdateError(f"{path} has no Image line")
+            out[path] = re.sub(r"^(# (?:PostgreSQL for |HTTPS for )?Lolly Work )\d+\.\d+\.\d+\S*", rf"\g<1>{target['version']}", text, count=1, flags=re.M)
+        return out
+
+    def put(self, old: dict, new: dict) -> None:
+        before, after = self.pins(old), self.pins(new)
+        for path, text in new.items():
+            if old.get(path) != text:
+                put_text(path, text)
+        run(["systemctl", "daemon-reload"])
+        # Restarting PostgreSQL restarts Lolly Work with it (Requires=).
+        for field, unit in self.UNITS.items():
+            if changed(field, before, after):
+                run(["systemctl", "restart", "--no-block", f"{unit}.service"])
+        run(["systemctl", "start", "--no-block", "lolly-postgres.service", "lolly-work.service", "lolly-caddy.service"])
+
+    def prepare(self, target: dict, current: dict) -> None:
+        for field in FIELDS:
+            if changed(field, current, target):
+                say(f"Pulling {pin(target[field])}")
+                run(["podman", "pull", "--quiet", pin(target[field])])
+
+    def pending(self, target: dict, current: dict) -> list[str]:
+        if not changed("serverImage", current, target):
+            return []
+        if not os.path.isdir("/run/lolly/containers/work"):
+            raise UpdateError("Lolly Work is not running, so its database cannot be checked; start it first (systemctl start lolly-work)")
+        result = run(["podman", "run", "--rm", "--pull", "never", "--network", "lolly", "--read-only", "--cap-drop", "all",
+                      "--security-opt", "no-new-privileges", "--security-opt", "label=level:s0:c20,c21",
+                      "--volume", "/run/lolly/containers/work:/run/lolly:ro", "--tmpfs", "/tmp:rw,size=64m",
+                      pin(target["serverImage"]), "/bin/sh", "-ec", f"{WORK_ENV}; exec node scripts/migrate.ts --check"], check=False)
+        return parse_pending(result)
+
+    def backup(self, path: str) -> None:
+        # A consistent copy: nothing writes while it is taken.
+        run(["systemctl", "stop", "lolly-work.service"])
+        with open(path, "wb") as out:
+            run(["podman", "exec", "lolly-postgres", "pg_dump", "-U", "lolly", "-d", "lollywork", "-Fc"], stdout=out, text=False)
+
+    def list_backup(self, path: str) -> int:
+        with open(path, "rb") as source:
+            result = run(["podman", "exec", "-i", "lolly-postgres", "pg_restore", "--list"], stdin=source, text=False, capture_output=True)
+        return len([line for line in result.stdout.decode().splitlines() if line and not line.startswith(";")])
+
+    def restore(self, path: str) -> None:
+        run(["systemctl", "stop", "lolly-work.service"])
+        run(["podman", "exec", "lolly-postgres", "psql", "-U", "lolly", "-d", "postgres", "-v", "ON_ERROR_STOP=1",
+             "-c", "DROP DATABASE IF EXISTS lollywork WITH (FORCE)", "-c", "CREATE DATABASE lollywork OWNER lolly"])
+        with open(path, "rb") as source:
+            run(["podman", "exec", "-i", "lolly-postgres", "pg_restore", "-U", "lolly", "-d", "lollywork", "--no-owner",
+                 "--exit-on-error"], stdin=source, text=False, capture_output=True)
+
+    def after_restore(self) -> None:
+        pass
+
+    def ready(self, target: dict) -> bool:
+        result = run(["podman", "inspect", "--format", "{{.ImageName}} {{.State.Status}}", "lolly-work", "lolly-postgres", "lolly-caddy"], check=False)
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()] if result.returncode == 0 else []
+        expected = [f"{pin(target[field])} running" for field in ("serverImage", "postgresImage", "caddyImage")]
+        return lines == expected and lolly_ready()
+
+
+class K3s:
+    name = "k3s"
+    MANIFESTS = "/var/lib/rancher/k3s/server/manifests"
+    WORK = f"{MANIFESTS}/lolly-work.yaml"
+    POSTGRES = f"{MANIFESTS}/lolly-postgres.yaml"
+    KUBECTL = ["/usr/local/bin/k3s", "kubectl"]
+    SERVER_PIN = re.compile(r'^(\s+repository: ")(?P<repository>[^"]+)("\n\s+digest: ")(?P<digest>sha256:[a-f0-9]{64})(")$', re.M)
+    POSTGRES_PIN = re.compile(r'^(\s+image: ")(?P<ref>[^"]+@sha256:[a-f0-9]{64})(")$', re.M)
+
+    def kubectl(self, *arguments: str, **kwargs) -> subprocess.CompletedProcess:
+        return run([*self.KUBECTL, *arguments], **kwargs)
+
+    def files(self) -> dict:
+        return {self.WORK: open(self.WORK).read(), self.POSTGRES: open(self.POSTGRES).read()}
+
+    @classmethod
+    def pins(cls, files: dict) -> dict:
+        work = cls.SERVER_PIN.search(files[cls.WORK])
+        postgres = cls.POSTGRES_PIN.search(files[cls.POSTGRES])
+        return {"serverImage": f"{work['repository']}@{work['digest']}" if work else None,
+                "postgresImage": postgres["ref"] if postgres else None, "caddyImage": None}
+
+    @classmethod
+    def render(cls, files: dict, target: dict, chart: dict | None = None) -> dict:
+        repository, digest = pin(target["serverImage"]).split("@")
+        text, count = cls.SERVER_PIN.subn(lambda m: f"{m.group(1)}{repository}{m.group(3)}{digest}{m.group(5)}"
+                                          if m["repository"] == repository else m.group(0), files[cls.WORK])
+        if count != 1 or f'digest: "{digest}"' not in text:
+            raise UpdateError(f"{cls.WORK} does not pin {repository} as generated")
+        text = re.sub(r'(lolly\.work/release: ")[^"]*(")', rf"\g<1>{target['version']}\g<2>", text, count=1)
+        text = re.sub(r"^(# Lolly Work )\d+\.\d+\.\d+\S*", rf"\g<1>{target['version']}", text, count=1, flags=re.M)
+        if chart:
+            import base64
+            text, count = re.subn(r"^(  chartContent: )\S+$", lambda m: m.group(1) + base64.b64encode(chart["content"]).decode(), text, count=1, flags=re.M)
+            if count != 1:
+                raise UpdateError(f"{cls.WORK} carries no chartContent")
+            text = re.sub(r'(lolly\.work/chart-sha256: ")[^"]*(")', rf"\g<1>{chart['sha256']}\g<2>", text, count=1)
+        postgres, count = cls.POSTGRES_PIN.subn(lambda m: f"{m.group(1)}{pin(target['postgresImage'])}{m.group(3)}", files[cls.POSTGRES], count=1)
+        if count != 1:
+            raise UpdateError(f"{cls.POSTGRES} does not pin an image as generated")
+        return {cls.WORK: text, cls.POSTGRES: postgres}
+
+    def put(self, old: dict, new: dict) -> None:
+        # K3s applies a changed manifest by itself; its Helm controller runs the
+        # chart upgrade (with the chart's migration Job) for lolly-work.yaml.
+        for path, text in new.items():
+            if old.get(path) != text:
+                put_text(path, text, 0o600)
+
+    def prepare(self, target: dict, current: dict) -> None:
+        for field in ("serverImage", "postgresImage"):
+            if changed(field, current, target):
+                say(f"Pulling {pin(target[field])}")
+                run(["/usr/local/bin/k3s", "crictl", "pull", pin(target[field])])
+
+    def pending(self, target: dict, current: dict) -> list[str]:
+        if not changed("serverImage", current, target):
+            return []
+        name = f"lolly-update-migrations-{int(time.time())}"
+        job = {
+            "apiVersion": "batch/v1", "kind": "Job",
+            "metadata": {"name": name, "namespace": "lolly", "labels": {"app.kubernetes.io/part-of": "lolly-appliance"}},
+            "spec": {
+                "backoffLimit": 0, "activeDeadlineSeconds": 300, "ttlSecondsAfterFinished": 600,
+                "template": {
+                    # The labels of the chart's own migration Job, so the same
+                    # network policies admit it to PostgreSQL.
+                    "metadata": {"labels": {"app.kubernetes.io/name": "lolly-work", "app.kubernetes.io/instance": "lolly-work",
+                                            "app.kubernetes.io/component": "migrate"}},
+                    "spec": {
+                        "restartPolicy": "Never", "automountServiceAccountToken": False,
+                        "securityContext": {"runAsNonRoot": True, "runAsUser": 1000, "runAsGroup": 1000, "seccompProfile": {"type": "RuntimeDefault"}},
+                        "containers": [{
+                            "name": "check", "image": pin(target["serverImage"]), "imagePullPolicy": "IfNotPresent",
+                            "command": ["node", "scripts/migrate.ts", "--check"],
+                            "env": [{"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "lolly-work-secrets", "key": "DATABASE_URL"}}}],
+                            "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}},
+                            "resources": {"limits": {"memory": "256Mi"}},
+                        }],
+                    },
+                },
+            },
+        }
+        self.kubectl("create", "-f", "-", input=json.dumps(job))
+        try:
+            deadline = time.time() + 330
+            while True:
+                status = json.loads(self.kubectl("-n", "lolly", "get", "job", name, "-o", "json").stdout).get("status", {})
+                if status.get("succeeded") or status.get("failed"):
+                    break
+                if time.time() > deadline:
+                    raise UpdateError("the migration check did not finish")
+                time.sleep(3)
+            logs = self.kubectl("-n", "lolly", "logs", f"job/{name}", check=False)
+            code = 0 if status.get("succeeded") else 1
+            return parse_pending(subprocess.CompletedProcess([], code, logs.stdout, logs.stderr))
+        finally:
+            self.kubectl("-n", "lolly", "delete", "job", name, "--wait=false", check=False)
+
+    def backup(self, path: str) -> None:
+        with open(path, "wb") as out:
+            run([*self.KUBECTL, "-n", "lolly", "exec", "lolly-postgres-0", "-c", "postgres", "--",
+                 "pg_dump", "-U", "lolly", "-d", "lollywork", "-Fc"], stdout=out, text=False)
+
+    def list_backup(self, path: str) -> int:
+        with open(path, "rb") as source:
+            result = run([*self.KUBECTL, "-n", "lolly", "exec", "-i", "lolly-postgres-0", "-c", "postgres", "--",
+                          "pg_restore", "--list"], stdin=source, text=False, capture_output=True)
+        return len([line for line in result.stdout.decode().splitlines() if line and not line.startswith(";")])
+
+    def restore(self, path: str) -> None:
+        self.kubectl("-n", "lolly", "scale", "deployment/lolly-work", "--replicas=0")
+        self.kubectl("-n", "lolly", "wait", "--for=delete", "pod", "-l",
+                     "app.kubernetes.io/instance=lolly-work,app.kubernetes.io/component=control-plane", "--timeout=180s", check=False)
+        self.kubectl("-n", "lolly", "exec", "lolly-postgres-0", "-c", "postgres", "--", "psql", "-U", "lolly", "-d", "postgres",
+                     "-v", "ON_ERROR_STOP=1", "-c", "DROP DATABASE IF EXISTS lollywork WITH (FORCE)", "-c", "CREATE DATABASE lollywork OWNER lolly")
+        with open(path, "rb") as source:
+            run([*self.KUBECTL, "-n", "lolly", "exec", "-i", "lolly-postgres-0", "-c", "postgres", "--",
+                 "pg_restore", "-U", "lolly", "-d", "lollywork", "--no-owner", "--exit-on-error"], stdin=source, text=False, capture_output=True)
+
+    def after_restore(self) -> None:
+        # Helm sets replicas again when it applies the chart; make sure of it.
+        time.sleep(10)
+        self.kubectl("-n", "lolly", "scale", "deployment/lolly-work", "--replicas=1", check=False)
+
+    def ready(self, target: dict) -> bool:
+        result = self.kubectl("-n", "lolly", "get", "deployment", "lolly-work", "-o", "json", check=False)
+        if result.returncode != 0:
+            return False
+        deployment = json.loads(result.stdout)
+        spec, status = deployment["spec"], deployment.get("status", {})
+        image = spec["template"]["spec"]["containers"][0]["image"]
+        settled = (status.get("observedGeneration", 0) >= deployment["metadata"]["generation"]
+                   and spec.get("replicas", 0) >= 1
+                   and status.get("updatedReplicas") == spec.get("replicas") == status.get("availableReplicas") == status.get("readyReplicas")
+                   and not status.get("unavailableReplicas"))
+        api = self.kubectl("get", "--raw=/readyz", check=False).stdout.strip() == "ok"
+        return "@" in image and pin(image) == pin(target["serverImage"]) and settled and api and lolly_ready()
+
+
+def backend() -> Podman | K3s:
+    return Podman() if summary().get("profile") == "podman" else K3s()
+
+
+# ---------------------------------------------------------------------------
+# The channel
+
+def channel_offer(state: dict, runtime, version: str | None = None, keep_chart: bool = False) -> dict | None:
+    """The newest release on the channel newer than the installed one (or
+    exactly VERSION), verified. None when there is nothing newer."""
+    installed = state["installed"]
+    channel = conf("LOLLY_UPDATE_CHANNEL", "stable")
+    if channel not in ("stable", "preview"):
+        raise UpdateError(f"LOLLY_UPDATE_CHANNEL must be stable or preview, not {channel!r}")
+    registry = Registry(SERVER)
+    tags = [tag for tag in registry.tags() if VERSION.match(tag)]
+    if version:
+        if version not in tags:
+            raise UpdateError(f"Lolly Work {version} is not published at {SERVER}")
+        candidate = version
+    else:
+        if channel == "stable":
+            tags = [tag for tag in tags if "-" not in tag]
+        newer = sorted((tag for tag in tags if version_key(tag) > version_key(installed["version"])), key=version_key)
+        if not newer:
+            return None
+        candidate = newer[-1]
+    digest = registry.digest(candidate)
+    ref = f"{SERVER}:{candidate}@{digest}"
+    verify_image(ref, candidate)
+    # The images Lolly does not publish stay as they are.
+    offer = {**{key: installed[key] for key in ("schemaVersion", *FIELDS)}, "version": candidate, "serverImage": ref}
+    if runtime.name == "k3s" and not keep_chart:
+        with tempfile.TemporaryDirectory(prefix="lolly-chart-") as directory:
+            chart = fetch_chart(candidate, directory)
+        if chart is None:
+            raise UpdateError(f"Lolly Work {candidate} has no published chart (release chart-v{candidate}) yet, so the k3s "
+                              "profile waits for it. An administrator can keep the installed chart: "
+                              f"lolly-update apply --version {candidate} --keep-chart")
+        offer["_chart"] = chart
+    return offer
+
+
+# ---------------------------------------------------------------------------
+# Applying, reverting and rolling back
+
+def wait_ready(runtime, target: dict, timeout: int) -> float | None:
+    started = time.time()
+    while time.time() - started < timeout:
+        if runtime.ready(target):
+            return time.time() - started
+        time.sleep(5)
+    return None
+
+
+def prune_backups(state: dict) -> None:
+    keep = {entry.get("backup") for entry in [state.get("installed") or {}, state.get("previous") or {}]}
+    backups = sorted((os.path.join(BACKUPS, name) for name in os.listdir(BACKUPS) if name.endswith(".dump")), key=os.path.getmtime)
+    for path in backups[:-KEEP_BACKUPS]:
+        if path not in keep:
+            os.remove(path)
+
+
+PREVIOUS_FILES = f"{STATE_DIR}/previous.json"
+
+
+def definition_of(entry: dict) -> dict:
+    return {key: entry[key] for key in ("schemaVersion", "version", *FIELDS) if key in entry}
+
+
+def apply(state: dict, runtime, target: dict, via: str, timeout: int) -> int:
+    installed = state["installed"]
+    chart = target.pop("_chart", None)
+    old = runtime.files()
+    current = {**definition_of(installed), **{key: value for key, value in runtime.pins(old).items() if value}}
+    new = runtime.render(old, target, chart)
+    changes = [field for field in FIELDS if changed(field, current, target)]
+    if chart and chart["sha256"] != (installed.get("chart") or {}).get("sha256"):
+        changes.append("chart")
+    if new == old:
+        say(f"Lolly Work {target['version']} is already what runs here; nothing to do.")
+        return 0
+    say(f"Updating Lolly Work {installed['version']} -> {target['version']} ({', '.join(changes) or 'labels'}) on the {runtime.name} profile")
+    runtime.prepare(target, current)
+    migrations = runtime.pending(target, current)
+    backup = None
+    if migrations:
+        os.makedirs(BACKUPS, mode=0o700, exist_ok=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = os.path.join(BACKUPS, f"lolly-work-{installed['version']}-before-{target['version']}-{stamp}.dump")
+        say(f"Lolly Work {target['version']} runs {len(migrations)} database migration{'s' if len(migrations) != 1 else ''}: {', '.join(migrations)}.")
+        say(f"Taking a backup first: {backup}")
+        say("After this update there is no plain rollback: going back means restoring this backup (lolly-update rollback --restore), "
+            "which loses changes made after the update.")
+        notice([f"Lolly Work update {installed['version']} -> {target['version']}: {len(migrations)} database migrations; "
+                f"backup {os.path.basename(backup)} taken first."])
+        mask = os.umask(0o077)
+        try:
+            runtime.backup(backup)
+        finally:
+            os.umask(mask)
+        entries, size = runtime.list_backup(backup), os.path.getsize(backup)
+        if entries < 1 or size < 1:
+            raise UpdateError(f"the backup {backup} is empty; nothing changed (start Lolly Work again: lolly-update status)")
+        say(f"Backup taken: {size} bytes, {entries} entries, sha256 {hashlib.sha256(open(backup, 'rb').read()).hexdigest()[:16]}...")
+    else:
+        say("This update runs no database migration, so lolly-update rollback stays available afterwards.")
+    # Exactly what to put back on a revert or a later rollback.
+    with open(PREVIOUS_FILES + ".new", "w") as handle:
+        json.dump({"version": installed["version"], "files": old}, handle)
+    os.chmod(PREVIOUS_FILES + ".new", 0o600)
+    os.replace(PREVIOUS_FILES + ".new", PREVIOUS_FILES)
+    state["inProgress"] = {"from": installed["version"], "to": target["version"], "at": now(), "backup": backup}
+    save_state(state)
+    started = time.time()
+    runtime.put(old, new)
+    waited = wait_ready(runtime, target, timeout)
+    if waited is not None:
+        entry = {**definition_of(target), "via": via, "at": now(), "migrations": migrations, "backup": backup}
+        if chart:
+            entry["chart"] = {"version": chart["version"], "sha256": chart["sha256"]}
+        elif installed.get("chart"):
+            entry["chart"] = installed["chart"]
+        state["previous"], state["installed"] = installed, entry
+        state.pop("inProgress", None)
+        record(state, {"result": "updated", "from": installed["version"], "to": target["version"], "migrations": len(migrations),
+                       "backup": backup, "seconds": round(time.time() - started)})
+        if os.path.isdir(BACKUPS):
+            prune_backups(state)
+        say(f"Lolly Work {target['version']} is ready, {waited:.0f} s after the switch.")
+        say(f"To go back to {installed['version']}: " + ("lolly-update rollback --restore (restores the backup)" if migrations else "lolly-update rollback"))
+        notice([f"Lolly Work updated {installed['version']} -> {target['version']} at {now()}"
+                + (f"; {len(migrations)} migrations, backup {os.path.basename(backup)}" if migrations else "")])
+        return 0
+    say(f"Lolly Work {target['version']} did not become ready within {timeout} s; putting {installed['version']} back.")
+    if migrations:
+        say(f"Restoring the backup taken before the update ({backup}).")
+        runtime.restore(backup)
+    runtime.put(new, old)
+    if migrations:
+        runtime.after_restore()
+    back = wait_ready(runtime, definition_of(installed), max(timeout, 600))
+    state.pop("inProgress", None)
+    record(state, {"result": "reverted" if back is not None else "revert-failed", "from": installed["version"], "to": target["version"],
+                   "migrations": len(migrations), "backup": backup})
+    if back is None:
+        notice([f"Lolly Work update to {target['version']} failed and {installed['version']} is not ready again; run lolly-update status"])
+        raise UpdateError(f"{installed['version']} did not become ready again after the revert; see lolly-update status and the journal")
+    say(f"Reverted: Lolly Work {installed['version']} is ready again, {back:.0f} s later" + (", with the backup restored." if migrations else "."))
+    notice([f"Lolly Work update to {target['version']} failed and was reverted to {installed['version']} at {now()}"])
+    return 1
+
+
+def rollback(state: dict, runtime, restore: bool, timeout: int) -> int:
+    installed, previous = state["installed"], state.get("previous")
+    if not previous or not os.path.exists(PREVIOUS_FILES):
+        raise UpdateError("there is no previous release on this machine to go back to")
+    saved = json.load(open(PREVIOUS_FILES))
+    if saved.get("version") != previous["version"]:
+        raise UpdateError(f"{PREVIOUS_FILES} does not describe {previous['version']}")
+    migrations = installed.get("migrations") or []
+    if migrations and not restore:
+        raise UpdateError(f"the update to {installed['version']} ran {len(migrations)} database migrations, so it cannot be rolled back in place. "
+                          f"Going back to {previous['version']} means restoring the backup taken before it ({installed.get('backup')}); "
+                          "changes made since the update are lost. To do that: lolly-update rollback --restore")
+    if restore and not migrations:
+        raise UpdateError(f"the update to {installed['version']} ran no migration; use lolly-update rollback (nothing needs restoring)")
+    if restore and not (installed.get("backup") and os.path.exists(installed["backup"])):
+        raise UpdateError(f"the backup {installed.get('backup')} is not there any more")
+    target = definition_of(previous)
+    say(f"Rolling back Lolly Work {installed['version']} -> {previous['version']}"
+        + (f", restoring {installed['backup']}" if restore else "; the update ran no migration, so nothing is restored"))
+    started = time.time()
+    old = runtime.files()
+    runtime.prepare(target, {**definition_of(installed), **{k: v for k, v in runtime.pins(old).items() if v}})
+    if restore:
+        runtime.restore(installed["backup"])
+    runtime.put(old, saved["files"])
+    if restore:
+        runtime.after_restore()
+    waited = wait_ready(runtime, target, timeout)
+    if waited is None:
+        record(state, {"result": "rollback-failed", "from": installed["version"], "to": previous["version"]})
+        raise UpdateError(f"{previous['version']} did not become ready within {timeout} s")
+    state["installed"] = {**previous, "via": "rollback-restore" if restore else "rollback", "at": now()}
+    state["previous"] = None
+    os.remove(PREVIOUS_FILES)
+    record(state, {"result": "rolled-back", "from": installed["version"], "to": previous["version"], "restored": bool(restore),
+                   "seconds": round(time.time() - started)})
+    say(f"Lolly Work {previous['version']} is ready, {waited:.0f} s later.")
+    notice([f"Lolly Work rolled back {installed['version']} -> {previous['version']} at {now()}" + (" (backup restored)" if restore else "")])
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Commands
+
+def cmd_status(state: dict, runtime) -> int:
+    installed = state["installed"]
+    say(f"Profile:        {runtime.name}")
+    say(f"Lolly Work:     {installed['version']} ({pin(installed['serverImage'])})")
+    if installed.get("chart"):
+        say(f"Chart:          {installed['chart']['version']} (sha256 {installed['chart']['sha256'][:16]}...)")
+    say(f"PostgreSQL:     {pin(installed['postgresImage'])}")
+    if runtime.name == "podman":
+        say(f"Caddy:          {pin(installed['caddyImage'])}")
+    say(f"Installed by:   {installed.get('via')}{' at ' + installed['at'] if installed.get('at') else ''}")
+    say(f"Updates:        {conf('LOLLY_UPDATE', 'auto')}, {conf('LOLLY_UPDATE_CHANNEL', 'stable')} channel, daily (lolly-update.timer)")
+    previous = state.get("previous")
+    if not previous:
+        say("Rollback:       none (no earlier release on this machine)")
+    elif installed.get("migrations"):
+        say(f"Rollback:       to {previous['version']} only by restoring {installed.get('backup')} "
+            f"({len(installed['migrations'])} migrations ran): lolly-update rollback --restore")
+    else:
+        say(f"Rollback:       to {previous['version']}: lolly-update rollback")
+    if state.get("inProgress"):
+        say(f"Interrupted:    an update {state['inProgress']['from']} -> {state['inProgress']['to']} started at {state['inProgress']['at']} did not finish")
+    for entry in (state.get("history") or [])[-5:]:
+        say(f"History:        {entry['at']} {entry.get('result')} {entry.get('from')} -> {entry.get('to')}"
+            + (f", {entry['migrations']} migrations" if entry.get("migrations") else ""))
+    say(f"Ready:          {'yes' if lolly_ready() else 'no'}")
+    return 0
+
+
+def cmd_check(state: dict, runtime) -> int:
+    offer = channel_offer(state, runtime)
+    if not offer:
+        say(f"Lolly Work {state['installed']['version']} is the newest release on the {conf('LOLLY_UPDATE_CHANNEL', 'stable')} channel.")
+        return 0
+    offer.pop("_chart", None)
+    say(f"Lolly Work {offer['version']} is available (verified): lolly-update apply")
+    return 0
+
+
+def cmd_run(state: dict, runtime, timeout: int) -> int:
+    mode = conf("LOLLY_UPDATE", "auto")
+    if mode == "off":
+        say("Automatic updates are off (LOLLY_UPDATE=off).")
+        return 0
+    try:
+        offer = channel_offer(state, runtime)
+    except UpdateError as error:
+        say(f"No update applied: {error}")
+        return 0 if "has no published chart" in str(error) else 1
+    if not offer:
+        say(f"Lolly Work {state['installed']['version']} is up to date.")
+        return 0
+    if mode != "auto":
+        offer.pop("_chart", None)
+        say(f"Lolly Work {offer['version']} is available; LOLLY_UPDATE={mode}, so it is not applied.")
+        notice([f"Lolly Work {offer['version']} is available: lolly-update apply"])
+        return 0
+    failed = [entry for entry in state.get("history") or [] if entry.get("to") == offer["version"] and entry.get("result") in ("reverted", "revert-failed")]
+    if failed:
+        say(f"Lolly Work {offer['version']} failed here before ({failed[-1]['at']}); not trying again automatically. "
+            f"To try again: lolly-update apply --version {offer['version']}")
+        return 0
+    return apply(state, runtime, offer, "channel", timeout)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="lolly-update", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("status")
+    commands.add_parser("check")
+    run_parser = commands.add_parser("run")
+    apply_parser = commands.add_parser("apply")
+    source = apply_parser.add_mutually_exclusive_group()
+    source.add_argument("--version")
+    source.add_argument("--definition")
+    apply_parser.add_argument("--keep-chart", action="store_true")
+    back = commands.add_parser("rollback")
+    back.add_argument("--restore", action="store_true")
+    for sub in (run_parser, apply_parser, back):
+        sub.add_argument("--timeout", type=int)
+    args = parser.parse_args(argv)
+    if os.geteuid() != 0:
+        print("lolly-update: run as root", file=sys.stderr)
+        return 1
+    timeout = args.timeout if getattr(args, "timeout", None) else int(conf("LOLLY_UPDATE_TIMEOUT", "900"))
+    runtime = backend()
+    lock = open(LOCK, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("lolly-update: another lolly-update is running", file=sys.stderr)
+        return 1
+    try:
+        state = load_state()
+        if args.command == "status":
+            return cmd_status(state, runtime)
+        if args.command == "check":
+            return cmd_check(state, runtime)
+        if args.command == "run":
+            return cmd_run(state, runtime, timeout)
+        if args.command == "rollback":
+            return rollback(state, runtime, args.restore, timeout)
+        if args.definition:
+            target = load_definition(json.load(open(args.definition)), args.definition)
+            if version_key(target["version"]) < version_key(state["installed"]["version"]):
+                raise UpdateError(f"{target['version']} is older than {state['installed']['version']}; use lolly-update rollback")
+            verify_image(target["serverImage"], target["version"])
+            say("PostgreSQL and Caddy images are taken from the definition as given: "
+                f"{pin(target['postgresImage'])}, {pin(target['caddyImage'])}")
+            if runtime.name == "k3s":
+                if args.keep_chart:
+                    say("Keeping the installed chart (--keep-chart).")
+                else:
+                    with tempfile.TemporaryDirectory(prefix="lolly-chart-") as directory:
+                        chart = fetch_chart(target["version"], directory)
+                    if chart is None:
+                        raise UpdateError(f"Lolly Work {target['version']} has no published chart; add --keep-chart to keep the installed one")
+                    target["_chart"] = chart
+            return apply(state, runtime, target, "definition", timeout)
+        offer = channel_offer(state, runtime, args.version, args.keep_chart)
+        if not offer:
+            say(f"Lolly Work {state['installed']['version']} is the newest release on the channel.")
+            return 0
+        if version_key(offer["version"]) < version_key(state["installed"]["version"]):
+            raise UpdateError(f"{offer['version']} is older than {state['installed']['version']}; use lolly-update rollback")
+        if runtime.name == "k3s" and args.keep_chart:
+            say("Keeping the installed chart (--keep-chart).")
+        return apply(state, runtime, offer, "channel", timeout)
+    except UpdateError as error:
+        print(f"lolly-update: {error}", file=sys.stderr)
+        return 1
+    finally:
+        lock.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

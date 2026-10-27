@@ -1,0 +1,30 @@
+#!/bin/bash
+# SPDX-License-Identifier: MPL-2.0
+# Every boot, before the Lolly container network is created: give it the MTU
+# of the interface this machine reaches the outside world through. A bridge
+# left at 1500 on a smaller link (1442 on MulgaDC Spinifex, where Docker's
+# default stalled large transfers) loses the packets that do not fit.
+set -euo pipefail
+. /usr/libexec/lolly-appliance/common.sh
+umask 022
+
+mtu= dev=
+for _ in $(seq 1 30); do
+  dev=$(ip -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n 1)
+  [ -n "$dev" ] && mtu=$(cat "/sys/class/net/$dev/mtu" 2>/dev/null || true)
+  [ -n "$mtu" ] && break
+  sleep 2
+done
+if [ -z "$mtu" ]; then
+  # No default route: the smallest MTU of the interfaces that are up.
+  dev=
+  mtu=$(ip -o link show up 2>/dev/null | awk '$2 != "lo:" && $2 !~ /^(podman|veth)/ {for (i = 1; i <= NF; i++) if ($i == "mtu") print $(i + 1)}' | sort -n | head -n 1)
+fi
+if ! [[ ${mtu:-} =~ ^[0-9]+$ ]] || [ "$mtu" -lt 1280 ] || [ "$mtu" -gt 9000 ]; then
+  log "could not read this machine's MTU; using 1500"
+  mtu=1500
+fi
+install -d -m 0755 /run/lolly
+printf 'LOLLY_MTU=%s\n' "$mtu" > /run/lolly/network.env.new
+mv /run/lolly/network.env.new /run/lolly/network.env
+log "container network MTU ${mtu}${dev:+ (from $dev)}"

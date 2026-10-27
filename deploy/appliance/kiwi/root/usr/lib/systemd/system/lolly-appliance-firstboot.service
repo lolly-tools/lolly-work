@@ -4,7 +4,7 @@ Documentation=file:/usr/share/doc/lolly-appliance/README.md
 ConditionPathExists=!/var/lib/lolly/firstboot.done
 Wants=network-online.target
 After=network-online.target local-fs.target systemd-tpm2-setup.service
-Before=k3s.service
+Before=k3s.service lolly-postgres.service lolly-work.service lolly-caddy.service
 
 [Service]
 Type=oneshot

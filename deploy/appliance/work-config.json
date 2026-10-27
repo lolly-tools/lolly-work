@@ -1,0 +1,53 @@
+{
+  "deployment": {
+    "mode": "production",
+    "application": "api",
+    "requireServerRendering": false
+  },
+  "instance": {
+    "name": "Lolly Work",
+    "baseUrl": "https://lolly.invalid",
+    "pack": "/app/packs/demo",
+    "catalogPublicationGeneration": 1
+  },
+  "idp": {
+    "issuer": "",
+    "clientId": "",
+    "groupsClaim": "groups",
+    "claimMap": {
+      "firstname": "given_name",
+      "lastname": "family_name",
+      "email": "email",
+      "title": "title"
+    },
+    "additional": [
+      { "id": "email", "kind": "password", "label": "Email and password" }
+    ],
+    "admission": { "emails": [], "invitations": true },
+    "bootstrapOwners": [],
+    "roleGroups": { "owner": ["lolly-owner"], "admin": [], "approver": [], "author": [] }
+  },
+  "policy": {
+    "defaultAccessMode": "gated",
+    "telemetry": "off",
+    "telemetryAttribution": "opt-in",
+    "guestLinks": { "enabled": false, "maxTtlHours": 168, "defaultTtlHours": 72 },
+    "sessionTtlHours": 12
+  },
+  "render": {
+    "allowHooksInFastPath": true
+  },
+  "audit": {
+    "headLog": { "onBoot": true, "intervalMinutes": 60 }
+  },
+  "rateLimit": {
+    "enabled": true,
+    "trustedProxyHops": 1,
+    "maxBuckets": 50000,
+    "auth": { "capacity": 10, "refillPerSec": 0.2 },
+    "telemetry": { "capacity": 120, "refillPerSec": 4 },
+    "link": { "capacity": 30, "refillPerSec": 1 }
+  },
+  "dev": { "enabled": false, "users": [] },
+  "catalogProviders": []
+}

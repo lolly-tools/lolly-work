@@ -1,0 +1,15 @@
+# Daily application update for the Lolly appliance (lolly-update run): reads
+# the channel, verifies the release's signatures, applies it through K3s or
+# Podman, waits for /healthz and /readyz and reverts on failure. Host updates
+# are separate: transactional-update, rebooting in rebootmgr's window.
+[Unit]
+Description=Lolly appliance: update Lolly Work from its channel
+Documentation=file:/usr/share/doc/lolly-appliance/README.md
+Wants=network-online.target
+After=network-online.target lolly-appliance-console.service
+ConditionPathExists=/var/lib/lolly/firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/lolly-update run
+TimeoutStartSec=2h
