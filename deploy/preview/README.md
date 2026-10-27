@@ -523,7 +523,7 @@ is built at its `main` head (SSHA). `selftest` and `adopt` are lolly.tools only 
 selftest covers both sites, and the cut-over seeds lolly.ing's records. Before the cut-over, `ship` builds and stops
 with `BUILT`, changing nothing on the node; `deploy` refuses `NOT_CONVERTED`.
 
-The private profile `lolly.ing.json` holds the smoke account's `sub`, one known pack asset path, the page list, the
+The private profile `lolly.ing.json` holds the smoke account's `sub` (`token:tok_…` for a service token), one known pack asset path, the page list, the
 memory fraction, the watch, build polling, rollout timeout, capacity (`minFreeAboveReserveBytes`, `archiveFactor`), the
 backup window (`01:30`-`02:30`), the claim allowlist, the retention counts, and `rehearsal`: `null` (the preview-grade
 default), or the backup store's host name and public address to run the restore rehearsal before each migration.
@@ -613,7 +613,7 @@ lane, `lollyLane`, `lollyLaneBase` and `lollyLaneRun`.
 
 On the Mac:
 1. Live state from the node: no run active, no hold, the instance-image layout, records that describe the live image,
-   and the smoke session file present.
+   and a usable smoke credential (the token file, or else the session file).
 2. WSHA is on lolly-work `main`. For `ship`: when the accepted live build already has this Work commit, this suse-lolly
    head and this Lolly pin, `ALREADY_LIVE` before anything else. Then the qualification above.
 3. The build is reused, resumed or dispatched, then bound and its manifest checked (the contract above); its suse-lolly
@@ -660,14 +660,29 @@ QR code export through the render worker; `www.lolly.ing` answers 308 to `https:
 restarts and a working set under the profile's fraction of the 1 Gi limit; Work's boot line names the lolly.ing key;
 and a read-only Job reads the database's publication generation back as N.
 
-The smoke account:
-- is a `member`, never an admin, and owns no projects (checked through `/api/auth/session` and `/api/v1/projects`);
-- has one grant, `export.server` on `tool:qr-code`, so it can render the QR code (Work grants live in the database; an
-  admin adds it once);
-- signs in through its `lw_session` cookie, kept in `/etc/lolly-preview/lolly.ing-smoke-session` on the node, root-owned
-  and 0600. The tool reads it with `O_NOFOLLOW`, sends it only to `https://lolly.ing`, and never prints, logs or stores
-  it anywhere else. Work sessions last `policy.sessionTtlHours` (12 by default), so the file needs a fresh session
-  before a deploy; an expired one stops the run before any change (`SMOKE_ACCOUNT`).
+The smoke signs in with a **Work service token** (Andy, 2026-10-27), or else a member's session cookie:
+
+- **Token:** one `lwt_…` line in `/etc/lolly-preview/lolly.ing-smoke-token`. It is sent as `Authorization: Bearer`.
+  - The token has role `member` or lower and its own grant, `export.server` on `tool:qr-code` for `user:svc_<token id>`,
+    so it can render the QR code.
+  - `/api/auth/session` must answer `kind: service`, with the `sub` the profile pins (`token:tok_…`) and a role of
+    `viewer` or `member`.
+  - `/api/v1/tokens` (owner tier) and `/api/v1/grants` (admin tier) must both answer 403, which proves the token has no
+    admin rights. A token owns nothing, so there is no projects check.
+  - A token does not expire overnight. Reading the catalogue and the session with a token needs a Work build that
+    contains lolly-work PR #237. An older build answers 401 there, and the smoke says so.
+- **Cookie** (only when there is no token file): the `lw_session` cookie of a `member` who owns no projects (checked
+  through `/api/auth/session` and `/api/v1/projects`), in `/etc/lolly-preview/lolly.ing-smoke-session`. It has the same
+  grant on the member's account. Work sessions last `policy.sessionTtlHours` (12 by default), so the file needs a fresh
+  session before a deploy.
+- **Both files:** each is root-owned and 0600. The tool reads it with `O_NOFOLLOW` and sends it only to
+  `https://lolly.ing`. It never prints, logs or stores the value anywhere else.
+- **A bad file stops the run** before any change (`SMOKE_ACCOUNT`). This covers a token file that is present but
+  malformed, open to others or a link; the tool does not fall back to the cookie then. It also covers neither file
+  being present.
+- **A missing grant:** when Work answers the QR export with 403, the check names the missing grant and its principal.
+
+`status` prints `smokeSession` (`present`, or why not) and `smokeCredential` (`token` or `cookie`).
 
 ### Rollback (PROPOSAL 4.6; Andy 2026-10-27)
 
@@ -703,7 +718,13 @@ apply refuses and asks for a new plan.
 created the second Secret. It always takes a fresh backup, runs the restore rehearsal when the profile configures one,
 applies pending migrations of any class with the same restore point and marker as a deploy, then applies the reviewed
 patch. A failed smoke after nothing or only additive migrations puts the claim layout, the old image and the old key
-reference back, with a new ConfigMap at a higher generation (`CONVERSION_REVERTED`), and that catalog verifies. After
+reference back, with a new ConfigMap at a higher generation (`CONVERSION_REVERTED`). The revert is then checked:
+- **With a cookie:** the signed catalogue GET must answer 200 and the database must read that generation back.
+- **With a token:** the old Work build (`9677dd56`) reads catalogues for a cookie only. The check is instead one
+  signed-in QR export, which must answer 200 with `image/svg+xml`. The database generation must be at most the new one:
+  nothing has read that catalogue yet, and the first signed-in read publishes the generation.
+
+After
 a non-additive migration the revert is off: `MAINTENANCE_UNVERIFIED`; recovery is a forward fix, or the restore by the
 runbook followed by `rollback --clear-hold`, which reverts with this plan. Every revert attempt, including `ExecStopPost` after a failed read, re-reads the marker first.
 Keep the old claims until two image deploys have passed.
@@ -748,9 +769,11 @@ In short:
   Then re-lock with `make-tool-lock.py`.
 - The second Secret, `lolly-ing-catalog-signing` (`ING_SIGNING_KEY_SECRET`), holding that key under
   `LW_CATALOG_SIGNING_KEY`, created in `lolly-private` by Andy.
-- The smoke member created, with the `export.server` grant on `tool:qr-code`, and its session written to
-  `/etc/lolly-preview/lolly.ing-smoke-session` (root, 0600). `lolly.ing.json` in the state directory names its `sub`;
-  `rehearsal` may be `null`.
+- The smoke credential, by the runbook. This is a `member` service token made in `/admin#/tokens`, written to
+  `/etc/lolly-preview/lolly.ing-smoke-token` (root, 0600) and given the `export.server` grant on `tool:qr-code` for
+  `user:svc_<token id>`. `lolly.ing.json` in the state directory pins `token:<token id>`, and `rehearsal` may be `null`.
+  The token route needs the cut-over build to contain lolly-work PR #237. The older cookie file is still read when no
+  token file is present.
 - The Postgres NetworkPolicy admitting the preview Job label (`app.kubernetes.io/component: preview-migrate`) in
   `lolly-private`, set up once by Andy: every deploy runs a read-only check Job against the database.
 - Then `ship` (it builds and stops at `BUILT`), `status`, `plan <work sha>`, the cut-over with Andy present, and a

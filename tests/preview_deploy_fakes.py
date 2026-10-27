@@ -684,7 +684,8 @@ def patch_node_modules(tool_lib, sandbox, state_path):
                                "imagefs": "/", "armed": f"{sandbox}/var/lib/lolly-preview/retention-armed",
                                "systemctl": os.environ["FAKE_BIN"] + "/systemctl",
                                "procStatus": f"{sandbox}/proc-status", "procAttr": f"{sandbox}/proc-attr",
-                               "spool": f"{sandbox}/var/lib/lolly-preview/spool", "smokeCookie": f"{sandbox}/smoke-session"})
+                               "spool": f"{sandbox}/var/lib/lolly-preview/spool", "smokeToken": f"{sandbox}/smoke-token",
+                               "smokeCookie": f"{sandbox}/smoke-session"})
     if os.environ.get("FAKE_ING_PIN"):
         preview_anchors.ING_PUBLIC_KEY_JWK = json.loads(os.environ["FAKE_ING_PIN"])
     for name, value in json.loads(os.environ.get("FAKE_ING_ANCHORS") or "{}").items():  # anchors a reviewed change pins

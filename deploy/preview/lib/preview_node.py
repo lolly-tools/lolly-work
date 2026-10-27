@@ -30,7 +30,7 @@ from preview_expect import format_lowering
 PATHS = {"run": A.NODE_RUN_DIR, "results": A.NODE_RESULTS_DIR, "lock": A.NODE_LOCK, "lockDir": A.NODE_LOCK_DIR,
          "imagefs": A.NODE_IMAGE_FILESYSTEM, "systemctl": A.NODE_SYSTEMCTL, "armed": A.NODE_RETENTION_ARMED,
          "procStatus": "/proc/self/status", "procAttr": "/proc/self/attr/current",
-         "spool": A.NODE_SPOOL_DIR, "smokeCookie": A.NODE_ING_SMOKE_COOKIE}
+         "spool": A.NODE_SPOOL_DIR, "smokeToken": A.NODE_ING_SMOKE_TOKEN, "smokeCookie": A.NODE_ING_SMOKE_COOKIE}
 MIB = 2 ** 20
 EXIT = {"LIVE": 0, "ALREADY_LIVE": 0, "CONVERTED": 0, "ALREADY_CONVERTED": 0, "GC_DONE": 0, "SELFTEST_OK": 0, "ADOPTED": 0,
         "ADOPTED_UNHEALTHY": 3,
