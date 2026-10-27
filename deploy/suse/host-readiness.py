@@ -130,7 +130,7 @@ def evaluate(facts, profile, expected_host):
     check("host-identity", facts.get("hostname") == expected_host, "Actual hostname must match the selected host")
     distro = facts.get("os", {})
     check("suse-os", distro.get("ID") in ("sles", "opensuse-leap") and re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", str(distro.get("VERSION_ID", ""))) is not None, "Versioned SLES or openSUSE Leap required; review the selected runtime support matrix")
-    check("architecture", facts.get("architecture") in (("x86_64", "aarch64") if profile == "podman-build" else ("x86_64",)), "K3s lock currently targets amd64; Podman builds also accept native arm64")
+    check("architecture", facts.get("architecture") in (("x86_64", "aarch64") if profile in ("k3s", "podman-build") else ("x86_64",)), "K3s locks cover amd64 and arm64; the RKE2 gate stays amd64; Podman builds accept native arm64")
     check("inspection", facts.get("inspectionErrors") == [], "Every required host inspection must succeed")
     check("tools", facts.get("missingTools") == [], "Required tools must be available from reviewed OS repositories")
     check("cgroup-v2", {"cpu", "memory", "pids"}.issubset(facts.get("cgroupControllers", [])), "Unified CPU, memory and PID controllers required")
