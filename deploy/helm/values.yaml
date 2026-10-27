@@ -230,6 +230,13 @@ renderWorker:
   # RuntimeDefault unless the node operator installs a reviewed Chromium policy.
   # See ../seccomp/README.md; Unconfined is not accepted.
   seccompProfile: { type: RuntimeDefault }
+  # Leave empty on SELinux nodes (Leap 16, SLES 16, the Lolly appliance), the
+  # recommended host. AppArmor nodes (Debian, Ubuntu) deny Chromium's user
+  # namespace under the runtime's default profile; there, load the reviewed
+  # ../apparmor/lolly-chromium profile on each worker node and set
+  # { type: Localhost, localhostProfile: lolly-chromium } together with the
+  # Localhost seccomp profile above. Needs Kubernetes 1.30+. See ../apparmor/README.md.
+  appArmorProfile: {}
   # For clusters where no node profile can be installed (shared/managed clusters):
   # run the worker in its own Kubernetes user namespace (hostUsers: false) and add
   # CAP_SYS_ADMIN and CAP_SYS_CHROOT, which then apply only inside that namespace

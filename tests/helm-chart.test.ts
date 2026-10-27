@@ -280,6 +280,24 @@ test('worker accepts a reviewed local seccomp profile and refuses an unconfined 
   }
 });
 
+test('worker names an AppArmor profile only when asked, for AppArmor nodes on Kubernetes 1.30+', { skip: noHelm }, () => {
+  const plain = render([...SECRETS, ...WORKER]); assert.ok(plain.ok, plain.err);
+  assert.equal(deployment(plain.out, true).spec.template.spec.containers[0].securityContext.appArmorProfile, undefined, 'SELinux nodes need the field left out');
+  const localhost = ['--set-json', 'renderWorker.appArmorProfile={"type":"Localhost","localhostProfile":"lolly-chromium"}'];
+  const approved = render([...SECRETS, ...WORKER, ...localhost, '--set-json', 'renderWorker.seccompProfile={"type":"Localhost","localhostProfile":"lolly/chromium.json"}', '--kube-version', '1.30.0']);
+  assert.ok(approved.ok, approved.err);
+  const context = deployment(approved.out, true).spec.template.spec.containers[0].securityContext;
+  assert.deepEqual(context.appArmorProfile, { type: 'Localhost', localhostProfile: 'lolly-chromium' });
+  assert.deepEqual(context.seccompProfile, { type: 'Localhost', localhostProfile: 'lolly/chromium.json' });
+  assert.equal(deployment(approved.out).spec.template.spec.containers[0].securityContext.appArmorProfile, undefined, 'the control plane is unchanged');
+  const old = render([...SECRETS, ...WORKER, ...localhost, '--kube-version', '1.29.9']);
+  assert.equal(old.ok, false); assert.match(old.err, /appArmorProfile requires Kubernetes 1\.30/);
+  for (const profile of [{ type: 'Unconfined' }, { type: 'Localhost' }, { type: 'Localhost', localhostProfile: '../lolly-chromium' }, { localhostProfile: 'lolly-chromium' }]) {
+    const refused = render([...SECRETS, ...WORKER, '--set-json', `renderWorker.appArmorProfile=${JSON.stringify(profile)}`, '--kube-version', '1.35.0']);
+    assert.equal(refused.ok, false, JSON.stringify(profile)); assert.match(refused.err, /appArmorProfile/);
+  }
+});
+
 test('worker user namespace scopes SYS_ADMIN and SYS_CHROOT to hostUsers: false and makes the worker check it', { skip: noHelm }, () => {
   const off = deployment(render([...SECRETS, ...WORKER]).out, true).spec.template.spec;
   assert.equal(off.hostUsers, undefined);

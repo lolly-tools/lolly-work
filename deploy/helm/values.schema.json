@@ -48,6 +48,23 @@
           ],
           "additionalProperties": false
         },
+        "appArmorProfile": {
+          "type": "object",
+          "description": "Empty on SELinux nodes. On AppArmor nodes, Localhost lolly-chromium (see deploy/apparmor/README.md). Requires Kubernetes 1.30+.",
+          "properties": {
+            "type": {
+              "enum": [
+                "RuntimeDefault",
+                "Localhost"
+              ]
+            },
+            "localhostProfile": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            }
+          },
+          "additionalProperties": false
+        },
         "userNamespace": {
           "type": "object",
           "properties": {

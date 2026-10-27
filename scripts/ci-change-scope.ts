@@ -42,10 +42,12 @@ export const EVERYTHING: readonly string[] = [
 export const INPUTS: Readonly<Record<Suite, readonly string[]>> = {
   // CI's render-worker image leg. The image builds from workers/render alone.
   // Its qualification checks out the Lolly source named by engine-pin.json,
-  // loads the vendored engine, applies the Chromium seccomp profile, runs the
+  // loads the vendored engine, applies the Chromium seccomp profile (the
+  // qualification can add its opt-in AppArmor companion), runs the
   // shell update tools with genuine Vite, and runs the in-image acceptance
   // tests, which import the server's render and API code.
   render_worker: [
+    'deploy/apparmor/',
     'deploy/seccomp/',
     'engine-pin.json',
     'scripts/ci-buildkit.sh',
