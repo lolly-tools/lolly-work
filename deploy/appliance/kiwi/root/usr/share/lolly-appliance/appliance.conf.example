@@ -14,3 +14,20 @@
 
 # The Cockpit host console on port 9090, local networks only. Default: on
 #LOLLY_COCKPIT=off
+
+# Lolly Work updates (lolly-update, daily at 02:30 machine time):
+# auto applies a verified release, check only reports it, off does nothing.
+# Default: auto
+#LOLLY_UPDATE=check
+
+# Which releases: stable, or preview (which includes pre-releases).
+# Default: stable
+#LOLLY_UPDATE_CHANNEL=preview
+
+# How long, in seconds, an update may take to become ready before it is
+# reverted. Default: 900
+#LOLLY_UPDATE_TIMEOUT=1800
+
+# How long, in seconds, the first boot of a new host snapshot may take to bring
+# Lolly Work up before health-checker rolls the host back. Default: 900
+#LOLLY_HEALTH_TIMEOUT=1800

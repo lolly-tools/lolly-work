@@ -20,6 +20,24 @@ image:
 
 existingSecret: lolly-work-secrets
 
+# K3s's network policy controller admits a new pod to PostgreSQL (the
+# lolly-postgres NetworkPolicy) a moment after the pod starts, and the
+# migration Job connects at once, so every attempt was refused. It now waits
+# up to 90 s for the database port, then migrates as the chart's default does.
+migrate:
+  command:
+    - sh
+    - -ec
+    - |
+      node -e '
+      const target = new URL(process.env.DATABASE_URL), net = require("node:net");
+      let tries = 0;
+      (function attempt() {
+        const socket = net.connect(Number(target.port) || 5432, target.hostname, () => { socket.end(); process.exit(0); });
+        socket.on("error", () => { if (++tries >= 90) process.exit(1); setTimeout(attempt, 1000); });
+      })();'
+      exec node scripts/migrate.ts
+
 # Lolly Work's own settings come from deploy/appliance/work-config.json, the
 # one file both profiles use (the podman profile writes it as instance.json).
 # It lists every key of the chart's default config, so Helm's merge adds

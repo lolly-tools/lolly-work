@@ -94,6 +94,17 @@ FIELDS = ("serverImage", "postgresImage", "caddyImage")
 USER_AGENT = "lolly-update/1"
 # Read inside Work's container: its secrets, one file per variable.
 WORK_ENV = 'for f in /run/lolly/env/*; do export "${f##*/}=$(cat "$f")"; done'
+# Inside Work's image on k3s: wait up to 90 s for the database port, because
+# K3s's network policy controller admits a new pod a moment after it starts
+# (the appliance's values wrap the chart's migration Job the same way).
+WAIT_FOR_DATABASE = """node -e '
+const target = new URL(process.env.DATABASE_URL), net = require("node:net");
+let tries = 0;
+(function attempt() {
+  const socket = net.connect(Number(target.port) || 5432, target.hostname, () => { socket.end(); process.exit(0); });
+  socket.on("error", () => { if (++tries >= 90) process.exit(1); setTimeout(attempt, 1000); });
+})();'
+"""
 
 
 class UpdateError(Exception):
@@ -448,8 +459,9 @@ class Podman:
         run(["systemctl", "start", "--no-block", "lolly-postgres.service", "lolly-work.service", "lolly-caddy.service"])
 
     def prepare(self, target: dict, current: dict) -> None:
+        # By digest, so an image already here (a rollback) needs no registry.
         for field in FIELDS:
-            if changed(field, current, target):
+            if changed(field, current, target) and run(["podman", "image", "exists", pin(target[field])], check=False).returncode != 0:
                 say(f"Pulling {pin(target[field])}")
                 run(["podman", "pull", "--quiet", pin(target[field])])
 
@@ -543,8 +555,9 @@ class K3s:
                 put_text(path, text, 0o600)
 
     def prepare(self, target: dict, current: dict) -> None:
+        # By digest, so an image already here (a rollback) needs no registry.
         for field in ("serverImage", "postgresImage"):
-            if changed(field, current, target):
+            if changed(field, current, target) and run(["/usr/local/bin/k3s", "crictl", "inspecti", pin(target[field])], check=False).returncode != 0:
                 say(f"Pulling {pin(target[field])}")
                 run(["/usr/local/bin/k3s", "crictl", "pull", pin(target[field])])
 
@@ -567,7 +580,7 @@ class K3s:
                         "securityContext": {"runAsNonRoot": True, "runAsUser": 1000, "runAsGroup": 1000, "seccompProfile": {"type": "RuntimeDefault"}},
                         "containers": [{
                             "name": "check", "image": pin(target["serverImage"]), "imagePullPolicy": "IfNotPresent",
-                            "command": ["node", "scripts/migrate.ts", "--check"],
+                            "command": ["sh", "-ec", WAIT_FOR_DATABASE + "exec node scripts/migrate.ts --check"],
                             "env": [{"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "lolly-work-secrets", "key": "DATABASE_URL"}}}],
                             "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}},
                             "resources": {"limits": {"memory": "256Mi"}},
@@ -629,8 +642,18 @@ class K3s:
                    and spec.get("replicas", 0) >= 1
                    and status.get("updatedReplicas") == spec.get("replicas") == status.get("availableReplicas") == status.get("readyReplicas")
                    and not status.get("unavailableReplicas"))
+        result = self.kubectl("-n", "lolly", "get", "statefulset", "lolly-postgres", "-o", "json", check=False)
+        if result.returncode != 0:
+            return False
+        postgres = json.loads(result.stdout)
+        pg_status = postgres.get("status", {})
+        pg_image = postgres["spec"]["template"]["spec"]["containers"][0]["image"]
+        pg_settled = (pg_status.get("observedGeneration", 0) >= postgres["metadata"]["generation"]
+                      and pg_status.get("currentRevision") == pg_status.get("updateRevision")
+                      and pg_status.get("readyReplicas") == postgres["spec"].get("replicas", 1))
         api = self.kubectl("get", "--raw=/readyz", check=False).stdout.strip() == "ok"
-        return "@" in image and pin(image) == pin(target["serverImage"]) and settled and api and lolly_ready()
+        return ("@" in image and pin(image) == pin(target["serverImage"]) and settled
+                and "@" in pg_image and pin(pg_image) == pin(target["postgresImage"]) and pg_settled and api and lolly_ready())
 
 
 def backend() -> Podman | K3s:

@@ -143,6 +143,11 @@ if [ "$profile" = k3s ]; then
 	done
 	chmod 0700 /var/lib/rancher/k3s/server
 	chmod 0755 /var/lib/rancher/k3s/agent /var/lib/rancher/k3s/agent/images
+	# The local-path volumes' parent, made here so the build labels it from
+	# k3s-selinux's file contexts (container_file_t). Made at run time by K3s
+	# (spc_t), it would take its parent's container_var_lib_t, which the
+	# provisioner's helper pod may not write to.
+	install -d -m 0711 /var/lib/rancher/k3s/storage
 	systemctl enable k3s.service lolly-appliance-secrets.service
 	# K3s's pod and service networks are trusted. The Kubernetes API (6443)
 	# stays closed.

@@ -159,6 +159,14 @@ test('both profiles run the same Lolly Work settings, which cover every chart de
     assert.deepEqual(JSON.parse(readFileSync(join(podman.root, 'usr/share/lolly-appliance/work-config.json'), 'utf8')), workConfig);
     assert.deepEqual(JSON.parse(readFileSync(join(k3s.root, 'usr/share/lolly-appliance/work-config.json'), 'utf8')), workConfig);
     assert.match(podman.files['lolly-work.container']!, /LW_CONFIG=\/run\/lolly\/instance\.json/);
+    // On k3s the migration Job waits for the database port before it migrates,
+    // and lolly-update's check Job waits the same way.
+    const wait = values.migrate.command as string[];
+    assert.deepEqual(wait.slice(0, 2), ['sh', '-ec']);
+    assert.match(wait[2]!, /net\.connect\(/);
+    assert.match(wait[2]!, /exec node scripts\/migrate\.ts\n$/);
+    const updaterWait = withUpdater('print(u.WAIT_FOR_DATABASE)');
+    assert.equal(updaterWait.trim(), wait[2]!.replace(/\nexec node scripts\/migrate\.ts\n$/, '').trim());
   } finally {
     for (const g of [k3s, podman]) rmSync(g.dir, { recursive: true, force: true });
   }
@@ -174,7 +182,7 @@ test('the embedded chart is the repository chart, and the values hold no secret'
     assert.equal(entries.get('lolly-work/values.yaml')!.toString('utf8'), read('deploy/helm/values.yaml'));
     assert.ok(entries.has('lolly-work/templates/deployment.yaml'));
     const values = chart.split('valuesContent: |-\n')[1]!;
-    assert.doesNotMatch(values, /sessionSecret|linkSecret|password:|DATABASE_URL|BEGIN .*PRIVATE KEY/);
+    assert.doesNotMatch(values, /sessionSecret|linkSecret|password:|postgres(ql)?:\/\/|BEGIN .*PRIVATE KEY/);
     // Generation is deterministic: the same inputs give the same manifest.
     const again = generate('x86_64');
     try { assert.equal(again.files['lolly-work.yaml'], chart); } finally { rmSync(again.dir, { recursive: true, force: true }); }
@@ -259,6 +267,9 @@ test('the image keeps the Leap 16.1 Immutable base and each profile adds only wh
   assert.doesNotMatch(config, /--add-service=cockpit|--add-port=6443/);
   // Each profile trusts its own container network, and only that.
   assert.match(config, /--zone=trusted --add-source=10\.42\.0\.0\/16 --add-source=10\.43\.0\.0\/16/);
+  // PostgreSQL's local-path volume needs its parent labelled container_file_t.
+  assert.match(config, /install -d -m 0711 \/var\/lib\/rancher\/k3s\/storage/);
+  assert.match(read(`${overlay}/usr/libexec/lolly-appliance/firstboot`), /restorecon -R \/var\/lib\/rancher\/k3s\/storage/);
   const network = read('deploy/appliance/podman/lolly.network');
   const subnet = /^Subnet=(\S+)$/m.exec(network)![1]!;
   assert.match(config, new RegExp(`--zone=trusted --add-source=${subnet.replaceAll('.', '\\.').replace('/', '\\/')}`));

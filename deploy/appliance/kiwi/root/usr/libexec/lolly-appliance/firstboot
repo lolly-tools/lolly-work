@@ -75,6 +75,14 @@ if [ "$(conf_get LOLLY_COCKPIT on)" = off ]; then
   /usr/sbin/lolly-appliance cockpit off || log "could not turn Cockpit off"
 fi
 
+# The k3s profile's volume directory must carry k3s-selinux's label
+# (container_file_t) before the local-path provisioner creates PostgreSQL's
+# volume in it.
+if [ "$PROFILE" = k3s ]; then
+  install -d -m 0711 /var/lib/rancher/k3s/storage
+  restorecon -R /var/lib/rancher/k3s/storage
+fi
+
 # The podman profile's own directories: PostgreSQL's data (its container runs
 # as uid 999) and Lolly Work's settings.
 if [ "$PROFILE" = podman ]; then

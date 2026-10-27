@@ -202,9 +202,16 @@ def host_phase(args, guest: Guest, profile: str, base: str) -> None:
     time.sleep(20)
     ok("the machine comes back after the reboot", guest.wait(900))
     waited = wait_ready(web, 1200)
-    log = guest.run("journalctl -b -u health-checker --no-pager -o cat").stdout
-    ok("health-checker's Lolly plugin judges the new snapshot and passes it", "Lolly Work is ready on the new snapshot" in log
-       and "Health check passed" in log, f"ready {waited:.0f} s into this run" if waited else "not ready")
+    # The plugin polls every 5 s, so health-checker finishes a little after Work is ready.
+    log = ""
+    for _ in range(60):
+        log = guest.run("journalctl -b -u health-checker --no-pager -o cat").stdout
+        if "Health check passed" in log or "Health check failed" in log:
+            break
+        time.sleep(5)
+    judged = re.search(r"Lolly Work is ready on the new snapshot after (\d+) s", log)
+    ok("health-checker's Lolly plugin judges the new snapshot and passes it", bool(judged) and "Health check passed" in log,
+       f"ready {judged.group(1)} s into the plugin's wait" if judged else "not judged")
     ok("the new host snapshot stays the default", default() == after_update and guest.run("rpm -q jq").returncode == 0)
 
     # A host update that breaks Lolly Work: health-checker rolls the host back.
