@@ -351,7 +351,7 @@
           "slug": "aws-compatible",
           "path": "aws-compatible.md",
           "title": "Run Work on AWS or MulgaDC Spinifex",
-          "summary": "Run Lolly Work on AWS or on MulgaDC Spinifex: one VM, managed PostgreSQL and S3, EKS with the chart, or an immutable openSUSE host, with the issues a Spinifex test run found."
+          "summary": "Run Lolly Work on AWS or on MulgaDC Spinifex: one VM, managed PostgreSQL and S3, EKS with the chart or the Lolly appliance, behind a load balancer if you like, with the issues two Spinifex test runs found."
         },
         {
           "slug": "wasm-deployment",

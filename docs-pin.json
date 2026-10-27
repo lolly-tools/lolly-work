@@ -1,8 +1,8 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "2b94131fd9ecde579eae7c2adfe611679d9d77d7",
-  "manifestSha256": "2da0c82bfe8176b754220f719aea79cb95599d29fbff04d3f951887a1d5987ed",
+  "commit": "d4beb3b49ee74c577ecb7d85f8b8386657cd9ffb",
+  "manifestSha256": "e5636f6833ece3ace3e15522bcf8921df3449d3a7a147833b4f1b0e5dfbb2208",
   "files": {
     "account-lifecycle.md": {
       "sha256": "37f7cf8213f0fb6805c7fd5e0a3e263a4afa24a68abd547e4904f640cc2cc4d0",
@@ -33,7 +33,7 @@
       "source": "docs/work/automation-api.md"
     },
     "aws-compatible.md": {
-      "sha256": "9ff3b46682abba9531dd17d813546d672fd41e7492da47174282b4339689c590",
+      "sha256": "25394acf8ff22749e2b18dc2648dc484b640f08c2a1ab3a2a174351d1951b498",
       "source": "docs/work/aws-compatible.md"
     },
     "c2pa.md": {
@@ -77,7 +77,7 @@
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
-      "sha256": "414a41b5f8b2b9f2bcf1d532229f0bebc5fc00c24fe5f774fe2e9aa7499863c0",
+      "sha256": "24b95a4550ced425ff8c6cbae558fb6069b0fc24cfa1b36d9714648bea455910",
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
