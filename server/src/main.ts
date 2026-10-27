@@ -14,7 +14,7 @@ import { createPostgresBlobStore } from './blobs/postgres.ts';
 import { createS3BlobStore } from './blobs/s3.ts';
 import { runMigrations, pendingMigrations, migrationDatabaseUrl } from './store/migrate.ts';
 import { buildApp } from './api/app.ts';
-import { parseBackgroundPollMs, type RenderRunner } from './renders/runner.ts';
+import { parseBackgroundPollMs, parseRenderConcurrency, type RenderRunner } from './renders/runner.ts';
 import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
@@ -206,6 +206,11 @@ if (s3Blobs) {
 // be woken for up to about 45 minutes after a job with a callback settles.
 const backgroundPollMs = parseBackgroundPollMs(process.env.LW_BACKGROUND_POLL_MS);
 if (backgroundPollMs !== undefined) console.log(`[lolly-work] background poll ${backgroundPollMs === 0 ? 'off (work runs on submission)' : `every ${backgroundPollMs} ms`}`);
+// LW_RENDER_CONCURRENCY: how many durable renders this process drives at once.
+// Unset keeps 2. Size it to the worker slots it should keep busy.
+const renderConcurrency = parseRenderConcurrency(process.env.LW_RENDER_CONCURRENCY);
+if (renderConcurrency !== undefined) console.log(`[lolly-work] durable render concurrency ${renderConcurrency}`);
+if (config.render.worker.dispatch === 'pull') console.log('[lolly-work] render worker dispatch: pull (workers lease jobs over /api/internal/render/lease)');
 let renderRunner: RenderRunner | undefined;
 const app = buildApp({ config, store, secrets, blobs, otel, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
   // A saved comment write tells the people in that session's live room (plan 76 M4).
@@ -215,6 +220,7 @@ const app = buildApp({ config, store, secrets, blobs, otel, listCollabRooms: () 
   collabSocketTicket: (cookie, id) => collab.issueSocketTicket(cookie, id),
   onRenderRunner: (runner) => { renderRunner = runner; },
   ...(backgroundPollMs !== undefined ? { backgroundPollMs } : {}),
+  ...(renderConcurrency !== undefined ? { renderConcurrency } : {}),
 });
 // Poll persisted requests at boot as well as after submission. Other replicas
 // may run the same loop: the store owns claims and fencing.

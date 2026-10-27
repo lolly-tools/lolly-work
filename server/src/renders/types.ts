@@ -71,7 +71,13 @@ export interface RenderStore {
   settleRender(id: string, token: string, outcome: RenderSettlement): Promise<boolean>;
   /** Retain a terminal cancellation; completed output/history cannot be deleted here. */
   cancelRender(id: string, principal: string): Promise<RenderRecord | null>;
+  /** Queued renders by tool, for the queue signals on /metrics. `oldestClaimableAt`
+   *  is the earliest `availableAt` among those a runner could claim now; a render
+   *  waiting out a retry delay counts as queued but not as claimable. */
+  renderQueue(): Promise<RenderQueueEntry[]>;
 }
+
+export interface RenderQueueEntry { toolId: string; queued: number; oldestClaimableAt: string | null }
 
 export interface RenderBatchSpec extends RenderSpec {
   rows: { key: string; inputs: Record<string, unknown> }[];

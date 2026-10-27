@@ -9,7 +9,10 @@ import { createProviderFetch, providerDestination, type ProviderResolver } from 
 import { credentialActive, credentialExpiry } from '../iam/credential-expiry.ts';
 import { safeMessageUrl } from '../inbox/message-url.ts';
 import { withRenderDeadline } from '../render/deadline.ts';
-import { WorkerError } from '../render/worker-client.ts';
+import { WorkerError, type WorkerConfig } from '../render/worker-client.ts';
+import { createLeaseBroker } from '../render/worker-leases.ts';
+import { registerLeaseRoutes } from '../render/lease-routes.ts';
+import { createToolPoolReader, RENDER_POOLS, type RenderPool } from '../render/pools.ts';
 import { createFilePreview, readPreviewInput, PREVIEW_INPUT_LIMIT } from '../catalog/file-preview.ts';
 import { visibleSourceStatuses } from '../catalog/source-status.ts';
 import { registerCommentRoutes } from '../comments/routes.ts';
@@ -334,6 +337,9 @@ export interface AppDeps {
    *  the database may be woken for up to about 45 minutes after a job with a
    *  callback settles. */
   backgroundPollMs?: number;
+  /** How many durable renders this process drives at once (main.ts reads
+   *  LW_RENDER_CONCURRENCY). Unset keeps the runner's default of 2. */
+  renderConcurrency?: number;
 }
 
 type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -435,9 +441,21 @@ export function buildApp(deps: AppDeps): App {
   });
   // The Chromium render worker is active only when both the URL and the shared
   // HMAC key are present; otherwise hooked tools keep 501-ing (unchanged).
-  const renderWorker = config.render.worker.url && secrets.renderWorker
+  const renderWorker: WorkerConfig | undefined = config.render.worker.url && secrets.renderWorker
     ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs, requireHttps: productionMode(config) }
     : undefined;
+  // Pull dispatch (render.worker.dispatch "pull", plan 324 M3): render and
+  // raster jobs wait in this process until a worker leases one over
+  // /api/internal/render/lease. Off by default, when push is unchanged and
+  // none of the lease routes exist.
+  const leaseBroker = renderWorker && config.render.worker.dispatch === 'pull'
+    ? createLeaseBroker({ secret: renderWorker.secret, leaseMs: config.render.worker.pull.leaseMs,
+      queueTimeoutMs: config.render.worker.pull.queueTimeoutMs, onEvent: (pool, event) => metrics.renderLease(pool, event) })
+    : undefined;
+  if (renderWorker && leaseBroker) {
+    renderWorker.dispatch = leaseBroker.dispatch;
+    registerLeaseRoutes(router, { broker: leaseBroker, secret: renderWorker.secret });
+  }
   // Advertised to shells via org_config (plans/23 §3.A) - computed HERE, beside
   // the worker resolution, so the advertisement can only ever reflect the same
   // condition that activates the worker.
@@ -767,6 +785,42 @@ export function buildApp(deps: AppDeps): App {
     });
   });
 
+  // Queue depth counts renders waiting for their pool's capacity: queued in the
+  // database (including those waiting out a retry delay) and, under pull
+  // dispatch, jobs waiting here for a worker to lease them. A render whose job
+  // waits for a worker is running in the database, so nothing counts twice.
+  // Oldest wait is the longest any of them has been claimable and unclaimed.
+  const toolPool = createToolPoolReader({ pack: config.instance.pack, allowHooksInFastPath: config.render.allowHooksInFastPath });
+  const renderQueueGauges = async (): Promise<GaugeLine[]> => {
+    const depth = new Map<RenderPool, number>(RENDER_POOLS.map((pool) => [pool, 0]));
+    const oldest = new Map<RenderPool, number>(RENDER_POOLS.map((pool) => [pool, 0]));
+    const t = Date.now();
+    for (const entry of await store.renderQueue()) {
+      const pool = await toolPool(entry.toolId);
+      depth.set(pool, depth.get(pool)! + entry.queued);
+      if (entry.oldestClaimableAt) oldest.set(pool, Math.max(oldest.get(pool)!, Math.max(0, (t - Date.parse(entry.oldestClaimableAt)) / 1000)));
+    }
+    const leases = leaseBroker?.stats() ?? [];
+    for (const s of leases) {
+      depth.set(s.pool, depth.get(s.pool)! + s.waiting);
+      oldest.set(s.pool, Math.max(oldest.get(s.pool)!, s.oldestWaitSeconds));
+    }
+    const lines: GaugeLine[] = [];
+    for (const pool of RENDER_POOLS) {
+      lines.push({ name: 'lw_render_queue_depth', help: 'Renders waiting for their pool\'s capacity: queued in the database, plus jobs waiting for a worker lease under pull dispatch.', type: 'gauge', labels: { pool }, value: depth.get(pool)! });
+      lines.push({ name: 'lw_render_oldest_wait_seconds', help: 'Seconds the oldest claimable render or unleased worker job has waited, by pool.', type: 'gauge', labels: { pool }, value: oldest.get(pool)! });
+    }
+    // Present only under pull dispatch, where workers hold leases.
+    if (leaseBroker) {
+      for (const pool of RENDER_POOLS) {
+        const s = leases.find((entry) => entry.pool === pool);
+        lines.push({ name: 'lw_render_leases_active', help: 'Worker jobs a render worker holds a lease on, by pool.', type: 'gauge', labels: { pool }, value: s?.leased ?? 0 });
+        lines.push({ name: 'lw_render_workers_waiting', help: 'Render worker slots waiting for a job (open lease requests), by pool.', type: 'gauge', labels: { pool }, value: s?.idleWorkers ?? 0 });
+      }
+    }
+    return lines;
+  };
+
   // The gauges are collected when they are read: by a Prometheus scrape of
   // /metrics, and by the OTLP metric export on its interval. One function, so
   // both carry the same series.
@@ -796,6 +850,8 @@ export function buildApp(deps: AppDeps): App {
         gauges.push({ name: 'lw_provider_credential_expiry_days', help: 'Days until the operator-stated credential expiry (negative = past it).', type: 'gauge', labels: { provider: p.id }, value: Math.floor((new Date(p.credentialExpiresAt).getTime() - Date.now()) / 86_400_000) });
       }
     }
+    // Render queue signals (plan 324 M3), per pool, for an autoscaler or an alert.
+    gauges.push(...await renderQueueGauges().catch((err: Error) => { log('warn', 'render queue signals unavailable', { error: err.message }); return []; }));
     // OTLP delivery counts, present only while export is on.
     gauges.push(...otel.selfMetrics());
     return gauges;
@@ -10158,6 +10214,7 @@ export function buildApp(deps: AppDeps): App {
   const durableRenders = new RenderRunner({
     store, blobs,
     ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
+    ...(deps.renderConcurrency !== undefined ? { concurrency: deps.renderConcurrency } : {}),
     execute: async (record, signal) => brand.run(async () => {
       const caller = await currentRenderCaller(record.principal, record.request);
       await validateRenderRequest(record.principal, record.request);

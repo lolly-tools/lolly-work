@@ -312,8 +312,18 @@ export interface InstanceConfig {
      * blast-separated from the control plane) instead of refusing with 501. Empty
      * url ⇒ no worker ⇒ hooked tools still 501 (unchanged). The shared HMAC key is
      * env-only: LW_RENDER_WORKER_SECRET.
+     *
+     * `dispatch` chooses how jobs reach the worker (plan 324 M3, D5). "push"
+     * (the default) POSTs each job to `url`. "pull" holds each job in Work
+     * until a worker leases it over /api/internal/render/lease and reports the
+     * answer back (render/worker-leases.ts); start the workers with
+     * LW_RENDER_PULL_URL pointing at this instance. `url` is still required and
+     * still serves file previews. `pull.leaseMs` is how long a lease lasts
+     * without renewal; `pull.queueTimeoutMs` is how long a job waits for a
+     * worker before it fails as RENDER_BUSY, the answer a full worker gives
+     * under push.
      */
-    worker: { url: string; timeoutMs: number };
+    worker: { url: string; timeoutMs: number; dispatch: 'push' | 'pull'; pull: { leaseMs: number; queueTimeoutMs: number } };
     /**
      * Instance C2PA signing identity (plans/17 §16). When `certFile` (a public
      * cert-chain PEM, leaf first) is set AND LW_C2PA_SIGNING_KEY (the PKCS#8
@@ -634,7 +644,7 @@ const DEFAULTS: InstanceConfig = {
     uploads: { ...UPLOAD_DEFAULTS },
     requests: { join: false, project: true, ttlDays: 14, joinOpenMax: 50 },
   },
-  render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
+  render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000, dispatch: 'push', pull: { leaseMs: 15000, queueTimeoutMs: 30000 } }, c2pa: { certFile: '', claimGenerator: '' } },
   audit: { headLog: { onBoot: true, intervalMinutes: 60 } },
   rateLimit: {
     enabled: true, trustedProxyHops: 0, maxBuckets: 50000,
@@ -1163,6 +1173,12 @@ export function parseConfig(json: string): InstanceConfig {
     catch { throw new Error('render.worker.url requires HTTPS; HTTP is only for explicit loopback evaluation'); }
   }
   if (cfg.render.worker.url && (!Number.isFinite(wt) || wt <= 0)) throw new Error(`invalid render.worker.timeoutMs: ${wt}`);
+  if (cfg.render.worker.dispatch !== 'push' && cfg.render.worker.dispatch !== 'pull') throw new Error('render.worker.dispatch must be "push" or "pull"');
+  const pull = cfg.render.worker.pull;
+  if (!pull || typeof pull !== 'object' || !Number.isInteger(pull.leaseMs) || pull.leaseMs < 1000 || pull.leaseMs > 120_000
+    || !Number.isInteger(pull.queueTimeoutMs) || pull.queueTimeoutMs < 1000 || pull.queueTimeoutMs > 600_000) {
+    throw new Error('render.worker.pull needs leaseMs from 1000 to 120000 and queueTimeoutMs from 1000 to 600000');
+  }
   const rl = cfg.rateLimit;
   if (!Number.isFinite(rl.trustedProxyHops) || rl.trustedProxyHops < 0) throw new Error('rateLimit.trustedProxyHops must be >= 0');
   for (const s of ['auth', 'telemetry', 'link', 'automation'] as const) {
