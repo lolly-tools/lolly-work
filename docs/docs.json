@@ -348,10 +348,22 @@
           "summary": "What the OpenTofu and Terraform modules create, how the two providers differ, moving a PostgreSQL database safely, and capacity and recovery checks."
         },
         {
+          "slug": "aws-compatible",
+          "path": "aws-compatible.md",
+          "title": "Run Work on AWS or MulgaDC Spinifex",
+          "summary": "Run Lolly Work on AWS or on MulgaDC Spinifex: one VM, managed PostgreSQL and S3, EKS with the chart, or an immutable openSUSE host, with the issues a Spinifex test run found."
+        },
+        {
           "slug": "wasm-deployment",
           "path": "wasm-deployment.md",
           "title": "WebAssembly and Kubewarden choices",
           "summary": "Optional WebAssembly tracks: evaluating Kubewarden admission policies and preparing a component host. A normal install needs neither."
+        },
+        {
+          "slug": "admission-policy",
+          "path": "admission-policy.md",
+          "title": "Admission policy with Kubewarden",
+          "summary": "What Work pods need from an admission policy, a ready Kubewarden policy set pinned by digest, a preflight check and how the set was qualified."
         },
         {
           "slug": "configuration",
@@ -370,6 +382,12 @@
           "path": "operations.md",
           "title": "Keep Lolly Work running",
           "summary": "Upgrades, backups and restores, secret rotation, health and storage alerts, rate limits, scan hooks, notifications and SIEM forwarding, in the order the jobs come round."
+        },
+        {
+          "slug": "metrics",
+          "path": "metrics.md",
+          "title": "Metrics and alerts",
+          "summary": "Every metric Work exports on /metrics with its type and labels, the suggested Prometheus alerts and the Grafana dashboard the Helm chart can install."
         },
         {
           "slug": "instance-pack-production",
