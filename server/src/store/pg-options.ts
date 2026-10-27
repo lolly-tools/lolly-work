@@ -20,6 +20,8 @@
  *   all that is needed.
  */
 
+import { processOtel } from '../observability/otel.ts';
+
 export const PG_CONNECT_TIMEOUT_MS = 15_000;
 export const PG_IDLE_TIMEOUT_MS = 30_000;
 
@@ -41,9 +43,12 @@ export function pgPoolOptions(connectionString: string, extra: { max?: number } 
 }
 
 /** Log, rather than crash on, an error from a connection idling in `pool`.
- *  The message names the pool, never the connection string. */
+ *  The message names the pool, never the connection string. When OTLP traces
+ *  are on, the pool's queries also become spans under the request or render
+ *  that ran them (observability/otel.ts); otherwise the pool is untouched. */
 export function guardPool<T>(pool: T, name: string): T {
   (pool as unknown as { on(event: 'error', listener: (err: Error) => void): void })
     .on('error', (err) => console.error(`[lolly-work] ${name} pool: idle connection closed: ${err.message}`));
+  processOtel().instrumentPool(pool as object);
   return pool;
 }
