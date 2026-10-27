@@ -110,13 +110,17 @@ The separate `helm-index` release contains the mutable discovery index. Neither
 kind replaces the application's latest release. No GitHub Pages site or paid
 marketplace account is needed.
 
-Each chart/template change requires a new chart version. Publication retries
-compare existing immutable assets, preserve old chart versions in the index and
-refuse different bytes under an existing version. If publication fails after the
-immutable release but before the index update, rerun the same reviewed source;
-do not delete the release or replace its chart archive. An incomplete already
-published release requires inspection before repair. A later source needs a new
-chart version even if its application version stays the same.
+The chart's version is the release version: `Chart.yaml` `version`, its
+`appVersion` and Work's `package.json` version are one number, the Lolly release,
+so people install one version of everything (`tests/helm-chart.test.ts` fails on
+drift). A chart or template change therefore ships with the next release, and the
+chart is published as part of each release, from that release's `main` commit.
+Publication retries compare existing immutable assets, preserve old chart
+versions in the index and refuse different bytes under an existing version. If
+publication fails after the immutable release but before the index update, rerun
+the same reviewed source; do not delete the release or replace its chart
+archive. An incomplete already published release requires inspection before
+repair.
 
 After a project maintainer creates the real Artifact Hub organization/repository,
 set the repository variables `ARTIFACTHUB_REPOSITORY_ID` and

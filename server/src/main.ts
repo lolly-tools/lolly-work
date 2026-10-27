@@ -18,6 +18,8 @@ import { parseBackgroundPollMs, type RenderRunner } from './renders/runner.ts';
 import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
+import { createOtel, setProcessOtel } from './observability/otel.ts';
+import { otelConfigFromEnv, printableEndpoint, SIGNALS } from './observability/otel-config.ts';
 import { runRetention } from './audit/retention.ts';
 import { scheduleProjectFileSweep } from './projects/files.ts';
 import { scheduleUploadSweep } from './uploads/scoped.ts';
@@ -35,6 +37,24 @@ import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commit
 
 const config = loadConfig();
 const secrets = loadSecrets(process.env, config);
+
+// OpenTelemetry export (observability/otel.ts): only when an OTLP endpoint is
+// set in the standard OTEL_* variables. Built before the stores so their
+// database pools can be traced. Endpoints print without userinfo or query, and
+// headers (often a credential) never print.
+const workVersion = (() => {
+  try { return String(JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version ?? 'unknown'); }
+  catch { return 'unknown'; }
+})();
+const otelSettings = otelConfigFromEnv(process.env, workVersion);
+for (const note of otelSettings.notes) console.warn(`[lolly-work] WARNING otlp: ${note}`);
+const otel = createOtel(otelSettings.config);
+setProcessOtel(otel);
+if (otelSettings.config) {
+  const cfg = otelSettings.config;
+  const sent = SIGNALS.flatMap(signal => { const e = cfg[signal]; return e ? [`${signal} to ${printableEndpoint(e.url)} (${e.protocol})`] : []; });
+  console.log(`[lolly-work] otlp export: ${sent.join('; ')}; service.name=${String(cfg.resource['service.name'])}`);
+}
 const setup = await assessSetup(config, secrets, !!process.env.DATABASE_URL?.trim());
 if (!setup.ready) {
   for (const check of setup.checks.filter(check => check.status === 'fail')) console.error(`[lolly-work] ${check.id}: ${check.message}`);
@@ -187,7 +207,7 @@ if (s3Blobs) {
 const backgroundPollMs = parseBackgroundPollMs(process.env.LW_BACKGROUND_POLL_MS);
 if (backgroundPollMs !== undefined) console.log(`[lolly-work] background poll ${backgroundPollMs === 0 ? 'off (work runs on submission)' : `every ${backgroundPollMs} ms`}`);
 let renderRunner: RenderRunner | undefined;
-const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
+const app = buildApp({ config, store, secrets, blobs, otel, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
   // A saved comment write tells the people in that session's live room (plan 76 M4).
   roomEvents: (id, frame) => collab.notifyComment(id, frame),
   // Version restores go through the live room, like an agent's edits (plan 76 M4).
@@ -322,6 +342,9 @@ const shutdown = async (signal: string): Promise<void> => {
   console.log('[lolly-work] drained');
   // Write the buffered blob read tally, so a routine deploy keeps the month's figure.
   await blobs.flushUsage?.().catch((err: Error) => console.error(`[lolly-work] blob read tally not written: ${err.message}`));
+  // Send the spans, log records and final metric reading still waiting, within
+  // five seconds so a collector that is down cannot hold the exit.
+  await otel.shutdown(5_000);
   process.exit(0);
 };
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {

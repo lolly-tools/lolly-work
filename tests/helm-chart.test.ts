@@ -49,6 +49,17 @@ const deployment = (out: string, worker = false) => manifests(out).find(doc =>
   doc?.kind === 'Deployment' && (doc.metadata.labels?.['app.kubernetes.io/component'] === 'render-worker') === worker);
 const SMALL = ['-f', `${CHART}/values-small-suse.yaml`];
 
+// One number for everything people install (Andy, 2026-10-27): the chart's own version
+// is the Lolly release, the same as appVersion and Work's package.json. Read without
+// helm, so the check runs everywhere.
+test('the chart carries the release version: version equals appVersion equals Work', () => {
+  const work = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const chart = parse(readFileSync(join(CHART, 'Chart.yaml'), 'utf8'));
+  assert.match(work, /^\d+\.\d+\.\d+$/);
+  assert.equal(chart.appVersion, work, 'Chart.yaml appVersion');
+  assert.equal(chart.version, work, 'Chart.yaml version');
+});
+
 test('chart application version matches Work and defaults server, migration and worker images together', { skip: noHelm }, () => {
   const appVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   const chart = parse(readFileSync(join(CHART, 'Chart.yaml'), 'utf8'));
@@ -614,4 +625,41 @@ test('worker DNS trust is namespace-scoped and HTTPS-only egress excludes specia
   const unscopedDns = render([...active, '--set-json', 'renderWorker.networkPolicy.dnsNamespaceLabels=null']);
   assert.equal(unscopedDns.ok, false);
   assert.match(unscopedDns.err, /dnsNamespaceLabels/);
+});
+
+test('OpenTelemetry export is off by default and sets the standard variables on the server only when on', { skip: noHelm }, () => {
+  const envNames = (doc: { spec: { template: { spec: { containers: { env?: { name: string }[] }[] } } } }) =>
+    doc.spec.template.spec.containers.flatMap(c => (c.env ?? []).map(e => e.name));
+  const off = render([...SECRETS, ...WORKER]);
+  assert.ok(off.ok, off.err);
+  assert.doesNotMatch(off.out, /OTEL_/, 'nothing is set, so the server exports nothing');
+
+  const on = render([...SECRETS, ...WORKER, '--set', 'otel.enabled=true', '--set', 'otel.endpoint=http://otel-collector.observability.svc:4318',
+    '--set', 'otel.protocol=http/json', '--set', 'otel.serviceName=work-eu', '--set', 'otel.logs=false',
+    '--set-json', 'otel.resourceAttributes={"deployment.environment.name":"prod one","team":"brand,web"}',
+    '--set', 'otel.sampler=parentbased_traceidratio', '--set', 'otel.samplerArg=0.25',
+    '--set', 'otel.headersSecret.name=otlp-auth', '--set', 'otel.headersSecret.key=headers']);
+  assert.ok(on.ok, on.err);
+  const app = deployment(on.out);
+  const env = Object.fromEntries(app.spec.template.spec.containers[0].env.map((e: { name: string; value?: string; valueFrom?: unknown }) => [e.name, e.value ?? e.valueFrom]));
+  assert.equal(env.OTEL_EXPORTER_OTLP_ENDPOINT, 'http://otel-collector.observability.svc:4318');
+  assert.equal(env.OTEL_EXPORTER_OTLP_PROTOCOL, 'http/json');
+  assert.equal(env.OTEL_SERVICE_NAME, 'work-eu');
+  assert.equal(env.OTEL_RESOURCE_ATTRIBUTES, 'deployment.environment.name=prod%20one,team=brand%2Cweb', 'percent-encoded, as the variable defines');
+  assert.equal(env.OTEL_TRACES_EXPORTER, 'otlp');
+  assert.equal(env.OTEL_METRICS_EXPORTER, 'otlp');
+  assert.equal(env.OTEL_LOGS_EXPORTER, 'none');
+  assert.equal(env.OTEL_TRACES_SAMPLER_ARG, '0.25');
+  assert.deepEqual(env.OTEL_EXPORTER_OTLP_HEADERS, { secretKeyRef: { name: 'otlp-auth', key: 'headers' } }, 'the header value comes from a Secret, never from values');
+  const migration = manifests(on.out).find(doc => doc?.kind === 'Job');
+  assert.ok(!envNames(migration).some(n => n.startsWith('OTEL_')), 'the migrate Job exports nothing');
+  assert.ok(!envNames(deployment(on.out, true)).some(n => n.startsWith('OTEL_')), 'nor does the render worker');
+
+  const missing = render([...SECRETS, '--set', 'otel.enabled=true']);
+  assert.equal(missing.ok, false);
+  assert.match(missing.err, /otel.endpoint is required/);
+  for (const bad of ['otel.protocol=grpc', 'otel.sampler=sometimes', 'otel.samplerArg=1.5', 'otel.endpoint=collector:4318', 'otel.compression=zstd']) {
+    const r = render([...SECRETS, '--set', 'otel.enabled=true', '--set', 'otel.endpoint=http://c:4318', '--set', bad]);
+    assert.equal(r.ok, false, `${bad} must be refused by values.schema.json`);
+  }
 });
