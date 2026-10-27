@@ -669,6 +669,35 @@ class IngDeploys(IngEndToEnd):
         self.assertEqual((image, notes.get("maintenance"), json.loads(notes["maintenance-migrations"])),
                          (fix["image"], None, [IF.MAINTENANCE]))
 
+    def test_once_the_backup_is_restored_rollback_returns_the_previous_image(self):
+        """Andy 2026-10-27: the rollback after a non-additive migration is the backup plus the previous image. A person
+        restores the backup by the runbook; `rollback --clear-hold` then confirms the restore from the ledger and does
+        the image half at a higher generation."""
+        build = self.pending_build(IF.MAINTENANCE)
+        self.behave(brokenSite=[build["image"]])
+        code, events = self.cli("deploy", W_NEXT)
+        self.assertEqual(self.done(events)["result"], "MAINTENANCE_UNVERIFIED", events)
+        point = self.restore_point()
+        code, events = self.cli("rollback", "--clear-hold")
+        refusal = self.done(events)
+        self.assertEqual(refusal["code"], "MAINTENANCE_NO_ROLLBACK", events)  # the database still holds the migration
+        self.assertIn(IF.MAINTENANCE, refusal["reason"])
+        self.assertEqual(self.live()[0], build["image"])
+        state = self.cluster()  # the runbook's restore: the database is the backup again, ledger and publication row
+        state["db"]["ledger"] = sorted(m["name"] for m in self.old["migrations"])
+        state["db"]["generation"], state["db"]["digest"] = 3008, self.old["packDigest"]
+        self.set_cluster(state)
+        code, events = self.cli("rollback", "--clear-hold")
+        result = self.done(events)
+        self.assertEqual((code, result["result"], result["reason"]), (2, "ROLLED_BACK", "MANUAL_AFTER_RESTORE"), events)
+        image, _, notes = self.live()
+        self.assertEqual((image, point["previousImage"], notes["phase"]), (self.old["image"], self.old["image"], "rolled-back"))
+        self.assertEqual([notes.get(k) for k in ("maintenance", "maintenance-applied", "maintenance-migrations")], [None, None, None])
+        back = {item["check"]: item["ok"] for item in self.result_file()["rollbackChecks"]}
+        self.assertTrue(back["signed catalog"] and back["generation"], back)
+        self.assertGreater(self.cluster()["db"]["generation"], 3010)  # a new generation above every config, never the old one
+        self.assertEqual(len(self.writes("migrate")), 1)  # the tool never touched the database itself
+
     def test_without_a_rehearsal_a_migration_still_takes_the_verified_backup_first(self):
         """The preview-grade profile sets no rehearsal: no rehearsal Pod, but the backup still precedes the migrate Job."""
         self.without_rehearsal()
@@ -1311,6 +1340,39 @@ class IngCutover(IngEndToEnd):
         self.assertEqual(self.done(events)["code"], "HELD_FOR_HUMAN", events)
         code, events = self.cli("rollback", "--clear-hold")
         self.assertEqual(self.done(events)["code"], "MAINTENANCE_NO_ROLLBACK", events)
+
+    def test_once_the_backup_is_restored_rollback_reverts_a_held_cutover(self):
+        """The first cut-over carries non-additive migrations, so a failed smoke holds. After the runbook's restore,
+        `rollback --clear-hold` confirms the restore from the ledger and reverts with the cut-over's own reviewed plan:
+        the claim layout, the old image and the old key reference, at a higher generation."""
+        build = self.pending_build(IF.MAINTENANCE)
+        plan = self.plan_for(W_NEXT)
+        self.behave(brokenSite=[build["image"]])
+        code, events = self.apply(plan)
+        self.assertEqual(self.done(events)["result"], "MAINTENANCE_UNVERIFIED", events)
+        code, events = self.cli("rollback", "--clear-hold")
+        self.assertEqual(self.done(events)["code"], "MAINTENANCE_NO_ROLLBACK", events)  # the database still holds the migration
+        self.assertTrue(I.is_converted(self.cluster()["deployment"], 0))
+        state = self.cluster()  # the runbook's restore: the database as it was before the cut-over
+        state["db"]["ledger"] = sorted(m["name"] for m in self.legacy["migrations"])
+        state["db"]["generation"], state["db"]["digest"] = 3008, self.legacy["packDigest"]
+        self.set_cluster(state)
+        path = Path(plan["path"])
+        original = path.read_bytes()
+        path.write_bytes(original.replace(b'"generation"', b'"generation" ', 1))  # not the plan that plan recorded
+        code, events = self.cli("rollback", "--clear-hold")
+        self.assertEqual((code, self.done(events)["code"]), (1, "PLAN_NOT_REVIEWED"), events)
+        path.write_bytes(original)
+        code, events = self.cli("rollback", "--clear-hold")
+        result = self.done(events)
+        self.assertEqual((code, result["result"], result["reason"]), (2, "CONVERSION_REVERTED", "MANUAL_AFTER_RESTORE"), events)
+        image, _, notes = self.live()
+        self.assertFalse(I.is_converted(self.cluster()["deployment"], 0))
+        self.assertEqual((image, self.signing_ref(), notes["phase"], notes.get("maintenance-applied")),
+                         (IF.LEGACY_IMAGE, IF.LEGACY_SIGNING_SECRET, "rolled-back", None))
+        back = {item["check"]: item["ok"] for item in self.result_file()["rollbackChecks"]}
+        self.assertTrue(back["signed catalog"] and back["generation"], back)
+        self.assert_no_secret_touched()
 
     def test_a_stopped_maintenance_cutover_with_a_transient_cleanup_read_failure_is_held(self):
         """The first cleanup read fails after migration and cut-over. The base cleanup's next read must not allow a revert."""

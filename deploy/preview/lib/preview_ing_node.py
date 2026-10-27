@@ -52,7 +52,7 @@ def validate_ing_request(request, au):
     anchors = A.ING
     require(isinstance(request, dict) and request.get("version") == 1 and request.get("site") == "lolly.ing",
             "BAD_REQUEST", "unsupported request")
-    require(request.get("kind") in ("deploy", "rollback", "convert", "gc", "read"), "BAD_REQUEST", "unknown kind for lolly.ing")
+    require(request.get("kind") in ("deploy", "rollback", "convert", "revert", "gc", "read"), "BAD_REQUEST", "unknown kind for lolly.ing")
     require(isinstance(request.get("deployId"), str) and DEPLOY_ID.fullmatch(request["deployId"]) is not None,
             "BAD_REQUEST", "deploy id is malformed")
     require(isinstance(request.get("tool"), str) and HEX64.fullmatch(request["tool"]) is not None, "BAD_REQUEST", "tool hash")
@@ -93,8 +93,17 @@ def validate_ing_request(request, au):
     require(type(request.get("drillFailSmoke")) is bool and type(request.get("clearHold")) is bool, "BAD_REQUEST", "flags")
     # The maintenance approval flow is gone (Andy, 2026-10-27); a request that still carries one is from an older Mac.
     require("maintenanceApproval" not in request, "BAD_REQUEST", "maintenance approvals are no longer part of a request")
-    if request["kind"] in ("deploy", "convert"):
+    if request["kind"] in ("deploy", "convert", "revert"):
         I.validate_release(request.get("release"))
+    if request["kind"] == "revert":
+        # The cut-over's own reviewed plan, to put the claim layout back after a person restored the database.
+        plan = request.get("conversion")
+        cutover = plan.get("cutover") if isinstance(plan, dict) else None
+        require(isinstance(cutover, dict) and plan.get("kind") == "lolly-ing-cutover" and isinstance(plan.get("deployId"), str)
+                and DEPLOY_ID.fullmatch(plan["deployId"]) is not None and plan["deployId"] != request["deployId"]
+                and all(isinstance(cutover.get(k), str) for k in ("image", "config", "signingKeySecret"))
+                and isinstance(cutover.get("volumes"), list) and isinstance(cutover.get("mounts"), list)
+                and plan.get("release") == request["release"], "BAD_REQUEST", "the cut-over plan to revert is malformed")
     if request["kind"] == "convert":
         plan = request.get("conversion")
         require(isinstance(plan, dict) and isinstance(plan.get("cutover"), dict) and isinstance(plan["cutover"].get("patch"), list)
@@ -119,7 +128,8 @@ class IngRunner(N.Runner):
         self.jobs = 0
 
     def handlers(self):
-        return {"deploy": self.run_deploy, "rollback": self.run_rollback, "convert": self.run_convert, "gc": self.run_gc}
+        return {"deploy": self.run_deploy, "rollback": self.run_rollback, "convert": self.run_convert,
+                "revert": self.run_revert, "gc": self.run_gc}
 
     # Small reads -------------------------------------------------------
     def namespace(self):
@@ -715,7 +725,7 @@ class IngRunner(N.Runner):
             return self.finish("MAINTENANCE_UNVERIFIED", reason=reason, checks=checks, backup=restore, note=HOLD_NOTE)
         return self.restore(previous, reason, watch=False, checks=checks, backup=restore)
 
-    def restore(self, previous, reason, watch, checks=None, backup=None):
+    def restore(self, previous, reason, watch, checks=None, backup=None, cleared=False):
         """The previous image (still pinned) plus a NEW config at a higher generation; never rollout undo.
         The database stays (PROPOSAL 4.6): after nothing or only additive migrations the previous image runs on it.
         backup is this run's restore point, reported when the rollback itself fails."""
@@ -751,6 +761,10 @@ class IngRunner(N.Runner):
                   "expect": compact(previous["expect"]), "config": config, "generation": str(generation), "previous": None,
                   "maintenance": None, "migration-set": None,  # the new build's set no longer describes the live image
                   "reason": reason[:500], "updated": utc_stamp()}
+        if cleared:  # the database was restored to before these migrations: they are applied nowhere now
+            left = sorted(set(self.applied_migrations(self.deployment(full=False)[0], "maintenance-migrations")) - set(cleared))
+            values.update({"maintenance-applied": None, "maintenance-applied-set": None,
+                           "maintenance-migrations": compact(left) if left else None})
         try:
             self.annotate(values, expect_image=previous["image"])
         except Refusal as exc:
@@ -763,15 +777,20 @@ class IngRunner(N.Runner):
     def run_rollback(self):
         value, index = self.deployment()
         self.hold_check(self.ann(value, "phase"))
-        require(self.ann(value, "maintenance") != "true", "MAINTENANCE_NO_ROLLBACK",
-                "the live build ran a maintenance migration; a rollback would need a restore, which Andy decides")
-        require(not self.applied_migrations(value, "maintenance-applied"), "MAINTENANCE_NO_ROLLBACK",
-                "a maintenance migration was applied and no accepted switch includes it yet; every earlier image is older "
-                "than that schema, so a rollback would need a restore, which Andy decides")
         previous = self.ann_json(value, "previous")
+        non_additive = self.ann(value, "maintenance") == "true" or bool(self.applied_migrations(value, "maintenance-applied"))
+        require(not non_additive or (isinstance(previous, dict) and previous.get("image")), "MAINTENANCE_NO_ROLLBACK",
+                "a non-additive migration is applied and there is no recorded previous build to return to; restore the backup "
+                "(runbook) and deploy a forward fix")
         require(isinstance(previous, dict) and previous.get("image") and previous.get("expect"), "NO_PREVIOUS",
                 "no recorded previous build; deploy a build instead")
         require(previous.get("source") == self.request.get("rollbackTo"), "STATE_CHANGED", "the recorded previous build changed")
+        restored = ()
+        if non_additive:
+            # Andy 2026-10-27: after a non-additive migration the rollback is the backup plus the previous image. A person
+            # restores the backup (the runbook); this run does the second half, and only once the database ledger shows
+            # the restore: none of the non-additive files the live build's deploy applied may be in it.
+            restored = self.restored_before_rollback(value, previous)
         lowering = format_lowering(self.ann_json(value, "formats"), previous.get("formats"))
         require(not lowering, "FORMAT_LOWERING", "the rollback would lower stored formats (" + ", ".join(lowering) +
                 "); roll forward instead")
@@ -780,7 +799,39 @@ class IngRunner(N.Runner):
         self.keep_pinned(previous["image"])
         previous = {name: item for name, item in previous.items() if name != "prior"}
         self.annotate({"deploy-id": self.request["deployId"], "updated": utc_stamp()})
-        return self.restore(previous, "MANUAL", watch=True)
+        return self.restore(previous, "MANUAL_AFTER_RESTORE" if restored else "MANUAL", watch=True, cleared=restored)
+
+    def run_revert(self):
+        """After a cut-over held by a non-additive migration: a person restored the backup (the runbook); put the claim
+        layout, the old image and the old signing key reference back, at a higher generation, as revert_cutover does
+        after a failed smoke. Only when the ledger shows the restore."""
+        plan = self.request["conversion"]
+        value, index = self.deployment()
+        self.hold_check(self.ann(value, "phase"))
+        require(I.is_converted(value, index) and self.ann(value, "deploy-id") == plan["deployId"], "STATE_CHANGED",
+                "the live Deployment is not the one this cut-over left; nothing to revert")
+        self.restored_before_rollback(value, {"image": plan["cutover"]["image"]})
+        self.annotate({"maintenance": None, "maintenance-applied": None, "maintenance-applied-set": None,
+                       "maintenance-migrations": None, "updated": utc_stamp()})
+        return self.revert_cutover(plan, "MANUAL_AFTER_RESTORE")
+
+    def restored_before_rollback(self, value, previous):
+        """MAINTENANCE_NO_ROLLBACK unless the database no longer holds the non-additive migrations of the live build's
+        deploy, as its restore point and marker name them, and the restore point names this same previous image."""
+        point = self.ann_json(value, "backup")
+        names = set(self.applied_migrations(value, "maintenance-applied"))
+        if isinstance(point, dict) and point.get("maintenance") is True and isinstance(point.get("migrations"), list):
+            names |= set(point["migrations"])
+        require(bool(names) and isinstance(point, dict) and point.get("previousImage") == previous["image"],
+                "MAINTENANCE_NO_ROLLBACK", "the live build ran a non-additive migration and its restore point does not name "
+                "this previous build; restore and roll back by hand with the runbook, or deploy a forward fix")
+        check = self.check_db(previous["image"] if I.instance_image(previous["image"]) else self.request["release"]["image"])
+        still = sorted(names & set(check["ledger"]))
+        require(not still, "MAINTENANCE_NO_ROLLBACK", "the live build ran a non-additive migration and the database still "
+                f"holds {', '.join(still[:5])}: restore the backup in the restore point first (runbook), then roll back again "
+                "with --clear-hold, or deploy a forward fix")
+        self.log("restored", migrations=sorted(names), backup=(point.get("record") or {}).get("object"))
+        return tuple(sorted(names))
 
     # Cut-over (PROPOSAL 4.8) -------------------------------------------------
     def run_convert(self):

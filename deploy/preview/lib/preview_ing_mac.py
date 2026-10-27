@@ -306,11 +306,14 @@ def cmd_deploy(context, wsha, dispatch):
 def cmd_rollback(context):
     status = _live(context)
     preview = status.get("preview", {})
-    require(preview.get("maintenance") != "true" and not _json(preview.get("maintenance-applied")), "MAINTENANCE_NO_ROLLBACK",
-            "the live build ran a non-additive migration, so the previous image alone is not a safe state. Roll back by "
-            "restoring the backup in status's `backup` record together with that image (the lolly.ing runbook), or deploy "
-            "a forward fix with --clear-hold")
     previous = _json(preview.get("previous"))
+    if preview.get("maintenance") == "true" or _json(preview.get("maintenance-applied")):
+        # The previous image alone is not a safe state after a non-additive migration. Once a person has restored the
+        # backup in status's `backup` record (the runbook), the node confirms the restore from the ledger and rolls back.
+        if not (isinstance(previous, dict) and previous.get("image")):
+            return _revert_cutover_after_restore(context, status, preview)
+        emit("rollback", note="the live build ran a non-additive migration; the node rolls back only if the database no "
+                              "longer holds it (the backup was restored by the runbook)", backup=_json(preview.get("backup")))
     require(isinstance(previous, dict) and previous.get("source") and previous.get("image"), "NO_PREVIOUS",
             "no recorded previous build; deploy a build instead")
     lowering = format_lowering(_json(preview.get("formats")), previous.get("formats"))
@@ -320,6 +323,27 @@ def cmd_rollback(context):
     request = context.request("rollback", context.deploy_id("rollback", previous["source"]), rollbackTo=previous["source"])
     result = context.start_and_follow(request)
     return M._finish(context, "rollback", result, sha=previous["source"])
+
+
+def _revert_cutover_after_restore(context, status, preview):
+    """The cut-over left no previous build: the way back is its own reviewed plan, after the database restore."""
+    deploy_id = preview.get("deploy-id")
+    path = context.state_dir / "plans" / (str(deploy_id) + ".json")
+    require(isinstance(deploy_id, str) and "-ing-cutover-" in deploy_id and path.is_file() and not path.is_symlink(),
+            "MAINTENANCE_NO_ROLLBACK", "a non-additive migration is applied and there is no previous build or cut-over plan to "
+            "return to; restore the backup (runbook) and deploy a forward fix")
+    data = path.read_bytes()
+    require(any(row.get("result") == "PLANNED" and row.get("planSha256") == sha256_hex(data) for row in context.records()),
+            "PLAN_NOT_REVIEWED", "the cut-over plan file differs from the one plan recorded")
+    plan = strict_json(data.decode("utf-8"), "plan")
+    require(isinstance(plan, dict) and plan.get("kind") == "lolly-ing-cutover" and plan.get("deployId") == deploy_id,
+            "PLAN_INVALID", "the plan file is not this cut-over's")
+    emit("rollback", note="the cut-over ran a non-additive migration; the node reverts it only if the database no longer "
+                          "holds it (the backup was restored by the runbook)", backup=_json(preview.get("backup")), plan=str(path))
+    context.check_target()
+    request = context.request("revert", context.deploy_id("revert", plan["source"]), release=plan["release"], conversion=plan)
+    result = context.start_and_follow(request)
+    return M._finish(context, "rollback", result, sha=plan["source"])
 
 
 def cmd_status(context, follow=None):

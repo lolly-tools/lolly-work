@@ -653,10 +653,17 @@ The smoke account:
   Manual `rollback` does the same to the recorded previous build and refuses one that would lower a stored format.
 - **Any other class:** the previous image alone is not a safe state, so automatic rollback is off. A failed smoke ends
   `MAINTENANCE_UNVERIFIED` (exit 3) with the phase `maintenance-unverified`, which holds every later run, and the result
-  names the restore point. The rollback is **that backup plus the previous image**, run by hand from the lolly.ing
-  runbook (`lolly-private/production/preview/`), because a restore drops every write since the backup. A forward fix
-  that already contains the migration may follow instead with `deploy <fix> --clear-hold`. Manual `rollback` refuses
-  `MAINTENANCE_NO_ROLLBACK`.
+  names the restore point. The rollback is **that backup plus the previous image**, in two halves:
+  1. a person restores the backup into the database by the lolly.ing runbook (`lolly-private/production/preview/`),
+     because a restore drops every write since the backup and the tool never restores the live database;
+  2. `rollback --clear-hold` reads the ledger with a check Job and refuses `MAINTENANCE_NO_ROLLBACK` while it still holds
+     any non-additive file of the live build's deploy (from its restore point and marker), or when the restore point
+     names another previous image. Once the restore shows, it switches to the previous image at a higher generation,
+     smokes and watches, and clears the maintenance records (`ROLLED_BACK`, reason `MANUAL_AFTER_RESTORE`).
+  After a held cut-over there is no previous build: the same `rollback --clear-hold` reads the cut-over's reviewed plan
+  from `plans/` (its sha256 must match the `PLANNED` record) and reverts the claim layout, old image and old key
+  reference (`CONVERSION_REVERTED`). A forward fix that already contains the migration may follow instead with
+  `deploy <fix> --clear-hold`, with no restore and no lost writes.
 - `status` prints the restore point of the last migrating deploy as `backup`.
 
 ### Cut-over (PROPOSAL 4.8)
@@ -672,8 +679,8 @@ created the second Secret. It always takes a fresh backup, runs the restore rehe
 applies pending migrations of any class with the same restore point and marker as a deploy, then applies the reviewed
 patch. A failed smoke after nothing or only additive migrations puts the claim layout, the old image and the old key
 reference back, with a new ConfigMap at a higher generation (`CONVERSION_REVERTED`), and that catalog verifies. After
-a non-additive migration the revert is off: `MAINTENANCE_UNVERIFIED`, and recovery is the restore point with the old
-layout, by the runbook. Every revert attempt, including `ExecStopPost` after a failed read, re-reads the marker first.
+a non-additive migration the revert is off: `MAINTENANCE_UNVERIFIED`; recovery is a forward fix, or the restore by the
+runbook followed by `rollback --clear-hold`, which reverts with this plan. Every revert attempt, including `ExecStopPost` after a failed read, re-reads the marker first.
 Keep the old claims until two image deploys have passed.
 
 ### Retention (`gc`, decision 12)
