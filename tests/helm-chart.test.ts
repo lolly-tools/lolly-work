@@ -49,6 +49,17 @@ const deployment = (out: string, worker = false) => manifests(out).find(doc =>
   doc?.kind === 'Deployment' && (doc.metadata.labels?.['app.kubernetes.io/component'] === 'render-worker') === worker);
 const SMALL = ['-f', `${CHART}/values-small-suse.yaml`];
 
+// One number for everything people install (Andy, 2026-10-27): the chart's own version
+// is the Lolly release, the same as appVersion and Work's package.json. Read without
+// helm, so the check runs everywhere.
+test('the chart carries the release version: version equals appVersion equals Work', () => {
+  const work = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const chart = parse(readFileSync(join(CHART, 'Chart.yaml'), 'utf8'));
+  assert.match(work, /^\d+\.\d+\.\d+$/);
+  assert.equal(chart.appVersion, work, 'Chart.yaml appVersion');
+  assert.equal(chart.version, work, 'Chart.yaml version');
+});
+
 test('chart application version matches Work and defaults server, migration and worker images together', { skip: noHelm }, () => {
   const appVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   const chart = parse(readFileSync(join(CHART, 'Chart.yaml'), 'utf8'));

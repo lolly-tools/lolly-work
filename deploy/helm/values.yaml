@@ -168,7 +168,8 @@ database:
 #     secret you created in your platform's secret store. The chart then creates
 #     NO secret; the Deployment and migrate Job both read from yours. It must
 #     contain keys: DATABASE_URL, LW_SESSION_SECRET, LW_LINK_SECRET, and
-#     optionally LW_IDP_CLIENT_SECRET, LW_CREDENTIAL_SECRET, LW_METRICS_TOKEN.
+#     optionally LW_IDP_CLIENT_SECRET, LW_CREDENTIAL_SECRET, LW_METRICS_TOKEN,
+#     LW_OFREP_TOKEN.
 existingSecret: ""
 
 secrets:
@@ -184,6 +185,9 @@ secrets:
   # loopback-only (never exposed). Set it to enable Prometheus scraping via the
   # ServiceMonitor below. openssl rand -hex 32
   metricsToken: ""
+  # Optional. Credential for your flag service when config.featureFlags.ofrep
+  # is set (sent as a bearer token, or as X-API-Key with auth: api-key).
+  ofrepToken: ""
 
 # ── Chromium render worker (plans/07/11) ─────────────────────────────────────
 # Hooked / HTML-heavy tools can't run in the control plane's in-process jsdom

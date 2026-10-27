@@ -9,7 +9,7 @@ import { resolveAiPolicy, type AiPolicy } from './ai.ts';
 import { renderCapabilities, type RenderCapabilities } from '../render/capabilities.ts';
 import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
 import { evaluate, grantDecision, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
-import { resolveFeatureFlags, flagGovernanceForVersion, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
+import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { projectInjectables, flagInjectableGovernance, injectablesForVersion } from '../injectables/registry.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
 import { passwordIdpOf, type InstanceConfig } from '../config/instance.ts';
@@ -124,8 +124,10 @@ export interface OrgConfigPayload {
   render: RenderCapabilities;
   /** Control-plane governance for the shell's per-user feature flags, by flag id:
    *  the resolved default (applied when the user hasn't set the flag) and whether
-   *  the toggle is hidden. Instance-wide - the same for every caller. Flag-kind
-   *  injectables (plans/19) merge in here, so the shell needs no new path for them. */
+   *  the toggle is hidden, for THIS caller: an organisation's flag service, then
+   *  the caller's group rules, then the instance setting (policy/feature-flags.ts).
+   *  Flag-kind injectables (plans/19) merge in here, so the shell needs no new
+   *  path for them, and the shell never learns which source decided. */
   featureFlags: Record<string, ResolvedFlag>;
   /** The injectables visible to THIS caller (plans/19) - declarative descriptors
    *  the shell consumes: tools, typed catalog resources, and UI chrome (flag-kind
@@ -191,7 +193,7 @@ export function policyVersionOf(
   deliveryDestinations: ConfigDeliveryDestination[] = [],
   grants: Grant[] = [],
   ai: AiPolicy = resolveAiPolicy(undefined, new Map()),
-  member?: { groups: readonly string[]; role: string; sharingGroups: readonly string[] },
+  member?: { groups: readonly string[]; role: string; sharingGroups: readonly string[]; flagService?: ReadonlyMap<string, boolean> },
   /** Deployment settings that move `can` bits or payload blocks for every
    *  caller: the invite policy, whether guest links are on and the home view
    *  (`instance.homeView`). Absent for
@@ -210,7 +212,13 @@ export function policyVersionOf(
     // sits on a 304 with stale bits. Absent for callers that hash policy only
     // (the render cache key), so their versions are unchanged.
     ...(member ? {
-      member: { groups: [...member.groups].sort(), role: member.role, sharingGroups: [...member.sharingGroups] },
+      member: {
+        groups: [...member.groups].sort(), role: member.role, sharingGroups: [...member.sharingGroups],
+        // The flag service's answers move without any edit in Work, so they
+        // must move the hash too. Present only when a service is configured,
+        // so deployments without one keep their version.
+        ...(member.flagService ? { flagService: [...member.flagService].sort(([a], [b]) => a.localeCompare(b)) } : {}),
+      },
     } : {}),
     overlays: [...overlays.values()].sort((a, b) => a.toolId.localeCompare(b.toolId)),
     profilePolicy,
@@ -283,8 +291,12 @@ export function assembleOrgConfig(opts: {
   grants?: Grant[];
   /** Declared inputs per tool id, from the pack's tool manifests (id is enough here). */
   toolInputs?: Map<string, Array<{ id: string }> | null>;
-  /** Control-plane feature-flag governance (defaults + visibility). */
+  /** Control-plane feature-flag governance (defaults, visibility, group rules). */
   flagGovernance?: Map<string, FlagGovernance>;
+  /** The organisation's flag service's answers for this caller (policy/ofrep.ts),
+   *  by flag id. Absent when no service is configured; a flag missing from the
+   *  map stays on Work's governed value. */
+  flagService?: ReadonlyMap<string, boolean>;
   /** The published injectables (plans/19), projected per-caller below. */
   injectables?: Map<string, InjectableRecord>;
   /** What the deployment can render (renderCapabilities(workerConfigured) - 
@@ -421,9 +433,15 @@ export function assembleOrgConfig(opts: {
     // feature-flag governance has NO explicit opinion - so the two rails never
     // fight and the more-specific governance always wins (plans/19 §3).
     featureFlags: (() => {
-      const base = resolveFeatureFlags(flagGovernance);
+      const base = resolveFeatureFlags(flagGovernance, user.groups);
       for (const [flagId, g] of flagInjectableGovernance(injectables.values(), user.groups)) {
         if (!flagGovernance.has(flagId) && flagId in base) base[flagId] = { default: g.default === 'on', hidden: g.hidden };
+      }
+      // The organisation's flag service decides the default above everything
+      // Work holds, which is what it falls back to. Visibility stays Work's,
+      // and an instance-only switch (managed AI) is never the service's.
+      for (const [flagId, on] of opts.flagService ?? []) {
+        if (flagId in base && isGroupScopedFlag(flagId)) base[flagId] = { ...base[flagId]!, default: on };
       }
       return base;
     })(),
@@ -439,7 +457,7 @@ export function assembleOrgConfig(opts: {
       overlays, profilePolicy, flagGovernance, injectables, render,
       config.policy.nearby?.enabled ?? true, config.delivery?.destinations ?? [], grants,
       resolveAiPolicy(config.policy.ai, flagGovernance),
-      { groups: user.groups, role: user.role, sharingGroups },
+      { groups: user.groups, role: user.role, sharingGroups, ...(opts.flagService ? { flagService: opts.flagService } : {}) },
       {
         invites: invitePolicy, guestLinks: config.policy.guestLinks?.enabled !== false,
         // The sharing limits are part of the payload (lolly plan 299 M1).

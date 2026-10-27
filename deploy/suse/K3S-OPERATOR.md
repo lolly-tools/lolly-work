@@ -1,18 +1,23 @@
 # K3s candidate installation and qualification
 
-This workflow stages a **new dedicated amd64 SLES/openSUSE candidate** on either
+This workflow stages a **new dedicated amd64 or arm64 SLES/openSUSE candidate**,
+including a transactional openSUSE Leap 16.1 Immutable host, on either
 [UpCloud](../upcloud/README.md) or [Evroc](../evroc/README.md). It never adopts a
 running Compose host, creates cloud resources, changes DNS or moves a database.
 Keep the existing Compose origin/database available during rehearsal. Source
 checks do not qualify actual provider access, host boot or application recovery.
 
-`k3s.lock.json` pins `v1.34.12+k3s1`, its official amd64 binary checksum and an
-installer at an immutable commit with a separate SHA-256. This patch matches the
-current Kubernetes 1.34 chart/schema lane. It is a candidate selection, not a
-support claim for every OS image. Review the
+`k3s.lock.json` (amd64) and `k3s.arm64.lock.json` (arm64) pin `v1.34.12+k3s1`,
+the official binary checksum for each architecture from the release's
+`sha256sum-amd64.txt` and `sha256sum-arm64.txt`, and the same installer at an
+immutable commit with a separate SHA-256. The helper picks the lock from
+`uname -m` (`x86_64` or `aarch64`) and refuses any other architecture. This
+patch matches the current Kubernetes 1.34 chart/schema lane. It is a candidate
+selection, not a support claim for every OS image. Review the
 [SUSE support matrix](https://www.suse.com/suse-rancher/support-matrix/all-supported-versions/)
-and release maintenance before choosing a host. Other architectures,
-transactional Linux Micro hosts, joining and upgrades need separate qualification.
+and release maintenance before choosing a host. Other architectures, SLE Micro
+and Leap Micro hosts (their `ID` is not on the reviewed list), joining and
+upgrades need separate qualification.
 
 ## Prepare the candidate and its network
 
@@ -24,17 +29,35 @@ occupied HTTP/API ports. Provisioning and cost review remain separate actions.
 Do not run it on the existing small production host.
 
 Review/install Bash, Python 3, curl, coreutils (`sha256sum`), iproute2 (`ip`/`ss`),
-systemd, RPM and firewalld in the selected OS image. The helper installs no OS
-packages and disables no security controls. Enforcing SELinux requires the
-matching `k3s-selinux` policy package; the configuration then enables SELinux.
+systemd, RPM and firewalld in the selected OS image. The helper disables no
+security controls and installs no OS packages, with one exception: on a
+[transactional host](#transactional-hosts) it installs the SUSE `k3s-selinux`
+policy into a new snapshot. Enforcing SELinux requires the matching
+`k3s-selinux` policy package; the configuration then enables SELinux.
 Permissive SELinux is refused. Disabled SELinux is an existing OS posture, not an
 action taken by the helper; review AppArmor separately. This is not CIS certification.
 
 An installed RPM alone does not prove its module loaded. Preflight verifies the
-RPM, loaded `k3s` module and expected executable/snapshot contexts. If the signed
+RPM, loaded `k3s` module and expected executable/snapshot contexts. It looks each
+path up as the file type K3s creates there: `/usr/local/bin/k3s` and the runc
+shim `data/current/bin/containerd-shim-runc-v2` as files
+(`container_runtime_exec_t`) and the overlayfs snapshot directory as a directory
+(`container_file_t`). SUSE's `k3s-selinux` 1.4.stable.1 maps `data/*/bin/runc`
+to `k3s_root_t`, because its `bin(/.*)?` rule sorts after the runc rule, so runc
+is not a usable probe. K3s labels runc `container_runtime_exec_t` itself when it
+unpacks; on Leap 16.1 pods still started, with no AVC denials, after `restorecon`
+had relabelled runc `k3s_root_t`. If the signed
 SUSE package script did not activate its intact policy, inspect the error and
 explicitly load only `/usr/share/selinux/packages/k3s.pp` with `semodule -X 200 -i`
 while remaining Enforcing. Do not generate a permissive policy from denied calls.
+On a fresh non-transactional Leap 16.1 host, installing `container-selinux` and
+`k3s-selinux` in one zypper transaction left the `k3s` module unloaded (the
+zypper history shows `Failed to resolve typeattributeset statement`), and
+preflight refused the host. `zypper install --force k3s-selinux` after that
+transaction loaded the module from the same signed package. On the Immutable
+image, which ships `container-selinux`, the module loaded first time, so
+installing `container-selinux` in an earlier transaction should avoid the
+problem; that order has not been tested on its own.
 Staging applies `restorecon` only to the binary, generated service and K3s data
 tree, then checks labels and Enforcing again before any first start. The upstream
 installer's skipped RPM path also skips its executable labelling, so this
@@ -72,6 +95,19 @@ sudo firewall-cmd --permanent --zone=public --add-service=ssh
 sudo firewall-cmd --permanent --zone=trusted --add-source=10.42.0.0/16
 sudo firewall-cmd --permanent --zone=trusted --add-source=10.43.0.0/16
 sudo firewall-cmd --reload
+```
+
+firewalld 2.3.2 on openSUSE Leap 16.1 ships a `docker` zone (target `ACCEPT`)
+bound to `docker0`. It is listed as an active zone even when no `docker0`
+interface exists, and the helper refuses it as an unreviewed zone. Remove the
+binding from the permanent and the runtime configuration; `--reload` keeps
+runtime interface bindings because the shipped `FlushAllOnReload=no`:
+
+```sh
+sudo firewall-cmd --permanent --zone=docker --remove-interface=docker0
+sudo firewall-cmd --reload
+sudo firewall-cmd --zone=docker --remove-interface=docker0
+sudo firewall-cmd --get-active-zones
 ```
 
 Keep firewalld active. The helper refuses extra public ports/services, custom
@@ -205,14 +241,20 @@ a cleared environment. Caller `K3S_*` and proxy credentials are not copied into
 its service. K3s is staged **disabled and stopped**, with Secret encryption,
 0600 kubeconfig, single-node embedded etcd and bounded six-hour snapshots.
 Bundled Traefik/ServiceLB are disabled so installation does not acquire ports
-80/443 or imply complete edge routing. No SELinux RPM is installed automatically.
+80/443 or imply complete edge routing. On an ordinary host no SELinux RPM is
+installed automatically; a transactional host follows the two-part install in
+[Transactional hosts](#transactional-hosts).
 
-Review config/unit, then explicitly start only the candidate:
+Review config/unit, then explicitly start only the candidate. `kubectl wait`
+finds nothing until the node has registered and CoreDNS's deployment exists,
+so wait for both objects first:
 
 ```sh
 sudo systemctl cat k3s
 sudo systemctl enable --now k3s
+until sudo /usr/local/bin/k3s kubectl get node "$(hostname)" >/dev/null 2>&1; do sleep 2; done
 sudo /usr/local/bin/k3s kubectl wait node --all --for=condition=Ready --timeout=180s
+until sudo /usr/local/bin/k3s kubectl -n kube-system get deployment coredns >/dev/null 2>&1; do sleep 2; done
 sudo /usr/local/bin/k3s kubectl rollout status deployment/coredns -n kube-system --timeout=120s
 sudo /usr/local/bin/k3s secrets-encrypt status
 ```
@@ -228,6 +270,75 @@ port, edit only this isolated kubeconfig.
 The qualifier uses the checksum-verified `/usr/local/bin/k3s` directly for both
 encryption and kubectl. SUSE's default sudo path can omit `/usr/local/bin`; do
 not change the global path or use a different kubectl binary to work around it.
+
+## Transactional hosts
+
+openSUSE Leap 16.1 Immutable reports `ID=opensuse-leap` and
+`VARIANT_ID=transactional`, boots a read-only btrfs root snapshot and changes
+packages only through `transactional-update`. The helper treats a host as
+transactional when os-release declares that variant **and** `/` is mounted
+read-only, and refuses a host where only one of the two holds. It also requires
+`transactional-update`, `findmnt` and `btrfs`, and checks that `/usr/local/bin`,
+`/etc` and `/var` are writable directories outside the root snapshot. On Leap
+16.1 Immutable `/usr/local` and `/var` are their own subvolumes, and `/etc` is a
+writable subvolume of each snapshot that `transactional-update` copies into the
+next one. The binary, configuration, unit and cluster data therefore survive
+host updates. A rollback to a snapshot older than the installation returns `/etc`
+to that snapshot, which removes `/etc/rancher/k3s` and the unit but leaves the
+binary and `/var/lib/rancher`; this follows from the subvolume layout and has
+not been exercised.
+
+With SELinux enforcing, the same `install` command runs twice, with a reboot
+between the runs:
+
+1. **First run.** The running snapshot has no `k3s-selinux`. After the full
+   preflight, `install` installs the package from the host's own signed
+   repositories into a new snapshot with
+   `transactional-update --no-selfupdate --drop-if-no-change run zypper --non-interactive install --no-recommends k3s-selinux`.
+   Inside the snapshot the command also requires the installed package's vendor
+   to be `SUSE LLC <https://www.suse.com/>`; otherwise transactional-update
+   discards the snapshot. No repository or signing key is added, K3s is not
+   downloaded, and nothing outside the new snapshot changes. `preflight` reports
+   when this step is due.
+2. **Reboot** with `sudo systemctl reboot`. Until then `preflight` and `install`
+   refuse, because the next boot selects a different snapshot: the helper reads
+   `/run/reboot-needed` and compares the running root subvolume with the btrfs
+   default. A pending automatic update is refused in the same way.
+3. **Second run.** Preflight now verifies the loaded policy as on any enforcing
+   host, and install downloads, verifies and stages K3s disabled and stopped.
+   The package's `%post` scriptlet ran inside the snapshot, so the empty
+   directories it prepares (`/var/lib/cni`, `/var/lib/kubelet/pods` and the K3s
+   data scaffold) never reached the persistent `/var`. The helper creates and
+   labels those directories, as the scriptlet would have, before it labels the
+   K3s tree.
+
+If another `transactional-update` replaces the policy snapshot before the
+reboot, the second run finds no policy and stages it again. A third run after
+staging refuses the existing configuration and binary, as on any host. With
+SELinux disabled no policy is needed and a single run stages K3s.
+
+The upstream installer reaches the same end differently: it detects
+`/usr/sbin/transactional-update`, adds the `rpm.rancher.io` repository with
+`--gpg-auto-import-keys`, picks the SLE Micro policy build for
+`VARIANT_ID=transactional` (get.k3s.io, read 2026-10-26) and leaves K3s
+enabled to start at the next boot. The pinned installer commit predates that
+variant check, and this helper skips the installer's SELinux step entirely.
+
+Measured on 2026-10-27 on a fresh Leap 16.1 Immutable release candidate
+(Build 3.13, `Leap_immutable-release-16.1-lp161.12.1`), aarch64, 4 vCPU and
+8 GiB in a local Lima VM, with kernel 6.12.0-160100.8, `selinux-policy-targeted`
+20260826, `container-selinux` 2.250.0, `k3s-selinux` 1.4.stable.1-160100.2.1 and
+`transactional-update` 6.1.1. The first run took 45 seconds and left snapshot 2
+pending; a repeat before the reboot was refused. After the reboot the second run
+took 12 seconds. K3s was Ready, with CoreDNS rolled out, 46 seconds after
+`systemctl enable --now k3s`, with SELinux enforcing, no AVC denials and about
+1.1 GiB of memory in use. A third run refused the existing state. After
+`transactional-update run true` and a reboot into snapshot 3 the node was Ready
+again with its configuration and unit in place. The same day a non-transactional
+Leap 16.1 Minimal VM (aarch64, same kernel and policy packages) took the single
+run: install took 7 seconds, K3s was Ready 22 seconds after start with SELinux
+enforcing and no AVC denials, and a second run refused the existing state. No
+amd64 transactional host has been through the helper yet.
 
 ## Install reviewed releases with scoped credentials
 

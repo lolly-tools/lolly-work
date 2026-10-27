@@ -27,6 +27,12 @@ export interface Metrics {
   /** The counters as lines, for the OTLP metric export (otel.ts): the same
    *  names, labels and values the text exposition carries. */
   snapshot(): GaugeLine[];
+  /** Requests to the organisation's flag service (policy/ofrep.ts), by flag;
+   *  cached answers are not requests. */
+  ofrepRequest(flag: string): void;
+  /** Flag-service evaluations that fell back to Work's own value, by flag and
+   *  a fixed reason (timeout, network, unauthorized, not_found, ...). */
+  ofrepError(flag: string, reason: string): void;
   renderText(gauges: GaugeLine[]): string;
 }
 
@@ -68,6 +74,8 @@ export function createMetrics(): Metrics {
       }
       return lines;
     },
+    ofrepRequest: (flag) => inc('lw_ofrep_requests_total', 'Evaluation requests sent to the organisation flag service (OFREP), by flag.', { flag }),
+    ofrepError: (flag, reason) => inc('lw_ofrep_evaluation_errors_total', 'Flag-service evaluations that fell back to the value Work governs, by flag and reason.', { flag, reason }),
     renderText(gauges) {
       const out: string[] = [];
       for (const [name, s] of counters) {

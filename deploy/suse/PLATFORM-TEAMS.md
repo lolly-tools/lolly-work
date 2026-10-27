@@ -38,12 +38,13 @@ sudo python3 -I deploy/suse/host-readiness.py \
 ```
 
 The initial cluster budget is four CPUs, seven usable GiB RAM and 40 GiB free in
-`/var`. It checks versioned SLES/Leap, amd64, cgroup v2, no active swap, tooling,
-firewalld, SELinux posture and absence of existing application/cluster owners or
-occupied standard ports. These are rehearsal bounds, not measured capacity or a
-runtime support matrix. A SUSE SELinux policy's existing scaffold is conservatively
-blocked here; the pinned K3s installer has its own narrow package-owned scaffold
-exception. Review that exact policy rather than deleting it to pass this gate.
+`/var`. It checks versioned SLES/Leap, amd64 (or arm64 for the K3s profile),
+cgroup v2, no active swap, tooling, firewalld, SELinux posture and absence of
+existing application/cluster owners or occupied standard ports. These are
+rehearsal bounds, not measured capacity or a runtime support matrix. A SUSE
+SELinux policy's existing scaffold is conservatively blocked here; the pinned
+K3s installer has its own narrow package-owned scaffold exception. Review that
+exact policy rather than deleting it to pass this gate.
 
 Use [Ansible](../ansible/README.md) or [Salt](../salt/README.md) to run the same
 gate through your existing fleet tooling. They do not introduce a second
@@ -61,7 +62,9 @@ storage, a cluster or Lolly itself. The handoff continues:
 3. For the repository's locked K3s path, complete its current provider/network
    review, run `k3s-bootstrap.sh preflight`, then its guarded `install`. It stages
    the pinned runtime stopped and disabled. Follow its operator runbook to review,
-   start and qualify that exact host. This installer presently accepts only
+   start and qualify that exact host. On a transactional host such as Leap 16.1
+   Immutable, `install` first stages the SUSE policy in a new snapshot and stops
+   for a reboot; run it again afterwards. This installer presently accepts only
    UpCloud/evroc; the provider-neutral gate does not widen that install contract.
 4. For RKE2, use your existing Rancher lifecycle or the official
    [RKE2 installation](https://docs.rke2.io/install/quickstart) and
@@ -135,7 +138,7 @@ Do not substitute `podman compose` into the historical VM production scripts.
 | Surface | Available now | Still required |
 |---|---|---|
 | Host readiness | CLI, Ansible and Salt; fixture/refusal tests | Real adapter execution on each selected SLES/Leap image |
-| New K3s host | Locked amd64 installer, provider/network guards | Actual candidate capacity and full application/storage acceptance |
+| New K3s host | Locked amd64 and arm64 installer, transactional (Leap 16.1 Immutable) path, provider/network guards | Actual candidate capacity and full application/storage acceptance |
 | Existing K3s/RKE2 | Work Helm profiles, immutable releases and guarded app-only updates | Platform's OS/runtime matrix and cluster lifecycle; RKE2 host installation is reference-only |
 | SUSE BCI Work image | Pinned base, CI boot/native checks | Selected target architecture and render acceptance |
 | AppCo PostgreSQL | Locked separate chart, TLS, rehearsal and backup tools | Every new database/storage target and measured independent restore |

@@ -2,7 +2,7 @@
  * Feature-flag governance - the control plane's opinion on the per-user shell
  * flags (`profile.featureFlags` in the OSS shell, see its `feature-flags.ts`).
  *
- * Two knobs per flag, both instance-wide policy (not per-group):
+ * Two knobs per flag, set for the whole instance:
  *   - `default`  the state a user gets when they haven't set the flag themselves.
  *                Unset ⇒ inherit the shell's own built-in default.
  *   - `visibility`  whether the user sees a toggle at all. `hide` removes the
@@ -10,6 +10,16 @@
  *                applies. This is what lets a seasonal surprise (Pride, Apr 1)
  *                ship dark - set default `off` + `hide` now, flip to `on` on the
  *                day and it lights up without ever having shown a switch.
+ *
+ * Group rules (`groups`) set the same two knobs for members of named groups,
+ * so one team can pilot a feature. Precedence, per knob, for one person:
+ *   1. a group rule for a group the person is in, over the instance setting;
+ *   2. when several of the person's groups have a rule, `off` beats `on` and
+ *      `hide` beats `show`, whatever order the rules were added in (the
+ *      deny-wins habit of grants, so the outcome never depends on ordering);
+ *   3. otherwise the instance setting, then the shell's built-in default.
+ * An organisation's own flag service (policy/ofrep.ts) can decide the default
+ * above all of these; this module is what it falls back to.
  *
  * The control plane can only govern flags it knows about - GOVERNABLE_FLAGS
  * mirrors the shell's standalone toggles by id; the built-in defaults must match
@@ -24,6 +34,10 @@ export interface GovernableFlag {
   builtinDefault: boolean;
   /** Admin-facing explainer, surfaced in the console tab. */
   info?: string;
+  /** A service switch only the instance setting decides: no group rules and
+   *  no flag service. Managed AI is one (policy/ai.ts): its stop switch is
+   *  audited, and nothing outside Work may grant AI execution. */
+  instanceOnly?: boolean;
 }
 
 /** The flags this control plane can govern. Ids are the shell's flag ids. */
@@ -32,6 +46,7 @@ export const GOVERNABLE_FLAGS: readonly GovernableFlag[] = [
     id: 'ai',
     label: 'Managed AI',
     builtinDefault: false,
+    instanceOnly: true,
     info: 'Service switch for AI execution. Off or Inherit stops managed AI. On permits only capabilities approved in policy.ai; members cannot override it. Updated shells renew every 30 seconds and stop on renewal failure or after a 60-second lease. The first production profile keeps the configuration ceiling off.',
   },
   {
@@ -83,21 +98,48 @@ export const GOVERNABLE_FLAGS: readonly GovernableFlag[] = [
   },
 ] as const;
 
-const FLAG_BY_ID = new Map(GOVERNABLE_FLAGS.map((f) => [f.id, f]));
+const FLAG_BY_ID = new Map<string, GovernableFlag>(GOVERNABLE_FLAGS.map((f) => [f.id, f]));
 export function isGovernableFlag(id: string): boolean {
   return FLAG_BY_ID.has(id);
+}
+/** Whether group rules and a flag service may decide this flag. */
+export function isGroupScopedFlag(id: string): boolean {
+  const flag = FLAG_BY_ID.get(id);
+  return !!flag && !flag.instanceOnly;
 }
 
 export type FlagDefault = 'on' | 'off';
 export type FlagVisibility = 'show' | 'hide';
 
+/** One group's opinion on a flag. An absent field is no opinion, so the
+ *  instance setting applies to it. Unlike the instance setting, `show` is
+ *  stored here: it is how a pilot group sees a toggle hidden from everyone else. */
+export interface FlagGroupRule {
+  group: string;
+  default?: FlagDefault;
+  visibility?: FlagVisibility;
+}
+
+/** The most group rules one flag may carry. */
+export const MAX_FLAG_GROUP_RULES = 100;
+/** A group name as identity providers send them: one line, at most 128
+ *  characters, no outer whitespace. `*` is the instance setting, not a group. */
+const GROUP_NAME = /^[^\u0000-\u001f\u007f]{1,128}$/;
+
 /** The stored governance record for one flag. Absent fields mean "no opinion":
- *  `default` unset ⇒ inherit the built-in; `visibility` unset ⇒ shown. */
+ *  `default` unset ⇒ inherit the built-in; `visibility` unset ⇒ shown;
+ *  `groups` absent ⇒ no group rules. Rules are sorted by group name. */
 export interface FlagGovernance {
   id: string;
   default?: FlagDefault;
   visibility?: FlagVisibility;
+  groups?: FlagGroupRule[];
   updatedAt: string;
+}
+
+/** Whether a record says anything at all; a store deletes one that does not. */
+export function hasFlagOpinion(rec: FlagGovernance): boolean {
+  return rec.default !== undefined || rec.visibility !== undefined || (rec.groups?.length ?? 0) > 0;
 }
 
 /** What a shell needs per flag: the resolved boolean default and whether the
@@ -108,21 +150,34 @@ export interface ResolvedFlag {
   hidden: boolean;
 }
 
-export function resolveFeatureFlags(gov: Map<string, FlagGovernance>): Record<string, ResolvedFlag> {
+/**
+ * Resolve every governable flag for one person. `groups` are the person's
+ * effective groups; without them only the instance settings apply. See the
+ * header for the precedence.
+ */
+export function resolveFeatureFlags(gov: Map<string, FlagGovernance>, groups: readonly string[] = []): Record<string, ResolvedFlag> {
+  const member = new Set(groups);
   const out: Record<string, ResolvedFlag> = {};
   for (const flag of GOVERNABLE_FLAGS) {
     const g = gov.get(flag.id);
-    out[flag.id] = {
-      default: g?.default ? g.default === 'on' : flag.builtinDefault,
-      hidden: g?.visibility === 'hide',
-    };
+    let on = g?.default ? g.default === 'on' : flag.builtinDefault;
+    let hidden = g?.visibility === 'hide';
+    if (!flag.instanceOnly && g?.groups?.length && member.size) {
+      const matched = g.groups.filter((r) => member.has(r.group));
+      const defaults = matched.flatMap((r) => (r.default ? [r.default] : []));
+      if (defaults.length) on = !defaults.includes('off');
+      const visibilities = matched.flatMap((r) => (r.visibility ? [r.visibility] : []));
+      if (visibilities.length) hidden = visibilities.includes('hide');
+    }
+    out[flag.id] = { default: on, hidden };
   }
   return out;
 }
 
 /** The admin-facing catalogue: each governable flag with its built-in default
  *  and the current override (null when none), for the console tab. */
-export function flagGovernanceCatalog(gov: Map<string, FlagGovernance>) {
+export function flagGovernanceCatalog(gov: Map<string, FlagGovernance>, opts: { flagService?: readonly string[] } = {}) {
+  const decided = new Set(opts.flagService ?? []);
   return GOVERNABLE_FLAGS.map((f) => {
     const g = gov.get(f.id);
     return {
@@ -132,9 +187,33 @@ export function flagGovernanceCatalog(gov: Map<string, FlagGovernance>) {
       builtinDefault: f.builtinDefault,
       default: g?.default ?? null, // null ⇒ inherit the built-in
       visibility: g?.visibility ?? 'show',
+      // Group rules apply to every flag but an instance-only switch.
+      groupRules: !f.instanceOnly,
+      groups: (g?.groups ?? []).map((r) => ({ group: r.group, default: r.default ?? null, visibility: r.visibility ?? null })),
+      // Whether the configured flag service decides this flag's default.
+      flagService: decided.has(f.id),
       updatedAt: g?.updatedAt ?? null,
     };
   });
+}
+
+/** Validate one group rule; null on a bad shape. A rule with no opinion
+ *  normalises to `{ group }` and the caller drops it. */
+function normalizeGroupRule(raw: unknown): FlagGroupRule | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !['group', 'default', 'visibility'].includes(k))) return null;
+  if (typeof r.group !== 'string' || r.group !== r.group.trim() || r.group === '*' || !GROUP_NAME.test(r.group)) return null;
+  const rule: FlagGroupRule = { group: r.group };
+  if (r.default !== undefined && r.default !== null) {
+    if (r.default !== 'on' && r.default !== 'off') return null;
+    rule.default = r.default;
+  }
+  if (r.visibility !== undefined && r.visibility !== null) {
+    if (r.visibility !== 'show' && r.visibility !== 'hide') return null;
+    rule.visibility = r.visibility;
+  }
+  return rule;
 }
 
 /** Validate/normalise a PUT body into a governance record. Returns null on a
@@ -158,6 +237,21 @@ export function normalizeFlagGovernance(
     // reset-to-defaults record collapses to {} and the version stays stable.
     if (b.visibility === 'hide') rec.visibility = 'hide';
   }
+  if (b.groups !== undefined && b.groups !== null) {
+    if (!Array.isArray(b.groups) || b.groups.length > MAX_FLAG_GROUP_RULES) return null;
+    const rules: FlagGroupRule[] = [];
+    const seen = new Set<string>();
+    for (const raw of b.groups) {
+      const rule = normalizeGroupRule(raw);
+      // Two rules for one group would have no single meaning: refuse, never pick.
+      if (!rule || seen.has(rule.group)) return null;
+      seen.add(rule.group);
+      if (rule.default !== undefined || rule.visibility !== undefined) rules.push(rule);
+    }
+    // An instance-only switch takes no group rules at all.
+    if (rules.length && !isGroupScopedFlag(id)) return null;
+    if (rules.length) rec.groups = rules.sort((x, y) => (x.group < y.group ? -1 : x.group > y.group ? 1 : 0));
+  }
   return rec;
 }
 
@@ -165,7 +259,11 @@ export function normalizeFlagGovernance(
  *  ETag and connected shells re-poll. Stable ordering ⇒ stable hash. */
 export function flagGovernanceForVersion(gov: Map<string, FlagGovernance>) {
   return [...gov.values()]
-    .filter((g) => g.default !== undefined || g.visibility !== undefined)
-    .map((g) => ({ id: g.id, default: g.default ?? null, visibility: g.visibility ?? null }))
+    .filter(hasFlagOpinion)
+    .map((g) => ({
+      id: g.id, default: g.default ?? null, visibility: g.visibility ?? null,
+      // Present only with rules, so a deployment without any keeps its version.
+      ...(g.groups?.length ? { groups: g.groups.map((r) => ({ group: r.group, default: r.default ?? null, visibility: r.visibility ?? null })) } : {}),
+    }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
