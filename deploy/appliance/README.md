@@ -7,8 +7,8 @@ Personal and Small team presets: a mini PC, a VM on a NAS or hypervisor, or a
 KVM cloud. One image definition builds two runtime profiles:
 
 - **k3s** (the default, `lolly-appliance-<version>-<arch>`): K3s, with Lolly
-  Work installed by K3s's Helm controller. The recommended runtime wherever
-  the machine suits it.
+  Work installed by K3s's Helm controller. The recommended runtime on any
+  machine with room for Kubernetes.
 - **podman** (`lolly-appliance-podman-<version>-<arch>`): Podman containers
   defined by Quadlet units, for small machines. It idles in about half the
   memory and two thirds of the disk ([Measured](#measured)).
@@ -365,7 +365,68 @@ on any Leap 16.1 Immutable machine.
 
 ## Measured
 
-@MEASURED_BOTH@
+Lolly Work 1.1.1 (chart 1.1.2), 27 October 2026, both aarch64 images built
+from this directory and run one at a time, each with 2 vCPU and 4 GiB memory
+under QEMU 11.1 with HVF on an Apple M4, the 20 GiB image on a 40 GiB disk, no
+TPM, the network card at a 1442 MTU (Spinifex's), Combustion through
+`fw_cfg`. Times are from QEMU's start (power-on) and from the machine's
+journal; memory is `free`'s used and available.
+
+| | k3s | podman |
+|---|---|---|
+| First boot: kernel, SSH, Work `/readyz` 200 | 12 s, 37 s, 117 s | 11 s, 31 s, 57 s |
+| Memory at first readiness, and the peak until then | 1426 MiB used, peak 1425 MiB | 753 MiB used, peak 753 MiB |
+| Reboot to Work `/readyz` 200, shutdown included | 82 s | 30 s |
+| Memory idle, 9 min after the reboot | 1295 MiB used, 2613 MiB available | 597 MiB used, 3311 MiB available |
+| Biggest processes, idle | K3s 677, Work 214, containerd 190, Traefik 100, CoreDNS 61 MiB | Work 219, Caddy 46, firewalld 46, PostgreSQL 27 MiB |
+| Disk used (btrfs: root snapshots and `/var`) | 4.57 GiB (`/var/lib/rancher` 2.6 GiB) | 2.97 GiB (`/var/lib/containers` 1.8 GiB) |
+| Update 1.1.1 -> 1.1.2 (6 migrations, backup first), its restore, and peak memory | 49 s, restore 29 s, peak 1403 MiB | 21 s, restore 7 s, peak 777 MiB |
+| Forced host rollback (`LOLLY_HEALTH_TIMEOUT=240`): from the reboot into the bad snapshot to the restored one answering | 300 s | 286 s |
+| qcow2 | 1.91 GB | 1.70 GB |
+| Image build in the Lima VM (cold download cache, then warm) | 1119 s, 177 s | 821 s, 224 s |
+| CI build, x86_64 (side by side) | 10 min | 9 min |
+
+The podman profile idles in 46% of the k3s profile's memory and 65% of its
+disk, and is ready in half the time. The package lists differ only by
+`k3s-selinux` against `cockpit-podman`. These are the numbers plan 324 sets
+the k3s threshold from: with 4 GiB, the k3s profile leaves 2.5 GiB free at
+idle, and the podman profile 3.2 GiB.
+
+Acceptance passed on both, first boot and after a reboot, with the checks of
+the k3s slice below plus, for podman: each container as `container_t` with its
+own category pair, the container network at the host's 1442 MTU (bridge and
+container), the pinned digests loaded from the image with nothing pulled, and
+the units linked from `/etc/containers/systemd` into `/var/lib/lolly/quadlet`.
+On both, the decrypted database password appears nowhere on disk outside its
+credential, except on k3s inside containerd's metadata (see
+[Not done yet](#not-done-yet)). The renders were byte-identical across the two
+profiles (SVG sha256 `28358ad6a32f5995...`, PNG `da253330e924b789...`).
+
+Updates, with real releases: 1.1.1 and 1.1.2 are Lolly Work's published
+images. 1.1.2's signature names `release.yml@refs/tags/v1.1.2`; 1.1.1's names
+`release.yml@refs/heads/main` (it was signed by a dispatch from main), so the
+updater refuses it as a target, which is right. Every Work release so far
+migrates (1.1.0 to 1.1.1 has four migrations, 1.1.1 to 1.1.2 six), so the update
+without a migration swaps the PostgreSQL 17 image for a newer published one
+through `--definition`. On both profiles: the channel offered 1.1.2 verified
+(on k3s it waits for the unpublished chart, so the update used
+`--keep-chart`); a 1.1.2 image presented as 1.1.3 and the main-signed 1.1.1
+were refused and changed nothing; the update said it migrates, took a backup
+first and applied the six migrations (60 to 66 rows in `schema_migrations`);
+the owner signed in and rendered on 1.1.2; a plain rollback was refused;
+`rollback --restore` returned to 1.1.1 with 60 rows and the owner signing in;
+the same update with a 1 s deadline reverted and restored its backup, and the
+timer would not retry it; the update without a migration kept the plain
+rollback, which returned to the previous PostgreSQL image with the data as it
+was.
+
+Host updates: the RC had no newer packages, so the host update was a real
+`transactional-update pkg install jq` into a new snapshot, which the plugin
+judged ready and `health-checker` kept. The forced rollback was a snapshot
+made with `transactional-update run systemctl mask` of Lolly's runtime
+(`k3s.service`, `lolly-work.service`): the plugin failed it after the 240 s
+timeout, `health-checker` set the last good snapshot as default and rebooted,
+and Lolly Work came back on the restored snapshot.
 
 ### The k3s slice
 
