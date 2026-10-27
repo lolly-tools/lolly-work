@@ -24,7 +24,8 @@ Python 3.9 or newer, standard library only, on both the operator's Mac and the n
   lolly.ing archive into the node's spool.
 - lolly.ing: `lib/preview_ing.py` (rules), `lib/preview_ing_github.py` (the private run), `lib/preview_ing_mac.py` and
   `lib/preview_ing_node.py`.
-- Tests: `tests/test_preview_deploy.py` and `tests/test_preview_deploy_ing.py`, with fakes in
+- `lib/preview_lane.py`: the fast deploy lanes for lolly.tools (see [Fast deploy lanes](#fast-deploy-lanes)).
+- Tests: `tests/test_preview_deploy.py`, `tests/test_preview_deploy_ing.py` and `tests/test_preview_lane.py`, with fakes in
   `tests/preview_deploy_fakes.py` and `tests/preview_deploy_ing_fakes.py`, run by Work CI through
   `tests/preview-deploy.test.ts`.
 - `restore-rehearsal.py`, `lib/preview_rehearsal.py` and the in-Pod programs in `rehearsal/`: the restore rehearsal
@@ -35,6 +36,31 @@ Python 3.9 or newer, standard library only, on both the operator's Mac and the n
 This directory sits outside `scripts/` on purpose: `deploy/compose/Dockerfile` copies `scripts/` into every Work image,
 and preview host tooling must not ship to private deployers.
 
+
+## Fast deploy lanes
+
+A lolly.tools ship need not wait about 40 minutes for the commit's own full `ci.yml` run when the change is docs or
+web shell UI only. `lib/preview_lane.py` is the Python port of Lolly's `scripts/deploy-lane.ts`, and both are tested
+against the same cases (`tests/fixtures/deploy-lane-cases.json`, a pinned copy of Lolly's
+`tests/fixtures/deploy-lane/cases.json`). When the commit has no successful full CI run of its own, ship:
+
+- refuses with `CI_NOT_GREEN` when a full CI run of the commit already failed (a lane never overrides one);
+- finds the base: the newest first-parent ancestor, within 50, with a successful full `ci.yml` push run on `main`;
+- reads every changed path between base and commit from GitHub's tree objects (exactly under `docs/` and
+  `shells/web/`, and per directory elsewhere, which needs full CI anyway) and applies the lane rules;
+- requires the lane's job in `.github/workflows/fast-lanes.yml` (`docs lane` or `web lane`) to have passed on a `push`
+  run of the commit on `main` in Lolly's own repository.
+
+Otherwise it refuses as before (`CI_PENDING`), with the lane's reason added: which path needs full CI, or which job has
+not passed yet. A lane ship records `lane`, `laneBase`, `laneBaseCiRun` and `laneRun` in `deploys.jsonl`.
+`preview-web.yml` then checks the same rule again from Git with the base commit's own copy of the TypeScript, so the
+build needs both to agree. Only lolly.tools has lanes (`fastLaneWorkflowFile` in its anchors); lolly.ing and the
+legacy release route never take one. The rules: docs is everything under `docs/` plus `README.md` and
+`engine/text-composition.md`, except `docs/supported-environments.md` and `docs/parser-inventory.md` (full) and the
+card renderer `docs/og-image.ts` and `docs/og-opal.ts` (web). Web adds `shells/web/` except its build inputs, entry
+page, served files other than static media (so `sw.js`), `main.ts`, `bridge/`, `capture/`, `catalog/`, `collab/`,
+`org/`, `ext/`, `vendor/`, `ca-root.ts`, `lib/sync-*` and security-named files. Dependency manifests, symlinks and
+executable files always need full CI. Tests never ship and take the lane of the changes beside them.
 
 ## How it is trusted
 
@@ -106,7 +132,8 @@ Flags:
    - It refuses while a run is active on the node, and before anything else when the live phase needs a human.
    - If this commit is live, accepted, and its records name the live image, it reports `ALREADY_LIVE` and stops.
 3. Reuses a build of this commit that still binds. Otherwise it:
-   - requires a successful normal CI push run on `main` for the commit;
+   - requires a successful normal CI push run on `main` for the commit, or a fast deploy lane above one (see
+     [Fast deploy lanes](#fast-deploy-lanes));
    - requires no other active preview build run;
    - dispatches `lolly-tools/lolly`'s `.github/workflows/preview-web.yml` on `refs/heads/main` with
      `inputs: {"source": "<40-hex sha>"}` only. It does not send `min_seq`. The workflow finds green main CI itself

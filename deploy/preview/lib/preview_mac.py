@@ -484,8 +484,11 @@ def _live_state(context):
     return status
 
 
-def deploy_bound(context, command, sha, bound):
-    """Second half of ship, and all of deploy: expectations, checks, then the node unit."""
+def deploy_bound(context, command, sha, bound, lane=None):
+    """Second half of ship, and all of deploy: expectations, checks, then the node unit.
+
+    lane: the fast-lane fields a ship records beside the result, when no full CI run of its own qualified it.
+    """
     anchors, gh = context.anchors, context.gh
     status = _live_state(context)
     preview, deployment = status.get("preview", {}), status["deployment"]
@@ -514,7 +517,7 @@ def deploy_bound(context, command, sha, bound):
     context.backup_window("deploy")
     context.check_target()
     result = context.start_and_follow(request)
-    return _finish(context, command, result, sha=sha, ciRun=bound["run"])
+    return _finish(context, command, result, sha=sha, ciRun=bound["run"], **(lane or {}))
 
 
 def cmd_ship(context, sha):
@@ -538,18 +541,20 @@ def cmd_ship(context, sha):
     except Refusal as exc:
         if exc.code != "RUN_NOT_FOUND":
             raise
-    ci = G.green_ci_run(gh, anchors, sha)
+    ci = G.qualified_ci(gh, anchors, sha)
+    lane = {} if ci["lane"] == "full" else {"lane": ci["lane"], "laneBase": ci["base"], "laneBaseCiRun": ci["id"],
+                                            "laneRun": ci["fastRun"]}
     active = G.active_candidate_runs(gh, anchors)
     if active:
         raise Refusal("CANDIDATE_ACTIVE", f"another candidate run is active ({active[0]}); wait for it or cancel it")
     known = {run["id"] for run in G.dispatch_runs(gh, anchors, sha)}
     G.dispatch_build(gh, anchors, sha)
-    emit("dispatched", source=sha, ciRun=ci["id"])
+    emit("dispatched", source=sha, ciRun=ci["id"], **lane)
     run = G.find_new_run(gh, anchors, sha, known)
     run = G.wait_for_run(gh, anchors, run["id"], context.profile["build"]["pollSeconds"], context.profile["build"]["timeoutMinutes"])
     bound = G.bind_run(gh, anchors, run, sha, pin, thumbprint)
     emit("bound", run=bound["run"], image=bound["image"])
-    return deploy_bound(context, "ship", sha, bound)
+    return deploy_bound(context, "ship", sha, bound, lane=lane)
 
 
 def cmd_deploy(context, sha):
