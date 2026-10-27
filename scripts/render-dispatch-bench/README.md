@@ -141,8 +141,10 @@ check free disk first: the images, the shell build and the cluster need about
    ```
 
    A run already recorded in `<out>/runs.json` is skipped, so an interrupted
-   matrix resumes. `<out>/raw-*.json` keeps every render's timings, and
-   `<out>/secrets.json` the benchmark-only credentials (mode 600).
+   matrix resumes. `<out>/raw-*.json` keeps every render's timings and the
+   distinct error messages seen while it ran. The benchmark-only credentials
+   (`secrets.json`, mode 600, and the test CA) go to `--keys=<dir>`, which
+   defaults to `<out>`; keep them out of anything you share.
 
 5. Tear down what you created: `k3d cluster delete lw-bench`, the two images,
    the shell worktree, and the VM if you made one for this.
