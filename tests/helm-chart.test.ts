@@ -627,6 +627,127 @@ test('worker DNS trust is namespace-scoped and HTTPS-only egress excludes specia
   assert.match(unscopedDns.err, /dnsNamespaceLabels/);
 });
 
+// Plan 324 M2: suggested alerts and a dashboard, both off by default, reading only what /metrics exports.
+const MONITORING = ['--set', 'metrics.prometheusRule.enabled=true', '--set', 'metrics.grafanaDashboard.enabled=true'];
+const ruleOf = (out: string) => manifests(out).find(doc => doc?.kind === 'PrometheusRule');
+const alertsOf = (out: string): { alert: string; expr: string; labels: Record<string, string>; annotations: Record<string, string> }[] =>
+  ruleOf(out).spec.groups.flatMap((group: { rules: unknown[] }) => group.rules);
+/** Metric names the server can emit: scrape-time gauges in app.ts, counters and blob lines in metrics.ts. */
+function exportedMetrics(): Set<string> {
+  const source = ['server/src/api/app.ts', 'server/src/observability/metrics.ts'].map(serverSource).join('\n');
+  return new Set([...source.matchAll(/(?:name: |inc\()'(lw_[a-z0-9_]+)'/g)].map(match => match[1]!));
+}
+/** Server sources read as text, by path from the repository root (they are not imported). */
+const serverSource = (path: string): string => readFileSync(join(CHART, '../..', path), 'utf8');
+const metricNames = (text: string): string[] => [...new Set(text.match(/\blw_[a-z0-9_]+/g) ?? [])];
+
+test('alerts and dashboard stay off by default', { skip: noHelm }, () => {
+  const r = render(SECRETS); assert.ok(r.ok, r.err);
+  assert.equal(ruleOf(r.out), undefined);
+  assert.ok(!manifests(r.out).some(doc => doc?.kind === 'ConfigMap' && doc.metadata.name.endsWith('-dashboard')));
+});
+
+test('suggested alerts read only exported metrics and registered routes, scoped to this release', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...MONITORING]); assert.ok(r.ok, r.err);
+  const alerts = alertsOf(r.out);
+  const exported = exportedMetrics();
+  assert.ok(exported.has('lw_audit_chain_intact') && exported.has('lw_http_requests_total'), 'the source scan finds the exported metrics');
+  assert.equal(new Set(alerts.map(a => a.alert)).size, alerts.length);
+  const app = serverSource('server/src/api/app.ts');
+  for (const alert of alerts) {
+    assert.match(alert.alert, /^LollyWork[A-Za-z]+$/);
+    assert.ok(['critical', 'warning'].includes(alert.labels.severity!), alert.alert);
+    assert.ok(alert.annotations.summary && alert.annotations.description, `${alert.alert} explains itself`);
+    for (const name of metricNames(alert.expr)) assert.ok(exported.has(name), `${alert.alert} reads ${name}, which Work does not export`);
+    for (const selector of alert.expr.match(/lw_[a-z0-9_]+\{[^}]*\}/g) ?? []) {
+      assert.ok(selector.includes('job="lolly-lolly-work",namespace="default"'), `${alert.alert}: ${selector} is not scoped to the release`);
+    }
+    for (const route of alert.expr.match(/\/[a-z0-9/:]+(?=["|])/g) ?? []) {
+      assert.ok(app.includes(`'${route}'`), `${alert.alert} names route ${route}, which no handler registers`);
+    }
+    assert.ok(!alert.expr.includes('__'), `${alert.alert} kept a placeholder`);
+  }
+  assert.match(alerts.find(a => a.alert === 'LollyWorkRateLimitBucketsHigh')!.expr, /> 0\.8 \* 50000$/);
+});
+
+test('alert options: labels, a custom selector, disabled alerts and the configured bucket limit', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...MONITORING,
+    '--set-json', 'metrics.prometheusRule.alertLabels={"team":"platform"}',
+    '--set-json', 'metrics.prometheusRule.disabled=["LollyWorkBlobReadsNearOffload"]',
+    '--set-string', 'metrics.prometheusRule.seriesSelector=job="work"',
+    '--set', 'config.rateLimit.maxBuckets=20000', '--set', 'metrics.prometheusRule.namespace=monitoring']);
+  assert.ok(r.ok, r.err);
+  const alerts = alertsOf(r.out);
+  assert.ok(!alerts.some(a => a.alert === 'LollyWorkBlobReadsNearOffload'));
+  for (const alert of alerts) {
+    assert.equal(alert.labels.team, 'platform');
+    assert.ok(alert.labels.severity);
+    for (const selector of alert.expr.match(/lw_[a-z0-9_]+\{[^}]*\}/g) ?? []) assert.ok(selector.startsWith(selector.split('{')[0] + '{job="work"'), selector);
+  }
+  assert.equal(ruleOf(r.out).metadata.namespace, 'monitoring');
+  assert.match(alerts.find(a => a.alert === 'LollyWorkRateLimitBucketsHigh')!.expr, /> 0\.8 \* 20000$/);
+  const directory = mkdtempSync(join(tmpdir(), 'lolly-helm-rules-config-'));
+  try {
+    const config = join(directory, 'instance.json');
+    writeFileSync(config, JSON.stringify({ rateLimit: { maxBuckets: 7000 } }), { mode: 0o600 });
+    const raw = render([...SECRETS, ...MONITORING, '--set-file', `config=${config}`]); assert.ok(raw.ok, raw.err);
+    assert.match(alertsOf(raw.out).find(a => a.alert === 'LollyWorkRateLimitBucketsHigh')!.expr, /> 0\.8 \* 7000$/, 'a raw instance.json is read too');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  const unknown = render([...SECRETS, ...MONITORING, '--set-json', 'metrics.prometheusRule.disabled=["LollyWorkTypo"]']);
+  assert.equal(unknown.ok, false); assert.match(unknown.err, /unknown alert "LollyWorkTypo"/);
+  const names = alertsOf(render([...SECRETS, ...MONITORING]).out).map(a => a.alert);
+  const none = render([...SECRETS, ...MONITORING, '--set-json', `metrics.prometheusRule.disabled=${JSON.stringify(names)}`]);
+  assert.equal(none.ok, false); assert.match(none.err, /leaves no alerts/);
+});
+
+test('Grafana dashboard ConfigMap carries the sidecar label and reads only exported metrics', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...MONITORING, '--set-json', 'metrics.grafanaDashboard.annotations={"grafana_folder":"Lolly"}']);
+  assert.ok(r.ok, r.err);
+  const map = manifests(r.out).find(doc => doc?.kind === 'ConfigMap' && doc.metadata.name.endsWith('-dashboard'));
+  assert.equal(map.metadata.labels.grafana_dashboard, '1');
+  assert.equal(map.metadata.annotations.grafana_folder, 'Lolly');
+  const dashboard = JSON.parse(map.data['lolly-work.json']);
+  assert.deepEqual(dashboard, JSON.parse(readFileSync(join(CHART, 'dashboards/lolly-work.json'), 'utf8')));
+  assert.equal(dashboard.uid, 'lolly-work');
+  assert.deepEqual(dashboard.templating.list.map((v: { name: string }) => v.name), ['datasource', 'namespace', 'job']);
+  const exported = exportedMetrics();
+  const panels = dashboard.panels.filter((panel: { type: string }) => panel.type !== 'row');
+  assert.ok(panels.length >= 15);
+  for (const panel of panels) {
+    assert.ok(panel.title && panel.description, `panel ${panel.id} has a title and a description`);
+    for (const target of panel.targets) {
+      assert.ok(metricNames(target.expr).length, `${panel.title} reads a Work metric`);
+      for (const name of metricNames(target.expr)) assert.ok(exported.has(name), `${panel.title} reads ${name}, which Work does not export`);
+      assert.match(target.expr, /namespace="\$namespace",job="\$job"/, `${panel.title} follows the dashboard variables`);
+    }
+  }
+});
+
+// promtool runs where it is installed; helm qualification installs a checksum-pinned copy.
+const promtool = spawnSync('promtool', ['--version'], { encoding: 'utf8' });
+const noPromtool = promtool.error || promtool.status !== 0 ? 'install promtool to check and unit-test the alert rules' : false;
+if (process.env.LW_REQUIRE_HELM_TESTS === '1' && noPromtool) throw new Error('Helm qualification requires promtool for the alert rules');
+
+test('alert rules pass promtool check and their unit tests', { skip: noPromtool }, () => {
+  const r = spawnSync('helm', ['template', 'lolly-work', CHART, '-n', 'lolly-work', ...SECRETS, '--set', 'metrics.prometheusRule.enabled=true'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const directory = mkdtempSync(join(tmpdir(), 'lolly-promtool-'));
+  try {
+    writeFileSync(join(directory, 'rules.yaml'), JSON.stringify({ groups: ruleOf(r.stdout).spec.groups }));
+    writeFileSync(join(directory, 'rules.test.yaml'), readFileSync(join(CHART, 'files/prometheus-rules.test.yaml')));
+    const check = spawnSync('promtool', ['check', 'rules', '--lint=all', '--lint-fatal', 'rules.yaml'], { cwd: directory, encoding: 'utf8' });
+    assert.equal(check.status, 0, check.stdout + check.stderr);
+    const unit = spawnSync('promtool', ['test', 'rules', 'rules.test.yaml'], { cwd: directory, encoding: 'utf8' });
+    assert.equal(unit.status, 0, unit.stdout + unit.stderr);
+    const tested = new Set([...readFileSync(join(CHART, 'files/prometheus-rules.test.yaml'), 'utf8').matchAll(/alertname: (\w+)/g)].map(m => m[1]));
+    for (const alert of alertsOf(r.stdout)) assert.ok(tested.has(alert.alert), `${alert.alert} has a promtool unit test`);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('OpenTelemetry export is off by default and sets the standard variables on the server only when on', { skip: noHelm }, () => {
   const envNames = (doc: { spec: { template: { spec: { containers: { env?: { name: string }[] }[] } } } }) =>
     doc.spec.template.spec.containers.flatMap(c => (c.env ?? []).map(e => e.name));

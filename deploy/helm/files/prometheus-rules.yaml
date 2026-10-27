@@ -1,0 +1,172 @@
+# SPDX-License-Identifier: MPL-2.0
+# Suggested alerts for Lolly Work, rendered by templates/prometheusrule.yaml.
+# Every expression reads a series Work exports on GET /metrics
+# (server/src/api/app.ts and server/src/observability/metrics.ts).
+# The chart replaces __SELECTOR__ with label matchers for this release and
+# __RATE_LIMIT_MAX_BUCKETS__ with config.rateLimit.maxBuckets.
+groups:
+  - name: lolly-work
+    rules:
+      - alert: LollyWorkAuditChainBroken
+        expr: max by (namespace, pod) (lw_audit_chain_intact{__SELECTOR__}) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: The audit log no longer verifies.
+          description: >-
+            lw_audit_chain_intact is 0 on {{ $labels.pod }}: the audit hash chain does not
+            verify end to end. Keep the database and its backups as they are and follow the
+            audit guide before changing anything.
+
+      - alert: LollyWorkNotReady
+        expr: >-
+          sum by (namespace, pod) (rate(lw_http_requests_total{__SELECTOR__,route="/readyz",status="5xx"}[2m])) > 0
+          unless
+          sum by (namespace, pod) (rate(lw_http_requests_total{__SELECTOR__,route="/readyz",status="2xx"}[2m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Lolly Work has failed every readiness check for 5 minutes.
+          description: >-
+            Every GET /readyz on {{ $labels.pod }} answered 503, so the pod is out of the
+            Service. The body of /readyz names the check holding it back (store, migrations,
+            setup or catalog).
+
+      - alert: LollyWorkMetricsAbsent
+        expr: absent(lw_process_uptime_seconds{__SELECTOR__})
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Prometheus has no Lolly Work metrics.
+          description: >-
+            No lw_process_uptime_seconds series for 10 minutes. Work is down, or the scrape
+            lost its bearer token (LW_METRICS_TOKEN) or its target.
+
+      - alert: LollyWorkHighErrorRate
+        expr: >-
+          (
+            sum by (namespace) (rate(lw_http_requests_total{__SELECTOR__,status="5xx",route!~"/healthz|/readyz|/metrics|/api/v1/render|/render/:spec"}[10m]))
+            /
+            sum by (namespace) (rate(lw_http_requests_total{__SELECTOR__,route!~"/healthz|/readyz|/metrics|/api/v1/render|/render/:spec"}[10m]))
+          ) > 0.05
+          and
+          sum by (namespace) (rate(lw_http_requests_total{__SELECTOR__,route!~"/healthz|/readyz|/metrics|/api/v1/render|/render/:spec"}[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 5% of Lolly Work requests fail with a server error.
+          description: >-
+            {{ $value | humanizePercentage }} of requests other than health checks and renders
+            answered 5xx over 10 minutes. Request ids in the access log join a failure to the
+            request a person reports.
+
+      - alert: LollyWorkRenderFailures
+        expr: >-
+          (
+            sum by (namespace) (rate(lw_http_requests_total{__SELECTOR__,route=~"/api/v1/render|/render/:spec",status="5xx"}[15m]))
+            /
+            sum by (namespace) (rate(lw_http_requests_total{__SELECTOR__,route=~"/api/v1/render|/render/:spec"}[15m]))
+          ) > 0.1
+          and
+          sum by (namespace) (increase(lw_http_requests_total{__SELECTOR__,route=~"/api/v1/render|/render/:spec"}[15m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 10% of Lolly Work renders fail.
+          description: >-
+            {{ $value | humanizePercentage }} of server renders answered 5xx over 15 minutes.
+            This covers a render worker that is unreachable or failing (502), at capacity
+            (503 RENDER_BUSY) and a hooked tool on an instance without a worker (501).
+
+      - alert: LollyWorkSiemLagGrowing
+        expr: >-
+          min_over_time(lw_siem_lag{__SELECTOR__}[15m]) > 0
+          and
+          deriv(lw_siem_lag{__SELECTOR__}[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The SIEM receiver has stopped confirming audit events.
+          description: >-
+            {{ $value }} audit events are waiting for the SIEM receiver on {{ $labels.pod }} and
+            the backlog has not cleared for 30 minutes. Check siem.url, LW_SIEM_SECRET and
+            the receiver's logs.
+
+      - alert: LollyWorkBlobStoreNearOffload
+        expr: max by (namespace) (lw_blob_stored_bytes{__SELECTOR__,driver="pg"}) > 0.9 * 10737418240
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: PostgreSQL holds more than 9 GiB of files.
+          description: >-
+            {{ $value | humanize1024 }}B of project files and assets are stored in PostgreSQL.
+            Work raises its own offload alert at 10 GiB; plan the move to object storage.
+
+      - alert: LollyWorkBlobReadsNearOffload
+        expr: sum by (namespace) (rate(lw_blob_read_bytes_total{__SELECTOR__,driver="pg"}[1d])) * 2592000 > 0.9 * 107374182400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: File reads from PostgreSQL are on course for 90 GiB a month.
+          description: >-
+            At the last day's rate, a 30-day month reads {{ $value | humanize1024 }}B of files
+            from PostgreSQL. Work raises its own offload alert at 100 GiB in a calendar month.
+
+      - alert: LollyWorkProviderSyncFailing
+        expr: >-
+          max by (namespace, provider) (lw_provider_last_error{__SELECTOR__}) == 1
+          and on (namespace, provider)
+          max by (namespace, provider) (lw_provider_enabled{__SELECTOR__}) == 1
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Catalog source {{ $labels.provider }} keeps failing to sync.
+          description: >-
+            The last sync of the enabled source {{ $labels.provider }} recorded an error for an
+            hour. The console's source page shows the error.
+
+      - alert: LollyWorkProviderCredentialExpiring
+        expr: min by (namespace, provider) (lw_provider_credential_expiry_days{__SELECTOR__}) <= 14
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: The credential for catalog source {{ $labels.provider }} expires within 14 days.
+          description: >-
+            {{ $value }} days remain before the expiry date entered with this credential.
+            Rotate it in the console before the vendor's schedule does.
+
+      - alert: LollyWorkNotificationsFailing
+        expr: >-
+          sum by (namespace, channel) (increase(lw_notify_total{__SELECTOR__,outcome="failed"}[1h])) > 0
+          unless on (namespace, channel)
+          sum by (namespace, channel) (increase(lw_notify_total{__SELECTOR__,outcome="sent"}[1h])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Every {{ $labels.channel }} notification in the last hour failed.
+          description: >-
+            Work could not deliver through the {{ $labels.channel }} channel. Check the notify
+            block in instance.json and the relay or receiver it names.
+
+      - alert: LollyWorkRateLimitBucketsHigh
+        expr: max by (namespace, pod) (lw_rate_limit_buckets{__SELECTOR__}) > 0.8 * __RATE_LIMIT_MAX_BUCKETS__
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The rate limiter tracks more than 80% of its addresses.
+          description: >-
+            {{ $value }} client addresses are tracked on {{ $labels.pod }}. Near
+            rateLimit.maxBuckets the limiter drops the oldest tenth. Check rateLimit.trustedProxyHops
+            if every request seems to come from a different address.

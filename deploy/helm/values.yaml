@@ -503,6 +503,32 @@ metrics:
     # Extra labels so your Prometheus's serviceMonitorSelector picks it up.
     labels: {}
     namespace: ""
+  # Suggested alerts as a Prometheus Operator PrometheusRule (files/prometheus-rules.yaml).
+  # Off by default. Each alert reads a series Work exports on /metrics, so it needs
+  # the scrape above or one of your own. The metrics reference in docs/metrics.md
+  # explains every alert.
+  prometheusRule:
+    enabled: false
+    namespace: ""
+    # Extra labels so your Prometheus's ruleSelector picks it up.
+    labels: {}
+    # Labels added to every alert, such as a team or a routing key.
+    alertLabels: {}
+    # PromQL label matchers for this release's series. Empty uses the labels the
+    # ServiceMonitor gives them: job="<release fullname>",namespace="<release namespace>".
+    seriesSelector: ""
+    # Alert names to leave out, e.g. [LollyWorkRateLimitBucketsHigh].
+    disabled: []
+  # Grafana dashboard (dashboards/lolly-work.json) in a ConfigMap. Off by default.
+  # The Grafana sidecar of kube-prometheus-stack loads ConfigMaps with the label
+  # below; the JSON also imports by hand.
+  grafanaDashboard:
+    enabled: false
+    namespace: ""
+    labels:
+      grafana_dashboard: "1"
+    # e.g. grafana_folder: Lolly, for a sidecar that sorts dashboards into folders.
+    annotations: {}
 
 # OpenTelemetry export: traces, metrics and logs pushed over OTLP to your
 # collector or backend. Off by default; while off the chart sets no OTEL_*

@@ -61,6 +61,10 @@ jobs:
           echo '9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform-linux-amd64.tar.gz' | sha256sum -c -
           tar -xzf kubeconform-linux-amd64.tar.gz kubeconform
           install -m 0755 kubeconform "$lolly_tools_dir/bin/kubeconform"
+          curl -fsSL --retry 3 https://github.com/prometheus/prometheus/releases/download/v3.13.4/prometheus-3.13.4.linux-amd64.tar.gz -o prometheus-3.13.4.linux-amd64.tar.gz
+          echo '87f21a66f96c597a189cef8d640e8921b621fc17a9feff707c332c4f3b3ddd56  prometheus-3.13.4.linux-amd64.tar.gz' | sha256sum -c -
+          tar -xzf prometheus-3.13.4.linux-amd64.tar.gz prometheus-3.13.4.linux-amd64/promtool
+          install -m 0755 prometheus-3.13.4.linux-amd64/promtool "$lolly_tools_dir/bin/promtool"
           echo "$lolly_tools_dir/bin" >> "$GITHUB_PATH"
       - name: Require rendered topology and schema checks
         env:
@@ -68,7 +72,8 @@ jobs:
         run: |
           helm version --short
           kubeconform -v
-          node --test tests/helm-chart.test.ts tests/helm-profile-schema.test.ts tests/marketplace-packages.test.ts tests/marketplace-channels.test.ts
+          promtool --version
+          node --test tests/helm-chart.test.ts tests/helm-profile-schema.test.ts tests/marketplace-packages.test.ts tests/marketplace-channels.test.ts tests/kubewarden-policies.test.ts
 
   # Each architecture installs the same pinned package on its own native runner.
   # An architecture joins qualifiedArchitectures in deploy/marketplaces/release.json

@@ -86,13 +86,18 @@ export const INPUTS: Readonly<Record<Suite, readonly string[]>> = {
   ],
   // Helm qualification: chart schemas and profiles, the generated marketplace
   // packages and the neutral Compose installation. Its tests import the server's
-  // configuration and setup checks.
+  // configuration and setup checks. The Kubewarden requirements are derived from
+  // the chart, the worker's egress rule and the release workflow's signing identity.
   helm: [
+    '.github/workflows/release.yml',
     'deploy/compose/',
     'deploy/dokploy/',
     'deploy/helm/',
+    'deploy/kubewarden/',
     'deploy/marketplaces/',
     'scripts/capture-marketplace-screenshots.ts',
+    'scripts/kubewarden-preflight.ts',
+    'scripts/kubewarden-requirements.ts',
     'scripts/marketplace-channels.ts',
     'scripts/marketplace-packages.ts',
     'scripts/package-helm-chart.ts',
@@ -102,9 +107,11 @@ export const INPUTS: Readonly<Record<Suite, readonly string[]>> = {
     'server/',
     'tests/helm-chart.test.ts',
     'tests/helm-profile-schema.test.ts',
+    'tests/kubewarden-policies.test.ts',
     'tests/marketplace-channels.test.ts',
     'tests/marketplace-packages.test.ts',
     'vendor/',
+    'workers/render/src/egress.ts',
   ],
 };
 

@@ -1,0 +1,198 @@
+# SPDX-License-Identifier: MPL-2.0
+# promtool unit tests for files/prometheus-rules.yaml, as rendered for a release
+# named lolly-work in namespace lolly-work. tests/helm-chart.test.ts renders the
+# rules to rules.yaml beside a copy of this file and runs promtool test rules
+# when promtool is installed.
+rule_files: [rules.yaml]
+evaluation_interval: 30s
+tests:
+  - name: a broken audit chain alerts within two minutes
+    interval: 30s
+    input_series:
+      - series: 'lw_audit_chain_intact{job="lolly-work",namespace="lolly-work",pod="work-0"}'
+        values: '1 1 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: LollyWorkAuditChainBroken
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: LollyWorkAuditChainBroken
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: lolly-work, pod: work-0 }
+            exp_annotations:
+              summary: The audit log no longer verifies.
+              description: "lw_audit_chain_intact is 0 on work-0: the audit hash chain does not verify end to end. Keep the database and its backups as they are and follow the audit guide before changing anything."
+
+  - name: readiness alerts only when no probe passed, including a pod that never became ready
+    interval: 10s
+    input_series:
+      - series: 'lw_http_requests_total{job="lolly-work",namespace="lolly-work",pod="work-0",route="/readyz",status="5xx"}'
+        values: '0+1x60'
+      - series: 'lw_http_requests_total{job="lolly-work",namespace="lolly-work",pod="work-1",route="/readyz",status="5xx"}'
+        values: '0+1x60'
+      - series: 'lw_http_requests_total{job="lolly-work",namespace="lolly-work",pod="work-1",route="/readyz",status="2xx"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: LollyWorkNotReady
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: lolly-work, pod: work-0 }
+            exp_annotations:
+              summary: Lolly Work has failed every readiness check for 5 minutes.
+              description: "Every GET /readyz on work-0 answered 503, so the pod is out of the Service. The body of /readyz names the check holding it back (store, migrations, setup or catalog)."
+
+  - name: missing metrics alert after ten minutes
+    interval: 1m
+    input_series:
+      - series: 'lw_process_uptime_seconds{job="other",namespace="lolly-work"}'
+        values: '1+60x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: LollyWorkMetricsAbsent
+        exp_alerts:
+          - exp_labels: { severity: warning, job: lolly-work, namespace: lolly-work }
+            exp_annotations:
+              summary: Prometheus has no Lolly Work metrics.
+              description: "No lw_process_uptime_seconds series for 10 minutes. Work is down, or the scrape lost its bearer token (LW_METRICS_TOKEN) or its target."
+
+  - name: render failures need volume and a failure share above 10%
+    interval: 1m
+    input_series:
+      - series: 'lw_http_requests_total{job="lolly-work",namespace="lolly-work",pod="work-0",route="/render/:spec",status="2xx"}'
+        values: '0+10x40'
+      - series: 'lw_http_requests_total{job="lolly-work",namespace="lolly-work",pod="work-0",route="/render/:spec",status="5xx"}'
+        values: '0+5x40'
+      - series: 'lw_http_requests_total{job="lolly-work",namespace="lolly-work",pod="work-0",route="/api/v1/projects",status="2xx"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: LollyWorkRenderFailures
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: lolly-work }
+            exp_annotations:
+              summary: More than 10% of Lolly Work renders fail.
+              description: "33.33% of server renders answered 5xx over 15 minutes. This covers a render worker that is unreachable or failing (502), at capacity (503 RENDER_BUSY) and a hooked tool on an instance without a worker (501)."
+      - eval_time: 25m
+        alertname: LollyWorkHighErrorRate
+        exp_alerts: []
+
+  - name: other server errors above 5% alert, renders and probes excluded
+    interval: 1m
+    input_series:
+      - series: 'lw_http_requests_total{job="lolly-work",namespace="lolly-work",pod="work-0",route="/api/v1/projects",status="2xx"}'
+        values: '0+90x40'
+      - series: 'lw_http_requests_total{job="lolly-work",namespace="lolly-work",pod="work-0",route="/api/v1/projects",status="5xx"}'
+        values: '0+10x40'
+      - series: 'lw_http_requests_total{job="lolly-work",namespace="lolly-work",pod="work-0",route="/readyz",status="2xx"}'
+        values: '0+1000x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: LollyWorkHighErrorRate
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: lolly-work }
+            exp_annotations:
+              summary: More than 5% of Lolly Work requests fail with a server error.
+              description: "10% of requests other than health checks and renders answered 5xx over 10 minutes. Request ids in the access log join a failure to the request a person reports."
+
+  - name: a SIEM backlog that keeps growing alerts, a draining one does not
+    interval: 30s
+    input_series:
+      - series: 'lw_siem_lag{job="lolly-work",namespace="lolly-work",pod="work-0"}'
+        values: '0 0 5+5x100'
+      - series: 'lw_siem_lag{job="lolly-work",namespace="lolly-work",pod="work-1"}'
+        values: '0 400 0 300 0 200 0 100 0 50 0x100'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: LollyWorkSiemLagGrowing
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: lolly-work, job: lolly-work, pod: work-0 }
+            exp_annotations:
+              summary: The SIEM receiver has stopped confirming audit events.
+              description: "300 audit events are waiting for the SIEM receiver on work-0 and the backlog has not cleared for 30 minutes. Check siem.url, LW_SIEM_SECRET and the receiver's logs."
+
+  - name: only a channel whose every notification failed alerts
+    interval: 1m
+    input_series:
+      - series: 'lw_notify_total{job="lolly-work",namespace="lolly-work",pod="work-0",channel="webhook",outcome="failed"}'
+        values: '1+1x60'
+      - series: 'lw_notify_total{job="lolly-work",namespace="lolly-work",pod="work-0",channel="smtp",outcome="failed"}'
+        values: '1+1x60'
+      - series: 'lw_notify_total{job="lolly-work",namespace="lolly-work",pod="work-0",channel="smtp",outcome="sent"}'
+        values: '1+1x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: LollyWorkNotificationsFailing
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: lolly-work, channel: webhook }
+            exp_annotations:
+              summary: Every webhook notification in the last hour failed.
+              description: "Work could not deliver through the webhook channel. Check the notify block in instance.json and the relay or receiver it names."
+
+  - name: a failing source alerts only while enabled
+    interval: 5m
+    input_series:
+      - series: 'lw_provider_last_error{job="lolly-work",namespace="lolly-work",pod="work-0",provider="dam"}'
+        values: '1x20'
+      - series: 'lw_provider_enabled{job="lolly-work",namespace="lolly-work",pod="work-0",provider="dam",kind="webdav"}'
+        values: '1x20'
+      - series: 'lw_provider_last_error{job="lolly-work",namespace="lolly-work",pod="work-0",provider="old"}'
+        values: '1x20'
+      - series: 'lw_provider_enabled{job="lolly-work",namespace="lolly-work",pod="work-0",provider="old",kind="git"}'
+        values: '0x20'
+      - series: 'lw_provider_credential_expiry_days{job="lolly-work",namespace="lolly-work",pod="work-0",provider="dam"}'
+        values: '10x20'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: LollyWorkProviderSyncFailing
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: lolly-work, provider: dam }
+            exp_annotations:
+              summary: Catalog source dam keeps failing to sync.
+              description: "The last sync of the enabled source dam recorded an error for an hour. The console's source page shows the error."
+      - eval_time: 70m
+        alertname: LollyWorkProviderCredentialExpiring
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: lolly-work, provider: dam }
+            exp_annotations:
+              summary: The credential for catalog source dam expires within 14 days.
+              description: "10 days remain before the expiry date entered with this credential. Rotate it in the console before the vendor's schedule does."
+
+  - name: blob offload alerts fire at 90% of the server's own thresholds, for PostgreSQL only
+    interval: 1m
+    input_series:
+      - series: 'lw_blob_stored_bytes{job="lolly-work",namespace="lolly-work",pod="work-0",driver="pg"}'
+        values: '9900000000x120'
+      - series: 'lw_blob_stored_bytes{job="lolly-work",namespace="lolly-work",pod="work-0",driver="memory"}'
+        values: '99000000000x120'
+      - series: 'lw_blob_read_bytes_total{job="lolly-work",namespace="lolly-work",pod="work-0",driver="pg"}'
+        values: '0+4000000x1560'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: LollyWorkBlobStoreNearOffload
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: lolly-work }
+            exp_annotations:
+              summary: PostgreSQL holds more than 9 GiB of files.
+              description: "9.22GiB of project files and assets are stored in PostgreSQL. Work raises its own offload alert at 10 GiB; plan the move to object storage."
+      # The read pace is a rate over one day, so it needs a day of samples.
+      - eval_time: 25h
+        alertname: LollyWorkBlobReadsNearOffload
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: lolly-work }
+            exp_annotations:
+              summary: File reads from PostgreSQL are on course for 90 GiB a month.
+              description: "At the last day's rate, a 30-day month reads 160.9GiB of files from PostgreSQL. Work raises its own offload alert at 100 GiB in a calendar month."
+
+  - name: the rate limiter alerts at 80% of rateLimit.maxBuckets
+    interval: 1m
+    input_series:
+      - series: 'lw_rate_limit_buckets{job="lolly-work",namespace="lolly-work",pod="work-0"}'
+        values: '45000x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LollyWorkRateLimitBucketsHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, namespace: lolly-work, pod: work-0 }
+            exp_annotations:
+              summary: The rate limiter tracks more than 80% of its addresses.
+              description: "45000 client addresses are tracked on work-0. Near rateLimit.maxBuckets the limiter drops the oldest tenth. Check rateLimit.trustedProxyHops if every request seems to come from a different address."

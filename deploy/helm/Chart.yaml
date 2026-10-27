@@ -41,6 +41,8 @@ annotations:
       url: https://github.com/lolly-tools/lolly-work
   artifacthub.io/changes: |
     - kind: added
+      description: Optional PrometheusRule of suggested alerts and a Grafana dashboard ConfigMap, both off by default.
+    - kind: added
       description: Official chart distribution, package documentation and Rancher configuration questions.
     - kind: changed
       description: Default server and render worker image tags follow Work 1.1.2.
