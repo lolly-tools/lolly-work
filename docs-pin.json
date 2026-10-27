@@ -1,8 +1,8 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "3c5714a130f2982c80a4ff32b0a0bbe3bdcb0cbd",
-  "manifestSha256": "9940f62285666ce178043cf4e464313d15575776c4aa1834e547070295bffb8a",
+  "commit": "878dd6ef747d93d2d854f9ba870cd9ca0b527940",
+  "manifestSha256": "6e30cff202e889fbbdeeed048a186ae438ebadb3304d95fdf92d652346536960",
   "files": {
     "account-lifecycle.md": {
       "sha256": "37f7cf8213f0fb6805c7fd5e0a3e263a4afa24a68abd547e4904f640cc2cc4d0",
@@ -13,7 +13,7 @@
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
-      "sha256": "ed55b5f50a91ebbc0b2bfa0fe77a45df7235bbdc62c9f163eefe6285fca5f17c",
+      "sha256": "4cc222b8bd96255e93ec307c304c6cf2fa698a6119e6fc84cfe67ed604c12350",
       "source": "docs/work/api.md"
     },
     "approvals.md": {
@@ -45,7 +45,7 @@
       "source": "docs/work/cloud-deployment.md"
     },
     "configuration.md": {
-      "sha256": "cdd70dd7e7794bce6681e05b20356e798e0540917c98133f08827ef499fbc22a",
+      "sha256": "d0d2902a12d32eb36f24fb9c9a21b5a70798a461e3c70f4e242b95d73326693f",
       "source": "docs/work/configuration.md"
     },
     "customer-setup.md": {
@@ -137,7 +137,7 @@
       "source": "docs/work/official-installations.md"
     },
     "operations.md": {
-      "sha256": "0446cca8a11fb08894b9db49ffa52f0b5525cb8a6136a921a2f0925ba0ff4ba8",
+      "sha256": "e1384a5892cfdf78fe7501f9efe8b4e956239eeaf8c527fde7892093a97daf40",
       "source": "docs/work/operations.md"
     },
     "overview.md": {
@@ -164,32 +164,20 @@
       "sha256": "45df464a868130227463d7649d5aa08da8ee6839880fcfcb3d016f79445c6270",
       "source": "docs/work/project-portability.md"
     },
-    "providers/acquia-dam-live-verify.md": {
-      "sha256": "d693b175875ac79e557dc30860a272d9605bddf18f6402a1200a9a3a9c4e0ea9",
-      "source": "docs/work/providers/acquia-dam-live-verify.md"
-    },
     "providers/acquia-dam.md": {
-      "sha256": "b96af5e0560e6608df1664b1ded995f6340a3dcbd40ebb4b1487157277f8c071",
+      "sha256": "b4f7a30153d7d4da6a78cb3f8c42d9a1577629a0a5060997883107e967b8dff5",
       "source": "docs/work/providers/acquia-dam.md"
     },
     "providers/brandfolder.md": {
       "sha256": "1ace1c265c0ab73691036818aff529964c9c9307747bf5375f56d7bde8b78160",
       "source": "docs/work/providers/brandfolder.md"
     },
-    "providers/canto-live-verify.md": {
-      "sha256": "0557255abd8d59fd18602bf8fa1d15930930a1abcae89d9e0c9498028238e919",
-      "source": "docs/work/providers/canto-live-verify.md"
-    },
     "providers/canto.md": {
-      "sha256": "c8f14a94e075f5d787918783f9ee789a3467d79d914306e16c7bfe7e9c1b95c5",
+      "sha256": "904b255d584bb03998eb076fe399aa34b0094219ca7d8bb8f66661c24126c119",
       "source": "docs/work/providers/canto.md"
     },
-    "providers/cloudinary-live-verify.md": {
-      "sha256": "bdd17dc27815c596b55a57a526f58590125a3450d4a246262652c6060e7116ef",
-      "source": "docs/work/providers/cloudinary-live-verify.md"
-    },
     "providers/cloudinary.md": {
-      "sha256": "174ab763e4589104788c92ab0f77371c123177d6267030c5662b888617c96364",
+      "sha256": "a0b289c9740f6b2482e9574f39f0b466358db17ed8dbb5924338542c8c27ea73",
       "source": "docs/work/providers/cloudinary.md"
     },
     "providers/dropbox.md": {
@@ -204,20 +192,12 @@
       "sha256": "2bd18fb54934759952c1baaa14b8846022390d2a6220ad3d3255999c77cef175",
       "source": "docs/work/providers/git.md"
     },
-    "providers/imagerelay-live-verify.md": {
-      "sha256": "54c680a9d7dee9991ed9eca1c3df1f21170d18ac607d0363f6d512d1359b88df",
-      "source": "docs/work/providers/imagerelay-live-verify.md"
-    },
     "providers/imagerelay.md": {
-      "sha256": "5447d33af1d0951bbfea42e13a8a0a8fa9e02c0ea619eeee5017d510d2555f37",
+      "sha256": "ea0749e9abb3aad60c3c86f1d69e4608f21ebf95edafce320e6ec572248df537",
       "source": "docs/work/providers/imagerelay.md"
     },
-    "providers/intelligencebank-live-verify.md": {
-      "sha256": "5a943102fe5c054db222185ad50ba17631815dbdccfa14c101219d71f8544f46",
-      "source": "docs/work/providers/intelligencebank-live-verify.md"
-    },
     "providers/intelligencebank.md": {
-      "sha256": "2120da9137a6358c99c1c7a9a1d28f01b34edd141189d311ee919f852fd497ad",
+      "sha256": "40e8fcc4a57de7c1546fd3fec11c55e6c5030d74c16e88b96a99e9b5db9e5aa6",
       "source": "docs/work/providers/intelligencebank.md"
     },
     "providers/o365.md": {
@@ -228,12 +208,8 @@
       "sha256": "ac50c8d653a74d5b438ff93be3d2fe2c73d81d72928e8651f550ce3cc2490509",
       "source": "docs/work/providers/optimizely-cmp.md"
     },
-    "providers/orange-logic-live-verify.md": {
-      "sha256": "4bf86957169acccbeffbda717a8c9152c72a56eb544bdb5924721e638df5ead9",
-      "source": "docs/work/providers/orange-logic-live-verify.md"
-    },
     "providers/orange-logic.md": {
-      "sha256": "49351d31b9f15c8ecddd61fe17dbc8d08e806e6efabdf5f6033426211fd56fcc",
+      "sha256": "41a2b609e561d516beec2825ad0ef11524a6e2ee1b55be636931a37a7fda3bfe",
       "source": "docs/work/providers/orange-logic.md"
     },
     "providers/penpot.md": {
@@ -241,7 +217,7 @@
       "source": "docs/work/providers/penpot.md"
     },
     "providers/README.md": {
-      "sha256": "e1046ba00aee70b4e64505eea329154a934e7cc7ae1b20df515859fac3269925",
+      "sha256": "a82e70b2fbcd51e29d0797b5ea025e41e95956c2e66c21a7cce0b5cb470db0b8",
       "source": "docs/work/providers/README.md"
     },
     "providers/s3.md": {
@@ -252,12 +228,8 @@
       "sha256": "b38b3891c44296b438f76a91dd3c1108815c7cec5175337305572aaf954318d5",
       "source": "docs/work/providers/tenant-check.md"
     },
-    "providers/webdav-live-verify.md": {
-      "sha256": "73e94882612cddc9aaadbb0c34c94fd344d3a1f4675fb70dc5272c357f5cdb85",
-      "source": "docs/work/providers/webdav-live-verify.md"
-    },
     "providers/webdav.md": {
-      "sha256": "4e7f3db281d3a8e719033a7d93bd3b64c15da95748512404147e23927d3e23b1",
+      "sha256": "fd254bb617326155fa17fff2fb727ee1779dba4b1d8424f2e6b1242eb3f8b6b7",
       "source": "docs/work/providers/webdav.md"
     },
     "README.md": {
@@ -265,7 +237,7 @@
       "source": "scripts/export-work-docs.ts"
     },
     "ready-made-package.md": {
-      "sha256": "6a8339d4012b0068507352b71798e77f959578f9efd5629b2e14e97c29bfb022",
+      "sha256": "4b9c29cbbdf8c341700c7eac4f8412c2394731080028aa96b7071fa34bda6f53",
       "source": "docs/work/ready-made-package.md"
     },
     "release-1-1-2.md": {
