@@ -205,7 +205,7 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
-import { CATALOG_INDEX_REL, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning } from '../catalog/signing.ts';
+import { CATALOG_INDEX_REL, CATALOG_PUBLIC_KEY_ROUTE, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning } from '../catalog/signing.ts';
 import { publicCard, shellStubFor } from '../shell/share-cards.ts';
 import { addressedToolArt, isToolKeyedCatalogPath, servedToolSidecar, toolArtAddress } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
@@ -1237,6 +1237,26 @@ export function buildApp(deps: AppDeps): App {
     ...(config.idp.issuer ? [{ id: 'primary', name: config.idp.displayName || 'SSO', kind: 'oidc' as const, loginPath: '/api/auth/login?idp=primary' }] : []),
     ...config.idp.additional.map((a) => ({ id: a.id, name: a.displayName, kind: a.kind ?? 'oidc', loginPath: `/api/auth/login?idp=${a.id}` })),
   ];
+
+  // ── the catalog public key (plan 324) ─────────────────────────────────────
+  // A web app with the publisher's key built in refuses a catalog that key did not
+  // sign, and this server signs each person's filtered catalog with its own key.
+  // The web app this server hosts at `/` reads this route from that same origin and
+  // accepts the key only for envelopes carrying its keyId. A web app on another
+  // origin, and the desktop and mobile apps, never take a key from here, so trust
+  // stays with whoever serves the web app's own code. Public, with no CORS: the
+  // half served is public, and only a same-origin reader acts on the answer.
+  // Without a key the route answers 404, as a server without this route does; a
+  // key that does not load answers 503, like the signature route, and the error
+  // never quotes the material.
+  router.add('GET', CATALOG_PUBLIC_KEY_ROUTE, async (req, res) => {
+    if (!catalogSigning) return sendError(res, 404, 'CATALOG_SIGNING_OFF', 'this instance does not sign its catalog');
+    let document: Buffer;
+    try { document = await catalogSigning.publicKeyDocument(); }
+    catch { return sendError(res, 503, 'CATALOG_SIGNING_UNAVAILABLE', 'the catalog signing key could not be loaded; see the server log'); }
+    sendBytes(req, res, document, { contentType: 'application/json; charset=utf-8',
+      headers: { 'cache-control': cachePolicy('public-revalidate').cacheControl, 'x-content-type-options': 'nosniff' } });
+  }, { delivery: 'public-revalidate' });
 
   // ── instance manifest (plans/34 wave 1a) ──────────────────────────────────
   // The card a fresh app-store shell reads before anyone signs in: what this

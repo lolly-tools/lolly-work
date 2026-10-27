@@ -67,6 +67,15 @@ enforces it.
 - **Rate limiting on the unauthenticated surface** — auth endpoints, telemetry
   ingest, and the public link resolver sit behind a per-IP token-bucket
   limiter (`server/src/observability/rate-limit.ts`) with LRU-bounded memory.
+- **Catalog key for the same origin only.** `GET /api/v1/catalog/public-key`
+  serves the public half of `LW_CATALOG_SIGNING_KEY`, copied field by field so no
+  private member can reach the response (`server/src/catalog/signing.ts`,
+  `tests/catalog-public-key.test.ts`). The Lolly web app reads the route only from
+  the origin that served its own code, and accepts the key only for envelopes
+  that carry its keyId; static hosts and the desktop and mobile apps keep their
+  build-time key. Whoever operates that origin already controls the web app's
+  scripts, so the route adds no trust, provided one operator runs the whole
+  origin, `/api/` included.
 - **Engine integrity** — the vendored engine is a pinned snapshot;
   `scripts/verify-engine-pin.ts` recomputes its content hashes against
   `engine-pin.json` before every test run and in CI, so a locally patched
