@@ -112,13 +112,22 @@ function runPlan(runId: string, count: number, rate: number | null, image: strin
   return JSON.parse(line.slice('BENCH_RESULT '.length));
 }
 
+/** CPU seconds Work's container has used (cgroup v2), to compare what each mode costs the one Work replica. */
+function workCpuSeconds(): number | null {
+  try {
+    const stat = kubectl(['-n', NS, 'exec', 'deploy/work', '--', 'cat', '/sys/fs/cgroup/cpu.stat']);
+    const usec = /usage_usec (\d+)/.exec(stat)?.[1];
+    return usec ? Number(usec) / 1e6 : null;
+  } catch { return null; }
+}
+
 function restarts(): Record<string, number> {
   const pods = JSON.parse(kubectl(['-n', NS, 'get', 'pods', '-o', 'json'])) as { items: { metadata: { name: string }; status: { containerStatuses?: { restartCount: number }[] } }[] };
   return Object.fromEntries(pods.items.filter((p) => !p.metadata.name.startsWith('bench-'))
     .map((p) => [p.metadata.name, (p.status.containerStatuses ?? []).reduce((n, c) => n + c.restartCount, 0)]));
 }
 
-interface RunRecord { corpus: string; slots?: number; workers: number; mode: string; load: Load; rate: number | null; jobs: number; summary: Record<string, Summary>; refused: number; metricsPeaks: Record<string, number>; metricsCounters: Record<string, number>; errorsSeen: Record<string, number>; restarts: Record<string, number> }
+interface RunRecord { corpus: string; slots?: number; workCpuSeconds?: number | null; workers: number; mode: string; load: Load; rate: number | null; jobs: number; summary: Record<string, Summary>; refused: number; metricsPeaks: Record<string, number>; metricsCounters: Record<string, number>; errorsSeen: Record<string, number>; restarts: Record<string, number> }
 const recordsFile = join(out, 'runs.json');
 const records: RunRecord[] = existsSync(recordsFile) ? JSON.parse(readFileSync(recordsFile, 'utf8')) : [];
 const save = () => writeFileSync(recordsFile, JSON.stringify(records, null, 2));
@@ -146,10 +155,12 @@ for (const workers of workerCounts) {
       psql('truncate renders cascade');
       say(`run ${corpusName}/${mode}/${workers}/${load}: ${count} renders${rate ? ` at ${rate}/s` : ' at once'}`);
       const tag = `${corpusName}-${mode}-${workers}${slots === 4 ? '' : `x${slots}`}-${load}`;
+      const cpuBefore = workCpuSeconds();
       const result = runPlan(tag, count, rate, workImage);
+      const cpuAfter = workCpuSeconds();
       writeFileSync(join(out, `raw-${tag}.json`), JSON.stringify(result));
       const summary = summariseByPool(result.rows);
-      records.push({ corpus: corpusName, slots, workers, mode, load, rate, jobs: count, summary, refused: result.refused.length,
+      records.push({ corpus: corpusName, slots, workCpuSeconds: cpuBefore !== null && cpuAfter !== null ? Number((cpuAfter - cpuBefore).toFixed(2)) : null, workers, mode, load, rate, jobs: count, summary, refused: result.refused.length,
         metricsPeaks: result.metricsPeaks, metricsCounters: result.metricsCounters, errorsSeen: result.errorsSeen ?? {}, restarts: restarts() });
       save();
       const a = summary.all!;
