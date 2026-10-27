@@ -35,7 +35,7 @@ import { pipeline, Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
-import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
+import type { ApiTokenRecord, InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
 import { createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
@@ -2354,7 +2354,15 @@ export function buildApp(deps: AppDeps): App {
 
   router.add('GET', '/api/auth/session', async (req, res) => {
     const p = await principalOf(req);
-    if (!p) return sendError(res, 401, 'UNAUTHORIZED', 'no session');
+    if (!p) {
+      // No browser session: a live service token says which token it is, so an
+      // automation can check its own identity and role before it acts. A cookie
+      // always answers first, so nothing a browser sends changes here.
+      const token = await presentedServiceToken(req);
+      if (!token) return sendError(res, 401, 'UNAUTHORIZED', 'no session');
+      return sendJson(res, 200, { kind: 'service', user: { sub: token.user.sub, role: token.user.role, label: token.record.label } },
+        { 'cache-control': 'no-store' });
+    }
     if (p.kind === 'guest') {
       return sendJson(res, 200, { kind: 'guest', guest: { name: p.guest.name, inviter: p.guest.inviter, toolId: p.guest.toolId } });
     }
@@ -3190,13 +3198,22 @@ export function buildApp(deps: AppDeps): App {
   // ACTION-GATED surface accepts one - the member workflow routes (approvals,
   // submit, collab, telemetry consent) stay human, because those flows mean "a
   // person decided", and a token impersonating that would launder authorship.
-  const serviceAccountOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
+  // Two read-only surfaces also take one, and neither decides anything: the
+  // catalogue (`serveCatalog`, gated on `catalog.read` for a token) and
+  // `/api/auth/session`, which says which token is calling.
+  /** The service token a request presents: null when it presents none, false
+   *  when the one it presents is unknown, revoked or expired. */
+  const presentedServiceToken = async (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null> => {
     const bearer = bearerFromHeader(req.headers.authorization);
     if (!bearer || !bearer.startsWith(SERVICE_TOKEN_PREFIX)) return null;
     const rec = await store.findApiTokenByHash(hashServiceSecret(bearer));
-    if (!rec || !credentialActive(rec, config.policy.serviceTokens.allowLegacyUnbounded)) return null;
+    if (!rec || !credentialActive(rec, config.policy.serviceTokens.allowLegacyUnbounded)) return false;
     void store.touchApiToken(rec.id, new Date().toISOString());
-    return serviceAccountFor(rec);
+    return { record: rec, user: serviceAccountFor(rec) };
+  };
+  const serviceAccountOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
+    const token = await presentedServiceToken(req);
+    return token ? token.user : null;
   };
 
   const requireAction = async (
@@ -5741,7 +5758,19 @@ export function buildApp(deps: AppDeps): App {
 
   // ── catalog serving (pack mount, per-caller filtered, lifecycle-enforced) ──
   const serveCatalog: Handler = async (req, res, ctx) => {
-    const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
+    const member = await memberOf(req);
+    // A service token reads the catalogue as its synthetic principal: a member
+    // with no groups, so visibility, overlays and lifecycle apply exactly as
+    // they do to one. Reading is the whole of it, and it is action-gated on
+    // `catalog.read`, so a deny grant on `user:svc_<id>` takes it away. A token
+    // that is presented but unknown, revoked or expired is refused outright
+    // rather than served the anonymous view.
+    const token = member ? null : await presentedServiceToken(req);
+    if (token === false) return sendError(res, 401, 'UNAUTHORIZED', 'this service token is unknown, revoked or expired');
+    if (token && !evaluate({ userId: token.user.id, groups: token.user.groups, role: token.user.role as Role }, 'catalog.read', ['*'], await store.listGrants())) {
+      return sendError(res, 403, 'FORBIDDEN', 'catalog.read required');
+    }
+    const user = member ?? token?.user ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = await principalOf(req);
     // Share cards answer before the sign-in gate: a link unfurler never signs in.
     // A tool's card follows the tool's own visibility for this caller, so a card
