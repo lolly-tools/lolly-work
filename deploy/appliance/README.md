@@ -220,35 +220,51 @@ machine.
 
 ## Measured
 
-The aarch64 image of Work 1.1.1 (chart 0.3.3), 27 October 2026, on QEMU 11.1
-with HVF on an Apple M4: 2 vCPU, 4 GiB memory, the 20 GiB image on a 40 GiB
-disk, no TPM, Combustion from the config partition. These are the first
-numbers for the k3s threshold; a real KVM host and the x86_64 image are
-listed below as they are run.
+Work 1.1.1 (chart 0.3.3), 27 October 2026, both images built from this
+directory. Two machines, each 2 vCPU and 4 GiB memory, the 20 GiB image on a
+40 GiB disk, no TPM, Combustion from the config partition:
 
-| | |
-|---|---|
-| First boot, power on to login prompt | 37 s |
-| First boot, power on to Work `/readyz` 200 | about 92 s (Work ready 85 s after the kernel started) |
-| Reboot to Work `/readyz` 200 | about 60 s (52 s after the kernel started) |
-| Memory at first readiness | 1.37 GiB used of 3.8 GiB |
-| Memory idle, 13 min after a reboot | 1.26 GiB used, 2.55 GiB available; K3s 679 MiB, Work 218 MiB, containerd 203 MiB, Traefik 104 MiB, CoreDNS 64 MiB, firewalld 49 MiB |
-| Disk used after first boot | 4.5 GiB of the btrfs filesystem (both root snapshots and `/var`); `/var/lib/rancher` 2.6 GiB, of which the preloaded archives are 450 MiB and PostgreSQL 66 MiB |
-| Image files | raw 20 GiB apparent, 2.5 GiB allocated; qcow2 1.75 GiB (aarch64), 1.84 GiB (x86_64) |
-| Build | 9 to 11 min for aarch64 in the Lima VM with a warm download cache; 5.5 min for x86_64 KIWI in CI |
-| Renders | `qr-code` SVG 1.7 s and PNG 1.1 s on first boot, 1.0 s each after the reboot, byte-identical before and after |
+- **aarch64** on QEMU 11.1 with HVF on an Apple M4.
+- **x86_64** (the CI build) on the MulgaDC Spinifex sandbox, a `c6a.large`
+  instance from a custom image registered through volume, snapshot and
+  `RegisterImage --boot-mode uefi`. Guest MTU 1442; K3s set flannel to 1392 by
+  itself, so the container MTU stall seen with Docker does not arise.
 
-Acceptance, first boot and after a reboot, all passed: Combustion from the
-config partition, `/readyz` 200 on PostgreSQL in production mode, HTTPS with the
-machine's own certificate, HTTP redirected, SELinux enforcing with K3s's
-policy loaded and `container_runtime_t`/`container_t` labels, six encrypted
-credentials and no Lolly secret in plain text, console text without the link
-and the link on tty1 only, owner link once only, owner sign-in by password,
-`qr-code` SVG and PNG renders, Cockpit on 9090, `lolly-appliance cockpit
-off` and `on`. Every pod image was "already present on machine": nothing was
-pulled. A second first boot with a software TPM (swtpm, under KVM) sealed the
-credentials to the host key and the TPM (`systemd-creds` type
-host+TPM2-HMAC); without a TPM they are sealed to the host key.
+These are the first numbers for the k3s threshold.
+
+| | aarch64, HVF | x86_64, Spinifex |
+|---|---|---|
+| First boot to root SSH (Combustion applied) | 37 s to the login prompt | 51 s after launch |
+| First boot to Work `/readyz` 200 | about 92 s (85 s after the kernel started) | about 96 s after launch (92 s after the kernel started) |
+| Reboot to Work `/readyz` 200 | about 60 s (52 s after the kernel started) | 84 s including the shutdown (46 s after the kernel started) |
+| Memory at first readiness | 1.37 GiB used of 3.8 GiB | 1.53 GiB used of 3.8 GiB |
+| Memory idle after a reboot | 1.26 GiB used, 2.55 GiB available (13 min) | 1.28 GiB used, 2.54 GiB available (10 min) |
+| Disk used | 4.5 GiB of the btrfs filesystem (root snapshots and `/var`) | 4.6 GiB |
+| Renders, `qr-code` SVG and PNG | 1.7 s and 1.1 s; 1.0 s each after the reboot | 3.2 s and 0.9 s; 5.1 s and 2.7 s after the reboot |
+
+On the aarch64 machine, idle: K3s 679 MiB, Work 218 MiB, containerd 203 MiB,
+Traefik 104 MiB, CoreDNS 64 MiB, firewalld 49 MiB; `/var/lib/rancher` 2.6
+GiB, of which the preloaded archives are 450 MiB and PostgreSQL 66 MiB. Image
+files: raw 20 GiB apparent and 2.5 GiB allocated; qcow2 1.75 GiB (aarch64) and
+1.84 GiB (x86_64). A build takes 9 to 11 min for aarch64 in the Lima VM with a
+warm download cache and 5.5 min of KIWI for x86_64 in CI.
+
+The renders were byte-identical across the two architectures and across each
+reboot (SVG sha256 `28358ad6a32f5995...`, PNG `da253330e924b789...`).
+
+Acceptance passed on both machines, first boot and after a reboot: Combustion
+from the config partition, `/readyz` 200 on PostgreSQL in production mode,
+HTTPS with the machine's own certificate, HTTP redirected, SELinux enforcing
+with K3s's policy loaded and `container_runtime_t`/`container_t` labels, six
+encrypted credentials and no Lolly secret in plain text, the console text
+without the link and the link on tty1 only, the owner link working once, the
+owner signing in by password, `qr-code` SVG and PNG renders, and Cockpit on
+9090 (from the internet, port 9090 did not answer on Spinifex). On aarch64,
+`lolly-appliance cockpit off` and `on` worked. Every pod image was "already
+present on machine": nothing was pulled. A further first boot with a software
+TPM (swtpm, under KVM) sealed the credentials to the host key and the TPM
+(`systemd-creds` type host+TPM2-HMAC); without a TPM they are sealed to the
+host key.
 
 KVM nested inside the Lima VM booted and configured the machine correctly but
 was too slow to measure: two starved vCPUs took six minutes to import one
