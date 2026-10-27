@@ -530,6 +530,42 @@ metrics:
     # e.g. grafana_folder: Lolly, for a sidecar that sorts dashboards into folders.
     annotations: {}
 
+# OpenTelemetry export: traces, metrics and logs pushed over OTLP to your
+# collector or backend. Off by default; while off the chart sets no OTEL_*
+# variable and the server exports nothing. Work speaks OTLP over HTTP (a
+# collector's port 4318), not gRPC. With networkPolicy.allowAllEgress false,
+# add an egress rule to the collector yourself. Anything not listed here (batch
+# sizes, timeouts, certificates) can go in extraEnv as a standard OTEL_* variable.
+otel:
+  enabled: false
+  # Base URL; Work appends /v1/traces, /v1/metrics and /v1/logs.
+  # e.g. http://otel-collector.observability.svc:4318
+  endpoint: ""
+  # http/protobuf (the OpenTelemetry default) or http/json.
+  protocol: http/protobuf
+  # none or gzip.
+  compression: none
+  # OTEL_SERVICE_NAME. Empty keeps the server's default, lolly-work.
+  serviceName: ""
+  # OTEL_RESOURCE_ATTRIBUTES as a map, e.g.
+  #   deployment.environment.name: production
+  resourceAttributes: {}
+  # Switch single signals off.
+  traces: true
+  metrics: true
+  logs: true
+  # OTEL_TRACES_SAMPLER and its ratio (OTEL_TRACES_SAMPLER_ARG), for the
+  # *traceidratio samplers. Keep the parent-based ones when an ingress or mesh
+  # in front already decides.
+  sampler: parentbased_always_on
+  samplerArg: ""
+  # A backend that wants an API key: name a Secret key holding the whole
+  # OTEL_EXPORTER_OTLP_HEADERS value (key1=value1,key2=value2). Never put the
+  # key in values.
+  headersSecret:
+    name: ""
+    key: ""
+
 # ── NetworkPolicy ───────────────────────────────────────────────────────────
 # Off by default. When enabled, restricts ingress to the app port and (if you
 # leave egress open) lets the pod reach Postgres, your IdP, and providers.
