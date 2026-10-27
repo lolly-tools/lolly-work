@@ -1,0 +1,10 @@
+# K3s settings for the Lolly appliance (k3s profile), one node.
+# A fixed node name keeps the node, and PostgreSQL's local volume, when the
+# machine's hostname changes.
+node-name: lolly
+selinux: true
+secrets-encryption: true
+write-kubeconfig-mode: "0600"
+# Not needed on one machine; saves memory.
+disable:
+  - metrics-server

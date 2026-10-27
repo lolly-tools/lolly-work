@@ -178,7 +178,7 @@ test('the Helm scope covers everything Helm qualification renders, generates and
 
 test('pull requests start the full-scope workflows only through PR qualification', () => {
   const withPullRequests = readdirSync(join(ROOT, '.github/workflows')).filter(name => 'pull_request' in workflow(name).on).sort();
-  assert.deepEqual(withPullRequests, ['admission-qualification.yml', 'pr-qualification.yml', 'suse-container.yml']);
+  assert.deepEqual(withPullRequests, ['admission-qualification.yml', 'appliance.yml', 'pr-qualification.yml', 'suse-container.yml']);
   for (const name of ['ci.yml', 'deployment-qualification.yml', 'helm-qualification.yml']) {
     const { on, concurrency } = workflow(name);
     assert.deepEqual(on.push, { branches: ['main'], tags: ['v*'] }, name);

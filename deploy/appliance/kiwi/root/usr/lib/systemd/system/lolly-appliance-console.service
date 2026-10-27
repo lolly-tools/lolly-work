@@ -1,0 +1,11 @@
+[Unit]
+Description=Lolly appliance: show the address and owner setup link on the console
+After=lolly-appliance-secrets.service
+Wants=lolly-appliance-secrets.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/lolly-appliance/console
+
+[Install]
+WantedBy=multi-user.target

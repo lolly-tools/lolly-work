@@ -1,0 +1,109 @@
+# PostgreSQL for the appliance's k3s profile, applied by K3s from
+# /var/lib/rancher/k3s/server/manifests. The image is the release's own
+# postgresImage pin (deploy/marketplaces/release.json, @POSTGRES_IMAGE_REF@),
+# preloaded so first boot needs no registry. Data lives on K3s's local-path
+# volume under /var/lib/rancher/k3s/storage, outside the root snapshots, so a
+# host rollback leaves it alone. The password comes from the lolly-postgres
+# Secret, which lolly-appliance-secrets.service creates from this machine's
+# systemd credential. Only Lolly Work's pods may connect. The lolly namespace
+# comes from 00-lolly-namespace.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: lolly-postgres
+  namespace: lolly
+  labels: { app.kubernetes.io/name: lolly-postgres, app.kubernetes.io/part-of: lolly-appliance }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: lolly-postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: postgres, protocol: TCP }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: lolly-postgres
+  namespace: lolly
+  labels: { app.kubernetes.io/name: lolly-postgres, app.kubernetes.io/part-of: lolly-appliance }
+spec:
+  serviceName: lolly-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: lolly-postgres }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: lolly-postgres, app.kubernetes.io/part-of: lolly-appliance }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: "@POSTGRES_IMAGE@"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          env:
+            - { name: POSTGRES_USER, value: lolly }
+            - { name: POSTGRES_DB, value: lollywork }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: lolly-postgres, key: POSTGRES_PASSWORD }
+          ports:
+            - { name: postgres, containerPort: 5432, protocol: TCP }
+          readinessProbe:
+            exec: { command: [pg_isready, -h, 127.0.0.1, -U, lolly, -d, lollywork] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: [pg_isready, -h, 127.0.0.1, -U, lolly, -d, lollywork] }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: run
+          emptyDir: { medium: Memory, sizeLimit: 16Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels: { app.kubernetes.io/name: lolly-postgres }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests: { storage: 10Gi }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lolly-postgres
+  namespace: lolly
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: lolly-postgres }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # The Work server and its migration Job (release lolly-work).
+        - podSelector:
+            matchLabels: { app.kubernetes.io/instance: lolly-work }
+      ports:
+        - { protocol: TCP, port: 5432 }

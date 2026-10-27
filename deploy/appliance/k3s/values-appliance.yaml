@@ -1,0 +1,85 @@
+# Lolly Work values for the appliance's k3s profile.
+#
+# generate.py fills the @...@ placeholders from deploy/marketplaces/release.json
+# and embeds this file in the HelmChart manifest that K3s's Helm controller
+# applies. Values that belong to one machine (its address, its owner) are not
+# here: the first boot writes them to a HelmChartConfig of the same name
+# (lolly-work-instance.yaml), which K3s merges over these values.
+#
+# Secrets come from the lolly-work-secrets Secret, which
+# lolly-appliance-secrets.service creates from this machine's systemd
+# credentials. Nothing secret is in the image or in this file.
+replicaCount: 1
+
+image:
+  repository: "@SERVER_REPOSITORY@"
+  digest: "@SERVER_DIGEST@"
+  # The image is preloaded from /var/lib/rancher/k3s/agent/images, so first
+  # boot needs no registry.
+  pullPolicy: IfNotPresent
+
+existingSecret: lolly-work-secrets
+
+config:
+  deployment:
+    mode: production
+    application: api
+    requireServerRendering: false
+  instance:
+    name: "Lolly Work"
+    # Replaced at first boot by the machine's own HTTPS address.
+    baseUrl: "https://lolly.invalid"
+    # The demo pack inside the server image. It is unsigned, so production
+    # mode needs an operator-provisioned publication generation.
+    pack: /app/packs/demo
+    catalogPublicationGeneration: 1
+  idp:
+    issuer: ""
+    clientId: ""
+    additional:
+      - { id: email, kind: password, label: "Email and password" }
+    # The owner's address is written at first boot.
+    admission: { emails: [], invitations: true }
+    bootstrapOwners: []
+    roleGroups: { owner: [lolly-owner], admin: [], approver: [], author: [] }
+  policy:
+    defaultAccessMode: gated
+    telemetry: "off"
+    telemetryAttribution: opt-in
+    guestLinks: { enabled: false }
+    sessionTtlHours: 12
+  render:
+    # The demo pack ships inside the image and is curated, the case this
+    # setting exists for. There is no render worker on the appliance yet.
+    allowHooksInFastPath: true
+  rateLimit:
+    enabled: true
+    # Traefik is the one proxy in front of Work.
+    trustedProxyHops: 1
+
+# K3s's bundled Traefik serves HTTPS on 443 with the machine's own certificate
+# (lolly-https.yaml makes it Traefik's default certificate) and redirects 80.
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  hosts:
+    - host: ""
+      paths:
+        - { path: /, pathType: Prefix }
+  tls: []
+
+networkPolicy:
+  enabled: true
+  # Traefik runs in kube-system.
+  ingressNamespaceSelector:
+    kubernetes.io/metadata.name: kube-system
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits: { cpu: "1", memory: 512Mi }
+
+tmp:
+  sizeLimit: 256Mi

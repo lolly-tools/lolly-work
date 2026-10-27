@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "profile": "k3s",
+  "base": {
+    "distribution": "openSUSE Leap 16.1 Immutable",
+    "stage": "release candidate (Build3.13); general availability is planned for 2026-11-03",
+    "repository": "https://download.opensuse.org/distribution/leap/16.1/repo/oss/",
+    "kiwiSource": "https://src.opensuse.org/pool/Leap_immutable",
+    "kiwiSourceBranch": "leap-16.1-images",
+    "kiwiSourceCommit": "fdfd2fb8fc0bcba3e3be0d99348e08afa081f6b5e06532da7b82285e3e3d3594",
+    "checkedAt": "2026-10-27"
+  },
+  "k3s": {
+    "version": "v1.34.12+k3s1",
+    "kubernetesMinor": "1.34",
+    "releaseUrl": "https://github.com/k3s-io/k3s/releases/tag/v1.34.12%2Bk3s1",
+    "releaseCommit": "47b4749964eb62628618bedad32eeacfc9eebbae",
+    "checksumSource": "https://github.com/k3s-io/k3s/releases/download/v1.34.12%2Bk3s1/sha256sum-<arch>.txt",
+    "architectures": {
+      "x86_64": {
+        "goarch": "amd64",
+        "binary": {
+          "url": "https://github.com/k3s-io/k3s/releases/download/v1.34.12%2Bk3s1/k3s",
+          "sha256": "ef1df26b26276c0f6d962391c94e12f9362d1f1e30ec7a7926e9ddb84b0d66ce"
+        },
+        "airgapImages": {
+          "url": "https://github.com/k3s-io/k3s/releases/download/v1.34.12%2Bk3s1/k3s-airgap-images-amd64.tar.zst",
+          "sha256": "c2c6571bee0e2cee5cc3e248aa0edc0343bcbfc0e512589630030b635be3d581"
+        }
+      },
+      "aarch64": {
+        "goarch": "arm64",
+        "binary": {
+          "url": "https://github.com/k3s-io/k3s/releases/download/v1.34.12%2Bk3s1/k3s-arm64",
+          "sha256": "67e3e242ba23480634caecc18939feff3a558756b340e4ef964552d748b0271e"
+        },
+        "airgapImages": {
+          "url": "https://github.com/k3s-io/k3s/releases/download/v1.34.12%2Bk3s1/k3s-airgap-images-arm64.tar.zst",
+          "sha256": "2c7a2347a7bf7606a40b6d2a8e2f350dfdc47f552c059f4594491934c25a6780"
+        }
+      }
+    },
+    "checkedAt": "2026-10-27"
+  },
+  "k3sSelinux": {
+    "package": "k3s-selinux",
+    "version": "1.6-1.sle",
+    "url": "https://rpm.rancher.io/k3s/stable/common/microos/noarch/k3s-selinux-1.6-1.sle.noarch.rpm",
+    "sha256": "aaaf5a0632d77db8c5808c6d1097167c934602639d628526c1ec0bd9cb2dd745",
+    "note": "The package the pinned K3s installer selects for a SUSE host that is not SLE Micro (rpm_site_infix=microos, stable channel).",
+    "checkedAt": "2026-10-27"
+  }
+}
