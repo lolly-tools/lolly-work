@@ -394,13 +394,16 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
   for (const o of demoOverlays()) await store.putOverlay(o);
   for (const c of demoChains()) await store.putChain(c);
 
-  // 2b. Feature-flag governance (This Deploy → Feature flags). Two shapes to
-  // demo: an opt-in flag forced on org-wide, and a hidden-but-on flag standing in
+  // 2b. Feature-flag governance (This Deploy → Feature flags). Three shapes to
+  // demo: an opt-in flag forced on org-wide, a hidden-but-on flag standing in
   // for a staged seasonal surprise (default still applies; the profile toggle is
-  // suppressed, replaced by a padlock in the shell).
+  // suppressed, replaced by a padlock in the shell), and a pilot: print
+  // preflight on and shown for the brand team only, dark for everyone else.
   const flagAt = new Date().toISOString();
   await store.putFlagGovernance({ id: 'strip-upload-metadata', default: 'on', updatedAt: flagAt });
   await store.putFlagGovernance({ id: 'jelly-effects', default: 'on', visibility: 'hide', updatedAt: flagAt });
+  await store.putFlagGovernance({ id: 'export-preflight', default: 'off', visibility: 'hide',
+    groups: [{ group: 'brand-team', default: 'on', visibility: 'show' }], updatedAt: flagAt });
 
   // Injectables (plans/19) - the rail that pushes capability into the governed
   // shell. Seed one of each kind so the console panel demonstrates the taxonomy.

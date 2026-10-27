@@ -26,7 +26,7 @@ import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
 import { roleFromGroups, type Grant, type RoleGroups } from '../rbac/evaluate.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
-import type { FlagGovernance } from '../policy/feature-flags.ts';
+import { hasFlagOpinion, type FlagGovernance } from '../policy/feature-flags.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
 import type { LinkRecord } from '../links/sign.ts';
 import type { StoredEvent } from '../telemetry/ingest.ts';
@@ -877,9 +877,9 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return new Map(flagGovernance);
     },
     async putFlagGovernance(rec) {
-      // A record with no opinion (no default, not hidden) clears the row - so
-      // "reset to inherit + show" leaves no residue and the version is stable.
-      if (rec.default === undefined && rec.visibility === undefined) flagGovernance.delete(rec.id);
+      // A record with no opinion (no default, not hidden, no group rules) clears
+      // the row - so "reset to inherit + show" leaves no residue and the version is stable.
+      if (!hasFlagOpinion(rec)) flagGovernance.delete(rec.id);
       else flagGovernance.set(rec.id, rec);
     },
     async listInjectables() {

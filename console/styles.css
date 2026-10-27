@@ -826,6 +826,12 @@ th[aria-sort] { cursor: pointer; }
   font-size: 15px; font-weight: 600; color: var(--ink); text-transform: none; letter-spacing: 0;
 }
 .compose-section > form { margin-top: 12px; }
+/* A feature flag's group rules: the add row's button sits on the controls'
+   baseline, and the rules table keeps air under the summary. */
+.flag-groups { margin-top: 6px; }
+.flag-groups > .data-tbl, .flag-groups > .tbl-scroll, .flag-groups > .empty { margin-top: 8px; }
+.flag-groups-add { display: flex; align-items: flex-end; }
+.flag-groups .search-select, .flag-groups .search-select input { display: flex; width: 100%; }
 .appr-steps > summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); width: max-content; }
 .appr-steps > summary:hover { color: var(--ink); }
 .appr-steps[open] > summary { margin-bottom: 8px; }

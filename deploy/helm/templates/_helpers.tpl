@@ -239,6 +239,12 @@ secret (Mode A didn't set them, or Mode B's secret omits them).
       name: {{ include "lolly-work.secretName" . }}
       key: LW_METRICS_TOKEN
       optional: true
+- name: LW_OFREP_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "lolly-work.secretName" . }}
+      key: LW_OFREP_TOKEN
+      optional: true
 - name: LW_RENDER_WORKER_SECRET
   valueFrom:
     secretKeyRef:

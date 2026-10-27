@@ -24,6 +24,12 @@ export interface Metrics {
   /** Response body bytes the origin wrote, by the route's delivery class
    *  (plan 80 section 10): what a CDN in front could take off this server. */
   originBytes(deliveryClass: string, bytes: number): void;
+  /** Requests to the organisation's flag service (policy/ofrep.ts), by flag;
+   *  cached answers are not requests. */
+  ofrepRequest(flag: string): void;
+  /** Flag-service evaluations that fell back to Work's own value, by flag and
+   *  a fixed reason (timeout, network, unauthorized, not_found, ...). */
+  ofrepError(flag: string, reason: string): void;
   renderText(gauges: GaugeLine[]): string;
 }
 
@@ -58,6 +64,8 @@ export function createMetrics(): Metrics {
     rateLimited: (surface) => inc('lw_rate_limited_total', 'Requests rejected by the per-IP rate limiter.', { surface }),
     notify: (channel, outcome) => inc('lw_notify_total', 'Notification deliveries by channel and outcome.', { channel, outcome }),
     originBytes: (cls, bytes) => inc('lw_origin_bytes_total', 'Response body bytes written by the origin, by delivery class.', { class: cls }, bytes),
+    ofrepRequest: (flag) => inc('lw_ofrep_requests_total', 'Evaluation requests sent to the organisation flag service (OFREP), by flag.', { flag }),
+    ofrepError: (flag, reason) => inc('lw_ofrep_evaluation_errors_total', 'Flag-service evaluations that fell back to the value Work governs, by flag and reason.', { flag, reason }),
     renderText(gauges) {
       const out: string[] = [];
       for (const [name, s] of counters) {
