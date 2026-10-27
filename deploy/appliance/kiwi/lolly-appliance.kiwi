@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lolly appliance: Lolly Work on openSUSE Leap 16.1 Immutable, k3s profile.
+
+  Derived from openSUSE's Leap 16.1 Immutable description (the Base flavour:
+  https://src.opensuse.org/pool/Leap_immutable, branch leap-16.1-images,
+  MIT licence, see ../LICENSE.kiwi). The base is kept: read-only btrfs root
+  snapshots, transactional-update, health-checker, rebootmgr, SELinux
+  enforcing, Combustion and Ignition. Added: K3s and k3s-selinux, Lolly Work
+  and PostgreSQL preloaded, Cockpit with cockpit-tukit, the Lolly first-boot
+  services and a small config partition (label "ignition") that Combustion and
+  Ignition read at first boot. Removed: jeos-firstboot (the appliance boots
+  unattended), cloud-init, ModemManager, usbguard.
+
+  Build with deploy/appliance/build.sh, which generates the K3s manifests from
+  deploy/marketplaces/release.json, sets <version> to that release's Lolly
+  version (@LOLLY_VERSION@ below), fetches and verifies the pinned K3s,
+  k3s-selinux and image archives, and runs kiwi-ng. One build gives a raw disk
+  (to write to a disk or import into a cloud) and a qcow2 of the same disk.
+
+  OBS: replace the two repositories with <source path="obsrepositories:/"/> and
+  provide k3s-selinux from a project; the rest builds unchanged.
+-->
+<image schemaversion="7.5" name="lolly-appliance" displayname="Lolly appliance">
+    <description type="system">
+        <author>Lolly Work</author>
+        <contact>https://github.com/lolly-tools/lolly-work</contact>
+        <specification>Lolly Work appliance on openSUSE Leap 16.1 Immutable, k3s profile</specification>
+    </description>
+    <profiles>
+        <profile name="platform-x86_64" description="UEFI disk for x86_64" arch="x86_64"/>
+        <profile name="platform-aarch64" description="UEFI disk for aarch64" arch="aarch64"/>
+        <profile name="k3s" description="Lolly Work on K3s, x86_64" arch="x86_64">
+            <requires profile="platform-x86_64"/>
+        </profile>
+        <profile name="k3s" description="Lolly Work on K3s, aarch64" arch="aarch64">
+            <requires profile="platform-aarch64"/>
+        </profile>
+    </profiles>
+
+    <preferences profiles="platform-x86_64">
+        <version>@LOLLY_VERSION@</version>
+        <packagemanager>zypper</packagemanager>
+        <bootsplash-theme>openSUSE</bootsplash-theme>
+        <bootloader-theme>openSUSE</bootloader-theme>
+        <rpm-excludedocs>true</rpm-excludedocs>
+        <locale>en_US</locale>
+        <type
+            image="oem"
+            format="qcow2"
+            initrd_system="dracut"
+            filesystem="btrfs"
+            firmware="uefi"
+            efipartsize="512"
+            kernelcmdline="console=ttyS0,115200 console=tty0 security=selinux selinux=1 quiet systemd.show_status=1"
+            bootpartition="false"
+            bootkernel="custom"
+            devicepersistency="by-uuid"
+            btrfs_root_is_snapshot="true"
+            btrfs_root_is_readonly_snapshot="true"
+            btrfs_quota_groups="true"
+        >
+            <bootloader name="grub2" console="gfxterm" timeout="3"/>
+            <systemdisk>
+                <volume name="home"/>
+                <volume name="root"/>
+                <volume name="opt"/>
+                <volume name="srv"/>
+                <volume name="boot/grub2/x86_64-efi" mountpoint="boot/grub2/x86_64-efi"/>
+                <volume name="boot/writable"/>
+                <volume name="usr/local"/>
+                <volume name="var" copy_on_write="false"/>
+            </systemdisk>
+            <partitions>
+                <!-- Write combustion/script or ignition/config.ign here before the first boot.
+                     KIWI needs a mount point to create the filesystem; config.sh
+                     marks it noauto, so the running system never mounts it. -->
+                <partition name="config" size="16" partition_name="p.lxconfig" filesystem="fat16" label="ignition" mountpoint="/var/lib/lolly/config-partition"/>
+            </partitions>
+            <size unit="G">20</size>
+        </type>
+    </preferences>
+
+    <preferences profiles="platform-aarch64">
+        <version>@LOLLY_VERSION@</version>
+        <packagemanager>zypper</packagemanager>
+        <bootsplash-theme>openSUSE</bootsplash-theme>
+        <bootloader-theme>openSUSE</bootloader-theme>
+        <rpm-excludedocs>true</rpm-excludedocs>
+        <locale>en_US</locale>
+        <type
+            image="oem"
+            format="qcow2"
+            initrd_system="dracut"
+            filesystem="btrfs"
+            firmware="uefi"
+            efipartsize="512"
+            kernelcmdline="security=selinux selinux=1 quiet systemd.show_status=1"
+            bootpartition="false"
+            bootkernel="custom"
+            devicepersistency="by-uuid"
+            btrfs_root_is_snapshot="true"
+            btrfs_root_is_readonly_snapshot="true"
+            btrfs_quota_groups="true"
+        >
+            <bootloader name="grub2" console="gfxterm" timeout="3"/>
+            <systemdisk>
+                <volume name="home"/>
+                <volume name="root"/>
+                <volume name="opt"/>
+                <volume name="srv"/>
+                <volume name="boot/grub2/arm64-efi" mountpoint="boot/grub2/arm64-efi"/>
+                <volume name="boot/writable"/>
+                <volume name="usr/local"/>
+                <volume name="var" copy_on_write="false"/>
+            </systemdisk>
+            <partitions>
+                <partition name="config" size="16" partition_name="p.lxconfig" filesystem="fat16" label="ignition" mountpoint="/var/lib/lolly/config-partition"/>
+            </partitions>
+            <size unit="G">20</size>
+        </type>
+    </preferences>
+
+    <repository type="rpm-md" alias="leap-16.1-oss">
+        <source path="https://download.opensuse.org/distribution/leap/16.1/repo/oss/"/>
+    </repository>
+    <!-- k3s-selinux only: fetched and checked against appliance.lock.json by build.sh. -->
+    <repository type="rpm-md" alias="lolly-appliance-local" priority="90">
+        <source path="this://local-repo"/>
+    </repository>
+
+    <!-- The Leap 16.1 Immutable Base package set (container-host flavour). -->
+    <packages type="image">
+        <namedCollection name="immutable_base"/>
+        <package name="patterns-base-immutable_base"/>
+        <package name="patterns-containers-runtime_podman"/>
+        <namedCollection name="selinux"/>
+        <package name="patterns-base-selinux"/>
+        <namedCollection name="hardware"/>
+        <package name="patterns-base-hardware"/>
+        <namedCollection name="bootloader"/>
+        <package name="patterns-base-bootloader"/>
+        <package name="Leap_immutable-release"/>
+        <package name="systemd-default-settings-branding-openSUSE"/>
+        <package name="grub2"/>
+        <package name="grub2-branding-openSUSE" bootinclude="true"/>
+        <package name="grub2-snapper-plugin"/>
+        <package name="shim"/>
+        <package name="mokutil"/>
+        <package name="kernel-default"/>
+        <package name="kernel-firmware-all"/>
+        <package name="dracut-kiwi-oem-repart"/>
+        <package name="dracut-kiwi-oem-dump"/>
+        <package name="glibc-locale-base"/>
+        <package name="ca-certificates"/>
+        <package name="openSUSE-build-key"/>
+        <package name="openSUSE-repos"/>
+        <package name="firewalld"/>
+        <package name="NetworkManager"/>
+        <package name="NetworkManager-branding-openSUSE"/>
+        <package name="NetworkManager-tui"/>
+        <package name="growpart-generator"/>
+        <package name="libpwquality-tools"/>
+        <package name="ignition"/>
+        <package name="combustion &gt;= 1.2"/>
+        <package name="qemu-guest-agent"/>
+        <package name="less"/>
+        <package name="vim-small"/>
+        <package name="parted"/>
+        <package name="iptables"/>
+        <package name="zypp-excludedocs"/>
+        <package name="zypp-no-multiversion"/>
+        <package name="zypp-no-recommends"/>
+        <!-- k3s profile -->
+        <package name="k3s-selinux"/>
+        <package name="container-selinux"/>
+        <package name="openssl"/>
+        <package name="curl"/>
+        <package name="tpm2.0-tools"/>
+        <package name="cockpit"/>
+        <package name="cockpit-tukit"/>
+    </packages>
+    <packages type="image" profiles="platform-x86_64">
+        <package name="grub2-x86_64-efi"/>
+    </packages>
+    <packages type="image" profiles="platform-aarch64">
+        <package name="grub2-arm64-efi"/>
+    </packages>
+    <packages type="bootstrap">
+        <package name="filesystem"/>
+        <!-- So zypper in the image root can verify the HTTPS repositories. -->
+        <package name="ca-certificates"/>
+        <package name="ca-certificates-mozilla"/>
+    </packages>
+</image>

@@ -18,8 +18,9 @@
 # publication read those main push runs, so their job names and contents do not
 # change here.
 #
-# SUSE container qualification and Admission service qualification keep their
-# own path-filtered pull request triggers and are not part of `required`.
+# SUSE container qualification, Admission service qualification and Appliance
+# image keep their own path-filtered pull request triggers and are not part of
+# `required`.
 name: PR qualification
 
 on:

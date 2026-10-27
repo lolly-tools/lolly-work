@@ -1,0 +1,16 @@
+# /etc/lolly/appliance.conf: optional settings for a Lolly appliance.
+# Write it from Combustion or Ignition at first boot, or edit it and reboot.
+# Every key is optional.
+
+# The first owner's email address. Default: owner@lolly.local
+#LOLLY_OWNER_EMAIL=ana@example.com
+
+# The HTTPS address people use, without a path. Default: https:// followed by
+# this machine's IPv4 address, worked out again at each boot.
+#LOLLY_BASE_URL=https://lolly.example.com
+
+# The workspace name. Default: Lolly Work
+#LOLLY_INSTANCE_NAME=Lolly Work
+
+# The Cockpit host console on port 9090, local networks only. Default: on
+#LOLLY_COCKPIT=off

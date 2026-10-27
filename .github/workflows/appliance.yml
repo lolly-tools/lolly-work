@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: MPL-2.0
+# Appliance image: build the Lolly appliance (openSUSE Leap 16.1 Immutable,
+# k3s profile) for x86_64 with KIWI, from deploy/appliance. Nothing is
+# published; the raw disk is kept as a short-lived artifact for boot tests. The aarch64 build and the boot acceptance run outside CI
+# (deploy/appliance/README.md, "Build", "Accept").
+#
+# KIWI needs loop devices, so the build runs in a privileged openSUSE Leap 16.1
+# container on the runner. Like SUSE container qualification, it keeps its own
+# path-filtered pull request trigger and is not part of PR qualification's
+# `required` check.
+name: Appliance image
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/appliance.yml'
+      - 'deploy/appliance/**'
+      - 'deploy/marketplaces/release.json'
+      - 'deploy/helm/**'
+      - 'tests/appliance.test.ts'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/appliance.yml'
+      - 'deploy/appliance/**'
+      - 'deploy/marketplaces/release.json'
+      - 'deploy/helm/**'
+      - 'tests/appliance.test.ts'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appliance-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  x86_64:
+    name: x86_64 raw and qcow2
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '26.11.1'
+      - name: Check the description and the generator
+        run: node --test tests/appliance.test.ts
+      - name: Make room for the build
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Build with KIWI in a privileged Leap 16.1 container
+        env:
+          # openSUSE's Leap 16.1 image, pinned on its own registry and on Docker Hub,
+          # which runners reach when registry.opensuse.org times out.
+          BUILDER: registry.opensuse.org/opensuse/leap@sha256:65a21515d62c7af67808e7aef29e0bcfdb609d95f9fe811fad7649d56c4b3dfa
+          BUILDER_MIRROR: docker.io/opensuse/leap@sha256:756634f02c733fc52d5c9aa09aca6374c91c53c675dd445743736e13a8428858
+        run: |
+          mkdir -p "$RUNNER_TEMP/out" "$RUNNER_TEMP/cache"
+          pulled=
+          for attempt in 1 2 3; do
+            if docker pull --quiet "$BUILDER"; then pulled=$BUILDER; break; fi
+            if docker pull --quiet "$BUILDER_MIRROR"; then pulled=$BUILDER_MIRROR; break; fi
+            sleep 20
+          done
+          [ -n "$pulled" ] || exit 1
+          BUILDER=$pulled
+          echo "builder image: $BUILDER"
+          docker run --rm --privileged -v /dev:/dev \
+            -v "$GITHUB_WORKSPACE:/src:ro" -v "$RUNNER_TEMP/out:/out" -v "$RUNNER_TEMP/cache:/var/cache/lolly-appliance" \
+            "$BUILDER" \
+            bash -euo pipefail -c '
+              zypper --non-interactive --gpg-auto-import-keys refresh >/dev/null
+              zypper --non-interactive install --no-recommends python3-kiwi kiwi-systemdeps-disk-images \
+                kiwi-systemdeps-filesystems kiwi-systemdeps-bootloaders createrepo_c dosfstools mtools >/dev/null
+              kiwi-ng --version
+              /src/deploy/appliance/build.sh --out /out --work /var/tmp/lolly-appliance
+            '
+      - name: Check the disk
+        run: |
+          cd "$RUNNER_TEMP/out"
+          ls -la
+          sha256sum -c SHA256SUMS
+          # The image carries the release's Lolly version, never its own.
+          version=$(node -p "require('$GITHUB_WORKSPACE/deploy/marketplaces/release.json').version")
+          raw=lolly-appliance-$version-x86_64.raw
+          test -f "$raw" && test -f "lolly-appliance-$version-x86_64.qcow2"
+          grep -q "\"version\": \"$version\"" "lolly-appliance-$version-x86_64.release.json"
+          sudo sfdisk --dump "$raw" | tee "$RUNNER_TEMP/partitions.txt"
+          # The config partition Combustion and Ignition read at first boot.
+          grep -q 'name="p.lxconfig"' "$RUNNER_TEMP/partitions.txt"
+          grep -E '^(k3s-selinux|cockpit|cockpit-tukit|ignition|combustion|transactional-update|health-checker|rebootmgr)\|' *.packages
+      - name: Compress the raw disk
+        # The qcow2 holds the same disk; keeping only the raw one halves the upload.
+        run: |
+          cd "$RUNNER_TEMP/out"
+          for disk in lolly-appliance-*.raw; do zstd -T0 -10 "$disk" -o "$disk.zst"; done
+          sudo rm -f lolly-appliance-*.raw lolly-appliance-*.qcow2
+          ls -la
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lolly-appliance-x86_64
+          path: ${{ runner.temp }}/out
+          retention-days: 3
+          compression-level: 0

@@ -1,0 +1,30 @@
+# K3s for the Lolly appliance (k3s profile). The binary is pinned and checked
+# at image build (deploy/appliance/appliance.lock.json); its settings are in
+# /etc/rancher/k3s/config.yaml. It starts after the first boot has created
+# this machine's secrets and written its Lolly Work address.
+[Unit]
+Description=Lightweight Kubernetes (Lolly appliance)
+Documentation=https://docs.k3s.io
+Wants=network-online.target lolly-appliance-firstboot.service lolly-appliance-instance.service
+After=network-online.target lolly-appliance-firstboot.service lolly-appliance-instance.service
+
+[Service]
+Type=notify
+EnvironmentFile=-/etc/default/%N
+EnvironmentFile=-/etc/sysconfig/%N
+KillMode=process
+Delegate=yes
+User=root
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+TimeoutStartSec=0
+Restart=always
+RestartSec=5s
+ExecStartPre=-/sbin/modprobe br_netfilter
+ExecStartPre=-/sbin/modprobe overlay
+ExecStart=/usr/local/bin/k3s server
+
+[Install]
+WantedBy=multi-user.target
