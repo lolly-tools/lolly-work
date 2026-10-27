@@ -156,8 +156,14 @@ limactl start lolly-kiwi
 limactl shell lolly-kiwi -- sudo zypper -n in --no-recommends python3-kiwi kiwi-systemdeps-disk-images \
   kiwi-systemdeps-filesystems kiwi-systemdeps-bootloaders createrepo_c dosfstools mtools \
   qemu-arm qemu-tools qemu-uefi-aarch64
+limactl shell lolly-kiwi -- sudo setenforce 0
 limactl shell lolly-kiwi -- sudo /path/to/lolly-work/deploy/appliance/build.sh --out /var/tmp/lolly-out
 ```
+
+The Leap builder runs SELinux enforcing, and its kernel would refuse the
+image's labels for types it does not know (Cockpit's, K3s's), so the build
+needs the builder permissive; `build.sh` stops with that message otherwise. A
+container on a host without SELinux, as in CI, needs nothing.
 
 On an x86_64 Linux host, the same `build.sh` builds the x86_64 image. CI
 (`.github/workflows/appliance.yml`) builds x86_64 in a privileged Leap 16.1

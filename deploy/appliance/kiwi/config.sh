@@ -79,6 +79,25 @@ EOF
 #======================================
 # Lolly appliance (k3s profile)
 #--------------------------------------
+# container-selinux adds its modules in %posttrans, after the %post of
+# passt-selinux and k3s-selinux has already tried to add theirs, which build on
+# the container module and so fail. Add the missing ones now, in one
+# transaction, and stop if K3s's policy is still not there.
+missing=()
+for pp in /usr/share/selinux/packages/targeted/passt.pp /usr/share/selinux/packages/targeted/pasta.pp \
+          /usr/share/selinux/packages/targeted/passt-repair.pp /usr/share/selinux/packages/targeted/pesto.pp \
+          /usr/share/selinux/packages/k3s.pp; do
+	name=$(basename "$pp" .pp)
+	if [ -f "$pp" ] && ! semodule -l | grep -qx "$name"; then
+		missing+=("$pp")
+	fi
+done
+if [ ${#missing[@]} -gt 0 ]; then
+	semodule -n -s targeted -X 200 -i "${missing[@]}"
+fi
+semodule -l | grep -qx k3s
+semodule -l | grep -qx container
+
 # K3s: the binary in /usr/local/bin (outside the root snapshots, replaced by
 # the appliance updater later) and the usual client links.
 for tool in kubectl crictl ctr; do

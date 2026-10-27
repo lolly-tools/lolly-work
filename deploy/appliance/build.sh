@@ -30,6 +30,13 @@ case $arch in x86_64|aarch64) ;; *) echo "build.sh: $arch is not supported" >&2;
 for tool in kiwi-ng createrepo_c python3; do
   command -v "$tool" >/dev/null || { echo "build.sh: $tool is missing" >&2; exit 1; }
 done
+# KIWI labels the image with the image's own policy, but on an SELinux host the
+# kernel checks each label against the host's policy, which does not know types
+# such as cockpit's or K3s's.
+if command -v getenforce >/dev/null && [ "$(getenforce)" = Enforcing ]; then
+  echo "build.sh: SELinux is enforcing on this build host. Build in a container, or run 'setenforce 0' for the build." >&2
+  exit 1
+fi
 
 started=$SECONDS
 rm -rf "$work/desc" "$work/root" "$work/build"
