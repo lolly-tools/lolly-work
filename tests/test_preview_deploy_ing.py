@@ -593,7 +593,7 @@ class IngEndToEnd(unittest.TestCase):
     def assert_no_secret_claim_or_exec(self):
         for write in self.cluster()["writes"]:
             self.assertIn(write[0], ("import", "backup", "job", "configmap", "patch", "migrate", "rehearsal-call", "label",
-                                     "rmi", "delete-configmap", "image-name-removed"), write)
+                                     "rmi", "delete-configmap", "image-name-removed", "image-tagged"), write)
             if write[0] == "patch":
                 text = json.dumps(write[1])
                 self.assertNotIn("secret", text.lower())
@@ -1307,6 +1307,83 @@ class IngRefusals(IngEndToEnd):
                 self.assertEqual((code, self.done(events)["code"]), (1, "NOT_FOR_LOLLY_ING"))
 
 
+class IngImageNames(IngEndToEnd):
+    """How the import names the image, by containerd version. On 2026-10-27 K3s v1.34.12's containerd v2.2.7 made only
+    the run tag, and the first cut-over was refused with IMAGE_MISMATCH until the digest name was made by hand."""
+
+    LABELS = {"io.cri-containerd.pinned": "pinned", "lolly.tools/preview-pulled": "true", "lolly.tools/preview-pin": "true"}
+    RUN_TAG = IF.ING_IMAGE + ":run-1100-1"
+
+    def names(self):
+        """Every name that points at the new build's digest, with its labels."""
+        return {ref: labels for entry in self.cluster()["images"].values() if entry["digest"] == self.new["digest"]
+                for ref, labels in entry["refs"].items() if not ref.startswith("sha256:")}
+
+    def digest_labels_set(self):
+        return sorted(w[2] for w in self.writes("label") if w[1] == self.new["image"])
+
+    def seed(self, digest_labels):
+        """An earlier run's import is on the node: the run tag with this import's labels, and the digest name."""
+        state = self.cluster()
+        image_id, entry = F.image_entry(self.new["image"], digest_labels, extra_refs=(self.RUN_TAG,))
+        entry["refs"][self.RUN_TAG] = dict(self.LABELS)
+        state["images"][image_id] = entry
+        state["content"].update(self.new["blobs"])
+        self.set_cluster(state)
+
+    def test_containerd_1_names_the_digest_on_import_and_nothing_is_tagged(self):
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual((self.writes("image-tagged"), self.digest_labels_set()), ([], []))
+        self.assertEqual(self.names(), {self.new["image"]: self.LABELS})  # the run tag is gone
+        self.assertEqual(self.writes("image-name-removed"), [["image-name-removed", self.RUN_TAG]])
+
+    def test_containerd_2_makes_only_the_run_tag_and_the_digest_name_is_made_from_it(self):
+        self.behave(containerd2=True)
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.live()[0], self.new["image"])
+        self.assertEqual(self.writes("image-tagged"), [["image-tagged", self.RUN_TAG, self.new["image"]]])
+        self.assertEqual(self.digest_labels_set(), sorted(f"{name}={value}" for name, value in self.LABELS.items()))
+        self.assertEqual(self.names(), {self.new["image"]: self.LABELS})  # the digest name kept every label; the run tag is gone
+        kinds = [w[0] for w in self.cluster()["writes"]]
+        self.assertLess(kinds.index("import"), kinds.index("image-tagged"))
+        self.assertLess(kinds.index("image-tagged"), kinds.index("image-name-removed"))
+        self.assertLess(kinds.index("image-name-removed"), kinds.index("patch"))
+        self.assertEqual(self.spool(), [])
+        self.assert_no_secret_claim_or_exec()
+
+    def test_a_labelled_digest_name_already_present_is_left_as_it_is(self):
+        """The state the manual repair on 2026-10-27 left: both names, both labelled. Nothing is imported or tagged."""
+        self.behave(containerd2=True)
+        self.seed(dict(self.LABELS))
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual((self.writes("import"), self.writes("image-tagged"), self.digest_labels_set()), ([], [], []))
+        self.assertEqual(self.names(), {self.new["image"]: self.LABELS})
+        self.assertEqual(self.writes("image-name-removed"), [["image-name-removed", self.RUN_TAG]])
+
+    def test_a_digest_name_a_stopped_run_left_without_labels_gets_the_run_tags_labels(self):
+        """A run stopped between `ctr images tag` and the labels: the next run sets them and does not tag again."""
+        self.behave(containerd2=True)
+        self.seed({})
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual((self.writes("import"), self.writes("image-tagged")), ([], []))
+        self.assertEqual(self.digest_labels_set(), sorted(f"{name}={value}" for name, value in self.LABELS.items()))
+        self.assertEqual(self.names(), {self.new["image"]: self.LABELS})
+
+    def test_a_run_tag_that_names_another_digest_is_refused_and_nothing_is_tagged(self):
+        self.behave(containerd2=True, importedDigest={self.new["image"]: "sha256:" + "e" * 64})
+        code, events = self.cli("deploy", W_NEW)
+        refused = self.done(events)
+        self.assertEqual((code, refused["code"]), (1, "IMAGE_MISMATCH"), events)
+        self.assertIn("run tag names another image", json.dumps(refused))
+        self.assertEqual((self.writes("image-tagged"), self.digest_labels_set(), self.writes("image-name-removed")), ([], [], []))
+        self.assertFalse(any(self.new["image"] in entry["refs"] for entry in self.cluster()["images"].values()))
+        self.assert_untouched()
+
+
 class IngRetention(IngEndToEnd):
     def own_config(self, state, generation):
         name = f"lolly-ing-config-{generation}-0000000{generation % 10}"
@@ -1448,6 +1525,17 @@ class IngCutover(IngEndToEnd):
         result = self.done(events)
         self.assertEqual((code, result["result"], result["rehearsal"]), (0, "CONVERTED", None), events)
         self.assertEqual((self.rehearsal_pods(), len(self.writes("backup"))), ([], 1))
+
+    def test_the_cutover_names_the_image_by_digest_on_containerd_2(self):
+        """2026-10-27: the first cut-over on K3s v1.34.12 (containerd v2.2.7) was refused with IMAGE_MISMATCH, because
+        the import made only the run tag."""
+        self.behave(containerd2=True)
+        code, events = self.apply(self.plan())
+        self.assertEqual((code, self.done(events)["result"]), (0, "CONVERTED"), events)
+        self.assertEqual(self.live()[0], self.new["image"])
+        self.assertEqual(self.writes("image-tagged"), [["image-tagged", IF.ING_IMAGE + ":run-1100-1", self.new["image"]]])
+        self.assertEqual(self.writes("image-name-removed"), [["image-name-removed", IF.ING_IMAGE + ":run-1100-1"]])
+        self.assert_no_secret_touched()
 
     def test_a_failed_cutover_returns_to_the_claims_at_a_higher_generation(self):
         """Review H3: the revert restores the old image, the old key reference and the old pack together, so the

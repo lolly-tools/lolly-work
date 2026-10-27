@@ -255,10 +255,37 @@ class IngRunner(N.Runner):
                 require(done.returncode == 0, "IMPORT_FAILED", f"ctr images import exited {done.returncode}")
             finally:
                 os.close(fd)
+        self.name_by_digest(release)
         self.verify_image(release)
         self.drop_run_tag(release)
         with contextlib.suppress(OSError):
             os.unlink(os.path.join(N.PATHS["spool"], release["archive"]["sha256"] + ".oci.tar"))
+
+    def name_by_digest(self, release):
+        """Give the image its digest name when the import made only the run tag.
+
+        containerd 1.x's ctr imports locally by default, and `--digests` adds the digest name beside the run tag.
+        containerd 2.x's ctr imports through the transfer service and passes `!--skip-digest-for-named` as
+        skipNamed (cmd/ctr/commands/images/import.go L143 at v2.2.7), so a manifest the archive names gets only
+        that name (core/transfer/image/imagestore.go L254-262). The digest name is made from the run tag, which
+        must point at the manifest's digest and carry this import's label. `ctr images tag` through the transfer
+        service copies no labels, so the run tag's labels are set again and read back. A digest name that already
+        has labels, from the import or an earlier run, is left as it is: verify_image judges it and drop_run_tag
+        checks the run tag."""
+        refs = self.containerd_refs()
+        tag, named = refs.get(release["refName"]), refs.get(release["image"])
+        if tag is None or (named is not None and (named[1] or named[0] != release["digest"])):
+            return
+        require(tag[0] == release["digest"] and tag[1].get(A.PULLED_LABEL.split("=")[0]) == "true", "IMAGE_MISMATCH",
+                "the run tag names another image or was not made by this import")
+        if named is None:
+            self.log("digest-name", image=release["image"])
+            self.k3s_run(["ctr", "--namespace", "k8s.io", "images", "tag", release["refName"], release["image"]])
+        for name, value in sorted(tag[1].items()):
+            self.label(release["image"], f"{name}={value}")
+        named = self.containerd_refs().get(release["image"])
+        require(named is not None and named[0] == release["digest"] and all(named[1].get(k) == v for k, v in tag[1].items()),
+                "IMAGE_MISMATCH", "the digest name made from the run tag did not read back with its labels")
 
     def content(self, digest):
         data = subprocess.run([self.k3s, "ctr", "--namespace", "k8s.io", "content", "get", digest], capture_output=True,

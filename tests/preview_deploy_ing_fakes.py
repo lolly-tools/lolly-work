@@ -488,6 +488,12 @@ def k3s_ing_main(argv, out):
             assert argv[argv.index("--base-name") + 1] == ING_IMAGE and "--digests" in argv and "--no-unpack" in argv and argv[-1] == "-"
             image_id, entry = F.image_entry(build["image"], labels, extra_refs=(found["refName"],))
             entry["refs"][found["refName"]] = dict(labels)
+            if state["behaviour"].get("containerd2"):
+                # ctr 2.x imports through the transfer service and passes !--skip-digest-for-named as skipNamed,
+                # so a manifest the archive names gets only that name (seen on K3s v1.34.12, containerd v2.2.7).
+                del entry["refs"][build["image"]]
+            # An archive whose index is not the one the build manifest names: every name points elsewhere.
+            entry["digest"] = state["behaviour"].get("importedDigest", {}).get(build["image"], entry["digest"])
             entry["size"] = len(data)
             state["images"][image_id] = entry
             for digest, blob in build["blobs"].items():
@@ -504,6 +510,18 @@ def k3s_ing_main(argv, out):
             return 1
         sys.stdout.buffer.write(unb64(blob))
         return 0
+    if argv[:5] == ["ctr", "--namespace", "k8s.io", "images", "tag"]:
+        source, target = argv[5], argv[6]
+        with F.state_file(state_path) as state:
+            for entry in state["images"].values():
+                if source in entry["refs"]:
+                    if any(target in other["refs"] for other in state["images"].values()):
+                        print(f"ctr: image {target!r}: already exists", file=sys.stderr)
+                        return 1
+                    entry["refs"][target] = {}  # a new name carries no labels: tag does not copy them
+                    state["writes"].append(["image-tagged", source, target])
+                    return 0
+        return 1
     if argv[:5] == ["ctr", "--namespace", "k8s.io", "images", "rm"]:
         with F.state_file(state_path) as state:
             for entry in state["images"].values():
