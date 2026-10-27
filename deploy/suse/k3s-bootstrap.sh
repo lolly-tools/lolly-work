@@ -6,14 +6,24 @@ K3S_OPERATOR_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 fail() { printf '%s\n' "k3s operator: $*" >&2; exit 1; }
 
+# The lock follows the host: x86_64 reads k3s.lock.json (amd64) and aarch64 reads
+# k3s.arm64.lock.json. Both pin the same release and installer commit.
 read_release_lock() {
-  python3 -I - "$K3S_OPERATOR_DIR/k3s.lock.json" <<'PY'
+  local machine=${1:-$(uname -m)} lock arch
+  case $machine in
+    x86_64) lock=k3s.lock.json arch=amd64 ;;
+    aarch64) lock=k3s.arm64.lock.json arch=arm64 ;;
+    *) fail 'no reviewed K3s lock for this architecture; amd64 and arm64 are locked' ;;
+  esac
+  python3 -I - "$K3S_OPERATOR_DIR/$lock" "$arch" <<'PY'
 import json,re,sys
-d=json.load(open(sys.argv[1]))
+d=json.load(open(sys.argv[1]));arch=sys.argv[2]
 assert re.fullmatch(r'v1\.34\.\d+\+k3s\d+',d['version'])
-assert d['architecture']=='amd64' and d['kubernetesMinor']=='1.34'
+assert d['architecture']==arch and d['kubernetesMinor']=='1.34'
 assert re.fullmatch(r'[a-f0-9]{40}',d['releaseCommit'])
-assert d['binary']['url']==f"https://github.com/k3s-io/k3s/releases/download/{d['version'].replace('+','%2B')}/k3s"
+release=f"https://github.com/k3s-io/k3s/releases/download/{d['version'].replace('+','%2B')}"
+assert d['binary']['url']==release+('/k3s' if arch=='amd64' else f'/k3s-{arch}')
+assert d['checksumSource']==f"{release}/sha256sum-{arch}.txt"
 assert d['installer']['url']==f"https://raw.githubusercontent.com/k3s-io/k3s/{d['releaseCommit']}/install.sh"
 for key in ['binary','installer']:
     assert re.fullmatch(r'[a-f0-9]{64}',d[key]['sha256'])
@@ -222,17 +232,21 @@ PY
 }
 
 validate_selinux_policy() {
-  local tool modules path context expected
+  local tool modules path context expected kind
   for tool in semodule matchpathcon restorecon; do
     command -v "$tool" >/dev/null || fail "missing SELinux prerequisite: $tool"
   done
   rpm -V k3s-selinux >/dev/null || fail 'installed K3s policy RPM has been modified'
   modules=$(semodule -lfull) || fail 'cannot inspect loaded SELinux modules'
   printf '%s\n' "$modules" | awk '$2 == "k3s" {found=1} END {exit !found}' || fail 'installed K3s SELinux module is not loaded'
-  for path in /usr/local/bin/k3s /var/lib/rancher/k3s/data/current/bin/runc /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots; do
-    expected=container_runtime_exec_t
-    if [[ $path == */snapshots ]]; then expected=container_file_t; fi
-    context=$(matchpathcon -n "$path") || fail 'cannot inspect package-owned SELinux context'
+  # Look each path up as the file type K3s creates there. SUSE's k3s-selinux 1.4
+  # maps data/*/bin/runc to k3s_root_t (its bin(/.*)? rule sorts after the runc
+  # rule) and containerd there is a symlink, so the runc shim is the runtime
+  # executable whose declared and applied contexts agree.
+  for path in /usr/local/bin/k3s /var/lib/rancher/k3s/data/current/bin/containerd-shim-runc-v2 /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots; do
+    expected=container_runtime_exec_t kind=file
+    if [[ $path == */snapshots ]]; then expected=container_file_t kind=dir; fi
+    context=$(matchpathcon -m "$kind" -n "$path") || fail 'cannot inspect package-owned SELinux context'
     [[ $context == *":${expected}:"* ]] || fail 'loaded K3s policy does not declare the required context'
   done
 }
@@ -244,8 +258,108 @@ label_installed_selinux() {
   [[ $(getenforce) == Enforcing ]] || fail 'SELinux must remain enforcing after staging'
 }
 
+# Transactional hosts (openSUSE Leap 16.1 Immutable reports ID=opensuse-leap and
+# VARIANT_ID=transactional) boot a read-only root snapshot and change packages only
+# through transactional-update. os-release and the root mount must agree.
+classify_transactional() {
+  local variant=$1 readonly_root=$2 updater=$3
+  if [[ $variant != transactional && $readonly_root == false ]]; then TRANSACTIONAL=false; return; fi
+  [[ $variant == transactional && $readonly_root == true ]] || fail 'os-release VARIANT_ID and the root mount disagree about a transactional host'
+  [[ $updater == true ]] || fail 'transactional host has no transactional-update'
+  TRANSACTIONAL=true
+}
+
+detect_transactional() {
+  local variant readonly_root updater=false
+  variant=$(. /etc/os-release; printf '%s' "${VARIANT_ID:-}")
+  readonly_root=$(python3 -I -c 'import os;print("true" if os.statvfs("/").f_flag & os.ST_RDONLY else "false")') || fail 'cannot inspect the root mount'
+  if [[ -x /usr/sbin/transactional-update ]]; then updater=true; fi
+  classify_transactional "$variant" "$readonly_root" "$updater"
+}
+
+# A pending snapshot replaces the running system at the next boot, so nothing
+# observed now would still hold. transactional-update leaves /run/reboot-needed;
+# a changed btrfs default subvolume catches snapshots set by other tools.
+validate_no_pending_snapshot() {
+  [[ $1 == false ]] || fail 'a transactional-update snapshot is waiting: reboot this host, then run the same command again'
+  [[ $2 =~ ^[0-9]+$ && $3 =~ ^[0-9]+$ ]] || fail 'cannot compare the running and default root snapshots'
+  [[ $2 == "$3" ]] || fail 'the next boot selects a different root snapshot: reboot this host, then run the same command again'
+}
+
+root_snapshot_ids() {
+  local mount default
+  mount=$(findmnt -n -o FSTYPE,OPTIONS --mountpoint /) || fail 'cannot inspect the root mount'
+  [[ $mount != *$'\n'* && $mount =~ ^btrfs[[:space:]]+(.*,)?subvolid=([0-9]+)(,.*)?$ ]] || fail 'transactional root must be a single btrfs subvolume mount'
+  RUNNING_SUBVOLUME=${BASH_REMATCH[2]}
+  default=$(btrfs subvolume get-default /) || fail 'cannot inspect the default root snapshot'
+  [[ $default =~ ^ID[[:space:]]+([0-9]+)[[:space:]] ]] || fail 'cannot read the default root snapshot'
+  DEFAULT_SUBVOLUME=${BASH_REMATCH[1]}
+}
+
+validate_transactional_host() {
+  local tool marker=false
+  for tool in findmnt btrfs transactional-update; do
+    command -v "$tool" >/dev/null || fail "missing transactional host prerequisite: $tool"
+  done
+  if [[ -e /run/reboot-needed || -L /run/reboot-needed ]]; then marker=true; fi
+  root_snapshot_ids
+  validate_no_pending_snapshot "$marker" "$RUNNING_SUBVOLUME" "$DEFAULT_SUBVOLUME"
+  # /usr belongs to the read-only snapshot. The binary goes to /usr/local/bin,
+  # configuration and the unit to /etc, cluster data to /var; each must be a
+  # writable directory outside that snapshot.
+  python3 -I - <<'PY'
+import os,stat
+for path in ['/usr/local/bin','/etc','/var']:
+    s=os.lstat(path)
+    assert stat.S_ISDIR(s.st_mode) and os.path.realpath(path)==path, f'{path} must be a real directory'
+    assert not os.statvfs(path).f_flag & os.ST_RDONLY, f'{path} must be writable outside the read-only root snapshot'
+PY
+}
+
+# Enforcing hosts need the SUSE k3s-selinux policy loaded before K3s is staged.
+# A transactional host can only gain it in a new snapshot, so install stages it
+# there and stops for a reboot (POLICY_STAGE); other hosts must already have it.
+selinux_preflight() {
+  SELINUX=false POLICY_STAGE=false
+  if command -v getenforce >/dev/null; then
+    case $(getenforce) in
+      Enforcing)
+        if rpm -q k3s-selinux >/dev/null; then validate_selinux_policy
+        elif [[ $TRANSACTIONAL == true ]]; then POLICY_STAGE=true
+        else fail 'install/review the matching SELinux policy first'; fi
+        SELINUX=true ;;
+      Disabled) ;;
+      *) fail 'permissive/unknown SELinux posture is refused' ;;
+    esac
+  fi
+}
+
+# Installs the policy from the host's own signed repositories into a new snapshot.
+# The command inside the snapshot fails, and transactional-update discards the
+# snapshot, unless the installed package is the reviewed SUSE build. No repository
+# or signing key is added.
+stage_transactional_policy() {
+  transactional-update --no-selfupdate --drop-if-no-change run /usr/bin/bash -c \
+    'zypper --non-interactive install --no-recommends k3s-selinux && [[ $(rpm -q --qf "%{VENDOR}" k3s-selinux) == "SUSE LLC <https://www.suse.com/>" ]]' \
+    || fail 'transactional-update could not stage the reviewed SUSE k3s-selinux policy'
+  root_snapshot_ids
+  [[ $RUNNING_SUBVOLUME != "$DEFAULT_SUBVOLUME" ]] || fail 'transactional-update left no new snapshot for the K3s policy'
+}
+
+# The policy package's %post makes and labels empty runtime directories. On a
+# transactional host that scriptlet ran inside the new snapshot, so the
+# directories never reached the persistent /var. Repeat its persistent part (its
+# /run paths are recreated at every boot) before the K3s tree is labelled.
+replay_policy_scaffold() {
+  (umask 022; mkdir -p /var/lib/cni /var/lib/kubelet/pods /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots /var/lib/rancher/k3s/data) || fail 'cannot create the K3s policy scaffold'
+  restorecon -R /var/lib/cni /var/lib/kubelet /var/lib/rancher || fail 'cannot label the K3s policy scaffold'
+}
+
 host_preflight() {
-  [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || fail 'only the amd64 Linux candidate is supported'
+  case $(uname -s)/$(uname -m) in
+    Linux/x86_64|Linux/aarch64) ;;
+    *) fail 'only amd64 or arm64 Linux candidates are supported' ;;
+  esac
   [[ $EUID -eq 0 ]] || fail 'host preflight/install requires root'
   [[ $(hostname) == "$CANDIDATE_HOST" ]] || fail 'candidate-host must equal this dedicated host name'
   for tool in python3 curl sha256sum systemctl ip ss firewall-cmd rpm; do
@@ -253,7 +367,9 @@ host_preflight() {
   done
   local osid
   osid=$(. /etc/os-release; printf '%s' "$ID")
-  case $osid in sles|opensuse-leap|opensuse-tumbleweed) ;; *) fail 'reviewed SLES/openSUSE host required; transactional hosts need their own installer' ;; esac
+  case $osid in sles|opensuse-leap|opensuse-tumbleweed) ;; *) fail 'reviewed SLES/openSUSE host required' ;; esac
+  detect_transactional
+  if [[ $TRANSACTIONAL == true ]]; then validate_transactional_host; fi
   for path in /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/rancher/rke2 /usr/local/bin/k3s; do
     if [[ -e $path || -L $path ]]; then
       if [[ $path == /var/lib/rancher/k3s ]]; then validate_policy_scaffold "$path";
@@ -278,14 +394,7 @@ assert all(x in controllers for x in ['cpu','memory','pids']), 'cgroup v2 contro
 interfaces=json.loads(subprocess.check_output(['ip','-j','-4','address','show'],text=True))
 assert any(a.get('local')==sys.argv[1] for i in interfaces for a in i.get('addr_info',[])), 'node-ip is not assigned to this host'
 PY
-  SELINUX=false
-  if command -v getenforce >/dev/null; then
-    case $(getenforce) in
-      Enforcing) rpm -q k3s-selinux >/dev/null || fail 'install/review the matching SELinux policy first'; validate_selinux_policy; SELINUX=true ;;
-      Disabled) ;;
-      *) fail 'permissive/unknown SELinux posture is refused' ;;
-    esac
-  fi
+  selinux_preflight
   validate_provider_review "$PROVIDER_REVIEW" "$PROVIDER"
   validate_ephemeral_range "$PROVIDER_REVIEW" "$(cat /proc/sys/net/ipv4/ip_local_port_range)"
   validate_network "$PUBLIC_INTERFACE"
@@ -319,7 +428,16 @@ main() {
   [[ -n $PUBLIC_INTERFACE && -n $PROVIDER_REVIEW ]] || fail 'interface and provider review are required'
   read_release_lock >/dev/null
   host_preflight
-  if [[ $command == preflight ]]; then printf '%s\n' 'Candidate preflight passed; no downloads or host changes.'; return; fi
+  if [[ $command == preflight ]]; then
+    printf '%s\n' 'Candidate preflight passed; no downloads or host changes.'
+    if [[ $POLICY_STAGE == true ]]; then printf '%s\n' 'This transactional host has no K3s policy yet: install first stages the SUSE k3s-selinux package in a new snapshot and stops for a reboot.'; fi
+    return
+  fi
+  if [[ $POLICY_STAGE == true ]]; then
+    stage_transactional_policy
+    printf '%s\n' 'SUSE k3s-selinux policy staged in a new snapshot. K3s was not downloaded and nothing else changed. Reboot this host (systemctl reboot), then run the same install command again to stage K3s.'
+    return
+  fi
   local stage version binary_url binary_sha installer_url installer_sha
   read -r version binary_url binary_sha installer_url installer_sha < <(read_release_lock)
   umask 077
@@ -335,6 +453,7 @@ main() {
   install -m 0600 "$stage/config.yaml" /etc/rancher/k3s/config.yaml
   install -m 0755 "$stage/k3s" /usr/local/bin/k3s
   run_verified_installer "$version" "$stage/install.sh"
+  if [[ $SELINUX == true && $TRANSACTIONAL == true ]]; then replay_policy_scaffold; fi
   if [[ $SELINUX == true ]]; then label_installed_selinux; fi
   printf '%s\n' 'Pinned K3s staged disabled and stopped. Review config/unit, then follow K3S-OPERATOR.md to start and qualify only this candidate.'
 }
