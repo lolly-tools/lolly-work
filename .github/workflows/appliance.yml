@@ -72,9 +72,9 @@ jobs:
           ls -la
           sha256sum -c SHA256SUMS
           raw=$(ls Lolly-Appliance*.raw)
-          sudo sfdisk --dump "$raw"
+          sudo sfdisk --dump "$raw" | tee "$RUNNER_TEMP/partitions.txt"
           # The config partition Combustion and Ignition read at first boot.
-          sudo sfdisk --json "$raw" | grep -q '"name":"p.lxconfig"'
+          grep -q 'name="p.lxconfig"' "$RUNNER_TEMP/partitions.txt"
           grep -E '^(k3s-selinux|cockpit|cockpit-tukit|ignition|combustion|transactional-update|health-checker|rebootmgr)\|' *.packages
       - name: Compress the raw disk
         # The qcow2 holds the same disk; keeping only the raw one halves the upload.
