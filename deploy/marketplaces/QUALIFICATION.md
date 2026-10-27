@@ -81,6 +81,16 @@ applied, and the existing owner session, the saved project and the whole browser
 check passed. Reading the existing key exercised the content service's ownership step,
 which the first attempt on fresh volumes had failed with `EACCES`.
 
+**The current 1.1.1 package with the key step, in CI.** Helm qualification run
+[40487638108](https://github.com/lolly-tools/lolly-work/actions/runs/40487638108),
+dispatched with `screenshots=true` on this change, booted the 1.1.1 package on amd64
+and arm64. Both legs passed the container qualification. In the amd64 leg's Chromium
+the web app accepted the catalogue: the gallery listed the tools with their previews
+and the Chart tool opened and drew its chart, captured as `tool-editor.png`. The gallery
+capture itself timed out after 120 seconds waiting for the web app's
+`data-shots-settled` marker, so the run failed. The listing captures need that wait
+fixed before they can be refreshed.
+
 Seen and not fixed here: the browser's requests for
 `/catalog/assets/lolly/tokens/demo.6352b216e44e0fe0.json` (present in the pack) and
 `/catalog/fonts/ttf/SUSE-Regular.ttf` and `SUSE-Bold.ttf` answered 404. The gallery and
