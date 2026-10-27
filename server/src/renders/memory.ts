@@ -115,6 +115,19 @@ export function createMemoryRenderStore(): RenderStore {
       }
       return true;
     },
+    async renderQueue() {
+      const now = Date.now(), byTool = new Map<string, { queued: number; oldest: number }>();
+      for (const r of records.values()) {
+        if (r.state !== 'queued') continue;
+        const entry = byTool.get(r.request.toolId) ?? { queued: 0, oldest: Infinity };
+        entry.queued++;
+        const at = Date.parse(r.availableAt);
+        if (at <= now) entry.oldest = Math.min(entry.oldest, at);
+        byTool.set(r.request.toolId, entry);
+      }
+      return [...byTool].sort(([a], [b]) => a.localeCompare(b)).map(([toolId, e]) => ({ toolId, queued: e.queued,
+        oldestClaimableAt: Number.isFinite(e.oldest) ? new Date(e.oldest).toISOString() : null }));
+    },
     async cancelRender(id, principal) {
       const r = records.get(id); if (!r || r.principal !== principal) return null;
       if (r.state === 'queued' || r.state === 'running') {

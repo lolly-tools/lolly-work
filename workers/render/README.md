@@ -30,6 +30,28 @@ GET /healthz -> 200 { "ok": true }
 The signature covers the exact request bytes; `ts` must be within ±5 min
 (`LW_RENDER_TS_SKEW_MS`).
 
+### Pull dispatch (off by default)
+
+With `render.worker.dispatch: "pull"` on the control plane and
+`LW_RENDER_PULL_URL` here, the worker asks Work for jobs instead of waiting for
+them. Each browser slot (`LW_RENDER_MAX_CONCURRENT`) runs one loop:
+
+```
+POST {LW_RENDER_PULL_URL}/api/internal/render/lease        { pools, waitMs, ts, nonce }
+  -> 200 { id, token, path, payload, signature, leaseMs } | 204 (nothing within waitMs)
+POST …/api/internal/render/leases/<id>/renew               { token, ts } -> 204 | 410
+POST …/api/internal/render/leases/<id>/result              { token, ts, status, body, outputSig?, retryAfter? } -> 204 | 410
+```
+
+Every request is signed like a pushed job (`x-lw-render-sig` over the exact
+body, same key) and must be within ±60 s; a lease request's nonce is accepted
+once. `payload` and `signature` are exactly what push would POST to `path`, so
+the job goes through the same checks and code (`runJob` in `src/server.ts`).
+The worker renews its lease every `leaseMs / 3`; a 410 means the render was
+cancelled or the lease lapsed and another worker has the job, and the worker
+stops. A worker that stops mid-job does not report, so its lease lapses and
+Work hands the job on. The worker still holds no database credentials.
+
 ## Config (env)
 
 | var | required | meaning |
@@ -41,6 +63,7 @@ The signature covers the exact request bytes; `ts` must be within ±5 min
 | `LOLLY_WEB_BASE` | ✅ | canonical HTTPS Lolly shell URL with trusted TLS; HTTP only for explicit localhost/127.0.0.1/[::1] development |
 | `LW_RENDER_ALLOWED_ORIGINS` | | comma-separated origins a rendered page may reach even on a private address (an internal asset host); plain origins, no paths |
 | `PORT` | | listen port (default 8791) |
+| `LW_RENDER_PULL_URL` | | pull dispatch: the Work instance's HTTPS URL to lease jobs from (HTTP only for explicit loopback evaluation). Unset: push only |
 | `LW_RENDER_NAV_TIMEOUT_MS` / `LW_RENDER_EXPORT_TIMEOUT_MS` | | per-render timeouts |
 | `LW_RENDER_BROWSER_STARTUP_TIMEOUT_MS` | | browser startup and recovery budget, default 30000 ms; integer from 1000 to 120000 |
 | `LOLLY_BROWSER_PATH` / `LOLLY_BROWSER_CHANNEL` | | pin a specific Chromium instead of the bundled one |

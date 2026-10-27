@@ -33,6 +33,9 @@ export interface Metrics {
   /** Flag-service evaluations that fell back to Work's own value, by flag and
    *  a fixed reason (timeout, network, unauthorized, not_found, ...). */
   ofrepError(flag: string, reason: string): void;
+  /** Render worker lease events under pull dispatch (render/worker-leases.ts),
+   *  by pool: `rate(lw_render_leases_total{event="granted"})` is the lease rate. */
+  renderLease(pool: string, event: string): void;
   renderText(gauges: GaugeLine[]): string;
 }
 
@@ -76,6 +79,7 @@ export function createMetrics(): Metrics {
     },
     ofrepRequest: (flag) => inc('lw_ofrep_requests_total', 'Evaluation requests sent to the organisation flag service (OFREP), by flag.', { flag }),
     ofrepError: (flag, reason) => inc('lw_ofrep_evaluation_errors_total', 'Flag-service evaluations that fell back to the value Work governs, by flag and reason.', { flag, reason }),
+    renderLease: (pool, event) => inc('lw_render_leases_total', 'Render worker lease events under pull dispatch, by pool and event (granted, completed, expired, reclaimed, timed_out, queue_timeout, cancelled).', { pool, event }),
     renderText(gauges) {
       const out: string[] = [];
       for (const [name, s] of counters) {
