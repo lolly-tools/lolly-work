@@ -35,7 +35,9 @@ architecture, network and acceptance limits.
   `assets/screenshots.json`. They show fixture data only; never substitute
   captures of a production instance. The shell gallery and tool views are
   withheld for 1.1.1 because its shell refuses the installation's catalogue
-  signature in a browser; submit a listing only with a release that passes.
+  signature in a browser. The content service now gives the shell the
+  installation's key, so refresh the captures before submitting; submit a listing
+  only with captures of the release it names.
 
 ## Helm and Artifact Hub
 
