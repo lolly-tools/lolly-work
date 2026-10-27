@@ -306,11 +306,45 @@ export async function importCatalogSigningKey(material: string): Promise<{ priva
   return { privateKey, publicJwk: { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y } };
 }
 
+/** Where this instance serves the public half of its catalogue signing key. */
+export const CATALOG_PUBLIC_KEY_ROUTE = '/api/v1/catalog/public-key';
+
+/**
+ * The document at {@link CATALOG_PUBLIC_KEY_ROUTE}. The Lolly web app this instance
+ * serves at `/` reads it from its own origin and accepts the key only for envelopes
+ * whose `keyId` matches (lolly `shells/web/src/catalog/instance-key.ts`). Static hosts
+ * and the desktop and mobile apps never read it and keep their build-time key.
+ */
+export interface CatalogPublicKeyDocument {
+  version: 1;
+  /** The envelope algorithm the key verifies, `ECDSA-P256-SHA256`. */
+  alg: string;
+  /** RFC 7638 thumbprint of `publicKey`: the `keyId` every envelope from this instance carries. */
+  keyId: string;
+  publicKey: { kty: 'EC'; crv: 'P-256'; x: string; y: string };
+}
+
+/**
+ * Build the served document from the four public members a verifier needs. Each
+ * field is copied by name, so `d`, or any other member the configured JWK carried,
+ * cannot reach the response whatever shape the key material had.
+ */
+export function catalogPublicKeyDocument(jwk: webcrypto.JsonWebKey, keyId: string, alg: string): CatalogPublicKeyDocument {
+  // A P-256 coordinate and a SHA-256 thumbprint are both 32 bytes, 43 base64url characters.
+  const coordinate = /^[A-Za-z0-9_-]{43}$/;
+  if (jwk.kty !== 'EC' || jwk.crv !== 'P-256' || !coordinate.test(jwk.x ?? '') || !coordinate.test(jwk.y ?? '') || !coordinate.test(keyId)) {
+    throw new Error('the catalog public key is not a P-256 key');
+  }
+  return { version: 1, alg, keyId, publicKey: { kty: 'EC', crv: 'P-256', x: jwk.x!, y: jwk.y! } };
+}
+
 export interface CatalogSigning {
   /** Resolves with the RFC 7638 key id once the key is imported; rejects with a
    *  message that names the variable, never its value. */
   ready: Promise<{ keyId: string }>;
   publicKey(): Promise<webcrypto.JsonWebKey>;
+  /** The serialised {@link CatalogPublicKeyDocument}; rejects as `ready` does. */
+  publicKeyDocument(): Promise<Buffer>;
   /** Internal immutable proof shared with startup and filtered catalog delivery. */
   fileDigests(packDir: string): Promise<Record<string, string>>;
   /** The serialised envelope binding exactly `served.bytes` for this caller. */
@@ -332,9 +366,12 @@ export function createCatalogSigning(material: string, now: () => Date = () => n
   ready.catch(() => {});
   const cache = new Map<string, Buffer>();
   const fileDigests = createToolDigestCache();
+  const document = keyed.then(({ e, publicJwk, keyId }) => Buffer.from(JSON.stringify(catalogPublicKeyDocument(publicJwk, keyId, e.CATALOG_SIG_ALG)), 'utf8'));
+  document.catch(() => {});
   return {
     ready,
     async publicKey() { return { ...(await keyed).publicJwk }; },
+    publicKeyDocument: () => document,
     fileDigests,
     async envelopeFor(packDir, served, binding) {
       const { e, privateKey, keyId } = await keyed;

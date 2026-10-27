@@ -24,6 +24,12 @@ export function installationCatalogueKey(keyFile) {
  * The coordinates are rewritten in place (equal length) in the shell's own scripts, and
  * their precompressed copies are rebuilt. The pack copy keeps the publisher's signature,
  * which the server verifies against the pinned publisher key.
+ *
+ * TODO(1.1.4): remove this step. From 1.1.3 the server serves the public half of its key
+ * at GET /api/v1/catalog/public-key and the web app accepts that key from its own origin,
+ * so a release.json that pins a 1.1.3 or later pair needs no patched scripts. Keep the
+ * step for the 1.1.3 package, then drop it once that pair passes its browser check
+ * without the patch.
  */
 export function bindShellCatalogueKey(shell, publisher, installation) {
   const from = publicCoordinates(publisher), to = publicCoordinates(installation);
