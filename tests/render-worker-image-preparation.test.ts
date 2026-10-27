@@ -18,6 +18,17 @@ test('image preparation refuses wrong source and engine without any build or bro
   }
 });
 
+test('the AppArmor companion is opt-in and only qualifies beside the chromium seccomp profile', () => {
+  const base = ['--image', 'lolly-render-worker:ci', '--lolly-root', '.'];
+  assert.equal(imageArguments(base).appArmorProfile, 'runtime-default');
+  assert.equal(imageArguments([...base, '--sandbox-profile', 'chromium']).appArmorProfile, 'runtime-default');
+  assert.equal(imageArguments([...base, '--sandbox-profile', 'chromium', '--apparmor-profile', 'lolly-chromium']).appArmorProfile, 'lolly-chromium');
+  assert.throws(() => imageArguments([...base, '--apparmor-profile', 'lolly-chromium']), /chromium sandbox profile/);
+  for (const value of ['unconfined', 'docker-default', 'lolly-chromium;x']) {
+    assert.throws(() => imageArguments([...base, '--sandbox-profile', 'chromium', '--apparmor-profile', value]), /AppArmor/);
+  }
+});
+
 test('cleanup authorizes only the exact created container identity/image/label', () => {
   const id = 'a'.repeat(64), image = `sha256:${'b'.repeat(64)}`, label = 'owned';
   const inspect = { Id: id, Image: image, Config: { Labels: { 'org.lolly.qualification': label } } };

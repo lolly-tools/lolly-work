@@ -18,6 +18,9 @@ this profile at `lolly/chromium.json` under each worker node's kubelet seccomp
 directory. Configure `renderWorker.seccompProfile` with `type: Localhost` and
 `localhostProfile: lolly/chromium.json`. The chart cannot install node policies.
 Qualify the policy on the actual cluster kernel, AppArmor policy and runtime.
+SELinux hosts need nothing more. On AppArmor hosts (Debian, Ubuntu), a runtime
+default profile can still refuse Chromium's user namespace; the opt-in
+companion in [`../apparmor/`](../apparmor/README.md) adds that one permission.
 
 ## When no node profile can be installed
 

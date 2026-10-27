@@ -31,6 +31,7 @@ test('each suite is selected by its own inputs', () => {
   assert.deepEqual(selected(['workers/render/src/server.ts']), ['render_worker']);
   assert.deepEqual(selected(['engine-pin.json']), ['render_worker']);
   assert.deepEqual(selected(['deploy/seccomp/chromium.json']), ['render_worker']);
+  assert.deepEqual(selected(['deploy/apparmor/lolly-chromium']), ['render_worker']);
   assert.deepEqual(selected(['tests/render-worker-image.test.ts']), ['render_worker']);
   assert.deepEqual(selected(['deploy/upcloud/main.tf']), ['deployment']);
   assert.deepEqual(selected(['deploy/yunohost/manifest.toml']), ['deployment']);

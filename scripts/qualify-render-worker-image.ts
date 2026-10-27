@@ -316,11 +316,14 @@ async function derivedToolFiles(root: string, dist: string, expected: CatalogInp
     return actual;
   } finally { rmSync(projected, { recursive: true }); }
 }
-export function imageArguments(args: string[]): { lollyRoot: string; image: string; sandboxProfile: 'runtime-default' | 'chromium' } {
+type SandboxProfile = 'runtime-default' | 'chromium';
+/** `lolly-chromium` is for AppArmor hosts only (deploy/apparmor/README.md); SELinux hosts keep the runtime default. */
+type AppArmorProfile = 'runtime-default' | 'lolly-chromium';
+export function imageArguments(args: string[]): { lollyRoot: string; image: string; sandboxProfile: SandboxProfile; appArmorProfile: AppArmorProfile } {
   const values = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const name = args[i] ?? '', value = args[i + 1];
-    if (!['--lolly-root', '--image', '--sandbox-profile'].includes(name) || values.has(name) || !value || value.startsWith('--')) throw new Error('Invalid image qualification arguments');
+    if (!['--lolly-root', '--image', '--sandbox-profile', '--apparmor-profile'].includes(name) || values.has(name) || !value || value.startsWith('--')) throw new Error('Invalid image qualification arguments');
     values.set(name, value);
   }
   const image = values.get('--image') ?? '';
@@ -328,7 +331,11 @@ export function imageArguments(args: string[]): { lollyRoot: string; image: stri
   if (!/^[a-z0-9][a-z0-9./:_@-]{0,255}$/.test(image) || !lollyRoot) throw new Error('A local image and matched Lolly checkout are required');
   const sandboxProfile = values.get('--sandbox-profile') ?? 'runtime-default';
   if (sandboxProfile !== 'runtime-default' && sandboxProfile !== 'chromium') throw new Error('Invalid sandbox qualification profile');
-  return { lollyRoot: realpathSync(lollyRoot), image, sandboxProfile };
+  const appArmorProfile = values.get('--apparmor-profile') ?? 'runtime-default';
+  if (appArmorProfile !== 'runtime-default' && appArmorProfile !== 'lolly-chromium') throw new Error('Invalid AppArmor qualification profile');
+  // The AppArmor profile only lets Chromium create its namespaces; the seccomp profile must allow the calls too.
+  if (appArmorProfile === 'lolly-chromium' && sandboxProfile !== 'chromium') throw new Error('The lolly-chromium AppArmor profile is qualified with the chromium sandbox profile');
+  return { lollyRoot: realpathSync(lollyRoot), image, sandboxProfile, appArmorProfile };
 }
 
 export function matchedShell(pin: unknown, source: string, engineVersion: string): string {
@@ -447,7 +454,7 @@ export function finishQualificationSource(fixture: QualificationSource): void {
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
   phase = 'ARGUMENTS'; trackedChangeCount = 0;
-  const { lollyRoot, image, sandboxProfile } = imageArguments(args);
+  const { lollyRoot, image, sandboxProfile, appArmorProfile } = imageArguments(args);
   phase = 'PLATFORM';
   assert.equal(process.platform, 'linux', 'Install frozen Work dependencies on the Linux qualification host');
   assert.ok(process.arch === 'x64' || process.arch === 'arm64', 'Image acceptance requires a supported Linux architecture');
@@ -467,17 +474,22 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   assert.match(imageId, /^sha256:[a-f0-9]{64}$/);
   assert.equal(output('docker', ['image', 'inspect', imageId, '--format', '{{.Os}}/{{.Architecture}}']),
     `linux/${process.arch === 'x64' ? 'amd64' : 'arm64'}`, 'Qualify the image with the matching Linux architecture');
+  // A profile in complain mode would log instead of enforce, so confirm the mode the container gets.
+  if (appArmorProfile === 'lolly-chromium') assert.equal(output('docker', ['run', '--rm', '--network', 'none', '--user', '1000:1000',
+    '--security-opt', 'apparmor=lolly-chromium', '--entrypoint', 'cat', imageId, '/proc/self/attr/current']), 'lolly-chromium (enforce)',
+  'Load deploy/apparmor/lolly-chromium in enforce mode before qualifying with it');
   const key = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const privateMaterial = key.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
   const publicMaterial = JSON.stringify(key.publicKey.export({ format: 'jwk' }));
   const fixture = await prepareQualificationSource(lollyRoot, source, publicMaterial);
-  try { await qualifyOwnedFixture(fixture.root, imageId, source, privateMaterial, publicMaterial, sandboxProfile); }
+  try { await qualifyOwnedFixture(fixture.root, imageId, source, privateMaterial, publicMaterial, sandboxProfile, appArmorProfile); }
   finally { finishQualificationSource(fixture); }
   console.log(JSON.stringify({ status: 'WORKER_FIXTURE_LINEAGE_CUSTODY', source,
     historicalEnvelopeSha256: fixture.originalEnvelopeSha256, receiptSha256: fixture.receiptSha256, originalCheckoutPreserved: true, productionAcceptance: false }));
 }
 
-async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: string, privateMaterial: string, publicMaterial: string, sandboxProfile: 'runtime-default' | 'chromium'): Promise<void> {
+async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: string, privateMaterial: string, publicMaterial: string,
+  sandboxProfile: SandboxProfile, appArmorProfile: AppArmorProfile): Promise<void> {
   phase = 'CATALOG_INPUT';
   const catalogInput = await authoredCatalog(lollyRoot);
   const buildEnv: NodeJS.ProcessEnv = {};
@@ -518,6 +530,7 @@ async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: s
       '--read-only', '--tmpfs', '/tmp:rw,size=1g,mode=1777', '--user', '1000:1000',
       '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '1g', '--cpus', '1', '--pids-limit', '256',
       ...(sandboxProfile === 'chromium' ? ['--security-opt', `seccomp=${seccomp}`] : []),
+      ...(appArmorProfile === 'lolly-chromium' ? ['--security-opt', 'apparmor=lolly-chromium'] : []),
       '--mount', `type=bind,src=${ROOT},dst=/qualification/work,readonly`,
       '--mount', `type=bind,src=${join(lollyRoot, 'shells/web/dist')},dst=/qualification/shell,readonly`,
       '--env', 'LW_CATALOG_SIGNING_KEY', '--env', 'LOLLY_TEST_CATALOG_PUBLIC_KEY_JWK',
@@ -549,7 +562,7 @@ async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: s
     phase = beforeCleanup;
   }
   console.log(JSON.stringify({ status: 'RENDER_WORKER_IMAGE_ACCEPTED', source, imageId,
-    fixtureProfile: 'lolly-start', fixtureKey: 'ephemeral-test-only', browserSandboxQualified: true, architecture: process.arch, sandboxProfile,
+    fixtureProfile: 'lolly-start', fixtureKey: 'ephemeral-test-only', browserSandboxQualified: true, architecture: process.arch, sandboxProfile, appArmorProfile,
     productionAcceptance: false, physicalGpuQualification: false }));
 }
 
