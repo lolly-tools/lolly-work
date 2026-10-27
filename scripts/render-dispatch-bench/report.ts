@@ -65,20 +65,20 @@ export function d5Across(sets: readonly (readonly RunRecord[])[], corpus: string
 const fmt = (v: number | null | undefined, unit = '') => (v === null || v === undefined ? '-' : `${v}${unit}`);
 
 export function report(sets: readonly (readonly RunRecord[])[]): string {
-  const records = sets.flat();
+  const records = sets.flatMap((set, i) => set.map((r) => ({ ...r, set: i + 1 })));
   const lines: string[] = [];
   for (const corpus of [...new Set(records.map((r) => r.corpus))]) {
     lines.push(`### Corpus: ${corpus}`, '');
-    lines.push('| Workers x slots | Load | Mode | OK / renders | Throughput (ok/s) | p50 (s) | p95 (s) | p99 (s) | p95 incl. failures (s) | Retries | Failures | tier-a p50 / p95 | tier-b p50 / p95 |');
-    lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+    lines.push('| Set | Workers x slots | Load | Mode | OK / renders | Throughput (ok/s) | p50 (s) | p95 (s) | p99 (s) | p95 incl. failures (s) | Retries | Failures | tier-a p50 / p95 | tier-b p50 / p95 |');
+    lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
     const order = ['light', 'medium', 'saturation'];
     const rows = records.filter((r) => r.corpus === corpus)
-      .sort((a, b) => a.workers - b.workers || (a.slots ?? 4) - (b.slots ?? 4) || order.indexOf(a.load) - order.indexOf(b.load) || a.mode.localeCompare(b.mode));
+      .sort((a, b) => a.workers - b.workers || (a.slots ?? 4) - (b.slots ?? 4) || order.indexOf(a.load) - order.indexOf(b.load) || a.set - b.set || a.mode.localeCompare(b.mode));
     for (const r of rows) {
       const a = r.summary.all!, ta = r.summary['tier-a'], tb = r.summary['tier-b'];
       const failures = Object.entries(a.errors).map(([code, n]) => `${code} ${n}`).join(', ') || '0';
       const delivered = a.p95Delivered === Infinity || a.p95Delivered === null ? 'not delivered' : String(a.p95Delivered);
-      lines.push(`| ${r.workers} x ${r.slots ?? 4} | ${r.load}${r.rate ? ` (${r.rate}/s)` : ''} | ${r.mode} | ${a.succeeded} / ${a.renders} | ${fmt(a.throughput)} | ${fmt(a.p50)} | ${fmt(a.p95)} | ${fmt(a.p99)} | ${delivered} | ${a.retries} | ${failures} | ${ta ? `${fmt(ta.p50)} / ${fmt(ta.p95)}` : '-'} | ${tb ? `${fmt(tb.p50)} / ${fmt(tb.p95)}` : '-'} |`);
+      lines.push(`| ${r.set} | ${r.workers} x ${r.slots ?? 4} | ${r.load}${r.rate ? ` (${r.rate}/s)` : ''} | ${r.mode} | ${a.succeeded} / ${a.renders} | ${fmt(a.throughput)} | ${fmt(a.p50)} | ${fmt(a.p95)} | ${fmt(a.p99)} | ${delivered} | ${a.retries} | ${failures} | ${ta ? `${fmt(ta.p50)} / ${fmt(ta.p95)}` : '-'} | ${tb ? `${fmt(tb.p50)} / ${fmt(tb.p95)}` : '-'} |`);
     }
     lines.push('', `D5 across ${sets.length} repetition set(s): how many repetitions held each check.`, '',
       '| Workers x slots | light p50 matches | saturation p95 better (failures count as not delivered) | saturation throughput better | D5 |', '|---|---|---|---|---|');
