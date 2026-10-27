@@ -2,6 +2,75 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "prometheusRule": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Render the suggested alerts as a Prometheus Operator PrometheusRule. Off by default."
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "alertLabels": {
+              "type": "object",
+              "description": "Labels added to every alert.",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "seriesSelector": {
+              "type": "string",
+              "description": "PromQL label matchers for this release's series. Empty uses job and namespace as the chart's ServiceMonitor sets them."
+            },
+            "disabled": {
+              "type": "array",
+              "description": "Alert names to leave out.",
+              "items": {
+                "type": "string",
+                "pattern": "^LollyWork[A-Za-z]+$"
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "grafanaDashboard": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Render the Grafana dashboard as a ConfigMap for the Grafana sidecar. Off by default."
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
     "renderWorker": {
       "type": "object",
       "properties": {

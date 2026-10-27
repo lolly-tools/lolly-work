@@ -22,8 +22,10 @@ values YAML, identity admission/owner mapping, storage and TLS before installati
 the form does not register an identity client or provision PostgreSQL.
 
 The chart supports external Secrets, immutable image digests, shell/pack claims or
-OCI copies, migration hooks, resource bounds and optional worker isolation. See
-`values.yaml`, `values.schema.json` and `values-small-suse.yaml` in the source.
+OCI copies, migration hooks, resource bounds and optional worker isolation. Suggested
+Prometheus alerts and a Grafana dashboard are available beside the ServiceMonitor, all
+three off by default; the [metrics reference](https://github.com/lolly-tools/lolly-work/blob/main/docs/metrics.md)
+explains them. See `values.yaml`, `values.schema.json` and `values-small-suse.yaml` in the source.
 Use `values-official-release.yaml` for the qualified immutable 1.1.1 image pins;
 it is generated from the same release record as the VM/Dokploy packages and keeps
 the worker disabled. Merge your operator configuration separately. Explicit tag

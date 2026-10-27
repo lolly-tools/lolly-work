@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: MPL-2.0
+# Apply after ../policies.yaml only when the chart sets
+# renderWorker.userNamespace.enabled=true (shared clusters that cannot install the
+# reviewed seccomp profile on nodes; see deploy/seccomp/README.md).
+#
+# It replaces lolly-work-capabilities-render-worker so a render worker pod may add
+# SYS_ADMIN and SYS_CHROOT, and adds a CEL rule that admits an added capability
+# only in a pod with its own user namespace (hostUsers: false). The capability
+# policy selects pods by their component label, which anyone who can create pods
+# in the namespace can set; the CEL rule is what keeps the two capabilities
+# inside a user namespace.
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-capabilities-render-worker
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/capabilities-psp:v1.0.15@sha256:3958f505c82bc7bac5c16e05d0d54d155e8d31593116394b3213f7d23cd18198
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  objectSelector:
+    matchLabels:
+      app.kubernetes.io/component: render-worker
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE"]
+  settings:
+    allowed_capabilities: [SYS_ADMIN, SYS_CHROOT]
+    required_drop_capabilities: [ALL]
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-capabilities-need-user-namespace
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/cel-policy:v1.6.5@sha256:b443c79065564741f6bf7f907018c495e9df2f31fe8f919db6635750de3d1a29
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE"]
+  settings:
+    variables:
+      - name: addsCapabilities
+        expression: >-
+          object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.add) && size(c.securityContext.capabilities.add) > 0) ||
+          (has(object.spec.initContainers) && object.spec.initContainers.exists(c, has(c.securityContext) &&
+          has(c.securityContext.capabilities) && has(c.securityContext.capabilities.add) &&
+          size(c.securityContext.capabilities.add) > 0))
+    validations:
+      - expression: "!variables.addsCapabilities || (has(object.spec.hostUsers) && object.spec.hostUsers == false)"
+        message: "A container that adds capabilities must run in its own user namespace (spec.hostUsers: false)."

@@ -1,0 +1,60 @@
+{{- /*
+Suggested alerts as a Prometheus Operator PrometheusRule (files/prometheus-rules.yaml).
+Off by default. The expressions select this release's series with the labels the
+ServiceMonitor produces (job is the Service name, namespace the release namespace);
+set metrics.prometheusRule.seriesSelector when another scrape job collects them.
+Requires the Prometheus Operator CRDs.
+*/ -}}
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- $settings := .Values.metrics.prometheusRule }}
+{{- $selector := $settings.seriesSelector | default (printf "job=%q,namespace=%q" (include "lolly-work.fullname" .) .Release.Namespace) }}
+{{- $config := .Values.config }}
+{{- if kindIs "string" $config }}
+{{- $config = fromJson $config }}
+{{- end }}
+{{- $maxBuckets := 50000 }}
+{{- with $config.rateLimit }}
+{{- with .maxBuckets }}
+{{- $maxBuckets = . }}
+{{- end }}
+{{- end }}
+{{- $raw := .Files.Get "files/prometheus-rules.yaml" | replace "__SELECTOR__" $selector | replace "__RATE_LIMIT_MAX_BUCKETS__" (toString (int64 $maxBuckets)) }}
+{{- $known := list }}
+{{- $groups := list }}
+{{- range (fromYaml $raw).groups }}
+{{- $rules := list }}
+{{- range .rules }}
+{{- $known = append $known .alert }}
+{{- if not (has .alert $settings.disabled) }}
+{{- $_ := set . "labels" (merge (dict) $settings.alertLabels .labels) }}
+{{- $rules = append $rules . }}
+{{- end }}
+{{- end }}
+{{- if $rules }}
+{{- $groups = append $groups (dict "name" .name "rules" $rules) }}
+{{- end }}
+{{- end }}
+{{- range $settings.disabled }}
+{{- if not (has . $known) }}
+{{- fail (printf "metrics.prometheusRule.disabled names an unknown alert %q" .) }}
+{{- end }}
+{{- end }}
+{{- if not $groups }}
+{{- fail "metrics.prometheusRule.disabled leaves no alerts; set metrics.prometheusRule.enabled=false instead" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "lolly-work.fullname" . }}
+  {{- with $settings.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+    {{- with $settings.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    {{- toYaml $groups | nindent 4 }}
+{{- end }}
