@@ -7,7 +7,7 @@
  *     [--corpus=mixed|light] [--workers=1,4,16] [--modes=push,pull] [--loads=saturation,medium,light]
  *     [--slots=4] [--seed=324] [--light-jobs=60] [--medium-jobs=100] [--burst-per-slot=6]
  *     [--light-share=0.15] [--medium-share=0.6] [--worker-timeout-ms=60000]
- *     [--seccomp=lolly/chromium.json] [--apparmor=lolly-chromium]
+ *     [--seccomp=lolly/chromium.json] [--apparmor=lolly-chromium] [--keys=<dir, default --out>]
  *
  * For each worker count it deploys push, measures saturation (a burst), then
  * runs medium and light as Poisson arrivals at fixed shares of push's measured
@@ -57,9 +57,11 @@ const say = (message: string) => console.log(`[bench ${new Date().toISOString().
 
 /** Benchmark-only credentials, generated once per output directory. */
 function secrets(): BenchSecrets {
-  const file = join(out, 'secrets.json');
+  const keys = resolve(arg('keys', out));
+  mkdirSync(keys, { recursive: true });
+  const file = join(keys, 'secrets.json');
   if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
-  const tls = join(out, 'tls');
+  const tls = join(keys, 'tls');
   mkdirSync(tls, { recursive: true });
   const ssl = (...a: string[]) => execFileSync('openssl', a, { cwd: tls, stdio: 'pipe' });
   ssl('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '7', '-subj', '/CN=lw-bench CA',
@@ -89,7 +91,7 @@ function psql(sql: string): string {
   return kubectl(['-n', NS, 'exec', 'deploy/postgres', '--', 'psql', '-U', 'bench', '-d', 'bench', '-tAc', sql]);
 }
 
-interface ClientResult { runId: string; submittedMs: number; refused: { seq: number; status: number }[]; rows: RenderRow[]; metricsPeaks: Record<string, number>; metricsCounters: Record<string, number> }
+interface ClientResult { runId: string; submittedMs: number; refused: { seq: number; status: number }[]; rows: RenderRow[]; metricsPeaks: Record<string, number>; metricsCounters: Record<string, number>; errorsSeen?: Record<string, number> }
 
 function runPlan(runId: string, count: number, rate: number | null, image: string): ClientResult {
   const planJobs = jobs(count, seed + count, CORPORA[corpusName]);
@@ -116,7 +118,7 @@ function restarts(): Record<string, number> {
     .map((p) => [p.metadata.name, (p.status.containerStatuses ?? []).reduce((n, c) => n + c.restartCount, 0)]));
 }
 
-interface RunRecord { corpus: string; workers: number; mode: string; load: Load; rate: number | null; jobs: number; summary: Record<string, Summary>; refused: number; metricsPeaks: Record<string, number>; metricsCounters: Record<string, number>; restarts: Record<string, number> }
+interface RunRecord { corpus: string; workers: number; mode: string; load: Load; rate: number | null; jobs: number; summary: Record<string, Summary>; refused: number; metricsPeaks: Record<string, number>; metricsCounters: Record<string, number>; errorsSeen: Record<string, number>; restarts: Record<string, number> }
 const recordsFile = join(out, 'runs.json');
 const records: RunRecord[] = existsSync(recordsFile) ? JSON.parse(readFileSync(recordsFile, 'utf8')) : [];
 const save = () => writeFileSync(recordsFile, JSON.stringify(records, null, 2));
@@ -147,7 +149,7 @@ for (const workers of workerCounts) {
       writeFileSync(join(out, `raw-${corpusName}-${mode}-${workers}-${load}.json`), JSON.stringify(result));
       const summary = summariseByPool(result.rows);
       records.push({ corpus: corpusName, workers, mode, load, rate, jobs: count, summary, refused: result.refused.length,
-        metricsPeaks: result.metricsPeaks, metricsCounters: result.metricsCounters, restarts: restarts() });
+        metricsPeaks: result.metricsPeaks, metricsCounters: result.metricsCounters, errorsSeen: result.errorsSeen ?? {}, restarts: restarts() });
       save();
       const a = summary.all!;
       say(`  ${a.succeeded}/${a.renders} ok, failed ${a.failed}, p50 ${a.p50}s p95 ${a.p95}s p99 ${a.p99}s, ${a.throughput}/s, retries ${a.retries}`);

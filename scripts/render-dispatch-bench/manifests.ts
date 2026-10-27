@@ -77,7 +77,8 @@ export function manifests(spec: BenchSpec): string {
     // PostgreSQL, in the cluster, on scratch storage.
     { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'postgres', namespace: ns }, spec: {
       replicas: 1, selector: { matchLabels: { app: 'postgres' } }, strategy: { type: 'Recreate' },
-      template: { metadata: { labels: { app: 'postgres' } }, spec: { containers: [{
+      // A new password needs a fresh data directory: it is only read at initdb.
+      template: { metadata: { labels: { app: 'postgres' }, annotations: { 'bench/db': createHash('sha256').update(spec.secrets.dbPassword).digest('hex').slice(0, 16) } }, spec: { containers: [{
         name: 'postgres', image: spec.postgresImage, args: ['-c', 'max_connections=200'],
         env: [{ name: 'POSTGRES_USER', value: 'bench' }, { name: 'POSTGRES_DB', value: 'bench' },
           { name: 'POSTGRES_PASSWORD', valueFrom: { secretKeyRef: { name: 'bench-secrets', key: 'POSTGRES_PASSWORD' } } }],

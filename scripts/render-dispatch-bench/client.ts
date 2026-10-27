@@ -92,8 +92,13 @@ async function main(): Promise<void> {
 
   const ids = accepted.map((a) => a.id);
   const deadline = started + plan.deadlineMs;
+  // A retried attempt's error is cleared when a later attempt succeeds, so
+  // collect the distinct errors while the renders are still in flight.
+  const errorsSeen = new Map<string, number>();
   for (;;) {
     const { rows } = await db.query(`select count(*)::integer as n from renders where id = any($1) and state in ('succeeded','failed','cancelled')`, [ids]);
+    const { rows: errors } = await db.query(`select id, attempt, error->>'code' as code, left(error->>'message', 240) as message from renders where id = any($1) and error is not null`, [ids]);
+    for (const e of errors) errorsSeen.set(`${e.code}: ${e.message}`, (errorsSeen.get(`${e.code}: ${e.message}`) ?? 0) + 1);
     if (rows[0].n >= ids.length || Date.now() > deadline) break;
     await delay(500);
   }
@@ -114,6 +119,8 @@ async function main(): Promise<void> {
         createdAt: Number(r.created), finishedAt: r.finished === null ? null : Number(r.finished), errorCode: r.code ?? null };
     }),
     metricsPeaks: peaks, metricsCounters: finalCounters,
+    // Distinct error messages seen during the run (sampled every 500 ms, so a counter here is samples, not attempts).
+    errorsSeen: Object.fromEntries(errorsSeen),
   };
   console.log(`BENCH_RESULT ${JSON.stringify(result)}`);
 }
