@@ -117,6 +117,8 @@ const DESCRIBE = "JSON.stringify({href:location.href,view:document.querySelector
 // Lolly's shell marks a refused catalogue on the root element and shows its reason in a
 // badge (catalog/integrity.ts). Null while the shell has not refused the catalogue.
 const REFUSAL = "document.documentElement.dataset.catalogTrust==='refused'?(document.getElementById('lolly-catalog-refused')?.textContent??''):null";
+// Distinct tools the gallery shows. A gallery that accepted the catalogue must list some.
+const TOOL_COUNT = "new Set([...document.querySelectorAll('[data-tool-id]')].map(el=>el.dataset.toolId)).size";
 // One-time prompts that would cover a view. The profile nudge is remembered in the
 // profile, not in localStorage, so it is dismissed through its own button.
 const DISMISS = ['.personalize-nudge-dismiss'];
@@ -183,6 +185,7 @@ export async function captureListingScreenshots(options: CaptureOptions): Promis
       const bytes = await page.screenshot({ type: 'png', animations: 'disabled', caret: 'hide' });
       // A catalogue view never ships with the shell's refusal on screen.
       if (shot.catalogue && await withhold(page, shot)) return;
+      if (shot.path === '/#/tools' && await page.evaluate(TOOL_COUNT) === 0) throw new Error(`${shot.file}: the gallery lists no tools`);
       const size = pngDimensions(bytes);
       if (size?.width !== LISTING_VIEWPORT.width || size.height !== LISTING_VIEWPORT.height) throw new Error(`${shot.file} is not ${LISTING_VIEWPORT.width} x ${LISTING_VIEWPORT.height}`);
       writeFileSync(join(options.outDir, shot.file), bytes);
