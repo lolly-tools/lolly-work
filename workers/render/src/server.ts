@@ -474,13 +474,15 @@ function stopWorker(code: number): void {
   });
 }
 
-if (MAIN) void getBrowser().then(() => {
-  // Lease only once the browser is up, so a job never waits on startup.
-  if (!PULL_BASE || stopping) return;
+if (MAIN) void getBrowser().catch(() => stopWorker(1));
+// Pull dispatch leases only once the browser is up (the same launch as above),
+// so a job never waits on startup; a failed launch has already stopped the worker.
+if (MAIN && PULL_BASE) void getBrowser().then(() => {
+  if (stopping) return;
   pull = startPull({ base: PULL_BASE, secret: SECRET, slots: MAX_CONCURRENT, pools: ['tier-b'],
     run: (job, signal) => runJob(job.path, job.payload, job.signature, signal, () => sem.acquire()) });
   console.log(`[render-worker] pulling jobs from ${PULL_BASE} with ${MAX_CONCURRENT} slots`);
-}).catch(() => stopWorker(1));
+}, () => {});
 
 // Graceful shutdown so Chromium is torn down (no leaked processes).
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
