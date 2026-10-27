@@ -53,16 +53,39 @@ against the same cases (`tests/fixtures/deploy-lane-cases.json`, a pinned copy o
   run of the commit on `main` in Lolly's own repository.
 
 Otherwise it refuses as before (`CI_PENDING`), with the lane's reason added: which path needs full CI, or which job has
-not passed yet. A lane ship records `lane`, `laneBase`, `laneBaseCiRun` and `laneRun` in `deploys.jsonl`.
-`preview-web.yml` then checks the same rule again from Git with the base commit's own copy of the TypeScript, so the
-build needs both to agree. lolly.tools ships its source on a lane. lolly.ing uses the same rule for the Lolly commit
-its Work commit pins (`ING_LOLLY_CI`), while the Work commit itself always needs its own full lolly-work CI run; see
-[Qualification](#qualification-andy-2026-10-27). The legacy release route never takes a lane. The rules: docs is everything under `docs/` plus `README.md` and
+not passed yet. A lane ship or deploy records `lane`, `laneBase`, `laneBaseCiRun` and `laneRun` in `deploys.jsonl`.
+For lolly.tools this port is the only lane check: `preview-web.yml` used to check the rule again with the base commit's
+own copy of the TypeScript, but it now builds at merge (see [Build at merge](#build-at-merge)). lolly.tools ships its
+source on a lane.
+lolly.ing uses the same rule for the Lolly commit its Work commit pins (`ING_LOLLY_CI`), while the Work commit itself
+always needs its own full lolly-work CI run; see [Qualification](#qualification-andy-2026-10-27). The legacy release
+route never takes a lane. The rules: docs is everything under `docs/` plus `README.md` and
 `engine/text-composition.md`, except `docs/supported-environments.md` and `docs/parser-inventory.md` (full) and the
 card renderer `docs/og-image.ts` and `docs/og-opal.ts` (web). Web adds `shells/web/` except its build inputs, entry
 page, served files other than static media (so `sw.js`), `main.ts`, `bridge/`, `capture/`, `catalog/`, `collab/`,
 `org/`, `ext/`, `vendor/`, `ca-root.ts`, `lib/sync-*` and security-named files. Dependency manifests, symlinks and
 executable files always need full CI. Tests never ship and take the lane of the changes beside them.
+
+## Build at merge
+
+The watcher on Andy's Mac (`lolly-private/production/preview/auto-ship.py`) has `preview-web.yml` build each new main
+head as soon as it reaches main, while its `ci.yml` run is still going, and runs `deploy <sha>` once the commit qualifies. So
+the image is ready when CI passes instead of starting then.
+
+- `preview-web.yml`'s source gate accepts a clean ancestor of main whose own main CI run has not failed. A green run
+  passes; a completed run that ended in anything but success or cancellation refuses; a run still going, a cancelled
+  run or none yet is accepted. The build's `release.json` says so: `"sourceGate": "not-failed"`.
+- A build therefore proves nothing about qualification, so the tool reads it at every ship and deploy
+  (`preview_mac.qualification`, the same `qualified_ci` ship used before dispatch): after the build is bound and before
+  the node is contacted, whichever build is bound, reused ones included. `CI_PENDING` and `CI_NOT_GREEN` refuse there
+  and change nothing.
+- `status` reports `qualifiesAtDeploy: true`, and the watcher builds at merge only when the tool says so and the
+  workflow on main carries the line `# auto-ship: build-at-merge`. With either missing it ships as before.
+- A tool from before this rule refuses the `sourceGate` field (`RECEIPT_INVALID`), so it can never deploy a build that
+  was made before its commit qualified.
+
+The trust change: the preview catalogue key signs builds of reviewed main commits before their CI finishes. Andy chose
+that for the preview sites. A build of a commit whose CI later fails stays in GitHub and is never deployed.
 
 ## How it is trusted
 
@@ -135,22 +158,24 @@ Flags:
    - If this commit is live, accepted, and its records name the live image, it reports `ALREADY_LIVE` and stops.
 3. Reuses a build of this commit that still binds. Otherwise it:
    - requires a successful normal CI push run on `main` for the commit, or a fast deploy lane above one (see
-     [Fast deploy lanes](#fast-deploy-lanes));
+     [Fast deploy lanes](#fast-deploy-lanes)), so a manual ship never builds an unqualified commit;
    - requires no other active preview build run;
    - dispatches `lolly-tools/lolly`'s `.github/workflows/preview-web.yml` on `refs/heads/main` with
-     `inputs: {"source": "<40-hex sha>"}` only. It does not send `min_seq`. The workflow finds green main CI itself
-     and uses its own preview pin. The Mac still checks green CI before dispatch.
+     `inputs: {"source": "<40-hex sha>"}` only. It does not send `min_seq`. The workflow refuses a source whose own CI
+     failed and uses its own preview pin; qualification is the Mac's, before dispatch and again at step 6.
 4. Waits for the run, tolerating brief GitHub errors. **Agents never approve an environment gate.**
 5. Binds the finished run:
    - workflow path, event `workflow_dispatch`, same repository for run and head, branch `main` and success;
    - exact display title `Preview web <source>`, with source equal to or an ancestor of the run's 40-hex head SHA.
      Discovery reads up to 100 runs without filtering by head SHA, since main may advance before dispatch;
-   - the `preview-web-receipts-attempt-N` artifact, with the same five receipt files and all existing field checks;
+   - the `preview-web-receipts-attempt-N` artifact, with the same five receipt files and all existing field checks
+     (`release.json` may also carry `"sourceGate": "not-failed"`, and no other value);
    - `public.jwk.json` must match the preview pin and the catalog key id must match its thumbprint. A receipt carrying
      the release pin is refused;
    - the image must be `ghcr.io/lolly-tools/lolly-web-preview@sha256:<64hex>`, never a tag.
-6. Requires the live records to describe the live image: same image, phase `accepted`, `rolled-back` or `aborted`.
-   Otherwise `RECORDS_STALE`.
+6. Reads the commit's qualification again, as in step 3 (see [Build at merge](#build-at-merge)), whichever build was
+   bound. Then requires the live records to describe the live image: same image, phase `accepted`, `rolled-back` or
+   `aborted`. Otherwise `RECORDS_STALE`.
 7. Builds the smoke expectations from the commit's own files:
    - the CSP from the `$lolly_csp` map in `deploy/docker/nginx.conf`, with the build's connector origins;
    - the other headers in `deploy/docker/security-headers.conf`;

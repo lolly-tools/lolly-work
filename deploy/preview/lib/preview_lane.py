@@ -13,11 +13,16 @@ the lane's job in fast-lanes.yml must have passed on the source:
 
 A lane never overrides a full CI run that has already failed on the source. The rules here and in
 lolly's TypeScript are tested against the same cases (tests/fixtures/deploy-lane-cases.json, a pinned
-copy of lolly's tests/fixtures/deploy-lane/cases.json). preview-web.yml enforces the TypeScript copy
-from the base commit; a deploy needs both to agree, so a rule that drifts can only refuse.
+copy of lolly's tests/fixtures/deploy-lane/cases.json). Until lolly's build-at-merge change,
+preview-web.yml also enforced the TypeScript copy from the base commit before it built. It now builds
+each commit as soon as it reaches main and refuses only a completed CI failure, so for lolly.tools this
+port decides, at deploy time (preview_mac.qualification), and a rule that drifts from the TypeScript is
+caught by the shared cases, not by a second check. lolly.ing's private build gate still runs the
+TypeScript copy for the Lolly commit its Work commit pins.
 
-The tool reads the change from GitHub's tree objects, never from a label or a commit message. Only a
-site whose anchors carry "fastLaneWorkflowFile" uses lanes: lolly.tools does, lolly.ing does not.
+The tool reads the change from GitHub's tree objects, never from a label or a commit message. Only
+anchors that carry "fastLaneWorkflowFile" use lanes: lolly.tools for its source, and lolly.ing for the
+Lolly commit its Work commit pins (ING_LOLLY_CI), never for the Work commit itself.
 """
 
 from __future__ import annotations
