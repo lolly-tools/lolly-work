@@ -148,9 +148,17 @@ MIGRATION_LOCK_BUDGET_SECONDS = 30
 MIGRATION_MANIFEST_HEADER = "lolly-work migration manifest v1\n"
 REHEARSAL_DEADLINE_SECONDS = 900
 
-# lolly.ing's own catalog key (PROPOSAL 4.7). Generated at the Phase 2 cut-over; it is
-# pinned here in a reviewed change. Until then every lolly.ing run refuses.
-ING_PUBLIC_KEY_JWK = None
+# lolly.ing's own catalog key (PROPOSAL 4.7), generated 2026-10-27 for the preview-grade
+# route. The private half is only in the lolly-ing-signing environment of
+# lolly-tools/suse-lolly (LOLLY_ING_CATALOG_SIGNING_KEY) and the node Secret below;
+# the public half is LOLLY_ING_PUBLIC_KEY_JWK there. Key id (RFC 7638 thumbprint)
+# UNkbjFt1EE_G_n2eoyRpyKU_EG7EeiTs3YTkU2L3hIQ.
+ING_PUBLIC_KEY_JWK = {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "yhFEPn0qYVTIGgq6HwzhYElg92TZDyAoiBk1Rs8kNtA",
+    "y": "sBWMHGVSKZdW87nmtLjkfIS5n9mNvCHzKCq9CWe-PDo",
+}
 # The Secret in lolly-private that holds lolly.ing's own key under LW_CATALOG_SIGNING_KEY
 # (review 2026-10-25 H3). Andy creates it before the cut-over and never edits the live
 # Secret. The cut-over patch points the server's reference at this name and a revert

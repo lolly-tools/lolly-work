@@ -438,10 +438,16 @@ class Shipped(unittest.TestCase):
         """PROPOSAL 4.7: until a reviewed change pins lolly.ing's key, every lolly.ing run refuses."""
         import preview_ing as I
         self.assertIs(A.site_anchors("lolly.ing"), A.ING)
-        self.assertIsNone(A.ING_PUBLIC_KEY_JWK)
-        with self.assertRaises(C.Refusal) as caught:
+        with mock.patch.object(A, "ING_PUBLIC_KEY_JWK", None), self.assertRaises(C.Refusal) as caught:
             I.ing_pin()
         self.assertEqual(caught.exception.code, "ING_KEY_NOT_PINNED")
+
+    def test_lolly_ing_pin_is_its_own_key(self):
+        """The key pinned on 2026-10-27: neither the release key nor the lolly.tools preview key."""
+        import preview_ing as I
+        _, thumbprint = I.ing_pin()
+        self.assertEqual(thumbprint, "UNkbjFt1EE_G_n2eoyRpyKU_EG7EeiTs3YTkU2L3hIQ")
+        self.assertNotIn(thumbprint, (A.RELEASE_PUBLIC_KEY_THUMBPRINT, A.PREVIEW_PUBLIC_KEY_THUMBPRINT))
         with mock.patch.object(A, "ING_PUBLIC_KEY_JWK", A.RELEASE_PUBLIC_KEY_JWK), self.assertRaises(C.Refusal) as caught:
             I.ing_pin()  # never the platform release key (R20 S1, R21 R2, R22 S1)
         self.assertEqual(caught.exception.code, "RELEASE_KEY")
@@ -1230,8 +1236,9 @@ class Refusals(EndToEnd):
         self.assertEqual(self.done(events)["code"], "CHECK_TARGET_IDENTITY")
 
     def test_lolly_ing_refuses_without_touching_anything(self):
+        """A tool with no lolly.ing key pinned refuses before any GitHub call."""
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out), mock.patch.object(A, "ING_PUBLIC_KEY_JWK", None):
             code = M.main(["--state-dir", str(self.state_dir), "--tool-sha256", self.tool_hash, "--checkout", str(self.checkout),
                            "--check-target", str(self.check_target_path), "lolly.ing", "ship", NEW])
         self.assertEqual(code, 1)
