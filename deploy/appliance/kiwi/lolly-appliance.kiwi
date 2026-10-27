@@ -13,14 +13,15 @@
   unattended), cloud-init, ModemManager, usbguard.
 
   Build with deploy/appliance/build.sh, which generates the K3s manifests from
-  deploy/marketplaces/release.json, fetches and verifies the pinned K3s,
+  deploy/marketplaces/release.json, sets <version> to that release's Lolly
+  version (@LOLLY_VERSION@ below), fetches and verifies the pinned K3s,
   k3s-selinux and image archives, and runs kiwi-ng. One build gives a raw disk
   (to write to a disk or import into a cloud) and a qcow2 of the same disk.
 
   OBS: replace the two repositories with <source path="obsrepositories:/"/> and
   provide k3s-selinux from a project; the rest builds unchanged.
 -->
-<image schemaversion="7.5" name="Lolly-Appliance" displayname="Lolly appliance">
+<image schemaversion="7.5" name="lolly-appliance" displayname="Lolly appliance">
     <description type="system">
         <author>Lolly Work</author>
         <contact>https://github.com/lolly-tools/lolly-work</contact>
@@ -38,7 +39,7 @@
     </profiles>
 
     <preferences profiles="platform-x86_64">
-        <version>0.1.0</version>
+        <version>@LOLLY_VERSION@</version>
         <packagemanager>zypper</packagemanager>
         <bootsplash-theme>openSUSE</bootsplash-theme>
         <bootloader-theme>openSUSE</bootloader-theme>
@@ -81,7 +82,7 @@
     </preferences>
 
     <preferences profiles="platform-aarch64">
-        <version>0.1.0</version>
+        <version>@LOLLY_VERSION@</version>
         <packagemanager>zypper</packagemanager>
         <bootsplash-theme>openSUSE</bootsplash-theme>
         <bootloader-theme>openSUSE</bootloader-theme>

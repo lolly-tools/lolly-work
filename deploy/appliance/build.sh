@@ -7,8 +7,9 @@
 # Needs root, kiwi-ng 10, createrepo_c and network access to the openSUSE
 # repositories, GitHub (K3s), rpm.rancher.io and the image registries. Every
 # downloaded file is checked against appliance.lock.json or the digests in
-# deploy/marketplaces/release.json. Output in --out (default
-# deploy/appliance/out/<arch>): <name>.raw, <name>.qcow2 and SHA256SUMS.
+# deploy/marketplaces/release.json. The image takes that release's Lolly
+# version: output in --out (default deploy/appliance/out/<arch>) is
+# lolly-appliance-<version>-<arch>.raw and .qcow2, with SHA256SUMS.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -42,8 +43,11 @@ started=$SECONDS
 rm -rf "$work/desc" "$work/root" "$work/build"
 mkdir -p "$work" "$out" "$cache"
 
-echo "== generate the K3s manifests from release.json"
-python3 -B "$here/generate.py" --arch "$arch" --overlay "$work/root" --plan "$work/images.json"
+echo "== generate the K3s manifests and the versioned description from release.json"
+mkdir -p "$work/desc"
+python3 -B "$here/generate.py" --arch "$arch" --overlay "$work/root" --plan "$work/images.json" --kiwi "$work/desc"
+version=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$work/root/usr/share/lolly-appliance/release.json")
+[ -n "$version" ] || { echo "build.sh: no version in the generated release summary" >&2; exit 1; }
 
 echo "== fetch and verify K3s, k3s-selinux and the release images"
 rm -rf "$work/local-repo"
@@ -51,8 +55,7 @@ python3 -B "$here/fetch.py" --plan "$work/images.json" --overlay "$work/root" --
 createrepo_c --quiet "$work/local-repo"
 
 echo "== assemble the description"
-mkdir -p "$work/desc"
-cp "$here/kiwi/lolly-appliance.kiwi" "$here/kiwi/config.sh" "$here/kiwi/disk.sh" "$work/desc/"
+cp "$here/kiwi/config.sh" "$here/kiwi/disk.sh" "$work/desc/"
 cp -a "$here/kiwi/root" "$work/desc/root"
 cp -a "$work/root/." "$work/desc/root/"
 install -D -m 0644 "$here/README.md" "$work/desc/root/usr/share/doc/lolly-appliance/README.md"
@@ -63,11 +66,14 @@ chown -R root:root "$work/desc"
 echo "== kiwi-ng system build (profile k3s, $arch)"
 kiwi-ng --profile k3s --type oem system build --description "$work/desc" --target-dir "$work/build"
 
-name=$(cd "$work/build" && ls Lolly-Appliance*.qcow2 | head -n 1)
-base=${name%.qcow2}
-cp --sparse=always "$work/build/$base.raw" "$out/$base.raw"
-cp "$work/build/$base.qcow2" "$out/$base.qcow2"
-cp "$work/build/$base.packages" "$out/$base.packages" 2>/dev/null || true
+# KIWI names its result <name>.<arch>-<version>; the release name is
+# lolly-appliance-<version>-<arch>.
+kiwi=lolly-appliance.$arch-$version
+base=lolly-appliance-$version-$arch
+[ -f "$work/build/$kiwi.qcow2" ] || { echo "build.sh: KIWI did not produce $kiwi.qcow2 (version drift?)" >&2; exit 1; }
+cp --sparse=always "$work/build/$kiwi.raw" "$out/$base.raw"
+cp "$work/build/$kiwi.qcow2" "$out/$base.qcow2"
+cp "$work/build/$kiwi.packages" "$out/$base.packages" 2>/dev/null || true
 cp "$work/images.json" "$out/$base.images.json"
 cp "$work/root/usr/share/lolly-appliance/release.json" "$out/$base.release.json"
 (cd "$out" && sha256sum "$base.raw" "$base.qcow2" > SHA256SUMS)

@@ -12,6 +12,10 @@ into an overlay tree that the KIWI build copies into the image:
   var/lib/rancher/k3s/server/manifests/lolly-work.yaml   (HelmChart)
   usr/share/lolly-appliance/release.json                 (what this image carries)
 
+With --kiwi it also writes the KIWI description with <version> set to the
+release's Lolly version: everything a person installs carries the Lolly
+project's release number, so the image is lolly-appliance-<version>-<arch>.
+
 It also writes an image plan (--plan) that fetch.py turns into preloaded image
 archives. Standard library only, no network, deterministic output, so the
 podman profile can later be generated from the same release.json and a test
@@ -136,6 +140,19 @@ def write(root: Path, rel: str, text: str | bytes, mode: int = 0o644) -> None:
     os.chmod(path, mode)
 
 
+def render_kiwi(release_path: Path, target: Path) -> str:
+    """The KIWI description with <version> set to the release's Lolly version."""
+    version = json.loads(release_path.read_text()).get("version", "")
+    if not re.match(r"^\d+\.\d+\.\d+$", str(version)):
+        raise GenerateError("release.json version must be MAJOR.MINOR.PATCH")
+    source = (HERE / "kiwi/lolly-appliance.kiwi").read_text()
+    if source.count("<version>@LOLLY_VERSION@</version>") != 2 or re.search(r"<version>\d", source):
+        raise GenerateError("kiwi/lolly-appliance.kiwi must take <version> from release.json (@LOLLY_VERSION@), never a literal")
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "lolly-appliance.kiwi").write_text(fill(source, {"LOLLY_VERSION": version}))
+    return version
+
+
 def generate(arch: str, overlay: Path, plan: Path | None, release_path: Path, chart: Path, lock_path: Path) -> dict:
     if arch not in GOARCH:
         raise GenerateError(f"arch must be one of {sorted(GOARCH)}")
@@ -189,6 +206,8 @@ def generate(arch: str, overlay: Path, plan: Path | None, release_path: Path, ch
     ]
     summary = {
         "schemaVersion": 1,
+        "version": release["version"],
+        "image": f"lolly-appliance-{release['version']}-{arch}",
         "profile": "k3s",
         "architecture": arch,
         "work": {"version": release["version"], "source": release.get("workSource"), "serverImage": f"{server['repository']}@{server['digest']}"},
@@ -212,12 +231,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--arch", required=True, choices=sorted(GOARCH))
     parser.add_argument("--overlay", required=True, type=Path, help="overlay root to write into")
     parser.add_argument("--plan", type=Path, help="where to write the image plan for fetch.py")
+    parser.add_argument("--kiwi", type=Path, help="directory to write the versioned KIWI description into")
     parser.add_argument("--release", type=Path, default=REPO / "deploy/marketplaces/release.json")
     parser.add_argument("--chart", type=Path, default=REPO / "deploy/helm")
     parser.add_argument("--lock", type=Path, default=HERE / "appliance.lock.json")
     args = parser.parse_args(argv)
     try:
         result = generate(args.arch, args.overlay, args.plan, args.release, args.chart, args.lock)
+        if args.kiwi:
+            render_kiwi(args.release, args.kiwi)
     except (GenerateError, KeyError, json.JSONDecodeError) as error:
         print(f"generate: {error}", file=sys.stderr)
         return 1

@@ -71,7 +71,11 @@ jobs:
           cd "$RUNNER_TEMP/out"
           ls -la
           sha256sum -c SHA256SUMS
-          raw=$(ls Lolly-Appliance*.raw)
+          # The image carries the release's Lolly version, never its own.
+          version=$(node -p "require('$GITHUB_WORKSPACE/deploy/marketplaces/release.json').version")
+          raw=lolly-appliance-$version-x86_64.raw
+          test -f "$raw" && test -f "lolly-appliance-$version-x86_64.qcow2"
+          grep -q "\"version\": \"$version\"" "lolly-appliance-$version-x86_64.release.json"
           sudo sfdisk --dump "$raw" | tee "$RUNNER_TEMP/partitions.txt"
           # The config partition Combustion and Ignition read at first boot.
           grep -q 'name="p.lxconfig"' "$RUNNER_TEMP/partitions.txt"
@@ -80,8 +84,8 @@ jobs:
         # The qcow2 holds the same disk; keeping only the raw one halves the upload.
         run: |
           cd "$RUNNER_TEMP/out"
-          for disk in *.raw; do zstd -T0 -10 "$disk" -o "$disk.zst"; done
-          sudo rm -f *.raw *.qcow2
+          for disk in lolly-appliance-*.raw; do zstd -T0 -10 "$disk" -o "$disk.zst"; done
+          sudo rm -f lolly-appliance-*.raw lolly-appliance-*.qcow2
           ls -la
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

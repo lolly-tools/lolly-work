@@ -105,6 +105,27 @@ test('the embedded chart is the repository chart, and the values hold no secret'
   }
 });
 
+test('the image takes the release\'s Lolly version, never one of its own', { skip }, () => {
+  assert.equal((kiwi.match(/<version>@LOLLY_VERSION@<\/version>/g) ?? []).length, 2);
+  assert.doesNotMatch(kiwi, /<version>\d/);
+  const dir = mkdtempSync(join(tmpdir(), 'lolly-appliance-kiwi-'));
+  try {
+    execFileSync('python3', ['-B', join(ROOT, 'deploy/appliance/generate.py'), '--arch', 'x86_64',
+      '--overlay', join(dir, 'root'), '--kiwi', join(dir, 'desc')], { stdio: 'pipe' });
+    const rendered = readFileSync(join(dir, 'desc/lolly-appliance.kiwi'), 'utf8');
+    assert.equal((rendered.match(new RegExp(`<version>${release.version.replaceAll('.', '\\.')}</version>`, 'g')) ?? []).length, 2);
+    assert.doesNotMatch(rendered, /@[A-Z_]+@/);
+    const summary = JSON.parse(readFileSync(join(dir, 'root/usr/share/lolly-appliance/release.json'), 'utf8'));
+    assert.equal(summary.version, release.version);
+    assert.equal(summary.image, `lolly-appliance-${release.version}-x86_64`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const build = read('deploy/appliance/build.sh');
+  assert.match(build, /base=lolly-appliance-\$version-\$arch/);
+  assert.match(read('.github/workflows/appliance.yml'), /raw=lolly-appliance-\$version-x86_64\.raw/);
+});
+
 test('the K3s pins agree with the K3s kit, and every download has a checksum', () => {
   const kit = JSON.parse(read('deploy/suse/k3s.lock.json')) as Record<string, any>;
   assert.equal(lock.k3s.version, kit.version);
@@ -124,7 +145,7 @@ test('the K3s pins agree with the K3s kit, and every download has a checksum', (
 });
 
 test('the image keeps the Leap 16.1 Immutable base and adds K3s, Cockpit and a config partition', () => {
-  assert.match(kiwi, /<image schemaversion="7\.5" name="Lolly-Appliance"/);
+  assert.match(kiwi, /<image schemaversion="7\.5" name="lolly-appliance"/);
   for (const arch of ['x86_64', 'aarch64']) {
     assert.match(kiwi, new RegExp(`<profile name="k3s" description="[^"]*" arch="${arch}">\\s*<requires profile="platform-${arch}"/>`));
   }

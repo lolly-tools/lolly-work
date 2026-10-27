@@ -174,8 +174,11 @@ compressed raw disk as an artifact for three days.
 `build.sh` steps: generate the manifests, fetch and verify the pinned files,
 make a local package repository for `k3s-selinux`, assemble the description
 and its overlay (`kiwi/root` plus the generated files), and run
-`kiwi-ng --profile k3s --type oem system build`. Outputs: `Lolly-Appliance.<arch>-0.1.0.raw`,
-the `.qcow2` of the same disk, the package list and `SHA256SUMS`.
+`kiwi-ng --profile k3s --type oem system build`. The image carries the
+Lolly release number from `release.json`, like everything else a person
+installs (`generate.py` sets KIWI's `<version>` from it, and the test and CI
+fail if they drift). Outputs: `lolly-appliance-<version>-<arch>.raw`, the
+`.qcow2` of the same disk, the package list and `SHA256SUMS`.
 
 ## Boot and accept
 
@@ -187,7 +190,7 @@ or FAIL per check and the measurements, without printing the owner link or any
 secret. Run it again with `--after-reboot` after `systemctl reboot`:
 
 ```sh
-deploy/appliance/test/boot-qemu.sh out/Lolly-Appliance.aarch64-0.1.0.raw --combustion script --dir run
+deploy/appliance/test/boot-qemu.sh out/lolly-appliance-<version>-aarch64.raw --combustion script --dir run
 deploy/appliance/test/accept.py --key key --state run/state.json
 ssh -p 2222 root@127.0.0.1 systemctl reboot
 deploy/appliance/test/accept.py --key key --state run/state.json --after-reboot
