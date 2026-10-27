@@ -244,7 +244,7 @@ def cmd_deploy(context, wsha, dispatch):
     require(converted or dispatch, "NOT_CONVERTED", "lolly.ing still mounts the shell and pack claims; build with ship, then "
             "review and apply its one-time cut-over plan")
     if converted:
-        require(status["smokeSession"] == "present", "SMOKE_ACCOUNT", "the smoke account's session on the node: " + status["smokeSession"])
+        require(status["smokeSession"] == "present", "SMOKE_ACCOUNT", "the smoke credential on the node: " + status["smokeSession"])
     preview = _settled_records(status) if converted else {}
     G.require_on_main(gh, WORK_ANCHORS, wsha)
     lsha = IG.lolly_for(gh, wsha)
@@ -358,7 +358,8 @@ def cmd_status(context, follow=None):
          suse=expect.get("suse"), lolly=expect.get("lolly"),
          image=status["deployment"]["image"], config=status["deployment"]["config"], generation=preview.get("generation"),
          converted=status["deployment"]["converted"], ready=status["deployment"]["ready"], unit=status.get("unit"),
-         pods=status.get("pods"), smokeSession=status.get("smokeSession"), maintenance=preview.get("maintenance") == "true",
+         pods=status.get("pods"), smokeSession=status.get("smokeSession"),
+         smokeCredential=status.get("smokeCredential"), maintenance=preview.get("maintenance") == "true",
          maintenanceApplied=_json(preview.get("maintenance-applied")), backup=_json(preview.get("backup")),
          deployId=preview.get("deploy-id"), reason=preview.get("reason"))
     return 0

@@ -36,6 +36,10 @@ ING_IMAGE = "docker.io/library/lolly-ing-instance"
 LEGACY_IMAGE = "docker.io/library/lolly-server@sha256:" + "c" * 64
 SMOKE_SUB = "smoke-member-1"
 SMOKE_COOKIE = "lw_session=" + "s" * 40
+# A Work service token (member role) for the smoke, as Andy made on lolly.ing (2026-10-27). Its id is not a secret.
+SMOKE_TOKEN = "lwt_" + "t" * 32
+SMOKE_TOKEN_ID = "tok_smoke001"
+SMOKE_TOKEN_SUB = "token:" + SMOKE_TOKEN_ID
 PACK_ASSET = "/catalog/assets/suse/logo/primary.svg"
 SUSE_REPO = "lolly-tools/suse-lolly"
 WORK_REPO = "lolly-tools/lolly-work"
@@ -313,6 +317,7 @@ def ing_cluster_state(builds, live, config_name, generation, converted=True, ann
                       "usage": 700 * F.MIB, "rvChurnRate": 0.0, "rvChurnAfterDryRun": {}, "edgeHeaders": {}, "edgeHeadersByImage": {},
                       "transport": {}, "dnsFailures": 0, "bootKeyByImage": {}, "catalogKeyByImage": {}},
         "smokeCookie": SMOKE_COOKIE,
+        "smokeToken": SMOKE_TOKEN,
         "secrets": secrets,
         "ingD": str(ing_key[0]) if ing_key else None,
         "reads": 0, "fetches": {}, "writes": [],
@@ -656,6 +661,11 @@ def make_ing_fetch(state_path):
             if parts.path == "/" and parts.hostname == "lolly.ing":
                 state["fetches"][image] = count + 1
             signed_in = cookie is not None and cookie == state["smokeCookie"]
+            # Work's service token: the old Work build (the claims layout) takes it on the action-gated routes only;
+            # a build with lolly-work's token reads (unless a test says otherwise) also on the catalogue and the session.
+            token = headers.get("Authorization") == "Bearer " + str(state["smokeToken"]) and not behaviour.get("tokenRevoked")
+            token_reads = token and image != LEGACY_IMAGE and image not in behaviour.get("noTokenReads", [])
+            reader = signed_in or token_reads
             csp = "default-src 'self'; script-src 'self' blob: 'unsafe-eval'; connect-src 'self' blob: https://lolly.ing"
             base = [("Content-Security-Policy", csp), ("Via", "1.1 Caddy")]
             if parts.hostname == "www.lolly.ing":
@@ -680,24 +690,35 @@ def make_ing_fetch(state_path):
             if path == "/info/":
                 return preview_smoke.Response(200, base, b"info")
             if path == "/api/auth/session":
+                if not signed_in and token_reads:
+                    return preview_smoke.Response(200, [], json.dumps({"kind": "service", "user": {
+                        "sub": behaviour.get("tokenSub", SMOKE_TOKEN_SUB), "role": behaviour.get("tokenRole", "member"),
+                        "label": "lolly.ing deploy check"}}).encode())
                 if not signed_in:
                     return preview_smoke.Response(401, [], b'{"error":{"code":"UNAUTHORIZED"}}')
                 role = behaviour.get("accountRole", "member")
                 return preview_smoke.Response(200, [], json.dumps({"kind": "member", "user": {"sub": behaviour.get("accountSub", SMOKE_SUB),
                                                                   "email": "smoke@example.com", "groups": [], "role": role}}).encode())
+            if path in ("/api/v1/tokens", "/api/v1/grants"):  # token.manage (owner) and grant.edit (admin)
+                if not (signed_in or token):
+                    return preview_smoke.Response(401, [], b'{"error":{"code":"UNAUTHORIZED"}}')
+                allowed = token and path in behaviour.get("tokenMayList", [])
+                return preview_smoke.Response(200 if allowed else 403, [], b'{}' if allowed else b'{"error":{"code":"FORBIDDEN"}}')
             if path == "/api/v1/projects":
                 projects = behaviour.get("ownedProjects", [])
                 return preview_smoke.Response(200 if signed_in else 401, [], json.dumps({"projects": projects}).encode())
             if path == "/api/v1/render":
-                if not signed_in or method != "POST" or json.loads(data)["toolId"] != "qr-code":
+                if not (signed_in or token) or method != "POST" or json.loads(data)["toolId"] != "qr-code":
                     return preview_smoke.Response(401, [], b"")
+                if image in behaviour.get("noExportGrant", []):
+                    return preview_smoke.Response(403, [], b'{"error":{"code":"FORBIDDEN","message":"export.server required"}}')
                 if image in behaviour.get("renderFails", []):
                     return preview_smoke.Response(501, [], b'{"error":{"code":"HOOKED_TOOL_NEEDS_CHROMIUM"}}')
                 return preview_smoke.Response(200, [("Content-Type", "image/svg+xml")], b'<svg xmlns="http://www.w3.org/2000/svg"/>')
             if path == PACK_ASSET:
-                return preview_smoke.Response(401 if not signed_in else 200, [], b"")
+                return preview_smoke.Response(401 if not reader else 200, [], b"")
             if path in ("/catalog/tools/index.json", "/catalog/tools/index.sig.json"):
-                if not signed_in:
+                if not reader:
                     return preview_smoke.Response(401, [], b'{"error":{"code":"UNAUTHORIZED","message":"this deployment is sign-in gated"}}')
                 server_key = _server_key(state, deploy["spec"]["template"]["spec"])
                 if server_key != build.get("packKey", build["thumb"]):  # publication.ts: the pack must verify against the server's key

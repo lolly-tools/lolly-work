@@ -175,7 +175,9 @@ ING_LOLLY_CI = {"site": "lolly.ing (Lolly source)", "repository": TOOLS["reposit
                 "ciWorkflowPath": TOOLS["ciWorkflowPath"], "fastLaneWorkflowFile": TOOLS["fastLaneWorkflowFile"],
                 "fastLaneWorkflowPath": TOOLS["fastLaneWorkflowPath"], "branch": TOOLS["branch"]}
 ING_ARCHIVE_MAX_BYTES = 6 * 1024 ** 3
-# The smoke account's session cookie: a root-only file on the node, never printed.
+# The smoke's credential, a root-only file on the node, never printed: a Work service token (lwt_..., member role or
+# lower) when its file exists, otherwise a member's session cookie. A token does not expire overnight (Andy, 2026-10-27).
+NODE_ING_SMOKE_TOKEN = "/etc/lolly-preview/lolly.ing-smoke-token"
 NODE_ING_SMOKE_COOKIE = "/etc/lolly-preview/lolly.ing-smoke-session"
 NODE_SPOOL_DIR = "/var/lib/lolly-preview/spool"
 

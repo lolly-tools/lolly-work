@@ -308,6 +308,47 @@ class IngRules(unittest.TestCase):
         runner.finish.assert_called_once_with("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED", checks=None, backup=restore,
                                               note=IN.HOLD_NOTE)
 
+    def test_the_smoke_credential_prefers_a_token_file_and_never_shows_its_value(self):
+        """Andy 2026-10-27: a service token, because a session cookie expires overnight. The cookie file still works
+        when no token file is there; a token file that is there but wrong refuses instead of falling back."""
+        import preview_ing_node as IN
+        runner = object.__new__(IN.IngRunner)
+        with tempfile.TemporaryDirectory() as tmp:
+            token, cookie = Path(tmp) / "token", Path(tmp) / "session"
+            with mock.patch.dict(IN.N.PATHS, {"smokeToken": str(token), "smokeCookie": str(cookie)}):
+                self.assertIn("neither", refused(self, runner.smoke_credential, "SMOKE_ACCOUNT").message)
+                cookie.write_text(IF.SMOKE_COOKIE + "\n")
+                cookie.chmod(0o600)
+                found = runner.smoke_credential()
+                self.assertEqual((found.kind, found.headers()), ("cookie", {"Cookie": IF.SMOKE_COOKIE}))
+                token.write_text(IF.SMOKE_TOKEN + "\n")
+                token.chmod(0o600)
+                found = runner.smoke_credential()
+                self.assertEqual((found.kind, found.headers(Accept="application/json")),
+                                 ("token", {"Authorization": "Bearer " + IF.SMOKE_TOKEN, "Accept": "application/json"}))
+                self.assertEqual((repr(found), str(found)), ("SmokeCredential(token)", "SmokeCredential(token)"))
+                for text, mode in ((IF.SMOKE_COOKIE, 0o600), ("lwt_short", 0o600), (IF.SMOKE_TOKEN + " " + IF.SMOKE_TOKEN, 0o600),
+                                   (IF.SMOKE_TOKEN + "\n" + IF.SMOKE_TOKEN, 0o600), (IF.SMOKE_TOKEN, 0o640)):
+                    with self.subTest(text=text[:12], mode=oct(mode)):
+                        token.write_text(text)
+                        token.chmod(mode)
+                        failure = refused(self, runner.smoke_credential, "SMOKE_ACCOUNT")
+                        self.assertNotIn(IF.SMOKE_TOKEN, failure.message)
+                token.unlink()
+                token.symlink_to(cookie)
+                refused(self, runner.smoke_credential, "SMOKE_ACCOUNT")  # a link is never followed, never a fallback
+
+    def test_a_refused_export_names_the_missing_grant(self):
+        """Work answers 403 export.server required until an admin grants it; the detail says exactly which grant."""
+        import preview_ing_node as IN
+        import preview_smoke
+        refusal = preview_smoke.Response(403, [], b'{"error":{"code":"FORBIDDEN","message":"export.server required"}}')
+        self.assertEqual(IN.export_detail(refusal, "token", IF.SMOKE_TOKEN_SUB),
+                         "HTTP 403: Work refuses the render; grant export.server on tool:qr-code (allow) to user:svc_tok_smoke001")
+        self.assertIn("to the smoke member", IN.export_detail(refusal, "cookie", IF.SMOKE_SUB))
+        served = preview_smoke.Response(200, [("Content-Type", "image/svg+xml; charset=utf-8")], b"<svg/>")
+        self.assertEqual(IN.export_detail(served, "token", IF.SMOKE_TOKEN_SUB), "HTTP 200; image/svg+xml through the render worker")
+
     def test_a_request_with_a_maintenance_approval_is_from_an_older_mac(self):
         """The approval flow is gone (Andy 2026-10-27); the node refuses a request shaped for it rather than ignore it."""
         source = (ROOT / "deploy/preview/lib/preview_ing_node.py").read_text()
@@ -520,6 +561,25 @@ class IngEndToEnd(unittest.TestCase):
         self.add_run(build, run_id)
         return build
 
+    def use_token(self, sub=IF.SMOKE_TOKEN_SUB, text=IF.SMOKE_TOKEN, mode=0o600):
+        """Andy's setup from 2026-10-27: the service token in its root-only file on the node, its id pinned in the
+        profile. The session file stays where it was."""
+        path = self.sandbox / "smoke-token"
+        path.write_text(text + "\n")
+        path.chmod(mode)
+        self.profile["smoke"]["account"]["sub"] = sub
+        profile = self.state_dir / "lolly.ing.json"
+        profile.write_text(json.dumps(self.profile))
+        profile.chmod(0o600)
+
+    def smoke_details(self, events):
+        """Each smoke check's detail as the node logged it, latest first."""
+        details = {}
+        for event in events:
+            if event.get("event") in ("smoke", "live-smoke") and "check" in event:
+                details.setdefault(event["check"], []).insert(0, event.get("detail", ""))
+        return details
+
     def without_rehearsal(self):
         """The preview-grade default profile: no restore rehearsal; the verified backup still comes first."""
         self.profile["rehearsal"] = None
@@ -574,6 +634,45 @@ class IngDeploys(IngEndToEnd):
         self.assertNotIn("lollyLane", record)
         self.assertFalse([c for c in json.loads(self.gh_path.read_text())["calls"] if "/approvals" in c["path"]])
         self.assert_no_secret_claim_or_exec()
+
+    def test_a_service_token_signs_the_smoke_in_and_is_never_printed(self):
+        """Andy 2026-10-27: the smoke signs in with a member service token, which does not expire overnight. With both
+        files on the node the token is used: the session file beside it has gone stale and would fail every check."""
+        self.use_token()
+        state = self.cluster()
+        state["smokeCookie"] = "lw_session=" + "x" * 40  # the copied session expired
+        self.set_cluster(state)
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        checks = {item["check"]: item for item in self.result_file()["checks"]}
+        for name in ("smoke account", "signed catalog", "qr export"):
+            self.assertTrue(checks[name]["ok"], checks[name])
+        self.assertEqual(checks["smoke account"]["detail"], "service token, member or lower; the token and grant lists refuse it (403)")
+        live = self.smoke_details(events)["smoke account"]
+        self.assertTrue(live and all(d.startswith("service token") for d in live), live)  # the live build's light smoke too
+        secret = IF.SMOKE_TOKEN[len("lwt_"):]
+        self.assertNotIn(secret, json.dumps(events))
+        for path in (self.sandbox / "var/lib/lolly-preview").rglob("*"):
+            if path.is_file():
+                self.assertNotIn(secret.encode(), path.read_bytes(), path)
+        self.assertNotIn(secret, (self.state_dir / "deploys.jsonl").read_text())
+        code, events = self.cli("status")
+        status = [e for e in events if e.get("event") == "status"][-1]
+        self.assertEqual((status["smokeSession"], status["smokeCredential"]), ("present", "token"))
+        self.assertNotIn(secret, json.dumps(events))
+
+    def test_a_missing_export_grant_is_named_and_rolled_back(self):
+        """Work answers 403 export.server required to a token without the grant; the smoke says which grant."""
+        self.use_token()
+        self.behave(noExportGrant=[self.new["image"]])
+        code, events = self.cli("deploy", W_NEW)
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (2, "ROLLED_BACK"), events)
+        checks = {item["check"]: item for item in self.result_file()["checks"]}
+        self.assertFalse(checks["qr export"]["ok"])
+        self.assertIn("grant export.server on tool:qr-code (allow) to user:svc_tok_smoke001", checks["qr export"]["detail"])
+        back = {item["check"]: item["ok"] for item in self.result_file()["rollbackChecks"]}
+        self.assertTrue(back["qr export"] and back["signed catalog"], back)
 
     def test_generation_takes_the_database_row_when_it_is_highest(self):
         """R20 S16: after an interrupted run the database can already hold a higher generation. Here the live
@@ -1075,6 +1174,43 @@ class IngRefusals(IngEndToEnd):
                 self.assertIn("smoke account", refusal["reason"])
                 self.assert_untouched()
 
+    def test_a_smoke_token_must_be_the_pinned_one_and_hold_no_admin_rights(self):
+        """The session names the pinned token with a role of member or lower, and the token list (owner tier) and
+        the grant list (admin tier) both refuse it. Checked on the live build before any change."""
+        self.use_token()
+        cases = (({"tokenRole": "admin"}, "is above member"), ({"tokenSub": "token:tok_another"}, "not the pinned token"),
+                 ({"tokenMayList": ["/api/v1/tokens"]}, "/api/v1/tokens answered HTTP 200"),
+                 ({"tokenMayList": ["/api/v1/grants"]}, "/api/v1/grants answered HTTP 200"),
+                 ({"tokenRevoked": True}, "HTTP 401: the token is unknown, revoked or expired"))
+        for change, words in cases:
+            with self.subTest(change=change):
+                self.behave(**dict({"tokenRole": "member", "tokenSub": IF.SMOKE_TOKEN_SUB, "tokenMayList": [], "tokenRevoked": False},
+                                   **change))
+                code, events = self.cli("deploy", W_NEW)
+                refusal = self.done(events)
+                self.assertEqual((code, refusal["code"]), (1, "LIVE_SMOKE_FAILED"), events)
+                self.assertIn("smoke account", refusal["reason"])
+                self.assertIn(words, self.smoke_details(events)["smoke account"][0])
+                self.assert_untouched()
+
+    def test_a_token_on_the_node_needs_a_token_pinned_in_the_profile(self):
+        self.use_token(sub=IF.SMOKE_SUB)
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "LIVE_SMOKE_FAILED"), events)
+        self.assertIn("set smoke.account.sub to token:<id>", self.smoke_details(events)["smoke account"][0])
+        self.assert_untouched()
+
+    def test_a_malformed_or_open_token_file_refuses_on_the_mac(self):
+        """A token file that is there but wrong never falls back to the session file beside it."""
+        for text, mode in (("lwt_short", 0o600), (IF.SMOKE_TOKEN, 0o644)):
+            with self.subTest(mode=oct(mode)):
+                self.use_token(text=text, mode=mode)
+                code, events = self.cli("deploy", W_NEW)
+                refusal = self.done(events)
+                self.assertEqual((code, refusal["code"]), (1, "SMOKE_ACCOUNT"), events)
+                self.assertIn("smoke token file", refusal["reason"])
+                self.assertEqual(self.cluster()["writes"], [])
+
     def test_check_target_runs_before_the_archive_reaches_the_node(self):
         """AGENTS.md: check-target immediately before the first production write; the upload is one."""
         os.environ["FAKE_CHECK_TARGET"] = "fail"
@@ -1283,6 +1419,39 @@ class IngCutover(IngEndToEnd):
         back = {item["check"]: item["ok"] for item in self.result_file()["rollbackChecks"]}
         self.assertTrue(back["signed catalog"] and back["generation"], back)
         self.assert_no_secret_touched()
+
+    def test_a_failed_cutover_with_a_token_checks_the_old_build_with_a_qr_export(self):
+        """The old Work build (9677dd56) reads catalogues for a cookie only, and its render route takes a token, so with
+        a token the revert check is one signed-in QR export instead of the signed catalog."""
+        self.use_token()
+        plan = self.plan()
+        code, events = self.apply(plan, "--drill-fail-smoke")
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (2, "CONVERSION_REVERTED"), events)
+        self.assertEqual(self.live()[0], IF.LEGACY_IMAGE)
+        checks = {item["check"]: item["ok"] for item in self.result_file()["checks"]}
+        self.assertTrue(checks["smoke account"] and checks["signed catalog"] and checks["qr export"], checks)  # the new build
+        back = {item["check"]: item for item in self.result_file()["rollbackChecks"]}
+        self.assertTrue(back["qr export"]["ok"] and back["generation"]["ok"], back)
+        self.assertNotIn("signed catalog", back)
+        # Nothing read the old build's catalogue: the database still holds the new build's generation, below the revert's.
+        self.assertEqual((result["generation"], self.cluster()["db"]["generation"]), (3011, 3010))
+        self.assertIn("at its first signed-in catalogue read", back["generation"]["detail"])
+
+    def test_a_cutover_to_a_build_without_token_reads_reverts_and_says_why(self):
+        """A Work build from before the token reads answers the session and the catalogue for cookies only."""
+        self.use_token()
+        self.behave(noTokenReads=[self.new["image"]])
+        plan = self.plan()
+        code, events = self.apply(plan)
+        result = self.done(events)
+        self.assertEqual((code, result["result"]), (2, "CONVERSION_REVERTED"), events)
+        checks = {item["check"]: item for item in self.result_file()["checks"]}
+        self.assertFalse(checks["smoke account"]["ok"] or checks["signed catalog"]["ok"])
+        self.assertIn("answers sessions for cookies only (a token needs lolly-work PR #237)", checks["smoke account"]["detail"])
+        self.assertTrue(checks["qr export"]["ok"])
+        back = {item["check"]: item["ok"] for item in self.result_file()["rollbackChecks"]}
+        self.assertTrue(back["qr export"] and back["generation"], back)
 
     def test_plan_refuses_until_the_signing_secret_is_pinned(self):
         with mock.patch.object(A, "ING_SIGNING_KEY_SECRET", None):

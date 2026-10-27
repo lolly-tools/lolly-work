@@ -38,7 +38,55 @@ HOLD_NOTE = ("automatic rollback is off after a non-additive migration. Recover 
              "--clear-hold), or roll back by restoring this run's backup (status: backup) with its previous image, by the "
              "lolly.ing runbook")
 COOKIE_PATTERN = r"lw_session=[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]{16,3800}"
+TOKEN_PATTERN = r"lwt_[A-Za-z0-9_-]{16,128}"
 ACCOUNT_ROLES = ("member",)  # least privilege that can still render one QR code with a grant
+TOKEN_ROLES = ("viewer", "member")  # a service token: member or lower; the grant below adds the one export it needs
+# Work's answer when the smoke may not render the QR code, and the grant that fixes it.
+EXPORT_GRANT = "export.server on tool:qr-code"
+# The Work change that lets a service token read the catalogue and name itself at /api/auth/session.
+TOKEN_READS_PR = "lolly-work PR #237"
+
+
+class SmokeCredential:
+    """What the smoke signs in with: a service token or a member's session cookie, and the one header that carries
+    it. The value never appears in a repr, a log line or a result; only `kind` does."""
+
+    __slots__ = ("kind", "_header", "_value")
+
+    def __init__(self, kind, header, value):
+        self.kind, self._header, self._value = kind, header, value
+
+    def headers(self, **extra):
+        return {self._header: self._value, **extra}
+
+    def __repr__(self):
+        return f"SmokeCredential({self.kind})"
+
+
+def _private_root_file(path, what):
+    """One small private root file, read without following a link. None only when it does not exist."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise Refusal("SMOKE_ACCOUNT", f"the smoke {what} file cannot be opened ({type(exc).__name__}); see the README") from exc
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077 and info.st_size <= 4096,
+                "SMOKE_ACCOUNT", f"the smoke {what} file must be a private root file")
+        return os.read(fd, 4097).decode("ascii", "replace").strip()
+    finally:
+        os.close(fd)
+
+
+def export_detail(response, kind, sub):
+    """What a QR export answer means. A 403 names the grant the smoke account is missing."""
+    content = (response.header("Content-Type") or "").split(";")[0].strip()
+    if response.status == 403:
+        holder = f"user:svc_{sub[len('token:'):]}" if kind == "token" and sub.startswith("token:") else "the smoke member"
+        return f"HTTP 403: Work refuses the render; grant {EXPORT_GRANT} (allow) to {holder}"
+    return f"HTTP {response.status}; {content or 'no content type'} through the render worker"
 
 
 def _number(value, low, high, label):
@@ -432,22 +480,32 @@ class IngRunner(N.Runner):
                 "NOT_READY", "the switched Deployment did not become Ready")
 
     # Smoke (PROPOSAL 4.5) -------------------------------------------------------
-    def smoke_cookie(self):
-        """The smoke account's session cookie from a root-only file. Never logged, printed or stored elsewhere."""
-        try:
-            fd = os.open(N.PATHS["smokeCookie"], os.O_RDONLY | os.O_NOFOLLOW)
-        except OSError as exc:
-            raise Refusal("SMOKE_ACCOUNT", "the smoke account's session file is missing; see the README") from exc
-        try:
-            info = os.fstat(fd)
-            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077 and info.st_size <= 4096,
-                    "SMOKE_ACCOUNT", "the smoke session file must be a private root file")
-            text = os.read(fd, 4097).decode("ascii", "replace").strip()
-        finally:
-            os.close(fd)
-        require(re.fullmatch(COOKIE_PATTERN, text) is not None, "SMOKE_ACCOUNT",
+    def smoke_credential(self):
+        """The smoke's credential from a root-only file: the service token when its file exists, else the session
+        cookie. A token file that is present but wrong refuses rather than falling back. The value is sent only to the
+        anchored origin and never logged, printed or stored elsewhere."""
+        token = _private_root_file(N.PATHS["smokeToken"], "token")
+        if token is not None:
+            require(re.fullmatch(TOKEN_PATTERN, token) is not None, "SMOKE_ACCOUNT",
+                    "the smoke token file does not hold one lwt_ service token")
+            return SmokeCredential("token", "Authorization", "Bearer " + token)
+        cookie = _private_root_file(N.PATHS["smokeCookie"], "session")
+        require(cookie is not None, "SMOKE_ACCOUNT", "neither the smoke token file nor the smoke session file is on the node; "
+                "see the README")
+        require(re.fullmatch(COOKIE_PATTERN, cookie) is not None, "SMOKE_ACCOUNT",
                 "the smoke session file does not hold one lw_session cookie")
-        return text
+        return SmokeCredential("cookie", "Cookie", cookie)
+
+    def qr_export(self, checks, credential):
+        """One QR code through the render worker, signed in. The reverted old server takes a token here too."""
+        origin = self.anchors["origin"]
+        body = json.dumps({"toolId": "qr-code", "format": "svg", "inputs": {"url": origin + "/?preview-smoke=1"}}).encode()
+        export = S._get(checks, "qr export", origin + "/api/v1/render", method="POST", data=body,
+                        headers=credential.headers(**{"Content-Type": "application/json", "Accept": "image/svg+xml"}))
+        if export is not None:
+            kind = (export.header("Content-Type") or "").split(";")[0].strip()
+            checks.record("qr export", export.status == 200 and kind == "image/svg+xml" and b"<svg" in export.body[:4096],
+                          export_detail(export, credential.kind, self.request["smoke"]["sub"]))
 
     def boot_key(self, value):
         pods = self.pods(value)
@@ -456,12 +514,15 @@ class IngRunner(N.Runner):
                               "--limit-bytes=1048576"])
         return I.boot_key_id(logs)
 
-    def account(self, checks, cookie):
-        """The smoke account is the expected member, holds no admin role and owns no projects (R20 S13)."""
-        origin, headers = self.anchors["origin"], {"Cookie": cookie, "Accept": "application/json"}
+    def account(self, checks, credential):
+        """The smoke account is the expected member, holds no admin role and owns no projects (R20 S13). A service
+        token instead: the pinned token, member or lower, and refused where an admin or owner is not."""
+        origin, headers = self.anchors["origin"], credential.headers(Accept="application/json")
         response = S._get(checks, "smoke account", origin + "/api/auth/session", headers=headers)
         if response is None:
             return False
+        if credential.kind == "token":
+            return checks.record("smoke account", *self.token_account(response, headers))
         try:
             body = json.loads(response.body)
             user = body.get("user") or {}
@@ -479,13 +540,41 @@ class IngRunner(N.Runner):
             ok, detail = False, "unreadable session answer: " + type(exc).__name__
         return checks.record("smoke account", ok, detail)
 
+    def token_account(self, response, headers):
+        """The session answer names the pinned token with a role of member or lower, and two routes that need more
+        refuse it: the token list (owner tier, token.manage) and the grant list (admin tier, grant.edit). The token
+        owns nothing, so there is no projects check."""
+        pinned = self.request["smoke"]["sub"]
+        if not pinned.startswith("token:"):
+            return False, "the node holds a service token but the profile pins a member; set smoke.account.sub to token:<id>"
+        if response.status == 401:
+            return False, ("HTTP 401: the token is unknown, revoked or expired, or this Work build answers sessions for "
+                           f"cookies only (a token needs {TOKEN_READS_PR})")
+        try:
+            body = json.loads(response.body)
+            user = body.get("user") or {}
+            if not (response.status == 200 and body.get("kind") == "service" and user.get("sub") == pinned
+                    and user.get("role") in TOKEN_ROLES):
+                return False, (f"HTTP {response.status}; the session is not the pinned token {pinned}, or its role "
+                               f"{user.get('role')!r} is above member")
+            refused = []
+            for path in ("/api/v1/tokens", "/api/v1/grants"):
+                probe = S.FETCH(self.anchors["origin"] + path, headers=headers)
+                if probe.status != 403:
+                    refused.append(f"{path} answered HTTP {probe.status}")
+            if refused:
+                return False, "service token; 403 expected for an account without admin rights, but " + ", ".join(refused)
+            return True, "service token, member or lower; the token and grant lists refuse it (403)"
+        except (ValueError, AttributeError, Refusal) as exc:
+            return False, "unreadable session answer: " + type(exc).__name__
+
     def run_smoke(self, expect, image, generation=None, light=False):
         """PROPOSAL 4.5. light: the live build before the switch (no generation readback, no export)."""
         I.validate_expect(expect)
         S.check_dns(self.anchors, self.limits["edgeAddress"])
-        cookie = self.smoke_cookie()
+        credential = self.smoke_credential()
         checks, files = S.Checks(), {"index.html": expect["index"]}
-        origin, signed_in = self.anchors["origin"], {"Cookie": cookie, "Accept": "application/json"}
+        origin, signed_in = self.anchors["origin"], credential.headers(Accept="application/json")
         health = S._get(checks, "healthz", origin + "/healthz")
         if health is not None:
             try:
@@ -526,7 +615,7 @@ class IngRunner(N.Runner):
         asset = S._get(checks, "anonymous pack asset", origin + self.request["smoke"]["packAssetPath"])
         if asset is not None:
             checks.record("anonymous pack asset", asset.status in (401, 404), f"HTTP {asset.status} (401 or 404 expected)")
-        self.account(checks, cookie)
+        self.account(checks, credential)
         index = S._get(checks, "signed catalog", origin + "/catalog/tools/index.json", headers=signed_in)
         envelope = S._get(checks, "signed catalog", origin + "/catalog/tools/index.sig.json", headers=signed_in)
         if index is not None and envelope is not None:
@@ -539,13 +628,7 @@ class IngRunner(N.Runner):
                 except Refusal as exc:
                     checks.record("signed catalog", False, exc.message)
         if not light:
-            body = json.dumps({"toolId": "qr-code", "format": "svg", "inputs": {"url": origin + "/?preview-smoke=1"}}).encode()
-            export = S._get(checks, "qr export", origin + "/api/v1/render", method="POST", data=body,
-                            headers={"Cookie": cookie, "Content-Type": "application/json", "Accept": "image/svg+xml"})
-            if export is not None:
-                kind = (export.header("Content-Type") or "").split(";")[0].strip()
-                checks.record("qr export", export.status == 200 and kind == "image/svg+xml" and b"<svg" in export.body[:4096],
-                              f"HTTP {export.status}; {kind or 'no content type'} through the render worker")
+            self.qr_export(checks, credential)
             www = S._get(checks, "www redirect", self.anchors["wwwOrigin"] + "/")
             if www is not None:
                 checks.record("www redirect", www.status == 308 and www.header("Location") == origin + "/",
@@ -985,13 +1068,24 @@ class IngRunner(N.Runner):
                 response = S._get(back, name, self.anchors["origin"] + path)
                 if response is not None:
                     back.record(name, response.status == want, f"HTTP {response.status}")
-            cookie = self.smoke_cookie()
-            catalog = S._get(back, "signed catalog", self.anchors["origin"] + "/catalog/tools/index.json", headers={"Cookie": cookie})
-            if catalog is not None:
-                back.record("signed catalog", catalog.status == 200, f"HTTP {catalog.status} at generation {generation}")
-            readback = self.check_db(self.request["release"]["image"])
-            back.record("generation", readback["publicationGeneration"] == generation, f"database generation "
-                        f"{readback['publicationGeneration']}; {generation} expected")
+            credential = self.smoke_credential()
+            if credential.kind == "token":
+                # The reverted server is the old Work build, which reads catalogues for a cookie only. Its render route
+                # takes a token, so one signed-in QR export proves the old build serves a signed-in caller again.
+                self.qr_export(back, credential)
+            else:
+                catalog = S._get(back, "signed catalog", self.anchors["origin"] + "/catalog/tools/index.json",
+                                 headers=credential.headers())
+                if catalog is not None:
+                    back.record("signed catalog", catalog.status == 200, f"HTTP {catalog.status} at generation {generation}")
+            readback = self.check_db(self.request["release"]["image"])["publicationGeneration"]
+            if credential.kind == "token":
+                # Nothing read the old build's catalogue, and the first signed-in read is what publishes a generation.
+                # What can be checked is that nothing holds it above this config, so that first read is admitted.
+                back.record("generation", readback <= generation, f"database generation {readback}; at most {generation}, "
+                            "which the old build publishes at its first signed-in catalogue read")
+            else:
+                back.record("generation", readback == generation, f"database generation {readback}; {generation} expected")
             problem = None if back.ok else "after the revert: " + ", ".join(i["check"] for i in back.failures())
         except (Refusal, self.au.Refusal, KeyError) as exc:
             problem = str(exc)[:300]
@@ -1139,15 +1233,15 @@ def read(query, au):
                          "ready": all(s.get("ready") for s in statuses) and bool(statuses)})
         unit = subprocess.run([N.PATHS["systemctl"], "show", "-p", "ActiveState", "--value", A.NODE_UNIT],
                               capture_output=True, timeout=20, check=False).stdout.decode().strip()
-        cookie = "present"
+        session, kind = "present", None
         try:
-            runner.smoke_cookie()
+            kind = runner.smoke_credential().kind
         except Refusal as exc:
-            cookie = exc.message
+            session = exc.message
         return {"deployment": {"uid": value["metadata"]["uid"], "image": runner.image_of(value, index), "ready": runner.ready(value),
                                "config": I.config_volume(value, index)[1], "converted": I.is_converted(value, index),
                                "revision": (value["metadata"].get("annotations") or {}).get("deployment.kubernetes.io/revision")},
-                "preview": annotations, "pods": pods, "unit": unit, "smokeSession": cookie}
+                "preview": annotations, "pods": pods, "unit": unit, "smokeSession": session, "smokeCredential": kind}
     if query["op"] == "intake":
         release = query["release"]
         I.validate_release(release)
