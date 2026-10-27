@@ -7,6 +7,9 @@
  * The multipart tests run against an in-process S3 double that makes the checks
  * S3 makes on every request: the body hashes to the signed payload hash, every
  * x-amz-* header is signed, and every part but the last is at least 5 MiB.
+ * With `dropsMetadata` the double behaves like a store that keeps neither the
+ * content type nor x-amz-meta-* (Predastore before v1.21, plan 324), and the
+ * same conformance suite runs against it.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -39,7 +42,7 @@ interface S3Request { method: string; key: string; query: URLSearchParams; heade
 interface StoredObject { bytes: Buffer; contentType: string; etag: string; sha256?: string }
 
 /** An in-process S3 for one bucket, path-style under https://s3.test. */
-function s3Double(hooks: { onRequest?: (r: S3Request) => Response | undefined } = {}) {
+function s3Double(hooks: { onRequest?: (r: S3Request) => Response | undefined; dropsMetadata?: boolean } = {}) {
   const objects = new Map<string, StoredObject>();
   const uploads = new Map<string, { key: string; contentType: string; sha256?: string; parts: Map<number, Buffer> }>();
   const requests: S3Request[] = [];
@@ -78,13 +81,15 @@ function s3Double(hooks: { onRequest?: (r: S3Request) => Response | undefined } 
       if (parts.slice(0, -1).some((p) => p.bytes!.length < PART)) return xml(400, '<Error><Code>EntityTooSmall</Code></Error>');
       const bytes = Buffer.concat(parts.map((p) => p.bytes!));
       const etag = `"${md5(Buffer.concat(parts.map((p) => Buffer.from(md5(p.bytes!), 'hex'))))}-${parts.length}"`;
-      objects.set(r.key, { bytes, contentType: upload.contentType, etag, ...(upload.sha256 ? { sha256: upload.sha256 } : {}) });
+      objects.set(r.key, hooks.dropsMetadata ? { bytes, contentType: 'application/octet-stream', etag }
+        : { bytes, contentType: upload.contentType, etag, ...(upload.sha256 ? { sha256: upload.sha256 } : {}) });
       uploads.delete(uploadId);
       return xml(200, `<CompleteMultipartUploadResult><Key>${r.key}</Key><ETag>${etag}</ETag></CompleteMultipartUploadResult>`);
     }
     if (r.method === 'PUT') {
       const etag = `"${md5(body)}"`;
-      objects.set(r.key, { bytes: body, contentType: headers['content-type'] ?? 'binary/octet-stream', etag, ...(headers['x-amz-meta-sha256'] ? { sha256: headers['x-amz-meta-sha256'] } : {}) });
+      objects.set(r.key, hooks.dropsMetadata ? { bytes: body, contentType: 'application/octet-stream', etag }
+        : { bytes: body, contentType: headers['content-type'] ?? 'binary/octet-stream', etag, ...(headers['x-amz-meta-sha256'] ? { sha256: headers['x-amz-meta-sha256'] } : {}) });
       return new Response(null, { status: 200, headers: { etag } });
     }
     if (r.method === 'DELETE') { objects.delete(r.key); return new Response(null, { status: 204 }); }
@@ -118,7 +123,7 @@ test('put signs a PUT with the body payload hash and returns the checksum', asyn
   const content = Buffer.from('materialized png bytes');
   const sha = createHash('sha256').update(content).digest('hex');
   const { fetchImpl, calls } = recorder(() => new Response('', { status: 200 }));
-  const store = createS3BlobStore(CONFIG, CRED, fetchImpl);
+  const store = createS3BlobStore(CONFIG, CRED, fetchImpl, { metadata: 'native' });
 
   const stat = await store.put('inst/abc/png', content, 'image/png');
   assert.equal(stat.checksum, sha);
@@ -136,7 +141,7 @@ test('put signs a PUT with the body payload hash and returns the checksum', asyn
 test('a single PUT records its sha256 on the object and signs every header it sends', async () => {
   const content = Buffer.from('materialized png bytes');
   const { fetchImpl, calls } = recorder(() => new Response('', { status: 200 }));
-  await createS3BlobStore(CONFIG, CRED, fetchImpl).put('inst/abc/png', content, 'image/png');
+  await createS3BlobStore(CONFIG, CRED, fetchImpl, { metadata: 'native' }).put('inst/abc/png', content, 'image/png');
   const put = calls[0]!;
   assert.equal(put.headers['x-amz-meta-sha256'], sha256(content));
   assert.equal(put.headers['content-type'], 'image/png');
@@ -194,6 +199,75 @@ test('a missing credential fails closed', async () => {
 
 test('the S3 driver passes the shared conformance suite against the S3 double', async () => {
   await blobStoreConformance(s3Double().store());
+});
+
+const isProbe = (r: S3Request): boolean => r.key.startsWith('inst/.lolly-probe-');
+const recordKeys = (objects: Map<string, StoredObject>): string[] => [...objects.keys()].filter((k) => k.startsWith('inst/.lolly-meta/'));
+
+test('the first write probes the store once, and a store that keeps metadata gets no records', async () => {
+  const s3 = s3Double();
+  const store = s3.store();
+  await store.put('a', Buffer.from('one'), 'image/png');
+  await store.put('b', Buffer.from('two'), 'image/png');
+  const probes = s3.requests.filter(isProbe);
+  assert.deepEqual(probes.map((r) => r.method), ['PUT', 'HEAD', 'DELETE'], 'one probe: write, read back, delete');
+  assert.equal(probes[0]!.headers['content-type'], 'image/svg+xml');
+  assert.equal(probes[0]!.headers['x-amz-meta-sha256'], sha256(probes[0]!.body));
+  assert.equal(await store.metadata(), 'native');
+  assert.deepEqual(recordKeys(s3.objects), []);
+  assert.ok(![...s3.objects.keys()].some((k) => k.includes('.lolly-probe-')), 'the probe object is deleted');
+  const before = s3.requests.length;
+  assert.equal((await store.head('a'))?.contentType, 'image/png');
+  await store.delete('a');
+  assert.equal(s3.requests.length - before, 2, 'a store known to keep metadata reads and deletes no records');
+});
+
+test('the S3 driver passes the shared conformance suite against a store that drops metadata', async () => {
+  const s3 = s3Double({ dropsMetadata: true });
+  const store = s3.store();
+  await blobStoreConformance(store);
+  assert.equal(await store.metadata(), 'sidecar');
+  assert.deepEqual(recordKeys(s3.objects).sort(), ['inst/.lolly-meta/b2', 'inst/.lolly-meta/b3'], 'b1 was deleted with its record');
+});
+
+test('on a store that drops metadata, a fresh process reads the record, and a streamed upload gets its sha256', async () => {
+  const s3 = s3Double({ dropsMetadata: true });
+  const { all, body } = source(PART + 99);
+  const stat = await s3.store().put('clip', body(), 'video/mp4');
+  assert.equal(stat.checksum, sha256(all));
+  assert.equal(s3.objects.get('inst/clip')?.contentType, 'application/octet-stream', 'the store kept no content type');
+  // A second process has not probed: it finds the record because the
+  // object's own headers carry no sha256.
+  const fresh = s3.store();
+  assert.deepEqual(await fresh.head('clip'), { blobId: 'clip', size: all.length, checksum: sha256(all), contentType: 'video/mp4' });
+  const got = await fresh.get('clip');
+  assert.equal(got?.stat.contentType, 'video/mp4');
+  assert.deepEqual(Buffer.from(await new Response(got!.body).arrayBuffer()), all);
+});
+
+test('a record left from earlier bytes is never applied to newer ones', async () => {
+  let failRecord = false;
+  const s3 = s3Double({ dropsMetadata: true, onRequest: (r) => (failRecord && r.method === 'PUT' && r.key.startsWith('inst/.lolly-meta/') ? new Response('no', { status: 500 }) : undefined) });
+  const store = s3.store();
+  await store.put('logo', Buffer.from('<svg>old</svg>'), 'image/svg+xml');
+  failRecord = true;
+  // Same length, different bytes: only the ETag tells the record is stale.
+  await assert.rejects(store.put('logo', Buffer.from('<svg>new</svg>'), 'image/png'), /metadata record put 500/);
+  const head = await s3.store().head('logo');
+  assert.equal(head?.contentType, 'application/octet-stream', 'the stale record is ignored');
+  assert.notEqual(head?.checksum, sha256('<svg>old</svg>'));
+  assert.equal(head?.checksum, md5(Buffer.from('<svg>new</svg>')), 'the read reports the ETag, as for any object without a sha256');
+});
+
+test('a probe that cannot write fails that put, and the next put probes again', async () => {
+  let refuse = true;
+  const s3 = s3Double({ onRequest: (r) => (refuse && isProbe(r) ? new Response('denied', { status: 403 }) : undefined) });
+  const store = s3.store();
+  await assert.rejects(store.put('a', Buffer.from('x'), 'text/plain'), /metadata probe put 403/);
+  assert.equal(s3.objects.has('inst/a'), false, 'nothing is written');
+  refuse = false;
+  assert.equal((await store.put('a', Buffer.from('x'), 'text/plain')).contentType, 'text/plain');
+  assert.equal(s3.requests.filter((r) => isProbe(r) && r.method === 'PUT').length, 2);
 });
 
 test('a streamed body larger than one part goes up in parts, holding one part at a time', async () => {

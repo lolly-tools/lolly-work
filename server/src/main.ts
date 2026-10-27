@@ -156,14 +156,27 @@ const nearby = createNearbyRegistry();
 // BlobStore for instance-owned catalog bytes (plans/26 §2, plans/27 §5): the
 // configured driver - s3 (any S3-compatible store) when chosen, else the PG
 // default (zero moving parts), else memory when there is no database at all.
-const blobs = config.blobs.driver === 's3'
+const s3Blobs = config.blobs.driver === 's3'
   ? createS3BlobStore(
       config.blobs.s3 ?? (() => { throw new Error('blobs.driver is "s3" but blobs.s3 config is missing'); })(),
       process.env.LW_BLOBS_S3_CREDENTIAL,
     )
-  : databaseUrl
+  : undefined;
+const blobs = s3Blobs
+  ?? (databaseUrl
     ? await createPostgresBlobStore(databaseUrl)
-    : createMemoryBlobStore();
+    : createMemoryBlobStore());
+// Probe the S3 store now rather than on the first upload, so the log says
+// whether it keeps object metadata (blobs/s3.ts). A failed probe is retried
+// by the first write, which then fails visibly if the store still refuses.
+if (s3Blobs) {
+  void s3Blobs.metadata().then(
+    (mode) => console.log(mode === 'native'
+      ? '[lolly-work] s3 blobs: the store keeps content types and metadata'
+      : '[lolly-work] s3 blobs: the store drops content types and metadata; keeping them in .lolly-meta/ records beside each blob'),
+    (error: Error) => console.warn(`[lolly-work] s3 blobs: metadata probe failed (${error.message}); the first write will try again`),
+  );
+}
 
 // LW_BACKGROUND_POLL_MS: how often the durable render and automation runners
 // look for queued work. Unset keeps 1 s; 0 sets no timer (work is still picked
