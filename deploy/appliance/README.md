@@ -197,6 +197,14 @@ deploy/appliance/test/accept.py --key key --state run/state.json --after-reboot
 kill "$(cat run/qemu.pid)"
 ```
 
+On a Mac, QEMU with Apple's hypervisor (`-accel hvf`) boots the aarch64
+image much faster than KVM nested inside a Lima VM, which starves the guest of
+CPU. Seed the config partition on Linux as `boot-qemu.sh` does, convert the
+raw disk to qcow2, then boot it with Homebrew's `qemu-system-aarch64 -machine
+virt -accel hvf -cpu host` and `edk2-aarch64-code.fd`, and point `accept.py`
+at the forwarded ports (`--ssh-port`, `--https`, `--http`, `--cockpit`).
+`--ssh-host` reaches a machine by its address instead, for a cloud test.
+
 ## Look after it
 
 ```sh
@@ -212,7 +220,39 @@ machine.
 
 ## Measured
 
-@MEASURED@
+The aarch64 image of Work 1.1.1 (chart 0.3.3), 27 October 2026, on QEMU 11.1
+with HVF on an Apple M4: 2 vCPU, 4 GiB memory, the 20 GiB image on a 40 GiB
+disk, no TPM, Combustion from the config partition. These are the first
+numbers for the k3s threshold; a real KVM host and the x86_64 image are
+listed below as they are run.
+
+| | |
+|---|---|
+| First boot, power on to login prompt | 37 s |
+| First boot, power on to Work `/readyz` 200 | about 92 s (Work ready 85 s after the kernel started) |
+| Reboot to Work `/readyz` 200 | about 60 s (52 s after the kernel started) |
+| Memory at first readiness | 1.37 GiB used of 3.8 GiB |
+| Memory idle, 13 min after a reboot | 1.26 GiB used, 2.55 GiB available; K3s 679 MiB, Work 218 MiB, containerd 203 MiB, Traefik 104 MiB, CoreDNS 64 MiB, firewalld 49 MiB |
+| Disk used after first boot | 4.5 GiB of the btrfs filesystem (both root snapshots and `/var`); `/var/lib/rancher` 2.6 GiB, of which the preloaded archives are 450 MiB and PostgreSQL 66 MiB |
+| Image files | raw 20 GiB apparent, 2.5 GiB allocated; qcow2 1.75 GiB (aarch64), 1.84 GiB (x86_64) |
+| Build | 9 to 11 min for aarch64 in the Lima VM with a warm download cache; 5.5 min for x86_64 KIWI in CI |
+| Renders | `qr-code` SVG 1.7 s and PNG 1.1 s on first boot, 1.0 s each after the reboot, byte-identical before and after |
+
+Acceptance, first boot and after a reboot, all passed: Combustion from the
+config partition, `/readyz` 200 on PostgreSQL in production mode, HTTPS with the
+machine's own certificate, HTTP redirected, SELinux enforcing with K3s's
+policy loaded and `container_runtime_t`/`container_t` labels, six encrypted
+credentials and no Lolly secret in plain text, console text without the link
+and the link on tty1 only, owner link once only, owner sign-in by password,
+`qr-code` SVG and PNG renders, Cockpit on 9090, `lolly-appliance cockpit
+off` and `on`. Every pod image was "already present on machine": nothing was
+pulled. A second first boot with a software TPM (swtpm, under KVM) sealed the
+credentials to the host key and the TPM (`systemd-creds` type
+host+TPM2-HMAC); without a TPM they are sealed to the host key.
+
+KVM nested inside the Lima VM booted and configured the machine correctly but
+was too slow to measure: two starved vCPUs took six minutes to import one
+image archive and the API timed out.
 
 ## Not done yet
 

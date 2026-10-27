@@ -41,9 +41,9 @@ def ok(label: str, cond: bool, extra: str = "") -> bool:
 
 
 class Guest:
-    def __init__(self, port: int, key: str):
+    def __init__(self, port: int, key: str, host: str = "127.0.0.1"):
         self.base = ["ssh", "-p", str(port), "-i", key, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-                     "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "root@127.0.0.1"]
+                     "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", f"root@{host}"]
 
     def run(self, command: str, timeout: int = 120) -> subprocess.CompletedProcess:
         return subprocess.run(self.base + [command], capture_output=True, text=True, timeout=timeout)
@@ -165,6 +165,7 @@ echo "kernel=$(uname -r)"
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--ssh-host", default="127.0.0.1")
     parser.add_argument("--ssh-port", type=int, default=2222)
     parser.add_argument("--key", required=True)
     parser.add_argument("--https", default="127.0.0.1:8443")
@@ -174,7 +175,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--after-reboot", action="store_true")
     parser.add_argument("--wait", type=int, default=1800)
     args = parser.parse_args(argv)
-    guest = Guest(args.ssh_port, args.key)
+    guest = Guest(args.ssh_port, args.key, args.ssh_host)
 
     t0 = time.time()
     ok("SSH answers (root key from the Combustion script on the config partition)", guest.wait(args.wait))
