@@ -37,7 +37,7 @@ async function fixture(opts: { flags?: Flag[]; flagService?: unknown; groups?: s
   w.eval(`${source}\nwindow.helpers = {viewFeatureFlags}; route = () => {}; activityHeader = async () => null;`);
   const main = w.document.getElementById('app');
   await w.helpers.viewFeatureFlags(main);
-  const card = (id: string) => [...main.querySelectorAll('[data-flag]')].find((c: { dataset: { flag: string } }) => c.dataset.flag === id) as HTMLElement;
+  const card = (id: string) => [...main.querySelectorAll('[data-flag]')].find((c: { dataset: { flag: string } }) => c.dataset.flag === id) as any;
   const puts = () => calls.filter((c) => c.method === 'PUT');
   return { dom, w, main, card, puts };
 }
@@ -46,7 +46,7 @@ test('managed AI shows no group rules; other flags offer them with labelled cont
   const p = await fixture();
   try {
     assert.equal(p.card('ai').querySelector('.flag-groups'), null);
-    const groups = p.card('export-preflight').querySelector('.flag-groups') as HTMLDetailsElement;
+    const groups = p.card('export-preflight').querySelector('.flag-groups') as any;
     assert.ok(groups);
     assert.equal(groups.open, false, 'closed while there are no rules');
     for (const control of groups.querySelectorAll('form input, form select')) {
@@ -60,26 +60,26 @@ test('managed AI shows no group rules; other flags offer them with labelled cont
 test('adding a group rule PUTs the whole record with the new rule, and refuses an empty or duplicate group', async () => {
   const p = await fixture({ flags: [flag('export-preflight', { default: 'off', visibility: 'hide' })] });
   try {
-    let form = p.card('export-preflight').querySelector('.flag-groups form') as HTMLFormElement;
+    let form = p.card('export-preflight').querySelector('.flag-groups form') as any;
     form.dispatchEvent(new p.w.Event('submit', { cancelable: true })); await pause();
     assert.equal(p.puts().length, 0);
     assert.match(p.card('export-preflight').querySelector('.flag-groups .form-err')!.textContent!, /Enter a group name/);
 
-    const [def, vis] = form.querySelectorAll('select') as unknown as HTMLSelectElement[];
-    (form.querySelector('input') as HTMLInputElement).value = 'pilot';
+    const [def, vis] = form.querySelectorAll('select') as any[];
+    (form.querySelector('input') as any).value = 'pilot';
     def!.value = 'on'; vis!.value = 'show';
     form.dispatchEvent(new p.w.Event('submit', { cancelable: true })); await pause();
     assert.deepEqual(p.puts()[0]!.body, { default: 'off', visibility: 'hide', groups: [{ group: 'pilot', default: 'on', visibility: 'show' }] });
     assert.equal(p.puts()[0]!.path, '/api/v1/policy/flags/export-preflight');
 
     // Re-rendered from the answer: the rule is listed and the disclosure is open.
-    const groups = p.card('export-preflight').querySelector('.flag-groups') as HTMLDetailsElement;
+    const groups = p.card('export-preflight').querySelector('.flag-groups') as any;
     assert.equal(groups.open, true);
     assert.match(groups.querySelector('table')!.textContent!, /pilot/);
     assert.equal(p.w.document.activeElement, groups.querySelector('form input'), 'focus returns to the add field');
 
-    form = groups.querySelector('form') as HTMLFormElement;
-    (form.querySelector('input') as HTMLInputElement).value = 'pilot';
+    form = groups.querySelector('form') as any;
+    (form.querySelector('input') as any).value = 'pilot';
     form.dispatchEvent(new p.w.Event('submit', { cancelable: true })); await pause();
     assert.equal(p.puts().length, 1, 'a duplicate is refused before any request');
     assert.match(groups.querySelector('.form-err')!.textContent!, /already has a rule/);
@@ -93,19 +93,19 @@ test('changing and removing a rule keeps the other rules and the instance settin
   try {
     const rows = p.card('neurospicy').querySelectorAll('.flag-groups tbody tr');
     assert.equal(rows.length, 2);
-    const [def, vis] = rows[0]!.querySelectorAll('select') as unknown as HTMLSelectElement[];
+    const [def, vis] = rows[0]!.querySelectorAll('select') as any[];
     assert.equal(def!.getAttribute('aria-label'), 'Default state for calm');
     vis!.value = 'hide'; vis!.dispatchEvent(new p.w.Event('change')); await pause();
     assert.deepEqual(p.puts()[0]!.body, { default: 'on', visibility: 'show', groups: [
       { group: 'calm', default: 'off', visibility: 'hide' }, { group: 'pilot', default: 'on', visibility: 'show' },
     ] });
 
-    const remove = p.card('neurospicy').querySelector('button[aria-label="Remove the rule for pilot"]') as HTMLButtonElement;
+    const remove = p.card('neurospicy').querySelector('button[aria-label="Remove the rule for pilot"]') as any;
     remove.click(); await pause();
     assert.deepEqual(p.puts()[1]!.body, { default: 'on', visibility: 'show', groups: [{ group: 'calm', default: 'off', visibility: 'hide' }] });
 
     // An instance-level change still carries the rules, so it cannot drop them.
-    const instanceDefault = p.card('neurospicy').querySelector('select[aria-label="Default state for neurospicy"]') as HTMLSelectElement;
+    const instanceDefault = p.card('neurospicy').querySelector('select[aria-label="Default state for neurospicy"]') as any;
     instanceDefault.value = 'off'; instanceDefault.dispatchEvent(new p.w.Event('change')); await pause();
     assert.deepEqual(p.puts()[2]!.body, { default: 'off', visibility: 'show', groups: [{ group: 'calm', default: 'off', visibility: 'hide' }] });
   } finally { p.dom.window.close(); }
