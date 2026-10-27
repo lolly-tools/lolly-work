@@ -13,7 +13,7 @@ Qualified release cohort: Work 1.1.1, from [`release.json`](release.json).
 | Channel | Route | Carries | Latest attempt | State | Still open |
 |---|---|---|---|---|---|
 | Container images (GHCR) | Image registry | [1.1.1](https://github.com/lolly-tools/lolly-work/releases/tag/v1.1.1) | published on 2026-10-15: Signed amd64 and arm64 images; both digests in release.json resolve without signing in. | current | Runtime qualification of the render worker's arm64 image; the server's arm64 image passes only the CI container qualification. |
-| Helm chart repository | Project repository | Nothing yet | None | prepared | First publication of chart 0.3.2, anonymous download and signature checks, then a live Rancher installation and upgrade. |
+| Helm chart repository | Project repository | Nothing yet | None | prepared | First publication of the chart, as 1.1.3 with the Lolly 1.1.3 release, anonymous download and signature checks, then a live Rancher installation and upgrade. |
 | Artifact Hub | Public catalogue | Nothing yet | None | prepared | A project organisation and repository, then Verified publisher, then Official status. |
 | Neutral Compose package (VM or private server) | Direct recipe | [1.1.1](https://github.com/lolly-tools/lolly-work/tree/265ea5d31d4da010d535fd27092f6deb150bf1d9/deploy/marketplaces) | published on 2026-10-16: CI boots the pinned package, signs in, exports, restarts and restores its database. | current | An installed cross-version upgrade and recovery on a second host. |
 | UpCloud quick start | Direct recipe | [1.1.1](https://github.com/lolly-tools/lolly-work/blob/265ea5d31d4da010d535fd27092f6deb150bf1d9/deploy/marketplaces/QUALIFICATION.md) | published on 2026-10-16: Reference installation on Ubuntu 24.04 amd64 in Frankfurt, created through the provider API. | current | An installed cross-version upgrade, recovery on a second host, organisation OIDC and a boot through the infrastructure module. |
@@ -63,8 +63,8 @@ Record failures as well as publications, in the same pull request as any change
 they cause:
 
 ```sh
-node scripts/marketplace-channels.ts record helm-repository --release 1.1.1 --package 0.3.2 \
-  --outcome published --evidence https://github.com/lolly-tools/lolly-work/releases/tag/chart-v0.3.2 --minutes 20
+node scripts/marketplace-channels.ts record helm-repository --release 1.1.3 --package 1.1.3 \
+  --outcome published --evidence https://github.com/lolly-tools/lolly-work/releases/tag/chart-v1.1.3 --minutes 20
 ```
 
 `--package` is the channel's own version, such as a chart version or `1.1.1~ynh1`; it
