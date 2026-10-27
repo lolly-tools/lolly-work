@@ -32,6 +32,25 @@ Take an independent backup and complete a restore before every application upgra
 Keep previous images, configuration, content and signing keys. A database migration
 may require restoration or forward repair; an older image alone is insufficient.
 
+Every install and upgrade runs the migration Job first. Helm removes the previous
+Job (`before-hook-creation`) and waits for it to go, so the last Job and its logs
+stay readable until the next upgrade. `helm rollback` does not run the Job. If an
+upgrade stops in the pre-upgrade hook, read the error before changing anything
+(names below are for a release called `lolly-work`):
+
+- `server-side apply failed for object <namespace>/lolly-work-migrate`: the
+  cluster API refused or dropped the request that creates the new Job, after the
+  previous Job was already removed. Check that the API server answers, then run
+  the same `helm upgrade` again. Nothing needs deleting by hand.
+- `lolly-work-migrate still exists. status: Terminating`: the previous Job was
+  still being deleted when `--timeout` ran out. Wait until `kubectl get job` no
+  longer lists the Job, then run the upgrade again.
+- `Job Failed`: the migration itself failed. Read
+  `kubectl logs job/lolly-work-migrate`, fix the cause, then upgrade again.
+
+These cases were checked with Helm 4.3.0 on K3s 1.35, including an upgrade after
+an install that failed its readiness wait, repeated upgrades and a rollback.
+
 Report issues through [the upstream repository](https://github.com/lolly-tools/lolly-work/issues).
 Support is community best effort; marketplace publication adds no service-level
 agreement or platform certification. See the repository's `SECURITY.md` for private
