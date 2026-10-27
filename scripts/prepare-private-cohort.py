@@ -38,10 +38,34 @@ JSON_LIMIT = 32 * 1024 * 1024
 MAX_FILES, MAX_SHELL_FILES, MAX_TREE_ENTRIES, MAX_BYTES, MAX_DEPTH = 100_000, 130_000, 200_000, 8 * 1024**3, 64
 NAME = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,61}[a-z0-9])?\Z")
 WORK_JOBS = ("test", "typecheck", "npm audit (high+critical) + SBOM", "container image builds (server)", "container image builds (render-worker)")
-LOLLY_JOBS = ("secret history scan", "typecheck", "test (browser)", "validate catalog", "smoke (render every tool)",
-              "build + bundle budget", "api bundle drift", "render-action self-test", "npm audit (high+critical)", "opengrep (custom rules + new findings)",
-              *[f"test ({shard})" for shard in ("unit:engine", "unit:web", "contracts", "security", "tools", "tauri", "conformance", "fuzz:regression")],
-              *[f"test (browser {part}/4)" for part in range(1, 5)])
+LOLLY_BASE_JOBS = ("secret history scan", "typecheck", "test (browser)", "validate catalog", "smoke (render every tool)",
+                   "build + bundle budget", "api bundle drift", "render-action self-test", "npm audit (high+critical)", "opengrep (custom rules + new findings)",
+                   *[f"test ({shard})" for shard in ("unit:engine", "unit:web", "contracts", "security", "tools", "tauri", "conformance", "fuzz:regression")])
+# lolly's ci.yml runs the browser suite as one job per partition, `test (browser <n>/<count>)`. It ran four
+# partitions until lolly-tools/lolly#569 and eight from that change on. Both shapes are accepted while main runs of
+# either age are prepared; remove 4 once no run before #569 needs preparing.
+LOLLY_BROWSER_PARTITION_COUNTS = (8, 4)
+
+
+def lolly_browser_partitions(count):
+    return tuple(f"test (browser {part}/{count})" for part in range(1, count + 1))
+
+
+LOLLY_JOBS = LOLLY_BASE_JOBS + lolly_browser_partitions(LOLLY_BROWSER_PARTITION_COUNTS[0])
+
+
+def lolly_jobs(value):
+    """The lolly jobs one run must have passed: the base jobs and every partition of the one shape that run lists.
+
+    The shape comes from the run's own job list. A run that lists partitions of both shapes is refused; a run that
+    lists none, or only some of its shape, is held to that shape's full list (eight when it lists none), so
+    jobs_record refuses it for the missing partitions.
+    """
+    rows = value.get("jobs") if isinstance(value, dict) else None
+    names = {row.get("name") for row in rows if isinstance(row, dict)} if isinstance(rows, list) else set()
+    shapes = [count for count in LOLLY_BROWSER_PARTITION_COUNTS if names & set(lolly_browser_partitions(count))]
+    require(len(shapes) <= 1, "Lolly CI lists browser partitions of more than one shape")
+    return LOLLY_BASE_JOBS + lolly_browser_partitions(shapes[0] if shapes else LOLLY_BROWSER_PARTITION_COUNTS[0])
 EVIDENCE_KEYS = {"version", "lolly", "work", "enginePin", "resolverPin", "workArtifact", "workArtifactMetadata", "expectedWorkImage",
                  "brand", "profile", "publicPin", "candidateShell", "previousShell", "shell", "rawPack", "build", "inspection", "webGate", "previous", "selection"}
 
@@ -249,7 +273,7 @@ def source_record(value, inputs, runner, kind):
     # closure, including the preparer's final unchanged() check.
     paired.main_record(inputs.file(value["main"]), value, inputs.base, inputs.file)
     jobs = inputs.file(value["ciJobs"])
-    required = WORK_JOBS if kind == "work" else LOLLY_JOBS
+    required = WORK_JOBS if kind == "work" else lolly_jobs(jobs)
     paired.jobs_record(jobs, run, allow_shell_skip=kind == "lolly", required_names=required)
     require(len({job["name"] for job in jobs["jobs"]}) == len(jobs["jobs"]), "Duplicate CI job names")
     return root, run

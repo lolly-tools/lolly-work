@@ -162,7 +162,8 @@ def cli_evidence(prepared, inputs):
                 return inputs.file(ref)
             cohort.paired.main_record(main, original[family], inputs.base, held_provider)
             run = cohort.paired.run_record(held_provider(original[family]["ciRun"]), original[family]["source"], original[family]["repository"], ".github/workflows/ci.yml", "push")
-            cohort.paired.jobs_record(held_provider(original[family]["ciJobs"]), run, allow_shell_skip=family == "lolly", required_names=cohort.WORK_JOBS if family == "work" else cohort.LOLLY_JOBS)
+            jobs = held_provider(original[family]["ciJobs"])
+            cohort.paired.jobs_record(jobs, run, allow_shell_skip=family == "lolly", required_names=cohort.WORK_JOBS if family == "work" else cohort.lolly_jobs(jobs))
             require(prepared["normalCI"][family] == {"run": run["id"], "attempt": run["run_attempt"]}, "Historical CI differs from prepared run")
     exact(original["brand"], {"path", "commit"})
     require(original["brand"]["commit"] == prepared["sources"]["brand"] and original["profile"] == prepared["profile"]
