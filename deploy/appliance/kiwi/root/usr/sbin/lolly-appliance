@@ -21,7 +21,7 @@ cmd_status() {
   if systemctl is-enabled --quiet cockpit.socket 2>/dev/null; then echo "Cockpit:      on, port 9090, local networks only"; else echo "Cockpit:      off"; fi
   if work_ready; then echo "Readiness:    ready"; else echo "Readiness:    not ready"; fi
   if [ "$(id -u)" = 0 ]; then
-    echo "Credentials:  $(systemd-creds has-tpm2 -q 2>/dev/null && echo 'TPM2 and host key' || echo 'host key (no TPM2 found)'), $(ls "$CRED_DIR" 2>/dev/null | wc -l) stored"
+    echo "Credentials:  $(systemd-analyze has-tpm2 -q 2>/dev/null && echo 'TPM2 and host key' || echo 'host key (no TPM2 found)'), $(ls "$CRED_DIR" 2>/dev/null | wc -l) stored"
     echo
     "${KUBECTL[@]}" -n lolly get pods -o wide 2>/dev/null || echo "K3s is not answering yet"
   fi

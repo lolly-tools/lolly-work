@@ -156,7 +156,7 @@ echo "btrfs_used=$(btrfs filesystem usage -b / 2>/dev/null | awk '/Used:/ {print
 echo "ready_monotonic=$(journalctl -b -u lolly-appliance-console -o short-monotonic --no-pager 2>/dev/null | grep -m1 'Lolly Work is ready' | sed 's/^\[ *\([0-9.]*\)\].*/\1/')"
 echo "k3s_rss_mib=$(ps -C k3s-server -o rss= 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')"
 echo "selinux=$(getenforce)"
-echo "tpm2=$(systemd-creds has-tpm2 -q && echo yes || echo no)"
+echo "tpm2=$(systemd-analyze has-tpm2 -q && echo yes || echo no)"
 echo "kernel=$(uname -r)"
 """
     result = guest.run(script)
@@ -207,7 +207,7 @@ def main(argv: list[str]) -> int:
         ok("plain HTTP redirects to HTTPS", response.status in (301, 308) and location.startswith("https://"), f"HTTP {response.status} {location}")
     except OSError as error:
         ok("plain HTTP redirects to HTTPS", False, str(error))
-    profile = guest.run("cat /etc/rancher/k3s/config.yaml; getenforce; ls /var/lib/lolly/credentials; systemd-creds has-tpm2 -q && echo tpm2 || echo host-key").stdout
+    profile = guest.run("cat /etc/rancher/k3s/config.yaml; getenforce; ls /var/lib/lolly/credentials; systemd-analyze has-tpm2 -q && echo tpm2 || echo host-key").stdout
     ok("SELinux is enforcing and K3s runs with selinux: true", "Enforcing" in profile and "selinux: true" in profile)
     ok("six credentials are stored as encrypted systemd credentials", len(re.findall(r"\.cred$", profile, re.M)) == 6, profile.strip().splitlines()[-1])
     # Cockpit keeps its own self-signed key in /etc/cockpit/ws-certs.d, as on any host.
