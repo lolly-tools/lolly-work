@@ -596,9 +596,14 @@ export function buildApp(deps: AppDeps): App {
     activePack: async () => (await brand.snapshot()).source.root,
     source: { pack: deploymentConfig.instance.pack, generation: deploymentConfig.instance.catalogPublicationGeneration,
       publicKey: deploymentConfig.instance.catalogPublicKey } });
-  let catalogReady = false;
+  // Readiness names this check; a failed preparation is logged once, because
+  // it does not recover without a restart and /readyz carries no detail.
+  let catalogCheck: 'preparing' | 'ok' | 'failed' = 'preparing';
   const catalogPreparation = catalogDelivery.prepare();
-  void catalogPreparation.then(() => { catalogReady = true; }, () => {});
+  void catalogPreparation.then(() => { catalogCheck = 'ok'; }, (err: Error) => {
+    catalogCheck = 'failed';
+    console.error('catalog preparation failed; /readyz stays 503 until a restart:', err.message);
+  });
   const extCache = createExtCache(serving.extCache);
   /** Whether a conditional request already holds `etag` (a list, `*`, or weak forms). */
   const etagMatches = (req: IncomingMessage, etag: string): boolean => {
@@ -715,13 +720,20 @@ export function buildApp(deps: AppDeps): App {
 
   // Readiness, distinct from liveness: a pod whose store cannot answer must
   // leave the Service until it can. Unauthenticated and cheap (`select 1`).
+  // `checks` gives each condition as a fixed word, never an error message,
+  // so an operator sees which one holds readiness back without signing in.
   router.add('GET', '/readyz', async (_req, res) => {
     const storeOk = await store.ping().catch(() => false);
-    const configured = !productionMode(config) || (storeOk
-      && await store.pendingMigrations().then(pending => pending.length === 0).catch(() => false)
-      && await setupReport().then(report => report.ready).catch(() => false));
-    const ok = storeOk && configured && catalogReady;
-    sendJson(res, ok ? 200 : 503, { ok, store: store.storageKind });
+    const checks: Record<string, string> = { store: storeOk ? 'ok' : 'unreachable' };
+    if (productionMode(config)) {
+      checks.migrations = !storeOk ? 'unknown'
+        : await store.pendingMigrations().then(pending => pending.length === 0 ? 'ok' : 'pending').catch(() => 'unknown');
+      checks.setup = checks.migrations !== 'ok' ? 'unknown'
+        : await setupReport().then(report => report.ready ? 'ok' : 'incomplete').catch(() => 'unknown');
+    }
+    checks.catalog = catalogCheck;
+    const ok = Object.values(checks).every(value => value === 'ok');
+    sendJson(res, ok ? 200 : 503, { ok, store: store.storageKind, checks });
   });
   // ── health + metrics ──────────────────────────────────────────────────────
   router.add('GET', '/healthz', (_req, res) => {

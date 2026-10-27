@@ -44,7 +44,7 @@ test('/readyz answers 200 while the store can, 503 when it cannot, and every res
   const { store, base } = await boot();
   const ok = await fetch(`${base}/readyz`);
   assert.equal(ok.status, 200);
-  assert.deepEqual(await ok.json(), { ok: true, store: process.env.DATABASE_URL ? 'postgres' : 'memory' });
+  assert.deepEqual(await ok.json(), { ok: true, store: process.env.DATABASE_URL ? 'postgres' : 'memory', checks: { store: 'ok', catalog: 'ok' } });
   assert.match(ok.headers.get('x-request-id') ?? '', /^r_/);
   const echoed = await fetch(`${base}/readyz`, { headers: { 'x-request-id': 'trace-abc-123' } });
   assert.equal(echoed.headers.get('x-request-id'), 'trace-abc-123', 'a sane caller id is echoed');
@@ -53,6 +53,7 @@ test('/readyz answers 200 while the store can, 503 when it cannot, and every res
   (store as { ping: () => Promise<boolean> }).ping = async () => false;
   const down = await fetch(`${base}/readyz`);
   assert.equal(down.status, 503);
+  assert.deepEqual((await down.json() as { checks: Record<string, string> }).checks, { store: 'unreachable', catalog: 'ok' }, 'the body says which check failed');
 });
 
 test('the audit read pages newest-first by seq and never re-walks the whole log per request', async () => {

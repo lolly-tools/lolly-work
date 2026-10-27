@@ -83,7 +83,9 @@ test('slow signed startup holds readiness, first catalog reads and worker dispat
     render: { allowHooksInFastPath: false, worker: { url: worker, timeoutMs: 20000 } }, policy: { defaultAccessMode: 'gated' } }));
   const base = await listen(t, createServer(buildApp({ config, store, secrets: { session: 'startup-session', link: 'startup-link', renderWorker: 'startup-worker', catalogSigningKey: f.material }, backgroundPollMs: 0 })));
   await started;
-  assert.equal((await fetch(base + '/readyz')).status, 503);
+  const waiting = await fetch(base + '/readyz');
+  assert.equal(waiting.status, 503);
+  assert.deepEqual(await waiting.json(), { ok: false, store: 'memory', checks: { store: 'ok', catalog: 'preparing' } }, 'readiness names the check it waits on');
   assert.equal((await fetch(base + '/healthz')).status, 200, 'Liveness remains independent of source verification');
   let catalogFinished = false, renderFinished = false;
   const catalog = fetch(base + '/catalog/tools/index.sig.json', { headers: { cookie } }).then(response => { catalogFinished = true; return response; });
@@ -114,6 +116,8 @@ test('a forged source signature never advertises readiness or dispatches a rende
   const render = await fetch(base + '/api/v1/render', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'probe', format: 'svg', inputs: {} }) });
   assert.equal(render.status, 503); assert.match(await render.text(), /publication could not be verified/);
   for (let i = 0; i < 3; i++) assert.equal((await fetch(base + '/readyz')).status, 503);
+  const refused = await (await fetch(base + '/readyz')).json() as { checks: Record<string, string> };
+  assert.deepEqual(refused.checks, { store: 'ok', catalog: 'failed' }, 'a refused source reads as a failed catalog check, with no error text');
   assert.equal((await fetch(base + '/catalog/tools/index.sig.json', { headers: { cookie } })).status, 503);
   assert.equal((await fetch(base + '/healthz')).status, 200); assert.equal(workerRequests, 0);
 });
@@ -124,7 +128,7 @@ test('startup shares one promise and production refuses generation zero while pr
   const development = createCatalogDelivery({ store: createMemoryStore(), servedIndex, signing: null, source: { pack: f.pack } });
   const first = development.prepare(); assert.equal(development.prepare(), first); await first;
   const production = createCatalogDelivery({ store: createMemoryStore(), servedIndex, signing: null, source: { pack: f.pack }, requireGeneration: true });
-  await assert.rejects(production.prepare(), /positive generation/);
+  await assert.rejects(production.prepare(), /positive generation: set instance\.catalogPublicationGeneration/);
   await assert.rejects(production.current(f.pack, { overlays: new Map(), groups: [] }), /positive generation/);
   const provisioned = createCatalogDelivery({ store: createMemoryStore(), servedIndex, signing: createCatalogSigning(f.material), source: { pack: f.pack, generation: 3000 }, requireGeneration: true });
   const ready = provisioned.prepare(); assert.equal(provisioned.prepare(), ready); await ready;
