@@ -55,11 +55,21 @@ jobs:
           df -h /
       - name: Build with KIWI in a privileged Leap 16.1 container
         env:
+          # openSUSE's Leap 16.1 image, pinned on its own registry and on Docker Hub,
+          # which runners reach when registry.opensuse.org times out.
           BUILDER: registry.opensuse.org/opensuse/leap@sha256:65a21515d62c7af67808e7aef29e0bcfdb609d95f9fe811fad7649d56c4b3dfa
+          BUILDER_MIRROR: docker.io/opensuse/leap@sha256:756634f02c733fc52d5c9aa09aca6374c91c53c675dd445743736e13a8428858
         run: |
           mkdir -p "$RUNNER_TEMP/out" "$RUNNER_TEMP/cache"
-          # registry.opensuse.org sometimes times out; try the pull three times.
-          for attempt in 1 2 3; do docker pull --quiet "$BUILDER" && break; [ "$attempt" = 3 ] && exit 1; sleep 20; done
+          pulled=
+          for attempt in 1 2 3; do
+            if docker pull --quiet "$BUILDER"; then pulled=$BUILDER; break; fi
+            if docker pull --quiet "$BUILDER_MIRROR"; then pulled=$BUILDER_MIRROR; break; fi
+            sleep 20
+          done
+          [ -n "$pulled" ] || exit 1
+          BUILDER=$pulled
+          echo "builder image: $BUILDER"
           docker run --rm --privileged -v /dev:/dev \
             -v "$GITHUB_WORKSPACE:/src:ro" -v "$RUNNER_TEMP/out:/out" -v "$RUNNER_TEMP/cache:/var/cache/lolly-appliance" \
             "$BUILDER" \
