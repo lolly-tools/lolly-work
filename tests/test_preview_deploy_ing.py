@@ -54,6 +54,50 @@ def fixture(name):
     return json.loads((FIXTURES / name).read_text())
 
 
+class DbReadScriptRetry(unittest.TestCase):
+    """The read-only check retries a refused connection: K3s adds a new pod's address to its network policy a
+    moment after the container starts, and Node connects within milliseconds (measured on the preview node)."""
+
+    def run_script(self, failures, code="ECONNREFUSED"):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "migrations").mkdir()
+            (root / "migrations" / "0001_init.sql").write_text("select 1;\n")
+            stub = root / "pg.mjs"
+            stub.write_text(f"""
+let calls = 0;
+class Client {{
+  async connect() {{ calls++; if (calls <= {failures}) {{ const e = new Error('refused'); e.code = '{code}'; throw e; }} }}
+  async query(text) {{
+    if (text.includes('to_regclass')) return {{ rows: [{{ t: null }}] }};
+    return {{ rows: [] }};
+  }}
+  async end() {{}}
+}}
+export default {{ Client }};
+process.on('exit', () => process.stderr.write('connects=' + calls + '\\n'));
+""")
+            script = I.DB_READ_SCRIPT.replace("file:///app/node_modules/pg/lib/index.js", stub.as_uri()) \
+                .replace("'/app/migrations'", repr(str(root / "migrations"))) \
+                .replace("'/app/migrations/'", repr(str(root / "migrations") + "/"))
+            return subprocess.run([node, "--input-type=module", "-e", script], capture_output=True, text=True, timeout=60,
+                                  env={**os.environ, "DATABASE_URL": "postgres://stub"})
+
+    def test_two_refusals_then_the_check_answers(self):
+        done = self.run_script(2)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("connects=3", done.stderr)
+        self.assertEqual(json.loads(done.stdout)["kind"], "lolly-migrate-check")
+
+    def test_any_other_error_is_not_retried(self):
+        done = self.run_script(1, code="28P01")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("connects=1", done.stderr)
+
+
 class IngRules(unittest.TestCase):
     def setUp(self):
         self.key = F.make_key()

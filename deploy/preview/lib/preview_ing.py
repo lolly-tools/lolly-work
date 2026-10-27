@@ -480,8 +480,18 @@ const { readdir, readFile } = await import('node:fs/promises');
 const names = (await readdir('/app/migrations')).filter(n => n.endsWith('.sql')).sort();  // Work's own rule
 const files = [];
 for (const name of names) files.push({ name, sha256: createHash('sha256').update(await readFile('/app/migrations/' + name)).digest('hex') });
-const client = new pg.Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 15000 });
-await client.connect();
+// K3s programs a new pod's address into its network policy a moment after the container
+// starts, and Node connects within milliseconds: the first attempts are refused (measured
+// 2026-10-27, open by 500 ms). Retry only refusals, with a fresh client each time.
+let client;
+for (let attempt = 1; ; attempt++) {
+  client = new pg.Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 15000 });
+  try { await client.connect(); break; } catch (error) {
+    await client.end().catch(() => {});
+    if (attempt >= 20 || !['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH'].includes(error?.code)) throw error;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+}
 let ledger = [], publicationGeneration = 0;
 try {
   await client.query('begin read only');
