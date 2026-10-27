@@ -959,11 +959,14 @@ def ssh_main(argv):
 
 
 # Fake GitHub ---------------------------------------------------------------------
-def receipt_zip(build, run_id, attempt, pin, thumbprint, **overrides):
+def receipt_zip(build, run_id, attempt, pin, thumbprint, source_gate=None, **overrides):
+    """source_gate: the "sourceGate" a build made at merge writes into release.json (None writes none)."""
     import zipfile
     web = {"imageId": "sha256:" + sha(build["image"].encode()), "digest": build["image"], "platform": "linux/amd64", "source": build["sha"]}
     release = {"source": build["sha"], "runId": str(run_id), "runAttempt": attempt, "neutralProfile": True,
                "images": {"web": web}, "candidateRuntimeQualified": False}
+    if source_gate is not None:
+        release["sourceGate"] = source_gate
     files = {"release.json": release, "web.json": web, "public.jwk.json": pin,
              "catalog.json": {"verified": True, "files": 10, "tools": 2, "indexSha256": "7" * 64, "keyId": thumbprint},
              "web-boot.json": {"serviceBootPassed": True, "results": {"web": 200}}}

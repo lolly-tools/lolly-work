@@ -484,12 +484,24 @@ def _live_state(context):
     return status
 
 
-def deploy_bound(context, command, sha, bound, lane=None):
-    """Second half of ship, and all of deploy: expectations, checks, then the node unit.
+def qualification(context, sha):
+    """What lets this commit reach the node, read now: its own green main CI run, or a fast lane above one.
 
-    lane: the fast-lane fields a ship records beside the result, when no full CI run of its own qualified it.
+    A build no longer proves this. preview-web.yml builds a main commit as soon as it is merged and refuses only a
+    completed CI failure, so a bound build can predate its commit's CI. Every ship and deploy passes here
+    (deploy_bound) after the build is bound and before the node is contacted, whichever build it binds.
+    Returns the fast-lane fields recorded beside the result, or {} for a full CI run.
     """
+    ci = G.qualified_ci(context.gh, context.anchors, sha)
+    emit("qualified", source=sha, ciRun=ci["id"], lane=ci["lane"])
+    return {} if ci["lane"] == "full" else {"lane": ci["lane"], "laneBase": ci["base"], "laneBaseCiRun": ci["id"],
+                                            "laneRun": ci["fastRun"]}
+
+
+def deploy_bound(context, command, sha, bound):
+    """Second half of ship, and all of deploy: qualification, expectations, checks, then the node unit."""
     anchors, gh = context.anchors, context.gh
+    lane = qualification(context, sha)
     status = _live_state(context)
     preview, deployment = status.get("preview", {}), status["deployment"]
     if deployment["image"] == bound["image"]:
@@ -517,7 +529,7 @@ def deploy_bound(context, command, sha, bound, lane=None):
     context.backup_window("deploy")
     context.check_target()
     result = context.start_and_follow(request)
-    return _finish(context, command, result, sha=sha, ciRun=bound["run"], **(lane or {}))
+    return _finish(context, command, result, sha=sha, ciRun=bound["run"], **lane)
 
 
 def cmd_ship(context, sha):
@@ -541,6 +553,8 @@ def cmd_ship(context, sha):
     except Refusal as exc:
         if exc.code != "RUN_NOT_FOUND":
             raise
+    # Before a build is dispatched, so a manual ship never builds an unqualified commit; deploy_bound
+    # reads qualification again before the node is touched.
     ci = G.qualified_ci(gh, anchors, sha)
     lane = {} if ci["lane"] == "full" else {"lane": ci["lane"], "laneBase": ci["base"], "laneBaseCiRun": ci["id"],
                                             "laneRun": ci["fastRun"]}
@@ -554,10 +568,12 @@ def cmd_ship(context, sha):
     run = G.wait_for_run(gh, anchors, run["id"], context.profile["build"]["pollSeconds"], context.profile["build"]["timeoutMinutes"])
     bound = G.bind_run(gh, anchors, run, sha, pin, thumbprint)
     emit("bound", run=bound["run"], image=bound["image"])
-    return deploy_bound(context, "ship", sha, bound, lane=lane)
+    return deploy_bound(context, "ship", sha, bound)
 
 
 def cmd_deploy(context, sha):
+    """Deploy the newest binding build of a main commit. deploy_bound reads the commit's qualification first,
+    so a build made at merge waits here, refused CI_PENDING, until its CI or fast lane has passed."""
     pin, thumbprint = A.preview_pin()
     context.backup_window("deploy")
     G.require_on_main(context.gh, context.anchors, sha)
@@ -597,10 +613,13 @@ def cmd_status(context, follow=None):
     status = context.read("status")
     preview = status.get("preview", {})
     phase = preview.get("phase") or "none"
+    # qualifiesAtDeploy: this tool reads CI at deploy time, so a watcher (auto-ship.py) may have a commit
+    # built before its CI finishes and deploy it once it qualifies.
     emit("status", phase=phase if phase == "accepted" else phase.upper(), source=preview.get("source"),
          image=status["deployment"]["image"], recordsDescribeLiveImage=_settled(status), ready=status["deployment"]["ready"],
          converted=status["deployment"]["converted"], revision=status["deployment"]["revision"], unit=status.get("unit"),
-         pods=status.get("pods"), deployId=preview.get("deploy-id"), reason=preview.get("reason"), lastResult=status.get("lastResult"))
+         pods=status.get("pods"), deployId=preview.get("deploy-id"), reason=preview.get("reason"), lastResult=status.get("lastResult"),
+         qualifiesAtDeploy=True)
     return 0
 
 

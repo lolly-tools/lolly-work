@@ -22,6 +22,12 @@ from preview_common import HEX64, RUN_ID, SHA, Refusal, emit, parse_utc, require
 
 ACTIVE_STATES = ("queued", "in_progress", "waiting", "pending", "requested")
 RECEIPT_FILES = {"release.json", "web.json", "public.jwk.json", "catalog.json", "web-boot.json"}
+RELEASE_KEYS = {"source", "runId", "runAttempt", "neutralProfile", "images", "candidateRuntimeQualified"}
+# A build from preview-web.yml that runs at merge, before the commit's CI finishes, says so in release.json:
+# "sourceGate": "not-failed" (its source gate refused only a completed CI failure). Such a build proves nothing
+# about qualification, and no build does any more: preview_mac.qualification reads it at deploy time for every
+# ship and deploy. A tool from before that rule refuses the field, so it can never deploy one of these builds.
+SOURCE_GATES = ("not-failed",)
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
@@ -228,8 +234,8 @@ def read_receipt_artifact(data, run, sha, anchors, public_jwk, thumbprint):
     except (zipfile.BadZipFile, UnicodeDecodeError, KeyError) as exc:
         raise Refusal("RECEIPT_INVALID", "receipt artifact is not a valid zip") from exc
     release = files["release.json"]
-    require(isinstance(release, dict) and set(release) == {"source", "runId", "runAttempt", "neutralProfile",
-            "images", "candidateRuntimeQualified"}, "RECEIPT_INVALID", "release receipt has missing or unexpected fields")
+    require(isinstance(release, dict) and (set(release) == RELEASE_KEYS or (set(release) == RELEASE_KEYS | {"sourceGate"}
+            and release["sourceGate"] in SOURCE_GATES)), "RECEIPT_INVALID", "release receipt has missing or unexpected fields")
     require(release["source"] == sha and release["runId"] == str(run["id"]) and type(release["runAttempt"]) is int
             and release["runAttempt"] == run["run_attempt"] and release["neutralProfile"] is True,
             "RECEIPT_INVALID", "release receipt is not bound to this run and source")
