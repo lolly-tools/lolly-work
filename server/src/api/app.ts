@@ -184,7 +184,8 @@ import { registerSetupRoutes } from '../setup/routes.ts';
 import { identitySettingsHash } from '../setup/configuration.ts';
 import { loadEngine } from '../render/contract.ts';
 import type { AuditFilter } from '../audit/filter.ts';
-import { flagGovernanceCatalog, normalizeFlagGovernance } from '../policy/feature-flags.ts';
+import { flagGovernanceCatalog, hasFlagOpinion, normalizeFlagGovernance } from '../policy/feature-flags.ts';
+import { createOfrepResolver } from '../policy/ofrep.ts';
 import { validatePublish, factsFor } from '../injectables/registry.ts';
 import { KIND_HANDLERS } from '../injectables/kinds.ts';
 import { INJECTABLE_KINDS, type InjectableRecord } from '../injectables/types.ts';
@@ -385,6 +386,14 @@ export function buildApp(deps: AppDeps): App {
   const router = createRouter();
   const agentRequests = createProjectRequests(router);
   const metrics = deps.metrics ?? createMetrics();
+  // The organisation's flag service (featureFlags.ofrep), when one is set.
+  // Its cache lives as long as this app, so every poll shares it.
+  const flagService = config.featureFlags?.ofrep ? createOfrepResolver({
+    config: config.featureFlags.ofrep,
+    ...(secrets.ofrepToken ? { token: secrets.ofrepToken } : {}),
+    fetchImpl,
+    metrics: { request: (flag) => metrics.ofrepRequest(flag), error: (flag, reason) => metrics.ofrepError(flag, reason) },
+  }) : null;
   const limiter = createRateLimiter(config.rateLimit);
   // A result token lets a receiver without the caller's session read one
   // job's result. It belongs in the x-lw-job-token header; the `?token=` URL
@@ -2408,6 +2417,9 @@ export function buildApp(deps: AppDeps): App {
   // preview-as-group tool - so a preview can never drift from what a member
   // actually receives (the projection is the same function, same store reads).
   const buildOrgConfigFor = async (subject: UserRecord, client: { shell?: string; engine?: string } = {}) => {
+    // Asked first so the flag service's round trip overlaps the store reads.
+    // It never rejects: a failure leaves each flag on Work's governed value.
+    const flagServiceAnswers = flagService?.evaluate({ groups: subject.groups, role: subject.role });
     const overlays = await brandRules.project(brand.current() ?? await brand.snapshot(), subject.groups);
     const grants = await store.listGrants();
     // The inbox's own count for the same client (its shell and engine
@@ -2420,7 +2432,8 @@ export function buildApp(deps: AppDeps): App {
     for (const toolId of overlays.keys()) {
       toolInputs.set(toolId, await readToolInputs(config.instance.pack, toolId));
     }
-    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
+    const flagServiceMap = flagServiceAnswers ? await flagServiceAnswers : undefined;
+    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
   };
 
   // A small, uncached lease renewal. Resolve membership on every request so a
@@ -7970,32 +7983,44 @@ export function buildApp(deps: AppDeps): App {
   // The control plane's default state + toggle visibility for the shell's
   // per-user feature flags. Same policy.edit gate as tool overlays: admin by
   // default, delegable to a brand group. Read the whole governable catalogue…
+  // The flag service block says which flags an organisation's own service
+  // decides and how it last answered, so the console can show who decides.
+  const flagServiceWire = () => flagService ? { origin: flagService.origin, flags: flagService.flags, ...flagService.stats() } : null;
+  const flagCatalogWire = async () => ({
+    flags: flagGovernanceCatalog(await store.listFlagGovernance(), { flagService: flagService?.flags ?? [] }),
+    flagService: flagServiceWire(),
+  });
   router.add('GET', '/api/v1/policy/flags', async (req, res) => {
     if (!(await requireAction(req, res, 'policy.edit'))) return;
-    const gov = await store.listFlagGovernance();
-    sendJson(res, 200, { flags: flagGovernanceCatalog(gov) });
+    sendJson(res, 200, await flagCatalogWire());
   });
 
   // …and set one flag's governance. Body: {default?: 'on'|'off'|null,
-  // visibility?: 'show'|'hide'}. A no-opinion record clears the row (inherit +
-  // shown). Governance folds into org-config's policyVersion, so a save busts
+  // visibility?: 'show'|'hide', groups?: [{group, default?, visibility?}]}.
+  // A body without `groups` keeps the stored group rules, so a client that
+  // only knows the two instance settings cannot drop them; `groups: []`
+  // clears them. A no-opinion record clears the row (inherit + shown).
+  // Governance folds into org-config's policyVersion, so a save busts
   // connected shells' ETag on their next poll - the surprise lights up on flip.
   router.add('PUT', '/api/v1/policy/flags/:flagId', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'policy.edit');
     if (!user) return;
     const flagId = ctx.params.flagId as string;
-    const rec = normalizeFlagGovernance(flagId, await readJson(req), new Date().toISOString());
+    const before = (await store.listFlagGovernance()).get(flagId) ?? null;
+    const body = await readJson(req);
+    const merged = body && typeof body === 'object' && !Array.isArray(body) && !Object.hasOwn(body, 'groups') && before?.groups
+      ? { ...body, groups: before.groups } : body;
+    const rec = normalizeFlagGovernance(flagId, merged, new Date().toISOString());
     if (!rec) {
       return sendError(res, 400, 'INVALID_INPUT',
-        'unknown flag, or body not {default?: "on"|"off"|null, visibility?: "show"|"hide"}');
+        'unknown flag, or body not {default?: "on"|"off"|null, visibility?: "show"|"hide", groups?: [{group, default?, visibility?}]}; group names appear once each, and managed AI takes no group rules');
     }
-    const before = (await store.listFlagGovernance()).get(flagId) ?? null;
     await store.putFlagGovernance(rec);
     await audit(`user:${user.id}`, 'policy.flag.edit', `flag:${flagId}`, {
       before,
-      after: rec.default === undefined && rec.visibility === undefined ? null : rec,
+      after: hasFlagOpinion(rec) ? rec : null,
     });
-    sendJson(res, 200, { flags: flagGovernanceCatalog(await store.listFlagGovernance()) });
+    sendJson(res, 200, await flagCatalogWire());
   });
 
   // ── injectables (plans/19) - the governed rail that injects tools / flags /

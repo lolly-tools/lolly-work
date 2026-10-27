@@ -18,7 +18,7 @@ import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
 import { roleFromGroups, type Grant, type RoleGroups } from '../rbac/evaluate.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
-import type { FlagGovernance } from '../policy/feature-flags.ts';
+import { hasFlagOpinion, type FlagGovernance } from '../policy/feature-flags.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
 import { pendingAgainst } from './migrate.ts';
 import { guardPool, pgPoolOptions } from './pg-options.ts';
@@ -1488,7 +1488,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return new Map(rows.map((r) => [r.flag_id as string, r.governance as FlagGovernance]));
     },
     async putFlagGovernance(rec) {
-      if (rec.default === undefined && rec.visibility === undefined) {
+      if (!hasFlagOpinion(rec)) {
         await pool.query('delete from feature_flags where flag_id = $1', [rec.id]);
         return;
       }

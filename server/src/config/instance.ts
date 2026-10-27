@@ -12,6 +12,8 @@ import type { ActivityPolicy } from '../policy/activity.ts';
  *   LW_IDP_CLIENT_SECRET - OIDC client secret (when the IdP requires one)
  *   LW_CREDENTIAL_SECRET - master key sealing stored provider credentials
  *                          (required in prod only once a credential is stored)
+ *   LW_OFREP_TOKEN - credential for the flag service featureFlags.ofrep names
+ *                          (optional; a flagd without auth needs none)
  *   <credentialRef> - config-managed catalog providers name their own env
  *                          var per entry; resolved at boot, never persisted
  */
@@ -20,6 +22,7 @@ import { serviceUrl } from '../lib/service-url.ts';
 import { providerOrigins, type ProviderNetworkPolicy } from '../catalog/providers/egress.ts';
 import { randomId } from '../lib/crypto.ts';
 import { validateAiConfig } from '../policy/ai.ts';
+import { validateOfrepConfig, type OfrepConfig } from '../policy/ofrep.ts';
 import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites.ts';
 import { PROJECT_FILE_DEFAULTS, PROJECT_FILE_MAX_BYTES, type ProjectFilePolicy } from '../projects/files.ts';
 import { UPLOAD_DEFAULTS, type UploadPolicy } from '../uploads/scoped.ts';
@@ -405,6 +408,11 @@ export interface InstanceConfig {
    *  receiver in signed batches, loss-free behind the siem_cursor. `url`
    *  absent = off. Long-lived server only; the HMAC key rides LW_SIEM_SECRET. */
   siem: { url?: string; batchSize: number; intervalSeconds: number };
+  /** Feature flags. `ofrep` connects the organisation's own flag service
+   *  (policy/ofrep.ts), which then decides the default of the governed flags
+   *  it lists; Work's own governance stays the fallback. Absent = Work alone
+   *  decides, with no egress. The credential rides LW_OFREP_TOKEN. */
+  featureFlags: { ofrep?: OfrepConfig };
   rateLimit: RateLimitConfig;
 }
 
@@ -578,6 +586,9 @@ export interface Secrets {
   credential?: string;
   /** Bearer token for /metrics. Absent ⇒ metrics are loopback-only (never public). */
   metricsToken?: string;
+  /** Credential for the organisation's flag service (featureFlags.ofrep).
+   *  Absent ⇒ requests carry no credential, which suits a flagd without auth. */
+  ofrepToken?: string;
   /** Shared HMAC key for the Chromium render worker. Absent ⇒ no worker dispatch. */
   renderWorker?: string;
   /** PKCS#8 private-key PEM for the instance C2PA signer. Absent ⇒ unsigned exports. */
@@ -654,6 +665,7 @@ const DEFAULTS: InstanceConfig = {
   blobs: { driver: 'pg' },
   notify: { people: { email: false } },
   siem: { batchSize: 200, intervalSeconds: 30 },
+  featureFlags: {},
   submit: {},
 };
 
@@ -1132,6 +1144,13 @@ export function parseConfig(json: string): InstanceConfig {
   if (!Number.isInteger(cfg.siem.intervalSeconds) || cfg.siem.intervalSeconds < 5) {
     throw new Error(`invalid siem.intervalSeconds: ${cfg.siem.intervalSeconds} (>= 5)`);
   }
+  if (!cfg.featureFlags || typeof cfg.featureFlags !== 'object' || Array.isArray(cfg.featureFlags)
+    || Object.keys(cfg.featureFlags).some((key) => key !== 'ofrep')) {
+    throw new Error('featureFlags must be an object whose only key is ofrep');
+  }
+  if (cfg.featureFlags.ofrep !== undefined) {
+    validateOfrepConfig(cfg.featureFlags.ofrep, cfg.deployment.mode === 'production' || (cfg.deployment.mode !== 'evaluation' && process.env.NODE_ENV === 'production'));
+  }
   const wt = cfg.render.worker.timeoutMs;
   if (!cfg.network?.providers || typeof cfg.network.providers !== 'object') throw new Error('network.providers must be configured');
   cfg.network.providers.allowedPrivateOrigins = providerOrigins(cfg.network.providers.allowedPrivateOrigins);
@@ -1349,6 +1368,7 @@ export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxy
   if (env.LW_CREDENTIAL_SECRET) secrets.credential = env.LW_CREDENTIAL_SECRET;
   // Not need()-gated: absence means /metrics is loopback-only, the easy-deploy default.
   if (env.LW_METRICS_TOKEN) secrets.metricsToken = env.LW_METRICS_TOKEN;
+  if (env.LW_OFREP_TOKEN) secrets.ofrepToken = env.LW_OFREP_TOKEN;
   // Both notify-channel secrets follow the credential-secret pattern: required
   // only when the matching notify block is configured, enforced at boot.
   if (env.LW_SMTP_PASSWORD) secrets.smtpPassword = env.LW_SMTP_PASSWORD;
