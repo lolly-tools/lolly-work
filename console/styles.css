@@ -641,6 +641,8 @@ button:active:not(:disabled):not(.tab):not(.rail-toggle):not(.act-time):not(.act
    state) — make that inert-ness visible, and kill the hover brightness. */
 button:disabled, .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 button:disabled:hover, .btn:disabled:hover { filter: none; }
+/* A confirm button whose action is running (armConfirmButton). */
+button[aria-busy="true"] { cursor: progress; }
 input, select, textarea {
   font: inherit; font-size: 13px; color: var(--ink); background: var(--plane);
   border: 0; border-radius: var(--radius-sm); padding: 8px 11px; width: 100%;
