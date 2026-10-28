@@ -247,6 +247,8 @@ class IngRules(unittest.TestCase):
         self.assertIs(spec["automountServiceAccountToken"], False)
         self.assertEqual(sorted(v["name"] for v in spec["volumes"]), ["postgres-ca", "tmp"])
         self.assertEqual(spec["containers"][0]["imagePullPolicy"], "Never")
+        # A finished Job's Pod pins its image on the node until Kubernetes deletes it (2026-10-28).
+        self.assertEqual(job["spec"]["ttlSecondsAfterFinished"], 3600)
         refused(self, lambda: I.job_manifest("j", "migrate", "x", deploy, 0, self.build["image"], ["node"],
                                              env + [{"name": "LW_SESSION_SECRET", "value": "x"}], 300), "BAD_JOB")
         refused(self, lambda: I.database_env(deploy, 0, "another-secret"), "DATABASE_ENV")
