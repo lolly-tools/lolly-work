@@ -1,0 +1,259 @@
+# SPDX-License-Identifier: MPL-2.0
+# Scheduled re-pin of Work to the newest qualified Lolly main commit.
+#
+# WHY THIS EXISTS
+# Work builds from its own main plus the Lolly commit it pins, recorded four
+# times: the vendor/lolly gitlink, engine-pin.json, docs-pin.json and
+# content-resolver-pin.json. The pin only moved when someone re-pinned by hand,
+# so it fell behind Lolly and the SUSE catalogue built against it. On 2026-10-27
+# the stale 1bbd20c4 pin failed the lolly.ing build until #239 moved it to
+# d4beb3b49 by hand.
+#
+# WHAT IT DOES
+# scripts/lolly-repin-target.ts picks the newest Lolly main commit whose CI push
+# run concluded success with a green `qualification` job in its latest attempt.
+# When Work already pins that commit, the run stops there. Otherwise it re-pins
+# with the existing scripts: sync-docs-bundle.ts, vendor-content-resolver.ts
+# --write and repin-engine.ts --apply (which runs the full test suite and puts
+# the old pin back if anything fails). It then verifies all four pins against
+# the target and proposes the result as ONE pull request from
+# chore/repin-lolly-auto, rebuilt from the newest Work main on every run. It
+# never pushes to main and never merges. When a later run finds Work already
+# pins the newest qualified commit, it closes the stale proposal.
+#
+# THE TOKEN, AND WHAT TO CREATE BEFORE THE FIRST RUN
+# The proposal has to start PR qualification so its `required` check runs.
+# GitHub does not start workflows for a pull request opened or pushed with
+# GITHUB_TOKEN, so the branch push and the pull request use a GitHub App
+# installation token instead. Without both secrets below the run fails at its
+# first step and names the missing one.
+#   1. Create a GitHub App owned by the lolly-tools organisation (Settings,
+#      Developer settings, GitHub Apps). No webhook. Repository permissions:
+#      Contents read and write, Pull requests read and write. Metadata read is
+#      added automatically. Nothing else.
+#   2. Install it on lolly-tools/lolly-work only.
+#   3. Generate a private key for the App.
+#   4. Add two repository secrets to lolly-work:
+#        LOLLY_REPIN_APP_CLIENT_ID     the App's Client ID
+#        LOLLY_REPIN_APP_PRIVATE_KEY   the whole .pem private key
+# The App, not a person, then owns the token, so it does not expire with
+# someone's personal access token and its pull requests can be reviewed by any
+# maintainer.
+name: Lolly re-pin
+
+on:
+  schedule:
+    - cron: '23 5 * * *'   # daily, 05:23 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# One proposal at a time. A queued run waits instead of cancelling a re-pin that
+# is part way through its test suite.
+concurrency:
+  group: lolly-repin
+  cancel-in-progress: false
+
+jobs:
+  repin:
+    name: re-pin to qualified Lolly main
+    if: github.repository == 'lolly-tools/lolly-work'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # GITHUB_TOKEN only reads: Work's tree, public Lolly runs and the open
+    # proposal. Every write uses the App token.
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      BRANCH: chore/repin-lolly-auto
+    steps:
+      - name: Require the re-pin App secrets
+        env:
+          CLIENT_ID: ${{ secrets.LOLLY_REPIN_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.LOLLY_REPIN_APP_PRIVATE_KEY }}
+        run: |
+          missing=''
+          [ -n "$CLIENT_ID" ] || missing="$missing LOLLY_REPIN_APP_CLIENT_ID"
+          [ -n "$PRIVATE_KEY" ] || missing="$missing LOLLY_REPIN_APP_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error title=Re-pin App secrets missing::Add the repository secret(s)$missing. A pull request opened with GITHUB_TOKEN does not start PR qualification, so its required check would never run. The header of .github/workflows/lolly-repin.yml says how to create the GitHub App."
+            exit 1
+          fi
+          echo 'Both re-pin App secrets are set.'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.26.0
+          run_install: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.11.1'
+          cache: pnpm
+
+      - name: Choose the newest qualified Lolly main commit
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/lolly-repin-target.ts >> "$GITHUB_OUTPUT"
+
+      # An open proposal built on the current Work main for the same target
+      # needs no second test run.
+      - name: Check the open proposal
+        id: proposal
+        if: steps.target.outputs.due == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          set -euo pipefail
+          open=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -z "$open" ] || ! git fetch --quiet --depth=2 origin "refs/heads/$BRANCH"; then
+            echo "No open $BRANCH proposal."
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          parent=$(git rev-parse FETCH_HEAD^ 2>/dev/null || true)
+          gitlink=$(git ls-tree FETCH_HEAD vendor/lolly | awk '{print $3}')
+          engine=$(git show FETCH_HEAD:engine-pin.json | node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0, "utf8")).generatedFrom)')
+          if [ "$parent" = "$(git rev-parse HEAD)" ] && [ "$gitlink" = "$TARGET" ] && [ "$engine" = "$TARGET" ]; then
+            echo "$BRANCH already re-pins the current Work main to $TARGET."
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install
+        if: steps.target.outputs.due == 'true' && steps.proposal.outputs.current != 'true'
+        run: |
+          pnpm install --frozen-lockfile
+          # The suite repin-engine.ts runs needs them, as ci.yml's test job does.
+          pnpm -C workers/render install --frozen-lockfile
+
+      # The submodule URL is SSH; Lolly is public, so fetch only the target over HTTPS.
+      - name: Check out Lolly at the target in vendor/lolly
+        if: steps.target.outputs.due == 'true' && steps.proposal.outputs.current != 'true'
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          set -euo pipefail
+          git -C vendor/lolly init --quiet
+          git -C vendor/lolly remote add origin https://github.com/lolly-tools/lolly.git
+          git -C vendor/lolly fetch --quiet --depth=1 origin "$TARGET"
+          git -C vendor/lolly checkout --quiet --detach FETCH_HEAD
+          test "$(git -C vendor/lolly rev-parse HEAD)" = "$TARGET"
+          # pack-engine.ts runs pnpm pack, which resolves workspace: references
+          # from installed packages. Only the two packed packages are needed.
+          pnpm -C vendor/lolly install --frozen-lockfile --ignore-scripts --filter @lolly/engine --filter @lolly-tools/core
+
+      - name: Re-pin with the existing scripts
+        if: steps.target.outputs.due == 'true' && steps.proposal.outputs.current != 'true'
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+          LOLLY_OSS_DIR: ${{ github.workspace }}/vendor/lolly
+        run: |
+          set -euo pipefail
+          node scripts/sync-docs-bundle.ts --source=vendor/lolly --commit="$TARGET"
+          node scripts/vendor-content-resolver.ts --write
+          node scripts/repin-engine.ts --apply
+          git add vendor/lolly
+          # A dependency change in the new engine moves the lockfile, and CI's audit job then needs the SBOM to match.
+          pnpm run sbom
+
+      - name: Verify the pins
+        if: steps.target.outputs.due == 'true' && steps.proposal.outputs.current != 'true'
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-engine-pin.ts
+          node scripts/verify-docs-pin.ts
+          node scripts/vendor-content-resolver.ts
+          node scripts/sync-docs-bundle.ts --source=vendor/lolly --commit="$TARGET" --check
+          node scripts/lolly-repin-target.ts --expect="$TARGET"
+
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          client-id: ${{ secrets.LOLLY_REPIN_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LOLLY_REPIN_APP_PRIVATE_KEY }}
+          repositories: lolly-work
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open, refresh or close the pull request
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          DUE: ${{ steps.target.outputs.due }}
+          CURRENT: ${{ steps.proposal.outputs.current }}
+          TARGET: ${{ steps.target.outputs.target }}
+          PINNED: ${{ steps.target.outputs.current }}
+          RUN_URL: ${{ steps.target.outputs.run_url }}
+          REASON: ${{ steps.target.outputs.reason }}
+        run: |
+          set -euo pipefail
+          open=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ "$DUE" != 'true' ]; then
+            echo "$REASON."
+            if [ -n "$open" ]; then
+              gh pr close "$open" --repo "$GITHUB_REPOSITORY" --delete-branch --comment "Not needed any more: $REASON."
+            fi
+            exit 0
+          fi
+          if [ "$CURRENT" = 'true' ]; then
+            echo "The open $BRANCH pull request already proposes $TARGET on the current Work main."
+            exit 0
+          fi
+          # Only the pin and what the re-pin scripts regenerate may change; anything else is a bug to look at, not to propose.
+          allowed='^(vendor/lolly|vendor/@lolly/.*|vendor/@lolly-tools/.*|docs/.*|engine-pin\.json|docs-pin\.json|content-resolver-pin\.json|pnpm-lock\.yaml|sbom\.cdx\.json)$'
+          git add -A -- vendor/lolly vendor/@lolly vendor/@lolly-tools docs engine-pin.json docs-pin.json content-resolver-pin.json pnpm-lock.yaml sbom.cdx.json
+          unexpected=$( { git diff --name-only; git ls-files --others --exclude-standard; git diff --cached --name-only; } | sort -u | grep -Ev "$allowed" || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error title=Unexpected re-pin output::$unexpected"
+            exit 1
+          fi
+          if git diff --cached --quiet; then
+            echo "::error title=Empty re-pin::Moving to $TARGET changed nothing, but the pins named $PINNED."
+            exit 1
+          fi
+          git --no-pager diff --cached --stat
+          bot_id=$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          read -r engine core < <(node -e 'const p = require("./engine-pin.json"); console.log(p.engine.version, p.core.version)')
+          git switch --quiet -c "$BRANCH"
+          git commit --quiet --file=- <<MSG
+          chore: re-pin Work to Lolly ${TARGET:0:9}
+
+          Moves vendor/lolly, engine-pin.json, docs-pin.json and
+          content-resolver-pin.json from ${PINNED:0:9} to $TARGET, the newest
+          Lolly main commit with a green qualification job ($RUN_URL).
+          Engine $engine, core $core. Made by .github/workflows/lolly-repin.yml.
+          MSG
+          # The token reaches git only for this push, as a masked header, never in .git/config.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push --force "https://github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$BRANCH"
+          cat > "$RUNNER_TEMP/body.md" <<BODY
+          Re-pins Work from \`${PINNED:0:9}\` to \`$TARGET\`, the newest Lolly main commit whose CI push run passed \`qualification\`: $RUN_URL
+
+          Lolly changes in range: https://github.com/lolly-tools/lolly/compare/$PINNED...$TARGET
+
+          Now pinned: engine $engine, core $core.
+
+          Made by \`.github/workflows/lolly-repin.yml\` with the existing scripts: \`sync-docs-bundle.ts\`, \`vendor-content-resolver.ts --write\` and \`repin-engine.ts --apply\`, which ran the full test suite before this branch was pushed. The four pins were then verified against the target. This pull request runs PR qualification like any other; review the engine changes and merge it as usual. A later run rebuilds this branch from the newest Work main, or closes it once Work pins the newest qualified commit.
+          BODY
+          if [ -n "$open" ]; then
+            gh pr edit "$open" --repo "$GITHUB_REPOSITORY" --title "chore: re-pin Work to Lolly ${TARGET:0:9}" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "chore: re-pin Work to Lolly ${TARGET:0:9}" --body-file "$RUNNER_TEMP/body.md"
+          fi
