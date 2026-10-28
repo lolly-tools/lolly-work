@@ -124,7 +124,7 @@ the `extraEgress` rules you add for a private shell or allowed origin.
 
 ## Packaged browser and verification
 
-The Dockerfile uses digest-pinned Node 26.12.0 on Debian Bookworm and installs
+The Dockerfile uses digest-pinned Node 26.12.1 on Debian Bookworm and installs
 the Chromium distribution matched to the worker's frozen Playwright lock. The
 browser lives at `/opt/lolly-browsers`, readable by the unprivileged runtime user.
 It includes the software graphics implementation needed by the shell's required
@@ -167,7 +167,7 @@ cancellation and loopback/model/WebSocket refusal. Its original 20-second render
 deadline remains unchanged. Existing injected-browser tests are supplementary.
 
 Run the same acceptance with a clean isolated checkout matching the engine pin,
-frozen Work and Lolly dependencies installed on Linux amd64 or arm64, Node 26.12.0 and a
+frozen Work and Lolly dependencies installed on Linux amd64 or arm64, Node 26.12.1 and a
 local Docker socket:
 
 ```sh

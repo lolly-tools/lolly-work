@@ -29,7 +29,7 @@ test('worker browser startup budget cannot be disabled or made unbounded', () =>
 test('packaged worker keeps Node and Playwright versions with a glibc browser installation', () => {
   const docker = readFileSync(new URL('../workers/render/Dockerfile', import.meta.url), 'utf8');
   const lock = readFileSync(new URL('../workers/render/pnpm-lock.yaml', import.meta.url), 'utf8');
-  assert.match(docker, /^FROM node:26\.12\.0-bookworm-slim@sha256:[a-f0-9]{64}$/m);
+  assert.match(docker, /^FROM node:26\.12\.1-bookworm-slim@sha256:[a-f0-9]{64}$/m);
   assert.match(docker, /PLAYWRIGHT_BROWSERS_PATH=\/opt\/lolly-browsers/);
   assert.match(docker, /pnpm install --frozen-lockfile --prod[\s\S]*pnpm exec playwright-core install --with-deps chromium/);
   assert.match(docker, /chmod -R a\+rX \/opt\/lolly-browsers/);
