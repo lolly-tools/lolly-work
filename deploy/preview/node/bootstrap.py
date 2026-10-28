@@ -22,7 +22,10 @@ import stat  # noqa: E402
 import subprocess  # noqa: E402
 import tarfile  # noqa: E402
 import tempfile  # noqa: E402
+import threading  # noqa: E402
 import time  # noqa: E402
+import zipfile  # noqa: E402
+import zlib  # noqa: E402
 
 ROOT = "/var/lib/lolly-preview"
 RUN = ROOT + "/run"
@@ -40,6 +43,13 @@ MIB = 1024 * 1024
 SYSTEMCTL = "/usr/bin/systemctl"
 BUSY = ("active", "activating", "deactivating", "reloading", "refreshing")
 DEPLOY_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-z0-9-]{1,40}\Z")
+# The fetch: GitHub keeps run artifacts in Azure Blob Storage and hands out a signed download address that expires a
+# minute after it is issued. Four ranges in parallel measured 33 MB/s on the preview node (2026-10-28); one ran at 8.
+ARTIFACT_HOST = re.compile(r"[a-z0-9]{3,24}\.blob\.core\.windows\.net\Z")
+ARCHIVE_NAME = re.compile(r"lolly-ing-instance-[0-9]{1,20}-[0-9]{1,4}\.oci\.tar\Z")
+FETCH_PARTS = 4
+FETCH_SECONDS = 900
+FETCH_READ_SECONDS = 60
 
 
 def out(value):
@@ -201,17 +211,9 @@ def above_reserve(path):
     return info.f_bavail * info.f_frsize - (info.f_blocks * info.f_frsize // 4 + 512 * MIB)
 
 
-def upload(header):
-    """Receive one instance-image archive on stdin into the root-only spool (PROPOSAL 4.3 step 3).
-
-    The bytes are hashed while they are written. A wrong size or sha256 deletes the
-    partial file. The unit hashes the spooled file again before ctr imports it.
-    """
-    if sys.version_info < (3, 9):
-        refuse("NODE_PYTHON_TOO_OLD", "the node needs Python 3.9 or newer")
-    if os.geteuid() != 0:
-        refuse("NOT_ROOT", "run through sudo")
-    os.chdir("/")
+def claim_spool(header, extra=0):
+    """The checks the upload and the fetch share. The start lock is held until the process ends, so no run starts
+    while an archive is arriving. Returns the spooled file's path, or None after printing ALREADY_UPLOADED."""
     sha, size = header.get("sha256"), header.get("bytes")
     if not isinstance(sha, str) or not HEX64.match(sha) or type(size) is not int or not 0 < size <= MAX_ARCHIVE:
         refuse("BAD_REQUEST", "the archive header is malformed")
@@ -234,10 +236,28 @@ def upload(header):
         found = os.lstat(final)
         if stat.S_ISREG(found.st_mode) and found.st_size == size:
             out({"result": "ALREADY_UPLOADED", "sha256": sha, "bytes": size})
-            return
+            return None
         refuse("SPOOL_UNSAFE", "a spooled file of that name is not the expected archive")
-    if above_reserve(SPOOL) < 2 * size:
+    if above_reserve(SPOOL) < 2 * size + extra:
         refuse("LOW_CAPACITY", "not enough space above the image-GC reserve for the archive and its import; run gc")
+    return final
+
+
+def upload(header):
+    """Receive one instance-image archive on stdin into the root-only spool (PROPOSAL 4.3 step 3).
+
+    The bytes are hashed while they are written. A wrong size or sha256 deletes the
+    partial file. The unit hashes the spooled file again before ctr imports it.
+    """
+    if sys.version_info < (3, 9):
+        refuse("NODE_PYTHON_TOO_OLD", "the node needs Python 3.9 or newer")
+    if os.geteuid() != 0:
+        refuse("NOT_ROOT", "run through sudo")
+    os.chdir("/")
+    final = claim_spool(header)
+    if final is None:
+        return
+    sha, size = header["sha256"], header["bytes"]
     partial = SPOOL + "/" + sha + ".partial"
     if os.path.lexists(partial):
         os.unlink(partial)
@@ -263,6 +283,159 @@ def upload(header):
     out({"result": "UPLOADED", "sha256": sha, "bytes": size})
 
 
+def artifact_address(url):
+    """An https address on GitHub's artifact store, with no user, password or other port."""
+    import urllib.parse
+    if not isinstance(url, str) or len(url) > 4096 or not url.isprintable() or " " in url:
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    return parts.scheme == "https" and parts.username is None and parts.password is None and port in (None, 443) \
+        and ARTIFACT_HOST.match(parts.hostname or "") is not None
+
+
+def open_range(url, first, last):
+    """GET bytes first..last of the artifact. A redirect is refused, not followed. The tests replace this function."""
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    request = urllib.request.Request(url, headers={"Range": "bytes=%d-%d" % (first, last), "User-Agent": "lolly-preview"})
+    return urllib.request.build_opener(NoRedirect).open(request, timeout=FETCH_READ_SECONDS)
+
+
+def fetch_range(url, descriptor, first, last, total, deadline, failures):
+    """Download one range into its place in the zip. A failure is recorded by kind only: an error message could
+    carry the signed address."""
+    try:
+        response = open_range(url, first, last)
+        try:
+            if getattr(response, "status", None) != 206 or response.headers.get("Content-Range") != "bytes %d-%d/%d" % (first, last, total):
+                failures.append("the artifact store did not answer the range request")
+                return
+            offset = first
+            while offset <= last:
+                if time.monotonic() > deadline:
+                    failures.append("the download took longer than %d seconds" % FETCH_SECONDS)
+                    return
+                chunk = response.read(min(MIB, last + 1 - offset))
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.pwrite(descriptor, view, offset)
+                    view, offset = view[written:], offset + written
+            if offset != last + 1:
+                failures.append("a range ended early")
+        finally:
+            response.close()
+    except Exception as exc:  # urllib, socket and TLS errors alike
+        code = getattr(exc, "code", None)
+        failures.append("the download failed (%s%s)" % (type(exc).__name__, " %d" % code if isinstance(code, int) else ""))
+
+
+def unpack_member(path, name, sha, size, final):
+    """Unpack the zip's one member into the spool while hashing it, as the upload hashes what it receives."""
+    partial = SPOOL + "/" + sha + ".partial"
+    if os.path.lexists(partial):
+        os.unlink(partial)
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            if [m.filename for m in members] != [name] or members[0].file_size != size \
+                    or members[0].compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                refuse("ARCHIVE_INVALID", "the artifact does not hold exactly the archive its manifest names")
+            descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            digest, received = hashlib.sha256(), 0
+            try:
+                with archive.open(members[0]) as stream:
+                    while received <= size:
+                        chunk = stream.read(min(MIB, size + 1 - received))
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        view = memoryview(chunk)
+                        while view:
+                            view = view[os.write(descriptor, view):]
+                        received += len(chunk)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    except (zipfile.BadZipFile, zlib.error, EOFError):
+        if os.path.lexists(partial):
+            os.unlink(partial)
+        refuse("ARCHIVE_MISMATCH", "the fetched artifact is damaged; it was deleted")
+    except OSError as exc:
+        if os.path.lexists(partial):
+            os.unlink(partial)
+        refuse("FETCH_FAILED", "the archive could not be unpacked into the spool (%s)" % (exc.strerror or type(exc).__name__))
+    except SystemExit:
+        if os.path.lexists(partial):
+            os.unlink(partial)
+        raise
+    if received != size or digest.hexdigest() != sha:
+        os.unlink(partial)
+        refuse("ARCHIVE_MISMATCH", "the fetched archive does not match its manifest; it was deleted")
+    os.rename(partial, final)
+
+
+def fetch(payload):
+    """Fetch one instance-image archive into the root-only spool from the artifact's signed download address, which
+    the Mac reads from GitHub and passes here. It expires a minute after GitHub issues it, and no credential is sent or
+    kept. The zip arrives in parallel ranges; its one member is then unpacked and hashed exactly as an upload is. The
+    zip is always deleted. A refusal names a kind of failure and never the address."""
+    archive = payload.get("archive")
+    if not isinstance(archive, dict):
+        refuse("BAD_REQUEST", "the fetch request is malformed")
+    url, name, total = archive.get("url"), archive.get("name"), archive.get("zipBytes")
+    if not isinstance(name, str) or not ARCHIVE_NAME.match(name) or type(total) is not int \
+            or not 0 < total <= MAX_ARCHIVE + 64 * MIB:
+        refuse("BAD_REQUEST", "the fetch request is malformed")
+    if not artifact_address(url):
+        refuse("FETCH_REFUSED", "the download address is not on GitHub's artifact store")
+    final = claim_spool(archive, extra=total)
+    if final is None:
+        return
+    sha, size = archive["sha256"], archive["bytes"]
+    started = time.monotonic()
+    deadline = started + FETCH_SECONDS
+    path = SPOOL + "/" + sha + ".zip.partial"
+    if os.path.lexists(path):
+        os.unlink(path)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            count = min(FETCH_PARTS, total)
+            step = -(-total // count)
+            failures, threads = [], []
+            for first in range(0, total, step):
+                thread = threading.Thread(target=fetch_range, args=(url, descriptor, first, min(total, first + step) - 1,
+                                                                    total, deadline, failures), daemon=True)
+                thread.start()
+                threads.append(thread)
+            for thread in threads:
+                thread.join(max(1.0, deadline - time.monotonic()))
+            if any(thread.is_alive() for thread in threads):
+                failures.append("the download took longer than %d seconds" % FETCH_SECONDS)
+            if failures:
+                refuse("FETCH_FAILED", failures[0])
+            if os.fstat(descriptor).st_size != total:
+                refuse("FETCH_FAILED", "the downloaded artifact has the wrong size")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        unpack_member(path, name, sha, size, final)
+    finally:
+        if os.path.lexists(path):
+            os.unlink(path)
+    out({"result": "FETCHED", "sha256": sha, "bytes": size, "seconds": int(time.monotonic() - started)})
+
+
 def main(payload):
     if sys.version_info < (3, 9):
         refuse("NODE_PYTHON_TOO_OLD", "the node needs Python 3.9 or newer")
@@ -276,5 +449,7 @@ def main(payload):
         poll(payload)
     elif action == "read":
         read(payload)
+    elif action == "fetch":
+        fetch(payload)
     else:
         refuse("BAD_REQUEST", "unknown action")

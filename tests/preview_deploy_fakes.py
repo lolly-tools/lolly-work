@@ -913,6 +913,9 @@ def _load_bootstrap(head, sandbox):
         data = json.loads(Path(os.environ["FAKE_STATE"]).read_text())["capacity"]
         return data["available"] - (data["total"] // 4 + 512 * MIB)
     namespace["above_reserve"] = above_reserve
+    if os.environ.get("FAKE_SITE") == "lolly.ing":
+        import preview_deploy_ing_fakes
+        namespace["open_range"] = preview_deploy_ing_fakes.store_open_range(sandbox, os.environ["FAKE_GH_STATE"])
     os.makedirs(f"{sandbox}/run/systemd/system", exist_ok=True)
     return namespace
 
@@ -1035,8 +1038,16 @@ def tree_listing(trees, sha_, recursive):
     return listing
 
 
+GH_TOKEN = "gho_" + "k" * 36
+
+
 def gh_main(argv):
     state_path = os.environ["FAKE_GH_STATE"]
+    if argv == ["auth", "token"]:  # preview_github.Gh.location reads gh's token for one request to api.github.com
+        if os.environ.get("FAKE_GH_NO_TOKEN"):
+            return 1
+        print(GH_TOKEN)
+        return 0
     if argv[:1] != ["api"]:
         return 2
     args = argv[1:]

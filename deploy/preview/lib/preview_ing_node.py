@@ -231,7 +231,9 @@ class IngRunner(N.Runner):
                 require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077
                         and info.st_size == release["archive"]["bytes"], "ARCHIVE_UNSAFE",
                         "the spooled archive is not a private root file of the expected size")
-                self.capacity(int(self.limits["needBytes"]))
+                # needBytes covers the archive, its import and its unpack; the archive is already on this disk, so only
+                # the rest must fit. Counting it twice refused every deploy once 2x to 3x the archive was free (2026-10-28).
+                self.capacity(int(self.limits["needBytes"]) - info.st_size)
                 digest = hashlib.sha256()
                 while True:
                     chunk = os.read(fd, 1024 * 1024)

@@ -175,6 +175,9 @@ ING_LOLLY_CI = {"site": "lolly.ing (Lolly source)", "repository": TOOLS["reposit
                 "ciWorkflowPath": TOOLS["ciWorkflowPath"], "fastLaneWorkflowFile": TOOLS["fastLaneWorkflowFile"],
                 "fastLaneWorkflowPath": TOOLS["fastLaneWorkflowPath"], "branch": TOOLS["branch"]}
 ING_ARCHIVE_MAX_BYTES = 6 * 1024 ** 3
+# How long the Mac waits for the node to fetch the archive artifact: the node's own 900 s budget (bootstrap.py
+# FETCH_SECONDS), the unpack and hash of up to ING_ARCHIVE_MAX_BYTES, and the SSH route.
+ING_FETCH_TIMEOUT_SECONDS = 1500
 # The smoke's credential, a root-only file on the node, never printed: a Work service token (lwt_..., member role or
 # lower) when its file exists, otherwise a member's session cookie. A token does not expire overnight (Andy, 2026-10-27).
 NODE_ING_SMOKE_TOKEN = "/etc/lolly-preview/lolly.ing-smoke-token"

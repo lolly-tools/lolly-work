@@ -209,13 +209,14 @@ def ing_artifacts(gh, build, run_id, manifest=None, archive=None):
     manifest = manifest or ing_manifest(build, run_id)
     archive = archive if archive is not None else archive_bytes(build, run_id)
     manifest_id, archive_id = run_id * 10 + 1, run_id * 10 + 2
+    archive_zip = zip_of(manifest["image"]["archive"]["name"], archive)
     gh.setdefault("artifacts", {})[str(run_id)] = [
         {"id": manifest_id, "name": "lolly-ing-instance-manifest", "expired": False, "size_in_bytes": 4000,
          "expires_at": "2026-11-20T00:00:00Z"},
-        {"id": archive_id, "name": "lolly-ing-instance-archive", "expired": False, "size_in_bytes": len(archive) + 200,
+        {"id": archive_id, "name": "lolly-ing-instance-archive", "expired": False, "size_in_bytes": len(unb64(archive_zip)),
          "expires_at": "2026-11-20T00:00:00Z"}]
     gh.setdefault("zips", {})[str(manifest_id)] = zip_of("lolly-ing-instance.manifest.json", json.dumps(manifest))
-    gh["zips"][str(archive_id)] = zip_of(manifest["image"]["archive"]["name"], archive)
+    gh["zips"][str(archive_id)] = archive_zip
     gh.setdefault("enginePins", {})[build["sha"]] = build["lolly"]
 
 
@@ -834,3 +835,57 @@ def rehearsal_cluster(**scenario):
     """#208's rehearsal namespace (its own fakes), reaching the backup store at STORAGE_ADDRESS."""
     import restore_rehearsal_fakes as RF
     return RF.cluster(**scenario)
+
+
+# The artifact store the node fetches from (bootstrap.fetch) ---------------------------
+STORE_HOST = "productionresultssa9.blob.core.windows.net"
+STORE_SIGNATURE = "sig=SIGNED-ONE-MINUTE"
+
+
+def location_opener(gh_path, host=STORE_HOST):
+    """api.github.com as preview_github.Gh.location reaches it: a 302 to the artifact's signed address. FAKE_LOCATION
+    "none" answers 200, "missing" 404. Each request is recorded as a LOCATION call in the fake GitHub's state."""
+    import urllib.error
+
+    def opener(request, timeout=None):
+        match = re.fullmatch(rf"https://api\.github\.com/repos/{SUSE_REPO}/actions/artifacts/(\d+)/zip", request.full_url)
+        assert match, request.full_url
+        assert request.get_header("Authorization") == "Bearer " + F.GH_TOKEN, "the request carries gh's token"
+        with F.state_file(gh_path) as gh:
+            gh["calls"].append({"method": "LOCATION", "path": request.full_url, "body": None})
+        mode = os.environ.get("FAKE_LOCATION")
+        if mode == "none":
+            return io.BytesIO(b"{}")
+        if mode == "missing":
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b""))
+        target = f"https://{host}/actions-results/{match.group(1)}.zip?sv=2025&se=soon&{STORE_SIGNATURE}"
+        raise urllib.error.HTTPError(request.full_url, 302, "Found", {"Location": target}, io.BytesIO(b""))
+    return opener
+
+
+class _StoreResponse(io.BytesIO):
+    def __init__(self, data, status, headers):
+        super().__init__(data)
+        self.status, self.headers = status, headers
+
+
+def store_open_range(sandbox, gh_path):
+    """bootstrap.open_range against the artifact store, served from the fake GitHub's zips. FAKE_FETCH: "down" raises
+    as a refused connection, "whole" ignores Range and answers 200, "short" ends each range early."""
+    def open_range(url, first, last):
+        parts = urlsplit(url)
+        match = re.fullmatch(r"/actions-results/(\d+)\.zip", parts.path)
+        assert parts.hostname == STORE_HOST and match and STORE_SIGNATURE in parts.query, url
+        with open(Path(sandbox) / "fetch-ranges.jsonl", "a") as log:
+            log.write(json.dumps([int(match.group(1)), first, last]) + "\n")
+        mode = os.environ.get("FAKE_FETCH")
+        if mode == "down":
+            raise ConnectionRefusedError(111, "Connection refused")
+        data = unb64(json.loads(Path(gh_path).read_text())["zips"][match.group(1)])
+        if mode == "whole":
+            return _StoreResponse(data, 200, {"Content-Length": str(len(data))})
+        body = data[first:last + 1]
+        if mode == "short":
+            body = body[:-1]
+        return _StoreResponse(body, 206, {"Content-Range": f"bytes {first}-{last}/{len(data)}"})
+    return open_range

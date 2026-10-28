@@ -528,6 +528,10 @@ memory fraction, the watch, build polling, rollout timeout, capacity (`minFreeAb
 backup window (`01:30`-`02:30`), the claim allowlist, the retention counts, and `rehearsal`: `null` (the preview-grade
 default), or the backup store's host name and public address to run the restore rehearsal before each migration.
 Identities come from check-target `--site lolly.ing`, including the database Secret name the Jobs may reference.
+Capacity is checked twice against the larger of `minFreeAboveReserveBytes` and `archiveFactor` times the archive: by the
+Mac before the archive is fetched or streamed, and by the unit before it imports. The unit subtracts the spooled archive,
+which is already on the disk; counting it twice refused every deploy on 2026-10-28 once the node had between 2 and 3
+archives' worth free.
 
 ### Qualification (Andy, 2026-10-27)
 
@@ -565,7 +569,7 @@ lane, `lollyLane`, `lollyLaneBase` and `lollyLaneRun`.
     `lolly-ing-instance-<run>-<attempt>.oci.tar`, kept 7 days.
   - The manifest's key ids (`shell.keyId`, `shell.publicPinThumbprint`, `catalog.keyId`, `buildSettings.pinThumbprint`)
     must all be the lolly.ing pin and never the release key.
-  - The archive's sha256 is checked twice: while it streams into the node's root-only spool, and again before
+  - The archive's sha256 is checked twice: while it is written into the node's root-only spool, and again before
     `ctr images import --no-unpack --digests --base-name docker.io/library/lolly-ing-instance` reads that same file.
     containerd 2.x's ctr (K3s v1.34 ships v2.2) makes only the run tag (`image.refName`) for a manifest the archive
     names, and no digest name. When the run tag points at the manifest's digest and carries this import's
@@ -624,9 +628,16 @@ On the Mac:
    and Lolly commits are on their `main`.
 4. The first-party commits and dependency files changed since the live release are printed (R21 R3).
 5. check-target `--site lolly.ing`, once, before the first write to the node.
-6. The archive is downloaded by run ID and streamed over the check-target SSH route into the node's root-only spool,
-   hashed while it is written. A wrong size or sha256 deletes it (`ARCHIVE_MISMATCH`). No registry credential is ever on
-   the node.
+6. The node fetches the archive itself (Andy, 2026-10-28). The Mac reads the archive artifact's signed download
+   address from GitHub without following it, with gh's own token, and passes it on SSH's stdin. The address is on
+   GitHub's artifact store (`*.blob.core.windows.net`, checked by the node) and expires a minute after it is issued.
+   The node downloads the zip in four parallel ranges, each checked against its `Content-Range`, then unpacks its one
+   member into the root-only spool, hashed while it is written. A wrong member, size or sha256 deletes it
+   (`ARCHIVE_INVALID`, `ARCHIVE_MISMATCH`) and is final. When the address cannot be read, the node refuses it, or the
+   download fails (`FETCH_UNAVAILABLE`, `FETCH_REFUSED`, `FETCH_FAILED`), the Mac downloads the archive by run ID and
+   streams it over the check-target SSH route instead, checked the same way. Neither the address nor a token is
+   printed or recorded, and no registry or GitHub credential is ever on the node. Measured on the preview node: 1.6 GB
+   in 77 seconds, where the Mac's download and stream took about 18 minutes.
 7. The unit starts.
 
 In the unit:
