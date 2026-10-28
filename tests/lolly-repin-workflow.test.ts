@@ -6,7 +6,9 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
 import { decide, isQualifyingRun, qualificationPassed, readPins, selectQualifiedRun, type Job, type Pins, type Run } from '../scripts/lolly-repin-target.ts';
@@ -41,7 +43,7 @@ test('runs on a schedule and by hand, never on a pull request, one run at a time
 
 test('GITHUB_TOKEN only reads; every write goes through the App token, scoped to Work', () => {
   assert.deepEqual(workflow.permissions, { contents: 'read' });
-  assert.deepEqual(job.permissions, { contents: 'read', 'pull-requests': 'read' });
+  assert.deepEqual(job.permissions, { contents: 'read', 'pull-requests': 'read', checks: 'read', statuses: 'read' });
   const app = step('app');
   assert.match(app.uses ?? '', /^actions\/create-github-app-token@[a-f0-9]{40}$/);
   assert.deepEqual(app.with, {
@@ -56,10 +58,84 @@ test('GITHUB_TOKEN only reads; every write goes through the App token, scoped to
   assert.match(propose.run ?? '', /gh pr create .*--head "\$BRANCH"/);
   assert.match(propose.run ?? '', /push --force "https:\/\/github\.com\/\$GITHUB_REPOSITORY\.git" "HEAD:refs\/heads\/\$BRANCH"/);
   assert.doesNotMatch(propose.run ?? '', /refs\/heads\/main/, 'never pushes main');
-  assert.doesNotMatch(text, /gh pr merge|secrets\.GITHUB_TOKEN/);
+  assert.doesNotMatch(text, /secrets\.GITHUB_TOKEN|--admin|gh pr merge [^\n]*--auto/);
+  const merge = step('Merge the proposal once its checks pass');
+  assert.equal(merge.if, "steps.propose.outputs.number != ''");
+  assert.equal(merge.env?.GH_TOKEN, '${{ steps.app.outputs.token }}', 'the merge pushes main as the App, so Work CI runs on it');
+  assert.equal(merge.env?.READ_TOKEN, '${{ github.token }}');
+  const merges = job.steps.filter(s => /gh pr merge/.test(s.run ?? ''));
+  assert.deepEqual(merges.map(s => s.name), ['Merge the proposal once its checks pass'], 'only the merge step merges');
+  assert.match(merge.run ?? '', /gh pr merge "\$NUMBER" --repo "\$GITHUB_REPOSITORY" --merge --match-head-commit "\$HEAD_SHA"/);
   for (const candidate of job.steps.filter(s => s.uses?.startsWith('actions/checkout@'))) {
     assert.equal(candidate.with?.['persist-credentials'], false, 'the checkout keeps no token in .git/config');
   }
+});
+
+// Runs the merge step's own script against a fake `gh` that serves one checks
+// listing per call (the last one repeats) and records any merge.
+const mergeWith = (listings: Array<Array<{ name: string; bucket: string }> | 'error'>, env: Record<string, string> = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'repin-merge-'));
+  try {
+    listings.forEach((listing, index) => writeFileSync(join(dir, `checks.${index}`), listing === 'error' ? 'ERROR' : JSON.stringify(listing)));
+    writeFileSync(join(dir, 'last'), String(listings.length - 1));
+    writeFileSync(join(dir, 'gh'), [
+      '#!/bin/bash',
+      'case "$2" in',
+      '  checks)',
+      '    n=$(cat "$FAKE_DIR/count" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_DIR/count"',
+      '    last=$(cat "$FAKE_DIR/last"); [ "$n" -le "$last" ] || n=$last',
+      '    if [ "$(cat "$FAKE_DIR/checks.$n")" = ERROR ]; then echo "no checks reported" >&2; exit 1; fi',
+      '    cat "$FAKE_DIR/checks.$n" ;;',
+      '  merge) echo "$*" >> "$FAKE_DIR/merged" ;;',
+      'esac',
+    ].join('\n'));
+    chmodSync(join(dir, 'gh'), 0o755);
+    const result = spawnSync('bash', ['-c', step('Merge the proposal once its checks pass').run ?? ''], {
+      encoding: 'utf8',
+      env: {
+        PATH: `${dir}:${process.env.PATH ?? ''}`, FAKE_DIR: dir, GITHUB_REPOSITORY: 'lolly-tools/lolly-work',
+        GH_TOKEN: 'app', READ_TOKEN: 'read', NUMBER: '245', HEAD_SHA: A, WAIT_MINUTES: '1', POLL_SECONDS: '0', ...env,
+      },
+    });
+    let merged = '';
+    try { merged = readFileSync(join(dir, 'merged'), 'utf8'); } catch { /* nothing merged */ }
+    const reads = Number(readFileSync(join(dir, 'count'), 'utf8'));
+    return { status: result.status, stdout: result.stdout, merged, reads };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test('merges the proposed commit only after every check finished and required passed', () => {
+  const pending = [{ name: 'CI / test', bucket: 'pending' }, { name: 'required', bucket: 'pending' }];
+  const requiredFirst = [{ name: 'CI / test', bucket: 'pending' }, { name: 'required', bucket: 'pass' }];
+  const green = [{ name: 'CI / test', bucket: 'pass' }, { name: 'Deployment qualification', bucket: 'skipping' }, { name: 'required', bucket: 'pass' }];
+  const done = mergeWith(['error', pending, requiredFirst, green]);
+  assert.equal(done.status, 0, done.stdout);
+  assert.equal(done.reads, 4, 'waited through the missing, pending and partly pending listings');
+  assert.equal(done.merged.trim(), `pr merge 245 --repo lolly-tools/lolly-work --merge --match-head-commit ${A}`);
+  assert.match(done.stdout, new RegExp(`Merged #245 at ${A}`));
+});
+
+test('a failed or cancelled check leaves the proposal open', () => {
+  for (const bucket of ['fail', 'cancel']) {
+    const failed = mergeWith([[{ name: 'CI / test', bucket }, { name: 'required', bucket: 'pending' }]]);
+    assert.equal(failed.status, 0);
+    assert.equal(failed.merged, '', bucket);
+    assert.match(failed.stdout, /::warning title=Re-pin left open::#245 has failed checks: CI \/ test\. Nothing was merged\./);
+  }
+});
+
+test('checks still running, or never reported, at the deadline leave the proposal open', () => {
+  const running = mergeWith([[{ name: 'required', bucket: 'pending' }]], { WAIT_MINUTES: '0' });
+  assert.equal(running.status, 0);
+  assert.equal(running.merged, '');
+  assert.match(running.stdout, /::notice title=Re-pin left open::#245 was still being checked after 0 minutes \(required: pending, 1 pending\)/);
+  const none = mergeWith(['error'], { WAIT_MINUTES: '0' });
+  assert.equal(none.merged, '');
+  assert.match(none.stdout, /required: missing, 0 pending/);
+  const noRequired = mergeWith([[{ name: 'CI / test', bucket: 'pass' }]], { WAIT_MINUTES: '0' });
+  assert.equal(noRequired.merged, '', 'green checks without the required check are not enough');
 });
 
 test('missing App secrets stop the run first, naming what to add', () => {

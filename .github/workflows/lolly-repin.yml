@@ -18,8 +18,13 @@
 # the old pin back if anything fails). It then verifies all four pins against
 # the target and proposes the result as ONE pull request from
 # chore/repin-lolly-auto, rebuilt from the newest Work main on every run. It
-# never pushes to main and never merges. When a later run finds Work already
-# pins the newest qualified commit, it closes the stale proposal.
+# never pushes to main. It merges the proposal itself (Andy, 2026-10-28) only
+# once every check on that exact commit has finished without a failure and the
+# `required` check passed; a failure, or checks still running after
+# WAIT_MINUTES, leaves the pull request open for a maintainer or the next run.
+# main has no required checks, so GitHub's own auto-merge would merge at once,
+# before CI; the wait here is what stands in for it. When a later run finds
+# Work already pins the newest qualified commit, it closes the stale proposal.
 #
 # THE TOKEN, AND WHAT TO CREATE BEFORE THE FIRST RUN
 # The proposal has to start PR qualification so its `required` check runs.
@@ -62,12 +67,16 @@ jobs:
     name: re-pin to qualified Lolly main
     if: github.repository == 'lolly-tools/lolly-work'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 100
     # GITHUB_TOKEN only reads: Work's tree, public Lolly runs and the open
     # proposal. Every write uses the App token.
     permissions:
       contents: read
       pull-requests: read
+      # The merge step reads the proposal's checks with GITHUB_TOKEN; the App
+      # token carries no checks or statuses permission.
+      checks: read
+      statuses: read
     env:
       BRANCH: chore/repin-lolly-auto
     steps:
@@ -191,6 +200,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Open, refresh or close the pull request
+        id: propose
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           APP_SLUG: ${{ steps.app.outputs.app-slug }}
@@ -212,6 +222,8 @@ jobs:
           fi
           if [ "$CURRENT" = 'true' ]; then
             echo "The open $BRANCH pull request already proposes $TARGET on the current Work main."
+            echo "number=$open" >> "$GITHUB_OUTPUT"
+            echo "head=$(gh pr view "$open" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Only the pin and what the re-pin scripts regenerate may change; anything else is a bug to look at, not to propose.
@@ -252,10 +264,51 @@ jobs:
 
           Now pinned: engine $engine, core $core.
 
-          Made by \`.github/workflows/lolly-repin.yml\` with the existing scripts: \`sync-docs-bundle.ts\`, \`vendor-content-resolver.ts --write\` and \`repin-engine.ts --apply\`, which ran the full test suite before this branch was pushed. The four pins were then verified against the target. This pull request runs PR qualification like any other; review the engine changes and merge it as usual. A later run rebuilds this branch from the newest Work main, or closes it once Work pins the newest qualified commit.
+          Made by \`.github/workflows/lolly-repin.yml\` with the existing scripts: \`sync-docs-bundle.ts\`, \`vendor-content-resolver.ts --write\` and \`repin-engine.ts --apply\`, which ran the full test suite before this branch was pushed. The four pins were then verified against the target. This pull request runs PR qualification like any other. The same run merges it once every check on this commit has passed, with \`required\` among them; a failure leaves it open for review. A later run rebuilds this branch from the newest Work main, or closes it once Work pins the newest qualified commit.
           BODY
           if [ -n "$open" ]; then
             gh pr edit "$open" --repo "$GITHUB_REPOSITORY" --title "chore: re-pin Work to Lolly ${TARGET:0:9}" --body-file "$RUNNER_TEMP/body.md"
           else
-            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "chore: re-pin Work to Lolly ${TARGET:0:9}" --body-file "$RUNNER_TEMP/body.md"
+            url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "chore: re-pin Work to Lolly ${TARGET:0:9}" --body-file "$RUNNER_TEMP/body.md")
+            open=${url##*/}
           fi
+          echo "number=$open" >> "$GITHUB_OUTPUT"
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Merges only the commit this run proposed or found current, and only when
+      # every check on it finished without a failure and `required` passed. The
+      # merge uses the App token so Work's CI runs on the new main, which the
+      # lolly.ing preview route needs before it ships.
+      - name: Merge the proposal once its checks pass
+        if: steps.propose.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          READ_TOKEN: ${{ github.token }}
+          NUMBER: ${{ steps.propose.outputs.number }}
+          HEAD_SHA: ${{ steps.propose.outputs.head }}
+          WAIT_MINUTES: '50'
+          POLL_SECONDS: '60'
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + WAIT_MINUTES * 60))
+          while :; do
+            checks=$(GH_TOKEN="$READ_TOKEN" gh pr checks "$NUMBER" --repo "$GITHUB_REPOSITORY" --json name,bucket 2>/dev/null || true)
+            [ -n "$checks" ] || checks='[]'
+            required=$(jq -r '[.[] | select(.name == "required")][0].bucket // "missing"' <<<"$checks")
+            failed=$(jq -r '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' <<<"$checks")
+            pending=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$checks")
+            if [ -n "$failed" ]; then
+              echo "::warning title=Re-pin left open::#$NUMBER has failed checks: $failed. Nothing was merged."
+              exit 0
+            fi
+            if [ "$required" = 'pass' ] && [ "$pending" -eq 0 ]; then
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::notice title=Re-pin left open::#$NUMBER was still being checked after $WAIT_MINUTES minutes (required: $required, $pending pending). A later run or a maintainer merges it."
+              exit 0
+            fi
+            sleep "$POLL_SECONDS"
+          done
+          gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --merge --match-head-commit "$HEAD_SHA"
+          echo "Merged #$NUMBER at $HEAD_SHA."
