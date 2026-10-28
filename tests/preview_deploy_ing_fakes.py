@@ -518,7 +518,9 @@ def k3s_ing_main(argv, out):
                     if any(target in other["refs"] for other in state["images"].values()):
                         print(f"ctr: image {target!r}: already exists", file=sys.stderr)
                         return 1
-                    entry["refs"][target] = {}  # a new name carries no labels: tag does not copy them
+                    # tag copies no labels; K3s's CRI marks the new name managed at once (seen on the node 2026-10-27)
+                    managed = {"io.cri-containerd.image": "managed"} if state["behaviour"].get("containerd2") else {}
+                    entry["refs"][target] = managed
                     state["writes"].append(["image-tagged", source, target])
                     return 0
         return 1

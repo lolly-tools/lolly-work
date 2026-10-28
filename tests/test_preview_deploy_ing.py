@@ -1313,6 +1313,7 @@ class IngImageNames(IngEndToEnd):
 
     LABELS = {"io.cri-containerd.pinned": "pinned", "lolly.tools/preview-pulled": "true", "lolly.tools/preview-pin": "true"}
     RUN_TAG = IF.ING_IMAGE + ":run-1100-1"
+    MANAGED = {"io.cri-containerd.image": "managed"}
 
     def names(self):
         """Every name that points at the new build's digest, with its labels."""
@@ -1345,7 +1346,8 @@ class IngImageNames(IngEndToEnd):
         self.assertEqual(self.live()[0], self.new["image"])
         self.assertEqual(self.writes("image-tagged"), [["image-tagged", self.RUN_TAG, self.new["image"]]])
         self.assertEqual(self.digest_labels_set(), sorted(f"{name}={value}" for name, value in self.LABELS.items()))
-        self.assertEqual(self.names(), {self.new["image"]: self.LABELS})  # the digest name kept every label; the run tag is gone
+        # the digest name has every label (and the CRI's own); the run tag is gone
+        self.assertEqual(self.names(), {self.new["image"]: dict(self.LABELS, **self.MANAGED)})
         kinds = [w[0] for w in self.cluster()["writes"]]
         self.assertLess(kinds.index("import"), kinds.index("image-tagged"))
         self.assertLess(kinds.index("image-tagged"), kinds.index("image-name-removed"))
@@ -1372,6 +1374,27 @@ class IngImageNames(IngEndToEnd):
         self.assertEqual((self.writes("import"), self.writes("image-tagged")), ([], []))
         self.assertEqual(self.digest_labels_set(), sorted(f"{name}={value}" for name, value in self.LABELS.items()))
         self.assertEqual(self.names(), {self.new["image"]: self.LABELS})
+
+    def test_a_digest_name_with_only_the_cri_managed_label_gets_the_run_tags_labels(self):
+        """K3s's CRI marks a new name io.cri-containerd.image=managed at once, so a run stopped between the tag and the
+        labels leaves that label alone on the digest name. Only this import's pulled label means the name is done."""
+        self.behave(containerd2=True)
+        self.seed(dict(self.MANAGED))
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual((self.writes("import"), self.writes("image-tagged")), ([], []))
+        self.assertEqual(self.digest_labels_set(), sorted(f"{name}={value}" for name, value in self.LABELS.items()))
+        self.assertEqual(self.names(), {self.new["image"]: dict(self.LABELS, **self.MANAGED)})
+        self.assertEqual(self.writes("image-name-removed"), [["image-name-removed", self.RUN_TAG]])
+
+    def test_a_pin_another_procedure_made_on_the_digest_name_stays_theirs(self):
+        """Review S-M1: the pulled label is added, but not this command's own-pin label, so retention never unpins it."""
+        self.behave(containerd2=True)
+        self.seed({"io.cri-containerd.pinned": "pinned"})
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.digest_labels_set(), ["lolly.tools/preview-pulled=true"])
+        self.assertEqual(self.names(), {self.new["image"]: {"io.cri-containerd.pinned": "pinned", "lolly.tools/preview-pulled": "true"}})
 
     def test_a_run_tag_that_names_another_digest_is_refused_and_nothing_is_tagged(self):
         self.behave(containerd2=True, importedDigest={self.new["image"]: "sha256:" + "e" * 64})

@@ -269,22 +269,30 @@ class IngRunner(N.Runner):
         skipNamed (cmd/ctr/commands/images/import.go L143 at v2.2.7), so a manifest the archive names gets only
         that name (core/transfer/image/imagestore.go L254-262). The digest name is made from the run tag, which
         must point at the manifest's digest and carry this import's label. `ctr images tag` through the transfer
-        service copies no labels, so the run tag's labels are set again and read back. A digest name that already
-        has labels, from the import or an earlier run, is left as it is: verify_image judges it and drop_run_tag
-        checks the run tag."""
+        service copies no labels, so the run tag's labels are set again and read back.
+
+        A digest name that carries this import's pulled label, from the import or an earlier run, is left as it is:
+        verify_image judges it and drop_run_tag checks the run tag. Any other label does not count, because K3s's
+        CRI adds io.cri-containerd.image=managed to a new name at once; a run stopped between the tag and the
+        labels gets them on the next run. A pin another procedure made stays theirs (review S-M1)."""
+        pulled = A.PULLED_LABEL.split("=")[0]
         refs = self.containerd_refs()
         tag, named = refs.get(release["refName"]), refs.get(release["image"])
-        if tag is None or (named is not None and (named[1] or named[0] != release["digest"])):
+        if tag is None or (named is not None and (named[1].get(pulled) == "true" or named[0] != release["digest"])):
             return
-        require(tag[0] == release["digest"] and tag[1].get(A.PULLED_LABEL.split("=")[0]) == "true", "IMAGE_MISMATCH",
+        require(tag[0] == release["digest"] and tag[1].get(pulled) == "true", "IMAGE_MISMATCH",
                 "the run tag names another image or was not made by this import")
         if named is None:
             self.log("digest-name", image=release["image"])
             self.k3s_run(["ctr", "--namespace", "k8s.io", "images", "tag", release["refName"], release["image"]])
-        for name, value in sorted(tag[1].items()):
+        have = named[1] if named is not None else {}
+        wanted = {name: value for name, value in tag[1].items() if have.get(name) != value}
+        if have.get("io.cri-containerd.pinned") == "pinned":
+            wanted.pop(A.OWN_PIN_LABEL.split("=")[0], None)
+        for name, value in sorted(wanted.items()):
             self.label(release["image"], f"{name}={value}")
         named = self.containerd_refs().get(release["image"])
-        require(named is not None and named[0] == release["digest"] and all(named[1].get(k) == v for k, v in tag[1].items()),
+        require(named is not None and named[0] == release["digest"] and all(named[1].get(k) == v for k, v in wanted.items()),
                 "IMAGE_MISMATCH", "the digest name made from the run tag did not read back with its labels")
 
     def content(self, digest):
