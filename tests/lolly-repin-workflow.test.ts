@@ -45,8 +45,8 @@ test('GITHUB_TOKEN only reads; every write goes through the App token, scoped to
   const app = step('app');
   assert.match(app.uses ?? '', /^actions\/create-github-app-token@[a-f0-9]{40}$/);
   assert.deepEqual(app.with, {
-    'client-id': '${{ secrets.LOLLY_REPIN_APP_CLIENT_ID }}',
-    'private-key': '${{ secrets.LOLLY_REPIN_APP_PRIVATE_KEY }}',
+    'client-id': '${{ secrets.LOLLY_AUTOMATION_APP_CLIENT_ID }}',
+    'private-key': '${{ secrets.LOLLY_AUTOMATION_APP_PRIVATE_KEY }}',
     repositories: 'lolly-work',
     'permission-contents': 'write',
     'permission-pull-requests': 'write',
@@ -68,11 +68,11 @@ test('missing App secrets stop the run first, naming what to add', () => {
   const attempt = (env: Record<string, string>) => spawnSync('bash', ['-e', '-c', check.run ?? ''], { env: { PATH: process.env.PATH ?? '', ...env }, encoding: 'utf8' });
   const none = attempt({ CLIENT_ID: '', PRIVATE_KEY: '' });
   assert.equal(none.status, 1);
-  assert.match(none.stdout, /::error title=Re-pin App secrets missing::Add the repository secret\(s\) LOLLY_REPIN_APP_CLIENT_ID LOLLY_REPIN_APP_PRIVATE_KEY\./);
+  assert.match(none.stdout, /::error title=Re-pin App secrets missing::Add the repository secret\(s\) LOLLY_AUTOMATION_APP_CLIENT_ID LOLLY_AUTOMATION_APP_PRIVATE_KEY\./);
   assert.match(none.stdout, /GITHUB_TOKEN does not start PR qualification/);
   const keyOnly = attempt({ CLIENT_ID: '', PRIVATE_KEY: 'pem' });
   assert.equal(keyOnly.status, 1);
-  assert.match(keyOnly.stdout, /secret\(s\) LOLLY_REPIN_APP_CLIENT_ID\./);
+  assert.match(keyOnly.stdout, /secret\(s\) LOLLY_AUTOMATION_APP_CLIENT_ID\./);
   assert.equal(attempt({ CLIENT_ID: 'Iv1.x', PRIVATE_KEY: 'pem' }).status, 0);
 });
 

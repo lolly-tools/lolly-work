@@ -31,11 +31,13 @@
 #      Developer settings, GitHub Apps). No webhook. Repository permissions:
 #      Contents read and write, Pull requests read and write. Metadata read is
 #      added automatically. Nothing else.
-#   2. Install it on lolly-tools/lolly-work only.
+#   2. Install it on lolly-tools/lolly-work. The same App is installed on
+#      lolly-tools/lolly for its sbom-refresh.yml; each workflow narrows its
+#      token to its own repository.
 #   3. Generate a private key for the App.
 #   4. Add two repository secrets to lolly-work:
-#        LOLLY_REPIN_APP_CLIENT_ID     the App's Client ID
-#        LOLLY_REPIN_APP_PRIVATE_KEY   the whole .pem private key
+#        LOLLY_AUTOMATION_APP_CLIENT_ID     the App's Client ID
+#        LOLLY_AUTOMATION_APP_PRIVATE_KEY   the whole .pem private key
 # The App, not a person, then owns the token, so it does not expire with
 # someone's personal access token and its pull requests can be reviewed by any
 # maintainer.
@@ -71,12 +73,12 @@ jobs:
     steps:
       - name: Require the re-pin App secrets
         env:
-          CLIENT_ID: ${{ secrets.LOLLY_REPIN_APP_CLIENT_ID }}
-          PRIVATE_KEY: ${{ secrets.LOLLY_REPIN_APP_PRIVATE_KEY }}
+          CLIENT_ID: ${{ secrets.LOLLY_AUTOMATION_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.LOLLY_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           missing=''
-          [ -n "$CLIENT_ID" ] || missing="$missing LOLLY_REPIN_APP_CLIENT_ID"
-          [ -n "$PRIVATE_KEY" ] || missing="$missing LOLLY_REPIN_APP_PRIVATE_KEY"
+          [ -n "$CLIENT_ID" ] || missing="$missing LOLLY_AUTOMATION_APP_CLIENT_ID"
+          [ -n "$PRIVATE_KEY" ] || missing="$missing LOLLY_AUTOMATION_APP_PRIVATE_KEY"
           if [ -n "$missing" ]; then
             echo "::error title=Re-pin App secrets missing::Add the repository secret(s)$missing. A pull request opened with GITHUB_TOKEN does not start PR qualification, so its required check would never run. The header of .github/workflows/lolly-repin.yml says how to create the GitHub App."
             exit 1
@@ -182,8 +184,8 @@ jobs:
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app
         with:
-          client-id: ${{ secrets.LOLLY_REPIN_APP_CLIENT_ID }}
-          private-key: ${{ secrets.LOLLY_REPIN_APP_PRIVATE_KEY }}
+          client-id: ${{ secrets.LOLLY_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LOLLY_AUTOMATION_APP_PRIVATE_KEY }}
           repositories: lolly-work
           permission-contents: write
           permission-pull-requests: write
