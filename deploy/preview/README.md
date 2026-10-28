@@ -567,8 +567,12 @@ lane, `lollyLane`, `lollyLaneBase` and `lollyLaneRun`.
     must all be the lolly.ing pin and never the release key.
   - The archive's sha256 is checked twice: while it streams into the node's root-only spool, and again before
     `ctr images import --no-unpack --digests --base-name docker.io/library/lolly-ing-instance` reads that same file.
-    Then the index digest, the linux/amd64 manifest, the config and the DiffIDs are checked, and the run tag
-    (`image.refName`) the import kept is removed.
+    containerd 2.x's ctr (K3s v1.34 ships v2.2) makes only the run tag (`image.refName`) for a manifest the archive
+    names, and no digest name. When the run tag points at the manifest's digest and carries this import's
+    `lolly.tools/preview-pulled=true` label, the tool makes the digest name from it and sets the run tag's labels
+    again, because `ctr images tag` copies none. A run tag that names another digest is refused (`IMAGE_MISMATCH`).
+    Then the index digest, the linux/amd64 manifest, the config and the DiffIDs are checked, and the run tag the
+    import kept is removed.
   - After the switch the smoke verifies the shell's served `/release-frontend.sig.json` against the lolly.ing pin
     (source `LSHA`, target `web`, profile `suse`), its sha256 against `receiptSha256`, and `/` against
     `shell.indexSha256`.
