@@ -14,7 +14,7 @@ component versions, migrations and the checks required before publication. The
 [1.1.1](docs/past-releases.md#111) and [1.1.0](docs/past-releases.md#110) releases keep
 their own records in [past releases](docs/past-releases.md).
 
-The default server and render-worker containers use Node 26.12.0. CI checks Node 26;
+The default server and render-worker containers use Node 26.12.1. CI checks Node 26;
 the SUSE BCI and admission images retain their separately qualified Node 24 base.
 The source minimum remains Node 24.
 
