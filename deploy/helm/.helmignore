@@ -13,3 +13,5 @@
 instance.json
 *.env
 .env
+# Unit tests for the alert rules run from tests/helm-chart.test.ts, not from the chart.
+files/*.test.yaml

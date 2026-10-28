@@ -21,6 +21,10 @@ import { observeWorkerResources } from './evidence.ts';
  *                    the Service instead of routing new work to it (plans/22
  *                    §5). Unauthenticated by design (no HMAC on a probe path).
  *
+ * Pull dispatch (plan 324 M3, off by default): with LW_RENDER_PULL_URL set,
+ * the worker also leases /render and /rasterise jobs from Work (./pull.ts) and
+ * runs each through runJob below, the same checks and code a POST gets.
+ *
  * Rendering mirrors the proven MCP Tier-B path: drive a headless Chromium against
  * a real Lolly web shell's export URL and capture the SVG the app's own export
  * downloads - so hooks run in a real browser exactly as a user's Download would.
@@ -41,6 +45,7 @@ import { workerBrowserOptions } from './browser-launch.ts';
 import { createBrowserLifecycle } from './browser-lifecycle.ts';
 import { RequestLifecycle } from './request-lifecycle.ts';
 import { deliverResponse, ResponseBudget } from './request-delivery.ts';
+import { pullBase, startPull, type JobReply } from './pull.ts';
 
 const PORT = Number(process.env.PORT ?? 8791);
 const SECRET = process.env.LW_RENDER_WORKER_SECRET ?? '';
@@ -73,6 +78,15 @@ function refused(url: string, reason: string): void {
   try { origin = new URL(url).origin; } catch { /* keep the placeholder */ }
   console.warn(`[render-worker] egress refused (${reason}): ${origin}`);
 }
+
+// Pull dispatch (./pull.ts): Work's URL, checked before the browser starts.
+let PULL_BASE = '';
+try {
+  if (process.env.LW_RENDER_PULL_URL) {
+    const mode = process.env.LW_RENDER_DEPLOYMENT_MODE;
+    PULL_BASE = pullBase(process.env.LW_RENDER_PULL_URL, mode === 'production' || (process.env.NODE_ENV === 'production' && mode !== 'evaluation'));
+  }
+} catch (err) { console.error(`[render-worker] ${(err as Error).message}`); process.exit(1); }
 
 // Caps concurrent Chromium contexts (plans/22 §5, plans/23 §3.C): one browser,
 // unboundedly many `browser.newContext()`s per request was the exposure - a
@@ -311,114 +325,131 @@ async function rasterise(job: { svg: string; format: string; width?: number }, s
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
-const sendJson = (res: import('node:http').ServerResponse, status: number, body: unknown, signed = false): void => {
-  if (res.destroyed) return;
+const json = (status: number, body: unknown, signed = false): JobReply => {
   const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...(signed ? { 'x-lw-output-sig': hmac(data) } : {}) });
-  res.end(data);
+  return { status, headers: { 'content-type': 'application/json; charset=utf-8', ...(signed ? { 'x-lw-output-sig': hmac(data) } : {}) }, body: data };
 };
-const fail = (res: import('node:http').ServerResponse, status: number, code: string, message: string): void =>
-  sendJson(res, status, { error: { code, message } });
+const failed = (status: number, code: string, message: string): JobReply => json(status, { error: { code, message } });
 // Capacity refusal: immediate, no queueing (see `sem` above). Retry-After is a
 // plain, deliberately-static hint (plans/23 §3.C) - the plane decides its own
 // retry policy; this just says "not now, don't hammer it".
-const busy = (res: import('node:http').ServerResponse): void => {
-  res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '2' });
-  res.end(JSON.stringify({ error: { code: 'RENDER_BUSY', message: 'render worker at capacity — retry shortly' } }));
+const busy = (): JobReply => ({ status: 503, headers: { 'content-type': 'application/json; charset=utf-8', 'retry-after': '2' },
+  body: JSON.stringify({ error: { code: 'RENDER_BUSY', message: 'render worker at capacity — retry shortly' } }) });
+const send = (res: import('node:http').ServerResponse, reply: JobReply): void => {
+  if (res.destroyed) return;
+  res.writeHead(reply.status, reply.headers);
+  res.end(reply.body);
 };
+
+type SignedJob = { toolId?: unknown; query?: unknown; overrides?: unknown; format?: unknown; ts?: unknown; evidence?: unknown; inputIds?: unknown; brandRevision?: unknown; readToken?: unknown; svg?: unknown; width?: unknown; bytesB64?: unknown };
+/** Verify the HMAC over the exact raw bytes, then the timestamp freshness. */
+function verifyJob(raw: string, sig: unknown): SignedJob | JobReply {
+  if (typeof sig !== 'string' || !macEquals(sig, hmac(raw))) return failed(401, 'BAD_SIGNATURE', 'invalid or missing render signature');
+  let job: SignedJob;
+  try { job = JSON.parse(raw); } catch { return failed(400, 'BAD_JSON', 'invalid JSON body'); }
+  if (typeof job.ts !== 'number' || Math.abs(Date.now() - job.ts) > TS_SKEW_MS) return failed(401, 'STALE', 'request timestamp outside the accepted window');
+  return job;
+}
+const isReply = (value: SignedJob | JobReply): value is JobReply => typeof (value as JobReply).status === 'number' && typeof (value as JobReply).body === 'string';
+
+/**
+ * One /render or /rasterise job, from its signed raw body to the reply. A
+ * pushed POST and a pulled lease both come through here, so both get the same
+ * signature, freshness and shape checks and the same browser code. `permit`
+ * takes a browser slot: a POST takes one only if free (busy otherwise); a
+ * pulled job waits for one, since the worker asked for it with a slot in hand.
+ */
+export async function runJob(path: '/render' | '/rasterise', raw: string, sig: unknown, signal: AbortSignal,
+  permit: () => Promise<(() => void) | null>): Promise<JobReply> {
+  const job = verifyJob(raw, sig);
+  if (isReply(job)) return job;
+
+  // /rasterise - a finished SVG → format bytes (the single-rasteriser path).
+  if (path === '/rasterise') {
+    if (typeof job.svg !== 'string' || !/<svg[\s>]/i.test(job.svg) || typeof job.format !== 'string') {
+      return failed(400, 'BAD_REQUEST', 'expected { svg, format, width? }');
+    }
+    const width = typeof job.width === 'number' ? job.width : undefined;
+    // No permit free ⇒ fail fast (503), don't wait in line - see `sem` above.
+    const release = await permit();
+    if (!release) return busy();
+    try {
+      const { bytes, mime } = await rasterise({ svg: job.svg, format: job.format, width }, signal);
+      return json(200, { bytesB64: bytes.toString('base64'), mime });
+    } catch (e) {
+      return failed(502, 'RASTER_FAILED', `Chromium raster failed: ${(e as Error).message}`);
+    } finally {
+      release(); // always, including on the catch above - a failed raster must not leak capacity
+    }
+  }
+
+  // /render - a toolId → SVG via the shell export (hooked/HTML tools).
+  if (typeof job.toolId !== 'string' || typeof job.query !== 'string' || job.format !== 'svg') {
+    return failed(400, 'BAD_REQUEST', 'expected { toolId, query, format:"svg", overrides }');
+  }
+  if (job.inputIds !== undefined && (!Array.isArray(job.inputIds) || job.inputIds.length > 128 || job.inputIds.some(id => typeof id !== 'string' || !id || id.length > 4096))) return failed(400, 'BAD_REQUEST', 'invalid production input ids');
+  if (job.readToken !== undefined && (typeof job.readToken !== 'string' || job.readToken.length > 8192)) return failed(400, 'BAD_REQUEST', 'invalid render read credential');
+  const overrides = (job.overrides && typeof job.overrides === 'object') ? job.overrides as Record<string, unknown> : {};
+
+  const release = await permit();
+  if (!release) return busy();
+  try {
+    const brandRevision = typeof job.brandRevision === 'string' ? job.brandRevision : undefined;
+    const output = await renderSvg({ toolId: job.toolId, query: job.query, overrides, brandRevision, readToken: job.readToken as string | undefined, evidence: job.evidence === true, inputIds: job.inputIds as string[] | undefined, requestSha256: createHash('sha256').update(raw).digest('hex') }, signal);
+    return json(200, { ...output, ...(brandRevision ? { brandRevision } : {}) }, true);
+  } catch (e) {
+    return failed(502, 'RENDER_FAILED', `Chromium render failed: ${(e as Error).message}`);
+  } finally {
+    release(); // always, including on the catch above - a failed render must not leak capacity
+  }
+}
 
 // Exported so tests can listen on an OS-assigned port and drive real HTTP
 // requests at it without launching Chromium (see __setBrowserGetterForTests).
 const transport = workerTransport((req, res) => {
   void (async () => {
-    if (req.method === 'GET' && req.url === '/healthz') return sendJson(res, 200, { ok: true });
+    if (req.method === 'GET' && req.url === '/healthz') return send(res, json(200, { ok: true }));
     // A process with no connected browser cannot take work. Capacity remains
     // part of readiness while liveness is independent of both conditions.
     if (req.method === 'GET' && req.url === '/readyz') {
       const ok = (!!browserGetterOverride || browserLifecycle.ready) && !sem.atCapacity;
-      return sendJson(res, ok ? 200 : 503, { ok, active: sem.inUse, capacity: sem.limit });
+      return send(res, json(ok ? 200 : 503, { ok, active: sem.inUse, capacity: sem.limit }));
     }
     const path = (req.url ?? '').split('?')[0];
     if (req.method !== 'POST' || (path !== '/render' && path !== '/rasterise' && path !== '/file-preview')) {
-      return fail(res, 404, 'NOT_FOUND', `no route for ${req.method} ${req.url}`);
+      return send(res, failed(404, 'NOT_FOUND', `no route for ${req.method} ${req.url}`));
     }
     // Read the body (bounded).
     const chunks: Buffer[] = [];
     let total = 0;
     for await (const c of req) {
       total += (c as Buffer).length;
-      if (total > (path === '/file-preview' ? 23 * 1024 * 1024 : 256 * 1024)) return fail(res, 413, 'TOO_LARGE', 'request body too large');
+      if (total > (path === '/file-preview' ? 23 * 1024 * 1024 : 256 * 1024)) return send(res, failed(413, 'TOO_LARGE', 'request body too large'));
       chunks.push(c as Buffer);
     }
     const raw = Buffer.concat(chunks).toString('utf8');
 
-    // Verify the HMAC over the exact raw bytes, then the timestamp freshness.
-    const sig = req.headers['x-lw-render-sig'];
-    if (typeof sig !== 'string' || !macEquals(sig, hmac(raw))) {
-      return fail(res, 401, 'BAD_SIGNATURE', 'invalid or missing render signature');
-    }
-    let job: { toolId?: unknown; query?: unknown; overrides?: unknown; format?: unknown; ts?: unknown; evidence?: unknown; inputIds?: unknown; brandRevision?: unknown; readToken?: unknown; svg?: unknown; width?: unknown; bytesB64?: unknown };
-    try { job = JSON.parse(raw); } catch { return fail(res, 400, 'BAD_JSON', 'invalid JSON body'); }
-    if (typeof job.ts !== 'number' || Math.abs(Date.now() - job.ts) > TS_SKEW_MS) {
-      return fail(res, 401, 'STALE', 'request timestamp outside the accepted window');
-    }
-
     const controller = new AbortController();
     const disconnected = () => { if (!res.writableFinished) controller.abort(new Error('render client disconnected')); };
     res.once('close', disconnected);
-
-    if (path === '/file-preview') {
-      if (typeof job.bytesB64 !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(job.bytesB64)) return fail(res, 400, 'BAD_REQUEST', 'expected file bytes');
-      const release = previewSem.tryAcquire(); if (!release) return busy(res);
-      try {
-        const bytes = await convertFilePreview(Buffer.from(job.bytesB64, 'base64'), controller.signal);
-        res.writeHead(200, { 'content-type': 'application/pdf', 'content-length': String(bytes.length), 'cache-control': 'no-store' }); res.end(bytes); return;
-      } catch { return fail(res, 422, 'PREVIEW_FAILED', 'This file could not be converted within the preview limits.'); }
-      finally { res.removeListener('close', disconnected); release(); }
-    }
-
-    // /rasterise - a finished SVG → format bytes (the single-rasteriser path).
-    if (path === '/rasterise') {
-      if (typeof job.svg !== 'string' || !/<svg[\s>]/i.test(job.svg) || typeof job.format !== 'string') {
-        return fail(res, 400, 'BAD_REQUEST', 'expected { svg, format, width? }');
-      }
-      const width = typeof job.width === 'number' ? job.width : undefined;
-      // No permit free ⇒ fail fast (503), don't wait in line - see `sem` above.
-      const release = sem.tryAcquire();
-      if (!release) return busy(res);
-      try {
-        const { bytes, mime } = await rasterise({ svg: job.svg, format: job.format, width }, controller.signal);
-        return sendJson(res, 200, { bytesB64: bytes.toString('base64'), mime });
-      } catch (e) {
-        return fail(res, 502, 'RASTER_FAILED', `Chromium raster failed: ${(e as Error).message}`);
-      } finally {
-        res.removeListener('close', disconnected);
-        release(); // always, including on the catch above - a failed raster must not leak capacity
-      }
-    }
-
-    // /render - a toolId → SVG via the shell export (hooked/HTML tools).
-    if (typeof job.toolId !== 'string' || typeof job.query !== 'string' || job.format !== 'svg') {
-      return fail(res, 400, 'BAD_REQUEST', 'expected { toolId, query, format:"svg", overrides }');
-    }
-    if (job.inputIds !== undefined && (!Array.isArray(job.inputIds) || job.inputIds.length > 128 || job.inputIds.some(id => typeof id !== 'string' || !id || id.length > 4096))) return fail(res, 400, 'BAD_REQUEST', 'invalid production input ids');
-    if (job.readToken !== undefined && (typeof job.readToken !== 'string' || job.readToken.length > 8192)) return fail(res, 400, 'BAD_REQUEST', 'invalid render read credential');
-    const overrides = (job.overrides && typeof job.overrides === 'object') ? job.overrides as Record<string, unknown> : {};
-
-    const release = sem.tryAcquire();
-    if (!release) return busy(res);
     try {
-      const brandRevision = typeof job.brandRevision === 'string' ? job.brandRevision : undefined;
-      const output = await renderSvg({ toolId: job.toolId, query: job.query, overrides, brandRevision, readToken: job.readToken as string | undefined, evidence: job.evidence === true, inputIds: job.inputIds as string[] | undefined, requestSha256: createHash('sha256').update(raw).digest('hex') }, controller.signal);
-      return sendJson(res, 200, { ...output, ...(brandRevision ? { brandRevision } : {}) }, true);
-    } catch (e) {
-      return fail(res, 502, 'RENDER_FAILED', `Chromium render failed: ${(e as Error).message}`);
+      if (path === '/file-preview') {
+        const job = verifyJob(raw, req.headers['x-lw-render-sig']);
+        if (isReply(job)) return send(res, job);
+        if (typeof job.bytesB64 !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(job.bytesB64)) return send(res, failed(400, 'BAD_REQUEST', 'expected file bytes'));
+        const release = previewSem.tryAcquire(); if (!release) return send(res, busy());
+        try {
+          const bytes = await convertFilePreview(Buffer.from(job.bytesB64, 'base64'), controller.signal);
+          res.writeHead(200, { 'content-type': 'application/pdf', 'content-length': String(bytes.length), 'cache-control': 'no-store' }); res.end(bytes); return;
+        } catch { return send(res, failed(422, 'PREVIEW_FAILED', 'This file could not be converted within the preview limits.')); }
+        finally { release(); }
+      }
+      return send(res, await runJob(path, raw, req.headers['x-lw-render-sig'], controller.signal, async () => sem.tryAcquire()));
     } finally {
       res.removeListener('close', disconnected);
-      release(); // always, including on the catch above - a failed render must not leak capacity
     }
   })().catch((e) => {
-    if (!res.headersSent) fail(res, 500, 'INTERNAL', (e as Error).message);
+    if (!res.headersSent) send(res, failed(500, 'INTERNAL', (e as Error).message));
   });
 });
 export const server = transport.server;
@@ -429,11 +460,13 @@ server.listen(PORT, transport.host, () => {
 });
 server.on('close', () => { void browserLifecycle.close().catch(() => {}); });
 
+let pull: ReturnType<typeof startPull> | undefined;
 let stopping = false;
 function stopWorker(code: number): void {
   if (stopping) return;
   stopping = true;
   if (code) console.error('[render-worker] browser startup refused; check sandbox support, browser installation and startup timeout');
+  void pull?.stop();
   server.close();
   const deadline = setTimeout(() => process.exit(code), 5000);
   void browserLifecycle.close().catch(() => {}).finally(() => {
@@ -442,6 +475,14 @@ function stopWorker(code: number): void {
 }
 
 if (MAIN) void getBrowser().catch(() => stopWorker(1));
+// Pull dispatch leases only once the browser is up (the same launch as above),
+// so a job never waits on startup; a failed launch has already stopped the worker.
+if (MAIN && PULL_BASE) void getBrowser().then(() => {
+  if (stopping) return;
+  pull = startPull({ base: PULL_BASE, secret: SECRET, slots: MAX_CONCURRENT, pools: ['tier-b'],
+    run: (job, signal) => runJob(job.path, job.payload, job.signature, signal, () => sem.acquire()) });
+  console.log(`[render-worker] pulling jobs from ${PULL_BASE} with ${MAX_CONCURRENT} slots`);
+}, () => {});
 
 // Graceful shutdown so Chromium is torn down (no leaked processes).
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {

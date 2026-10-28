@@ -1,0 +1,10 @@
+# The namespace for Lolly Work and its PostgreSQL. One manifest owns it, so
+# removing any other manifest never removes the namespace with it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lolly
+  labels:
+    app.kubernetes.io/part-of: lolly-appliance
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

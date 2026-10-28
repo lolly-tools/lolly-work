@@ -36,6 +36,10 @@ ING_IMAGE = "docker.io/library/lolly-ing-instance"
 LEGACY_IMAGE = "docker.io/library/lolly-server@sha256:" + "c" * 64
 SMOKE_SUB = "smoke-member-1"
 SMOKE_COOKIE = "lw_session=" + "s" * 40
+# A Work service token (member role) for the smoke, as Andy made on lolly.ing (2026-10-27). Its id is not a secret.
+SMOKE_TOKEN = "lwt_" + "t" * 32
+SMOKE_TOKEN_ID = "tok_smoke001"
+SMOKE_TOKEN_SUB = "token:" + SMOKE_TOKEN_ID
 PACK_ASSET = "/catalog/assets/suse/logo/primary.svg"
 SUSE_REPO = "lolly-tools/suse-lolly"
 WORK_REPO = "lolly-tools/lolly-work"
@@ -45,6 +49,10 @@ STORAGE_HOST = "backups.example.test"
 STORAGE_ADDRESS = "203.0.113.7"
 REHEARSAL_NAMESPACE = "lolly-restore-rehearsal"
 MANIFEST_HEADER = "lolly-work migration manifest v1\n"
+# The Secret the live server's LW_CATALOG_SIGNING_KEY names before the cut-over (the release key, decision 2), and
+# the one holding lolly.ing's own key that the cut-over switches the reference to (review H3). Names only, never values.
+LEGACY_SIGNING_SECRET = "lolly-work-instance"
+ING_SIGNING_SECRET = "lolly-work-ing-catalog-signing"
 sha = F.sha
 
 
@@ -128,9 +136,11 @@ def make_ing_build(key, wsha, label, migrations=None, seq=3000, lolly="2" * 40, 
 
 
 def legacy_build(key):
-    """The pre-cut-over server image with claim-mounted shell and pack (live before PROPOSAL 4.8)."""
+    """The pre-cut-over server image with claim-mounted shell and pack (live before PROPOSAL 4.8). Its pack is signed
+    with the release key, which is what the live Secret holds until the cut-over (decision 2)."""
+    import preview_anchors as A
     build = make_ing_build(key, "9" * 40, "legacy", seq=2000)
-    build.update({"image": LEGACY_IMAGE, "digest": "sha256:" + "c" * 64})
+    build.update({"image": LEGACY_IMAGE, "digest": "sha256:" + "c" * 64, "packKey": A.RELEASE_PUBLIC_KEY_THUMBPRINT})
     return build
 
 
@@ -179,10 +189,19 @@ def zip_of(name, data):
 
 
 def ing_run(run_id, suse, event="workflow_dispatch", status="completed", conclusion="success", attempt=1,
-            created="2026-10-24T05:00:00Z", repository=SUSE_REPO, path=".github/workflows/lolly-ing-preview.yml"):
+            created="2026-10-24T05:00:00Z", repository=SUSE_REPO, path=".github/workflows/lolly-ing-preview.yml", work=None):
+    """One run of the private workflow; its run-name is `lolly.ing preview <WSHA>`."""
     return {"id": run_id, "path": path, "event": event, "head_branch": "main", "head_sha": suse, "status": status,
             "conclusion": conclusion, "run_attempt": attempt, "created_at": created,
+            "display_title": "lolly.ing preview " + (work or "?"),
             "repository": {"full_name": repository}, "head_repository": {"full_name": repository}}
+
+
+def ci_run(run_id, sha_, repository, status="completed", conclusion="success", path=".github/workflows/ci.yml"):
+    """A full ci.yml push run on main, of Lolly or of lolly-work."""
+    return {"id": run_id, "path": path, "event": "push", "head_branch": "main", "head_sha": sha_, "status": status,
+            "conclusion": conclusion, "run_attempt": 1, "created_at": "2026-10-24T04:00:00Z",
+            "display_title": "CI", "repository": {"full_name": repository}, "head_repository": {"full_name": repository}}
 
 
 def ing_artifacts(gh, build, run_id, manifest=None, archive=None):
@@ -207,7 +226,8 @@ def register_archive(state, build, run_id, attempt=1):
 
 
 # Cluster --------------------------------------------------------------------------
-def ing_deployment(image, config, converted=True, annotations=None):
+def ing_deployment(image, config, converted=True, annotations=None, signing_secret=None):
+    signing_secret = signing_secret or (ING_SIGNING_SECRET if converted else LEGACY_SIGNING_SECRET)
     volumes = [{"name": "config", "configMap": {"name": config}}, {"name": "tmp", "emptyDir": {}},
                {"name": "postgres-ca", "configMap": {"name": "lolly-postgres-ca"}},
                {"name": "render-worker-trust", "configMap": {"name": "lolly-render-worker-trust", "items": [{"key": "ca.crt", "path": "ca.crt"}]}}]
@@ -223,7 +243,7 @@ def ing_deployment(image, config, converted=True, annotations=None):
                    {"name": "shell", "mountPath": "/app/shell", "readOnly": True},
                    {"name": "engine-pin", "mountPath": "/app/engine-pin.json", "subPath": "engine-pin.json", "readOnly": True}]
     secret = lambda name, key: {"name": name, "valueFrom": {"secretKeyRef": {"name": DATABASE_SECRET if name.startswith("DATABASE")
-                                                                             else "lolly-work-instance", "key": key}}}
+                                                                             else signing_secret, "key": key}}}
     env = [{"name": "NODE_ENV", "value": "production"}, {"name": "LW_CONFIG", "value": "/app/instance.json"},
            {"name": "LW_AUTO_MIGRATE", "value": "false"}, secret("DATABASE_URL", "DATABASE_URL"),
            {"name": "LW_SESSION_SECRET", "valueFrom": {"secretKeyRef": {"name": DATABASE_SECRET, "key": "LW_SESSION_SECRET"}}},
@@ -265,7 +285,14 @@ def ing_annotations(build, run="800", config="lolly-ing-config-3008-aaaaaaaa", g
 
 
 def ing_cluster_state(builds, live, config_name, generation, converted=True, annotations=None, ing_key=None, extra_configs=None):
+    import preview_anchors as A
+    import preview_receipt as R
     deploy = ing_deployment(live["image"], config_name, converted, annotations)
+    # Which key each Secret holds, by name (never a value): Work signs with the key the referenced Secret holds, and
+    # serves a pack only when its envelope verifies against that key (server/src/catalog/publication.ts).
+    secrets = {LEGACY_SIGNING_SECRET: A.RELEASE_PUBLIC_KEY_THUMBPRINT}
+    if ing_key:
+        secrets[ING_SIGNING_SECRET] = R.jwk_thumbprint(ing_key[1])
     configs = {config_name: {"data": {"instance.json": instance_json(generation)}, "uid": "cm-" + config_name, "labels": {}}}
     for name, gen in (extra_configs or {}).items():
         configs[name] = {"data": {"instance.json": instance_json(gen)}, "uid": "cm-" + name, "labels": {}}
@@ -290,6 +317,8 @@ def ing_cluster_state(builds, live, config_name, generation, converted=True, ann
                       "usage": 700 * F.MIB, "rvChurnRate": 0.0, "rvChurnAfterDryRun": {}, "edgeHeaders": {}, "edgeHeadersByImage": {},
                       "transport": {}, "dnsFailures": 0, "bootKeyByImage": {}, "catalogKeyByImage": {}},
         "smokeCookie": SMOKE_COOKIE,
+        "smokeToken": SMOKE_TOKEN,
+        "secrets": secrets,
         "ingD": str(ing_key[0]) if ing_key else None,
         "reads": 0, "fetches": {}, "writes": [],
         "capacity": {"total": 100 * F.GIB, "available": 60 * F.GIB},
@@ -353,6 +382,14 @@ def _live_config_generation(state):
     name = next(v["configMap"]["name"] for v in deploy["spec"]["template"]["spec"]["volumes"] if v["name"] == "config")
     document = json.loads(state["configmaps"][name]["data"]["instance.json"])
     return document["instance"]["catalogPublicationGeneration"]
+
+
+def _server_key(state, pod_spec):
+    """The key id Work signs with: the one held by the Secret its LW_CATALOG_SIGNING_KEY references, or None."""
+    for entry in pod_spec["containers"][0].get("env", []):
+        if entry.get("name") == "LW_CATALOG_SIGNING_KEY":
+            return state["secrets"].get(((entry.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name"))
+    return None
 
 
 def _check_output(state, image):
@@ -451,6 +488,12 @@ def k3s_ing_main(argv, out):
             assert argv[argv.index("--base-name") + 1] == ING_IMAGE and "--digests" in argv and "--no-unpack" in argv and argv[-1] == "-"
             image_id, entry = F.image_entry(build["image"], labels, extra_refs=(found["refName"],))
             entry["refs"][found["refName"]] = dict(labels)
+            if state["behaviour"].get("containerd2"):
+                # ctr 2.x imports through the transfer service and passes !--skip-digest-for-named as skipNamed,
+                # so a manifest the archive names gets only that name (seen on K3s v1.34.12, containerd v2.2.7).
+                del entry["refs"][build["image"]]
+            # An archive whose index is not the one the build manifest names: every name points elsewhere.
+            entry["digest"] = state["behaviour"].get("importedDigest", {}).get(build["image"], entry["digest"])
             entry["size"] = len(data)
             state["images"][image_id] = entry
             for digest, blob in build["blobs"].items():
@@ -467,6 +510,20 @@ def k3s_ing_main(argv, out):
             return 1
         sys.stdout.buffer.write(unb64(blob))
         return 0
+    if argv[:5] == ["ctr", "--namespace", "k8s.io", "images", "tag"]:
+        source, target = argv[5], argv[6]
+        with F.state_file(state_path) as state:
+            for entry in state["images"].values():
+                if source in entry["refs"]:
+                    if any(target in other["refs"] for other in state["images"].values()):
+                        print(f"ctr: image {target!r}: already exists", file=sys.stderr)
+                        return 1
+                    # tag copies no labels; K3s's CRI marks the new name managed at once (seen on the node 2026-10-27)
+                    managed = {"io.cri-containerd.image": "managed"} if state["behaviour"].get("containerd2") else {}
+                    entry["refs"][target] = managed
+                    state["writes"].append(["image-tagged", source, target])
+                    return 0
+        return 1
     if argv[:5] == ["ctr", "--namespace", "k8s.io", "images", "rm"]:
         with F.state_file(state_path) as state:
             for entry in state["images"].values():
@@ -598,8 +655,9 @@ def _kubectl(state, args, out):
         if pod is None:
             return 1
         image = pod["status"]["containerStatuses"][0]["image"]
-        key = state["behaviour"]["bootKeyByImage"].get(image) or state["builds"].get(image, {}).get("thumb")
-        out.write(f"[lolly-work] listening on 8787\n[lolly-work] catalog signing on (keyId {key})\n")
+        key = state["behaviour"]["bootKeyByImage"].get(image) or _server_key(state, pod["spec"])
+        line = f"catalog signing on (keyId {key})" if key else "catalog signing unavailable: no key"
+        out.write(f"[lolly-work] listening on 8787\n[lolly-work] {line}\n")
         return 0
     print("unsupported kubectl " + " ".join(args[:3]), file=sys.stderr)
     return 1
@@ -623,6 +681,11 @@ def make_ing_fetch(state_path):
             if parts.path == "/" and parts.hostname == "lolly.ing":
                 state["fetches"][image] = count + 1
             signed_in = cookie is not None and cookie == state["smokeCookie"]
+            # Work's service token: the old Work build (the claims layout) takes it on the action-gated routes only;
+            # a build with lolly-work's token reads (unless a test says otherwise) also on the catalogue and the session.
+            token = headers.get("Authorization") == "Bearer " + str(state["smokeToken"]) and not behaviour.get("tokenRevoked")
+            token_reads = token and image != LEGACY_IMAGE and image not in behaviour.get("noTokenReads", [])
+            reader = signed_in or token_reads
             csp = "default-src 'self'; script-src 'self' blob: 'unsafe-eval'; connect-src 'self' blob: https://lolly.ing"
             base = [("Content-Security-Policy", csp), ("Via", "1.1 Caddy")]
             if parts.hostname == "www.lolly.ing":
@@ -647,25 +710,39 @@ def make_ing_fetch(state_path):
             if path == "/info/":
                 return preview_smoke.Response(200, base, b"info")
             if path == "/api/auth/session":
+                if not signed_in and token_reads:
+                    return preview_smoke.Response(200, [], json.dumps({"kind": "service", "user": {
+                        "sub": behaviour.get("tokenSub", SMOKE_TOKEN_SUB), "role": behaviour.get("tokenRole", "member"),
+                        "label": "lolly.ing deploy check"}}).encode())
                 if not signed_in:
                     return preview_smoke.Response(401, [], b'{"error":{"code":"UNAUTHORIZED"}}')
                 role = behaviour.get("accountRole", "member")
                 return preview_smoke.Response(200, [], json.dumps({"kind": "member", "user": {"sub": behaviour.get("accountSub", SMOKE_SUB),
                                                                   "email": "smoke@example.com", "groups": [], "role": role}}).encode())
+            if path in ("/api/v1/tokens", "/api/v1/grants"):  # token.manage (owner) and grant.edit (admin)
+                if not (signed_in or token):
+                    return preview_smoke.Response(401, [], b'{"error":{"code":"UNAUTHORIZED"}}')
+                allowed = token and path in behaviour.get("tokenMayList", [])
+                return preview_smoke.Response(200 if allowed else 403, [], b'{}' if allowed else b'{"error":{"code":"FORBIDDEN"}}')
             if path == "/api/v1/projects":
                 projects = behaviour.get("ownedProjects", [])
                 return preview_smoke.Response(200 if signed_in else 401, [], json.dumps({"projects": projects}).encode())
             if path == "/api/v1/render":
-                if not signed_in or method != "POST" or json.loads(data)["toolId"] != "qr-code":
+                if not (signed_in or token) or method != "POST" or json.loads(data)["toolId"] != "qr-code":
                     return preview_smoke.Response(401, [], b"")
+                if image in behaviour.get("noExportGrant", []):
+                    return preview_smoke.Response(403, [], b'{"error":{"code":"FORBIDDEN","message":"export.server required"}}')
                 if image in behaviour.get("renderFails", []):
                     return preview_smoke.Response(501, [], b'{"error":{"code":"HOOKED_TOOL_NEEDS_CHROMIUM"}}')
                 return preview_smoke.Response(200, [("Content-Type", "image/svg+xml")], b'<svg xmlns="http://www.w3.org/2000/svg"/>')
             if path == PACK_ASSET:
-                return preview_smoke.Response(401 if not signed_in else 200, [], b"")
+                return preview_smoke.Response(401 if not reader else 200, [], b"")
             if path in ("/catalog/tools/index.json", "/catalog/tools/index.sig.json"):
-                if not signed_in:
+                if not reader:
                     return preview_smoke.Response(401, [], b'{"error":{"code":"UNAUTHORIZED","message":"this deployment is sign-in gated"}}')
+                server_key = _server_key(state, deploy["spec"]["template"]["spec"])
+                if server_key != build.get("packKey", build["thumb"]):  # publication.ts: the pack must verify against the server's key
+                    return preview_smoke.Response(503, [], b'{"error":{"code":"CATALOG_UNAVAILABLE","message":"pack signature"}}')
                 generation = max(_live_config_generation(state), build["seq"])
                 db = state["db"]
                 if generation > db["generation"] or (generation == db["generation"] and build["packDigest"] == db["digest"]):
@@ -675,7 +752,7 @@ def make_ing_fetch(state_path):
                 index = unb64(build["catalog"])
                 if path.endswith("index.json"):
                     return preview_smoke.Response(200, [], index)
-                key_id = behaviour["catalogKeyByImage"].get(image) or build["thumb"]
+                key_id = behaviour["catalogKeyByImage"].get(image) or server_key
                 body = {"alg": "ECDSA-P256-SHA256", "keyId": key_id, "signedAt": "2026-10-24T05:00:00.000Z", "seq": 7,
                         "indexHash": sha(index), "files": {}}
                 signature = sign_raw(int(state["ingD"]), preview_common.canonical_js_json(body).encode())
@@ -694,12 +771,18 @@ def gh_ing_route(gh, method, route, query, data, out):
                 return 1
             run = gh.get("onDispatch")
             if run:
+                run["display_title"] = "lolly.ing preview " + data["inputs"]["WSHA"]  # the workflow's run-name
                 gh["ingRuns"].append(run)
                 gh["onDispatch"] = None
             return 0
         return None
     if route == f"repos/{SUSE_REPO}/git/ref/heads/main":
         out.write(json.dumps({"ref": "refs/heads/main", "object": {"type": "commit", "sha": gh["suseMainHead"]}}))
+        return 0
+    if route == f"repos/{WORK_REPO}/actions/workflows/ci.yml/runs":  # lolly-work's own full CI (the qualification rule)
+        runs = [r for r in gh.get("workCiRuns", []) if (not query.get("head_sha") or r["head_sha"] == query["head_sha"])
+                and (not query.get("status") or query["status"] in (r["status"], r.get("conclusion")))]
+        out.write(json.dumps({"workflow_runs": runs}))
         return 0
     if route == f"repos/{WORK_REPO}/contents/engine-pin.json":
         lsha = gh.get("enginePins", {}).get(query.get("ref"))
@@ -719,7 +802,8 @@ def gh_ing_route(gh, method, route, query, data, out):
         return 0
     if route == f"repos/{SUSE_REPO}/actions/workflows/lolly-ing-preview.yml/runs":
         runs = [r for r in gh["ingRuns"] if (not query.get("head_sha") or r["head_sha"] == query["head_sha"])
-                and (not query.get("event") or r["event"] == query["event"])]
+                and (not query.get("event") or r["event"] == query["event"])
+                and (not query.get("status") or query["status"] in (r["status"], r.get("conclusion")))]
         out.write(json.dumps({"workflow_runs": runs}))
         return 0
     match = re.fullmatch(rf"repos/{SUSE_REPO}/actions/runs/(\d+)", route)

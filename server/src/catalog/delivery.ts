@@ -49,7 +49,7 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     sourcePublication(), toolFiles(deps.source.pack),
     ...(deps.activePack ? [deps.activePack().then(toolFiles)] : []),
   ]).then(([source]) => {
-    if (deps.requireGeneration && source.generation <= 0) throw Object.assign(new Error('Production catalog publication requires a positive generation'), { status: 503 });
+    if (deps.requireGeneration && source.generation <= 0) throw Object.assign(new Error('Production catalog publication requires a positive generation: set instance.catalogPublicationGeneration, or mount a pack whose signed publication instance.catalogPublicKey verifies'), { status: 503 });
   });
   const remember = async (scope: string, kind: CatalogSnapshotKind, bytes: Buffer): Promise<void> => {
     const at = now();

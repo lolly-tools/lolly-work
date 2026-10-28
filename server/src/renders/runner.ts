@@ -22,6 +22,22 @@ export function parseBackgroundPollMs(value: string | undefined): number | undef
   }
   return ms;
 }
+/** The most durable renders one Work process may drive at once. */
+export const MAX_RENDER_CONCURRENCY = 128;
+
+/** `LW_RENDER_CONCURRENCY`, how many durable renders one Work process drives at
+ *  once. Unset or blank keeps the runner's default of 2 (undefined). Size it to
+ *  the worker slots it should keep busy (replicas times LW_RENDER_MAX_CONCURRENT):
+ *  under push a render beyond them meets 503 RENDER_BUSY and a retry delay;
+ *  under pull dispatch it waits in order for the next free worker. */
+export function parseRenderConcurrency(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const n = Number(value.trim());
+  if (!Number.isSafeInteger(n) || n < 1 || n > MAX_RENDER_CONCURRENCY) {
+    throw new Error(`LW_RENDER_CONCURRENCY must be a whole number from 1 to ${MAX_RENDER_CONCURRENCY}`);
+  }
+  return n;
+}
 export interface RenderRunnerOptions {
   store: RenderStore;
   blobs: BlobStore;
@@ -60,7 +76,7 @@ export class RenderRunner {
     this.concurrency = options.concurrency ?? 2;
     this.leaseMs = options.leaseMs ?? 30_000;
     this.timeoutMs = options.timeoutMs ?? 120_000;
-    if (!Number.isInteger(this.concurrency) || this.concurrency < 1 || this.concurrency > 32) throw new Error('render concurrency must be 1–32');
+    if (!Number.isInteger(this.concurrency) || this.concurrency < 1 || this.concurrency > MAX_RENDER_CONCURRENCY) throw new Error(`render concurrency must be 1 to ${MAX_RENDER_CONCURRENCY}`);
     if (!Number.isFinite(this.leaseMs) || this.leaseMs < 30 || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 1) throw new Error('invalid render lease/timeout');
   }
 

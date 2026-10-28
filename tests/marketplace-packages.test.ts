@@ -10,7 +10,8 @@ import { parse } from 'yaml';
 import { deploymentPackages, release, writePackages } from '../scripts/marketplace-packages.ts';
 import { prepareInstance } from '../scripts/prepare-marketplace-instance.ts';
 import { instanceConfiguration, prepareConfiguration } from '../deploy/marketplaces/server-start.mjs';
-import { archivePaths, prepareContent } from '../deploy/marketplaces/content-init.mjs';
+import { archivePaths, bindShellCatalogueKey, installationCatalogueKey, prepareContent } from '../deploy/marketplaces/content-init.mjs';
+import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from 'node:zlib';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { startupChecks } from '../server/src/setup/checks.ts';
 import { mergeIndex } from '../scripts/package-helm-chart.ts';
@@ -160,6 +161,52 @@ test('content preparation verifies bytes before extraction and retains keys and 
     assert.throws(() => archivePaths('../outside\nindex.html\ncatalog/tools/index.json'), /unsafe/);
     const linkRoot = join(directory, 'link'); symlinkSync(content, linkRoot);
     await assert.rejects(prepareContent(pin, linkRoot, keys, download), /physical/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+const download = (body: Buffer) => (async () => new Response(body)) as typeof fetch;
+
+test('the served shell trusts the installation catalogue key while the pack keeps the publisher signature', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'lolly-content-key-test-'));
+  try {
+    const publisher = release.sourceCatalogPublicKey, literal = (key: { x: string; y: string }) => `{"kty":"EC","crv":"P-256","x":"${key.x}","y":"${key.y}"}`;
+    const fixture = join(directory, 'fixture');
+    mkdirSync(join(fixture, 'catalog/tools'), { recursive: true }); mkdirSync(join(fixture, 'tools')); mkdirSync(join(fixture, '_app'));
+    writeFileSync(join(fixture, 'index.html'), '<html>shell</html>');
+    writeFileSync(join(fixture, 'catalog/tools/index.json'), '{"tools":[]}');
+    writeFileSync(join(fixture, 'catalog/tools/index.sig.json'), JSON.stringify({ keyId: 'publisher', note: literal(publisher) }));
+    const boot = `const pinned=\`${literal(publisher)}\`;const env={VITE_CATALOG_PUBLIC_KEY_JWK:\`${literal(publisher)}\`};`;
+    writeFileSync(join(fixture, '_app/web-boot-test.js'), boot);
+    writeFileSync(join(fixture, '_app/web-boot-test.js.br'), brotliCompressSync(boot));
+    writeFileSync(join(fixture, '_app/web-boot-test.js.gz'), gzipSync(boot));
+    writeFileSync(join(fixture, '_app/view-test.js'), 'export const view = 1;');
+    const archive = join(directory, 'shell.tgz');
+    execFileSync('tar', ['-czf', archive, '-C', fixture, '.']);
+    const body = readFileSync(archive), sha256 = createHash('sha256').update(body).digest('hex');
+    const pin = { url: 'https://release.example.test/shell.tgz', sha256, catalogPublicKey: publisher };
+    const content = join(directory, 'content'), keys = join(directory, 'keys');
+    const target = await prepareContent(pin, content, keys, download(body));
+    const installation = installationCatalogueKey(join(keys, 'catalog.jwk'));
+    assert.notEqual(installation.x, publisher.x);
+    const served = readFileSync(join(target, 'shell/_app/web-boot-test.js'));
+    assert.equal(served.toString(), boot.replaceAll(literal(publisher), literal(installation)), 'every pinned copy names the installation key');
+    assert.ok(brotliDecompressSync(readFileSync(join(target, 'shell/_app/web-boot-test.js.br'))).equals(served), 'the brotli copy matches');
+    assert.ok(gunzipSync(readFileSync(join(target, 'shell/_app/web-boot-test.js.gz'))).equals(served), 'the gzip copy matches');
+    assert.equal(readFileSync(join(target, 'shell/_app/view-test.js'), 'utf8'), 'export const view = 1;');
+    assert.equal(readFileSync(join(target, 'pack/catalog/tools/index.sig.json'), 'utf8'), readFileSync(join(fixture, 'catalog/tools/index.sig.json'), 'utf8'), 'the pack keeps the publisher envelope');
+    const binding = JSON.parse(readFileSync(join(target, 'catalogue-key.json'), 'utf8'));
+    assert.deepEqual([binding.publisher.x, binding.installation.x, binding.files], [publisher.x, installation.x, ['web-boot-test.js']]);
+    assert.equal(await prepareContent(pin, content, keys, (async () => { throw Error('cached release must not download'); }) as typeof fetch), target);
+    // Content installed before the binding existed is never silently reused.
+    rmSync(join(target, 'catalogue-key.json'));
+    await assert.rejects(prepareContent(pin, content, keys, download(body)), /does not trust this installation/);
+    // A shell that does not pin the publisher key is refused before anything is installed.
+    writeFileSync(join(fixture, '_app/web-boot-test.js'), 'const pinned = "";');
+    execFileSync('tar', ['-czf', archive, '-C', fixture, '.']);
+    const other = readFileSync(archive), otherPin = { ...pin, sha256: createHash('sha256').update(other).digest('hex') };
+    await assert.rejects(prepareContent(otherPin, content, keys, download(other)), /does not pin the release catalogue key/);
+    assert.equal(existsSync(join(content, otherPin.sha256)), false);
+    assert.throws(() => bindShellCatalogueKey(join(target, 'shell'), { ...publisher, crv: 'P-384' }, installation), /P-256/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

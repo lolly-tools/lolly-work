@@ -11,6 +11,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const bootstrap = join(root, 'deploy/suse/k3s-bootstrap.sh');
 const qualify = join(root, 'deploy/suse/k3s-qualify.sh');
 const lock = JSON.parse(readFileSync(join(root, 'deploy/suse/k3s.lock.json'), 'utf8'));
+const arm64Lock = JSON.parse(readFileSync(join(root, 'deploy/suse/k3s.arm64.lock.json'), 'utf8'));
 
 function first<T>(items: T[]): T {
   const item = items[0];
@@ -41,10 +42,66 @@ test('release lock fixes the chart minor, immutable installer commit and officia
   assert.match(lock.binary.url, /^https:\/\/github\.com\/k3s-io\/k3s\/releases\/download\//);
   assert.ok(lock.installer.url.includes(lock.releaseCommit));
   for (const item of [lock.binary, lock.installer]) assert.match(item.sha256, /^[a-f0-9]{64}$/);
-  const result = bash('source "$K3S_TEST_BOOTSTRAP"; read_release_lock');
+  const result = bash('source "$K3S_TEST_BOOTSTRAP"; read_release_lock x86_64');
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.includes(lock.binary.sha256));
 });
+
+test('arm64 lock pins the same release and installer with the official arm64 binary', () => {
+  assert.equal(arm64Lock.architecture, 'arm64');
+  for (const key of ['version', 'kubernetesMinor', 'releaseUrl', 'releasePublishedAt', 'releaseCommit'])
+    assert.equal(arm64Lock[key], lock[key], key);
+  assert.deepEqual(arm64Lock.installer, lock.installer);
+  assert.equal(
+    arm64Lock.binary.url,
+    'https://github.com/k3s-io/k3s/releases/download/v1.34.12%2Bk3s1/k3s-arm64',
+  );
+  // From the release's sha256sum-arm64.txt, checked against a download on 2026-10-27.
+  assert.equal(arm64Lock.binary.sha256, '67e3e242ba23480634caecc18939feff3a558756b340e4ef964552d748b0271e');
+  assert.equal(
+    arm64Lock.checksumSource,
+    'https://github.com/k3s-io/k3s/releases/download/v1.34.12%2Bk3s1/sha256sum-arm64.txt',
+  );
+  const result = bash('source "$K3S_TEST_BOOTSTRAP"; read_release_lock aarch64');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split(' '), [
+    arm64Lock.version,
+    arm64Lock.binary.url,
+    arm64Lock.binary.sha256,
+    arm64Lock.installer.url,
+    arm64Lock.installer.sha256,
+  ]);
+});
+
+test('lock selection follows uname -m and refuses an unlocked architecture', () => {
+  for (const machine of ['ppc64le', 's390x', 'arm64', 'armv7l', 'i686']) {
+    const result = bash('source "$K3S_TEST_BOOTSTRAP"; read_release_lock "$1"', [machine]);
+    assert.notEqual(result.status, 0, machine);
+    assert.ok(result.stderr.includes('no reviewed K3s lock'), machine);
+  }
+  for (const [machine, sha] of [
+    ['x86_64', lock.binary.sha256],
+    ['aarch64', arm64Lock.binary.sha256],
+  ]) {
+    const result = bash(
+      'source "$K3S_TEST_BOOTSTRAP"; uname() { [[ $1 == -m ]] && printf "%s\\n" "$MACHINE"; }; read_release_lock',
+      [],
+      { MACHINE: machine },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(sha), machine);
+  }
+});
+
+test('a lock whose binary does not match its architecture is refused', () =>
+  sandbox((dir) => {
+    writeFileSync(join(dir, 'k3s.lock.json'), JSON.stringify({ ...lock, binary: arm64Lock.binary }));
+    writeFileSync(join(dir, 'k3s.arm64.lock.json'), JSON.stringify({ ...arm64Lock, binary: lock.binary }));
+    for (const machine of ['x86_64', 'aarch64']) {
+      const result = bash('source "$K3S_TEST_BOOTSTRAP"; K3S_OPERATOR_DIR=$1; read_release_lock "$2"', [dir, machine]);
+      assert.notEqual(result.status, 0, machine);
+    }
+  }));
 
 test('configuration preserves pod API routing while encryption and disabled ingress are explicit', () => {
   const result = bash(
@@ -236,11 +293,15 @@ function selinux(dir: string, mode: string) {
       file,
       `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv.slice(2);const tool=${JSON.stringify(tool)};const mode=${JSON.stringify(mode)};
 fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({tool,args:a})+'\\n');
-if(tool==='rpm')process.exit(mode==='modified-rpm'?1:0);
+if(tool==='rpm'){if(mode==='missing-rpm'&&a[0]==='-q')process.exit(1);process.exit(mode==='modified-rpm'?1:0);}
 if(tool==='semodule'){if(mode==='module-query-error')process.exit(2);console.log(mode==='missing-module'?'200 container pp':'200 container pp\\n200 k3s pp');}
-if(tool==='matchpathcon'){if(mode==='context-query-error')process.exit(2);if(a.includes('-V'))process.exit(mode==='readback-failure'?1:0);console.log('system_u:object_r:'+(mode==='wrong-context'?'var_lib_t':a.some(x=>x.endsWith('/snapshots'))?'container_file_t':'container_runtime_exec_t')+':s0');}
+if(tool==='matchpathcon'){if(mode==='context-query-error')process.exit(2);if(a.includes('-V'))process.exit(mode==='readback-failure'?1:0);
+const path=a.at(-1);const kind=a.includes('-m')?a[a.indexOf('-m')+1]:'';
+// The measured SUSE k3s-selinux 1.4 file contexts on Leap 16.1.
+const type=mode==='wrong-context'?'var_lib_t':path.endsWith('/bin/runc')?'k3s_root_t':path.endsWith('/snapshots')?(kind==='file'?'container_var_lib_t':'container_file_t'):kind==='dir'?(path.startsWith('/usr/')?'bin_t':'k3s_root_t'):'container_runtime_exec_t';
+console.log('system_u:object_r:'+type+':s0');}
 if(tool==='restorecon')process.exit(mode==='restore-failure'?1:0);
-if(tool==='getenforce')console.log(mode==='permissive'?'Permissive':'Enforcing');\n`,
+if(tool==='getenforce')console.log(mode==='permissive'?'Permissive':mode==='disabled'?'Disabled':'Enforcing');\n`,
     );
     chmodSync(file, 0o700);
   }
@@ -285,6 +346,222 @@ for (const mode of [
       const result = bash('source "$K3S_TEST_BOOTSTRAP"; label_installed_selinux', [], selinux(dir, mode));
       assert.notEqual(result.status, 0);
     }));
+
+function calls(dir: string, file: string) {
+  return readFileSync(join(dir, file), 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { tool: string; args: string[] });
+}
+
+test('policy lookups use the file type K3s creates and the runtime executable SUSE labels', () =>
+  sandbox((dir) => {
+    const result = bash('source "$K3S_TEST_BOOTSTRAP"; validate_selinux_policy', [], selinux(dir, 'safe'));
+    assert.equal(result.status, 0, result.stderr);
+    const lookups = calls(dir, 'selinux-calls.jsonl')
+      .filter((call) => call.tool === 'matchpathcon')
+      .map((call) => call.args);
+    assert.deepEqual(lookups, [
+      ['-m', 'file', '-n', '/usr/local/bin/k3s'],
+      ['-m', 'file', '-n', '/var/lib/rancher/k3s/data/current/bin/containerd-shim-runc-v2'],
+      ['-m', 'dir', '-n', '/var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots'],
+    ]);
+    // SUSE's policy labels runc k3s_root_t, so a runc probe would refuse every enforcing host.
+    const runc = bash('PATH=$1; matchpathcon -m file -n /var/lib/rancher/k3s/data/current/bin/runc', [
+      `${dir}:${process.env.PATH}`,
+    ]);
+    assert.ok(runc.stdout.includes(':k3s_root_t:'));
+    assert.ok(!readFileSync(bootstrap, 'utf8').includes('data/current/bin/runc'));
+  }));
+
+for (const [variant, readonlyRoot, updater, expected] of [
+  ['', 'false', 'false', 'false'],
+  ['', 'false', 'true', 'false'],
+  ['sle-micro', 'false', 'false', 'false'],
+  ['transactional', 'true', 'true', 'true'],
+] as const)
+  test(`transactional detection reads ${variant || 'no variant'} with read-only root ${readonlyRoot} as ${expected}`, () => {
+    const result = bash('source "$K3S_TEST_BOOTSTRAP"; classify_transactional "$1" "$2" "$3"; printf "%s" "$TRANSACTIONAL"', [
+      variant,
+      readonlyRoot,
+      updater,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, expected);
+  });
+
+for (const [name, variant, readonlyRoot, updater, message] of [
+  ['a declared variant on a writable root', 'transactional', 'false', 'true', 'disagree'],
+  ['a read-only root without the declared variant', '', 'true', 'true', 'disagree'],
+  ['a read-only root declaring another variant', 'sle-micro', 'true', 'true', 'disagree'],
+  ['a transactional host without transactional-update', 'transactional', 'true', 'false', 'no transactional-update'],
+] as const)
+  test(`transactional detection refuses ${name}`, () => {
+    const result = bash('source "$K3S_TEST_BOOTSTRAP"; classify_transactional "$1" "$2" "$3"', [variant, readonlyRoot, updater]);
+    assert.notEqual(result.status, 0);
+    assert.ok(result.stderr.includes(message), result.stderr);
+  });
+
+test('a pending snapshot stops preflight and install until the host reboots', () => {
+  assert.equal(bash('source "$K3S_TEST_BOOTSTRAP"; validate_no_pending_snapshot false 258 258').status, 0);
+  for (const args of [
+    ['true', '258', '258'],
+    ['false', '258', '268'],
+    ['false', '', '258'],
+    ['false', '258', 'x'],
+  ]) {
+    const result = bash('source "$K3S_TEST_BOOTSTRAP"; validate_no_pending_snapshot "$1" "$2" "$3"', args);
+    assert.notEqual(result.status, 0, args.join(' '));
+  }
+  const marker = bash('source "$K3S_TEST_BOOTSTRAP"; validate_no_pending_snapshot true 258 258');
+  assert.ok(marker.stderr.includes('reboot this host'));
+});
+
+function transactional(dir: string, mode: string) {
+  const log = join(dir, 'transactional-calls.jsonl');
+  const state = join(dir, 'default-subvolume');
+  writeFileSync(state, '258');
+  const tools: Record<string, string> = {
+    findmnt: `if(mode==='ext4-root'){console.log('ext4   rw,relatime');}else if(mode==='two-roots'){console.log('btrfs  ro,subvolid=258');console.log('btrfs  ro,subvolid=259');}else{console.log('btrfs  ro,relatime,seclabel,discard=async,space_cache=v2,subvolid=258,subvol=/@/.snapshots/1/snapshot');}`,
+    btrfs: `console.log('ID '+fs.readFileSync(${JSON.stringify(state)},'utf8')+' gen 49 top level 257 path @/.snapshots/2/snapshot');`,
+    'transactional-update': `if(mode==='tu-fails')process.exit(1);const i=a.indexOf('run');const r=require('node:child_process').spawnSync('bash',a.slice(i+2),{stdio:'inherit'});if(r.status===0&&mode!=='no-snapshot')fs.writeFileSync(${JSON.stringify(state)},'268');process.exit(r.status??1);`,
+    zypper: `process.exit(mode==='zypper-fails'?104:0);`,
+    rpm: `if(a.includes('%{VENDOR}'))process.stdout.write(mode==='other-vendor'?'Rancher Labs':'SUSE LLC <https://www.suse.com/>');`,
+  };
+  for (const [tool, body] of Object.entries(tools)) {
+    const file = join(dir, tool);
+    writeFileSync(
+      file,
+      `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv.slice(2);const mode=${JSON.stringify(mode)};
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({tool:${JSON.stringify(tool)},args:a})+'\\n');
+${body}\n`,
+    );
+    chmodSync(file, 0o700);
+  }
+  return { PATH: `${dir}:${process.env.PATH}` };
+}
+
+test('root snapshot ids come from the btrfs root mount and the default subvolume', () =>
+  sandbox((dir) => {
+    const result = bash(
+      'source "$K3S_TEST_BOOTSTRAP"; root_snapshot_ids; printf "%s %s" "$RUNNING_SUBVOLUME" "$DEFAULT_SUBVOLUME"',
+      [],
+      transactional(dir, 'safe'),
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '258 258');
+    for (const mode of ['ext4-root', 'two-roots']) {
+      const refused = bash('source "$K3S_TEST_BOOTSTRAP"; root_snapshot_ids', [], transactional(dir, mode));
+      assert.notEqual(refused.status, 0, mode);
+    }
+  }));
+
+test('policy staging installs only the SUSE package from signed OS repositories into a new snapshot', () =>
+  sandbox((dir) => {
+    const result = bash('source "$K3S_TEST_BOOTSTRAP"; stage_transactional_policy', [], transactional(dir, 'safe'));
+    assert.equal(result.status, 0, result.stderr);
+    const log = calls(dir, 'transactional-calls.jsonl');
+    const update = log.find((call) => call.tool === 'transactional-update');
+    assert.ok(update);
+    assert.deepEqual(update.args.slice(0, 5), ['--no-selfupdate', '--drop-if-no-change', 'run', '/usr/bin/bash', '-c']);
+    const script = update.args[5] ?? '';
+    assert.ok(script.includes('zypper --non-interactive install --no-recommends k3s-selinux'));
+    assert.ok(script.includes('"SUSE LLC <https://www.suse.com/>"'));
+    for (const forbidden of ['gpg-auto-import-keys', 'addrepo', ' ar ', 'rpm.rancher.io', '--no-gpg-checks'])
+      assert.ok(!script.includes(forbidden), forbidden);
+    assert.deepEqual(
+      log.find((call) => call.tool === 'zypper')?.args,
+      ['--non-interactive', 'install', '--no-recommends', 'k3s-selinux'],
+    );
+    assert.ok(log.some((call) => call.tool === 'rpm' && call.args.includes('k3s-selinux')));
+  }));
+
+for (const [mode, message] of [
+  ['tu-fails', 'could not stage'],
+  ['zypper-fails', 'could not stage'],
+  ['other-vendor', 'could not stage'],
+  ['no-snapshot', 'left no new snapshot'],
+] as const)
+  test(`policy staging refuses ${mode}`, () =>
+    sandbox((dir) => {
+      const result = bash('source "$K3S_TEST_BOOTSTRAP"; stage_transactional_policy', [], transactional(dir, mode));
+      assert.notEqual(result.status, 0);
+      assert.ok(result.stderr.includes(message), result.stderr);
+    }));
+
+for (const [name, transactionalHost, mode, staged] of [
+  ['transactional host without the policy stages it', 'true', 'missing-rpm', 'true'],
+  ['transactional host with the policy verifies it', 'true', 'safe', 'false'],
+  ['ordinary host with the policy verifies it', 'false', 'safe', 'false'],
+] as const)
+  test(`enforcing preflight: ${name}`, () =>
+    sandbox((dir) => {
+      const result = bash(
+        'source "$K3S_TEST_BOOTSTRAP"; TRANSACTIONAL=$1; selinux_preflight; printf "%s %s" "$SELINUX" "$POLICY_STAGE"',
+        [transactionalHost],
+        selinux(dir, mode),
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, `true ${staged}`);
+      const verified = calls(dir, 'selinux-calls.jsonl').some((call) => call.tool === 'rpm' && call.args[0] === '-V');
+      assert.equal(verified, staged === 'false');
+    }));
+
+test('ordinary enforcing host without the policy is still refused before any change', () =>
+  sandbox((dir) => {
+    const result = bash('source "$K3S_TEST_BOOTSTRAP"; TRANSACTIONAL=false; selinux_preflight', [], selinux(dir, 'missing-rpm'));
+    assert.notEqual(result.status, 0);
+    assert.ok(result.stderr.includes('install/review the matching SELinux policy first'));
+  }));
+
+test('SELinux posture rules are the same on transactional hosts', () =>
+  sandbox((dir) => {
+    for (const transactionalHost of ['true', 'false']) {
+      const permissive = bash('source "$K3S_TEST_BOOTSTRAP"; TRANSACTIONAL=$1; selinux_preflight', [transactionalHost], selinux(dir, 'permissive'));
+      assert.notEqual(permissive.status, 0);
+      const disabled = bash(
+        'source "$K3S_TEST_BOOTSTRAP"; TRANSACTIONAL=$1; selinux_preflight; printf "%s %s" "$SELINUX" "$POLICY_STAGE"',
+        [transactionalHost],
+        selinux(dir, 'disabled'),
+      );
+      assert.equal(disabled.status, 0, disabled.stderr);
+      assert.equal(disabled.stdout, 'false false');
+    }
+  }));
+
+test('install stops after staging the policy, before any download or host write', () => {
+  const source = readFileSync(bootstrap, 'utf8');
+  const main = source.slice(source.indexOf('main() {'));
+  const stage = main.indexOf('stage_transactional_policy');
+  assert.ok(stage > main.indexOf('host_preflight'));
+  for (const later of ['curl --fail', 'install -d -m 0700 /etc/rancher/k3s', 'run_verified_installer "$version"'])
+    assert.ok(stage < main.indexOf(later), later);
+  assert.ok(main.slice(stage, main.indexOf('curl --fail')).includes('return'));
+  // The ordinary preflight result stays word for word.
+  assert.ok(main.includes("printf '%s\\n' 'Candidate preflight passed; no downloads or host changes.'"));
+  const preflight = source.slice(source.indexOf('host_preflight() {'), source.indexOf('run_verified_installer() {'));
+  assert.ok(preflight.indexOf('validate_transactional_host') < preflight.indexOf('/etc/rancher/k3s /var/lib/rancher/k3s'));
+});
+
+test('transactional hosts replay the policy package directories before labelling, and only they do', () => {
+  const source = readFileSync(bootstrap, 'utf8');
+  const main = source.slice(source.indexOf('main() {'));
+  const replay = main.indexOf('if [[ $SELINUX == true && $TRANSACTIONAL == true ]]; then replay_policy_scaffold; fi');
+  assert.ok(replay > main.indexOf('run_verified_installer "$version"'));
+  assert.ok(replay < main.indexOf('if [[ $SELINUX == true ]]; then label_installed_selinux; fi'));
+  // The persistent directories made by the k3s-selinux %post scriptlet (rpm -q --scripts, Leap 16.1).
+  const body = source.slice(source.indexOf('replay_policy_scaffold() {'), source.indexOf('host_preflight() {'));
+  for (const path of [
+    '/var/lib/cni',
+    '/var/lib/kubelet/pods',
+    '/var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots',
+    '/var/lib/rancher/k3s/data',
+  ])
+    assert.ok(body.includes(path), path);
+  assert.ok(body.includes('umask 022'));
+  assert.ok(body.includes('restorecon -R /var/lib/cni /var/lib/kubelet /var/lib/rancher'));
+});
 
 for (const mode of ['safe', 'http3', 'drop', 'reject'])
   test(`restricted firewall keeps pod/service paths in ${mode} profile`, () =>

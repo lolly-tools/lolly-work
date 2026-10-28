@@ -1,0 +1,125 @@
+#!/bin/bash
+# SPDX-License-Identifier: MPL-2.0
+# Every boot, before Lolly Work starts: work out this machine's Lolly Work
+# address and owner and write them where the runtime reads them.
+#   k3s:    lolly-work-instance.yaml, a HelmChartConfig that K3s merges over the
+#           release's values.
+#   podman: /var/lib/lolly/work/instance.json, Lolly Work's settings
+#           (/usr/share/lolly-appliance/work-config.json, the same as the k3s
+#           profile's) with this machine's values filled in.
+# Each file is rewritten only when a value changed, so an ordinary reboot does
+# not upgrade or restart anything.
+#
+# Settings come from /etc/lolly/appliance.conf, which Combustion or Ignition
+# can write at first boot:
+#   LOLLY_OWNER_EMAIL    the first owner's address        (default owner@lolly.local)
+#   LOLLY_BASE_URL       the HTTPS address people use      (default https://<this machine's IPv4>)
+#   LOLLY_INSTANCE_NAME  the workspace name                (default Lolly Work)
+set -euo pipefail
+. /usr/libexec/lolly-appliance/common.sh
+umask 022
+
+owner=$(owner_email)
+name=$(conf_get LOLLY_INSTANCE_NAME "Lolly Work")
+if ! [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9\ ._\'-]{0,79}$ ]]; then
+  log "LOLLY_INSTANCE_NAME may hold letters, digits, spaces and . _ ' - (80 at most); using Lolly Work"
+  name="Lolly Work"
+fi
+
+base=$(conf_get LOLLY_BASE_URL "")
+if [ -n "$base" ]; then
+  base=${base%/}
+  if ! [[ $base =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ || $base =~ ^https://\[[0-9a-fA-F:]+\](:[0-9]{1,5})?$ ]]; then
+    log "LOLLY_BASE_URL must be https://host[:port] with no path; using this machine's address"
+    base=
+  fi
+fi
+if [ -z "$base" ]; then
+  ip=
+  for _ in $(seq 1 60); do
+    ip=$(primary_ipv4)
+    [ -n "$ip" ] && break
+    sleep 2
+  done
+  if [ -z "$ip" ]; then
+    # Keep the last address rather than invent one.
+    if [ -r "$INSTANCE_ENV" ]; then
+      log "no IPv4 address yet; keeping the previous address"
+      exit 0
+    fi
+    ip=127.0.0.1
+    log "no IPv4 address found; Work answers on https://127.0.0.1 until the next boot"
+  fi
+  base="https://$ip"
+fi
+
+json_escape() { local s=${1//\\/\\\\}; printf '%s' "${s//\"/\\\"}"; }
+
+write_helmchartconfig() {
+  local next
+  next=$(mktemp "$MANIFESTS/.lolly-work-instance.XXXXXX")
+  trap 'rm -f "$next"' EXIT
+  cat > "$next" <<EOF
+# This machine's values for Lolly Work, written at boot by
+# /usr/libexec/lolly-appliance/instance from /etc/lolly/appliance.conf.
+# Change the settings there, not here: this file is regenerated.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: lolly-work
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    {
+      "config": {
+        "instance": { "name": "$(json_escape "$name")", "baseUrl": "$base" },
+        "idp": {
+          "admission": { "emails": ["$owner"], "invitations": true },
+          "bootstrapOwners": ["$owner"]
+        }
+      }
+    }
+EOF
+  chmod 0644 "$next"
+  if [ -f "$INSTANCE_MANIFEST" ] && cmp -s "$next" "$INSTANCE_MANIFEST"; then
+    rm -f "$next"
+  else
+    mv "$next" "$INSTANCE_MANIFEST"
+    log "Lolly Work address $base, owner $owner"
+  fi
+  trap - EXIT
+}
+
+write_instance_json() {
+  install -d -m 0755 "$(dirname "$WORK_INSTANCE")"
+  # The same merge K3s makes with the HelmChartConfig above.
+  python3 -c '
+import json, os, sys
+source, target, name, base, owner = sys.argv[1:]
+config = json.load(open(source))
+config["instance"].update({"name": name, "baseUrl": base})
+config["idp"]["admission"] = {"emails": [owner], "invitations": True}
+config["idp"]["bootstrapOwners"] = [owner]
+text = json.dumps(config, indent=2) + "\n"
+if os.path.exists(target) and open(target).read() == text:
+    sys.exit(0)
+with open(target + ".new", "w") as handle:
+    handle.write(text)
+os.chmod(target + ".new", 0o644)
+os.replace(target + ".new", target)
+print(f"lolly-appliance: Lolly Work address {base}, owner {owner}", file=sys.stderr)
+' "$WORK_CONFIG" "$WORK_INSTANCE" "$name" "$base" "$owner"
+}
+
+if [ "$PROFILE" = podman ]; then
+  write_instance_json
+else
+  write_helmchartconfig
+fi
+
+cat > "$INSTANCE_ENV.new" <<EOF
+LOLLY_BASE_URL=$base
+LOLLY_OWNER_EMAIL=$owner
+LOLLY_INSTANCE_NAME=$name
+EOF
+mv "$INSTANCE_ENV.new" "$INSTANCE_ENV"

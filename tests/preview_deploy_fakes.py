@@ -684,9 +684,12 @@ def patch_node_modules(tool_lib, sandbox, state_path):
                                "imagefs": "/", "armed": f"{sandbox}/var/lib/lolly-preview/retention-armed",
                                "systemctl": os.environ["FAKE_BIN"] + "/systemctl",
                                "procStatus": f"{sandbox}/proc-status", "procAttr": f"{sandbox}/proc-attr",
-                               "spool": f"{sandbox}/var/lib/lolly-preview/spool", "smokeCookie": f"{sandbox}/smoke-session"})
+                               "spool": f"{sandbox}/var/lib/lolly-preview/spool", "smokeToken": f"{sandbox}/smoke-token",
+                               "smokeCookie": f"{sandbox}/smoke-session"})
     if os.environ.get("FAKE_ING_PIN"):
         preview_anchors.ING_PUBLIC_KEY_JWK = json.loads(os.environ["FAKE_ING_PIN"])
+    for name, value in json.loads(os.environ.get("FAKE_ING_ANCHORS") or "{}").items():  # anchors a reviewed change pins
+        setattr(preview_anchors, name, tuple(value) if isinstance(value, list) else value)
 
     def capacity(_path):
         data = json.loads(Path(state_path).read_text())["capacity"]
@@ -793,6 +796,8 @@ def run_unit(sandbox, state_path, name):
         migrated = []
         migrate, backup_fresh = runner.migrate, runner.backup_fresh
         rehearse, annotate, switch, new_config = runner.rehearse, runner.annotate, runner.switch, runner.new_config
+        take_backup, wait_switch = runner.take_backup, runner.wait_switch
+        cutover_stopped = []
 
         def migrate_(self, *args, **kwargs):
             result = migrate(self, *args, **kwargs)
@@ -808,8 +813,19 @@ def run_unit(sandbox, state_path, name):
             result = rehearse(self, *args, **kwargs)
             hours = float(os.environ.get("FAKE_AGE_AFTER_REHEARSAL", "0"))
             real_wall = preview_node.WALL
-            preview_node.WALL = lambda: real_wall() + hours * 3600  # the rehearsal took this long
+            preview_node.WALL = lambda: real_wall() + hours * 3600  # the rehearsal (or, without one, the classifier) took this long
             return result
+
+        def take_backup_(self, *args, **kwargs):
+            if point == "backup-job":
+                raise refusal("JOB_FAILED", "drill: the backup Job failed")
+            return take_backup(self, *args, **kwargs)
+
+        def wait_switch_(self, *args, **kwargs):
+            if point == "cutover-read" and not cutover_stopped:  # stop once after the cut-over patch, before smoke
+                cutover_stopped.append(True)
+                raise KeyboardInterrupt
+            return wait_switch(self, *args, **kwargs)
 
         def annotate_(self, values, *args, **kwargs):
             if point == "annotate" and values.get("phase") == "switching":
@@ -827,6 +843,7 @@ def run_unit(sandbox, state_path, name):
             return new_config(self, *args, **kwargs)
         runner.migrate, runner.backup_fresh, runner.rehearse = migrate_, backup_fresh_, rehearse_
         runner.annotate, runner.switch, runner.new_config = annotate_, switch_, new_config_
+        runner.take_backup, runner.wait_switch = take_backup_, wait_switch_
     unit_state.write_text("active")
     environment = {"SERVICE_RESULT": "success", "EXIT_CODE": "exited", "EXIT_STATUS": "0"}
     try:
@@ -840,6 +857,18 @@ def run_unit(sandbox, state_path, name):
         preview_node.Runner.annotate = original
     unit_state.write_text("deactivating")
     stop_script, stop_mode, stop_request = command(stops[0])
+    if os.environ.get("FAKE_ING_ABORT") == "cutover-read":  # the first cleanup read fails, the next one answers
+        deployment = runner.deployment
+        cleanup_reads = []
+
+        def deployment_(self, *args, **kwargs):
+            failed = not cleanup_reads
+            cleanup_reads.append(failed)
+            self.log("drill-cleanup-read", failed=failed)
+            if failed:
+                raise refusal("KUBECTL_FAILED", "drill: first cleanup read failed")
+            return deployment(self, *args, **kwargs)
+        runner.deployment = deployment_
     preview_node.main([stop_mode, stop_request], app_update_path=app_update, environment=environment)
     unit_state.write_text("inactive")
     return 0
@@ -931,11 +960,14 @@ def ssh_main(argv):
 
 
 # Fake GitHub ---------------------------------------------------------------------
-def receipt_zip(build, run_id, attempt, pin, thumbprint, **overrides):
+def receipt_zip(build, run_id, attempt, pin, thumbprint, source_gate=None, **overrides):
+    """source_gate: the "sourceGate" a build made at merge writes into release.json (None writes none)."""
     import zipfile
     web = {"imageId": "sha256:" + sha(build["image"].encode()), "digest": build["image"], "platform": "linux/amd64", "source": build["sha"]}
     release = {"source": build["sha"], "runId": str(run_id), "runAttempt": attempt, "neutralProfile": True,
                "images": {"web": web}, "candidateRuntimeQualified": False}
+    if source_gate is not None:
+        release["sourceGate"] = source_gate
     files = {"release.json": release, "web.json": web, "public.jwk.json": pin,
              "catalog.json": {"verified": True, "files": 10, "tools": 2, "indexSha256": "7" * 64, "keyId": thumbprint},
              "web-boot.json": {"serviceBootPassed": True, "results": {"web": 200}}}
@@ -957,6 +989,50 @@ def run_object(run_id, sha_, path=".github/workflows/preview-web.yml", event="wo
 
 
 TOOL_MAIN = "e" * 40
+
+
+def git_trees(files):
+    """Git tree objects for {path: text or (mode, text)}: (root tree sha, {tree sha: direct entries}).
+
+    The fake gh serves them as GitHub's trees API does, recursive listings included, so the lane code
+    reads a real-shaped history (preview_lane.tree_changes)."""
+    root = {}
+    for path, value in files.items():
+        mode, text = value if isinstance(value, tuple) else ("100644", value)
+        node, parts = root, path.split("/")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = (mode, text)
+    trees = {}
+
+    def store(node):
+        entries = []
+        for name in sorted(node):
+            value = node[name]
+            if isinstance(value, dict):
+                entries.append({"path": name, "mode": "040000", "type": "tree", "sha": store(value)})
+            else:
+                kind = "commit" if value[0] == "160000" else "blob"
+                entries.append({"path": name, "mode": value[0], "type": kind,
+                                "sha": hashlib.sha1((value[0] + value[1]).encode()).hexdigest()})
+        sha_ = hashlib.sha1(json.dumps(entries, sort_keys=True).encode()).hexdigest()
+        trees[sha_] = entries
+        return sha_
+    return store(root), trees
+
+
+def tree_listing(trees, sha_, recursive):
+    if not recursive:
+        return list(trees[sha_])
+    listing = []
+
+    def walk(tree, prefix):
+        for entry in trees[tree]:
+            listing.append(dict(entry, path=prefix + entry["path"]))
+            if entry["type"] == "tree":
+                walk(entry["sha"], prefix + entry["path"] + "/")
+    walk(sha_, "")
+    return listing
 
 
 def gh_main(argv):
@@ -1014,13 +1090,35 @@ def gh_main(argv):
                 return 1
             sys.stdout.write(json.dumps({"status": gh["compare"].get(spec, "ahead")}))
             return 0
-        match = re.fullmatch(rf"repos/{REPO}/actions/workflows/(ci|deployment-suse|preview-web)\.yml/runs", route)
+        match = re.fullmatch(rf"repos/{REPO}/actions/workflows/(ci|deployment-suse|preview-web|fast-lanes)\.yml/runs", route)
         if match:
-            runs = gh["ciRuns"] if match.group(1) == "ci" else gh["runs"]
+            if match.group(1) == "fast-lanes" and "fastRuns" not in gh:
+                print("gh: Not Found (HTTP 404)", file=sys.stderr)
+                return 1
+            runs = {"ci": gh["ciRuns"], "fast-lanes": gh.get("fastRuns", [])}.get(match.group(1), gh["runs"])
+            # GitHub's status filter takes a run status or a conclusion.
             selected = [r for r in runs if (not query.get("head_sha") or r["head_sha"] == query["head_sha"])
                         and r["path"] == ".github/workflows/" + match.group(1) + ".yml"
-                        and (not query.get("status") or r["status"] == query["status"])]
+                        and (not query.get("status") or query["status"] in (r["status"], r.get("conclusion")))]
             sys.stdout.write(json.dumps({"workflow_runs": selected}))
+            return 0
+        match = re.fullmatch(rf"repos/{REPO}/actions/runs/(\d+)/jobs", route)
+        if match:
+            if query.get("filter") != "latest":
+                print("jobs must be read with filter=latest", file=sys.stderr)
+                return 1
+            sys.stdout.write(json.dumps({"jobs": gh.get("jobs", {}).get(match.group(1), [])}))
+            return 0
+        match = re.fullmatch(rf"repos/{REPO}/git/commits/([0-9a-f]{{40}})", route)
+        if match and match.group(1) in gh.get("commits", {}):
+            commit = gh["commits"][match.group(1)]
+            sys.stdout.write(json.dumps({"sha": match.group(1), "tree": {"sha": commit["tree"]},
+                                         "parents": [{"sha": parent} for parent in commit["parents"]]}))
+            return 0
+        match = re.fullmatch(rf"repos/{REPO}/git/trees/([0-9a-f]{{40}})", route)
+        if match and match.group(1) in gh.get("trees", {}):
+            listing = tree_listing(gh["trees"], match.group(1), query.get("recursive") == "1")
+            sys.stdout.write(json.dumps({"sha": match.group(1), "tree": listing, "truncated": gh.get("truncated", False)}))
             return 0
         match = re.fullmatch(rf"repos/{REPO}/actions/runs/(\d+)", route)
         if match:

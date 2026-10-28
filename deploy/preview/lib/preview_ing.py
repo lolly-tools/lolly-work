@@ -3,8 +3,8 @@
 
 Pure functions only: no network, no cluster, no clock. They decide whether a
 private build may go live, which catalog generation it gets, how the live
-instance.json changes (the generation and nothing else), what a pending
-migration set allows, and which key a build is pinned to.
+instance.json changes (the generation and nothing else), which migrations are
+pending, and which key a build is pinned to.
 """
 
 from __future__ import annotations
@@ -36,6 +36,31 @@ def ing_pin():
     require(thumbprint != A.RELEASE_PUBLIC_KEY_THUMBPRINT and thumbprint != jwk_thumbprint(A.RELEASE_PUBLIC_KEY_JWK),
             "RELEASE_KEY", "the lolly.ing pin is the platform release key; lolly.ing needs its own key")
     return jwk, thumbprint
+
+
+SECRET_NAME = re.compile(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?\Z")
+
+
+def signing_secret():
+    """The Secret holding lolly.ing's own key (review 2026-10-25 H3), or a refusal until a reviewed change pins it."""
+    name = A.ING_SIGNING_KEY_SECRET
+    require(isinstance(name, str) and SECRET_NAME.fullmatch(name) is not None, "SIGNING_SECRET_NOT_PINNED",
+            "the Secret holding lolly.ing's own catalog key (ING_SIGNING_KEY_SECRET) is not pinned in the tool yet; "
+            "nothing was changed")
+    return name
+
+
+def signing_key_env(value, index):
+    """(env index, Secret name) of the server's LW_CATALOG_SIGNING_KEY: exactly one entry, a Secret key reference."""
+    env = value["spec"]["template"]["spec"]["containers"][index].get("env") or []
+    found = [i for i, entry in enumerate(env) if entry.get("name") == A.ING["signingKeyEnv"]]
+    require(len(found) == 1, "LAYOUT_UNKNOWN", f"the server has no single {A.ING['signingKeyEnv']} variable")
+    entry = env[found[0]]
+    ref = (entry.get("valueFrom") or {}).get("secretKeyRef") or {}
+    require(set(entry) == {"name", "valueFrom"} and set(entry["valueFrom"]) == {"secretKeyRef"} and isinstance(ref.get("name"), str)
+            and SECRET_NAME.fullmatch(ref["name"]) is not None and isinstance(ref.get("key"), str), "LAYOUT_UNKNOWN",
+            f"{A.ING['signingKeyEnv']} is not a reference to a Secret key")
+    return found[0], ref["name"]
 
 
 def refuse_release_key(key_id, what):
@@ -275,11 +300,17 @@ def guard_switch(before, after, index, to_image, to_config):
             "the patch or an admission webhook changed other Deployment fields")
 
 
-def cutover_plan(value, index, to_image, to_config, annotations):
-    """PROPOSAL 4.8: drop the shell, pack and engine-pin mounts, set the instance image and config generation N."""
+def cutover_plan(value, index, to_image, to_config, annotations, to_secret):
+    """PROPOSAL 4.8: drop the shell, pack and engine-pin mounts, set the instance image and config generation N, and
+    point the catalog signing key at lolly.ing's own Secret (review 2026-10-25 H3). One patch, so a revert puts the
+    old image, old key reference and old pack back together and the reverted catalog still verifies."""
     spec = value["spec"]["template"]["spec"]
     container = spec["containers"][index]
     base = "/spec/template/spec"
+    require(isinstance(to_secret, str) and SECRET_NAME.fullmatch(to_secret) is not None, "BAD_INPUT", "signing Secret name")
+    env_index, current_secret = signing_key_env(value, index)
+    require(current_secret != to_secret, "SIGNING_SECRET_LIVE", f"the server already references the lolly.ing signing Secret "
+            f"{to_secret} before the cut-over, so a revert could not restore the previous key; a human must look")
     volumes, mounts = spec.get("volumes") or [], container.get("volumeMounts") or []
     gone_volumes = [(i, v) for i, v in enumerate(volumes) if v.get("name") in A.ING["conversionVolumes"]]
     gone_mounts = [(i, m) for i, m in enumerate(mounts) if m.get("name") in A.ING["conversionVolumes"]]
@@ -294,16 +325,20 @@ def cutover_plan(value, index, to_image, to_config, annotations):
              {"op": "test", "path": "/metadata/resourceVersion", "value": value["metadata"]["resourceVersion"]},
              {"op": "test", "path": f"{base}/containers/{index}/name", "value": container["name"]},
              {"op": "test", "path": f"{base}/containers/{index}/image", "value": container["image"]},
-             {"op": "test", "path": f"{base}/volumes/{config_index}/configMap/name", "value": current_config}]
+             {"op": "test", "path": f"{base}/volumes/{config_index}/configMap/name", "value": current_config},
+             {"op": "test", "path": f"{base}/containers/{index}/env/{env_index}/name", "value": A.ING["signingKeyEnv"]},
+             {"op": "test", "path": f"{base}/containers/{index}/env/{env_index}/valueFrom/secretKeyRef/name", "value": current_secret}]
     patch += [{"op": "test", "path": f"{base}/volumes/{i}", "value": v} for i, v in gone_volumes]
     patch += [{"op": "test", "path": f"{base}/containers/{index}/volumeMounts/{i}", "value": m} for i, m in gone_mounts]
     patch += [{"op": "replace", "path": f"{base}/containers/{index}/image", "value": to_image},
-              {"op": "replace", "path": f"{base}/volumes/{config_index}/configMap/name", "value": to_config}]
+              {"op": "replace", "path": f"{base}/volumes/{config_index}/configMap/name", "value": to_config},
+              {"op": "replace", "path": f"{base}/containers/{index}/env/{env_index}/valueFrom/secretKeyRef/name", "value": to_secret}]
     patch += [{"op": "remove", "path": f"{base}/containers/{index}/volumeMounts/{i}"} for i, _ in sorted(gone_mounts, reverse=True)]
     patch += [{"op": "remove", "path": f"{base}/volumes/{i}"} for i, _ in sorted(gone_volumes, reverse=True)]
     patch += L.annotation_ops(value["metadata"], annotations)
     return {"patch": patch, "annotations": annotations, "image": container["image"], "toImage": to_image,
             "config": current_config, "toConfig": to_config,
+            "signingKeySecret": current_secret, "toSigningKeySecret": to_secret,
             "volumes": [v for _, v in gone_volumes], "mounts": [m for _, m in gone_mounts],
             "resourceVersion": value["metadata"]["resourceVersion"]}
 
@@ -317,17 +352,21 @@ def comparable_cutover(plan):
 
 
 def guard_cutover(before, after, index, plan):
-    """The cut-over removed exactly the three mounts and set the image and config; nothing else."""
+    """The cut-over removed exactly the three mounts and set the image, config and signing key reference; nothing else."""
     require(after["metadata"]["uid"] == before["metadata"]["uid"] and is_converted(after, index), "CUTOVER_GUARD",
             "the cut-over did not produce the instance-image layout")
     _, config = config_volume(after, index)
-    require(after["spec"]["template"]["spec"]["containers"][index]["image"] == plan["toImage"] and config == plan["toConfig"],
-            "CUTOVER_GUARD", "the cut-over did not set the image and config")
+    _, secret = signing_key_env(after, index)
+    require(after["spec"]["template"]["spec"]["containers"][index]["image"] == plan["toImage"] and config == plan["toConfig"]
+            and secret == plan["toSigningKeySecret"], "CUTOVER_GUARD",
+            "the cut-over did not set the image, config and signing key reference")
     restored = json.loads(json.dumps(after["spec"]))
     spec = restored["template"]["spec"]
     spec["containers"][index]["image"] = plan["image"]
     volume, _ = config_volume({"spec": restored}, index)
     spec["volumes"][volume]["configMap"]["name"] = plan["config"]
+    env_index, _ = signing_key_env({"spec": restored}, index)
+    spec["containers"][index]["env"][env_index]["valueFrom"]["secretKeyRef"]["name"] = plan["signingKeySecret"]
     spec["volumes"] = sorted(spec["volumes"] + plan["volumes"], key=lambda v: v["name"])
     spec["containers"][index]["volumeMounts"] = sorted(spec["containers"][index].get("volumeMounts", []) + plan["mounts"],
                                                        key=lambda m: (m["name"], m["mountPath"]))
@@ -340,16 +379,21 @@ def guard_cutover(before, after, index, plan):
 
 
 def revert_cutover_patch(value, index, plan, to_config, annotations):
-    """Put the claim layout and the old image back, with a NEW config at a higher generation (PROPOSAL 4.6)."""
+    """Put the claim layout, the old image and the old signing key reference back, with a NEW config at a higher
+    generation (PROPOSAL 4.6). The old pack then verifies against the old key again, so the catalog answers."""
     container = value["spec"]["template"]["spec"]["containers"][index]
     base = "/spec/template/spec"
     config_index, current_config = config_volume(value, index)
+    env_index, current_secret = signing_key_env(value, index)
     patch = [{"op": "test", "path": "/metadata/uid", "value": value["metadata"]["uid"]},
              {"op": "test", "path": "/metadata/resourceVersion", "value": value["metadata"]["resourceVersion"]},
              {"op": "test", "path": f"{base}/containers/{index}/image", "value": container["image"]},
              {"op": "test", "path": f"{base}/volumes/{config_index}/configMap/name", "value": current_config},
+             {"op": "test", "path": f"{base}/containers/{index}/env/{env_index}/valueFrom/secretKeyRef/name", "value": current_secret},
              {"op": "replace", "path": f"{base}/containers/{index}/image", "value": plan["image"]},
-             {"op": "replace", "path": f"{base}/volumes/{config_index}/configMap/name", "value": to_config}]
+             {"op": "replace", "path": f"{base}/volumes/{config_index}/configMap/name", "value": to_config},
+             {"op": "replace", "path": f"{base}/containers/{index}/env/{env_index}/valueFrom/secretKeyRef/name",
+              "value": plan["signingKeySecret"]}]
     patch += [{"op": "add", "path": f"{base}/volumes/-", "value": volume} for volume in plan["volumes"]]
     patch += [{"op": "add", "path": f"{base}/containers/{index}/volumeMounts/-", "value": mount} for mount in plan["mounts"]]
     return patch + L.annotation_ops(value["metadata"], annotations)
@@ -436,8 +480,18 @@ const { readdir, readFile } = await import('node:fs/promises');
 const names = (await readdir('/app/migrations')).filter(n => n.endsWith('.sql')).sort();  // Work's own rule
 const files = [];
 for (const name of names) files.push({ name, sha256: createHash('sha256').update(await readFile('/app/migrations/' + name)).digest('hex') });
-const client = new pg.Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 15000 });
-await client.connect();
+// K3s programs a new pod's address into its network policy a moment after the container
+// starts, and Node connects within milliseconds: the first attempts are refused (measured
+// 2026-10-27, open by 500 ms). Retry only refusals, with a fresh client each time.
+let client;
+for (let attempt = 1; ; attempt++) {
+  client = new pg.Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 15000 });
+  try { await client.connect(); break; } catch (error) {
+    await client.end().catch(() => {});
+    if (attempt >= 20 || !['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH'].includes(error?.code)) throw error;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+}
 let ledger = [], publicationGeneration = 0;
 try {
   await client.query('begin read only');
@@ -521,7 +575,8 @@ def validate_classes(output, pending):
 
 def migration_plan(manifest_migrations, check, applied_by_lane):
     """Pending files and the database-ahead rule: the database may be ahead only by names this lane applied
-    as allowlisted. A file that sorts before an applied one is noted; the classifier decides each class."""
+    as additive, which an older image can run beside. A file that sorts before an applied one is noted; the
+    classifier decides each class."""
     validate_check(check)
     image = {item["name"]: item["sha256"] for item in check["files"]}
     recorded = {item["name"]: item["sha256"] for item in manifest_migrations}
@@ -530,7 +585,7 @@ def migration_plan(manifest_migrations, check, applied_by_lane):
     ahead = sorted(ledger - set(image))
     unexplained = [name for name in ahead if name not in applied_by_lane]
     require(not unexplained, "DATABASE_AHEAD", "the database holds migrations this image lacks and this lane did not apply "
-            "as allowlisted: " + ", ".join(unexplained[:5]) + "; a human must look")
+            "as additive: " + ", ".join(unexplained[:5]) + "; deploy an image that carries them, or a human must look")
     pending = sorted(set(image) - ledger)
     newest = max((name for name in ledger if name in image), default="")
     return {"pending": [{"name": name, "sha256": image[name]} for name in pending], "ahead": ahead,

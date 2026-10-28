@@ -144,6 +144,7 @@ spec:
             # (auto-migrate at boot) has to come back or the pods never start.
             - name: LW_AUTO_MIGRATE
               value: {{ .Values.migrate.enabled | ternary "false" "true" | quote }}
+            {{- include "lolly-work.otelEnv" . | nindent 12 }}
             {{- include "lolly-work.secretEnv" . | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

@@ -1,5 +1,110 @@
 # Neutral package reference qualification
 
+## Browser check of the catalogue key step, Spinifex, 2026-10-27
+
+This run tested the content service's catalogue key step with a matched Work and Lolly
+pair before the package moves to its next release. The package's `release.json` still
+pins 1.1.1; the run pinned the 1.1.2 pair. Lolly 1.1.2 published no web app archive,
+so the archive was cut locally from the signed `ghcr.io/lolly-tools/lolly-web:1.1.2`
+image (`sha256:dd1c3910…d829`) and never published: `lolly-web-1.1.2-ynh1.tar.gz`,
+728,516,824 bytes, SHA-256
+`6bbccd06bc2288245637cd36a668d726820e07ff01c01fdc4033378e4f5cf488`, the same bytes from
+a macOS arm64 Debian 13 container and a Debian 13 amd64 VM. Afterwards
+`scripts/cut-shell-archive.sh 1.1.2 sha256:dd1c3910…d829` reproduced that archive byte
+for byte, and `scripts/marketplace-cohort.ts` reproduced the tested `release.json` and
+Compose file, as well as the committed 1.1.1 pin. That image carries the `lolly-demo`
+profile; the 1.1.1 archive carries `lolly-start`.
+
+An agent ran the installation on the maintainer's behalf, on a dedicated, disposable VM
+in the MulgaDC Spinifex sandbox, an AWS-compatible cloud. Everything it created was
+deleted afterwards. This is a reference installation, not marketplace admission or a
+platform certification.
+
+| Input | Tested value |
+|---|---|
+| Provider / region | MulgaDC Spinifex sandbox, `us-west-1`, created through its EC2 API |
+| OS / architecture | Debian 13.7 image `ami-debian-13-x86_64`, kernel 6.12.107, native amd64 |
+| Compute / disk | `m6a.large`: 2 vCPU, 8 GB RAM, 40 GB root volume |
+| Network | Guest MTU 1442; Docker's MTU set to 1442 in `/etc/docker/daemon.json` before the first start, as the package guide says |
+| Docker / Compose | 26.1.5 / 2.26.1 (Debian packages) |
+| Application | Work 1.1.2 server `sha256:68ef78a1…0504` and the archive above |
+| Archive delivery | A temporary Spinifex S3 bucket through a presigned URL; setup verified the pinned SHA-256 |
+| HTTPS | Caddy's internal CA on `work.example.test`; the sandbox gives no public name. The browser trusted only that chain |
+| Sign-in | Built-in password and a host-issued owner link; no external IdP or mail service |
+| Rendering | No Chromium worker; checked `asset-export` SVG |
+
+The generated Compose file's SHA-256 was
+`014d04a44f4c5416c497ad48a33b3e87d5a41f0104b3e3e71b6dc2b3379db4fe`. The installed
+copy changed only `LW_SHELL_URL` and the Caddyfile (`tls internal`).
+
+**Without the key step.** The same pair with the content service left without
+`LW_SOURCE_CATALOG_PUBLIC_KEY`, so the archive is installed unchanged, passed every API
+check, and in Chromium the web app showed "Couldn't load the tools" with "Catalog
+refused: signature does not verify against the pinned key" and no tools. A newer
+release alone does not fix the browser: the 1.1.2 web app pins the publisher key the
+same way 1.1.1 does. The current 1.1.1 package showed the same refusal on this VM.
+
+**With the key step**, on fresh volumes:
+
+- Content setup took about 140 seconds: download, full checksum, extraction and the
+  key step, which rewrote five `_app` scripts and their `.br` and `.gz` copies and
+  recorded them in `catalogue-key.json`.
+- API: owner setup link, password setup and owner session; anonymous catalogue refused
+  (401); the signed-in catalogue lists 68 tools; a project is created; an
+  `asset-export` SVG render job succeeds with the chosen colour, evidence and an
+  idempotent replay. The SVG's SHA-256 is
+  `b2224c0b59cdb0a5aaa1d71cf963e61f5ee6a2699e52e611afa365c72978bd03`, the same bytes as
+  the 1.1.1 reference below. A QR Code render job is refused with
+  `HOOKED_TOOL_NEEDS_CHROMIUM`, as documented for a package without the worker.
+- **Browser:** headless Chromium 156.0.8078.4 (the 1.1.2 render worker image's
+  Playwright build, SwiftShader WebGPU) signed in through the password form and got the
+  owner session. The web app reported the catalogue as `verified`, the gallery listed
+  43 distinct tools (Utilities hold the rest of the 68), and QR Code opened and drew
+  its template previews.
+- `/models/embed/config.json` through the instance returned the file from `lolli.li`:
+  the image-built web app has an empty model base, so the browser asks only the
+  instance for models.
+- `/readyz` answered 503 for about 30 seconds after the server became healthy, while
+  catalogue preparation ran, then 200.
+- A provider reboot through `RebootInstances` (new boot ID): Docker restarted the
+  services, and the existing owner session, the anonymous refusal, the catalogue, the
+  saved project and the whole browser check passed again.
+
+**Update from the 1.1.1 package**, on fresh volumes: the current 1.1.1 package was
+installed and accepted (its browser check showed the refusal above), then updated in
+place as the package guide describes, keeping `.env`, the project name and the
+volumes. The server was unavailable for about three minutes while content setup ran.
+Afterwards the stored `catalogPublicationGeneration` was 4 (from 3), the content
+pointed at the new archive with the 1.1.1 content kept, the catalogue key was
+unchanged and still owned by the server's user with mode 600, migrations 0072 to 0075
+applied, and the existing owner session, the saved project and the whole browser
+check passed. Reading the existing key exercised the content service's ownership step,
+which the first attempt on fresh volumes had failed with `EACCES`.
+
+**The current 1.1.1 package with the key step, in CI.** Helm qualification run
+[40487638108](https://github.com/lolly-tools/lolly-work/actions/runs/40487638108),
+dispatched with `screenshots=true` on this change, booted the 1.1.1 package on amd64
+and arm64. Both legs passed the container qualification. In the amd64 leg's Chromium
+the web app accepted the catalogue: the gallery listed the tools with their previews
+and the Chart tool opened and drew its chart, captured as `tool-editor.png`. The gallery
+capture itself timed out after 120 seconds waiting for the web app's
+`data-shots-settled` marker, so the run failed. The listing captures need that wait
+fixed before they can be refreshed.
+
+Seen and not fixed here: the browser's requests for
+`/catalog/assets/lolly/tokens/demo.6352b216e44e0fe0.json` (present in the pack) and
+`/catalog/fonts/ttf/SUSE-Regular.ttf` and `SUSE-Bold.ttf` answered 404. The gallery and
+tools worked regardless.
+
+Not covered by this run: public ACME, member sign-in, restore into a separate
+installation, recovery on a second host, organisation OIDC, an arm64 provider VM and
+the published archive of the next release, which needs its own receipt. The receipts,
+screenshots and drivers are retained outside Git. Driver SHA-256s: browser check
+`f61f471337131972079dc64e3e92a363b080bd00a85ef9acba7ec0424039859b`, API acceptance
+`74dd0c45c788666185af2c74ae8a8d707a612ee96b26dc733ab53c95068dcec6`.
+
+## UpCloud reference for 1.1.1
+
 On 2026-10-16 the package from Work source
 `00ba001a0683eac116b83775c07dc79f8fa3a29a` was installed on a dedicated, disposable
 UpCloud VM. This is a reference installation, not marketplace admission or a

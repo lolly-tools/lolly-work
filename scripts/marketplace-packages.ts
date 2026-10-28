@@ -18,7 +18,7 @@ export function deploymentPackages() {
   const services = {
     content: {
       image: release.serverImage, user: '0:0', ...safety, cap_add: ['CHOWN'],
-      environment: { LW_DISTRIBUTION_INIT: '1', LW_SHELL_URL: release.shell.url, LW_SHELL_SHA256: release.shell.sha256 },
+      environment: { LW_DISTRIBUTION_INIT: '1', LW_SHELL_URL: release.shell.url, LW_SHELL_SHA256: release.shell.sha256, LW_SOURCE_CATALOG_PUBLIC_KEY: pins.LW_SOURCE_CATALOG_PUBLIC_KEY },
       command: ['node', '--input-type=module', '--eval', script('content-init')],
       volumes: ['content:/content', 'keys:/keys', 'state:/state'], tmpfs: ['/tmp:size=64m,mode=1777'],
       mem_limit: '512m', cpus: 1, restart: 'no',

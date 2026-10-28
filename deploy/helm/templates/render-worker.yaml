@@ -13,6 +13,21 @@
 {{- if and (eq $seccomp.type "Localhost") (not (regexMatch "^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*\\.json$" ($seccomp.localhostProfile | default ""))) }}
 {{- fail "renderWorker.seccompProfile.localhostProfile must name a reviewed relative JSON profile" }}
 {{- end }}
+{{- /* Opt-in for AppArmor nodes only (Debian, Ubuntu). Empty leaves the field out,
+       which is what SELinux nodes need: a kubelet without AppArmor refuses a pod
+       that names a profile. */}}
+{{- $appArmor := .Values.renderWorker.appArmorProfile | default dict }}
+{{- if $appArmor }}
+{{- if not (and (kindIs "map" $appArmor) (has $appArmor.type (list "RuntimeDefault" "Localhost"))) }}
+{{- fail "renderWorker.appArmorProfile must use RuntimeDefault or Localhost, or stay empty on SELinux nodes" }}
+{{- end }}
+{{- if and (eq $appArmor.type "Localhost") (not (regexMatch "^[a-zA-Z0-9_-]+$" ($appArmor.localhostProfile | default ""))) }}
+{{- fail "renderWorker.appArmorProfile.localhostProfile must name a reviewed profile loaded on the node, such as lolly-chromium" }}
+{{- end }}
+{{- if not (semverCompare ">=1.30.0-0" .Capabilities.KubeVersion.Version) }}
+{{- fail "renderWorker.appArmorProfile requires Kubernetes 1.30 or newer (securityContext.appArmorProfile); pass --kube-version when rendering offline" }}
+{{- end }}
+{{- end }}
 {{- if or (not (or (kindIs "int" $startupMs) (kindIs "int64" $startupMs) (kindIs "float64" $startupMs))) (ne (float64 $startupMs) (float64 (int $startupMs))) (lt (int $startupMs) 1000) (gt (int $startupMs) 120000) }}
 {{- fail "renderWorker.browserStartupTimeoutMs must be an integer from 1000 to 120000" }}
 {{- end }}
@@ -109,6 +124,10 @@ spec:
               {{- end }}
             seccompProfile:
               {{- toYaml $seccomp | nindent 14 }}
+            {{- with $appArmor }}
+            appArmorProfile:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
           env:
             - name: LW_RENDER_DEPLOYMENT_MODE
               value: production

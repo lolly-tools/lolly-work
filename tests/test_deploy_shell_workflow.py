@@ -26,19 +26,30 @@ q = module('qualification_test', 'verify-shell-qualification.py')
 d = module('deployment_test', 'deploy-private-shell.py')
 
 
-def fixture():
+# lolly's ci.yml runs one job per browser partition: four until lolly-tools/lolly#569, eight from that change on.
+SHAPES = (4, 8)
+
+
+def partitions(count):
+    return [f'test (browser {n}/{count})' for n in range(1, count + 1)]
+
+
+def fixture(count=8):
+    """A lolly CI run whose fast checks passed while every browser partition of the given shape is still running."""
     source = 'a' * 40
     repository = {'id': 12, 'full_name': q.REPOSITORY}
     run = {'id': 34, 'run_attempt': 2, 'head_sha': source, 'path': q.WORKFLOW, 'workflow_id': 56,
            'repository': repository, 'head_repository': repository, 'head_branch': 'main', 'event': 'push', 'status': 'in_progress', 'conclusion': None}
     jobs = [{'id': i + 1, 'run_id': 34, 'run_attempt': 2, 'head_sha': source, 'name': name, 'status': 'completed', 'conclusion': 'success'}
             for i, name in enumerate(sorted(q.FAST | {'public-ready', 'qualification'}))]
-    jobs.append({'id': 100, 'run_id': 34, 'run_attempt': 2, 'head_sha': source, 'name': 'test (browser 1/4)', 'status': 'in_progress', 'conclusion': None})
+    fast = len(jobs)
+    jobs += [{'id': 100 + n, 'run_id': 34, 'run_attempt': 2, 'head_sha': source, 'name': name, 'status': 'in_progress', 'conclusion': None}
+             for n, name in enumerate(partitions(count))]
     value = {'version': 1, 'status': 'CI_QUALIFIED', 'qualificationTier': 'public-ready', 'fullSuiteQualified': False,
              'repository': q.REPOSITORY, 'headRepository': q.REPOSITORY, 'repositoryId': 12, 'source': source, 'headSha': source,
              'headBranch': 'main', 'event': 'push', 'workflow': q.WORKFLOW, 'runId': 34, 'runAttempt': 2,
              'publicationEligible': True, 'knownFailuresRejected': True, 'lateFailureCheckRequired': True, 'productionMutation': False,
-             'scope': {'publicReadyEligible': True}, 'requiredJobs': [{key: row[key] for key in ('id', 'name', 'conclusion')} for row in jobs[:-1]]}
+             'scope': {'publicReadyEligible': True}, 'requiredJobs': [{key: row[key] for key in ('id', 'name', 'conclusion')} for row in jobs[:fast]]}
     artifact = {'id': 78, 'name': 'public-ready-34-2', 'digest': 'sha256:' + 'b' * 64, 'expired': False,
                 'workflow_run': {'id': 34, 'head_sha': source, 'repository_id': 12, 'head_repository_id': 12}}
     request = {'version': 1, 'status': 'QUALIFIED_SHELL_DEPLOYMENT_REQUEST', 'repository': q.REPOSITORY,
@@ -51,11 +62,14 @@ class Qualification(unittest.TestCase):
         return q.validate(f.value, f.run, f.jobs, f.repository, 56, f.source, 34, 2, f.value['qualificationTier'])
 
     def test_fast_lane_accepts_pending_browser_but_rejects_later_failure(self):
-        f = fixture(); self.validate(f)
-        for conclusion in ('failure', 'cancelled', 'timed_out', 'action_required', 'neutral', 'skipped'):
-            with self.subTest(conclusion=conclusion):
-                f.jobs[-1].update(status='completed', conclusion=conclusion)
-                with self.assertRaises(q.Refusal): self.validate(f)
+        for count in SHAPES:
+            f = fixture(count); self.validate(f)
+            for index in (0, count - 1):
+                for conclusion in ('failure', 'cancelled', 'timed_out', 'action_required', 'neutral', 'skipped'):
+                    with self.subTest(count=count, index=index, conclusion=conclusion):
+                        f = fixture(count)
+                        f.jobs[-count + index].update(status='completed', conclusion=conclusion)
+                        with self.assertRaises(q.Refusal): self.validate(f)
 
     def test_wrong_source_attempt_event_repository_and_scope_refuse(self):
         changes = [lambda f: f.run.update(run_attempt=3), lambda f: f.run.update(head_sha='b' * 40),
@@ -67,20 +81,40 @@ class Qualification(unittest.TestCase):
             f = fixture(); change(f)
             with self.assertRaises(q.Refusal): self.validate(f)
 
-    def test_full_tier_waits_for_whole_run_and_only_explicit_scope_skip_is_allowed(self):
-        f = fixture(); f.value.update(qualificationTier='release-ready', fullSuiteQualified=True)
+    def full(self, count):
+        """A release-ready receipt whose required jobs include every partition of the shape, as lolly's policy records them."""
+        f = fixture(count); f.value.update(qualificationTier='release-ready', fullSuiteQualified=True)
         f.value['scope']['publicReadyEligible'] = False
         f.jobs = [row for row in f.jobs if row['name'] != 'public-ready']
-        f.jobs.append({'id': 101, 'run_id': 34, 'run_attempt': 2, 'head_sha': f.source, 'name': 'release-ready', 'status': 'completed', 'conclusion': 'success'})
-        f.jobs.append({'id': 102, 'run_id': 34, 'run_attempt': 2, 'head_sha': f.source, 'name': 'public-ready', 'status': 'completed', 'conclusion': 'skipped'})
-        f.value['requiredJobs'] = [{key: row[key] for key in ('id', 'name', 'conclusion')} for row in f.jobs if row['conclusion'] == 'success']
-        with self.assertRaises(q.Refusal): self.validate(f)
-        f.run.update(status='completed', conclusion='success')
-        with self.assertRaises(q.Refusal): self.validate(f)
-        next(row for row in f.jobs if row['id'] == 100).update(status='completed', conclusion='success')
-        self.validate(f)
-        f.value['scope']['publicReadyEligible'] = True
-        with self.assertRaises(q.Refusal): self.validate(f)
+        f.jobs.append({'id': 201, 'run_id': 34, 'run_attempt': 2, 'head_sha': f.source, 'name': 'release-ready', 'status': 'completed', 'conclusion': 'success'})
+        f.jobs.append({'id': 202, 'run_id': 34, 'run_attempt': 2, 'head_sha': f.source, 'name': 'public-ready', 'status': 'completed', 'conclusion': 'skipped'})
+        f.value['requiredJobs'] = [{'id': row['id'], 'name': row['name'], 'conclusion': 'success'} for row in f.jobs if row['conclusion'] != 'skipped']
+        return f
+
+    def test_full_tier_waits_for_whole_run_and_only_explicit_scope_skip_is_allowed(self):
+        for count in SHAPES:
+            with self.subTest(count=count):
+                f = self.full(count)
+                with self.assertRaises(q.Refusal): self.validate(f)
+                f.run.update(status='completed', conclusion='success')
+                with self.assertRaises(q.Refusal): self.validate(f)
+                for row in f.jobs:
+                    if row['name'] in partitions(count): row.update(status='completed', conclusion='success')
+                self.validate(f)
+                f.value['scope']['publicReadyEligible'] = True
+                with self.assertRaises(q.Refusal): self.validate(f)
+
+    def test_full_tier_refuses_a_run_missing_or_holding_back_one_partition_in_either_shape(self):
+        for count in SHAPES:
+            for name in partitions(count):
+                with self.subTest(count=count, partition=name):
+                    f = self.full(count); f.run.update(status='completed', conclusion='success')
+                    for row in f.jobs:
+                        if row['name'] in partitions(count): row.update(status='completed', conclusion='success')
+                    missing = copy.deepcopy(f); missing.jobs = [row for row in missing.jobs if row['name'] != name]
+                    with self.assertRaises(q.Refusal): self.validate(missing)
+                    pending = copy.deepcopy(f); next(row for row in pending.jobs if row['name'] == name).update(status='in_progress', conclusion=None)
+                    with self.assertRaises(q.Refusal): self.validate(pending)
 
     def test_pagination_rejects_truncation_duplicates_and_changing_counts(self):
         first = [{'id': n} for n in range(100)]
@@ -121,7 +155,7 @@ class Qualification(unittest.TestCase):
     def test_existing_full_preparer_requires_all_tier_checks_before_accepting_fast_skip(self):
         paired = d.update.cohort.paired
         f = fixture(); f.run.update(status='completed', conclusion='success')
-        f.jobs = [row for row in f.jobs if row['name'] != 'test (browser 1/4)']
+        f.jobs = [row for row in f.jobs if row['name'] not in partitions(8)]
         next(row for row in f.jobs if row['name'] == 'public-ready').update(conclusion='skipped')
         record = {'total_count': len(f.jobs), 'jobs': f.jobs}
         with self.assertRaises(paired.Refusal): paired.jobs_record(record, f.run, allow_shell_skip=True)

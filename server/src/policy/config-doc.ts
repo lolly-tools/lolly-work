@@ -16,7 +16,7 @@ import type { Store } from '../store/types.ts';
 import { ownerOnlyAction, type Grant, type Effect } from '../rbac/evaluate.ts';
 import { normalizeOverlay, type ToolOverlay } from './overlay.ts';
 import { normalizeChain, type Chain } from '../approvals/engine.ts';
-import { normalizeFlagGovernance, isGovernableFlag, type FlagDefault, type FlagVisibility } from './feature-flags.ts';
+import { normalizeFlagGovernance, isGovernableFlag, hasFlagOpinion, type FlagDefault, type FlagGovernance, type FlagGroupRule, type FlagVisibility } from './feature-flags.ts';
 import { normalizeCatalogField, type CatalogFieldDef } from '../catalog/asset-meta.ts';
 import { normalizeHiddenTags, validTagScope } from '../catalog/tag-rules.ts';
 import { PROVIDER_KINDS, type ProviderKind, type ProviderMapping, type ProviderExposure, type ProviderSyncConfig } from '../catalog/providers/types.ts';
@@ -33,8 +33,15 @@ export interface OverlayExport {
   enforce?: ToolOverlay['enforce'];
   defaults?: ToolOverlay['defaults'];
 }
-/** Feature-flag governance minus `updatedAt`; no-opinion fields omitted. */
-export interface FlagExport { id: string; default?: FlagDefault; visibility?: FlagVisibility }
+/** Feature-flag governance minus `updatedAt`; no-opinion fields omitted, and
+ *  `groups` only when the flag has group rules, so an earlier export hashes the same. */
+export interface FlagExport { id: string; default?: FlagDefault; visibility?: FlagVisibility; groups?: FlagGroupRule[] }
+const flagExport = (g: FlagGovernance): FlagExport => ({
+  id: g.id,
+  ...(g.default ? { default: g.default } : {}),
+  ...(g.visibility ? { visibility: g.visibility } : {}),
+  ...(g.groups?.length ? { groups: g.groups.map((r) => ({ group: r.group, ...(r.default ? { default: r.default } : {}), ...(r.visibility ? { visibility: r.visibility } : {}) })) } : {}),
+});
 /** A DB-managed provider's config + exposure only - never credential/state/enabled/timestamps. */
 export interface ProviderExport {
   id: string;
@@ -107,8 +114,8 @@ export async function buildConfigDocument(store: Store): Promise<ConfigDocument>
   const chains = [...await store.listChains()].sort((a, b) => (a.id < b.id ? -1 : 1));
   const gov = await store.listFlagGovernance();
   const featureFlags: FlagExport[] = [...gov.values()]
-    .filter((g) => g.default !== undefined || g.visibility !== undefined)
-    .map((g) => ({ id: g.id, ...(g.default ? { default: g.default } : {}), ...(g.visibility ? { visibility: g.visibility } : {}) }))
+    .filter(hasFlagOpinion)
+    .map(flagExport)
     .sort((a, b) => (a.id < b.id ? -1 : 1));
   const catalogFields = [...await store.listCatalogFields()].sort((a, b) => (a.id < b.id ? -1 : 1));
   const tagRules: TagRuleExport[] = (await store.listCatalogTagRules())
@@ -183,7 +190,7 @@ export function validateConfigDocument(raw: unknown): { doc: ConfigDocument } | 
     if (!isGovernableFlag(f.id)) return void errors.push(`featureFlags[${i}]: unknown flag id "${f.id}"`);
     const norm = normalizeFlagGovernance(f.id, f, '');
     if (!norm) return void errors.push(`featureFlags[${i}] (${f.id}): malformed governance`);
-    featureFlags.push({ id: norm.id, ...(norm.default ? { default: norm.default } : {}), ...(norm.visibility ? { visibility: norm.visibility } : {}) });
+    featureFlags.push(flagExport(norm));
   });
 
   const catalogFields: CatalogFieldDef[] = [];

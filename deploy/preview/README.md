@@ -5,7 +5,8 @@ web image, puts that image on the K3s node by digest, switches the Deployment wi
 (`scripts/app-update.py`), runs a smoke check, watches for a few minutes and rolls back by itself if anything fails.
 
 For lolly.ing it ships one private instance image, built for a lolly-work `main` commit by suse-lolly's private
-workflow, with a fresh backup, a migration guard, a restore rehearsal and a catalog generation rule. See
+workflow, with a verified backup before any migration, a migration guard and a catalog generation rule. lolly.ing is a
+preview-grade route (Andy, 2026-10-27): a qualified build ships with no approval. See
 [lolly.ing](#lollying-phase-2-proposal-section-4). Every lolly.ing command refuses until the tool pins lolly.ing's own
 catalog key.
 
@@ -24,7 +25,8 @@ Python 3.9 or newer, standard library only, on both the operator's Mac and the n
   lolly.ing archive into the node's spool.
 - lolly.ing: `lib/preview_ing.py` (rules), `lib/preview_ing_github.py` (the private run), `lib/preview_ing_mac.py` and
   `lib/preview_ing_node.py`.
-- Tests: `tests/test_preview_deploy.py` and `tests/test_preview_deploy_ing.py`, with fakes in
+- `lib/preview_lane.py`: the fast deploy lanes for lolly.tools (see [Fast deploy lanes](#fast-deploy-lanes)).
+- Tests: `tests/test_preview_deploy.py`, `tests/test_preview_deploy_ing.py` and `tests/test_preview_lane.py`, with fakes in
   `tests/preview_deploy_fakes.py` and `tests/preview_deploy_ing_fakes.py`, run by Work CI through
   `tests/preview-deploy.test.ts`.
 - `restore-rehearsal.py`, `lib/preview_rehearsal.py` and the in-Pod programs in `rehearsal/`: the restore rehearsal
@@ -35,6 +37,55 @@ Python 3.9 or newer, standard library only, on both the operator's Mac and the n
 This directory sits outside `scripts/` on purpose: `deploy/compose/Dockerfile` copies `scripts/` into every Work image,
 and preview host tooling must not ship to private deployers.
 
+
+## Fast deploy lanes
+
+A lolly.tools ship need not wait about 40 minutes for the commit's own full `ci.yml` run when the change is docs or
+web shell UI only. `lib/preview_lane.py` is the Python port of Lolly's `scripts/deploy-lane.ts`, and both are tested
+against the same cases (`tests/fixtures/deploy-lane-cases.json`, a pinned copy of Lolly's
+`tests/fixtures/deploy-lane/cases.json`). When the commit has no successful full CI run of its own, ship:
+
+- refuses with `CI_NOT_GREEN` when a full CI run of the commit already failed (a lane never overrides one);
+- finds the base: the newest first-parent ancestor, within 50, with a successful full `ci.yml` push run on `main`;
+- reads every changed path between base and commit from GitHub's tree objects (exactly under `docs/` and
+  `shells/web/`, and per directory elsewhere, which needs full CI anyway) and applies the lane rules;
+- requires the lane's job in `.github/workflows/fast-lanes.yml` (`docs lane` or `web lane`) to have passed on a `push`
+  run of the commit on `main` in Lolly's own repository.
+
+Otherwise it refuses as before (`CI_PENDING`), with the lane's reason added: which path needs full CI, or which job has
+not passed yet. A lane ship or deploy records `lane`, `laneBase`, `laneBaseCiRun` and `laneRun` in `deploys.jsonl`.
+For lolly.tools this port is the only lane check: `preview-web.yml` used to check the rule again with the base commit's
+own copy of the TypeScript, but it now builds at merge (see [Build at merge](#build-at-merge)). lolly.tools ships its
+source on a lane.
+lolly.ing uses the same rule for the Lolly commit its Work commit pins (`ING_LOLLY_CI`), while the Work commit itself
+always needs its own full lolly-work CI run; see [Qualification](#qualification-andy-2026-10-27). The legacy release
+route never takes a lane. The rules: docs is everything under `docs/` plus `README.md` and
+`engine/text-composition.md`, except `docs/supported-environments.md` and `docs/parser-inventory.md` (full) and the
+card renderer `docs/og-image.ts` and `docs/og-opal.ts` (web). Web adds `shells/web/` except its build inputs, entry
+page, served files other than static media (so `sw.js`), `main.ts`, `bridge/`, `capture/`, `catalog/`, `collab/`,
+`org/`, `ext/`, `vendor/`, `ca-root.ts`, `lib/sync-*` and security-named files. Dependency manifests, symlinks and
+executable files always need full CI. Tests never ship and take the lane of the changes beside them.
+
+## Build at merge
+
+The watcher on Andy's Mac (`lolly-private/production/preview/auto-ship.py`) has `preview-web.yml` build each new main
+head as soon as it reaches main, while its `ci.yml` run is still going, and runs `deploy <sha>` once the commit qualifies. So
+the image is ready when CI passes instead of starting then.
+
+- `preview-web.yml`'s source gate accepts a clean ancestor of main whose own main CI run has not failed. A green run
+  passes; a completed run that ended in anything but success or cancellation refuses; a run still going, a cancelled
+  run or none yet is accepted. The build's `release.json` says so: `"sourceGate": "not-failed"`.
+- A build therefore proves nothing about qualification, so the tool reads it at every ship and deploy
+  (`preview_mac.qualification`, the same `qualified_ci` ship used before dispatch): after the build is bound and before
+  the node is contacted, whichever build is bound, reused ones included. `CI_PENDING` and `CI_NOT_GREEN` refuse there
+  and change nothing.
+- `status` reports `qualifiesAtDeploy: true`, and the watcher builds at merge only when the tool says so and the
+  workflow on main carries the line `# auto-ship: build-at-merge`. With either missing it ships as before.
+- A tool from before this rule refuses the `sourceGate` field (`RECEIPT_INVALID`), so it can never deploy a build that
+  was made before its commit qualified.
+
+The trust change: the preview catalogue key signs builds of reviewed main commits before their CI finishes. Andy chose
+that for the preview sites. A build of a commit whose CI later fails stays in GitHub and is never deployed.
 
 ## How it is trusted
 
@@ -106,22 +157,25 @@ Flags:
    - It refuses while a run is active on the node, and before anything else when the live phase needs a human.
    - If this commit is live, accepted, and its records name the live image, it reports `ALREADY_LIVE` and stops.
 3. Reuses a build of this commit that still binds. Otherwise it:
-   - requires a successful normal CI push run on `main` for the commit;
+   - requires a successful normal CI push run on `main` for the commit, or a fast deploy lane above one (see
+     [Fast deploy lanes](#fast-deploy-lanes)), so a manual ship never builds an unqualified commit;
    - requires no other active preview build run;
    - dispatches `lolly-tools/lolly`'s `.github/workflows/preview-web.yml` on `refs/heads/main` with
-     `inputs: {"source": "<40-hex sha>"}` only. It does not send `min_seq`. The workflow finds green main CI itself
-     and uses its own preview pin. The Mac still checks green CI before dispatch.
+     `inputs: {"source": "<40-hex sha>"}` only. It does not send `min_seq`. The workflow refuses a source whose own CI
+     failed and uses its own preview pin; qualification is the Mac's, before dispatch and again at step 6.
 4. Waits for the run, tolerating brief GitHub errors. **Agents never approve an environment gate.**
 5. Binds the finished run:
    - workflow path, event `workflow_dispatch`, same repository for run and head, branch `main` and success;
    - exact display title `Preview web <source>`, with source equal to or an ancestor of the run's 40-hex head SHA.
      Discovery reads up to 100 runs without filtering by head SHA, since main may advance before dispatch;
-   - the `preview-web-receipts-attempt-N` artifact, with the same five receipt files and all existing field checks;
+   - the `preview-web-receipts-attempt-N` artifact, with the same five receipt files and all existing field checks
+     (`release.json` may also carry `"sourceGate": "not-failed"`, and no other value);
    - `public.jwk.json` must match the preview pin and the catalog key id must match its thumbprint. A receipt carrying
      the release pin is refused;
    - the image must be `ghcr.io/lolly-tools/lolly-web-preview@sha256:<64hex>`, never a tag.
-6. Requires the live records to describe the live image: same image, phase `accepted`, `rolled-back` or `aborted`.
-   Otherwise `RECORDS_STALE`.
+6. Reads the commit's qualification again, as in step 3 (see [Build at merge](#build-at-merge)), whichever build was
+   bound. Then requires the live records to describe the live image: same image, phase `accepted`, `rolled-back` or
+   `aborted`. Otherwise `RECORDS_STALE`.
 7. Builds the smoke expectations from the commit's own files:
    - the CSP from the `$lolly_csp` map in `deploy/docker/nginx.conf`, with the build's connector origins;
    - the other headers in `deploy/docker/security-headers.conf`;
@@ -288,9 +342,9 @@ roll forward.
 One unit serves both sites, so `RuntimeMaxSec=9090` is the longer of two budgets:
 - lolly.tools (5130 s): two pulls (600 s each), two rollouts (600 s each), the longest allowed watch (15 minutes),
   three smokes and the image retention after an accepted deploy (330 s), with margin.
-- lolly.ing (9090 s): the archive import (900 s), the backup Job (660 s), the read-only checks, the migration path
-  (classifier, a 1500 s rehearsal and a 900 s migrate Job), the switch, the smoke and readback, the longest watch, one
-  rollback and the retention, with margin.
+- lolly.ing (9090 s): the archive import (900 s), the read-only checks, the migration path (the backup Job 660 s, the
+  classifier, a 1500 s rehearsal when configured and a 900 s migrate Job), the switch, the smoke and readback, the
+  longest watch, one rollback and the retention, with margin.
 
 `TimeoutStopSec=1800` is the separate budget for one `ExecStopPost` rollback: a pull, a rollout and a smoke. The request
 validator refuses a longer watch or rollout, and a test keeps the unit file equal to `preview_anchors.py`. The
@@ -438,10 +492,10 @@ Common refusal codes:
 - **Conversion and gc:** `PLAN_MISMATCH`, `PRECONVERSION_SMOKE`, `GC_REPORT_FIRST`.
 - **lolly.ing:** `ING_KEY_NOT_PINNED`, `RELEASE_KEY`, `KEY_MISMATCH`, `MANIFEST_INVALID`, `RECEIPT_SIGNATURE`,
   `RECEIPT_MISMATCH`, `ARCHIVE_MISMATCH`, `ARCHIVE_MISSING`, `IMAGE_MISMATCH`, `SMOKE_ACCOUNT`, `BACKUP_UNVERIFIED`,
-  `BACKUP_STALE`, `MIGRATIONS_MISMATCH`, `DATABASE_AHEAD`, `MAINTENANCE_NOT_APPROVED`, `CLASSIFIER_UNAVAILABLE`,
-  `REHEARSAL_UNAVAILABLE`, `REHEARSAL_FAILED`, `MIGRATE_INCOMPLETE`, `GENERATION_UNKNOWN`, `CONFIG_GUARD`,
-  `SWITCH_GUARD`, `CUTOVER_GUARD`, `MAINTENANCE_NO_ROLLBACK`, `MAINTENANCE_AT_CUTOVER`, `PLAN_NOT_REVIEWED`,
-  `NOT_FOR_LOLLY_ING`.
+  `BACKUP_STALE`, `MIGRATIONS_MISMATCH`, `DATABASE_AHEAD`, `CLASSIFIER_UNAVAILABLE`, `REHEARSAL_UNAVAILABLE`,
+  `REHEARSAL_FAILED`, `MIGRATE_INCOMPLETE`, `GENERATION_UNKNOWN`, `CONFIG_GUARD`, `SWITCH_GUARD`, `CUTOVER_GUARD`,
+  `MAINTENANCE_NO_ROLLBACK`, `SIGNING_SECRET_NOT_PINNED`, `SIGNING_SECRET_LIVE`, `PLAN_NOT_REVIEWED`, `NOT_FOR_LOLLY_ING`,
+  and the shared `CI_PENDING`, `CI_NOT_GREEN` and `CANDIDATE_ACTIVE`.
 
 ## lolly.ing (Phase 2, PROPOSAL section 4)
 
@@ -449,11 +503,16 @@ lolly.ing runs one private **instance image** (`docker.io/library/lolly-ing-inst
 the SUSE shell at `/app/shell` and the pack at `/app/packs/lolly-ing`. `instance.json` stays a ConfigMap, one immutable
 ConfigMap per catalog generation. One digest names the cohort, so a rollback is one digest back plus a new generation.
 
+lolly.ing is a **preview-grade** route (Andy, 2026-10-27), the same model as lolly.tools: a time-boxed collaboration
+preview that must be quick to update. A qualified Work commit ships from `main` with no approval. Kept: lolly.ing's own
+catalog key, protected `main`, and a verified PostgreSQL backup before every migration. Dropped: the two signing
+approvals per build, the separate agent identity and the maintenance-migration approval.
+
 ```
+launch.py lolly.ing ship <work sha>                    build (or reuse, or resume) the private build, then deploy it
+launch.py lolly.ing deploy <work sha>                  deploy the newest bound build of that Work commit
 launch.py lolly.ing plan <work sha>                    print the one-time cut-over patch (PROPOSAL 4.8)
 launch.py lolly.ing plan <sha> --apply PLAN --reviewed-plan-sha256 H   apply it once, the owner with Andy present
-launch.py lolly.ing ship <work sha>                    dispatch the private build, wait, then deploy
-launch.py lolly.ing deploy <work sha>                  deploy the newest bound build of that Work commit
 launch.py lolly.ing rollback                           the recorded previous build, at a higher generation
 launch.py lolly.ing status [--follow DEPLOY_ID]
 launch.py lolly.ing gc [--execute]                     retention report; --execute removes only what this command made
@@ -461,50 +520,75 @@ launch.py lolly.ing gc [--execute]                     retention report; --execu
 
 The input is one lolly-work `main` commit (WSHA). Its `engine-pin.json` names the Lolly commit (LSHA), and suse-lolly
 is built at its `main` head (SSHA). `selftest` and `adopt` are lolly.tools only (`NOT_FOR_LOLLY_ING`): the unit's own
-selftest covers both sites, and the cut-over seeds lolly.ing's records.
+selftest covers both sites, and the cut-over seeds lolly.ing's records. Before the cut-over, `ship` builds and stops
+with `BUILT`, changing nothing on the node; `deploy` refuses `NOT_CONVERTED`.
 
-The private profile `lolly.ing.json` holds the smoke account's `sub`, one known pack asset path, the page list, the
+The private profile `lolly.ing.json` holds the smoke account's `sub` (`token:tok_…` for a service token), one known pack asset path, the page list, the
 memory fraction, the watch, build polling, rollout timeout, capacity (`minFreeAboveReserveBytes`, `archiveFactor`), the
-backup window (`01:30`-`02:30`), the claim allowlist, the retention counts, and the backup store's host name and public
-address for the restore rehearsal. Identities come from check-target `--site lolly.ing`, including the database Secret
-name the Jobs may reference.
+backup window (`01:30`-`02:30`), the claim allowlist, the retention counts, and `rehearsal`: `null` (the preview-grade
+default), or the backup store's host name and public address to run the restore rehearsal before each migration.
+Identities come from check-target `--site lolly.ing`, including the database Secret name the Jobs may reference.
+
+### Qualification (Andy, 2026-10-27)
+
+`ship` dispatches nothing, and `deploy` changes nothing, until both sources qualify:
+
+- **Work (WSHA):** its own successful full `ci.yml` push run on lolly-work `main` (`ING_WORK_CI`, about 15 minutes).
+  Work's CI cancels a superseded push, so in practice this is `main`'s head once its run is green.
+- **Lolly (LSHA, from Work's engine pin):** what qualifies a lolly.tools source: its own successful full Lolly CI run, or
+  a fast lane above one (`ING_LOLLY_CI`, `preview_lane.py`). The engine pin usually names an older commit whose full
+  run finished long ago.
+- **suse-lolly (SSHA):** no CI gate of its own. The build validates the SUSE catalog with the strict `suse` profile,
+  signs and verifies it, assembles the pack with Work's release-mode producer and boots the image; the deploy smoke
+  checks the signed catalog again. A broken content commit fails the build and nothing ships. suse-lolly `main` is
+  protected (Andy's setting).
+
+A refusal is `CI_PENDING` while a run is still going, and `CI_NOT_GREEN` once one failed or was cancelled, each naming
+the repository. The private workflow's gate checks the same rule again (green Work CI, and Lolly's own run or the lane
+rule from the base commit's `scripts/deploy-lane.ts`). `deploys.jsonl` records `workCiRun`, `lollyCiRun` and, for a
+lane, `lollyLane`, `lollyLaneBase` and `lollyLaneRun`.
 
 ### INTEGRATION: the Phase 2 contract
 
-Three pieces built in parallel meet here. This is the contract they share. The fixtures in `tests/fixtures/preview-ing/`
-are real output of #207's classifier and #208's rehearsal, and the tests run this tool against them and against
-#208's own fake kubectl.
-
-- **suse-lolly PR #28, `.github/workflows/lolly-ing-preview.yml`.**
-  - `ship` dispatches it on `refs/heads/main` with `LSHA`, `WSHA` and `SSHA` (main's head). Two `lolly-ing-signing`
-    jobs wait for Andy each time; agents never approve them.
+- **suse-lolly `.github/workflows/lolly-ing-preview.yml`.**
+  - `ship` dispatches it on `refs/heads/main` with `LSHA`, `WSHA` and `SSHA` (main's head). Its run is named
+    `lolly.ing preview <WSHA>`, so a later `ship` of the same commit resumes a running build instead of dispatching
+    another; a build of anything else that is still running refuses `CANDIDATE_ACTIVE`.
+  - The two jobs that hold the key (`sign-source` and `sign`) use environment `lolly-ing-signing`: no reviewer,
+    deployments from `main` only, secret `LOLLY_ING_CATALOG_SIGNING_KEY`. They install nothing; the compile between them
+    never holds the key. Nothing waits for a person.
   - The run is bound by its ID: workflow path, event `workflow_dispatch`, repository and head repository
     `lolly-tools/suse-lolly`, branch `main`, success, and head SHA equal to `sources.suse` and `run.workflowSha`. The
-    gate refuses an `SSHA` that is not the run's own commit.
+    gate refuses an `SSHA` that is not the run's own commit. A run whose manifest is malformed is skipped and reported
+    (`build-skipped`), not fatal to the search (review L2).
   - From that run only: `lolly-ing-instance.manifest.json` (kind `lolly-ing-instance-image`, version 1) and
-    `lolly-ing-instance-<run>-<attempt>.oci.tar`.
+    `lolly-ing-instance-<run>-<attempt>.oci.tar`, kept 7 days.
   - The manifest's key ids (`shell.keyId`, `shell.publicPinThumbprint`, `catalog.keyId`, `buildSettings.pinThumbprint`)
     must all be the lolly.ing pin and never the release key.
   - The archive's sha256 is checked twice: while it streams into the node's root-only spool, and again before
     `ctr images import --no-unpack --digests --base-name docker.io/library/lolly-ing-instance` reads that same file.
-    Then the index digest, the linux/amd64 manifest, the config and the DiffIDs are checked, and the run tag
-    (`image.refName`) the import kept is removed.
+    containerd 2.x's ctr (K3s v1.34 ships v2.2) makes only the run tag (`image.refName`) for a manifest the archive
+    names, and no digest name. When the run tag points at the manifest's digest and carries this import's
+    `lolly.tools/preview-pulled=true` label, the tool makes the digest name from it and sets the run tag's labels
+    again, because `ctr images tag` copies none. A run tag that names another digest is refused (`IMAGE_MISMATCH`).
+    Then the index digest, the linux/amd64 manifest, the config and the DiffIDs are checked, and the run tag the
+    import kept is removed.
   - After the switch the smoke verifies the shell's served `/release-frontend.sig.json` against the lolly.ing pin
     (source `LSHA`, target `web`, profile `suse`), its sha256 against `receiptSha256`, and `/` against
     `shell.indexSha256`.
-  - A maintenance migration needs `MAINTENANCE=true` at dispatch and Andy's approval of `lolly-ing-maintenance` in the
-    same run, by a login in `ING_MAINTENANCE_APPROVERS`.
 - **lolly-work PR #207, the migration classifier and `LW_MIGRATE_EXPECT`.**
   - A Job from the new image, with no environment, runs `node scripts/classify-migrations.ts --json --only <pending>`.
     It prints one JSON document: `{"version": 1, "migrations": [{name, sha256, class, reasons, statements}],
     "manifest"}`. The tool requires exactly the pending files, their manifest sha256s and the same `manifest`.
-  - Any file classed `maintenance` makes the deploy a maintenance deploy.
+  - The class no longer admits or refuses anything. It decides what a failed switch does afterwards: after only
+    `additive` files the previous image comes back automatically; after any other class the run holds.
   - The migrate Job runs `node scripts/migrate.ts` with only `DATABASE_URL` (and `DATABASE_URL_UNPOOLED` when the
     server has it), `NODE_ENV` and `LW_MIGRATE_EXPECT=sha256:<manifest>`. The manifest is sha256 over
     `lolly-work migration manifest v1\n` and one `name<TAB>sha256` line per pending file in name order. The runner
     refuses before any DDL unless the pending set has exactly that manifest.
 - **lolly-work PR #208, the restore rehearsal** (`restore-rehearsal.py`, `lib/preview_rehearsal.py`, `rehearsal/`;
-  see [`REHEARSAL.md`](REHEARSAL.md)).
+  see [`REHEARSAL.md`](REHEARSAL.md)). Optional on the preview-grade route: it runs before a migration only when the
+  profile's `rehearsal` names the backup store. Otherwise it is a manual drill.
   - It lives in `deploy/preview/`, so the tool lock covers it with no launcher change.
   - The unit calls it as a library: `Rehearsal(Kubectl(argv), Inputs(...)).run()`. The inputs are the backup Job's own
     `VERIFIED` line, the pending files, the new and the live image, the anchored PostgreSQL image, the profile's backup
@@ -512,9 +596,8 @@ are real output of #207's classifier and #208's rehearsal, and the tests run thi
     check-target covers it.
   - It refuses anything but `result: PASSED` with `teardownComplete`, the same pending set and `expect`, the same
     images, every file within the budget, and `egressClosedAfterFetch`.
-  - The cut-over runs it with nothing pending (`expect: none`).
 
-### Key (PROPOSAL 4.7)
+### Key (PROPOSAL 4.7, review H3)
 
 - Every lolly.ing command refuses with `ING_KEY_NOT_PINNED` until a reviewed change sets `ING_PUBLIC_KEY_JWK` in
   `preview_anchors.py` to lolly.ing's own public key. The tool refuses a pin equal to the platform release key.
@@ -523,17 +606,22 @@ are real output of #207's classifier and #208's rehearsal, and the tests run thi
 - Before any change, Work's boot line `catalog signing on (keyId …)` in the live Pod must not name the release key.
   After the switch it must name the lolly.ing key, and the signed catalog and the shell's receipt must verify against
   the lolly.ing pin.
-- The command never touches the Secret. Andy changes `LW_CATALOG_SIGNING_KEY` to the lolly.ing key before the cut-over.
+- The private key lives in a **second** Secret that Andy creates (`ING_SIGNING_KEY_SECRET` names it), under the key name
+  `LW_CATALOG_SIGNING_KEY`. Nobody edits the live Secret. The cut-over patch points the server's
+  `LW_CATALOG_SIGNING_KEY` reference at the new Secret, together with the image and the config; a revert points it back.
+  So a reverted cut-over is old image, old key and old pack again, and its catalog verifies. `instance.catalogPublicKey`
+  stays unset. The command never reads or writes a Secret's value. `plan` refuses `SIGNING_SECRET_NOT_PINNED` until the
+  name is pinned, and `SIGNING_SECRET_LIVE` when the server already references it.
 
 ### Deploy steps (PROPOSAL 4.3)
 
 On the Mac:
 1. Live state from the node: no run active, no hold, the instance-image layout, records that describe the live image,
-   and the smoke session file present.
-2. WSHA is on lolly-work `main`. The build is bound and its manifest checked (the contract above); its suse-lolly and
-   Lolly commits are on their `main`.
-3. The maintenance approval in the run is read, when there is one. The node refuses a pending maintenance migration
-   without it.
+   and a usable smoke credential (the token file, or else the session file).
+2. WSHA is on lolly-work `main`. For `ship`: when the accepted live build already has this Work commit, this suse-lolly
+   head and this Lolly pin, `ALREADY_LIVE` before anything else. Then the qualification above.
+3. The build is reused, resumed or dispatched, then bound and its manifest checked (the contract above); its suse-lolly
+   and Lolly commits are on their `main`.
 4. The first-party commits and dependency files changed since the live release are printed (R21 R3).
 5. check-target `--site lolly.ing`, once, before the first write to the node.
 6. The archive is downloaded by run ID and streamed over the check-target SSH route into the node's root-only spool,
@@ -544,20 +632,28 @@ On the Mac:
 In the unit:
 1. Identity, hold and layout checks; the live build passes its own light smoke (`LIVE_SMOKE_FAILED` otherwise).
 2. The live image stays pinned. The archive is checked and imported as in the contract above, and the pin read back.
-3. A fresh backup Job from the `lolly-postgres-offhost-backup` CronJob; its `VERIFIED` line is kept as it is. It must be
-   under 6 hours old at the switch (1 hour after a maintenance migration).
-4. A read-only check Job from the new image, with `DATABASE_URL` only, in a `begin read only` transaction: the image's
+3. A read-only check Job from the new image, with `DATABASE_URL` only, in a `begin read only` transaction: the image's
    migration files, the ledger and `catalog_delivery_sequence.publication_generation`. The files must equal the build
-   manifest's. The database may be ahead only by names this lane applied as allowlisted (`DATABASE_AHEAD` otherwise).
-5. Only with pending migrations: the classifier, then the restore rehearsal, then the migrate Job (the contract above).
-   A second check must find nothing pending. The old Pod keeps serving throughout.
-6. Generation N = 1 + the maximum of the live config, every ConfigMap holding an `instance.json`, the database row and
+   manifest's. The database may be ahead only by names this lane applied as additive (`DATABASE_AHEAD` otherwise).
+4. Only with pending migrations, of any class:
+   - a fresh backup Job from the `lolly-postgres-offhost-backup` CronJob, whose `VERIFIED` line (a complete GET,
+     ciphertext check, authenticated decryption and plaintext comparison) is kept as it is;
+   - the classifier, then the restore rehearsal when the profile configures one;
+   - the backup must be under an hour old (`BACKUP_STALE`, nothing applied);
+   - the **restore point** is written to the Deployment (annotation `lolly.tools/preview-backup`: the backup record,
+     the migrations, their class, and the previous image, source and config), and for a non-additive class the
+     `maintenance-applied-unswitched` marker too, before anything is applied;
+   - the migrate Job (the contract above), and a second check must find nothing pending. The old Pod keeps serving
+     throughout.
+   With nothing pending there is no backup Job: the daily backup and the previous image cover a deploy that changes no
+   schema.
+5. Generation N = 1 + the maximum of the live config, every ConfigMap holding an `instance.json`, the database row and
    the new shell catalog's signed seq (R20 S16). A new immutable ConfigMap `lolly-ing-config-<N>-<sha8>` holds the live
    `instance.json` with only `instance.catalogPublicationGeneration` changed.
-7. One guarded patch: the image, the config ConfigMap name and the records, with a server dry run first. It tests the
+6. One guarded patch: the image, the config ConfigMap name and the records, with a server dry run first. It tests the
    UID, resourceVersion, container name, current image and current ConfigMap name. `app-update.py` changes images only,
    so this patch follows its guard pattern instead of calling it. Recreate drains the old Pod.
-8. Smoke, then the watch.
+7. Smoke, then the watch.
 
 ### Smoke (PROPOSAL 4.5)
 
@@ -568,44 +664,74 @@ QR code export through the render worker; `www.lolly.ing` answers 308 to `https:
 restarts and a working set under the profile's fraction of the 1 Gi limit; Work's boot line names the lolly.ing key;
 and a read-only Job reads the database's publication generation back as N.
 
-The smoke account:
-- is a `member`, never an admin, and owns no projects (checked through `/api/auth/session` and `/api/v1/projects`);
-- has one grant, `export.server` on `tool:qr-code`, so it can render the QR code (Work grants live in the database; an
-  admin adds it once);
-- signs in through its `lw_session` cookie, kept in `/etc/lolly-preview/lolly.ing-smoke-session` on the node, root-owned
-  and 0600. The tool reads it with `O_NOFOLLOW`, sends it only to `https://lolly.ing`, and never prints, logs or stores
-  it anywhere else. Work sessions last `policy.sessionTtlHours` (12 by default), so the file needs a fresh session
-  before a deploy; an expired one stops the run before any change.
+The smoke signs in with a **Work service token** (Andy, 2026-10-27), or else a member's session cookie:
 
-### Rollback (PROPOSAL 4.6)
+- **Token:** one `lwt_…` line in `/etc/lolly-preview/lolly.ing-smoke-token`. It is sent as `Authorization: Bearer`.
+  - The token has role `member` or lower and its own grant, `export.server` on `tool:qr-code` for `user:svc_<token id>`,
+    so it can render the QR code.
+  - `/api/auth/session` must answer `kind: service`, with the `sub` the profile pins (`token:tok_…`) and a role of
+    `viewer` or `member`.
+  - `/api/v1/tokens` (owner tier) and `/api/v1/grants` (admin tier) must both answer 403, which proves the token has no
+    admin rights. A token owns nothing, so there is no projects check.
+  - A token does not expire overnight. Reading the catalogue and the session with a token needs a Work build that
+    contains lolly-work PR #237. An older build answers 401 there, and the smoke says so.
+- **Cookie** (only when there is no token file): the `lw_session` cookie of a `member` who owns no projects (checked
+  through `/api/auth/session` and `/api/v1/projects`), in `/etc/lolly-preview/lolly.ing-smoke-session`. It has the same
+  grant on the member's account. Work sessions last `policy.sessionTtlHours` (12 by default), so the file needs a fresh
+  session before a deploy.
+- **Both files:** each is root-owned and 0600. The tool reads it with `O_NOFOLLOW` and sends it only to
+  `https://lolly.ing`. It never prints, logs or stores the value anywhere else.
+- **A bad file stops the run** before any change (`SMOKE_ACCOUNT`). This covers a token file that is present but
+  malformed, open to others or a link; the tool does not fall back to the cookie then. It also covers neither file
+  being present.
+- **A missing grant:** when Work answers the QR export with 403, the check names the missing grant and its principal.
 
-- Automatic, after a failed smoke or watch, or from `ExecStopPost` after a stopped unit: the previous image (still
-  pinned) plus a **new** ConfigMap at a generation above every existing one, through the same guarded patch, then the
-  full smoke at that generation. Never `rollout undo`: Work's fence answers 503 for a lower generation.
-- Manual: `rollback` does the same to the recorded previous build. It refuses a rollback that would lower a stored
-  format, and any rollback after a maintenance migration.
-- The database stays. A maintenance migration turns automatic rollback off: a failed smoke then ends
-  `MAINTENANCE_UNVERIFIED` (exit 3) with the phase `maintenance-unverified`, which holds every later run. Recovery would
-  be a restore, which Andy decides. A forward fix that already contains the migration may follow with `--clear-hold`.
+`status` prints `smokeSession` (`present`, or why not) and `smokeCredential` (`token` or `cookie`).
+
+### Rollback (PROPOSAL 4.6; Andy 2026-10-27)
+
+- **Nothing or only additive migrations:** automatic, as on lolly.tools, after a failed smoke or watch, or from
+  `ExecStopPost` after a stopped unit: the previous image (still pinned) plus a **new** ConfigMap at a generation above
+  every existing one, through the same guarded patch, then the full smoke at that generation. Never `rollout undo`:
+  Work's fence answers 503 for a lower generation. The database stays; the previous image runs beside additive files.
+  Manual `rollback` does the same to the recorded previous build and refuses one that would lower a stored format.
+- **Any other class:** the previous image alone is not a safe state, so automatic rollback is off. A failed smoke ends
+  `MAINTENANCE_UNVERIFIED` (exit 3) with the phase `maintenance-unverified`, which holds every later run, and the result
+  names the restore point. The rollback is **that backup plus the previous image**, in two halves:
+  1. a person restores the backup into the database by the lolly.ing runbook (`lolly-private/production/preview/`),
+     because a restore drops every write since the backup and the tool never restores the live database;
+  2. `rollback --clear-hold` reads the ledger with a check Job and refuses `MAINTENANCE_NO_ROLLBACK` while it still holds
+     any non-additive file of the live build's deploy (from its restore point and marker), or when the restore point
+     names another previous image. Once the restore shows, it switches to the previous image at a higher generation,
+     smokes and watches, and clears the maintenance records (`ROLLED_BACK`, reason `MANUAL_AFTER_RESTORE`).
+  After a held cut-over there is no previous build: the same `rollback --clear-hold` reads the cut-over's reviewed plan
+  from `plans/` (its sha256 must match the `PLANNED` record) and reverts the claim layout, old image and old key
+  reference (`CONVERSION_REVERTED`). A forward fix that already contains the migration may follow instead with
+  `deploy <fix> --clear-hold`, with no restore and no lost writes.
+- `status` prints the restore point of the last migrating deploy as `backup`.
 
 ### Cut-over (PROPOSAL 4.8)
 
-`plan <work sha>` reads the live Deployment and prints the exact patch: drop the `shell`, `pack` and `engine-pin`
-volumes and their mounts, set the instance image, and set the config to generation N. It writes the plan to
+`plan <work sha>` requires qualified sources and a bound build, reads the live Deployment and prints the exact patch:
+drop the `shell`, `pack` and `engine-pin` volumes and their mounts, set the instance image, set the config to generation
+N, and point `LW_CATALOG_SIGNING_KEY` at lolly.ing's own Secret. It writes the plan to
 `lolly-private/production/preview/plans/` and prints its sha256. The database row is read at apply; if it raised N, the
 apply refuses and asks for a new plan.
 
 `plan <sha> --apply PLAN --reviewed-plan-sha256 H` is applied once by the named owner with Andy present, after Andy has
-changed the Secret to the lolly.ing key. It takes a fresh backup and runs the full restore rehearsal even with nothing
-pending, then applies the reviewed patch. A failed smoke puts the claim layout and the old image back, with a new
-ConfigMap at a higher generation (`CONVERSION_REVERTED`). Keep the old claims until two image deploys have passed.
+created the second Secret. It always takes a fresh backup, runs the restore rehearsal when the profile configures one,
+applies pending migrations of any class with the same restore point and marker as a deploy, then applies the reviewed
+patch. A failed smoke after nothing or only additive migrations puts the claim layout, the old image and the old key
+reference back, with a new ConfigMap at a higher generation (`CONVERSION_REVERTED`). The revert is then checked:
+- **With a cookie:** the signed catalogue GET must answer 200 and the database must read that generation back.
+- **With a token:** the old Work build (`9677dd56`) reads catalogues for a cookie only. The check is instead one
+  signed-in QR export, which must answer 200 with `image/svg+xml`. The database generation must be at most the new one:
+  nothing has read that catalogue yet, and the first signed-in read publishes the generation.
 
-A revert after the Secret change has a limit. Work checks the mounted pack's signed envelope with
-`instance.catalogPublicKey`, or else with the signing key's public half (`server/src/catalog/publication.ts`). The live
-`instance.json` sets no `catalogPublicKey`, so the old pack, signed with the release key, no longer verifies once the
-Secret holds the lolly.ing key, and the reverted catalog answers 503. The revert then ends `ROLLBACK_UNHEALTHY`. Recovery
-is Andy putting the previous Secret value back. The command never changes the Secret or any other `instance.json`
-field.
+After
+a non-additive migration the revert is off: `MAINTENANCE_UNVERIFIED`; recovery is a forward fix, or the restore by the
+runbook followed by `rollback --clear-hold`, which reverts with this plan. Every revert attempt, including `ExecStopPost` after a failed read, re-reads the marker first.
+Keep the old claims until two image deploys have passed.
 
 ### Retention (`gc`, decision 12)
 
@@ -621,11 +747,13 @@ field.
 
 ### What the lolly.ing path may change, and what it never touches
 
-It may import and pin the instance image, create generation ConfigMaps, create the backup Job and its own check,
-classifier and migrate Jobs, run the restore rehearsal in its own namespace, and patch the target Deployment's image,
-config ConfigMap reference and annotations. It never reads or changes a Secret, a PVC, Postgres directly, the edge or
-DNS; never execs into a Pod; never restores the live database; and never changes any `instance.json` field other than
-the generation.
+It may import and pin the instance image, create generation ConfigMaps, create its own check, classifier and migrate
+Jobs and, before a migration or at the cut-over, one backup Job from the existing CronJob, run the restore rehearsal in
+its own namespace when configured, and patch the target Deployment's image, config ConfigMap reference and annotations,
+plus, once at the cut-over, which Secret its catalog signing key reference names. The Jobs it creates reference the
+database Secret (and the backup Job the CronJob's own Secrets); the tool process itself never reads or changes a
+Secret's value, a PVC, Postgres directly, the edge or DNS; never execs into a Pod; never restores the live database; and
+never changes any `instance.json` field other than the generation.
 
 ## Before the first live run
 
@@ -636,20 +764,21 @@ the generation.
 
 ## Before the first lolly.ing run
 
-- Merge in this order: lolly-work #207 (classifier and `LW_MIGRATE_EXPECT`), #208 (restore rehearsal), then this tool's
-  lolly.ing change. suse-lolly #28 may merge at any time. Then re-lock with `make-tool-lock.py`; the lock's paths do not
-  change.
-- suse-lolly's `lolly-ing-signing` environment (two approvals per build, prevent self-review on) and
-  `lolly-ing-maintenance` environment exist. `ING_MAINTENANCE_APPROVERS` is pinned by a reviewed lolly-work PR before
-  the first maintenance migration; while it is empty every maintenance migration is refused.
-- lolly.ing's own key generated; its public half pinned in `ING_PUBLIC_KEY_JWK` by a reviewed lolly-work PR.
-- The smoke member created, with the `export.server` grant on `tool:qr-code`, and its session written to
-  `/etc/lolly-preview/lolly.ing-smoke-session` (root, 0600). `lolly.ing.json` in the state directory names its `sub`
-  and the backup store's `rehearsal.storageHost` and `rehearsal.storageAddress`.
-- The rehearsal namespace `lolly-restore-rehearsal`, set up once with `restore-rehearsal.py setup`, and its read-only
-  backup credential Secret `restore-rehearsal-backup-read`, both by Andy (see [`REHEARSAL.md`](REHEARSAL.md)). The
-  anchored PostgreSQL image is on the node by digest.
+The exact steps, with commands, are in the private runbook `lolly-private/production/preview/LOLLY-ING-PREVIEW-GRADE.md`.
+In short:
+
+- suse-lolly: environment `lolly-ing-signing` (no reviewer, deployments from `main` only) with secret
+  `LOLLY_ING_CATALOG_SIGNING_KEY`, repository variable `LOLLY_ING_PUBLIC_KEY_JWK`, and `main` protected.
+- lolly.ing's own key generated by Andy; its public half pinned in `ING_PUBLIC_KEY_JWK` by a reviewed lolly-work PR.
+  Then re-lock with `make-tool-lock.py`.
+- The second Secret, `lolly-ing-catalog-signing` (`ING_SIGNING_KEY_SECRET`), holding that key under
+  `LW_CATALOG_SIGNING_KEY`, created in `lolly-private` by Andy.
+- The smoke credential, by the runbook. This is a `member` service token made in `/admin#/tokens`, written to
+  `/etc/lolly-preview/lolly.ing-smoke-token` (root, 0600) and given the `export.server` grant on `tool:qr-code` for
+  `user:svc_<token id>`. `lolly.ing.json` in the state directory pins `token:<token id>`, and `rehearsal` may be `null`.
+  The token route needs the cut-over build to contain lolly-work PR #237. The older cookie file is still read when no
+  token file is present.
 - The Postgres NetworkPolicy admitting the preview Job label (`app.kubernetes.io/component: preview-migrate`) in
-  `lolly-private`, set up once by Andy.
-- Then `status`, `plan <work sha>`, Andy changes the Secret, the cut-over with Andy present, and a `--drill-fail-smoke`
-  deploy that must land on catalog 200 at a higher generation.
+  `lolly-private`, set up once by Andy: every deploy runs a read-only check Job against the database.
+- Then `ship` (it builds and stops at `BUILT`), `status`, `plan <work sha>`, the cut-over with Andy present, and a
+  `--drill-fail-smoke` deploy that must land on catalog 200 at a higher generation.

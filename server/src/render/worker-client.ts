@@ -12,7 +12,12 @@
 import { hmac, macEquals, canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { serviceUrl } from '../lib/service-url.ts';
 
-export interface WorkerConfig { url: string; secret: string; timeoutMs: number; requireHttps?: boolean }
+export interface WorkerConfig {
+  url: string; secret: string; timeoutMs: number; requireHttps?: boolean;
+  /** Set when render.worker.dispatch is "pull": render and raster jobs then
+   *  wait for a worker to lease them instead of being POSTed to `url`. */
+  dispatch?: WorkerDispatch;
+}
 
 export function workerEndpoint(cfg: WorkerConfig, path: string): string {
   if (cfg.requireHttps && process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new WorkerError('Worker TLS verification is required');
@@ -94,11 +99,85 @@ export const WORKER_TS_SKEW_MS = 5 * 60 * 1000;
 /** The worker sends Retry-After as a plain integer-seconds string (see
  *  server.ts `busy()`); tolerate anything else by simply not passing a hint
  *  through rather than throwing on a malformed header. */
-function parseRetryAfter(res: Response): number | undefined {
-  const raw = res.headers.get('retry-after');
-  if (raw === null) return undefined;
+function parseRetryAfter(raw: string | null | undefined): number | undefined {
+  if (raw === null || raw === undefined) return undefined;
   const n = Number(raw);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/** The worker calls the pipeline makes; both carry a signed job and answer JSON. */
+export type WorkerPath = '/render' | '/rasterise';
+
+/** One worker answer, whichever way it travelled: an HTTPS response under push,
+ *  or a leased job's reported result under pull (worker-leases.ts). */
+export interface WorkerReply {
+  status: number;
+  statusText?: string;
+  retryAfter?: string | null;
+  body: string;
+  /** `x-lw-output-sig`, the worker's HMAC over `body`. */
+  outputSig?: string | null;
+}
+
+/** The exact signed payload the worker received, and its reply. Evidence binds
+ *  the payload, so the caller needs both. */
+export interface WorkerExchange { payload: string; reply: WorkerReply }
+
+/** Pull dispatch plugs in here (render.worker.dispatch "pull"); absent means
+ *  push. It signs the job when a worker takes it and resolves with that
+ *  worker's reply. */
+export type WorkerDispatch = (path: WorkerPath, job: Record<string, unknown>,
+  opts: { signal?: AbortSignal; timeoutMs: number }) => Promise<WorkerExchange>;
+
+/** Push: sign the job now and POST it to the worker Service. The timeout spans
+ *  the request and its whole body, as it always has. */
+async function pushExchange(cfg: WorkerConfig, path: WorkerPath, job: Record<string, unknown>,
+  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal }, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
+  const payload = canonicalJson({ ...job, ts: opts.now ?? Date.now() });
+  const sig = signBody(payload, cfg.secret);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
+  try {
+    const res = await (opts.fetchImpl ?? fetch)(workerEndpoint(cfg, path), {
+      method: 'POST',
+      redirect: 'error',
+      headers: { 'content-type': 'application/json', 'x-lw-render-sig': sig },
+      body: payload,
+      signal: opts.signal ? AbortSignal.any([opts.signal, ctrl.signal]) : ctrl.signal,
+    });
+    const body = res.ok ? await readBody(res) : await res.text().catch(() => '');
+    opts.signal?.throwIfAborted();
+    ctrl.signal.throwIfAborted();
+    return { payload, reply: { status: res.status, statusText: res.statusText, retryAfter: res.headers.get('retry-after'),
+      body, outputSig: res.headers.get('x-lw-output-sig') } };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function exchange(cfg: WorkerConfig, path: WorkerPath, job: Record<string, unknown>,
+  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal }, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
+  return cfg.dispatch
+    ? cfg.dispatch(path, job, { ...(opts.signal ? { signal: opts.signal } : {}), timeoutMs: cfg.timeoutMs })
+    : pushExchange(cfg, path, job, opts, readBody);
+}
+
+/** A non-2xx worker answer as the plane's error. The worker answers capacity
+ *  saturation with 503 + Retry-After; surface it as its own code/status rather
+ *  than folding it into the generic 502, so callers can tell "busy, try again"
+ *  apart from a real failure. */
+function replyError(reply: WorkerReply, what: string): WorkerError {
+  let detail = reply.statusText ?? '';
+  try {
+    const body = JSON.parse(reply.body) as { error?: { message?: string } };
+    if (body.error?.message) detail = body.error.message;
+  } catch { /* non-JSON error body */ }
+  if (reply.status === 503) {
+    return new WorkerError(`render worker at capacity: ${detail}`, 503, { code: 'RENDER_BUSY', retryAfter: parseRetryAfter(reply.retryAfter) });
+  }
+  // Surface the worker's own status where sensible; other 5xx stays a plane 502.
+  const status = reply.status === 422 || reply.status === 400 ? reply.status : 502;
+  return new WorkerError(`render worker rejected the ${what} (${reply.status}): ${detail}`, status);
 }
 
 /**
@@ -111,49 +190,14 @@ export async function renderViaWorker(
   opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal; onEvidence?: (evidence: WorkerEvidence) => void } = {},
 ): Promise<string> {
   opts.signal?.throwIfAborted();
-  const now = opts.now ?? Date.now();
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const payload = canonicalJson({ ...job, ts: now });
-  const sig = signBody(payload, cfg.secret);
-
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
-  let res: Response;
   try {
-    res = await fetchImpl(workerEndpoint(cfg, '/render'), {
-      method: 'POST',
-      redirect: 'error',
-      headers: { 'content-type': 'application/json', 'x-lw-render-sig': sig },
-      body: payload,
-      signal: opts.signal ? AbortSignal.any([opts.signal, ctrl.signal]) : ctrl.signal,
-    });
-
-    if (!res.ok) {
-      let detail = res.statusText;
-      try {
-        const body = await res.json() as { error?: { message?: string } };
-        if (body.error?.message) detail = body.error.message;
-      } catch { /* non-JSON error body */ }
-      // The worker answers capacity saturation with 503 + Retry-After - surface
-      // it as its own code/status rather than folding it into the generic 502
-      // below, so callers can tell "busy, try again" apart from a real failure.
-      if (res.status === 503) {
-        throw new WorkerError(`render worker at capacity: ${detail}`, 503, {
-          code: 'RENDER_BUSY',
-          retryAfter: parseRetryAfter(res),
-        });
-      }
-      // Surface the worker's own status where sensible; other 5xx stays a plane 502.
-      const status = res.status === 422 || res.status === 400 ? res.status : 502;
-      throw new WorkerError(`render worker rejected the job (${res.status}): ${detail}`, status);
-    }
-
-    const responseText = await boundedWorkerText(res);
+    const { payload, reply } = await exchange(cfg, '/render', job as unknown as Record<string, unknown>, opts, boundedWorkerText);
+    if (reply.status < 200 || reply.status > 299) throw replyError(reply, 'job');
+    const responseText = reply.body;
     if (Buffer.byteLength(responseText) > 40 * 1024 * 1024) throw new WorkerError('Worker response exceeds its byte budget', 502);
-    if (job.evidence && !verifyBody(responseText, cfg.secret, res.headers.get('x-lw-output-sig') ?? '')) throw new WorkerError('Worker evidence signature is missing or invalid', 502);
+    if (job.evidence && !verifyBody(responseText, cfg.secret, reply.outputSig ?? '')) throw new WorkerError('Worker evidence signature is missing or invalid', 502);
     const out = JSON.parse(responseText) as { svg?: unknown; brandRevision?: unknown; evidence?: WorkerEvidence } | null;
     opts.signal?.throwIfAborted();
-    ctrl.signal.throwIfAborted();
     if (!out || typeof out.svg !== 'string' || !/<svg[\s>]/i.test(out.svg)) {
       throw new WorkerError('render worker returned no SVG', 502);
     }
@@ -172,8 +216,6 @@ export async function renderViaWorker(
     opts.signal?.throwIfAborted();
     if (e instanceof WorkerError) throw e;
     throw new WorkerError(`render worker unreachable: ${(e as Error).message}`, 502);
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -189,43 +231,12 @@ export async function rasteriseViaWorker(
   opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<RasterResult> {
   opts.signal?.throwIfAborted();
-  const now = opts.now ?? Date.now();
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const payload = canonicalJson({ ...job, ts: now });
-  const sig = signBody(payload, cfg.secret);
-
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
-  let res: Response;
   try {
-    res = await fetchImpl(workerEndpoint(cfg, '/rasterise'), {
-      method: 'POST',
-      redirect: 'error',
-      headers: { 'content-type': 'application/json', 'x-lw-render-sig': sig },
-      body: payload,
-      signal: opts.signal ? AbortSignal.any([opts.signal, ctrl.signal]) : ctrl.signal,
-    });
-
-    if (!res.ok) {
-      let detail = res.statusText;
-      try {
-        const body = await res.json() as { error?: { message?: string } };
-        if (body.error?.message) detail = body.error.message;
-      } catch { /* non-JSON error body */ }
-      // Same RENDER_BUSY special-case as renderViaWorker above.
-      if (res.status === 503) {
-        throw new WorkerError(`render worker at capacity: ${detail}`, 503, {
-          code: 'RENDER_BUSY',
-          retryAfter: parseRetryAfter(res),
-        });
-      }
-      const status = res.status === 422 || res.status === 400 ? res.status : 502;
-      throw new WorkerError(`render worker rejected the raster job (${res.status}): ${detail}`, status);
-    }
-
-    const out = await res.json().catch(() => null) as { bytesB64?: unknown; mime?: unknown } | null;
+    const { reply } = await exchange(cfg, '/rasterise', job as unknown as Record<string, unknown>, opts, (res) => res.text());
+    if (reply.status < 200 || reply.status > 299) throw replyError(reply, 'raster job');
+    let out: { bytesB64?: unknown; mime?: unknown } | null = null;
+    try { out = JSON.parse(reply.body); } catch { /* reported below */ }
     opts.signal?.throwIfAborted();
-    ctrl.signal.throwIfAborted();
     if (!out || typeof out.bytesB64 !== 'string' || typeof out.mime !== 'string') {
       throw new WorkerError('render worker returned no raster bytes', 502);
     }
@@ -234,8 +245,6 @@ export async function rasteriseViaWorker(
     opts.signal?.throwIfAborted();
     if (e instanceof WorkerError) throw e;
     throw new WorkerError(`render worker unreachable: ${(e as Error).message}`, 502);
-  } finally {
-    clearTimeout(timer);
   }
 }
 

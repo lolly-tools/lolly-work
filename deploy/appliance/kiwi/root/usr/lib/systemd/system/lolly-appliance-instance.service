@@ -1,0 +1,13 @@
+[Unit]
+Description=Lolly appliance: write this machine's Lolly Work address and owner
+Wants=network-online.target
+After=network-online.target lolly-appliance-firstboot.service
+Before=k3s.service lolly-work.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/lolly-appliance/instance
+
+[Install]
+WantedBy=multi-user.target

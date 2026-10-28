@@ -239,6 +239,12 @@ secret (Mode A didn't set them, or Mode B's secret omits them).
       name: {{ include "lolly-work.secretName" . }}
       key: LW_METRICS_TOKEN
       optional: true
+- name: LW_OFREP_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "lolly-work.secretName" . }}
+      key: LW_OFREP_TOKEN
+      optional: true
 - name: LW_RENDER_WORKER_SECRET
   valueFrom:
     secretKeyRef:
@@ -251,6 +257,55 @@ secret (Mode A didn't set them, or Mode B's secret omits them).
       name: {{ include "lolly-work.secretName" . }}
       key: LW_C2PA_SIGNING_KEY
       optional: true
+{{- end }}
+
+{{/*
+OpenTelemetry export (values otel.*): the standard OTEL_* variables for the
+server container only. Renders nothing while otel.enabled is false, so the
+server's export stays off and the manifest is unchanged.
+*/}}
+{{- define "lolly-work.otelEnv" -}}
+{{- with .Values.otel }}
+{{- if .enabled }}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ required "otel.endpoint is required when otel.enabled (the collector's OTLP/HTTP base URL, usually port 4318)" .endpoint | quote }}
+- name: OTEL_EXPORTER_OTLP_PROTOCOL
+  value: {{ .protocol | quote }}
+- name: OTEL_EXPORTER_OTLP_COMPRESSION
+  value: {{ .compression | quote }}
+{{- if .serviceName }}
+- name: OTEL_SERVICE_NAME
+  value: {{ .serviceName | quote }}
+{{- end }}
+{{- with .resourceAttributes }}
+{{- $pairs := list }}
+{{- range $key := keys . | sortAlpha }}
+{{- $pairs = append $pairs (printf "%s=%s" $key (get $.Values.otel.resourceAttributes $key | toString | urlquery | replace "+" "%20")) }}
+{{- end }}
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: {{ join "," $pairs | quote }}
+{{- end }}
+- name: OTEL_TRACES_EXPORTER
+  value: {{ ternary "otlp" "none" .traces | quote }}
+- name: OTEL_METRICS_EXPORTER
+  value: {{ ternary "otlp" "none" .metrics | quote }}
+- name: OTEL_LOGS_EXPORTER
+  value: {{ ternary "otlp" "none" .logs | quote }}
+- name: OTEL_TRACES_SAMPLER
+  value: {{ .sampler | quote }}
+{{- if .samplerArg }}
+- name: OTEL_TRACES_SAMPLER_ARG
+  value: {{ .samplerArg | toString | quote }}
+{{- end }}
+{{- if .headersSecret.name }}
+- name: OTEL_EXPORTER_OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ .headersSecret.name | quote }}
+      key: {{ required "otel.headersSecret.key is required with otel.headersSecret.name" .headersSecret.key | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/*

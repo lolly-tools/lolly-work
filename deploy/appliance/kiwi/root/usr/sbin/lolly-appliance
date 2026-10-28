@@ -1,0 +1,109 @@
+#!/bin/bash
+# SPDX-License-Identifier: MPL-2.0
+# lolly-appliance: look after a Lolly appliance (k3s or podman profile).
+#
+#   lolly-appliance status                 what runs, where, and whether it is ready
+#   lolly-appliance owner-link [--email A] print a one-time owner setup link
+#                                          (--email first changes the owner address)
+#   lolly-appliance cockpit on|off         turn the Cockpit host console on or off
+#
+# Updates: lolly-update (lolly-update --help).
+set -euo pipefail
+. /usr/libexec/lolly-appliance/common.sh
+
+usage() { sed -n '3,11s/^# \{0,1\}//p' "$0"; }
+need_root() { [ "$(id -u)" = 0 ] || { echo "lolly-appliance: run as root" >&2; exit 1; }; }
+
+cmd_status() {
+  echo "Lolly Work:   $(installed_version) (image built with $(release_field work version))"
+  if [ "$PROFILE" = podman ]; then
+    echo "Runtime:      Podman $(podman --version 2>/dev/null | awk '{print $3}') with Quadlet units in /etc/containers/systemd"
+  else
+    echo "Chart:        $(release_field chart version), K3s $(release_field k3s version)"
+  fi
+  echo "Address:      $(instance_get LOLLY_BASE_URL)/"
+  echo "Owner:        $(instance_get LOLLY_OWNER_EMAIL)"
+  echo "Certificate:  SHA-256 $(cat "$TLS_DIR/appliance.sha256" 2>/dev/null || echo 'not created yet')"
+  if systemctl is-enabled --quiet cockpit.socket 2>/dev/null; then echo "Cockpit:      on, port 9090, local networks only"; else echo "Cockpit:      off"; fi
+  echo "Updates:      $(conf_get LOLLY_UPDATE auto), $(conf_get LOLLY_UPDATE_CHANNEL stable) channel (lolly-update status)"
+  if work_ready; then echo "Readiness:    ready"; else echo "Readiness:    not ready"; fi
+  if [ "$(id -u)" = 0 ]; then
+    echo "Credentials:  $(systemd-analyze has-tpm2 -q 2>/dev/null && echo 'TPM2 and host key' || echo 'host key (no TPM2 found)'), $(ls "$CRED_DIR" 2>/dev/null | wc -l) stored"
+    echo
+    if [ "$PROFILE" = podman ]; then
+      podman ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null || echo "Podman is not answering"
+    else
+      "${KUBECTL[@]}" -n lolly get pods -o wide 2>/dev/null || echo "K3s is not answering yet"
+    fi
+  fi
+}
+
+cmd_owner_link() {
+  need_root
+  local email=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --email) email=${2:-}; shift 2 ;;
+      --email=*) email=${1#--email=}; shift ;;
+      *) echo "lolly-appliance: unknown option $1" >&2; exit 2 ;;
+    esac
+  done
+  if [ -n "$email" ]; then
+    email=$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')
+    [[ $email =~ $EMAIL_RE ]] || { echo "lolly-appliance: $email is not an email address" >&2; exit 2; }
+    install -d -m 0755 /etc/lolly
+    touch "$CONF"
+    if grep -q '^[[:space:]]*LOLLY_OWNER_EMAIL[[:space:]]*=' "$CONF"; then
+      sed -i "s|^[[:space:]]*LOLLY_OWNER_EMAIL[[:space:]]*=.*|LOLLY_OWNER_EMAIL=$email|" "$CONF"
+    else
+      echo "LOLLY_OWNER_EMAIL=$email" >> "$CONF"
+    fi
+    /usr/libexec/lolly-appliance/instance
+    echo "Owner is now $email; waiting for Lolly Work to pick up the change..." >&2
+    if [ "$PROFILE" = podman ]; then
+      # Waits until the restarted server reports ready (Notify=healthy).
+      systemctl restart lolly-work.service
+    else
+      sleep 15
+      "${KUBECTL[@]}" -n lolly rollout status deploy/lolly-work --timeout=600s >&2
+    fi
+  fi
+  local owner
+  owner=$(instance_get LOLLY_OWNER_EMAIL)
+  issue_owner_link "$owner"
+}
+
+cmd_cockpit() {
+  need_root
+  local rule action
+  case ${1:-} in
+    on) action=--add-rich-rule ;;
+    off) action=--remove-rich-rule ;;
+    *) echo "usage: lolly-appliance cockpit on|off" >&2; exit 2 ;;
+  esac
+  local fw=(firewall-offline-cmd)
+  systemctl is-active --quiet firewalld && fw=(firewall-cmd --permanent)
+  for net in $COCKPIT_SOURCES_V4; do
+    rule="rule family=\"ipv4\" source address=\"$net\" service name=\"cockpit\" accept"
+    "${fw[@]}" --zone=public "$action=$rule" >/dev/null 2>&1 || true
+  done
+  for net in $COCKPIT_SOURCES_V6; do
+    rule="rule family=\"ipv6\" source address=\"$net\" service name=\"cockpit\" accept"
+    "${fw[@]}" --zone=public "$action=$rule" >/dev/null 2>&1 || true
+  done
+  if systemctl is-active --quiet firewalld; then firewall-cmd --reload >/dev/null; fi
+  if [ "$1" = on ]; then
+    systemctl enable --now cockpit.socket
+  else
+    systemctl disable --now cockpit.socket cockpit.service 2>/dev/null || true
+  fi
+  echo "Cockpit is $1."
+}
+
+case ${1:-} in
+  status) shift; cmd_status "$@" ;;
+  owner-link) shift; cmd_owner_link "$@" ;;
+  cockpit) shift; cmd_cockpit "$@" ;;
+  -h|--help|help|'') usage ;;
+  *) echo "lolly-appliance: unknown command $1" >&2; usage >&2; exit 2 ;;
+esac

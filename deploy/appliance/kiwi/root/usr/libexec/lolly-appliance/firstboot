@@ -1,0 +1,94 @@
+#!/bin/bash
+# SPDX-License-Identifier: MPL-2.0
+# First boot of a Lolly appliance: create this machine's secrets and its HTTPS
+# certificate. Runs once, before K3s or the Lolly containers start
+# (lolly-appliance-firstboot.service).
+#
+# Every secret is generated here, on the machine, and stored as an encrypted
+# systemd credential under /var/lib/lolly/credentials: bound to the TPM2 chip
+# when the machine has one, and to the host key in /var/lib/systemd otherwise
+# (systemd-creds --with-key=auto). /var sits outside the root snapshots, so a
+# host rollback keeps the secrets that match the database. The image carries no
+# secret at all.
+set -euo pipefail
+. /usr/libexec/lolly-appliance/common.sh
+umask 077
+
+install -d -m 0700 "$STATE_DIR" "$CRED_DIR"
+install -d -m 0755 "$TLS_DIR"
+work=$(mktemp -d /run/lolly-firstboot.XXXXXX)
+trap 'rm -rf "$work"' EXIT
+
+# store NAME FILE: encrypt FILE as credential NAME, unless it already exists.
+store() {
+  local name=$1 file=$2
+  [ -s "$CRED_DIR/$name.cred" ] && return 0
+  systemd-creds encrypt --with-key=auto --name="$name" "$file" "$CRED_DIR/$name.cred.new"
+  mv "$CRED_DIR/$name.cred.new" "$CRED_DIR/$name.cred"
+}
+
+random_hex() { # 32 random bytes as 64 hex characters, no newline
+  printf '%s' "$(openssl rand -hex 32)" > "$1"
+}
+
+for name in lolly-session-secret lolly-link-secret lolly-credential-secret lolly-postgres-password; do
+  if [ ! -s "$CRED_DIR/$name.cred" ]; then
+    random_hex "$work/$name"
+    store "$name" "$work/$name"
+  fi
+done
+
+# The ECDSA P-256 key that signs each member's catalogue index (PKCS#8 PEM).
+if [ ! -s "$CRED_DIR/lolly-catalog-signing-key.cred" ]; then
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/catalog.pem"
+  store lolly-catalog-signing-key "$work/catalog.pem"
+fi
+
+# The appliance's own certificate. Self-signed and named for this machine's
+# current addresses; apps will pin its fingerprint when pairing arrives.
+if [ ! -s "$CRED_DIR/lolly-tls-key.cred" ] || [ ! -s "$TLS_DIR/appliance.crt" ]; then
+  rm -f "$CRED_DIR/lolly-tls-key.cred"
+  host=$(hostnamectl hostname 2>/dev/null || hostname)
+  san="DNS:lolly.local,DNS:localhost,IP:127.0.0.1"
+  case $host in
+    ''|localhost|localhost.*) ;;
+    *) san="DNS:$host,$san"; [[ $host == *.* ]] || san="$san,DNS:$host.local" ;;
+  esac
+  for ip in $(all_ipv4); do san="$san,IP:$ip"; done
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/tls.key"
+  openssl req -x509 -new -key "$work/tls.key" -days 825 -sha256 \
+    -subj "/O=Lolly appliance/CN=$(cut -c1-12 /etc/machine-id)" \
+    -addext "subjectAltName=$san" \
+    -addext "basicConstraints=critical,CA:FALSE" \
+    -addext "keyUsage=critical,digitalSignature" \
+    -addext "extendedKeyUsage=serverAuth" \
+    -out "$work/tls.crt"
+  store lolly-tls-key "$work/tls.key"
+  install -m 0644 "$work/tls.crt" "$TLS_DIR/appliance.crt"
+  openssl x509 -in "$TLS_DIR/appliance.crt" -noout -fingerprint -sha256 | sed 's/^[^=]*=//' > "$TLS_DIR/appliance.sha256"
+  chmod 0644 "$TLS_DIR/appliance.sha256"
+fi
+
+# Cockpit is on by default (socket-activated, local networks only). An
+# unattended install can turn it off with LOLLY_COCKPIT=off.
+if [ "$(conf_get LOLLY_COCKPIT on)" = off ]; then
+  /usr/sbin/lolly-appliance cockpit off || log "could not turn Cockpit off"
+fi
+
+# The k3s profile's volume directory must carry k3s-selinux's label
+# (container_file_t) before the local-path provisioner creates PostgreSQL's
+# volume in it.
+if [ "$PROFILE" = k3s ]; then
+  install -d -m 0711 /var/lib/rancher/k3s/storage
+  restorecon -R /var/lib/rancher/k3s/storage
+fi
+
+# The podman profile's own directories: PostgreSQL's data (its container runs
+# as uid 999) and Lolly Work's settings.
+if [ "$PROFILE" = podman ]; then
+  install -d -m 0700 -o 999 -g 999 "$STATE_DIR/postgres"
+  install -d -m 0755 "$STATE_DIR/work"
+fi
+
+touch "$STATE_DIR/firstboot.done"
+log "first-boot secrets and certificate are in place"

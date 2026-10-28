@@ -1729,17 +1729,45 @@ async function viewInjectables(main) {
   );
 }
 
+// Group rules (lolly plan 324 M2) set the same two settings for members of a
+// named group, over the setting for everyone: one team can pilot a feature.
+// When a person's groups disagree, Off wins over On and Hidden over Shown
+// (server: policy/feature-flags.ts). A configured flag service (featureFlags.ofrep)
+// decides the default of the flags it lists; these settings are its fallback.
 async function viewFeatureFlags(main) {
-  const { flags } = await api('/api/v1/policy/flags');
+  const [catalogue, knownGroups] = await Promise.all([
+    api('/api/v1/policy/flags'),
+    // Suggestions only: the groups list needs grant.edit, which a delegated
+    // brand group may not hold, and any group name can be typed instead.
+    api('/api/v1/groups').then((r) => (r.groups ?? []).map((g) => g.name)).catch(() => []),
+  ]);
   const list = el('div', { class: 'stack' });
+  const serviceHost = el('div');
+  const openRules = new Set(); // flag ids whose group rules stay open across re-renders
+  const opt = (value, label, on) => el('option', { value, selected: on ? 'selected' : null }, label);
+
+  function serviceCard(svc) {
+    if (!svc) return null;
+    const failing = !!svc.lastError && (!svc.lastSuccessAt || svc.lastError.at > svc.lastSuccessAt);
+    const state = failing ? ['revoked', 'Not answering'] : svc.lastSuccessAt ? ['live', 'Answering'] : ['', 'Not asked yet'];
+    return el('div', { class: 'card stack' },
+      el('div', { class: 'list-bar' }, el('h2', { class: 'flush' }, 'Flag service'),
+        el('span', { class: `status ${state[0]}`.trim(), role: 'status' }, state[1])),
+      el('p', { class: 'sub flush' }, `${svc.origin} decides the default of ${svc.flags.length === 1 ? 'one flag' : `${svc.flags.length} flags`} through OpenFeature (OFREP). Whenever it does not answer, those flags follow the settings on this page. The toggle setting is always this page's.`),
+      el('dl', { class: 'verify-facts' },
+        el('dt', {}, 'Requests'), el('dd', {}, fmt(svc.requests)),
+        el('dt', {}, 'Fell back'), el('dd', {}, fmt(svc.errors)),
+        el('dt', {}, 'Last answer'), el('dd', {}, when(svc.lastSuccessAt)),
+        el('dt', {}, 'Last fallback'), el('dd', {}, svc.lastError ? `${when(svc.lastError.at)} (${svc.lastError.flag}: ${svc.lastError.reason.replace(/_/g, ' ')})` : 'None')));
+  }
 
   function row(f) {
     const effectiveOn = f.default != null ? f.default === 'on' : f.builtinDefault;
     const hidden = f.visibility === 'hide';
     const serviceAi = f.id === 'ai';
+    const rules = (f.groups ?? []).map((r) => ({ ...r }));
     const status = el('span', { class: 'muted', role: 'status', style: 'margin-left:auto;font-size:.85rem' });
 
-    const opt = (value, label, on) => el('option', { value, selected: on ? 'selected' : null }, label);
     const defSel = el('select', { 'aria-label': `Default state for ${f.label}` },
       opt('inherit', `Inherit (${f.builtinDefault ? 'On' : 'Off'})`, f.default == null),
       opt('on', 'On', f.default === 'on'),
@@ -1748,48 +1776,123 @@ async function viewFeatureFlags(main) {
       opt('show', 'Shown in profile', !hidden),
       opt('hide', 'Hidden (surprise)', hidden));
 
-    async function save() {
+    // One PUT carries the whole record, so the instance settings and the
+    // group rules can never be saved half and half.
+    async function save(nextRules = rules, focusAfter = null) {
       status.className = 'muted';
       status.textContent = 'Saving…';
       try {
-        const res = await api(`/api/v1/policy/flags/${encodeURIComponent(f.id)}`,
-          { method: 'PUT', body: { default: defSel.value === 'inherit' ? null : defSel.value, visibility: visSel.value } });
+        const body = { default: defSel.value === 'inherit' ? null : defSel.value, visibility: visSel.value };
+        if (f.groupRules) body.groups = nextRules.map((r) => ({ group: r.group, default: r.default ?? null, visibility: r.visibility ?? null }));
+        const res = await api(`/api/v1/policy/flags/${encodeURIComponent(f.id)}`, { method: 'PUT', body });
         toast(`Saved ${f.label}`);
-        render(res.flags); // re-render from the authoritative catalogue
+        render(res.flags, res.flagService, focusAfter ? { flag: f.id, target: focusAfter } : null);
+        return true;
       } catch (e) {
         status.className = 'form-err';
         status.textContent = e.status === 403 ? 'Not allowed' : `Error: ${e.message}`;
+        return false;
       }
     }
-    defSel.addEventListener('change', save);
-    visSel.addEventListener('change', save);
+    defSel.addEventListener('change', () => save());
+    visSel.addEventListener('change', () => save());
 
     const control = (label, sel) => el('label', { class: 'stack', style: 'gap:4px;flex:1 1 12rem' },
       el('span', { class: 'muted', style: 'font-size:.8rem' }, label), sel);
+    const everyone = rules.length ? 'Members with no group rule who haven’t chosen get' : 'Members who haven’t chosen get';
 
-    return el('div', { class: 'card stack' },
-      el('div', { class: 'list-bar' }, el('h2', { class: 'flush' }, f.label), status),
+    return el('div', { class: 'card stack', 'data-flag': f.id },
+      el('div', { class: 'list-bar' }, el('h2', { class: 'flush' }, f.label),
+        f.flagService ? el('span', { class: 'chip' }, 'Flag service decides') : null, status),
       f.info ? el('p', { class: 'sub flush' }, f.info) : null,
       el('div', { style: 'display:flex;gap:14px;flex-wrap:wrap' },
         control(serviceAi ? 'Service switch' : 'Default state', defSel), serviceAi ? null : control('User toggle', visSel)),
       el('p', { class: 'sub flush' },
-        serviceAi ? (effectiveOn ? 'On is requested. The instance approval ceiling and capability list still apply. There is no personal override.' : 'Managed AI is disabled. There is no personal override.') : `Members who haven’t chosen get ${effectiveOn ? 'On' : 'Off'}` +
+        serviceAi ? (effectiveOn ? 'On is requested. The instance approval ceiling and capability list still apply. There is no personal override.' : 'Managed AI is disabled. There is no personal override.') : `${everyone} ${effectiveOn ? 'On' : 'Off'}` +
         (hidden
-          ? ' — and the toggle is hidden from their profile (a padlock stands in). Flip the default to reveal a surprise on the day without ever showing a switch.'
-          : ' — and can change it themselves in their profile.')));
+          ? ', and the toggle is hidden from their profile (a padlock stands in). Flip the default to reveal a surprise on the day without ever showing a switch.'
+          : ', and can change it themselves in their profile.')),
+      f.groupRules ? groupRules(f, rules, save) : null);
   }
 
-  function render(next) { list.replaceChildren(...next.map(row)); }
+  function groupRules(f, rules, save) {
+    const ruleRow = (r, i) => {
+      const def = el('select', { 'aria-label': `Default state for ${r.group}` },
+        opt('inherit', 'Same as everyone', r.default == null), opt('on', 'On', r.default === 'on'), opt('off', 'Off', r.default === 'off'));
+      const vis = el('select', { 'aria-label': `Toggle visibility for ${r.group}` },
+        opt('inherit', 'Same as everyone', r.visibility == null), opt('show', 'Shown', r.visibility === 'show'), opt('hide', 'Hidden', r.visibility === 'hide'));
+      const change = () => {
+        const next = rules.map((x, j) => (j === i ? { group: x.group, default: def.value === 'inherit' ? null : def.value, visibility: vis.value === 'inherit' ? null : vis.value } : x));
+        save(next);
+      };
+      def.addEventListener('change', change);
+      vis.addEventListener('change', change);
+      const remove = el('button', { type: 'button', class: 'danger', 'aria-label': `Remove the rule for ${r.group}`,
+        onclick: () => save(rules.filter((_, j) => j !== i), 'summary') }, 'Remove');
+      return el('tr', {},
+        el('td', {}, el('span', { class: 'mono' }, r.group)),
+        el('td', {}, def), el('td', {}, vis),
+        el('td', {}, el('div', { class: 'lc-actions' }, remove)));
+    };
+
+    const taken = new Set(rules.map((r) => r.group));
+    const groupBox = searchSelect(knownGroups.filter((g) => !taken.has(g)).map((g) => ({ value: g, label: g })),
+      { placeholder: 'Group name', onchange: () => {} });
+    const addDef = el('select', {}, opt('on', 'On', true), opt('off', 'Off', false), opt('inherit', 'Same as everyone', false));
+    const addVis = el('select', {}, opt('inherit', 'Same as everyone', true), opt('show', 'Shown', false), opt('hide', 'Hidden', false));
+    const addErr = errSpan();
+    const form = el('form', { class: 'formrow', novalidate: 'true' },
+      field('Group', groupBox.node), field('Default state', addDef), field('User toggle', addVis),
+      el('div', { class: 'flag-groups-add' }, el('button', { type: 'submit' }, 'Add group rule')));
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      addErr.textContent = '';
+      groupBox.input.removeAttribute('aria-invalid');
+      const group = groupBox.input.value.trim();
+      const problem = !group ? 'Enter a group name.'
+        : taken.has(group) ? `${group} already has a rule. Change it in the table.`
+          : addDef.value === 'inherit' && addVis.value === 'inherit' ? 'Choose a default state or a toggle setting for this group.' : '';
+      if (problem) {
+        addErr.textContent = problem;
+        groupBox.input.setAttribute('aria-invalid', 'true');
+        groupBox.input.focus();
+        return;
+      }
+      const ok = await save([...rules, { group, default: addDef.value === 'inherit' ? null : addDef.value, visibility: addVis.value === 'inherit' ? null : addVis.value }], 'input');
+      if (!ok) addErr.textContent = 'The rule was not saved.';
+    });
+
+    const details = el('details', { class: 'compose-section flag-groups', open: rules.length || openRules.has(f.id) ? 'true' : null },
+      el('summary', {}, el('h3', { class: 'section-h' }, 'Group rules'), rules.length ? el('span', { class: 'chip' }, String(rules.length)) : null),
+      rules.length
+        ? dataTable(['Group', 'Default state', 'User toggle', { label: '', w: '1%', sort: false }], rules.map(ruleRow),
+          { sortable: false, filter: false, paginate: false, csv: false })
+        : el('p', { class: 'empty' }, 'No group rules yet. Every member follows the default state and user toggle for everyone.'),
+      form, addErr);
+    details.addEventListener('toggle', () => { if (details.open) openRules.add(f.id); else openRules.delete(f.id); });
+    return details;
+  }
+
+  function render(next, svc, focus = null) {
+    serviceHost.replaceChildren(...[serviceCard(svc)].filter(Boolean));
+    list.replaceChildren(...next.map(row));
+    if (!focus) return;
+    const card = [...list.children].find((c) => c.dataset.flag === focus.flag);
+    const target = focus.target === 'input' ? card?.querySelector('.flag-groups form input') : card?.querySelector('.flag-groups > summary');
+    target?.focus();
+  }
 
   const hdr = await activityHeader('Flag governance edits per day.', [
     { key: 'a', label: 'Edits', match: ['policy.flag.edit'] },
   ]);
   main.replaceChildren(
     el('h1', {}, 'Feature flags'),
-    el('p', { class: 'sub' }, 'Default state and toggle visibility for the shell’s per-user feature flags. A member who hasn’t set one gets the default here; hiding a toggle removes it from their profile while the default still applies — set a flag Off + Hidden to stage a seasonal surprise (Pride, April 1), then flip it On on the day. Changes reach connected shells on their next poll.'),
+    el('p', { class: 'sub' }, 'Default state and toggle visibility for the shell’s per-user feature flags. A member who hasn’t set one gets the default here; hiding a toggle removes it from their profile while the default still applies. Set a flag Off and Hidden to stage a seasonal surprise (Pride, April 1), then flip it On on the day. Changes reach connected shells on their next poll.'),
+    el('p', { class: 'sub' }, 'A group rule sets either setting for members of one group, so a team can pilot a feature. A group rule wins over the setting for everyone. When a member’s groups have different rules, Off wins over On and Hidden wins over Shown.'),
     ...(hdr ? [hdr] : []),
+    serviceHost,
     list);
-  render(flags);
+  render(catalogue.flags, catalogue.flagService);
 }
 
 // Numeric dotted-version compare for the fleet floor — same semantics as the

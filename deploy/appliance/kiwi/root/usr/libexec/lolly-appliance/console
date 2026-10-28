@@ -1,0 +1,80 @@
+#!/bin/bash
+# SPDX-License-Identifier: MPL-2.0
+# Every boot: tell the person at the console where Lolly Work is.
+#
+# Every console (screen and serial) shows the address, the certificate's
+# fingerprint and Cockpit's address. Only the machine's own screen (tty1) shows
+# the one-time owner setup link: a serial console is often logged by a cloud or
+# hypervisor, and the link is a credential. Signed in as root, run
+# `lolly-appliance owner-link` to print it anywhere.
+set -euo pipefail
+. /usr/libexec/lolly-appliance/common.sh
+
+PUBLIC=/run/issue.d/60-lolly.issue
+LOCAL_DIR=/run/lolly/local-issue.d
+LOCAL=$LOCAL_DIR/61-lolly-owner.issue
+install -d -m 0755 /run/issue.d
+install -d -m 0755 /run/lolly
+install -d -m 0700 "$LOCAL_DIR"
+
+base=$(instance_get LOLLY_BASE_URL)
+owner=$(instance_get LOLLY_OWNER_EMAIL)
+fingerprint=$(cat "$TLS_DIR/appliance.sha256" 2>/dev/null || echo unknown)
+work=$(installed_version)
+if [ "$PROFILE" = podman ]; then
+  runtime="Podman $(podman --version 2>/dev/null | awk '{print $3}')"
+else
+  runtime="K3s $(release_field k3s version)"
+fi
+cockpit_host=${base#https://}; cockpit_host=${cockpit_host%%:*}
+
+reload() { agetty --reload 2>/dev/null || true; }
+
+public() { # public STATUS
+  local cockpit="https://$cockpit_host:9090/ (local networks only)"
+  systemctl is-enabled --quiet cockpit.socket 2>/dev/null || cockpit="off (lolly-appliance cockpit on)"
+  umask 022
+  cat > "$PUBLIC.new" <<EOF
+
+  Lolly Work $work appliance (openSUSE Leap 16.1 Immutable, $runtime)
+  Lolly Work:   $base/   $1
+  Certificate:  self-signed for this machine, SHA-256
+                $fingerprint
+  Host console: $cockpit
+
+EOF
+  mv "$PUBLIC.new" "$PUBLIC"
+}
+
+local_text() {
+  umask 077
+  printf '%s\n' "$@" > "$LOCAL.new"
+  mv "$LOCAL.new" "$LOCAL"
+}
+
+public "(starting, this takes a few minutes on first boot)"
+local_text "  First owner: $owner. The setup link appears here once Lolly Work is ready." ""
+reload
+
+deadline=$((SECONDS + 1800))
+until work_ready; do
+  if [ $SECONDS -ge $deadline ]; then
+    public "(not ready; run lolly-appliance status)"
+    reload
+    exit 1
+  fi
+  sleep 5
+done
+
+if owner_has_password "$owner"; then
+  local_text "  Owner: $owner has set a password. Sign in at $base/admin" ""
+elif link=$(issue_owner_link "$owner") && [ -n "$link" ]; then
+  local_text "  First owner: open this one-time link to set the password for $owner." \
+    "  It works once, for 7 days. Signed in as root, lolly-appliance owner-link prints a new one." \
+    "" "  $link" ""
+else
+  local_text "  Could not create the owner setup link. Signed in as root, run lolly-appliance owner-link." ""
+fi
+public "(ready)"
+reload
+log "Lolly Work is ready at $base/"

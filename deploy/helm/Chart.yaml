@@ -8,8 +8,10 @@ description: >-
   room routing across replicas is not supported yet.
 type: application
 
-# Chart version — bump on any change to templates/values (SemVer for the chart).
-version: 0.3.3
+# Chart version: the Lolly release version, the same number as appVersion and
+# Work's package.json, so people install one version of everything. Chart-only
+# changes ship with the next release; tests/helm-chart.test.ts fails on drift.
+version: 1.1.2
 
 # The lolly-work server version this chart is designed against. Used as the
 # default image tag when image.tag is left empty. Keep in sync with the app's
@@ -38,6 +40,8 @@ annotations:
     - name: Source and support
       url: https://github.com/lolly-tools/lolly-work
   artifacthub.io/changes: |
+    - kind: added
+      description: Optional PrometheusRule of suggested alerts and a Grafana dashboard ConfigMap, both off by default.
     - kind: added
       description: Official chart distribution, package documentation and Rancher configuration questions.
     - kind: changed

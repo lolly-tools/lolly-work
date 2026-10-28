@@ -1,9 +1,54 @@
 // SPDX-License-Identifier: MPL-2.0
-import { createHash, generateKeyPairSync } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from 'node:crypto';
 import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
+
+const coordinate = /^[A-Za-z0-9_-]{43}$/;
+const publicCoordinates = (key) => {
+  if (key?.kty !== 'EC' || key.crv !== 'P-256' || !coordinate.test(key.x) || !coordinate.test(key.y)) throw new Error('Catalogue keys must be P-256 JWKs');
+  return { kty: 'EC', crv: 'P-256', x: key.x, y: key.y };
+};
+
+/** The public half of this installation's catalogue signing key. */
+export function installationCatalogueKey(keyFile) {
+  return publicCoordinates(createPublicKey(createPrivateKey({ key: JSON.parse(readFileSync(keyFile, 'utf8')), format: 'jwk' })).export({ format: 'jwk' }));
+}
+
+/**
+ * The release shell pins the publisher's catalogue key at build time, and refuses any
+ * catalogue that key did not sign. Work signs each person's filtered catalogue with this
+ * installation's key instead, so the shell this installation serves must pin that key.
+ * The coordinates are rewritten in place (equal length) in the shell's own scripts, and
+ * their precompressed copies are rebuilt. The pack copy keeps the publisher's signature,
+ * which the server verifies against the pinned publisher key.
+ *
+ * TODO(1.1.4): remove this step. From 1.1.3 the server serves the public half of its key
+ * at GET /api/v1/catalog/public-key and the web app accepts that key from its own origin,
+ * so a release.json that pins a 1.1.3 or later pair needs no patched scripts. Keep the
+ * step for the 1.1.3 package, then drop it once that pair passes its browser check
+ * without the patch.
+ */
+export function bindShellCatalogueKey(shell, publisher, installation) {
+  const from = publicCoordinates(publisher), to = publicCoordinates(installation);
+  const app = join(shell, '_app'), files = [];
+  for (const name of readdirSync(app).sort()) {
+    const file = join(app, name);
+    if (!name.endsWith('.js') || !lstatSync(file).isFile()) continue;
+    const text = readFileSync(file, 'latin1'), x = text.split(from.x).length - 1, y = text.split(from.y).length - 1;
+    if (x !== y) throw new Error(`${name} carries an incomplete catalogue key`);
+    if (!x) continue;
+    const bytes = Buffer.from(text.split(from.x).join(to.x).split(from.y).join(to.y), 'latin1');
+    writeFileSync(file, bytes);
+    if (existsSync(file + '.br')) writeFileSync(file + '.br', brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: bytes.length } }));
+    if (existsSync(file + '.gz')) writeFileSync(file + '.gz', gzipSync(bytes, { level: 9 }));
+    files.push(name);
+  }
+  if (!files.some((name) => name.startsWith('web-boot-'))) throw new Error('The shell does not pin the release catalogue key; content not installed');
+  return { publisher: from, installation: to, files };
+}
 
 export function archivePaths(listing) {
   const names = listing.trim().split('\n').map((name) => name.replace(/^\.\//, ''));
@@ -36,11 +81,25 @@ export async function prepareContent(release, contentRoot, keysRoot, download = 
     writeFileSync(keyFile, JSON.stringify(privateKey.export({ format: 'jwk' })), { flag: 'wx', mode: 0o600 });
   }
   if (!lstatSync(keyFile).isFile() || lstatSync(keyFile).isSymbolicLink()) throw new Error('Signing key must be a regular file');
-  if (process.getuid?.() === 0) chownSync(keyFile, 1000, 1000);
+  // This service runs as root with only CHOWN, so it reads the key as the file's owner
+  // and then hands the file back to the server's user.
+  const asRoot = process.getuid?.() === 0;
+  let installation = null;
+  try {
+    if (asRoot) chownSync(keyFile, 0, 0);
+    if (release.catalogPublicKey) installation = installationCatalogueKey(keyFile);
+  } finally {
+    if (asRoot) chownSync(keyFile, 1000, 1000);
+  }
   const target = join(contentRoot, release.sha256);
   if (existsSync(target)) {
     if (lstatSync(target).isSymbolicLink() || readFileSync(join(target, 'release.sha256'), 'utf8').trim() !== release.sha256) {
       throw new Error('Existing content differs; preserve it and inspect before retrying');
+    }
+    const marker = join(target, 'catalogue-key.json');
+    const bound = installation && existsSync(marker) ? JSON.parse(readFileSync(marker, 'utf8')).installation : null;
+    if (installation && (bound?.x !== installation.x || bound?.y !== installation.y)) {
+      throw new Error('Existing content does not trust this installation\'s catalogue key; preserve it and inspect before retrying');
     }
     return target;
   }
@@ -74,6 +133,10 @@ export async function prepareContent(release, contentRoot, keysRoot, download = 
     const pack = join(staged, 'pack');
     mkdirSync(pack);
     for (const name of ['tools', 'catalog']) cpSync(join(shell, name), join(pack, name), { recursive: true });
+    if (installation) {
+      const binding = bindShellCatalogueKey(shell, release.catalogPublicKey, installation);
+      writeFileSync(join(staged, 'catalogue-key.json'), JSON.stringify(binding, null, 2) + '\n');
+    }
     writeFileSync(join(staged, 'release.sha256'), release.sha256 + '\n');
     renameSync(staged, target);
     return target;
@@ -84,7 +147,8 @@ export async function prepareContent(release, contentRoot, keysRoot, download = 
 }
 
 if (process.env.LW_DISTRIBUTION_INIT === '1') {
-  await prepareContent({ url: process.env.LW_SHELL_URL, sha256: process.env.LW_SHELL_SHA256 }, '/content', '/keys');
+  await prepareContent({ url: process.env.LW_SHELL_URL, sha256: process.env.LW_SHELL_SHA256,
+    catalogPublicKey: JSON.parse(process.env.LW_SOURCE_CATALOG_PUBLIC_KEY ?? 'null') ?? undefined }, '/content', '/keys');
   mkdirSync('/state', { recursive: true });
   const state = lstatSync('/state');
   if (!state.isDirectory() || state.isSymbolicLink()) throw new Error('Configuration state must be a physical directory');

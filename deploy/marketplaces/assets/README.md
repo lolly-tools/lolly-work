@@ -31,6 +31,11 @@ shell has the publisher's key built in. Signed in, the gallery says it couldn't 
 the tools and a tool view shows only the refusal. The fixture's API checks still pass
 because they never verify that signature in a browser.
 
+Since the content service gives the served shell the installation's key on first
+start (see [the maintenance notes](../README.md)), a signed-in browser lists the tools,
+and the capture run fails if the gallery shows none. The withheld views come back with
+the next capture run.
+
 `screenshots.json` records the two shell views as withheld, with the shell's own
 refusal message as the reason, and the capture run uploads what the browser showed
 under `diagnostics/`. A shell view is never captured while the shell shows a refusal,

@@ -49,6 +49,17 @@ const deployment = (out: string, worker = false) => manifests(out).find(doc =>
   doc?.kind === 'Deployment' && (doc.metadata.labels?.['app.kubernetes.io/component'] === 'render-worker') === worker);
 const SMALL = ['-f', `${CHART}/values-small-suse.yaml`];
 
+// One number for everything people install (Andy, 2026-10-27): the chart's own version
+// is the Lolly release, the same as appVersion and Work's package.json. Read without
+// helm, so the check runs everywhere.
+test('the chart carries the release version: version equals appVersion equals Work', () => {
+  const work = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const chart = parse(readFileSync(join(CHART, 'Chart.yaml'), 'utf8'));
+  assert.match(work, /^\d+\.\d+\.\d+$/);
+  assert.equal(chart.appVersion, work, 'Chart.yaml appVersion');
+  assert.equal(chart.version, work, 'Chart.yaml version');
+});
+
 test('chart application version matches Work and defaults server, migration and worker images together', { skip: noHelm }, () => {
   const appVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   const chart = parse(readFileSync(join(CHART, 'Chart.yaml'), 'utf8'));
@@ -277,6 +288,24 @@ test('worker accepts a reviewed local seccomp profile and refuses an unconfined 
   for (const profile of [{ type: 'Unconfined' }, { type: 'Localhost', localhostProfile: '../profile.json' }, { type: 'Localhost' }]) {
     const refused = render([...SECRETS, ...WORKER, '--set-json', `renderWorker.seccompProfile=${JSON.stringify(profile)}`]);
     assert.equal(refused.ok, false); assert.match(refused.err, /seccompProfile/);
+  }
+});
+
+test('worker names an AppArmor profile only when asked, for AppArmor nodes on Kubernetes 1.30+', { skip: noHelm }, () => {
+  const plain = render([...SECRETS, ...WORKER]); assert.ok(plain.ok, plain.err);
+  assert.equal(deployment(plain.out, true).spec.template.spec.containers[0].securityContext.appArmorProfile, undefined, 'SELinux nodes need the field left out');
+  const localhost = ['--set-json', 'renderWorker.appArmorProfile={"type":"Localhost","localhostProfile":"lolly-chromium"}'];
+  const approved = render([...SECRETS, ...WORKER, ...localhost, '--set-json', 'renderWorker.seccompProfile={"type":"Localhost","localhostProfile":"lolly/chromium.json"}', '--kube-version', '1.30.0']);
+  assert.ok(approved.ok, approved.err);
+  const context = deployment(approved.out, true).spec.template.spec.containers[0].securityContext;
+  assert.deepEqual(context.appArmorProfile, { type: 'Localhost', localhostProfile: 'lolly-chromium' });
+  assert.deepEqual(context.seccompProfile, { type: 'Localhost', localhostProfile: 'lolly/chromium.json' });
+  assert.equal(deployment(approved.out).spec.template.spec.containers[0].securityContext.appArmorProfile, undefined, 'the control plane is unchanged');
+  const old = render([...SECRETS, ...WORKER, ...localhost, '--kube-version', '1.29.9']);
+  assert.equal(old.ok, false); assert.match(old.err, /appArmorProfile requires Kubernetes 1\.30/);
+  for (const profile of [{ type: 'Unconfined' }, { type: 'Localhost' }, { type: 'Localhost', localhostProfile: '../lolly-chromium' }, { localhostProfile: 'lolly-chromium' }]) {
+    const refused = render([...SECRETS, ...WORKER, '--set-json', `renderWorker.appArmorProfile=${JSON.stringify(profile)}`, '--kube-version', '1.35.0']);
+    assert.equal(refused.ok, false, JSON.stringify(profile)); assert.match(refused.err, /appArmorProfile/);
   }
 });
 
@@ -552,7 +581,8 @@ test('fresh-install migration hooks use an existing account and keep cleanup ord
     'the pre-install hook cannot wait for an ordinary resource Helm creates after hooks');
   assert.equal(job.spec.template.spec.automountServiceAccountToken, false);
   assert.equal(job.metadata.annotations['helm.sh/hook'], 'pre-install,pre-upgrade');
-  assert.equal(job.metadata.annotations['helm.sh/hook-delete-policy'], 'before-hook-creation');
+  assert.equal(job.metadata.annotations['helm.sh/hook-delete-policy'], 'before-hook-creation',
+    'the last migration Job and its logs stay until the next upgrade, and Helm waits for its deletion before creating the next one');
   const secret = docs.find(doc => doc?.kind === 'Secret');
   assert.ok(Number(secret.metadata.annotations['helm.sh/hook-weight']) < Number(job.metadata.annotations['helm.sh/hook-weight']));
   assert.equal(docs.filter(doc => doc?.kind === 'ServiceAccount').length, 1,
@@ -595,4 +625,162 @@ test('worker DNS trust is namespace-scoped and HTTPS-only egress excludes specia
   const unscopedDns = render([...active, '--set-json', 'renderWorker.networkPolicy.dnsNamespaceLabels=null']);
   assert.equal(unscopedDns.ok, false);
   assert.match(unscopedDns.err, /dnsNamespaceLabels/);
+});
+
+// Plan 324 M2: suggested alerts and a dashboard, both off by default, reading only what /metrics exports.
+const MONITORING = ['--set', 'metrics.prometheusRule.enabled=true', '--set', 'metrics.grafanaDashboard.enabled=true'];
+const ruleOf = (out: string) => manifests(out).find(doc => doc?.kind === 'PrometheusRule');
+const alertsOf = (out: string): { alert: string; expr: string; labels: Record<string, string>; annotations: Record<string, string> }[] =>
+  ruleOf(out).spec.groups.flatMap((group: { rules: unknown[] }) => group.rules);
+/** Metric names the server can emit: scrape-time gauges in app.ts, counters and blob lines in metrics.ts. */
+function exportedMetrics(): Set<string> {
+  const source = ['server/src/api/app.ts', 'server/src/observability/metrics.ts'].map(serverSource).join('\n');
+  return new Set([...source.matchAll(/(?:name: |inc\()'(lw_[a-z0-9_]+)'/g)].map(match => match[1]!));
+}
+/** Server sources read as text, by path from the repository root (they are not imported). */
+const serverSource = (path: string): string => readFileSync(join(CHART, '../..', path), 'utf8');
+const metricNames = (text: string): string[] => [...new Set(text.match(/\blw_[a-z0-9_]+/g) ?? [])];
+
+test('alerts and dashboard stay off by default', { skip: noHelm }, () => {
+  const r = render(SECRETS); assert.ok(r.ok, r.err);
+  assert.equal(ruleOf(r.out), undefined);
+  assert.ok(!manifests(r.out).some(doc => doc?.kind === 'ConfigMap' && doc.metadata.name.endsWith('-dashboard')));
+});
+
+test('suggested alerts read only exported metrics and registered routes, scoped to this release', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...MONITORING]); assert.ok(r.ok, r.err);
+  const alerts = alertsOf(r.out);
+  const exported = exportedMetrics();
+  assert.ok(exported.has('lw_audit_chain_intact') && exported.has('lw_http_requests_total'), 'the source scan finds the exported metrics');
+  assert.equal(new Set(alerts.map(a => a.alert)).size, alerts.length);
+  const app = serverSource('server/src/api/app.ts');
+  for (const alert of alerts) {
+    assert.match(alert.alert, /^LollyWork[A-Za-z]+$/);
+    assert.ok(['critical', 'warning'].includes(alert.labels.severity!), alert.alert);
+    assert.ok(alert.annotations.summary && alert.annotations.description, `${alert.alert} explains itself`);
+    for (const name of metricNames(alert.expr)) assert.ok(exported.has(name), `${alert.alert} reads ${name}, which Work does not export`);
+    for (const selector of alert.expr.match(/lw_[a-z0-9_]+\{[^}]*\}/g) ?? []) {
+      assert.ok(selector.includes('job="lolly-lolly-work",namespace="default"'), `${alert.alert}: ${selector} is not scoped to the release`);
+    }
+    for (const route of alert.expr.match(/\/[a-z0-9/:]+(?=["|])/g) ?? []) {
+      assert.ok(app.includes(`'${route}'`), `${alert.alert} names route ${route}, which no handler registers`);
+    }
+    assert.ok(!alert.expr.includes('__'), `${alert.alert} kept a placeholder`);
+  }
+  assert.match(alerts.find(a => a.alert === 'LollyWorkRateLimitBucketsHigh')!.expr, /> 0\.8 \* 50000$/);
+});
+
+test('alert options: labels, a custom selector, disabled alerts and the configured bucket limit', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...MONITORING,
+    '--set-json', 'metrics.prometheusRule.alertLabels={"team":"platform"}',
+    '--set-json', 'metrics.prometheusRule.disabled=["LollyWorkBlobReadsNearOffload"]',
+    '--set-string', 'metrics.prometheusRule.seriesSelector=job="work"',
+    '--set', 'config.rateLimit.maxBuckets=20000', '--set', 'metrics.prometheusRule.namespace=monitoring']);
+  assert.ok(r.ok, r.err);
+  const alerts = alertsOf(r.out);
+  assert.ok(!alerts.some(a => a.alert === 'LollyWorkBlobReadsNearOffload'));
+  for (const alert of alerts) {
+    assert.equal(alert.labels.team, 'platform');
+    assert.ok(alert.labels.severity);
+    for (const selector of alert.expr.match(/lw_[a-z0-9_]+\{[^}]*\}/g) ?? []) assert.ok(selector.startsWith(selector.split('{')[0] + '{job="work"'), selector);
+  }
+  assert.equal(ruleOf(r.out).metadata.namespace, 'monitoring');
+  assert.match(alerts.find(a => a.alert === 'LollyWorkRateLimitBucketsHigh')!.expr, /> 0\.8 \* 20000$/);
+  const directory = mkdtempSync(join(tmpdir(), 'lolly-helm-rules-config-'));
+  try {
+    const config = join(directory, 'instance.json');
+    writeFileSync(config, JSON.stringify({ rateLimit: { maxBuckets: 7000 } }), { mode: 0o600 });
+    const raw = render([...SECRETS, ...MONITORING, '--set-file', `config=${config}`]); assert.ok(raw.ok, raw.err);
+    assert.match(alertsOf(raw.out).find(a => a.alert === 'LollyWorkRateLimitBucketsHigh')!.expr, /> 0\.8 \* 7000$/, 'a raw instance.json is read too');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  const unknown = render([...SECRETS, ...MONITORING, '--set-json', 'metrics.prometheusRule.disabled=["LollyWorkTypo"]']);
+  assert.equal(unknown.ok, false); assert.match(unknown.err, /unknown alert "LollyWorkTypo"/);
+  const names = alertsOf(render([...SECRETS, ...MONITORING]).out).map(a => a.alert);
+  const none = render([...SECRETS, ...MONITORING, '--set-json', `metrics.prometheusRule.disabled=${JSON.stringify(names)}`]);
+  assert.equal(none.ok, false); assert.match(none.err, /leaves no alerts/);
+});
+
+test('Grafana dashboard ConfigMap carries the sidecar label and reads only exported metrics', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...MONITORING, '--set-json', 'metrics.grafanaDashboard.annotations={"grafana_folder":"Lolly"}']);
+  assert.ok(r.ok, r.err);
+  const map = manifests(r.out).find(doc => doc?.kind === 'ConfigMap' && doc.metadata.name.endsWith('-dashboard'));
+  assert.equal(map.metadata.labels.grafana_dashboard, '1');
+  assert.equal(map.metadata.annotations.grafana_folder, 'Lolly');
+  const dashboard = JSON.parse(map.data['lolly-work.json']);
+  assert.deepEqual(dashboard, JSON.parse(readFileSync(join(CHART, 'dashboards/lolly-work.json'), 'utf8')));
+  assert.equal(dashboard.uid, 'lolly-work');
+  assert.deepEqual(dashboard.templating.list.map((v: { name: string }) => v.name), ['datasource', 'namespace', 'job']);
+  const exported = exportedMetrics();
+  const panels = dashboard.panels.filter((panel: { type: string }) => panel.type !== 'row');
+  assert.ok(panels.length >= 15);
+  for (const panel of panels) {
+    assert.ok(panel.title && panel.description, `panel ${panel.id} has a title and a description`);
+    for (const target of panel.targets) {
+      assert.ok(metricNames(target.expr).length, `${panel.title} reads a Work metric`);
+      for (const name of metricNames(target.expr)) assert.ok(exported.has(name), `${panel.title} reads ${name}, which Work does not export`);
+      assert.match(target.expr, /namespace="\$namespace",job="\$job"/, `${panel.title} follows the dashboard variables`);
+    }
+  }
+});
+
+// promtool runs where it is installed; helm qualification installs a checksum-pinned copy.
+const promtool = spawnSync('promtool', ['--version'], { encoding: 'utf8' });
+const noPromtool = promtool.error || promtool.status !== 0 ? 'install promtool to check and unit-test the alert rules' : false;
+if (process.env.LW_REQUIRE_HELM_TESTS === '1' && noPromtool) throw new Error('Helm qualification requires promtool for the alert rules');
+
+test('alert rules pass promtool check and their unit tests', { skip: noPromtool }, () => {
+  const r = spawnSync('helm', ['template', 'lolly-work', CHART, '-n', 'lolly-work', ...SECRETS, '--set', 'metrics.prometheusRule.enabled=true'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const directory = mkdtempSync(join(tmpdir(), 'lolly-promtool-'));
+  try {
+    writeFileSync(join(directory, 'rules.yaml'), JSON.stringify({ groups: ruleOf(r.stdout).spec.groups }));
+    writeFileSync(join(directory, 'rules.test.yaml'), readFileSync(join(CHART, 'files/prometheus-rules.test.yaml')));
+    const check = spawnSync('promtool', ['check', 'rules', '--lint=all', '--lint-fatal', 'rules.yaml'], { cwd: directory, encoding: 'utf8' });
+    assert.equal(check.status, 0, check.stdout + check.stderr);
+    const unit = spawnSync('promtool', ['test', 'rules', 'rules.test.yaml'], { cwd: directory, encoding: 'utf8' });
+    assert.equal(unit.status, 0, unit.stdout + unit.stderr);
+    const tested = new Set([...readFileSync(join(CHART, 'files/prometheus-rules.test.yaml'), 'utf8').matchAll(/alertname: (\w+)/g)].map(m => m[1]));
+    for (const alert of alertsOf(r.stdout)) assert.ok(tested.has(alert.alert), `${alert.alert} has a promtool unit test`);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('OpenTelemetry export is off by default and sets the standard variables on the server only when on', { skip: noHelm }, () => {
+  const envNames = (doc: { spec: { template: { spec: { containers: { env?: { name: string }[] }[] } } } }) =>
+    doc.spec.template.spec.containers.flatMap(c => (c.env ?? []).map(e => e.name));
+  const off = render([...SECRETS, ...WORKER]);
+  assert.ok(off.ok, off.err);
+  assert.doesNotMatch(off.out, /OTEL_/, 'nothing is set, so the server exports nothing');
+
+  const on = render([...SECRETS, ...WORKER, '--set', 'otel.enabled=true', '--set', 'otel.endpoint=http://otel-collector.observability.svc:4318',
+    '--set', 'otel.protocol=http/json', '--set', 'otel.serviceName=work-eu', '--set', 'otel.logs=false',
+    '--set-json', 'otel.resourceAttributes={"deployment.environment.name":"prod one","team":"brand,web"}',
+    '--set', 'otel.sampler=parentbased_traceidratio', '--set', 'otel.samplerArg=0.25',
+    '--set', 'otel.headersSecret.name=otlp-auth', '--set', 'otel.headersSecret.key=headers']);
+  assert.ok(on.ok, on.err);
+  const app = deployment(on.out);
+  const env = Object.fromEntries(app.spec.template.spec.containers[0].env.map((e: { name: string; value?: string; valueFrom?: unknown }) => [e.name, e.value ?? e.valueFrom]));
+  assert.equal(env.OTEL_EXPORTER_OTLP_ENDPOINT, 'http://otel-collector.observability.svc:4318');
+  assert.equal(env.OTEL_EXPORTER_OTLP_PROTOCOL, 'http/json');
+  assert.equal(env.OTEL_SERVICE_NAME, 'work-eu');
+  assert.equal(env.OTEL_RESOURCE_ATTRIBUTES, 'deployment.environment.name=prod%20one,team=brand%2Cweb', 'percent-encoded, as the variable defines');
+  assert.equal(env.OTEL_TRACES_EXPORTER, 'otlp');
+  assert.equal(env.OTEL_METRICS_EXPORTER, 'otlp');
+  assert.equal(env.OTEL_LOGS_EXPORTER, 'none');
+  assert.equal(env.OTEL_TRACES_SAMPLER_ARG, '0.25');
+  assert.deepEqual(env.OTEL_EXPORTER_OTLP_HEADERS, { secretKeyRef: { name: 'otlp-auth', key: 'headers' } }, 'the header value comes from a Secret, never from values');
+  const migration = manifests(on.out).find(doc => doc?.kind === 'Job');
+  assert.ok(!envNames(migration).some(n => n.startsWith('OTEL_')), 'the migrate Job exports nothing');
+  assert.ok(!envNames(deployment(on.out, true)).some(n => n.startsWith('OTEL_')), 'nor does the render worker');
+
+  const missing = render([...SECRETS, '--set', 'otel.enabled=true']);
+  assert.equal(missing.ok, false);
+  assert.match(missing.err, /otel.endpoint is required/);
+  for (const bad of ['otel.protocol=grpc', 'otel.sampler=sometimes', 'otel.samplerArg=1.5', 'otel.endpoint=collector:4318', 'otel.compression=zstd']) {
+    const r = render([...SECRETS, '--set', 'otel.enabled=true', '--set', 'otel.endpoint=http://c:4318', '--set', bad]);
+    assert.equal(r.ok, false, `${bad} must be refused by values.schema.json`);
+  }
 });

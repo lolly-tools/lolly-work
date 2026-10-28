@@ -2,12 +2,15 @@
 """Node side of the lolly.ing preview deploy (PROPOSAL 4.3 to 4.8). Runs as root inside the unit.
 
 What it may change: the imported instance image and its pins; new generation
-ConfigMaps; one backup Job from the existing CronJob; read-only check Jobs; and,
-only with pending migrations, the classifier and migrate Jobs plus whatever the
-Phase 2A rehearsal driver creates in its own namespace. Then the target
-Deployment's image, config ConfigMap reference and annotations. It never reads
-or changes a Secret, a PVC, Postgres directly, the edge or DNS, and never execs
-into a Pod.
+ConfigMaps; read-only check Jobs; and, only with pending migrations (or at the
+cut-over), one backup Job from the existing CronJob, the classifier and migrate
+Jobs, plus whatever the restore rehearsal driver creates in its own namespace
+when the profile configures one. Then the target Deployment's image, config
+ConfigMap reference and annotations, and once, at the cut-over, which Secret its
+catalog signing key reference names. It never reads or changes a Secret's value,
+a PVC, Postgres directly, the edge or DNS, never execs into a Pod, and never
+restores the live database: after a non-additive migration a failed switch is
+held, and the restore is a human step (the lolly.ing runbook).
 """
 
 from __future__ import annotations
@@ -29,8 +32,61 @@ from preview_expect import format_lowering
 from preview_receipt import verify_frontend_receipt
 
 key = N.key
+# What a held run tells the operator. The tool never restores the live database itself: a restore drops every write
+# since the backup, and it is run by hand from the lolly.ing runbook.
+HOLD_NOTE = ("automatic rollback is off after a non-additive migration. Recover with a forward fix (deploy <fix> "
+             "--clear-hold), or roll back by restoring this run's backup (status: backup) with its previous image, by the "
+             "lolly.ing runbook")
 COOKIE_PATTERN = r"lw_session=[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]{16,3800}"
+TOKEN_PATTERN = r"lwt_[A-Za-z0-9_-]{16,128}"
 ACCOUNT_ROLES = ("member",)  # least privilege that can still render one QR code with a grant
+TOKEN_ROLES = ("viewer", "member")  # a service token: member or lower; the grant below adds the one export it needs
+# Work's answer when the smoke may not render the QR code, and the grant that fixes it.
+EXPORT_GRANT = "export.server on tool:qr-code"
+# The Work change that lets a service token read the catalogue and name itself at /api/auth/session.
+TOKEN_READS_PR = "lolly-work PR #237"
+
+
+class SmokeCredential:
+    """What the smoke signs in with: a service token or a member's session cookie, and the one header that carries
+    it. The value never appears in a repr, a log line or a result; only `kind` does."""
+
+    __slots__ = ("kind", "_header", "_value")
+
+    def __init__(self, kind, header, value):
+        self.kind, self._header, self._value = kind, header, value
+
+    def headers(self, **extra):
+        return {self._header: self._value, **extra}
+
+    def __repr__(self):
+        return f"SmokeCredential({self.kind})"
+
+
+def _private_root_file(path, what):
+    """One small private root file, read without following a link. None only when it does not exist."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise Refusal("SMOKE_ACCOUNT", f"the smoke {what} file cannot be opened ({type(exc).__name__}); see the README") from exc
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077 and info.st_size <= 4096,
+                "SMOKE_ACCOUNT", f"the smoke {what} file must be a private root file")
+        return os.read(fd, 4097).decode("ascii", "replace").strip()
+    finally:
+        os.close(fd)
+
+
+def export_detail(response, kind, sub):
+    """What a QR export answer means. A 403 names the grant the smoke account is missing."""
+    content = (response.header("Content-Type") or "").split(";")[0].strip()
+    if response.status == 403:
+        holder = f"user:svc_{sub[len('token:'):]}" if kind == "token" and sub.startswith("token:") else "the smoke member"
+        return f"HTTP 403: Work refuses the render; grant {EXPORT_GRANT} (allow) to {holder}"
+    return f"HTTP {response.status}; {content or 'no content type'} through the render worker"
 
 
 def _number(value, low, high, label):
@@ -44,7 +100,7 @@ def validate_ing_request(request, au):
     anchors = A.ING
     require(isinstance(request, dict) and request.get("version") == 1 and request.get("site") == "lolly.ing",
             "BAD_REQUEST", "unsupported request")
-    require(request.get("kind") in ("deploy", "rollback", "convert", "gc", "read"), "BAD_REQUEST", "unknown kind for lolly.ing")
+    require(request.get("kind") in ("deploy", "rollback", "convert", "revert", "gc", "read"), "BAD_REQUEST", "unknown kind for lolly.ing")
     require(isinstance(request.get("deployId"), str) and DEPLOY_ID.fullmatch(request["deployId"]) is not None,
             "BAD_REQUEST", "deploy id is malformed")
     require(isinstance(request.get("tool"), str) and HEX64.fullmatch(request["tool"]) is not None, "BAD_REQUEST", "tool hash")
@@ -79,15 +135,23 @@ def validate_ing_request(request, au):
             and isinstance(smoke["pages"], list) and all(isinstance(p, str) and p.startswith("/") for p in smoke["pages"]),
             "BAD_REQUEST", "smoke settings")
     rehearsal = request.get("rehearsal")
-    require(isinstance(rehearsal, dict) and set(rehearsal) == {"storageHost", "storageAddress"}
-            and all(isinstance(rehearsal[k], str) and 0 < len(rehearsal[k]) <= 253 for k in rehearsal), "BAD_REQUEST",
+    require(rehearsal is None or (isinstance(rehearsal, dict) and set(rehearsal) == {"storageHost", "storageAddress"}
+            and all(isinstance(rehearsal[k], str) and 0 < len(rehearsal[k]) <= 253 for k in rehearsal)), "BAD_REQUEST",
             "rehearsal settings")
     require(type(request.get("drillFailSmoke")) is bool and type(request.get("clearHold")) is bool, "BAD_REQUEST", "flags")
-    if request["kind"] in ("deploy", "convert"):
+    # The maintenance approval flow is gone (Andy, 2026-10-27); a request that still carries one is from an older Mac.
+    require("maintenanceApproval" not in request, "BAD_REQUEST", "maintenance approvals are no longer part of a request")
+    if request["kind"] in ("deploy", "convert", "revert"):
         I.validate_release(request.get("release"))
-        approval = request.get("maintenanceApproval")
-        require(approval is None or (isinstance(approval, dict) and set(approval) == {"run", "approver", "environment"}),
-                "BAD_REQUEST", "maintenance approval")
+    if request["kind"] == "revert":
+        # The cut-over's own reviewed plan, to put the claim layout back after a person restored the database.
+        plan = request.get("conversion")
+        cutover = plan.get("cutover") if isinstance(plan, dict) else None
+        require(isinstance(cutover, dict) and plan.get("kind") == "lolly-ing-cutover" and isinstance(plan.get("deployId"), str)
+                and DEPLOY_ID.fullmatch(plan["deployId"]) is not None and plan["deployId"] != request["deployId"]
+                and all(isinstance(cutover.get(k), str) for k in ("image", "config", "signingKeySecret"))
+                and isinstance(cutover.get("volumes"), list) and isinstance(cutover.get("mounts"), list)
+                and plan.get("release") == request["release"], "BAD_REQUEST", "the cut-over plan to revert is malformed")
     if request["kind"] == "convert":
         plan = request.get("conversion")
         require(isinstance(plan, dict) and isinstance(plan.get("cutover"), dict) and isinstance(plan["cutover"].get("patch"), list)
@@ -112,7 +176,8 @@ class IngRunner(N.Runner):
         self.jobs = 0
 
     def handlers(self):
-        return {"deploy": self.run_deploy, "rollback": self.run_rollback, "convert": self.run_convert, "gc": self.run_gc}
+        return {"deploy": self.run_deploy, "rollback": self.run_rollback, "convert": self.run_convert,
+                "revert": self.run_revert, "gc": self.run_gc}
 
     # Small reads -------------------------------------------------------
     def namespace(self):
@@ -190,10 +255,45 @@ class IngRunner(N.Runner):
                 require(done.returncode == 0, "IMPORT_FAILED", f"ctr images import exited {done.returncode}")
             finally:
                 os.close(fd)
+        self.name_by_digest(release)
         self.verify_image(release)
         self.drop_run_tag(release)
         with contextlib.suppress(OSError):
             os.unlink(os.path.join(N.PATHS["spool"], release["archive"]["sha256"] + ".oci.tar"))
+
+    def name_by_digest(self, release):
+        """Give the image its digest name when the import made only the run tag.
+
+        containerd 1.x's ctr imports locally by default, and `--digests` adds the digest name beside the run tag.
+        containerd 2.x's ctr imports through the transfer service and passes `!--skip-digest-for-named` as
+        skipNamed (cmd/ctr/commands/images/import.go L143 at v2.2.7), so a manifest the archive names gets only
+        that name (core/transfer/image/imagestore.go L254-262). The digest name is made from the run tag, which
+        must point at the manifest's digest and carry this import's label. `ctr images tag` through the transfer
+        service copies no labels, so the run tag's labels are set again and read back.
+
+        A digest name that carries this import's pulled label, from the import or an earlier run, is left as it is:
+        verify_image judges it and drop_run_tag checks the run tag. Any other label does not count, because K3s's
+        CRI adds io.cri-containerd.image=managed to a new name at once; a run stopped between the tag and the
+        labels gets them on the next run. A pin another procedure made stays theirs (review S-M1)."""
+        pulled = A.PULLED_LABEL.split("=")[0]
+        refs = self.containerd_refs()
+        tag, named = refs.get(release["refName"]), refs.get(release["image"])
+        if tag is None or (named is not None and (named[1].get(pulled) == "true" or named[0] != release["digest"])):
+            return
+        require(tag[0] == release["digest"] and tag[1].get(pulled) == "true", "IMAGE_MISMATCH",
+                "the run tag names another image or was not made by this import")
+        if named is None:
+            self.log("digest-name", image=release["image"])
+            self.k3s_run(["ctr", "--namespace", "k8s.io", "images", "tag", release["refName"], release["image"]])
+        have = named[1] if named is not None else {}
+        wanted = {name: value for name, value in tag[1].items() if have.get(name) != value}
+        if have.get("io.cri-containerd.pinned") == "pinned":
+            wanted.pop(A.OWN_PIN_LABEL.split("=")[0], None)
+        for name, value in sorted(wanted.items()):
+            self.label(release["image"], f"{name}={value}")
+        named = self.containerd_refs().get(release["image"])
+        require(named is not None and named[0] == release["digest"] and all(named[1].get(k) == v for k, v in wanted.items()),
+                "IMAGE_MISMATCH", "the digest name made from the run tag did not read back with its labels")
 
     def content(self, digest):
         data = subprocess.run([self.k3s, "ctr", "--namespace", "k8s.io", "content", "get", digest], capture_output=True,
@@ -294,7 +394,11 @@ class IngRunner(N.Runner):
     def rehearse(self, backup, image, previous_image, pending):
         """The restore rehearsal (deploy/preview/restore-rehearsal.py, #208) as a library: restore the fresh backup
         in its own namespace, apply the pending files with the new image's runner within the lock budget, and boot
-        the previous image on the copy for one save round trip (R20 S7, R22 S4). This run's check-target covers it."""
+        the previous image on the copy for one save round trip (R20 S7, R22 S4). This run's check-target covers it.
+        Optional on the preview-grade route: None when the profile configures no rehearsal."""
+        if self.request.get("rehearsal") is None:
+            self.log("rehearsal", skipped=True, note="the profile configures no restore rehearsal; the verified backup comes first")
+            return None
         try:
             import preview_rehearsal as RH
         except ImportError as exc:
@@ -344,11 +448,20 @@ class IngRunner(N.Runner):
         require(isinstance(completed, str), "BACKUP_UNVERIFIED", "the backup Job has no completion time")
         return {"job": name, "record": line, "completedAt": completed}
 
-    def backup_fresh(self, backup, maintenance):
-        limit = A.MAINTENANCE_BACKUP_MAX_AGE_SECONDS if maintenance else A.BACKUP_MAX_AGE_SECONDS
+    def backup_fresh(self, backup):
+        """The verified backup is under an hour old at the moment the schema changes (Andy 2026-10-27)."""
+        limit = A.BACKUP_MAX_AGE_SECONDS
         age = N.WALL() - parse_utc(backup["completedAt"]).timestamp()
-        require(age < limit, "BACKUP_STALE", f"the fresh backup is {int(age // 60)} minutes old at the switch; "
-                f"the limit is {limit // 60}. Nothing was switched")
+        require(age < limit, "BACKUP_STALE", f"the verified backup is {int(age // 60)} minutes old before the migration; "
+                f"the limit is {limit // 60}. Nothing was migrated or switched")
+
+    def restore_point(self, backup, previous_image, previous_source, previous_config, pending, maintenance):
+        """What a rollback after this migration restores (Andy 2026-10-27: the backup plus the previous image). Written to
+        the Deployment before the migrate Job and shown by status; the runbook reads it. The tool never restores it."""
+        return {"record": backup["record"], "job": backup["job"], "completedAt": backup["completedAt"],
+                "deployId": self.request["deployId"], "migrations": sorted(item["name"] for item in pending),
+                "maintenance": maintenance, "previousImage": previous_image, "previousSource": previous_source,
+                "previousConfig": previous_config}
 
     # Generation and config (PROPOSAL 4.3 step 7) ------------------------------
     def new_config(self, generation, live_text, source):
@@ -402,22 +515,32 @@ class IngRunner(N.Runner):
                 "NOT_READY", "the switched Deployment did not become Ready")
 
     # Smoke (PROPOSAL 4.5) -------------------------------------------------------
-    def smoke_cookie(self):
-        """The smoke account's session cookie from a root-only file. Never logged, printed or stored elsewhere."""
-        try:
-            fd = os.open(N.PATHS["smokeCookie"], os.O_RDONLY | os.O_NOFOLLOW)
-        except OSError as exc:
-            raise Refusal("SMOKE_ACCOUNT", "the smoke account's session file is missing; see the README") from exc
-        try:
-            info = os.fstat(fd)
-            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077 and info.st_size <= 4096,
-                    "SMOKE_ACCOUNT", "the smoke session file must be a private root file")
-            text = os.read(fd, 4097).decode("ascii", "replace").strip()
-        finally:
-            os.close(fd)
-        require(re.fullmatch(COOKIE_PATTERN, text) is not None, "SMOKE_ACCOUNT",
+    def smoke_credential(self):
+        """The smoke's credential from a root-only file: the service token when its file exists, else the session
+        cookie. A token file that is present but wrong refuses rather than falling back. The value is sent only to the
+        anchored origin and never logged, printed or stored elsewhere."""
+        token = _private_root_file(N.PATHS["smokeToken"], "token")
+        if token is not None:
+            require(re.fullmatch(TOKEN_PATTERN, token) is not None, "SMOKE_ACCOUNT",
+                    "the smoke token file does not hold one lwt_ service token")
+            return SmokeCredential("token", "Authorization", "Bearer " + token)
+        cookie = _private_root_file(N.PATHS["smokeCookie"], "session")
+        require(cookie is not None, "SMOKE_ACCOUNT", "neither the smoke token file nor the smoke session file is on the node; "
+                "see the README")
+        require(re.fullmatch(COOKIE_PATTERN, cookie) is not None, "SMOKE_ACCOUNT",
                 "the smoke session file does not hold one lw_session cookie")
-        return text
+        return SmokeCredential("cookie", "Cookie", cookie)
+
+    def qr_export(self, checks, credential):
+        """One QR code through the render worker, signed in. The reverted old server takes a token here too."""
+        origin = self.anchors["origin"]
+        body = json.dumps({"toolId": "qr-code", "format": "svg", "inputs": {"url": origin + "/?preview-smoke=1"}}).encode()
+        export = S._get(checks, "qr export", origin + "/api/v1/render", method="POST", data=body,
+                        headers=credential.headers(**{"Content-Type": "application/json", "Accept": "image/svg+xml"}))
+        if export is not None:
+            kind = (export.header("Content-Type") or "").split(";")[0].strip()
+            checks.record("qr export", export.status == 200 and kind == "image/svg+xml" and b"<svg" in export.body[:4096],
+                          export_detail(export, credential.kind, self.request["smoke"]["sub"]))
 
     def boot_key(self, value):
         pods = self.pods(value)
@@ -426,12 +549,15 @@ class IngRunner(N.Runner):
                               "--limit-bytes=1048576"])
         return I.boot_key_id(logs)
 
-    def account(self, checks, cookie):
-        """The smoke account is the expected member, holds no admin role and owns no projects (R20 S13)."""
-        origin, headers = self.anchors["origin"], {"Cookie": cookie, "Accept": "application/json"}
+    def account(self, checks, credential):
+        """The smoke account is the expected member, holds no admin role and owns no projects (R20 S13). A service
+        token instead: the pinned token, member or lower, and refused where an admin or owner is not."""
+        origin, headers = self.anchors["origin"], credential.headers(Accept="application/json")
         response = S._get(checks, "smoke account", origin + "/api/auth/session", headers=headers)
         if response is None:
             return False
+        if credential.kind == "token":
+            return checks.record("smoke account", *self.token_account(response, headers))
         try:
             body = json.loads(response.body)
             user = body.get("user") or {}
@@ -449,13 +575,41 @@ class IngRunner(N.Runner):
             ok, detail = False, "unreadable session answer: " + type(exc).__name__
         return checks.record("smoke account", ok, detail)
 
+    def token_account(self, response, headers):
+        """The session answer names the pinned token with a role of member or lower, and two routes that need more
+        refuse it: the token list (owner tier, token.manage) and the grant list (admin tier, grant.edit). The token
+        owns nothing, so there is no projects check."""
+        pinned = self.request["smoke"]["sub"]
+        if not pinned.startswith("token:"):
+            return False, "the node holds a service token but the profile pins a member; set smoke.account.sub to token:<id>"
+        if response.status == 401:
+            return False, ("HTTP 401: the token is unknown, revoked or expired, or this Work build answers sessions for "
+                           f"cookies only (a token needs {TOKEN_READS_PR})")
+        try:
+            body = json.loads(response.body)
+            user = body.get("user") or {}
+            if not (response.status == 200 and body.get("kind") == "service" and user.get("sub") == pinned
+                    and user.get("role") in TOKEN_ROLES):
+                return False, (f"HTTP {response.status}; the session is not the pinned token {pinned}, or its role "
+                               f"{user.get('role')!r} is above member")
+            refused = []
+            for path in ("/api/v1/tokens", "/api/v1/grants"):
+                probe = S.FETCH(self.anchors["origin"] + path, headers=headers)
+                if probe.status != 403:
+                    refused.append(f"{path} answered HTTP {probe.status}")
+            if refused:
+                return False, "service token; 403 expected for an account without admin rights, but " + ", ".join(refused)
+            return True, "service token, member or lower; the token and grant lists refuse it (403)"
+        except (ValueError, AttributeError, Refusal) as exc:
+            return False, "unreadable session answer: " + type(exc).__name__
+
     def run_smoke(self, expect, image, generation=None, light=False):
         """PROPOSAL 4.5. light: the live build before the switch (no generation readback, no export)."""
         I.validate_expect(expect)
         S.check_dns(self.anchors, self.limits["edgeAddress"])
-        cookie = self.smoke_cookie()
+        credential = self.smoke_credential()
         checks, files = S.Checks(), {"index.html": expect["index"]}
-        origin, signed_in = self.anchors["origin"], {"Cookie": cookie, "Accept": "application/json"}
+        origin, signed_in = self.anchors["origin"], credential.headers(Accept="application/json")
         health = S._get(checks, "healthz", origin + "/healthz")
         if health is not None:
             try:
@@ -496,7 +650,7 @@ class IngRunner(N.Runner):
         asset = S._get(checks, "anonymous pack asset", origin + self.request["smoke"]["packAssetPath"])
         if asset is not None:
             checks.record("anonymous pack asset", asset.status in (401, 404), f"HTTP {asset.status} (401 or 404 expected)")
-        self.account(checks, cookie)
+        self.account(checks, credential)
         index = S._get(checks, "signed catalog", origin + "/catalog/tools/index.json", headers=signed_in)
         envelope = S._get(checks, "signed catalog", origin + "/catalog/tools/index.sig.json", headers=signed_in)
         if index is not None and envelope is not None:
@@ -509,13 +663,7 @@ class IngRunner(N.Runner):
                 except Refusal as exc:
                     checks.record("signed catalog", False, exc.message)
         if not light:
-            body = json.dumps({"toolId": "qr-code", "format": "svg", "inputs": {"url": origin + "/?preview-smoke=1"}}).encode()
-            export = S._get(checks, "qr export", origin + "/api/v1/render", method="POST", data=body,
-                            headers={"Cookie": cookie, "Content-Type": "application/json", "Accept": "image/svg+xml"})
-            if export is not None:
-                kind = (export.header("Content-Type") or "").split(";")[0].strip()
-                checks.record("qr export", export.status == 200 and kind == "image/svg+xml" and b"<svg" in export.body[:4096],
-                              f"HTTP {export.status}; {kind or 'no content type'} through the render worker")
+            self.qr_export(checks, credential)
             www = S._get(checks, "www redirect", self.anchors["wwwOrigin"] + "/")
             if www is not None:
                 checks.record("www redirect", www.status == 308 and www.header("Location") == origin + "/",
@@ -603,36 +751,35 @@ class IngRunner(N.Runner):
         self.window_check()
         self.keep_pinned(live_image)
         self.ensure_image(release)
-        self.window_check()
-        backup = self.take_backup()
         check = self.check_db(release["image"])
         plan = I.migration_plan(release["migrations"], check, self.applied_migrations(value))
         applied = set(self.applied_migrations(value))
         maintenance_applied = set(self.applied_migrations(value, "maintenance-migrations"))
         marked = set(self.applied_migrations(value, "maintenance-applied"))  # applied by an earlier run, never accepted
-        maintenance, rehearsal = False, None
+        maintenance, rehearsal, backup, restore = False, None, None, None
         if plan["pending"]:
+            # Andy 2026-10-27: every migration class is applied, and a verified backup comes first. Nothing pending,
+            # nothing to back up: the daily backup and the previous image cover a deploy that changes no schema.
+            self.window_check()
+            backup = self.take_backup()
             classes = self.classify(release["image"], plan["pending"])
             maintenance = any(classes[item["name"]]["class"] != "additive" for item in plan["pending"])
-            if maintenance:
-                require(self.request.get("maintenanceApproval") is not None, "MAINTENANCE_NOT_APPROVED",
-                        "a pending migration is not on the allowlist; it needs Andy's approval in the private run "
-                        f"({A.ING['maintenanceEnvironment']}). Nothing was applied")
-                self.backup_fresh(backup, maintenance=True)
             rehearsal = self.rehearse(backup, release["image"], live_image, plan["pending"])
             self.window_check()
+            self.backup_fresh(backup)  # the rehearsal takes time: the backup must still be fresh as the schema changes
+            restore = self.restore_point(backup, live_image, previous["source"], live_config, plan["pending"], maintenance)
+            values = {"backup": compact(restore), "updated": utc_stamp()}
             if maintenance:
-                # The rehearsal takes time: the backup must still be fresh at the moment the schema changes (PROPOSAL 4.3).
-                self.backup_fresh(backup, maintenance=True)
-                marked |= {item["name"] for item in plan["pending"]}
                 # From here the old image may run on a non-additive schema. Record that on the Deployment (annotations
                 # only, no rollout) before anything is applied, and keep it until a switch that includes these
                 # migrations is accepted.
-                self.annotate({"phase": "maintenance-applied-unswitched", "deploy-id": self.request["deployId"],
+                marked |= {item["name"] for item in plan["pending"]}
+                values.update({"phase": "maintenance-applied-unswitched", "deploy-id": self.request["deployId"],
                                "maintenance-applied": compact(sorted(marked)),
-                               "maintenance-applied-set": I.migration_set(release["migrations"]),
-                               "reason": None, "updated": utc_stamp()}, expect_image=live_image)
-                self.log("phase", phase="maintenance-applied-unswitched", migrations=sorted(marked))
+                               "maintenance-applied-set": I.migration_set(release["migrations"]), "reason": None})
+            self.annotate(values, expect_image=live_image)
+            self.log("restore-point", backup=backup["record"]["object"], maintenance=maintenance,
+                     migrations=[item["name"] for item in plan["pending"]])
             self.migrate(release["image"], plan["pending"])
             check = self.check_db(release["image"])
             require(not I.migration_plan(release["migrations"], check, applied)["pending"], "MIGRATE_INCOMPLETE",
@@ -645,7 +792,6 @@ class IngRunner(N.Runner):
         generation = self.generation_for(live_text, check, release["seq"])
         config = self.new_config(generation, live_text, release["source"])
         self.window_check()
-        self.backup_fresh(backup, maintenance)
         deploys = int(self.ann(value, "deploys") or "0")
         self.annotate({"phase": "switching", "deploy-id": self.request["deployId"], "previous": compact(previous),
                        "reason": None, "updated": utc_stamp()}, expect_image=live_image)
@@ -659,10 +805,10 @@ class IngRunner(N.Runner):
                 self.annotate({"phase": "maintenance-applied-unswitched" if marked else "aborted",
                                "previous": compact(previous["prior"]) if previous["prior"] else None,
                                "reason": exc.message[:500], "updated": utc_stamp()}, expect_image=live_image)
-                return self.finish("ABORTED", reason=exc.message, image=live_image)
-            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold)
+                return self.finish("ABORTED", reason=exc.message, image=live_image, backup=restore)
+            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold, restore=restore)
         except self.au.Refusal as exc:
-            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold)
+            return self.after_failure(previous, "ROLLOUT_FAILED: " + str(exc)[:300], hold, restore=restore)
         self.log("phase", phase="switched-unverified")
         try:
             checks, files = self.run_smoke(I.expect_of(release), release["image"], generation)
@@ -670,37 +816,37 @@ class IngRunner(N.Runner):
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
                 return self.after_failure(previous, "SMOKE_FAILED: " + ", ".join(i["check"] for i in checks.failures()),
-                                          hold, checks.items)
+                                          hold, checks.items, restore=restore)
             reason = self.watch(files["index.html"], release["image"])
             if reason:
-                return self.after_failure(previous, "WATCH_FAILED: " + reason, hold, checks.items)
+                return self.after_failure(previous, "WATCH_FAILED: " + reason, hold, checks.items, restore=restore)
             accepted = {"phase": "accepted", "deploys": str(deploys + 1), "updated": utc_stamp()}
             if marked and marked <= {item["name"] for item in release["migrations"]}:
                 accepted.update({"maintenance-applied": None, "maintenance-applied-set": None})  # this switch includes them
             self.annotate(accepted, expect_image=release["image"])
         except (Refusal, self.au.Refusal) as exc:
-            return self.after_failure(previous, "UNVERIFIED: " + str(exc)[:300], hold)
+            return self.after_failure(previous, "UNVERIFIED: " + str(exc)[:300], hold, restore=restore)
         armed = os.path.exists(armed_path())
         retention = self.retain_images(execute=armed, budget=A.RETENTION_AFTER_DEPLOY_SECONDS)
         if armed:
             retention["configMaps"] = self.retain_configs(execute=True)
         return self.finish("LIVE", source=release["source"], image=release["image"], previous=previous["image"],
-                           generation=generation, config=config, backup=backup, retention=retention, rehearsal=rehearsal,
+                           generation=generation, config=config, backup=restore, retention=retention, rehearsal=rehearsal,
                            migrations=[item["name"] for item in plan["pending"]], maintenance=maintenance, checks=checks.items)
 
-    def after_failure(self, previous, reason, maintenance, checks=None):
-        """Roll back by one forward publication, unless a maintenance migration ran (PROPOSAL 4.4, 4.6)."""
+    def after_failure(self, previous, reason, maintenance, checks=None, restore=None):
+        """Roll back by one forward publication, unless a non-additive migration ran (PROPOSAL 4.4, 4.6). Then the
+        previous image alone is not a safe state: the run holds, and the rollback is the backup plus that image."""
         if maintenance:
             with contextlib.suppress(Refusal):
                 self.annotate({"phase": "maintenance-unverified", "reason": reason[:500], "updated": utc_stamp()})
-            return self.finish("MAINTENANCE_UNVERIFIED", reason=reason, checks=checks,
-                               note="automatic rollback is off after a maintenance migration; recovery would be a restore, "
-                                    "which Andy decides")
-        return self.restore(previous, reason, watch=False, checks=checks)
+            return self.finish("MAINTENANCE_UNVERIFIED", reason=reason, checks=checks, backup=restore, note=HOLD_NOTE)
+        return self.restore(previous, reason, watch=False, checks=checks, backup=restore)
 
-    def restore(self, previous, reason, watch, checks=None):
+    def restore(self, previous, reason, watch, checks=None, backup=None, cleared=False):
         """The previous image (still pinned) plus a NEW config at a higher generation; never rollout undo.
-        The database stays (PROPOSAL 4.6)."""
+        The database stays (PROPOSAL 4.6): after nothing or only additive migrations the previous image runs on it.
+        backup is this run's restore point, reported when the rollback itself fails."""
         self.log("rollback", reason=reason)
         with contextlib.suppress(Refusal):
             self.annotate({"phase": "rolling-back", "reason": reason[:500], "updated": utc_stamp()})
@@ -726,12 +872,17 @@ class IngRunner(N.Runner):
             with contextlib.suppress(Refusal):
                 self.annotate({"phase": "rollback-unhealthy", "reason": (reason + " / " + problem)[:500], "updated": utc_stamp()})
             return self.finish("ROLLBACK_UNHEALTHY", reason=reason, problem=problem, checks=checks,
-                               rollbackChecks=back.items if back else None, generation=generation)
+                               rollbackChecks=back.items if back else None, generation=generation, backup=backup,
+                               note=HOLD_NOTE if backup else None)
         values = {"phase": "rolled-back", "source": previous["source"], "image": previous["image"], "ci-run": previous.get("ciRun"),
                   "formats": compact(previous["formats"]) if previous.get("formats") else None,
                   "expect": compact(previous["expect"]), "config": config, "generation": str(generation), "previous": None,
                   "maintenance": None, "migration-set": None,  # the new build's set no longer describes the live image
                   "reason": reason[:500], "updated": utc_stamp()}
+        if cleared:  # the database was restored to before these migrations: they are applied nowhere now
+            left = sorted(set(self.applied_migrations(self.deployment(full=False)[0], "maintenance-migrations")) - set(cleared))
+            values.update({"maintenance-applied": None, "maintenance-applied-set": None,
+                           "maintenance-migrations": compact(left) if left else None})
         try:
             self.annotate(values, expect_image=previous["image"])
         except Refusal as exc:
@@ -744,15 +895,20 @@ class IngRunner(N.Runner):
     def run_rollback(self):
         value, index = self.deployment()
         self.hold_check(self.ann(value, "phase"))
-        require(self.ann(value, "maintenance") != "true", "MAINTENANCE_NO_ROLLBACK",
-                "the live build ran a maintenance migration; a rollback would need a restore, which Andy decides")
-        require(not self.applied_migrations(value, "maintenance-applied"), "MAINTENANCE_NO_ROLLBACK",
-                "a maintenance migration was applied and no accepted switch includes it yet; every earlier image is older "
-                "than that schema, so a rollback would need a restore, which Andy decides")
         previous = self.ann_json(value, "previous")
+        non_additive = self.ann(value, "maintenance") == "true" or bool(self.applied_migrations(value, "maintenance-applied"))
+        require(not non_additive or (isinstance(previous, dict) and previous.get("image")), "MAINTENANCE_NO_ROLLBACK",
+                "a non-additive migration is applied and there is no recorded previous build to return to; restore the backup "
+                "(runbook) and deploy a forward fix")
         require(isinstance(previous, dict) and previous.get("image") and previous.get("expect"), "NO_PREVIOUS",
                 "no recorded previous build; deploy a build instead")
         require(previous.get("source") == self.request.get("rollbackTo"), "STATE_CHANGED", "the recorded previous build changed")
+        restored = ()
+        if non_additive:
+            # Andy 2026-10-27: after a non-additive migration the rollback is the backup plus the previous image. A person
+            # restores the backup (the runbook); this run does the second half, and only once the database ledger shows
+            # the restore: none of the non-additive files the live build's deploy applied may be in it.
+            restored = self.restored_before_rollback(value, previous)
         lowering = format_lowering(self.ann_json(value, "formats"), previous.get("formats"))
         require(not lowering, "FORMAT_LOWERING", "the rollback would lower stored formats (" + ", ".join(lowering) +
                 "); roll forward instead")
@@ -761,17 +917,50 @@ class IngRunner(N.Runner):
         self.keep_pinned(previous["image"])
         previous = {name: item for name, item in previous.items() if name != "prior"}
         self.annotate({"deploy-id": self.request["deployId"], "updated": utc_stamp()})
-        return self.restore(previous, "MANUAL", watch=True)
+        return self.restore(previous, "MANUAL_AFTER_RESTORE" if restored else "MANUAL", watch=True, cleared=restored)
+
+    def run_revert(self):
+        """After a cut-over held by a non-additive migration: a person restored the backup (the runbook); put the claim
+        layout, the old image and the old signing key reference back, at a higher generation, as revert_cutover does
+        after a failed smoke. Only when the ledger shows the restore."""
+        plan = self.request["conversion"]
+        value, index = self.deployment()
+        self.hold_check(self.ann(value, "phase"))
+        require(I.is_converted(value, index) and self.ann(value, "deploy-id") == plan["deployId"], "STATE_CHANGED",
+                "the live Deployment is not the one this cut-over left; nothing to revert")
+        self.restored_before_rollback(value, {"image": plan["cutover"]["image"]})
+        self.annotate({"maintenance": None, "maintenance-applied": None, "maintenance-applied-set": None,
+                       "maintenance-migrations": None, "updated": utc_stamp()})
+        return self.revert_cutover(plan, "MANUAL_AFTER_RESTORE")
+
+    def restored_before_rollback(self, value, previous):
+        """MAINTENANCE_NO_ROLLBACK unless the database no longer holds the non-additive migrations of the live build's
+        deploy, as its restore point and marker name them, and the restore point names this same previous image."""
+        point = self.ann_json(value, "backup")
+        names = set(self.applied_migrations(value, "maintenance-applied"))
+        if isinstance(point, dict) and point.get("maintenance") is True and isinstance(point.get("migrations"), list):
+            names |= set(point["migrations"])
+        require(bool(names) and isinstance(point, dict) and point.get("previousImage") == previous["image"],
+                "MAINTENANCE_NO_ROLLBACK", "the live build ran a non-additive migration and its restore point does not name "
+                "this previous build; restore and roll back by hand with the runbook, or deploy a forward fix")
+        check = self.check_db(previous["image"] if I.instance_image(previous["image"]) else self.request["release"]["image"])
+        still = sorted(names & set(check["ledger"]))
+        require(not still, "MAINTENANCE_NO_ROLLBACK", "the live build ran a non-additive migration and the database still "
+                f"holds {', '.join(still[:5])}: restore the backup in the restore point first (runbook), then roll back again "
+                "with --clear-hold, or deploy a forward fix")
+        self.log("restored", migrations=sorted(names), backup=(point.get("record") or {}).get("object"))
+        return tuple(sorted(names))
 
     # Cut-over (PROPOSAL 4.8) -------------------------------------------------
     def run_convert(self):
         plan, release = self.request["conversion"], self.request["release"]
+        to_secret = I.signing_secret()  # review H3: the cut-over patch also switches the signing key reference
         value, index = self.deployment()
         if I.is_converted(value, index):
             return self.finish("ALREADY_CONVERTED", image=self.image_of(value, index))
         self.hold_check(self.ann(value, "phase"))
         require(self.ready(value), "NOT_READY", "the Deployment is not reconciled and Ready")
-        require(I.comparable_cutover(I.cutover_plan(value, index, release["image"], plan["toConfig"], plan["annotations"]))
+        require(I.comparable_cutover(I.cutover_plan(value, index, release["image"], plan["toConfig"], plan["annotations"], to_secret))
                 == I.comparable_cutover(plan["cutover"]), "PLAN_MISMATCH",
                 "the live Deployment no longer gives the reviewed plan; make and review a new plan")
         live_image, live_config = self.image_of(value, index), I.config_volume(value, index)[1]
@@ -780,34 +969,52 @@ class IngRunner(N.Runner):
         self.window_check()
         self.keep_pinned(live_image)
         self.ensure_image(release)
-        backup = self.take_backup()
+        backup = self.take_backup()  # the cut-over always takes one, migrations or not
         check = self.check_db(release["image"])
         migrations = I.migration_plan(release["migrations"], check, set())
+        marked = set(self.applied_migrations(value, "maintenance-applied"))  # applied by an earlier attempt, never switched
+        maintenance, restore = False, None
         if migrations["pending"]:
+            # Review 2026-10-25 H2, resolved by Andy's 2026-10-27 choice: the cut-over takes every migration class, after
+            # the verified backup, with no approval. A non-additive one turns the automatic revert off afterwards.
             classes = self.classify(release["image"], migrations["pending"])
-            require(all(classes[item["name"]]["class"] == "additive" for item in migrations["pending"]), "MAINTENANCE_AT_CUTOVER",
-                    "the cut-over takes allowlisted migrations only")
-        # PROPOSAL 4.8 step 1: the full restore rehearsal runs once even with nothing pending.
+            maintenance = any(classes[item["name"]]["class"] != "additive" for item in migrations["pending"])
+        # PROPOSAL 4.8 step 1: the restore rehearsal runs once even with nothing pending, when the profile configures one.
         rehearsal = self.rehearse(backup, release["image"], live_image, migrations["pending"])
         if migrations["pending"]:
             self.window_check()
+            self.backup_fresh(backup)  # the rehearsal took time; still fresh as the schema changes
+            restore = self.restore_point(backup, live_image, plan["liveSource"], live_config, migrations["pending"], maintenance)
+            values = {"backup": compact(restore), "updated": utc_stamp()}
+            if maintenance:
+                # From here the old image may run on a non-additive schema and a revert is no longer a safe state.
+                # Record that on the Deployment (annotations only, no rollout) before anything is applied.
+                marked |= {item["name"] for item in migrations["pending"]}
+                values.update({"phase": "maintenance-applied-unswitched", "deploy-id": self.request["deployId"],
+                               "maintenance-applied": compact(sorted(marked)),
+                               "maintenance-applied-set": I.migration_set(release["migrations"]), "reason": None})
+            self.annotate(values, expect_image=live_image)
+            self.log("restore-point", backup=backup["record"]["object"], maintenance=maintenance,
+                     migrations=[item["name"] for item in migrations["pending"]])
             self.migrate(release["image"], migrations["pending"])
             check = self.check_db(release["image"])
+            require(not I.migration_plan(release["migrations"], check, set())["pending"], "MIGRATE_INCOMPLETE",
+                    "migrations are still pending after the migrate Job")
+        hold = maintenance or bool(marked)  # a marker from an earlier attempt also turns the automatic revert off
         generation = self.generation_for(live_text, check, release["seq"])
         require(generation == plan["generation"], "PLAN_MISMATCH", f"the generation is now {generation}, the plan says "
                 f"{plan['generation']}; make and review a new plan")
         config = self.new_config(generation, live_text, release["source"])
         require(config == plan["toConfig"], "PLAN_MISMATCH", "the config name differs from the plan")
         self.window_check()
-        self.backup_fresh(backup, False)
-        self.log("phase", phase="converting", generation=generation)
+        self.log("phase", phase="converting", generation=generation, maintenance=hold)
         applied = False
         for _ in range(N.SWITCH_ATTEMPTS):
             value, index = self.deployment()
             if I.is_converted(value, index):
                 applied = True
                 break
-            current = I.cutover_plan(value, index, release["image"], config, plan["annotations"])
+            current = I.cutover_plan(value, index, release["image"], config, plan["annotations"], to_secret)
             try:
                 dry = self.kube.patch(self.component, current["patch"], True)
                 I.guard_cutover(value, dry, index, current)
@@ -819,22 +1026,43 @@ class IngRunner(N.Runner):
                 self.log("switch-retry", reason=str(exc)[:200])
                 N.SLEEP(2)
         if not applied:
-            return self.finish("ABORTED", reason="the cut-over patch was not applied")
+            return self.finish("ABORTED", reason="the cut-over patch was not applied", backup=restore,
+                               note="a non-additive migration is applied and unswitched" if hold else None)
         try:
             self.wait_switch(release["image"], config)
             checks, files = self.run_smoke(I.expect_of(release), release["image"], generation)
             if self.request["drillFailSmoke"]:
                 checks.record("drill", False, "forced failure (--drill-fail-smoke)")
             if not checks.ok:
-                return self.revert_cutover(plan, "SMOKE_FAILED: " + ", ".join(i["check"] for i in checks.failures()), checks.items)
+                return self.after_convert_failure(plan, "SMOKE_FAILED: " + ", ".join(i["check"] for i in checks.failures()), hold,
+                                                  checks.items, restore=restore)
             reason = self.watch(files["index.html"], release["image"])
             if reason:
-                return self.revert_cutover(plan, "WATCH_FAILED: " + reason, checks.items)
-            self.annotate({"phase": "accepted", "updated": utc_stamp()}, expect_image=release["image"])
+                return self.after_convert_failure(plan, "WATCH_FAILED: " + reason, hold, checks.items, restore=restore)
+            accepted = {"phase": "accepted", "updated": utc_stamp()}
+            if maintenance:
+                accepted.update({"maintenance": "true",
+                                 "maintenance-migrations": compact(sorted(item["name"] for item in migrations["pending"]))})
+            elif migrations["pending"]:
+                accepted["migrations"] = compact(sorted(item["name"] for item in migrations["pending"]))
+            if marked and marked <= {item["name"] for item in release["migrations"]}:
+                accepted.update({"maintenance-applied": None, "maintenance-applied-set": None})  # this switch includes them
+            self.annotate(accepted, expect_image=release["image"])
         except (Refusal, self.au.Refusal) as exc:
-            return self.revert_cutover(plan, "UNVERIFIED: " + str(exc)[:300])
+            return self.after_convert_failure(plan, "UNVERIFIED: " + str(exc)[:300], hold, restore=restore)
         return self.finish("CONVERTED", source=release["source"], image=release["image"], generation=generation, config=config,
-                           backup=backup, rehearsal=rehearsal, checks=checks.items)
+                           signingKeySecret=to_secret, backup=restore or {"record": backup["record"], "job": backup["job"],
+                                                                          "completedAt": backup["completedAt"]},
+                           rehearsal=rehearsal, migrations=[item["name"] for item in migrations["pending"]],
+                           maintenance=maintenance, checks=checks.items)
+
+    def after_convert_failure(self, plan, reason, maintenance, checks=None, restore=None):
+        """Revert the cut-over, unless a non-additive migration ran: the old image cannot be trusted on that schema."""
+        if maintenance:
+            with contextlib.suppress(Refusal):
+                self.annotate({"phase": "maintenance-unverified", "reason": reason[:500], "updated": utc_stamp()})
+            return self.finish("MAINTENANCE_UNVERIFIED", reason=reason, checks=checks, backup=restore, note=HOLD_NOTE)
+        return self.revert_cutover(plan, reason, checks)
 
     def revert_cutover(self, plan, reason, checks=None):
         """Back to the claim layout and the old image, at a higher generation again (never the old one)."""
@@ -842,6 +1070,8 @@ class IngRunner(N.Runner):
         cutover, problem, back, generation = plan["cutover"], None, None, None
         try:
             value, index = self.deployment()
+            if self.ann(value, "maintenance") == "true" or self.applied_migrations(value, "maintenance-applied"):
+                return self.after_convert_failure(plan, reason, True, checks, restore=self.ann_json(value, "backup"))
             current_config = I.config_volume(value, index)[1]
             configs = self.config_maps()
             check = self.check_db(self.request["release"]["image"])  # a Job runs the instance image only
@@ -851,6 +1081,9 @@ class IngRunner(N.Runner):
             reverted = False
             for _ in range(N.SWITCH_ATTEMPTS):
                 value, index = self.deployment()
+                # Every caller and retry respects the one-way boundary a non-additive migration draws.
+                if self.ann(value, "maintenance") == "true" or self.applied_migrations(value, "maintenance-applied"):
+                    return self.after_convert_failure(plan, reason, True, checks, restore=self.ann_json(value, "backup"))
                 if not I.is_converted(value, index):
                     reverted = True
                     break
@@ -870,13 +1103,24 @@ class IngRunner(N.Runner):
                 response = S._get(back, name, self.anchors["origin"] + path)
                 if response is not None:
                     back.record(name, response.status == want, f"HTTP {response.status}")
-            cookie = self.smoke_cookie()
-            catalog = S._get(back, "signed catalog", self.anchors["origin"] + "/catalog/tools/index.json", headers={"Cookie": cookie})
-            if catalog is not None:
-                back.record("signed catalog", catalog.status == 200, f"HTTP {catalog.status} at generation {generation}")
-            readback = self.check_db(self.request["release"]["image"])
-            back.record("generation", readback["publicationGeneration"] == generation, f"database generation "
-                        f"{readback['publicationGeneration']}; {generation} expected")
+            credential = self.smoke_credential()
+            if credential.kind == "token":
+                # The reverted server is the old Work build, which reads catalogues for a cookie only. Its render route
+                # takes a token, so one signed-in QR export proves the old build serves a signed-in caller again.
+                self.qr_export(back, credential)
+            else:
+                catalog = S._get(back, "signed catalog", self.anchors["origin"] + "/catalog/tools/index.json",
+                                 headers=credential.headers())
+                if catalog is not None:
+                    back.record("signed catalog", catalog.status == 200, f"HTTP {catalog.status} at generation {generation}")
+            readback = self.check_db(self.request["release"]["image"])["publicationGeneration"]
+            if credential.kind == "token":
+                # Nothing read the old build's catalogue, and the first signed-in read is what publishes a generation.
+                # What can be checked is that nothing holds it above this config, so that first read is admitted.
+                back.record("generation", readback <= generation, f"database generation {readback}; at most {generation}, "
+                            "which the old build publishes at its first signed-in catalogue read")
+            else:
+                back.record("generation", readback == generation, f"database generation {readback}; {generation} expected")
             problem = None if back.ok else "after the revert: " + ", ".join(i["check"] for i in back.failures())
         except (Refusal, self.au.Refusal, KeyError) as exc:
             problem = str(exc)[:300]
@@ -890,7 +1134,17 @@ class IngRunner(N.Runner):
 
     # ExecStopPost --------------------------------------------------------
     def stop_post(self, environment):
-        """As lolly.tools, except that a switch after a maintenance migration is held, never rolled back."""
+        """As lolly.tools, except that a switch after a non-additive migration is held, never rolled back."""
+        if self.request["kind"] == "convert":
+            try:
+                value, _ = self.deployment()
+            except (Refusal, self.au.Refusal):
+                return super().stop_post(environment)  # its revert re-reads and rechecks the marker (revert_cutover)
+            if (self.ann(value, "deploy-id") == self.request["deployId"] and self.ann(value, "phase") == "converting"
+                    and self.applied_migrations(value, "maintenance-applied")):
+                self.annotate({"phase": "maintenance-unverified", "reason": "UNIT_STOPPED", "updated": utc_stamp()})
+                return self.finish("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED", backup=self.ann_json(value, "backup"),
+                                   note=HOLD_NOTE)
         if self.request["kind"] == "deploy":
             try:
                 value, _ = self.deployment()
@@ -902,10 +1156,11 @@ class IngRunner(N.Runner):
                 previous = self.ann_json(value, "previous")
                 if phase == "switching" and isinstance(previous, dict) and self.image_of(value, self.deployment()[1]) == previous.get("image"):
                     self.annotate({"phase": "maintenance-applied-unswitched", "reason": "UNIT_STOPPED", "updated": utc_stamp()})
-                    return self.finish("ABORTED", reason="UNIT_STOPPED", note="a maintenance migration is applied and unswitched")
+                    return self.finish("ABORTED", reason="UNIT_STOPPED", backup=self.ann_json(value, "backup"),
+                                       note="a non-additive migration is applied and unswitched")
                 self.annotate({"phase": "maintenance-unverified", "reason": "UNIT_STOPPED", "updated": utc_stamp()})
-                return self.finish("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED",
-                                   note="automatic rollback is off after a maintenance migration")
+                return self.finish("MAINTENANCE_UNVERIFIED", reason="UNIT_STOPPED", backup=self.ann_json(value, "backup"),
+                                   note=HOLD_NOTE)
         return super().stop_post(environment)
 
     def revert_conversion(self, plan, reason, checks=None):
@@ -1013,15 +1268,15 @@ def read(query, au):
                          "ready": all(s.get("ready") for s in statuses) and bool(statuses)})
         unit = subprocess.run([N.PATHS["systemctl"], "show", "-p", "ActiveState", "--value", A.NODE_UNIT],
                               capture_output=True, timeout=20, check=False).stdout.decode().strip()
-        cookie = "present"
+        session, kind = "present", None
         try:
-            runner.smoke_cookie()
+            kind = runner.smoke_credential().kind
         except Refusal as exc:
-            cookie = exc.message
+            session = exc.message
         return {"deployment": {"uid": value["metadata"]["uid"], "image": runner.image_of(value, index), "ready": runner.ready(value),
                                "config": I.config_volume(value, index)[1], "converted": I.is_converted(value, index),
                                "revision": (value["metadata"].get("annotations") or {}).get("deployment.kubernetes.io/revision")},
-                "preview": annotations, "pods": pods, "unit": unit, "smokeSession": cookie}
+                "preview": annotations, "pods": pods, "unit": unit, "smokeSession": session, "smokeCredential": kind}
     if query["op"] == "intake":
         release = query["release"]
         I.validate_release(release)

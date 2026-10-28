@@ -1,0 +1,25 @@
+#!/bin/bash
+# SPDX-License-Identifier: MPL-2.0
+# Load the release images this image carries into Podman's storage, once, so
+# the first boot needs no registry. Each archive holds the release's
+# multi-architecture index unchanged plus this machine's platform (fetch.py),
+# so the image is known by the very digest the Quadlet units pin. An archive is
+# removed once its image is in storage.
+set -euo pipefail
+. /usr/libexec/lolly-appliance/common.sh
+
+shopt -s nullglob
+for archive in "$STATE_DIR"/images/*.tar; do
+  log "loading $(basename "$archive")"
+  podman load --quiet --input "$archive" >/dev/null
+  rm -f "$archive"
+done
+missing=0
+for unit in "$QUADLET_DIR"/*.container; do
+  image=$(sed -n 's/^Image=//p' "$unit")
+  if ! podman image exists "$image"; then
+    log "$(basename "$unit") pins $image, which is not in Podman's storage"
+    missing=1
+  fi
+done
+exit $missing

@@ -168,7 +168,8 @@ database:
 #     secret you created in your platform's secret store. The chart then creates
 #     NO secret; the Deployment and migrate Job both read from yours. It must
 #     contain keys: DATABASE_URL, LW_SESSION_SECRET, LW_LINK_SECRET, and
-#     optionally LW_IDP_CLIENT_SECRET, LW_CREDENTIAL_SECRET, LW_METRICS_TOKEN.
+#     optionally LW_IDP_CLIENT_SECRET, LW_CREDENTIAL_SECRET, LW_METRICS_TOKEN,
+#     LW_OFREP_TOKEN.
 existingSecret: ""
 
 secrets:
@@ -184,6 +185,9 @@ secrets:
   # loopback-only (never exposed). Set it to enable Prometheus scraping via the
   # ServiceMonitor below. openssl rand -hex 32
   metricsToken: ""
+  # Optional. Credential for your flag service when config.featureFlags.ofrep
+  # is set (sent as a bearer token, or as X-API-Key with auth: api-key).
+  ofrepToken: ""
 
 # ── Chromium render worker (plans/07/11) ─────────────────────────────────────
 # Hooked / HTML-heavy tools can't run in the control plane's in-process jsdom
@@ -230,6 +234,13 @@ renderWorker:
   # RuntimeDefault unless the node operator installs a reviewed Chromium policy.
   # See ../seccomp/README.md; Unconfined is not accepted.
   seccompProfile: { type: RuntimeDefault }
+  # Leave empty on SELinux nodes (Leap 16, SLES 16, the Lolly appliance), the
+  # recommended host. AppArmor nodes (Debian, Ubuntu) deny Chromium's user
+  # namespace under the runtime's default profile; there, load the reviewed
+  # ../apparmor/lolly-chromium profile on each worker node and set
+  # { type: Localhost, localhostProfile: lolly-chromium } together with the
+  # Localhost seccomp profile above. Needs Kubernetes 1.30+. See ../apparmor/README.md.
+  appArmorProfile: {}
   # For clusters where no node profile can be installed (shared/managed clusters):
   # run the worker in its own Kubernetes user namespace (hostUsers: false) and add
   # CAP_SYS_ADMIN and CAP_SYS_CHROOT, which then apply only inside that namespace
@@ -492,6 +503,68 @@ metrics:
     # Extra labels so your Prometheus's serviceMonitorSelector picks it up.
     labels: {}
     namespace: ""
+  # Suggested alerts as a Prometheus Operator PrometheusRule (files/prometheus-rules.yaml).
+  # Off by default. Each alert reads a series Work exports on /metrics, so it needs
+  # the scrape above or one of your own. The metrics reference in docs/metrics.md
+  # explains every alert.
+  prometheusRule:
+    enabled: false
+    namespace: ""
+    # Extra labels so your Prometheus's ruleSelector picks it up.
+    labels: {}
+    # Labels added to every alert, such as a team or a routing key.
+    alertLabels: {}
+    # PromQL label matchers for this release's series. Empty uses the labels the
+    # ServiceMonitor gives them: job="<release fullname>",namespace="<release namespace>".
+    seriesSelector: ""
+    # Alert names to leave out, e.g. [LollyWorkRateLimitBucketsHigh].
+    disabled: []
+  # Grafana dashboard (dashboards/lolly-work.json) in a ConfigMap. Off by default.
+  # The Grafana sidecar of kube-prometheus-stack loads ConfigMaps with the label
+  # below; the JSON also imports by hand.
+  grafanaDashboard:
+    enabled: false
+    namespace: ""
+    labels:
+      grafana_dashboard: "1"
+    # e.g. grafana_folder: Lolly, for a sidecar that sorts dashboards into folders.
+    annotations: {}
+
+# OpenTelemetry export: traces, metrics and logs pushed over OTLP to your
+# collector or backend. Off by default; while off the chart sets no OTEL_*
+# variable and the server exports nothing. Work speaks OTLP over HTTP (a
+# collector's port 4318), not gRPC. With networkPolicy.allowAllEgress false,
+# add an egress rule to the collector yourself. Anything not listed here (batch
+# sizes, timeouts, certificates) can go in extraEnv as a standard OTEL_* variable.
+otel:
+  enabled: false
+  # Base URL; Work appends /v1/traces, /v1/metrics and /v1/logs.
+  # e.g. http://otel-collector.observability.svc:4318
+  endpoint: ""
+  # http/protobuf (the OpenTelemetry default) or http/json.
+  protocol: http/protobuf
+  # none or gzip.
+  compression: none
+  # OTEL_SERVICE_NAME. Empty keeps the server's default, lolly-work.
+  serviceName: ""
+  # OTEL_RESOURCE_ATTRIBUTES as a map, e.g.
+  #   deployment.environment.name: production
+  resourceAttributes: {}
+  # Switch single signals off.
+  traces: true
+  metrics: true
+  logs: true
+  # OTEL_TRACES_SAMPLER and its ratio (OTEL_TRACES_SAMPLER_ARG), for the
+  # *traceidratio samplers. Keep the parent-based ones when an ingress or mesh
+  # in front already decides.
+  sampler: parentbased_always_on
+  samplerArg: ""
+  # A backend that wants an API key: name a Secret key holding the whole
+  # OTEL_EXPORTER_OTLP_HEADERS value (key1=value1,key2=value2). Never put the
+  # key in values.
+  headersSecret:
+    name: ""
+    key: ""
 
 # ── NetworkPolicy ───────────────────────────────────────────────────────────
 # Off by default. When enabled, restricts ingress to the app port and (if you

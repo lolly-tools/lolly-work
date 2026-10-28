@@ -1,0 +1,15 @@
+[Unit]
+Description=Lolly appliance: create this machine's secrets and certificate
+Documentation=file:/usr/share/doc/lolly-appliance/README.md
+ConditionPathExists=!/var/lib/lolly/firstboot.done
+Wants=network-online.target
+After=network-online.target local-fs.target systemd-tpm2-setup.service
+Before=k3s.service lolly-postgres.service lolly-work.service lolly-caddy.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/lolly-appliance/firstboot
+
+[Install]
+WantedBy=multi-user.target

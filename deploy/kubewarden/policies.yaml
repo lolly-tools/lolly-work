@@ -1,0 +1,385 @@
+# SPDX-License-Identifier: MPL-2.0
+# Kubewarden policy set for Lolly Work. Read README.md first.
+#
+# Each policy is a published Kubewarden policy pinned by tag and digest. Together
+# they admit exactly what lolly-work-requirements.json says Work's pods need with
+# the chart defaults and its optional render worker, and refuse the rest.
+# They apply to Pods in namespaces labelled lolly.tools/policy-set=lolly-work:
+#
+#   kubectl label namespace lolly-work lolly.tools/policy-set=lolly-work
+#   kubectl apply -f deploy/kubewarden/policies.yaml
+#
+# Run PostgreSQL and any other workload in another namespace: these policies
+# describe Lolly's pods, not a general namespace baseline.
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-privileged
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/pod-privileged:v1.0.14@sha256:c57197bb3204187780b1acb701bfaf1375395980e962926709bb16324beaece3
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings: {}
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-privilege-escalation
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/allow-privilege-escalation-psp:v1.0.15@sha256:de2e55ca8a42c0861de08a9429b7c9c4df4235408a06856f9be20f2e9d7fc985
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings:
+    # Every Work container states allowPrivilegeEscalation: false; one that
+    # leaves it out would need a mutation, which this policy refuses instead.
+    default_allow_privilege_escalation: false
+---
+# Capabilities are split by component so the render worker's user-namespace
+# option (options/render-worker-user-namespace.yaml) widens one policy only.
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-capabilities
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/capabilities-psp:v1.0.15@sha256:3958f505c82bc7bac5c16e05d0d54d155e8d31593116394b3213f7d23cd18198
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  objectSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values: [render-worker]
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE"]
+  settings:
+    allowed_capabilities: []
+    required_drop_capabilities: [ALL]
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-capabilities-render-worker
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/capabilities-psp:v1.0.15@sha256:3958f505c82bc7bac5c16e05d0d54d155e8d31593116394b3213f7d23cd18198
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  objectSelector:
+    matchLabels:
+      app.kubernetes.io/component: render-worker
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE"]
+  settings:
+    allowed_capabilities: []
+    required_drop_capabilities: [ALL]
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-user-group
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/user-group-psp:v1.1.5@sha256:d1bb2a898e9b51ac48133e9654a62565bbefb923355dc510af11b8924b2406bc
+  mode: protect
+  # Mutating: Work sets UID and GID 1000 for the pod, not on each container, and
+  # this policy checks each container on its own. It fills an unset container ID
+  # with 1000 and refuses any other ID. Its validate_only mode cannot be used:
+  # in v1.1.5 it refuses MustRunAs even when the ID is present and in range.
+  mutating: true
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings:
+    # Work's images run as the non-root node user, UID and GID 1000.
+    run_as_user:
+      rule: MustRunAs
+      ranges: [{ min: 1000, max: 1000 }]
+    run_as_group:
+      rule: MustRunAs
+      ranges: [{ min: 1000, max: 1000 }]
+    supplemental_groups:
+      rule: MayRunAs
+      ranges: [{ min: 1000, max: 1000 }]
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-fsgroup
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/allowed-fsgroups-psp:v1.0.14@sha256:20eccd02411a6fbe3773fc4cc1faf0d753dbfe91bf2c01b40357b7795852fe4a
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings:
+    rule: MustRunAs
+    ranges: [{ min: 1000, max: 1000 }]
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-host-namespaces
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/host-namespaces-psp:v1.1.13@sha256:575568d86815b3ad330d82bb1de76a5543451fc00d9b06dae0ea2f26d5836bfb
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings:
+    allow_host_ipc: false
+    allow_host_network: false
+    allow_host_pid: false
+    allow_host_ports: []
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-volumes
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/volumes-psp:v1.1.12@sha256:b9041b2afcc1557064e941151106e9fab97c99ce1d32b10080746e93a334b0e1
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings:
+    # hostPath (pack.type or shell.type hostPath, single node only) and projected
+    # (serviceAccount.automountServiceAccountToken: true) are left out on purpose.
+    allowedTypes: [configMap, emptyDir, persistentVolumeClaim, secret]
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-readonly-root
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/readonly-root-filesystem-psp:v1.0.15@sha256:6d28782b97d06fd5b0210f1bd54cd5bd440704fbefbc7c7607251a1d734ff27d
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings: {}
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-seccomp
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/seccomp-psp:v1.0.16@sha256:0ebf229f973bb84e435d15e947847e054b797034164211a1ade5a77600fc3dfd
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings:
+    # RuntimeDefault everywhere; the render worker may name the reviewed
+    # Chromium profile from deploy/seccomp once it is installed on the node.
+    allowed_profiles: [runtime/default, localhost/lolly/chromium.json]
+    profile_types: [RuntimeDefault, Localhost]
+    localhost_profiles: [lolly/chromium.json]
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-apparmor
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  # The published apparmor-psp policy reads only the old per-container
+  # annotation, so it cannot see securityContext.appArmorProfile, which the
+  # chart uses on Kubernetes 1.30 and later. This CEL rule checks the field
+  # on the pod and on every container, and the annotation as well.
+  module: registry://ghcr.io/kubewarden/policies/cel-policy:v1.6.5@sha256:b443c79065564741f6bf7f907018c495e9df2f31fe8f919db6635750de3d1a29
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings:
+    # Unset (the runtime default) everywhere; on AppArmor nodes the render
+    # worker may name the reviewed profile from deploy/apparmor.
+    variables:
+      - name: containers
+        expression: "object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])"
+    validations:
+      - expression: >-
+          !has(object.spec.securityContext) || !has(object.spec.securityContext.appArmorProfile) ||
+          object.spec.securityContext.appArmorProfile.type == 'RuntimeDefault' ||
+          (object.spec.securityContext.appArmorProfile.type == 'Localhost' &&
+          has(object.spec.securityContext.appArmorProfile.localhostProfile) &&
+          object.spec.securityContext.appArmorProfile.localhostProfile == 'lolly-chromium')
+        message: "The pod's AppArmor profile must be RuntimeDefault or Localhost lolly-chromium."
+      - expression: >-
+          variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.appArmorProfile) ||
+          c.securityContext.appArmorProfile.type == 'RuntimeDefault' ||
+          (c.securityContext.appArmorProfile.type == 'Localhost' &&
+          has(c.securityContext.appArmorProfile.localhostProfile) &&
+          c.securityContext.appArmorProfile.localhostProfile == 'lolly-chromium'))
+        message: "A container's AppArmor profile must be RuntimeDefault or Localhost lolly-chromium."
+      - expression: >-
+          !has(object.metadata.annotations) || object.metadata.annotations.all(k,
+          !k.startsWith('container.apparmor.security.beta.kubernetes.io/') ||
+          object.metadata.annotations[k] in ['runtime/default', 'localhost/lolly-chromium'])
+        message: "An AppArmor annotation must name runtime/default or localhost/lolly-chromium."
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-image-sources
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/trusted-repos:v2.1.6@sha256:d230e38189e5eaf2806f258e596db3f5920a14811d12e1173d7d1dd28cf37045
+  mode: protect
+  mutating: false
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings:
+    images:
+      # Any tag or digest of these two. Add your pack.image and shell.image
+      # repositories here, and your mirror's names if you mirror Work's images.
+      allow:
+        - ghcr.io/lolly-tools/lolly-work-server
+        - ghcr.io/lolly-tools/lolly-work-render-worker
+---
+apiVersion: policies.kubewarden.io/v1
+kind: ClusterAdmissionPolicy
+metadata:
+  name: lolly-work-image-signatures
+  labels:
+    app.kubernetes.io/part-of: lolly-work-policy-set
+spec:
+  policyServer: default
+  module: registry://ghcr.io/kubewarden/policies/verify-image-signatures:v1.0.13@sha256:9f23d6453b3b4958b365d2ae3663781929047229d93a893c90e6bc9fabf17762
+  mode: protect
+  # Mutating so each admitted Pod runs the digest that was verified, even when
+  # the chart names a tag.
+  mutating: true
+  # A first verification fetches the signature and Sigstore's trust material,
+  # which can outlast the Policy Server's default 2 second evaluation limit.
+  timeoutEvalSeconds: 10
+  timeoutSeconds: 15
+  namespaceSelector:
+    matchLabels:
+      lolly.tools/policy-set: lolly-work
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods"]
+      operations: ["CREATE", "UPDATE"]
+  settings:
+    modifyImagesWithDigest: true
+    signatures:
+      # Signed keyless by lolly-work's release workflow at a release tag.
+      # The policy reads url_prefix (snake case) and appends "/" to it, so the
+      # prefix ends at refs/tags/. Signatures are Sigstore bundles stored as OCI
+      # referrers (cosign 3); Kubewarden 1.38 verifies them.
+      - image: "ghcr.io/lolly-tools/lolly-work-server*"
+        keylessPrefix:
+          - issuer: https://token.actions.githubusercontent.com
+            url_prefix: https://github.com/lolly-tools/lolly-work/.github/workflows/release.yml@refs/tags/
+      - image: "ghcr.io/lolly-tools/lolly-work-render-worker*"
+        keylessPrefix:
+          - issuer: https://token.actions.githubusercontent.com
+            url_prefix: https://github.com/lolly-tools/lolly-work/.github/workflows/release.yml@refs/tags/

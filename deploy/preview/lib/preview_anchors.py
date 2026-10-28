@@ -18,6 +18,10 @@ TOOLS = {
     "buildWorkflowPath": ".github/workflows/preview-web.yml",
     "ciWorkflowFile": "ci.yml",
     "ciWorkflowPath": ".github/workflows/ci.yml",
+    # Fast deploy lanes (lolly scripts/deploy-lane.ts, ported in preview_lane.py): a docs or web shell
+    # change may ship once its lane job here passed, before its own full CI run finishes.
+    "fastLaneWorkflowFile": "fast-lanes.yml",
+    "fastLaneWorkflowPath": ".github/workflows/fast-lanes.yml",
     "branch": "main",
     "buildRunTitle": "Preview web {sha}",
     "buildSourceInput": "source",
@@ -62,18 +66,24 @@ TOOLS_LEGACY = dict(TOOLS, buildWorkflowFile="deployment-suse.yml",
                     imageRepository="ghcr.io/lolly-tools/lolly-web", registryName="lolly-tools/lolly-web")
 TOOLS_LEGACY.pop("buildRunTitle")
 TOOLS_LEGACY.pop("buildSourceInput")
+TOOLS_LEGACY.pop("fastLaneWorkflowFile")
+TOOLS_LEGACY.pop("fastLaneWorkflowPath")
 
-# lolly.ing (Phase 2, PROPOSAL section 4). One private instance image holds the Work
-# server, the SUSE shell and the pack. suse-lolly's private lolly-ing-preview.yml builds
-# and signs it (two approvals of lolly-ing-signing per build), and the Mac streams it to
-# the node; no registry credential is ever on the node. The deploy input is a Work commit:
-# its engine pin names the Lolly commit, and suse-lolly is built at its main head.
+# lolly.ing (Phase 2, PROPOSAL section 4; preview-grade route, Andy 2026-10-27). One private
+# instance image holds the Work server, the SUSE shell and the pack. suse-lolly's private
+# lolly-ing-preview.yml builds it and signs it with lolly.ing's own key in the
+# lolly-ing-signing environment, which has no reviewer and deploys from main only, so a
+# qualified build needs no approval. The Mac streams it to the node; no registry credential
+# is ever on the node. The deploy input is a Work commit: its engine pin names the Lolly
+# commit, and suse-lolly is built at its main head.
 ING = {
     "site": "lolly.ing",
     "repository": "lolly-tools/suse-lolly",
     "buildWorkflowFile": "lolly-ing-preview.yml",
     "buildWorkflowPath": ".github/workflows/lolly-ing-preview.yml",
     "buildEvents": ("workflow_dispatch",),
+    # The workflow's run-name, so a ship can find and resume a build of the same Work commit that is still running.
+    "buildRunTitle": "lolly.ing preview {sha}",
     "branch": "main",
     "workRepository": "lolly-tools/lolly-work",
     "lollyRepository": "lolly-tools/lolly",
@@ -85,8 +95,8 @@ ING = {
     "archivePattern": r"lolly-ing-instance-{run}-{attempt}\.oci\.tar",
     # The tag the workflow builds; ctr import --base-name keeps it, and --digests adds <name>@<digest>.
     "refNamePattern": "docker.io/library/lolly-ing-instance:run-{run}-{attempt}",
-    # A maintenance migration needs an approval of this environment in the same run (R20 S7).
-    "maintenanceEnvironment": "lolly-ing-maintenance",
+    # The server's catalog signing key reference. The cut-over switches which Secret it names (review 2026-10-25 H3).
+    "signingKeyEnv": "LW_CATALOG_SIGNING_KEY",
     "receiptProfile": "suse",
     "receiptTarget": "web",
     # First-party repositories whose changes are listed before a switch (R21 R3).
@@ -138,14 +148,36 @@ MIGRATION_LOCK_BUDGET_SECONDS = 30
 MIGRATION_MANIFEST_HEADER = "lolly-work migration manifest v1\n"
 REHEARSAL_DEADLINE_SECONDS = 900
 
-# lolly.ing's own catalog key (PROPOSAL 4.7). Generated at the Phase 2 cut-over; it is
-# pinned here in a reviewed change. Until then every lolly.ing run refuses.
-ING_PUBLIC_KEY_JWK = None
-# GitHub logins whose approval in the private run admits a maintenance migration.
-# Andy's own login once agents have their own account (decision 3). Empty refuses all.
-ING_MAINTENANCE_APPROVERS = ()
+# lolly.ing's own catalog key (PROPOSAL 4.7), generated 2026-10-27 for the preview-grade
+# route. The private half is only in the lolly-ing-signing environment of
+# lolly-tools/suse-lolly (LOLLY_ING_CATALOG_SIGNING_KEY) and the node Secret below;
+# the public half is LOLLY_ING_PUBLIC_KEY_JWK there. Key id (RFC 7638 thumbprint)
+# UNkbjFt1EE_G_n2eoyRpyKU_EG7EeiTs3YTkU2L3hIQ.
+ING_PUBLIC_KEY_JWK = {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "yhFEPn0qYVTIGgq6HwzhYElg92TZDyAoiBk1Rs8kNtA",
+    "y": "sBWMHGVSKZdW87nmtLjkfIS5n9mNvCHzKCq9CWe-PDo",
+}
+# The Secret in lolly-private that holds lolly.ing's own key under LW_CATALOG_SIGNING_KEY
+# (review 2026-10-25 H3). Andy creates it before the cut-over and never edits the live
+# Secret. The cut-over patch points the server's reference at this name and a revert
+# points it back, so the old image, old key and old pack return together and the
+# reverted catalog still verifies. The tool never reads or writes a Secret's value.
+# None refuses plan and plan --apply.
+ING_SIGNING_KEY_SECRET = "lolly-ing-catalog-signing"
+# What qualifies a lolly.ing build (Andy 2026-10-27): the Work commit needs its own
+# successful full lolly-work CI push run on main; the Lolly commit its engine pin names
+# qualifies as a lolly.tools source does, by its own full CI run or a fast lane above one.
+ING_WORK_CI = {"site": "lolly.ing (Work source)", "repository": "lolly-tools/lolly-work", "ciWorkflowFile": "ci.yml",
+               "ciWorkflowPath": ".github/workflows/ci.yml", "branch": "main"}
+ING_LOLLY_CI = {"site": "lolly.ing (Lolly source)", "repository": TOOLS["repository"], "ciWorkflowFile": TOOLS["ciWorkflowFile"],
+                "ciWorkflowPath": TOOLS["ciWorkflowPath"], "fastLaneWorkflowFile": TOOLS["fastLaneWorkflowFile"],
+                "fastLaneWorkflowPath": TOOLS["fastLaneWorkflowPath"], "branch": TOOLS["branch"]}
 ING_ARCHIVE_MAX_BYTES = 6 * 1024 ** 3
-# The smoke account's session cookie: a root-only file on the node, never printed.
+# The smoke's credential, a root-only file on the node, never printed: a Work service token (lwt_..., member role or
+# lower) when its file exists, otherwise a member's session cookie. A token does not expire overnight (Andy, 2026-10-27).
+NODE_ING_SMOKE_TOKEN = "/etc/lolly-preview/lolly.ing-smoke-token"
 NODE_ING_SMOKE_COOKIE = "/etc/lolly-preview/lolly.ing-smoke-session"
 NODE_SPOOL_DIR = "/var/lib/lolly-preview/spool"
 
@@ -260,17 +292,21 @@ REMOVE_WORST_SECONDS = (CRICTL_WRITE_TIMEOUT_SECONDS + REMOVE_VERIFY_SECONDS + C
 RETENTION_AFTER_DEPLOY_SECONDS = REMOVE_WORST_SECONDS + 60
 TOOLS_RUNTIME_MAX_SECONDS = (2 * PULL_TIMEOUT_SECONDS + 2 * MAX_ROLLOUT_SECONDS + MAX_WATCH_MINUTES * 60 + 3 * SMOKE_BUDGET_SECONDS
                              + RETENTION_AFTER_DEPLOY_SECONDS + 600)
-# lolly.ing steps (PROPOSAL 4.3): import, backup, read-only checks, rehearsal, migrate Job.
+# lolly.ing steps (PROPOSAL 4.3): import, read-only checks, and for a deploy that migrates the backup, the
+# classifier, the restore rehearsal when the profile configures one, and the migrate Job.
 ING_IMPORT_TIMEOUT_SECONDS = 900
 JOB_TIMEOUT_SECONDS = 300
 BACKUP_TIMEOUT_SECONDS = 660
 REHEARSAL_TIMEOUT_SECONDS = 1500
 MIGRATE_TIMEOUT_SECONDS = 900
-BACKUP_MAX_AGE_SECONDS = 6 * 3600
-MAINTENANCE_BACKUP_MAX_AGE_SECONDS = 3600
+# A deploy that migrates takes a verified backup first, and it must be under an hour old
+# when the schema changes (Andy 2026-10-27: every migration class, backup first).
+BACKUP_MAX_AGE_SECONDS = 3600
 ING_ROLLBACK_SECONDS = MAX_ROLLOUT_SECONDS + SMOKE_BUDGET_SECONDS + JOB_TIMEOUT_SECONDS
-ING_MIGRATION_SECONDS = JOB_TIMEOUT_SECONDS + REHEARSAL_TIMEOUT_SECONDS + MIGRATE_TIMEOUT_SECONDS + JOB_TIMEOUT_SECONDS
-ING_RUNTIME_MAX_SECONDS = (ING_IMPORT_TIMEOUT_SECONDS + BACKUP_TIMEOUT_SECONDS + JOB_TIMEOUT_SECONDS + ING_MIGRATION_SECONDS
+# A migrating deploy: the backup, the classifier, the optional rehearsal, the migrate Job and a second check.
+ING_MIGRATION_SECONDS = (BACKUP_TIMEOUT_SECONDS + JOB_TIMEOUT_SECONDS + REHEARSAL_TIMEOUT_SECONDS + MIGRATE_TIMEOUT_SECONDS
+                         + JOB_TIMEOUT_SECONDS)
+ING_RUNTIME_MAX_SECONDS = (ING_IMPORT_TIMEOUT_SECONDS + JOB_TIMEOUT_SECONDS + ING_MIGRATION_SECONDS
                            + MAX_ROLLOUT_SECONDS + SMOKE_BUDGET_SECONDS + JOB_TIMEOUT_SECONDS + MAX_WATCH_MINUTES * 60
                            + ING_ROLLBACK_SECONDS + RETENTION_AFTER_DEPLOY_SECONDS + 600)
 # One unit serves both sites, so it gets the longer of the two budgets.

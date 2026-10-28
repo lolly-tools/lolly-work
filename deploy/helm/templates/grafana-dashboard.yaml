@@ -1,0 +1,26 @@
+{{- /*
+Grafana dashboard (dashboards/lolly-work.json) as a ConfigMap the Grafana sidecar
+loads by label. Off by default. The same JSON imports by hand in Grafana; its
+datasource, namespace and job are dashboard variables.
+*/ -}}
+{{- if .Values.metrics.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lolly-work.fullname" . }}-dashboard
+  {{- with .Values.metrics.grafanaDashboard.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+    {{- with .Values.metrics.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.grafanaDashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  lolly-work.json: |-
+    {{- .Files.Get "dashboards/lolly-work.json" | nindent 4 }}
+{{- end }}

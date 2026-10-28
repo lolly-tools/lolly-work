@@ -12,6 +12,8 @@ import type { ActivityPolicy } from '../policy/activity.ts';
  *   LW_IDP_CLIENT_SECRET - OIDC client secret (when the IdP requires one)
  *   LW_CREDENTIAL_SECRET - master key sealing stored provider credentials
  *                          (required in prod only once a credential is stored)
+ *   LW_OFREP_TOKEN - credential for the flag service featureFlags.ofrep names
+ *                          (optional; a flagd without auth needs none)
  *   <credentialRef> - config-managed catalog providers name their own env
  *                          var per entry; resolved at boot, never persisted
  */
@@ -20,6 +22,7 @@ import { serviceUrl } from '../lib/service-url.ts';
 import { providerOrigins, type ProviderNetworkPolicy } from '../catalog/providers/egress.ts';
 import { randomId } from '../lib/crypto.ts';
 import { validateAiConfig } from '../policy/ai.ts';
+import { validateOfrepConfig, type OfrepConfig } from '../policy/ofrep.ts';
 import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites.ts';
 import { PROJECT_FILE_DEFAULTS, PROJECT_FILE_MAX_BYTES, type ProjectFilePolicy } from '../projects/files.ts';
 import { UPLOAD_DEFAULTS, type UploadPolicy } from '../uploads/scoped.ts';
@@ -309,8 +312,18 @@ export interface InstanceConfig {
      * blast-separated from the control plane) instead of refusing with 501. Empty
      * url ⇒ no worker ⇒ hooked tools still 501 (unchanged). The shared HMAC key is
      * env-only: LW_RENDER_WORKER_SECRET.
+     *
+     * `dispatch` chooses how jobs reach the worker (plan 324 M3, D5). "push"
+     * (the default) POSTs each job to `url`. "pull" holds each job in Work
+     * until a worker leases it over /api/internal/render/lease and reports the
+     * answer back (render/worker-leases.ts); start the workers with
+     * LW_RENDER_PULL_URL pointing at this instance. `url` is still required and
+     * still serves file previews. `pull.leaseMs` is how long a lease lasts
+     * without renewal; `pull.queueTimeoutMs` is how long a job waits for a
+     * worker before it fails as RENDER_BUSY, the answer a full worker gives
+     * under push.
      */
-    worker: { url: string; timeoutMs: number };
+    worker: { url: string; timeoutMs: number; dispatch: 'push' | 'pull'; pull: { leaseMs: number; queueTimeoutMs: number } };
     /**
      * Instance C2PA signing identity (plans/17 §16). When `certFile` (a public
      * cert-chain PEM, leaf first) is set AND LW_C2PA_SIGNING_KEY (the PKCS#8
@@ -405,6 +418,11 @@ export interface InstanceConfig {
    *  receiver in signed batches, loss-free behind the siem_cursor. `url`
    *  absent = off. Long-lived server only; the HMAC key rides LW_SIEM_SECRET. */
   siem: { url?: string; batchSize: number; intervalSeconds: number };
+  /** Feature flags. `ofrep` connects the organisation's own flag service
+   *  (policy/ofrep.ts), which then decides the default of the governed flags
+   *  it lists; Work's own governance stays the fallback. Absent = Work alone
+   *  decides, with no egress. The credential rides LW_OFREP_TOKEN. */
+  featureFlags: { ofrep?: OfrepConfig };
   rateLimit: RateLimitConfig;
 }
 
@@ -578,6 +596,9 @@ export interface Secrets {
   credential?: string;
   /** Bearer token for /metrics. Absent ⇒ metrics are loopback-only (never public). */
   metricsToken?: string;
+  /** Credential for the organisation's flag service (featureFlags.ofrep).
+   *  Absent ⇒ requests carry no credential, which suits a flagd without auth. */
+  ofrepToken?: string;
   /** Shared HMAC key for the Chromium render worker. Absent ⇒ no worker dispatch. */
   renderWorker?: string;
   /** PKCS#8 private-key PEM for the instance C2PA signer. Absent ⇒ unsigned exports. */
@@ -623,7 +644,7 @@ const DEFAULTS: InstanceConfig = {
     uploads: { ...UPLOAD_DEFAULTS },
     requests: { join: false, project: true, ttlDays: 14, joinOpenMax: 50 },
   },
-  render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
+  render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000, dispatch: 'push', pull: { leaseMs: 15000, queueTimeoutMs: 30000 } }, c2pa: { certFile: '', claimGenerator: '' } },
   audit: { headLog: { onBoot: true, intervalMinutes: 60 } },
   rateLimit: {
     enabled: true, trustedProxyHops: 0, maxBuckets: 50000,
@@ -654,6 +675,7 @@ const DEFAULTS: InstanceConfig = {
   blobs: { driver: 'pg' },
   notify: { people: { email: false } },
   siem: { batchSize: 200, intervalSeconds: 30 },
+  featureFlags: {},
   submit: {},
 };
 
@@ -1132,6 +1154,13 @@ export function parseConfig(json: string): InstanceConfig {
   if (!Number.isInteger(cfg.siem.intervalSeconds) || cfg.siem.intervalSeconds < 5) {
     throw new Error(`invalid siem.intervalSeconds: ${cfg.siem.intervalSeconds} (>= 5)`);
   }
+  if (!cfg.featureFlags || typeof cfg.featureFlags !== 'object' || Array.isArray(cfg.featureFlags)
+    || Object.keys(cfg.featureFlags).some((key) => key !== 'ofrep')) {
+    throw new Error('featureFlags must be an object whose only key is ofrep');
+  }
+  if (cfg.featureFlags.ofrep !== undefined) {
+    validateOfrepConfig(cfg.featureFlags.ofrep, cfg.deployment.mode === 'production' || (cfg.deployment.mode !== 'evaluation' && process.env.NODE_ENV === 'production'));
+  }
   const wt = cfg.render.worker.timeoutMs;
   if (!cfg.network?.providers || typeof cfg.network.providers !== 'object') throw new Error('network.providers must be configured');
   cfg.network.providers.allowedPrivateOrigins = providerOrigins(cfg.network.providers.allowedPrivateOrigins);
@@ -1144,6 +1173,12 @@ export function parseConfig(json: string): InstanceConfig {
     catch { throw new Error('render.worker.url requires HTTPS; HTTP is only for explicit loopback evaluation'); }
   }
   if (cfg.render.worker.url && (!Number.isFinite(wt) || wt <= 0)) throw new Error(`invalid render.worker.timeoutMs: ${wt}`);
+  if (cfg.render.worker.dispatch !== 'push' && cfg.render.worker.dispatch !== 'pull') throw new Error('render.worker.dispatch must be "push" or "pull"');
+  const pull = cfg.render.worker.pull;
+  if (!pull || typeof pull !== 'object' || !Number.isInteger(pull.leaseMs) || pull.leaseMs < 1000 || pull.leaseMs > 120_000
+    || !Number.isInteger(pull.queueTimeoutMs) || pull.queueTimeoutMs < 1000 || pull.queueTimeoutMs > 600_000) {
+    throw new Error('render.worker.pull needs leaseMs from 1000 to 120000 and queueTimeoutMs from 1000 to 600000');
+  }
   const rl = cfg.rateLimit;
   if (!Number.isFinite(rl.trustedProxyHops) || rl.trustedProxyHops < 0) throw new Error('rateLimit.trustedProxyHops must be >= 0');
   for (const s of ['auth', 'telemetry', 'link', 'automation'] as const) {
@@ -1349,6 +1384,7 @@ export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxy
   if (env.LW_CREDENTIAL_SECRET) secrets.credential = env.LW_CREDENTIAL_SECRET;
   // Not need()-gated: absence means /metrics is loopback-only, the easy-deploy default.
   if (env.LW_METRICS_TOKEN) secrets.metricsToken = env.LW_METRICS_TOKEN;
+  if (env.LW_OFREP_TOKEN) secrets.ofrepToken = env.LW_OFREP_TOKEN;
   // Both notify-channel secrets follow the credential-secret pattern: required
   // only when the matching notify block is configured, enforced at boot.
   if (env.LW_SMTP_PASSWORD) secrets.smtpPassword = env.LW_SMTP_PASSWORD;

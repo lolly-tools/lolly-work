@@ -1,0 +1,16 @@
+{
+  "id": "bench-card",
+  "name": "Bench card",
+  "description": "A hook-less SVG card for the render dispatch benchmark: Work renders it in its jsdom path.",
+  "version": "1.0.0",
+  "engineVersion": "^1.0.0",
+  "status": "experimental",
+  "category": "utility",
+  "tags": ["benchmark"],
+  "render": { "width": 1200, "height": 630, "formats": ["svg", "png"] },
+  "inputs": [
+    { "id": "title", "type": "text", "label": "Title", "default": "Bench card" },
+    { "id": "subtitle", "type": "text", "label": "Subtitle", "default": "Rendered by Work" },
+    { "id": "accent", "type": "color", "label": "Accent", "default": "#30ba78" }
+  ]
+}

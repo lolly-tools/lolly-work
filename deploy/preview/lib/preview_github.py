@@ -17,10 +17,17 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+import preview_lane
 from preview_common import HEX64, RUN_ID, SHA, Refusal, emit, parse_utc, require, sha256_hex, strict_json
 
 ACTIVE_STATES = ("queued", "in_progress", "waiting", "pending", "requested")
 RECEIPT_FILES = {"release.json", "web.json", "public.jwk.json", "catalog.json", "web-boot.json"}
+RELEASE_KEYS = {"source", "runId", "runAttempt", "neutralProfile", "images", "candidateRuntimeQualified"}
+# A build from preview-web.yml that runs at merge, before the commit's CI finishes, says so in release.json:
+# "sourceGate": "not-failed" (its source gate refused only a completed CI failure). Such a build proves nothing
+# about qualification, and no build does any more: preview_mac.qualification reads it at deploy time for every
+# ship and deploy. A tool from before that rule refuses the field, so it can never deploy one of these builds.
+SOURCE_GATES = ("not-failed",)
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
@@ -118,6 +125,27 @@ def green_ci_run(gh, anchors, sha):
     return max(good, key=lambda run: run["id"])
 
 
+def qualified_ci(gh, anchors, sha):
+    """What lets this commit ship: its own successful main CI push run, or a fast lane above one.
+
+    Returns {"id": the full CI run, "lane": "full" | "docs" | "web", "base": the commit that run tested, ...}.
+    A site without "fastLaneWorkflowFile" in its anchors (lolly.ing) only ever takes the first answer.
+    """
+    try:
+        run = green_ci_run(gh, anchors, sha)
+        return {"id": run["id"], "lane": "full", "base": sha}
+    except Refusal as exc:
+        if "fastLaneWorkflowFile" not in anchors:
+            raise
+        refusal = exc
+    try:
+        return preview_lane.qualify(gh, anchors, sha)
+    except Refusal as lane:
+        if lane.code == "CI_NOT_GREEN":  # the full run already failed: a lane never overrides that
+            raise
+        raise Refusal(refusal.code, f"{refusal.message}; no fast lane either: {lane.message}") from lane
+
+
 def active_candidate_runs(gh, anchors):
     active = []
     for state in ACTIVE_STATES:
@@ -206,8 +234,8 @@ def read_receipt_artifact(data, run, sha, anchors, public_jwk, thumbprint):
     except (zipfile.BadZipFile, UnicodeDecodeError, KeyError) as exc:
         raise Refusal("RECEIPT_INVALID", "receipt artifact is not a valid zip") from exc
     release = files["release.json"]
-    require(isinstance(release, dict) and set(release) == {"source", "runId", "runAttempt", "neutralProfile",
-            "images", "candidateRuntimeQualified"}, "RECEIPT_INVALID", "release receipt has missing or unexpected fields")
+    require(isinstance(release, dict) and (set(release) == RELEASE_KEYS or (set(release) == RELEASE_KEYS | {"sourceGate"}
+            and release["sourceGate"] in SOURCE_GATES)), "RECEIPT_INVALID", "release receipt has missing or unexpected fields")
     require(release["source"] == sha and release["runId"] == str(run["id"]) and type(release["runAttempt"]) is int
             and release["runAttempt"] == run["run_attempt"] and release["neutralProfile"] is True,
             "RECEIPT_INVALID", "release receipt is not bound to this run and source")

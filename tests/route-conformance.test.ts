@@ -44,6 +44,7 @@ const ROUTE_CLASSES: Record<string, DeliveryClass> = {
   'HEAD /api/brand/logo/:variant': 'public-revalidate',
   'HEAD /api/brand/r/:revision/font/:file': 'public-immutable',
   'HEAD /api/brand/r/:revision/logo/:variant': 'public-immutable',
+  'GET /api/v1/catalog/public-key': 'public-revalidate',
   'GET /api/v1/discovery': 'public-revalidate',
   'GET /catalog/*': 'instance-private',
   'HEAD /catalog/*': 'instance-private',

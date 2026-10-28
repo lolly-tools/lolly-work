@@ -14,10 +14,12 @@ import { createPostgresBlobStore } from './blobs/postgres.ts';
 import { createS3BlobStore } from './blobs/s3.ts';
 import { runMigrations, pendingMigrations, migrationDatabaseUrl } from './store/migrate.ts';
 import { buildApp } from './api/app.ts';
-import { parseBackgroundPollMs, type RenderRunner } from './renders/runner.ts';
+import { parseBackgroundPollMs, parseRenderConcurrency, type RenderRunner } from './renders/runner.ts';
 import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
+import { createOtel, setProcessOtel } from './observability/otel.ts';
+import { otelConfigFromEnv, printableEndpoint, SIGNALS } from './observability/otel-config.ts';
 import { runRetention } from './audit/retention.ts';
 import { scheduleProjectFileSweep } from './projects/files.ts';
 import { scheduleUploadSweep } from './uploads/scoped.ts';
@@ -35,6 +37,24 @@ import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commit
 
 const config = loadConfig();
 const secrets = loadSecrets(process.env, config);
+
+// OpenTelemetry export (observability/otel.ts): only when an OTLP endpoint is
+// set in the standard OTEL_* variables. Built before the stores so their
+// database pools can be traced. Endpoints print without userinfo or query, and
+// headers (often a credential) never print.
+const workVersion = (() => {
+  try { return String(JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version ?? 'unknown'); }
+  catch { return 'unknown'; }
+})();
+const otelSettings = otelConfigFromEnv(process.env, workVersion);
+for (const note of otelSettings.notes) console.warn(`[lolly-work] WARNING otlp: ${note}`);
+const otel = createOtel(otelSettings.config);
+setProcessOtel(otel);
+if (otelSettings.config) {
+  const cfg = otelSettings.config;
+  const sent = SIGNALS.flatMap(signal => { const e = cfg[signal]; return e ? [`${signal} to ${printableEndpoint(e.url)} (${e.protocol})`] : []; });
+  console.log(`[lolly-work] otlp export: ${sent.join('; ')}; service.name=${String(cfg.resource['service.name'])}`);
+}
 const setup = await assessSetup(config, secrets, !!process.env.DATABASE_URL?.trim());
 if (!setup.ready) {
   for (const check of setup.checks.filter(check => check.status === 'fail')) console.error(`[lolly-work] ${check.id}: ${check.message}`);
@@ -156,14 +176,27 @@ const nearby = createNearbyRegistry();
 // BlobStore for instance-owned catalog bytes (plans/26 §2, plans/27 §5): the
 // configured driver - s3 (any S3-compatible store) when chosen, else the PG
 // default (zero moving parts), else memory when there is no database at all.
-const blobs = config.blobs.driver === 's3'
+const s3Blobs = config.blobs.driver === 's3'
   ? createS3BlobStore(
       config.blobs.s3 ?? (() => { throw new Error('blobs.driver is "s3" but blobs.s3 config is missing'); })(),
       process.env.LW_BLOBS_S3_CREDENTIAL,
     )
-  : databaseUrl
+  : undefined;
+const blobs = s3Blobs
+  ?? (databaseUrl
     ? await createPostgresBlobStore(databaseUrl)
-    : createMemoryBlobStore();
+    : createMemoryBlobStore());
+// Probe the S3 store now rather than on the first upload, so the log says
+// whether it keeps object metadata (blobs/s3.ts). A failed probe is retried
+// by the first write, which then fails visibly if the store still refuses.
+if (s3Blobs) {
+  void s3Blobs.metadata().then(
+    (mode) => console.log(mode === 'native'
+      ? '[lolly-work] s3 blobs: the store keeps content types and metadata'
+      : '[lolly-work] s3 blobs: the store drops content types and metadata; keeping them in .lolly-meta/ records beside each blob'),
+    (error: Error) => console.warn(`[lolly-work] s3 blobs: metadata probe failed (${error.message}); the first write will try again`),
+  );
+}
 
 // LW_BACKGROUND_POLL_MS: how often the durable render and automation runners
 // look for queued work. Unset keeps 1 s; 0 sets no timer (work is still picked
@@ -173,8 +206,13 @@ const blobs = config.blobs.driver === 's3'
 // be woken for up to about 45 minutes after a job with a callback settles.
 const backgroundPollMs = parseBackgroundPollMs(process.env.LW_BACKGROUND_POLL_MS);
 if (backgroundPollMs !== undefined) console.log(`[lolly-work] background poll ${backgroundPollMs === 0 ? 'off (work runs on submission)' : `every ${backgroundPollMs} ms`}`);
+// LW_RENDER_CONCURRENCY: how many durable renders this process drives at once.
+// Unset keeps 2. Size it to the worker slots it should keep busy.
+const renderConcurrency = parseRenderConcurrency(process.env.LW_RENDER_CONCURRENCY);
+if (renderConcurrency !== undefined) console.log(`[lolly-work] durable render concurrency ${renderConcurrency}`);
+if (config.render.worker.dispatch === 'pull') console.log('[lolly-work] render worker dispatch: pull (workers lease jobs over /api/internal/render/lease)');
 let renderRunner: RenderRunner | undefined;
-const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
+const app = buildApp({ config, store, secrets, blobs, otel, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
   // A saved comment write tells the people in that session's live room (plan 76 M4).
   roomEvents: (id, frame) => collab.notifyComment(id, frame),
   // Version restores go through the live room, like an agent's edits (plan 76 M4).
@@ -182,6 +220,7 @@ const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => col
   collabSocketTicket: (cookie, id) => collab.issueSocketTicket(cookie, id),
   onRenderRunner: (runner) => { renderRunner = runner; },
   ...(backgroundPollMs !== undefined ? { backgroundPollMs } : {}),
+  ...(renderConcurrency !== undefined ? { renderConcurrency } : {}),
 });
 // Poll persisted requests at boot as well as after submission. Other replicas
 // may run the same loop: the store owns claims and fencing.
@@ -309,6 +348,9 @@ const shutdown = async (signal: string): Promise<void> => {
   console.log('[lolly-work] drained');
   // Write the buffered blob read tally, so a routine deploy keeps the month's figure.
   await blobs.flushUsage?.().catch((err: Error) => console.error(`[lolly-work] blob read tally not written: ${err.message}`));
+  // Send the spans, log records and final metric reading still waiting, within
+  // five seconds so a collector that is down cannot hold the exit.
+  await otel.shutdown(5_000);
   process.exit(0);
 };
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {

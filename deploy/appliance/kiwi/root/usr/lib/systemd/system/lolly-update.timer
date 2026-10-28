@@ -1,0 +1,15 @@
+# The appliance's maintenance night (machine time):
+#   01:00-01:30  transactional-update prepares a host snapshot
+#   02:30-03:00  lolly-update applies a Lolly Work release
+#   04:00-05:30  rebootmgr reboots into a prepared host snapshot
+# Backups, when they arrive, take the hour before midnight.
+[Unit]
+Description=Lolly appliance: daily Lolly Work update
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=30min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

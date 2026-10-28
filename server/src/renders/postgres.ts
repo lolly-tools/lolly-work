@@ -81,6 +81,16 @@ export function createPostgresRenderStore(pool: RenderDatabase): RenderStore {
         [id, token, JSON.stringify(outcome.error), outcome.retryAfterMs ?? null]);
       return rowCount === 1;
     },
+    async renderQueue() {
+      // state='queued' implies the partial index renders_claim's predicate, so
+      // this reads only live work, never the retained history.
+      const { rows } = await pool.query(
+        `select request->>'toolId' as tool_id, count(*)::integer as queued,
+           min(available_at) filter (where available_at<=clock_timestamp()) as oldest
+         from renders where state='queued' group by 1 order by 1`);
+      return rows.map((r: Record<string, unknown>) => ({ toolId: String(r.tool_id), queued: Number(r.queued),
+        oldestClaimableAt: r.oldest ? new Date(r.oldest as string).toISOString() : null }));
+    },
     async cancelRender(id, principal) {
       const { rows } = await pool.query(
         `update renders set state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp(),lease_token=null,lease_until=null

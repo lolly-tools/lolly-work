@@ -196,8 +196,8 @@ class Binding(unittest.TestCase):
         self.build = F.make_build(self.key, "b" * 40, "new")
         self.run = F.run_object(77, "b" * 40)
 
-    def read(self, run=None, **overrides):
-        data = base64.b64decode(F.receipt_zip(self.build, 77, 1, self.pin, self.thumb, **overrides))
+    def read(self, run=None, source_gate=None, **overrides):
+        data = base64.b64decode(F.receipt_zip(self.build, 77, 1, self.pin, self.thumb, source_gate=source_gate, **overrides))
         return G.read_receipt_artifact(data, run or self.run, "b" * 40, A.TOOLS, self.pin, self.thumb)
 
     def test_receipt_artifact_binds_run_source_image_and_pin(self):
@@ -217,6 +217,19 @@ class Binding(unittest.TestCase):
         for name, override in cases.items():
             with self.subTest(name=name), self.assertRaises(C.Refusal):
                 self.read(**override)
+
+    def test_a_build_made_at_merge_binds_and_says_which_source_gate_it_passed(self):
+        """lolly's preview-web.yml builds before CI finishes and writes "sourceGate"; only the known rule binds."""
+        self.assertEqual(self.read(source_gate="not-failed")["image"], self.build["image"])
+        for gate in ("pending", "", None, True, ["not-failed"]):
+            data = base64.b64decode(F.receipt_zip(self.build, 77, 1, self.pin, self.thumb))
+            release = {"source": "b" * 40, "runId": "77", "runAttempt": 1, "neutralProfile": True, "candidateRuntimeQualified": False,
+                       "images": {"web": {"imageId": "sha256:" + C.sha256_hex(self.build["image"].encode()), "digest": self.build["image"],
+                                          "platform": "linux/amd64", "source": "b" * 40}}, "sourceGate": gate}
+            with self.subTest(gate=gate), self.assertRaises(C.Refusal) as caught:
+                self.read(**{"release.json": release})
+            self.assertEqual(caught.exception.code, "RECEIPT_INVALID")
+            self.assertTrue(data)
 
     def test_bind_run_requires_workflow_event_repository_branch_commit_success(self):
         class StubGh:
@@ -425,10 +438,16 @@ class Shipped(unittest.TestCase):
         """PROPOSAL 4.7: until a reviewed change pins lolly.ing's key, every lolly.ing run refuses."""
         import preview_ing as I
         self.assertIs(A.site_anchors("lolly.ing"), A.ING)
-        self.assertIsNone(A.ING_PUBLIC_KEY_JWK)
-        with self.assertRaises(C.Refusal) as caught:
+        with mock.patch.object(A, "ING_PUBLIC_KEY_JWK", None), self.assertRaises(C.Refusal) as caught:
             I.ing_pin()
         self.assertEqual(caught.exception.code, "ING_KEY_NOT_PINNED")
+
+    def test_lolly_ing_pin_is_its_own_key(self):
+        """The key pinned on 2026-10-27: neither the release key nor the lolly.tools preview key."""
+        import preview_ing as I
+        _, thumbprint = I.ing_pin()
+        self.assertEqual(thumbprint, "UNkbjFt1EE_G_n2eoyRpyKU_EG7EeiTs3YTkU2L3hIQ")
+        self.assertNotIn(thumbprint, (A.RELEASE_PUBLIC_KEY_THUMBPRINT, A.PREVIEW_PUBLIC_KEY_THUMBPRINT))
         with mock.patch.object(A, "ING_PUBLIC_KEY_JWK", A.RELEASE_PUBLIC_KEY_JWK), self.assertRaises(C.Refusal) as caught:
             I.ing_pin()  # never the platform release key (R20 S1, R21 R2, R22 S1)
         self.assertEqual(caught.exception.code, "RELEASE_KEY")
@@ -558,15 +577,21 @@ class EndToEnd(unittest.TestCase):
         self.profile["watch"]["minutes"] = minutes
         self.write_profile()
 
-    def add_build(self, sha, label, run_id):
-        """A built and bound commit that `deploy` and `adopt` can use."""
+    def add_build(self, sha, label, run_id, ci="success", source_gate=None):
+        """A built and bound commit that `deploy` and `adopt` can use, with its main CI push run in state `ci`
+        ("success", "in_progress", "failure" or None for no run yet). deploy reads it at deploy time.
+        source_gate: the build's receipt says it was made at merge ("not-failed")."""
         build = F.make_build(self.key, sha, label)
         build["catalogPin"] = self.thumb
         self.builds[label] = build
         self.gh = json.loads(self.gh_path.read_text())
         self.gh["runs"].append(F.run_object(run_id, sha))
+        if ci:
+            status, conclusion = ("in_progress", None) if ci == "in_progress" else ("completed", ci)
+            self.gh["ciRuns"].append(F.run_object(run_id + 50000, sha, path=".github/workflows/ci.yml", event="push",
+                                                  status=status, conclusion=conclusion))
         self.gh["artifacts"][str(run_id)] = [{"id": run_id + 100000, "name": "preview-web-receipts-attempt-1", "expired": False}]
-        self.gh["zips"][str(run_id + 100000)] = F.receipt_zip(build, run_id, 1, self.pin, self.thumb)
+        self.gh["zips"][str(run_id + 100000)] = F.receipt_zip(build, run_id, 1, self.pin, self.thumb, source_gate=source_gate)
         self.gh["files"].update(F.source_files(build))
         self.write_gh()
         state = self.cluster()
@@ -922,6 +947,56 @@ class Deploys(EndToEnd):
         self.assertEqual(self.records()[-1]["deployId"], deploy_id)
 
 
+class BuildAtMerge(EndToEnd):
+    """A build made as soon as a commit is merged, before its CI finishes: deploy reads qualification itself."""
+
+    FIX = "c" * 40
+
+    def test_deploy_waits_for_the_commits_ci_and_never_touches_the_node_before(self):
+        fix = self.add_build(self.FIX, "fix", 1101, ci="in_progress", source_gate="not-failed")
+        code, events = self.cli("deploy", self.FIX)
+        refused = self.done(events)
+        self.assertEqual((code, refused["code"]), (1, "CI_PENDING"), events)
+        self.assertFalse(any(e.get("event") in ("qualified", "starting") for e in events))
+        self.assertEqual((self.cluster()["writes"], self.live()[0]), ([], self.old["image"]))
+        self.assertEqual((self.records()[-1]["command"], self.records()[-1]["code"]), ("deploy", "CI_PENDING"))
+        # The same build, once its CI run has passed.
+        runs = self.gh["ciRuns"]
+        runs[-1].update(status="completed", conclusion="success")
+        self.update_gh(ciRuns=runs)
+        code, events = self.cli("deploy", self.FIX)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual([(e["ciRun"], e["lane"]) for e in events if e.get("event") == "qualified"], [(51101, "full")])
+        self.assertEqual(self.live()[0], fix["image"])
+        self.assertEqual([c for c in self.gh_calls() if c["method"] == "POST"], [])
+
+    def test_a_build_whose_ci_then_failed_is_never_deployed(self):
+        for name, ci, code_name in (("failed", "failure", "CI_NOT_GREEN"), ("no run yet", None, "CI_NOT_GREEN")):
+            with self.subTest(name=name):
+                self.tearDown()
+                self.setUp()
+                self.add_build(self.FIX, "fix", 1101, ci=ci, source_gate="not-failed")
+                for command in ("deploy", "ship"):
+                    code, events = self.cli(command, self.FIX)
+                    self.assertEqual((code, self.done(events).get("code")), (1, code_name), events[-3:])
+                self.assertEqual(self.cluster()["writes"], [])
+                self.assertEqual(self.live()[0], self.old["image"])
+                self.assertFalse(any(call["method"] == "POST" for call in self.gh_calls()))
+
+    def test_ship_reusing_a_build_reads_qualification_too(self):
+        """A manual ship of a commit the watcher already built takes the reuse path, which never asked CI before."""
+        self.add_build(self.FIX, "fix", 1101, ci="in_progress", source_gate="not-failed")
+        code, events = self.cli("ship", self.FIX)
+        self.assertEqual((code, self.done(events)["code"]), (1, "CI_PENDING"), events[-3:])
+        self.assertTrue(any(e.get("event") == "reused" for e in events))
+        self.assertEqual(self.cluster()["writes"], [])
+        self.assertFalse(any(call["method"] == "POST" for call in self.gh_calls()))
+
+    def test_status_tells_a_watcher_that_deploy_reads_qualification(self):
+        code, events = self.cli("status")
+        self.assertEqual((code, [e.get("qualifiesAtDeploy") for e in events if e.get("event") == "status"]), (0, [True]))
+
+
 class Refusals(EndToEnd):
     """Every refusal before a change, and the tool, profile and identity checks."""
 
@@ -1161,13 +1236,99 @@ class Refusals(EndToEnd):
         self.assertEqual(self.done(events)["code"], "CHECK_TARGET_IDENTITY")
 
     def test_lolly_ing_refuses_without_touching_anything(self):
+        """A tool with no lolly.ing key pinned refuses before any GitHub call."""
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out), mock.patch.object(A, "ING_PUBLIC_KEY_JWK", None):
             code = M.main(["--state-dir", str(self.state_dir), "--tool-sha256", self.tool_hash, "--checkout", str(self.checkout),
                            "--check-target", str(self.check_target_path), "lolly.ing", "ship", NEW])
         self.assertEqual(code, 1)
         self.assertIn("ING_KEY_NOT_PINNED", out.getvalue())
         self.assertEqual(self.gh_calls(), [])
+
+
+class LaneShips(EndToEnd):
+    """Fast deploy lanes (preview_lane.py): a docs or web shell change ships before its own full CI run finishes."""
+
+    FILES = {"docs/using.md": "# Using\n", "shells/web/src/styles/a.css": "a{}\n", "engine/src/runtime.ts": "runtime\n"}
+
+    def arrange_lane(self, changed, jobs=("docs lane",), source_status="in_progress", source_conclusion=None, workflow=True):
+        old_root, old_trees = F.git_trees(self.FILES)
+        new_root, new_trees = F.git_trees(dict(self.FILES, **changed))
+        self.gh.update(commits={OLD: {"tree": old_root, "parents": []}, NEW: {"tree": new_root, "parents": [OLD]}},
+                       trees={**old_trees, **new_trees},
+                       ciRuns=[F.run_object(899, OLD, path=".github/workflows/ci.yml", event="push"),
+                               F.run_object(900, NEW, path=".github/workflows/ci.yml", event="push", status=source_status,
+                                            conclusion=source_conclusion)],
+                       jobs={"1300": [{"id": 13000 + index, "run_id": 1300, "head_sha": NEW, "name": name, "status": "completed",
+                                       "conclusion": "success"} for index, name in enumerate(jobs)]})
+        if workflow:
+            self.gh["fastRuns"] = [F.run_object(1300, NEW, path=".github/workflows/fast-lanes.yml", event="push")]
+        self.write_gh()
+
+    def test_a_docs_change_ships_on_its_lane_job_and_records_the_lane(self):
+        self.arrange_lane({"docs/using.md": "# Using Lolly\n", "docs/work/new.md": "# New\n"})
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        dispatched = [event for event in events if event.get("event") == "dispatched"]
+        self.assertEqual([(e["ciRun"], e["lane"], e["laneBase"], e["laneRun"]) for e in dispatched], [(899, "docs", OLD, 1300)])
+        record = self.records()[-1]
+        self.assertEqual((record["result"], record["lane"], record["laneBase"], record["laneBaseCiRun"], record["laneRun"]),
+                         ("LIVE", "docs", OLD, 899, 1300))
+        self.assertEqual(self.live()[0], self.new["image"])
+        self.assertEqual(len([call for call in self.gh_calls() if call["method"] == "POST"]), 1)
+
+    def test_a_docs_change_built_at_merge_deploys_once_its_lane_job_passes(self):
+        self.arrange_lane({"docs/using.md": "# Using Lolly\n"}, jobs=())
+        self.gh["runs"].append(F.run_object(1001, NEW))
+        self.gh["zips"]["555"] = F.receipt_zip(self.new, 1001, 1, self.pin, self.thumb, source_gate="not-failed")
+        self.write_gh()
+        code, events = self.cli("deploy", NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "CI_PENDING"), events[-3:])
+        self.assertIn('"docs lane" job', self.records()[-1]["reason"])
+        self.assertEqual(self.cluster()["writes"], [])
+        jobs = {"1300": [{"id": 13000, "run_id": 1300, "head_sha": NEW, "name": "docs lane", "status": "completed", "conclusion": "success"}]}
+        self.update_gh(jobs=jobs)
+        code, events = self.cli("deploy", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        record = self.records()[-1]
+        self.assertEqual((record["command"], record["lane"], record["laneBase"], record["laneBaseCiRun"], record["laneRun"]),
+                         ("deploy", "docs", OLD, 899, 1300))
+        self.assertFalse(any(call["method"] == "POST" for call in self.gh_calls()))
+
+    def test_a_css_change_ships_on_the_web_lane_job(self):
+        self.arrange_lane({"shells/web/src/styles/a.css": "a{color:red}\n"}, jobs=("docs lane", "web lane"))
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.records()[-1]["lane"], "web")
+
+    def test_a_full_ci_run_of_its_own_needs_no_lane_and_records_none(self):
+        self.arrange_lane({"engine/src/runtime.ts": "runtime 2\n"}, jobs=(), source_status="completed", source_conclusion="success")
+        code, events = self.cli("ship", NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertNotIn("lane", self.records()[-1])
+        self.assertFalse(any("/git/trees/" in call["path"] or "fast-lanes" in call["path"] for call in self.gh_calls()))
+
+    def test_lane_refusals_change_nothing(self):
+        cases = [
+            ("web change, docs job only", {"shells/web/src/styles/a.css": "a{color:red}\n"}, {}, "CI_PENDING", '"web lane" job'),
+            ("engine change", {"engine/src/runtime.ts": "runtime 2\n"}, {"jobs": ("docs lane", "web lane")}, "CI_PENDING",
+             "Full CI required: engine/src"),
+            ("full CI failed", {"docs/using.md": "x\n"}, {"source_status": "completed", "source_conclusion": "failure"}, "CI_NOT_GREEN",
+             "a lane never overrides"),
+            ("no lane workflow yet", {"docs/using.md": "x\n"}, {"workflow": False}, "CI_PENDING", '"docs lane" job'),
+            ("service worker", {"shells/web/public/sw.js": "sw\n"}, {"jobs": ("docs lane", "web lane")}, "CI_PENDING", "sw.js"),
+        ]
+        for name, changed, options, code_name, reason in cases:
+            with self.subTest(name=name):
+                self.tearDown()
+                self.setUp()
+                self.arrange_lane(changed, **options)
+                code, events = self.cli("ship", NEW)
+                self.assertEqual((code, self.done(events).get("code")), (1, code_name), events[-3:])
+                self.assertIn(reason, self.records()[-1]["reason"])
+                self.assertFalse(any(call["method"] == "POST" for call in self.gh_calls()))
+                self.assertEqual(self.cluster()["writes"], [])
+                self.assertEqual(self.live()[0], self.old["image"])
 
 
 class Operations(EndToEnd):

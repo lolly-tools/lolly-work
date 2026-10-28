@@ -2,6 +2,75 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "prometheusRule": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Render the suggested alerts as a Prometheus Operator PrometheusRule. Off by default."
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "alertLabels": {
+              "type": "object",
+              "description": "Labels added to every alert.",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "seriesSelector": {
+              "type": "string",
+              "description": "PromQL label matchers for this release's series. Empty uses job and namespace as the chart's ServiceMonitor sets them."
+            },
+            "disabled": {
+              "type": "array",
+              "description": "Alert names to leave out.",
+              "items": {
+                "type": "string",
+                "pattern": "^LollyWork[A-Za-z]+$"
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "grafanaDashboard": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Render the Grafana dashboard as a ConfigMap for the Grafana sidecar. Off by default."
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
     "renderWorker": {
       "type": "object",
       "properties": {
@@ -48,6 +117,23 @@
           ],
           "additionalProperties": false
         },
+        "appArmorProfile": {
+          "type": "object",
+          "description": "Empty on SELinux nodes. On AppArmor nodes, Localhost lolly-chromium (see deploy/apparmor/README.md). Requires Kubernetes 1.30+.",
+          "properties": {
+            "type": {
+              "enum": [
+                "RuntimeDefault",
+                "Localhost"
+              ]
+            },
+            "localhostProfile": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            }
+          },
+          "additionalProperties": false
+        },
         "userNamespace": {
           "type": "object",
           "properties": {
@@ -62,6 +148,93 @@
           "additionalProperties": false
         }
       }
+    },
+    "otel": {
+      "type": "object",
+      "description": "OpenTelemetry export over OTLP/HTTP. Off by default; while off no OTEL_* variable is set.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^(https?://[^\\s]+)?$",
+          "description": "The collector's OTLP/HTTP base URL, usually port 4318. Work appends /v1/traces, /v1/metrics and /v1/logs."
+        },
+        "protocol": {
+          "enum": [
+            "http/protobuf",
+            "http/json"
+          ],
+          "description": "OTLP over HTTP. gRPC is not supported."
+        },
+        "compression": {
+          "enum": [
+            "none",
+            "gzip"
+          ]
+        },
+        "serviceName": {
+          "type": "string"
+        },
+        "resourceAttributes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "traces": {
+          "type": "boolean"
+        },
+        "metrics": {
+          "type": "boolean"
+        },
+        "logs": {
+          "type": "boolean"
+        },
+        "sampler": {
+          "enum": [
+            "always_on",
+            "always_off",
+            "traceidratio",
+            "parentbased_always_on",
+            "parentbased_always_off",
+            "parentbased_traceidratio"
+          ]
+        },
+        "samplerArg": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^$|^(0(\\.[0-9]+)?|1(\\.0+)?)$"
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          ],
+          "description": "The sampling ratio for the traceidratio samplers, from 0 to 1."
+        },
+        "headersSecret": {
+          "type": "object",
+          "description": "A Secret key holding the whole OTEL_EXPORTER_OTLP_HEADERS value.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

@@ -43,7 +43,7 @@ test('new SUSE host passes the selected gate without claiming deployment accepta
 const refusals: Array<[string, string, unknown]> = [
   ['different host', 'hostname', 'production'],
   ['non-Linux host', 'system', 'Darwin'],
-  ['wrong cluster architecture', 'architecture', 'aarch64'],
+  ['unlocked cluster architecture', 'architecture', 'ppc64le'],
   ['unreviewed OS', 'os', { ID: 'ubuntu', VERSION_ID: '24.04' }],
   ['missing OS version', 'os', { ID: 'sles' }],
   ['non-version OS value', 'os', { ID: 'sles', VERSION_ID: '$(echo forbidden)' }],
@@ -74,6 +74,11 @@ test('missing observations fail closed, rather than assuming an empty host', () 
   const facts: Record<string, unknown> = fixture();
   delete facts.existingOwners;
   assert.equal(evaluate(facts).status, 'blocked');
+});
+
+test('K3s gate follows the amd64 and arm64 locks while RKE2 stays amd64', () => {
+  assert.equal(evaluate({ ...fixture(), architecture: 'aarch64' }, 'k3s').status, 'ready');
+  assert.equal(evaluate({ ...fixture(), architecture: 'aarch64' }, 'rke2').status, 'blocked');
 });
 
 test('Podman build gate permits arm64 but requires an unprivileged mapped owner', () => {

@@ -7,11 +7,14 @@ import { fileURLToPath } from 'node:url';
 // deploy/preview is Python standard library only. Its tests use fake gh, ssh,
 // k3s, systemctl and check-target executables and never contact a cluster.
 // The end-to-end groups each start many fake processes, so they run in parallel.
-// lolly.tools lives in test_preview_deploy.py, lolly.ing in test_preview_deploy_ing.py.
+// lolly.tools lives in test_preview_deploy.py, lolly.ing in test_preview_deploy_ing.py, and the
+// fast deploy lanes' rules in test_preview_lane.py.
 const GROUPS = [
   ['Verifier', 'Expectations', 'Layout', 'Binding', 'Smoke', 'Shipped'].map(name => `test_preview_deploy.${name}`)
-    .concat(['test_preview_deploy_ing.IngRules']),
+    .concat(['test_preview_deploy_ing.IngRules', 'test_preview_lane.LaneRules', 'test_preview_lane.LaneGitHub']),
   ['test_preview_deploy.Deploys'],
+  ['test_preview_deploy.BuildAtMerge'],
+  ['test_preview_deploy.LaneShips'],
   ['test_preview_deploy.Refusals'],
   ['test_preview_deploy.Operations'],
   ['test_preview_deploy.Endurance'],

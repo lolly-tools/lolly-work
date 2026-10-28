@@ -9,7 +9,10 @@ import { createProviderFetch, providerDestination, type ProviderResolver } from 
 import { credentialActive, credentialExpiry } from '../iam/credential-expiry.ts';
 import { safeMessageUrl } from '../inbox/message-url.ts';
 import { withRenderDeadline } from '../render/deadline.ts';
-import { WorkerError } from '../render/worker-client.ts';
+import { WorkerError, type WorkerConfig } from '../render/worker-client.ts';
+import { createLeaseBroker } from '../render/worker-leases.ts';
+import { registerLeaseRoutes } from '../render/lease-routes.ts';
+import { createToolPoolReader, RENDER_POOLS, type RenderPool } from '../render/pools.ts';
 import { createFilePreview, readPreviewInput, PREVIEW_INPUT_LIMIT } from '../catalog/file-preview.ts';
 import { visibleSourceStatuses } from '../catalog/source-status.ts';
 import { registerCommentRoutes } from '../comments/routes.ts';
@@ -32,7 +35,7 @@ import { pipeline, Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
-import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
+import type { ApiTokenRecord, InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
 import { createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
@@ -184,7 +187,8 @@ import { registerSetupRoutes } from '../setup/routes.ts';
 import { identitySettingsHash } from '../setup/configuration.ts';
 import { loadEngine } from '../render/contract.ts';
 import type { AuditFilter } from '../audit/filter.ts';
-import { flagGovernanceCatalog, normalizeFlagGovernance } from '../policy/feature-flags.ts';
+import { flagGovernanceCatalog, hasFlagOpinion, normalizeFlagGovernance } from '../policy/feature-flags.ts';
+import { createOfrepResolver } from '../policy/ofrep.ts';
 import { validatePublish, factsFor } from '../injectables/registry.ts';
 import { KIND_HANDLERS } from '../injectables/kinds.ts';
 import { INJECTABLE_KINDS, type InjectableRecord } from '../injectables/types.ts';
@@ -204,7 +208,7 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
-import { CATALOG_INDEX_REL, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning } from '../catalog/signing.ts';
+import { CATALOG_INDEX_REL, CATALOG_PUBLIC_KEY_ROUTE, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning } from '../catalog/signing.ts';
 import { publicCard, shellStubFor } from '../shell/share-cards.ts';
 import { addressedToolArt, isToolKeyedCatalogPath, servedToolSidecar, toolArtAddress } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
@@ -217,6 +221,7 @@ import { accessibleNotices, listAccessibleNotices } from '../inbox/comment-notic
 import { parseClientHeader } from '../fleet/client-header.ts';
 import { verifyChain, deriveAuditMacKey, type AuditEventBody } from '../audit/chain.ts';
 import { createLogger, requestId } from '../observability/log.ts';
+import { NOOP_OTEL, type Otel, type RequestSpan } from '../observability/otel.ts';
 import { safeReturnTo } from '../iam/return-to.ts';
 import { registerPasskeyRoutes, passkeysEnabled } from '../iam/passkeys/routes.ts';
 import { csrfVerdict } from '../iam/csrf.ts';
@@ -289,6 +294,9 @@ export interface AppDeps {
   providerResolver?: ProviderResolver;
   /** Injectable metrics registry (tests pass a fresh one to assert counter deltas). */
   metrics?: Metrics;
+  /** OpenTelemetry export (observability/otel.ts). main.ts builds it from the
+   *  OTEL_* variables; unset, as on Vercel and in most tests, nothing is exported. */
+  otel?: Otel;
   /** Live collab-room snapshot for the admin console's Rooms panel
    *  (`GET /api/v1/collab/rooms`, OSS plans/100 §7, lolly-work plans/14 §6).
    *  A plain function, not a `CollabGateway` import - this module is also
@@ -329,6 +337,9 @@ export interface AppDeps {
    *  the database may be woken for up to about 45 minutes after a job with a
    *  callback settles. */
   backgroundPollMs?: number;
+  /** How many durable renders this process drives at once (main.ts reads
+   *  LW_RENDER_CONCURRENCY). Unset keeps the runner's default of 2. */
+  renderConcurrency?: number;
 }
 
 type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -347,6 +358,7 @@ export function buildApp(deps: AppDeps): App {
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
   configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
   const blobs = deps.blobs ?? createMemoryBlobStore();
+  const otel = deps.otel ?? NOOP_OTEL;
   const brand = createBrandService(deploymentConfig, store, blobs, {
     ...(productionMode(deploymentConfig) ? { inspectSource: async (source: string) => {
       const report = await inspectPack(deploymentConfig.instance.pack, { source,
@@ -374,7 +386,17 @@ export function buildApp(deps: AppDeps): App {
       return out;
     };
     const bounded = () => withRenderDeadline(run, config.render.worker.timeoutMs, args[1].signal);
-    return brand.current() ? bounded() : brand.run(bounded);
+    // A render is traced under the request that asked for it, or as its own
+    // trace when the durable runner picks it up. The tool id and format are the
+    // caller's words until the render has checked them, so a value that breaks
+    // the naming rules for tool ids and format names is left out.
+    const format = args[1].format.toLowerCase() === 'jpeg' ? 'jpg' : args[1].format.toLowerCase();
+    const traced = () => otel.span('render', {
+      ...(/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/.test(args[1].toolId) ? { 'lw.render.tool_id': args[1].toolId } : {}),
+      ...(/^[a-z0-9]{2,8}$/.test(format) ? { 'lw.render.format': format } : {}),
+      'lw.render.worker': !!args[0].worker,
+    }, bounded, { root: true });
+    return brand.current() ? traced() : brand.run(traced);
   };
   const fetchImpl = deps.fetchImpl ?? fetch;
   const providerFetch = createProviderFetch(config.network.providers, deps.fetchImpl, deps.providerResolver);
@@ -385,6 +407,14 @@ export function buildApp(deps: AppDeps): App {
   const router = createRouter();
   const agentRequests = createProjectRequests(router);
   const metrics = deps.metrics ?? createMetrics();
+  // The organisation's flag service (featureFlags.ofrep), when one is set.
+  // Its cache lives as long as this app, so every poll shares it.
+  const flagService = config.featureFlags?.ofrep ? createOfrepResolver({
+    config: config.featureFlags.ofrep,
+    ...(secrets.ofrepToken ? { token: secrets.ofrepToken } : {}),
+    fetchImpl,
+    metrics: { request: (flag) => metrics.ofrepRequest(flag), error: (flag, reason) => metrics.ofrepError(flag, reason) },
+  }) : null;
   const limiter = createRateLimiter(config.rateLimit);
   // A result token lets a receiver without the caller's session read one
   // job's result. It belongs in the x-lw-job-token header; the `?token=` URL
@@ -411,9 +441,21 @@ export function buildApp(deps: AppDeps): App {
   });
   // The Chromium render worker is active only when both the URL and the shared
   // HMAC key are present; otherwise hooked tools keep 501-ing (unchanged).
-  const renderWorker = config.render.worker.url && secrets.renderWorker
+  const renderWorker: WorkerConfig | undefined = config.render.worker.url && secrets.renderWorker
     ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs, requireHttps: productionMode(config) }
     : undefined;
+  // Pull dispatch (render.worker.dispatch "pull", plan 324 M3): render and
+  // raster jobs wait in this process until a worker leases one over
+  // /api/internal/render/lease. Off by default, when push is unchanged and
+  // none of the lease routes exist.
+  const leaseBroker = renderWorker && config.render.worker.dispatch === 'pull'
+    ? createLeaseBroker({ secret: renderWorker.secret, leaseMs: config.render.worker.pull.leaseMs,
+      queueTimeoutMs: config.render.worker.pull.queueTimeoutMs, onEvent: (pool, event) => metrics.renderLease(pool, event) })
+    : undefined;
+  if (renderWorker && leaseBroker) {
+    renderWorker.dispatch = leaseBroker.dispatch;
+    registerLeaseRoutes(router, { broker: leaseBroker, secret: renderWorker.secret });
+  }
   // Advertised to shells via org_config (plans/23 §3.A) - computed HERE, beside
   // the worker resolution, so the advertisement can only ever reflect the same
   // condition that activates the worker.
@@ -596,9 +638,14 @@ export function buildApp(deps: AppDeps): App {
     activePack: async () => (await brand.snapshot()).source.root,
     source: { pack: deploymentConfig.instance.pack, generation: deploymentConfig.instance.catalogPublicationGeneration,
       publicKey: deploymentConfig.instance.catalogPublicKey } });
-  let catalogReady = false;
+  // Readiness names this check; a failed preparation is logged once, because
+  // it does not recover without a restart and /readyz carries no detail.
+  let catalogCheck: 'preparing' | 'ok' | 'failed' = 'preparing';
   const catalogPreparation = catalogDelivery.prepare();
-  void catalogPreparation.then(() => { catalogReady = true; }, () => {});
+  void catalogPreparation.then(() => { catalogCheck = 'ok'; }, (err: Error) => {
+    catalogCheck = 'failed';
+    console.error('catalog preparation failed; /readyz stays 503 until a restart:', err.message);
+  });
   const extCache = createExtCache(serving.extCache);
   /** Whether a conditional request already holds `etag` (a list, `*`, or weak forms). */
   const etagMatches = (req: IncomingMessage, etag: string): boolean => {
@@ -697,7 +744,7 @@ export function buildApp(deps: AppDeps): App {
   // Keyed audit MAC (audit/chain.ts): the store signs rows with it, every
   // verification here checks with it. Derived, never stored.
   const auditMacKey = deriveAuditMacKey(secrets.session);
-  const log = createLogger();
+  const log = createLogger(process.env, undefined, otel.signals.logs ? otel.log : undefined);
   const linkPasswordAttempts = createLinkPasswordAttempts();
 
   let setupMemo: { revision: string; expires: number; report: Promise<SetupReport> } | undefined;
@@ -715,13 +762,20 @@ export function buildApp(deps: AppDeps): App {
 
   // Readiness, distinct from liveness: a pod whose store cannot answer must
   // leave the Service until it can. Unauthenticated and cheap (`select 1`).
+  // `checks` gives each condition as a fixed word, never an error message,
+  // so an operator sees which one holds readiness back without signing in.
   router.add('GET', '/readyz', async (_req, res) => {
     const storeOk = await store.ping().catch(() => false);
-    const configured = !productionMode(config) || (storeOk
-      && await store.pendingMigrations().then(pending => pending.length === 0).catch(() => false)
-      && await setupReport().then(report => report.ready).catch(() => false));
-    const ok = storeOk && configured && catalogReady;
-    sendJson(res, ok ? 200 : 503, { ok, store: store.storageKind });
+    const checks: Record<string, string> = { store: storeOk ? 'ok' : 'unreachable' };
+    if (productionMode(config)) {
+      checks.migrations = !storeOk ? 'unknown'
+        : await store.pendingMigrations().then(pending => pending.length === 0 ? 'ok' : 'pending').catch(() => 'unknown');
+      checks.setup = checks.migrations !== 'ok' ? 'unknown'
+        : await setupReport().then(report => report.ready ? 'ok' : 'incomplete').catch(() => 'unknown');
+    }
+    checks.catalog = catalogCheck;
+    const ok = Object.values(checks).every(value => value === 'ok');
+    sendJson(res, ok ? 200 : 503, { ok, store: store.storageKind, checks });
   });
   // ── health + metrics ──────────────────────────────────────────────────────
   router.add('GET', '/healthz', (_req, res) => {
@@ -731,12 +785,46 @@ export function buildApp(deps: AppDeps): App {
     });
   });
 
-  // Prometheus scrape endpoint (registered before auth so it can't be shadowed).
-  // Loopback-only unless LW_METRICS_TOKEN is set. Gauges are collected at scrape.
-  router.add('GET', '/metrics', async (req, res) => {
-    const gate = metricsGate(req, secrets.metricsToken, productionMode(config) || config.proxyAuth.enabled || config.rateLimit.trustedProxyHops > 0);
-    if (gate === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no route for GET /metrics');
-    if (gate === 'unauthorized') return sendError(res, 401, 'UNAUTHORIZED', 'metrics require a bearer token');
+  // Queue depth counts renders waiting for their pool's capacity: queued in the
+  // database (including those waiting out a retry delay) and, under pull
+  // dispatch, jobs waiting here for a worker to lease them. A render whose job
+  // waits for a worker is running in the database, so nothing counts twice.
+  // Oldest wait is the longest any of them has been claimable and unclaimed.
+  const toolPool = createToolPoolReader({ pack: config.instance.pack, allowHooksInFastPath: config.render.allowHooksInFastPath });
+  const renderQueueGauges = async (): Promise<GaugeLine[]> => {
+    const depth = new Map<RenderPool, number>(RENDER_POOLS.map((pool) => [pool, 0]));
+    const oldest = new Map<RenderPool, number>(RENDER_POOLS.map((pool) => [pool, 0]));
+    const t = Date.now();
+    for (const entry of await store.renderQueue()) {
+      const pool = await toolPool(entry.toolId);
+      depth.set(pool, depth.get(pool)! + entry.queued);
+      if (entry.oldestClaimableAt) oldest.set(pool, Math.max(oldest.get(pool)!, Math.max(0, (t - Date.parse(entry.oldestClaimableAt)) / 1000)));
+    }
+    const leases = leaseBroker?.stats() ?? [];
+    for (const s of leases) {
+      depth.set(s.pool, depth.get(s.pool)! + s.waiting);
+      oldest.set(s.pool, Math.max(oldest.get(s.pool)!, s.oldestWaitSeconds));
+    }
+    const lines: GaugeLine[] = [];
+    for (const pool of RENDER_POOLS) {
+      lines.push({ name: 'lw_render_queue_depth', help: 'Renders waiting for their pool\'s capacity: queued in the database, plus jobs waiting for a worker lease under pull dispatch.', type: 'gauge', labels: { pool }, value: depth.get(pool)! });
+      lines.push({ name: 'lw_render_oldest_wait_seconds', help: 'Seconds the oldest claimable render or unleased worker job has waited, by pool.', type: 'gauge', labels: { pool }, value: oldest.get(pool)! });
+    }
+    // Present only under pull dispatch, where workers hold leases.
+    if (leaseBroker) {
+      for (const pool of RENDER_POOLS) {
+        const s = leases.find((entry) => entry.pool === pool);
+        lines.push({ name: 'lw_render_leases_active', help: 'Worker jobs a render worker holds a lease on, by pool.', type: 'gauge', labels: { pool }, value: s?.leased ?? 0 });
+        lines.push({ name: 'lw_render_workers_waiting', help: 'Render worker slots waiting for a job (open lease requests), by pool.', type: 'gauge', labels: { pool }, value: s?.idleWorkers ?? 0 });
+      }
+    }
+    return lines;
+  };
+
+  // The gauges are collected when they are read: by a Prometheus scrape of
+  // /metrics, and by the OTLP metric export on its interval. One function, so
+  // both carry the same series.
+  const collectGauges = async (): Promise<GaugeLine[]> => {
     const gauges: GaugeLine[] = [
       { name: 'lw_audit_chain_intact', help: 'Audit hash-chain verifies end to end (1) or is broken (0).', type: 'gauge', value: (await auditIntact()) ? 1 : 0 },
       { name: 'lw_process_uptime_seconds', help: 'Process uptime in seconds.', type: 'gauge', value: process.uptime() },
@@ -762,6 +850,21 @@ export function buildApp(deps: AppDeps): App {
         gauges.push({ name: 'lw_provider_credential_expiry_days', help: 'Days until the operator-stated credential expiry (negative = past it).', type: 'gauge', labels: { provider: p.id }, value: Math.floor((new Date(p.credentialExpiresAt).getTime() - Date.now()) / 86_400_000) });
       }
     }
+    // Render queue signals (plan 324 M3), per pool, for an autoscaler or an alert.
+    gauges.push(...await renderQueueGauges().catch((err: Error) => { log('warn', 'render queue signals unavailable', { error: err.message }); return []; }));
+    // OTLP delivery counts, present only while export is on.
+    gauges.push(...otel.selfMetrics());
+    return gauges;
+  };
+  otel.setMetricSource(async () => [...metrics.snapshot(), ...await collectGauges()]);
+
+  // Prometheus scrape endpoint (registered before auth so it can't be shadowed).
+  // Loopback-only unless LW_METRICS_TOKEN is set. Gauges are collected at scrape.
+  router.add('GET', '/metrics', async (req, res) => {
+    const gate = metricsGate(req, secrets.metricsToken, productionMode(config) || config.proxyAuth.enabled || config.rateLimit.trustedProxyHops > 0);
+    if (gate === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no route for GET /metrics');
+    if (gate === 'unauthorized') return sendError(res, 401, 'UNAUTHORIZED', 'metrics require a bearer token');
+    const gauges = await collectGauges();
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8', 'cache-control': 'no-store' });
     res.end(metrics.renderText(gauges));
   });
@@ -1190,6 +1293,26 @@ export function buildApp(deps: AppDeps): App {
     ...(config.idp.issuer ? [{ id: 'primary', name: config.idp.displayName || 'SSO', kind: 'oidc' as const, loginPath: '/api/auth/login?idp=primary' }] : []),
     ...config.idp.additional.map((a) => ({ id: a.id, name: a.displayName, kind: a.kind ?? 'oidc', loginPath: `/api/auth/login?idp=${a.id}` })),
   ];
+
+  // ── the catalog public key (plan 324) ─────────────────────────────────────
+  // A web app with the publisher's key built in refuses a catalog that key did not
+  // sign, and this server signs each person's filtered catalog with its own key.
+  // The web app this server hosts at `/` reads this route from that same origin and
+  // accepts the key only for envelopes carrying its keyId. A web app on another
+  // origin, and the desktop and mobile apps, never take a key from here, so trust
+  // stays with whoever serves the web app's own code. Public, with no CORS: the
+  // half served is public, and only a same-origin reader acts on the answer.
+  // Without a key the route answers 404, as a server without this route does; a
+  // key that does not load answers 503, like the signature route, and the error
+  // never quotes the material.
+  router.add('GET', CATALOG_PUBLIC_KEY_ROUTE, async (req, res) => {
+    if (!catalogSigning) return sendError(res, 404, 'CATALOG_SIGNING_OFF', 'this instance does not sign its catalog');
+    let document: Buffer;
+    try { document = await catalogSigning.publicKeyDocument(); }
+    catch { return sendError(res, 503, 'CATALOG_SIGNING_UNAVAILABLE', 'the catalog signing key could not be loaded; see the server log'); }
+    sendBytes(req, res, document, { contentType: 'application/json; charset=utf-8',
+      headers: { 'cache-control': cachePolicy('public-revalidate').cacheControl, 'x-content-type-options': 'nosniff' } });
+  }, { delivery: 'public-revalidate' });
 
   // ── instance manifest (plans/34 wave 1a) ──────────────────────────────────
   // The card a fresh app-store shell reads before anyone signs in: what this
@@ -2231,7 +2354,15 @@ export function buildApp(deps: AppDeps): App {
 
   router.add('GET', '/api/auth/session', async (req, res) => {
     const p = await principalOf(req);
-    if (!p) return sendError(res, 401, 'UNAUTHORIZED', 'no session');
+    if (!p) {
+      // No browser session: a live service token says which token it is, so an
+      // automation can check its own identity and role before it acts. A cookie
+      // always answers first, so nothing a browser sends changes here.
+      const token = await presentedServiceToken(req);
+      if (!token) return sendError(res, 401, 'UNAUTHORIZED', 'no session');
+      return sendJson(res, 200, { kind: 'service', user: { sub: token.user.sub, role: token.user.role, label: token.record.label } },
+        { 'cache-control': 'no-store' });
+    }
     if (p.kind === 'guest') {
       return sendJson(res, 200, { kind: 'guest', guest: { name: p.guest.name, inviter: p.guest.inviter, toolId: p.guest.toolId } });
     }
@@ -2396,6 +2527,9 @@ export function buildApp(deps: AppDeps): App {
   // preview-as-group tool - so a preview can never drift from what a member
   // actually receives (the projection is the same function, same store reads).
   const buildOrgConfigFor = async (subject: UserRecord, client: { shell?: string; engine?: string } = {}) => {
+    // Asked first so the flag service's round trip overlaps the store reads.
+    // It never rejects: a failure leaves each flag on Work's governed value.
+    const flagServiceAnswers = flagService?.evaluate({ groups: subject.groups, role: subject.role });
     const overlays = await brandRules.project(brand.current() ?? await brand.snapshot(), subject.groups);
     const grants = await store.listGrants();
     // The inbox's own count for the same client (its shell and engine
@@ -2408,7 +2542,8 @@ export function buildApp(deps: AppDeps): App {
     for (const toolId of overlays.keys()) {
       toolInputs.set(toolId, await readToolInputs(config.instance.pack, toolId));
     }
-    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
+    const flagServiceMap = flagServiceAnswers ? await flagServiceAnswers : undefined;
+    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
   };
 
   // A small, uncached lease renewal. Resolve membership on every request so a
@@ -3063,13 +3198,22 @@ export function buildApp(deps: AppDeps): App {
   // ACTION-GATED surface accepts one - the member workflow routes (approvals,
   // submit, collab, telemetry consent) stay human, because those flows mean "a
   // person decided", and a token impersonating that would launder authorship.
-  const serviceAccountOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
+  // Two read-only surfaces also take one, and neither decides anything: the
+  // catalogue (`serveCatalog`, gated on `catalog.read` for a token) and
+  // `/api/auth/session`, which says which token is calling.
+  /** The service token a request presents: null when it presents none, false
+   *  when the one it presents is unknown, revoked or expired. */
+  const presentedServiceToken = async (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null> => {
     const bearer = bearerFromHeader(req.headers.authorization);
     if (!bearer || !bearer.startsWith(SERVICE_TOKEN_PREFIX)) return null;
     const rec = await store.findApiTokenByHash(hashServiceSecret(bearer));
-    if (!rec || !credentialActive(rec, config.policy.serviceTokens.allowLegacyUnbounded)) return null;
+    if (!rec || !credentialActive(rec, config.policy.serviceTokens.allowLegacyUnbounded)) return false;
     void store.touchApiToken(rec.id, new Date().toISOString());
-    return serviceAccountFor(rec);
+    return { record: rec, user: serviceAccountFor(rec) };
+  };
+  const serviceAccountOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
+    const token = await presentedServiceToken(req);
+    return token ? token.user : null;
   };
 
   const requireAction = async (
@@ -5614,7 +5758,19 @@ export function buildApp(deps: AppDeps): App {
 
   // ── catalog serving (pack mount, per-caller filtered, lifecycle-enforced) ──
   const serveCatalog: Handler = async (req, res, ctx) => {
-    const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
+    const member = await memberOf(req);
+    // A service token reads the catalogue as its synthetic principal: a member
+    // with no groups, so visibility, overlays and lifecycle apply exactly as
+    // they do to one. Reading is the whole of it, and it is action-gated on
+    // `catalog.read`, so a deny grant on `user:svc_<id>` takes it away. A token
+    // that is presented but unknown, revoked or expired is refused outright
+    // rather than served the anonymous view.
+    const token = member ? null : await presentedServiceToken(req);
+    if (token === false) return sendError(res, 401, 'UNAUTHORIZED', 'this service token is unknown, revoked or expired');
+    if (token && !evaluate({ userId: token.user.id, groups: token.user.groups, role: token.user.role as Role }, 'catalog.read', ['*'], await store.listGrants())) {
+      return sendError(res, 403, 'FORBIDDEN', 'catalog.read required');
+    }
+    const user = member ?? token?.user ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = await principalOf(req);
     // Share cards answer before the sign-in gate: a link unfurler never signs in.
     // A tool's card follows the tool's own visibility for this caller, so a card
@@ -7958,32 +8114,44 @@ export function buildApp(deps: AppDeps): App {
   // The control plane's default state + toggle visibility for the shell's
   // per-user feature flags. Same policy.edit gate as tool overlays: admin by
   // default, delegable to a brand group. Read the whole governable catalogue…
+  // The flag service block says which flags an organisation's own service
+  // decides and how it last answered, so the console can show who decides.
+  const flagServiceWire = () => flagService ? { origin: flagService.origin, flags: flagService.flags, ...flagService.stats() } : null;
+  const flagCatalogWire = async () => ({
+    flags: flagGovernanceCatalog(await store.listFlagGovernance(), { flagService: flagService?.flags ?? [] }),
+    flagService: flagServiceWire(),
+  });
   router.add('GET', '/api/v1/policy/flags', async (req, res) => {
     if (!(await requireAction(req, res, 'policy.edit'))) return;
-    const gov = await store.listFlagGovernance();
-    sendJson(res, 200, { flags: flagGovernanceCatalog(gov) });
+    sendJson(res, 200, await flagCatalogWire());
   });
 
   // …and set one flag's governance. Body: {default?: 'on'|'off'|null,
-  // visibility?: 'show'|'hide'}. A no-opinion record clears the row (inherit +
-  // shown). Governance folds into org-config's policyVersion, so a save busts
+  // visibility?: 'show'|'hide', groups?: [{group, default?, visibility?}]}.
+  // A body without `groups` keeps the stored group rules, so a client that
+  // only knows the two instance settings cannot drop them; `groups: []`
+  // clears them. A no-opinion record clears the row (inherit + shown).
+  // Governance folds into org-config's policyVersion, so a save busts
   // connected shells' ETag on their next poll - the surprise lights up on flip.
   router.add('PUT', '/api/v1/policy/flags/:flagId', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'policy.edit');
     if (!user) return;
     const flagId = ctx.params.flagId as string;
-    const rec = normalizeFlagGovernance(flagId, await readJson(req), new Date().toISOString());
+    const before = (await store.listFlagGovernance()).get(flagId) ?? null;
+    const body = await readJson(req);
+    const merged = body && typeof body === 'object' && !Array.isArray(body) && !Object.hasOwn(body, 'groups') && before?.groups
+      ? { ...body, groups: before.groups } : body;
+    const rec = normalizeFlagGovernance(flagId, merged, new Date().toISOString());
     if (!rec) {
       return sendError(res, 400, 'INVALID_INPUT',
-        'unknown flag, or body not {default?: "on"|"off"|null, visibility?: "show"|"hide"}');
+        'unknown flag, or body not {default?: "on"|"off"|null, visibility?: "show"|"hide", groups?: [{group, default?, visibility?}]}; group names appear once each, and managed AI takes no group rules');
     }
-    const before = (await store.listFlagGovernance()).get(flagId) ?? null;
     await store.putFlagGovernance(rec);
     await audit(`user:${user.id}`, 'policy.flag.edit', `flag:${flagId}`, {
       before,
-      after: rec.default === undefined && rec.visibility === undefined ? null : rec,
+      after: hasFlagOpinion(rec) ? rec : null,
     });
-    sendJson(res, 200, { flags: flagGovernanceCatalog(await store.listFlagGovernance()) });
+    sendJson(res, 200, await flagCatalogWire());
   });
 
   // ── injectables (plans/19) - the governed rail that injects tools / flags /
@@ -10075,6 +10243,7 @@ export function buildApp(deps: AppDeps): App {
   const durableRenders = new RenderRunner({
     store, blobs,
     ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
+    ...(deps.renderConcurrency !== undefined ? { concurrency: deps.renderConcurrency } : {}),
     execute: async (record, signal) => brand.run(async () => {
       const caller = await currentRenderCaller(record.principal, record.request);
       await validateRenderRequest(record.principal, record.request);
@@ -11111,7 +11280,7 @@ export function buildApp(deps: AppDeps): App {
     }, secrets.session, secure, renewal.ttlSec);
   };
 
-  const app: App = async (req, res) => {
+  const handle = async (req: IncomingMessage, res: ServerResponse, span: RequestSpan | undefined): Promise<void> => {
     guardDelivery(req, res);
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
@@ -11130,6 +11299,8 @@ export function buildApp(deps: AppDeps): App {
         .catch(() => {});
     }
     let routeClass = 'unmatched';
+    // The server span (when tracing is on) carries the route label the metric uses.
+    span?.routeFrom(() => routeClass);
     // Request id: echoed on the response and on the access line, so a 5xx in
     // the logs joins to the request a person reports.
     const reqId = requestId(req.headers['x-request-id']);
@@ -11222,6 +11393,8 @@ export function buildApp(deps: AppDeps): App {
       if (!res.headersSent) sendError(res, status, err instanceof BrandError ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
     }
   };
+  // One server span per request when OTLP traces are on; otherwise the handler directly.
+  const app: App = (req, res) => otel.serve(req, res, (span) => handle(req, res, span));
   appRoutes.set(app, router.descriptions);
   return app;
 }
