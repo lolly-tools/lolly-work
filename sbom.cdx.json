@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:9baaa9a8-0d1e-45ec-826e-a036dcd8e646",
+  "serialNumber": "urn:uuid:31463405-f0a1-430b-8d23-96b64e7e0cf2",
   "version": 1,
   "metadata": {
     "tools": [
@@ -2079,10 +2079,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/jose@6.2.12",
+      "bom-ref": "pkg:npm/jose@6.2.13",
       "name": "jose",
-      "version": "6.2.12",
-      "purl": "pkg:npm/jose@6.2.12",
+      "version": "6.2.13",
+      "purl": "pkg:npm/jose@6.2.13",
       "scope": "required",
       "licenses": [
         {
@@ -2094,7 +2094,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "f4d88598911ec74b32d83939f23d94181487814b36ca917d7994aee0beaf8ce5f70e9f7a4b0d45dee2fe1fe0f5b31d368d965dcd44f41e0bc2cb9f42baf5dc5b"
+          "content": "ed3220d74644d71f3661e76237e95cacf36f18c2a07bdc851d00fe421a3f6fccb669d7ee814dc0b2fbc77f15747f3c859654fa97dc428dfe11598f60fd9f4f25"
         }
       ]
     },
