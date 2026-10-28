@@ -299,6 +299,10 @@ TOOLS_RUNTIME_MAX_SECONDS = (2 * PULL_TIMEOUT_SECONDS + 2 * MAX_ROLLOUT_SECONDS 
 # classifier, the restore rehearsal when the profile configures one, and the migrate Job.
 ING_IMPORT_TIMEOUT_SECONDS = 900
 JOB_TIMEOUT_SECONDS = 300
+# Kubernetes deletes a finished lolly.ing Job, and its Pod, an hour after it ends; the run has already read its output.
+# Until then the Pod keeps its image on the node, so a day (the old value) held two or three 7 GB images beyond
+# retention and refused every lolly.ing deploy LOW_CAPACITY on 2026-10-28.
+ING_JOB_TTL_SECONDS = 3600
 BACKUP_TIMEOUT_SECONDS = 660
 REHEARSAL_TIMEOUT_SECONDS = 1500
 MIGRATE_TIMEOUT_SECONDS = 900

@@ -436,7 +436,7 @@ def job_manifest(name, kind, deploy_id, value, index, image, command, env, deadl
     return {"apiVersion": "batch/v1", "kind": "Job",
             "metadata": {"name": name, "namespace": A.ING["namespace"], "labels": labels,
                          "annotations": {"lolly.tools/preview-deploy-id": deploy_id}},
-            "spec": {"backoffLimit": 0, "activeDeadlineSeconds": deadline, "ttlSecondsAfterFinished": 86400,
+            "spec": {"backoffLimit": 0, "activeDeadlineSeconds": deadline, "ttlSecondsAfterFinished": A.ING_JOB_TTL_SECONDS,
                      "template": {"metadata": {"labels": labels},
                                   "spec": {"restartPolicy": "Never", "automountServiceAccountToken": False,
                                            "enableServiceLinks": False, "securityContext": spec.get("securityContext") or {},
