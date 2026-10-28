@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
 """GitHub side of the preview deploy command: find, dispatch, wait for and bind one build.
 
-Every call goes through the `gh` CLI as an argument list (never a shell string).
-The only write is the preview workflow dispatch. Nothing here approves an environment gate.
+Every call goes through the `gh` CLI as an argument list (never a shell string), except
+`Gh.location`, which reads an artifact's download address with gh's own token because gh
+follows redirects. The only write is the preview workflow dispatch. Nothing here approves an environment gate.
 """
 
 from __future__ import annotations
@@ -63,6 +64,37 @@ class Gh:
 
     def post(self, path, body):
         self._run(["--method", "POST", path, "--input", "-"], stdin=json.dumps(body).encode(), limit=65536)
+
+    def location(self, path, opener=None, timeout=60):
+        """Where GitHub redirects a GET of path, without following it: for an artifact, its signed download address,
+        which expires a minute after it is issued. gh's token is read for this one request to api.github.com and is
+        never stored or printed; nothing here prints the address."""
+        try:
+            done = subprocess.run([self.executable, "auth", "token"], capture_output=True, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Refusal("FETCH_UNAVAILABLE", "gh auth token failed to run") from exc
+        token = done.stdout.decode("ascii", "replace").strip()
+        require(done.returncode == 0 and re.fullmatch(r"[A-Za-z0-9_]{20,255}", token) is not None, "FETCH_UNAVAILABLE",
+                "gh has no token to read the download address with")
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+
+        request = urllib.request.Request("https://api.github.com/" + path, headers={
+            "Authorization": "Bearer " + token, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+        try:
+            response = (opener or urllib.request.build_opener(NoRedirect).open)(request, timeout=timeout)
+            response.close()
+        except urllib.error.HTTPError as exc:
+            target = exc.headers.get("Location") if exc.code in (302, 303, 307) else None
+            exc.close()
+            require(isinstance(target, str) and target.startswith("https://"), "FETCH_UNAVAILABLE",
+                    f"GitHub answered {exc.code} for " + path.split("?")[0])
+            return target
+        except (OSError, ValueError) as exc:
+            raise Refusal("FETCH_UNAVAILABLE", "GitHub could not be reached for " + path.split("?")[0]) from exc
+        raise Refusal("FETCH_UNAVAILABLE", "GitHub did not redirect " + path.split("?")[0])
 
     def download(self, path, destination, limit, timeout=3600):
         """Stream a large response (an artifact zip) to a new private file; never into memory."""

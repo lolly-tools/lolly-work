@@ -4,8 +4,10 @@
 Inputs are only the site and a lolly-work main commit (WSHA). Its engine pin
 names the Lolly commit, and suse-lolly is built at its main head. The build comes
 from the bound private run, identities from check-target.py --site lolly.ing, and
-live state from the node. The archive is downloaded by run ID and streamed over the
-existing SSH route; no registry credential is ever on the node.
+live state from the node. The node fetches the archive artifact itself from the signed,
+one-minute download address GitHub gives this Mac for it (Andy, 2026-10-28); when that
+fails, the Mac downloads the archive by run ID and streams it over the existing SSH route.
+No registry or GitHub credential is ever on the node.
 
 Preview-grade route (Andy, 2026-10-27): a qualified build ships with no approval,
 every migration class is applied after a verified backup, and a rollback after a
@@ -32,6 +34,10 @@ from preview_common import HEX64, Refusal, compact, emit, require, sha256_hex, s
 from preview_expect import format_lowering
 
 UPLOAD_COMMAND = 'sudo -n python3 -I -c "import sys,base64;exec(base64.b64decode(sys.stdin.buffer.readline()))"'
+# The node's fetch failed in a way the Mac's own download and upload may not: the address could not be read, the node
+# refused it, or the download from the artifact store failed. A damaged archive, a full disk or a held lock is refused
+# as it is, because the upload would meet the same problem.
+FETCH_FALLBACK = {"FETCH_UNAVAILABLE", "FETCH_REFUSED", "FETCH_FAILED"}
 PROFILE_KEYS = {"version", "site", "smoke", "watch", "build", "rolloutTimeoutSeconds", "capacity", "noDeployUtc", "gc",
                 "retainPreviousImages", "retainConfigMaps", "rehearsal"}
 CHUNK = 1024 * 1024
@@ -198,15 +204,39 @@ def stream_archive(context, bound, release, sha):
     emit("archive", result=reply["result"], sha256=release["archive"]["sha256"])
 
 
+def fetch_on_node(context, bound, release, sha):
+    """The node downloads the archive artifact from the signed address GitHub gives this Mac, which expires a minute
+    after it is issued, then checks it as an upload is checked. The address goes to the node on SSH's stdin."""
+    artifact = bound["archiveArtifact"]
+    emit("archive", note="the node fetches the archive artifact from GitHub's artifact store", run=bound["run"],
+         bytes=artifact["bytes"])
+    url = context.gh.location(f"repos/{context.anchors['repository']}/actions/artifacts/{artifact['id']}/zip",
+                              opener=context.opener)
+    archive = {"deployId": context.deploy_id("fetch", sha), "sha256": release["archive"]["sha256"],
+               "bytes": release["archive"]["bytes"], "name": release["archive"]["name"], "zipBytes": artifact["bytes"], "url": url}
+    reply = context.ssh({"action": "fetch", "archive": archive}, timeout=A.ING_FETCH_TIMEOUT_SECONDS)
+    require(reply.get("result") in ("FETCHED", "ALREADY_UPLOADED") and reply.get("sha256") == release["archive"]["sha256"],
+            "FETCH_FAILED", "the node did not confirm the archive")
+    emit("archive", result=reply["result"], sha256=release["archive"]["sha256"], seconds=reply.get("seconds"))
+
+
 def intake(context, bound, release, sha):
-    """Make sure the node has the archive or the image, with room for both, before the unit starts."""
+    """Make sure the node has the archive or the image, with room for both, before the unit starts. The node fetches
+    the archive itself; the Mac streams it only when that fetch fails (FETCH_FALLBACK)."""
     found = context.read("intake", release=release)
     if found["imagePresent"] or found["spoolPresent"]:
         return
     need = context.need_bytes(release)
     require(found["aboveReserve"] >= need, "LOW_CAPACITY", f"{found['aboveReserve'] // 2 ** 20} MiB above the image-GC reserve, "
             f"{need // 2 ** 20} MiB needed; run gc")
-    stream_archive(context, bound, release, sha)
+    try:
+        fetch_on_node(context, bound, release, sha)
+    except Refusal as exc:
+        if exc.code not in FETCH_FALLBACK:
+            raise
+        emit("archive", note="the node could not fetch the archive; this Mac downloads and streams it instead",
+             code=exc.code, reason=exc.message)
+        stream_archive(context, bound, release, sha)
 
 
 # Commands --------------------------------------------------------------------------------
@@ -293,7 +323,7 @@ def cmd_deploy(context, wsha, dispatch):
                    {"suse": release["suse"], "work": release["source"], "lolly": release["lolly"]})
     context.expect_migrations = preview.get("migration-set") != I.migration_set(release["migrations"])
     context.backup_window("deploy")
-    context.check_target()  # once, before the first write to the node (the archive upload)
+    context.check_target()  # once, before the first write to the node (the archive fetch or upload)
     intake(context, bound, release, wsha)
     request = context.request("deploy", context.deploy_id("deploy", wsha), need_bytes=context.need_bytes(release),
                               release=release)

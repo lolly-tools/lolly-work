@@ -21,6 +21,7 @@ const GROUPS = [
   ['test_preview_deploy_ing.IngDeploys'],
   ['test_preview_deploy_ing.IngRefusals'],
   ['test_preview_deploy_ing.IngCutover', 'test_preview_deploy_ing.IngRetention'],
+  ['test_preview_deploy_ing.IngFetch'],
 ];
 
 function run(classes: string[]): Promise<{ status: number | null; output: string }> {

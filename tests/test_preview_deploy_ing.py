@@ -469,6 +469,7 @@ class IngEndToEnd(unittest.TestCase):
         self.rehearsal_path = base / "rehearsal.json"
         self.rehearsal_path.write_text(json.dumps(IF.rehearsal_cluster()))
         self.gh_path = base / "gh.json"
+        self.location = IF.location_opener(str(self.gh_path))
         # Andy 2026-10-27: every Work commit here has its green full lolly-work CI run, and the Lolly commits the
         # builds pin have theirs, unless a test says otherwise.
         self.gh = {"mainHead": "f" * 40, "compare": {}, "calls": [], "runs": [], "statusSequence": {},
@@ -485,7 +486,8 @@ class IngEndToEnd(unittest.TestCase):
             "FAKE_ING_ANCHORS": json.dumps({"ING_SIGNING_KEY_SECRET": IF.ING_SIGNING_SECRET})})
         self.environ.start()
         for name in ("FAKE_CRASH_PHASE", "FAKE_CHECK_TARGET", "FAKE_SSH_DOWN", "FAKE_START_REPLY_LOST", "FAKE_UNIT_NEVER_STARTS",
-                     "FAKE_CRASH_AFTER_SWITCH", "FAKE_ING_ABORT", "FAKE_AGE_AFTER_REHEARSAL"):
+                     "FAKE_CRASH_AFTER_SWITCH", "FAKE_ING_ABORT", "FAKE_AGE_AFTER_REHEARSAL", "FAKE_FETCH", "FAKE_LOCATION",
+                     "FAKE_GH_NO_TOKEN"):
             os.environ.pop(name, None)
         self.patches = [mock.patch.object(A, "ING_PUBLIC_KEY_JWK", self.key[1]),
                         mock.patch.object(A, "ING_SIGNING_KEY_SECRET", IF.ING_SIGNING_SECRET), mock.patch.object(M, "SLEEP", lambda s: None),
@@ -545,7 +547,8 @@ class IngEndToEnd(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             code = M.main(["--state-dir", str(self.state_dir), "--tool-sha256", self.tool_hash, "--checkout", str(self.checkout),
                            "--check-target", str(self.check_target_path), "lolly.ing", *argv],
-                          gh=G.Gh(executable=str(self.bin / "gh"), sleep=lambda s: None))
+                          gh=G.Gh(executable=str(self.bin / "gh"), sleep=lambda s: None),
+                          opener=self.location)
         events = []
         for line in out.getvalue().splitlines():
             with contextlib.suppress(ValueError):
@@ -1305,6 +1308,168 @@ class IngRefusals(IngEndToEnd):
             with self.subTest(argv=argv):
                 code, events = self.cli(*argv)
                 self.assertEqual((code, self.done(events)["code"]), (1, "NOT_FOR_LOLLY_ING"))
+
+
+class IngFetch(IngEndToEnd):
+    """Andy 2026-10-28: the node fetches the archive artifact itself, from the signed one-minute address GitHub gives
+    the Mac, instead of the Mac downloading 1.6 GB and streaming 3.8 GB over SSH. No credential reaches the node; any
+    failure the Mac's own route might not share falls back to that route."""
+
+    ARCHIVE_ID = "11002"  # run 1100's archive artifact (preview_deploy_ing_fakes.ing_artifacts)
+
+    def calls(self):
+        return json.loads(self.gh_path.read_text())["calls"]
+
+    def mac_downloads(self):
+        return [c for c in self.calls() if c["method"] == "GET" and c["path"] == f"repos/{IF.SUSE_REPO}/actions/artifacts/{self.ARCHIVE_ID}/zip"]
+
+    def ranges(self):
+        path = self.sandbox / "fetch-ranges.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def archive_notes(self, events):
+        return [e for e in events if e.get("event") == "archive"]
+
+    def assert_fell_back(self, events, code):
+        notes = self.archive_notes(events)
+        self.assertEqual([n.get("code") for n in notes if "code" in n], [code], notes)
+        self.assertEqual([n["result"] for n in notes if "result" in n], ["UPLOADED"], notes)
+        self.assertEqual(len(self.mac_downloads()), 1)
+        self.assertEqual((self.done(events)["result"], self.spool()), ("LIVE", []), events)
+
+    def test_the_node_fetches_the_archive_and_this_mac_downloads_none_of_it(self):
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual([n["result"] for n in self.archive_notes(events) if "result" in n], ["FETCHED"])
+        self.assertEqual(self.mac_downloads(), [])
+        self.assertEqual([c["path"] for c in self.calls() if c["method"] == "LOCATION"],
+                         [f"https://api.github.com/repos/{IF.SUSE_REPO}/actions/artifacts/{self.ARCHIVE_ID}/zip"])
+        size = len(IF.unb64(json.loads(self.gh_path.read_text())["zips"][self.ARCHIVE_ID]))
+        ranges = sorted(self.ranges())
+        self.assertEqual(len(ranges), 4)
+        self.assertEqual([r[1] for r in ranges], [0] + [r[2] + 1 for r in ranges[:-1]])  # contiguous, no gap or overlap
+        self.assertEqual(ranges[-1][2], size - 1)
+        self.assertEqual((len(self.writes("import")), self.spool()), (1, []))  # imported, and the spool emptied
+
+    def test_the_signed_address_is_never_printed_or_recorded(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, events = self.cli("deploy", W_NEW)
+        self.assertEqual(self.done(events)["result"], "LIVE")
+        for text in (json.dumps(events), (self.state_dir / "deploys.jsonl").read_text(),
+                     *(p.read_text() for p in (self.sandbox / "var/lib/lolly-preview/results").iterdir())):
+            self.assertNotIn(IF.STORE_SIGNATURE, text)
+            self.assertNotIn(F.GH_TOKEN, text)
+
+    def test_a_failed_download_falls_back_to_this_mac_streaming_it(self):
+        os.environ["FAKE_FETCH"] = "down"
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual(code, 0)
+        self.assert_fell_back(events, "FETCH_FAILED")
+        self.assertIn("ConnectionRefusedError", [n for n in self.archive_notes(events) if "code" in n][0]["reason"])
+
+    def test_a_store_that_ignores_the_range_is_not_used(self):
+        os.environ["FAKE_FETCH"] = "whole"
+        code, events = self.cli("deploy", W_NEW)
+        self.assert_fell_back(events, "FETCH_FAILED")
+
+    def test_a_range_that_ends_early_is_not_used(self):
+        os.environ["FAKE_FETCH"] = "short"
+        code, events = self.cli("deploy", W_NEW)
+        self.assert_fell_back(events, "FETCH_FAILED")
+
+    def test_the_spooled_archive_is_not_counted_twice(self):
+        """2026-10-28: the unit asked for the whole need (archive, import, unpack) on top of an archive already on disk,
+        so with 2x to 3x the archive free every deploy was refused after the transfer, and gc deleted the archive."""
+        archive = IF.archive_bytes(self.new, 1100)
+        spool = self.sandbox / "var/lib/lolly-preview/spool"
+        spool.mkdir(parents=True, mode=0o700)
+        (spool / (C.sha256_hex(archive) + ".oci.tar")).write_bytes(archive)
+        (spool / (C.sha256_hex(archive) + ".oci.tar")).chmod(0o600)
+        state = self.cluster()
+        total = state["capacity"]["total"]
+        state["capacity"]["available"] = total // 4 + 512 * 2 ** 20 + GIB - len(archive)  # exactly the need less the archive
+        self.set_cluster(state)
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.archive_notes(events), [])  # already spooled: nothing fetched or streamed
+        self.assertEqual((len(self.writes("import")), self.spool()), (1, []))
+
+    def test_one_byte_short_of_the_import_is_refused_after_the_archive_arrived(self):
+        archive = IF.archive_bytes(self.new, 1100)
+        spool = self.sandbox / "var/lib/lolly-preview/spool"
+        spool.mkdir(parents=True, mode=0o700)
+        (spool / (C.sha256_hex(archive) + ".oci.tar")).write_bytes(archive)
+        (spool / (C.sha256_hex(archive) + ".oci.tar")).chmod(0o600)
+        state = self.cluster()
+        state["capacity"]["available"] = state["capacity"]["total"] // 4 + 512 * 2 ** 20 + GIB - len(archive) - 1
+        self.set_cluster(state)
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "LOW_CAPACITY"), events)
+        self.assertEqual(self.writes("import"), [])
+        self.assert_untouched()
+
+    def address_off_the_store(self, host):
+        self.location = IF.location_opener(str(self.gh_path), host=host)
+        code, events = self.cli("deploy", W_NEW)
+        self.assert_fell_back(events, "FETCH_REFUSED")
+        self.assertEqual(self.ranges(), [])  # the node never contacted the host
+
+    def test_an_address_off_githubs_artifact_store_is_never_contacted(self):
+        self.address_off_the_store("results.example.com")
+
+    def test_a_look_alike_of_the_artifact_store_is_never_contacted(self):
+        self.address_off_the_store("productionresultssa9.blob.core.windows.net.example.com")
+
+    def no_address(self, env, value):
+        os.environ[env] = value
+        code, events = self.cli("deploy", W_NEW)
+        self.assert_fell_back(events, "FETCH_UNAVAILABLE")
+        self.assertEqual(self.ranges(), [])
+
+    def test_without_a_gh_token_this_mac_streams_the_archive(self):
+        self.no_address("FAKE_GH_NO_TOKEN", "1")
+
+    def test_when_github_does_not_redirect_this_mac_streams_the_archive(self):
+        self.no_address("FAKE_LOCATION", "none")
+
+    def test_when_github_has_no_artifact_this_mac_streams_the_archive(self):
+        self.no_address("FAKE_LOCATION", "missing")
+
+    def test_a_tampered_archive_the_node_fetched_is_deleted_and_not_streamed_instead(self):
+        """The manifest's sha256 binds the fetch as it binds the upload; a mismatch is final, never a reason to fall back."""
+        archive = bytearray(IF.archive_bytes(self.new, 1100))
+        archive[-1] ^= 1
+        self.gh = json.loads(self.gh_path.read_text())
+        IF.ing_artifacts(self.gh, self.new, 1100, archive=bytes(archive))
+        self.write_gh()
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "ARCHIVE_MISMATCH"), events)
+        self.assertEqual((self.mac_downloads(), self.writes("import"), self.spool()), ([], [], []))
+        self.assertEqual(len(self.ranges()), 4)
+        self.assert_untouched()
+
+    def artifact_holding(self, members):
+        import zipfile
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for member, content in members:
+                archive.writestr(member, content)
+        gh = json.loads(self.gh_path.read_text())
+        gh["zips"][self.ARCHIVE_ID] = IF.b64(buffer.getvalue())
+        next(a for a in gh["artifacts"]["1100"] if a["id"] == int(self.ARCHIVE_ID))["size_in_bytes"] = len(buffer.getvalue())
+        self.gh_path.write_text(json.dumps(gh))
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["code"]), (1, "ARCHIVE_INVALID"), events)
+        self.assertEqual((self.mac_downloads(), self.writes("import"), self.spool()), ([], [], []))
+        self.assert_untouched()
+
+    def test_an_artifact_with_a_second_file_is_refused(self):
+        name = IF.ing_manifest(self.new, 1100)["image"]["archive"]["name"]
+        self.artifact_holding([(name, IF.archive_bytes(self.new, 1100)), ("extra.txt", b"x")])
+
+    def test_an_artifact_whose_archive_has_another_name_is_refused(self):
+        self.artifact_holding([("lolly-ing-instance-1099-1.oci.tar", IF.archive_bytes(self.new, 1100))])
 
 
 class IngImageNames(IngEndToEnd):
