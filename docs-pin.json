@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "6e116f862bddcdb6a85203b75324ffcf49774833",
+  "commit": "cbb8a721c4a1380bc09eee6500f3409099d3a56e",
   "manifestSha256": "e5636f6833ece3ace3e15522bcf8921df3449d3a7a147833b4f1b0e5dfbb2208",
   "files": {
     "account-lifecycle.md": {
@@ -33,7 +33,7 @@
       "source": "docs/work/automation-api.md"
     },
     "aws-compatible.md": {
-      "sha256": "25394acf8ff22749e2b18dc2648dc484b640f08c2a1ab3a2a174351d1951b498",
+      "sha256": "15eeb5e5ce36d2721231ab3984234591b1f385a62084aec36cd84ace811e6e46",
       "source": "docs/work/aws-compatible.md"
     },
     "c2pa.md": {
