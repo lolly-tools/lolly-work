@@ -388,31 +388,78 @@ function whenCell(iso) {
   return el('td', { 'data-sort': iso ?? '' }, when(iso));
 }
 
-const CONFIRM_ARM_MS = 4000; // how long a "Really …?" arm stays live before disarming itself
+// How long a "Really …?" arm stays live after the first activation. A screen
+// reader takes two or three seconds to speak the prompt, so the old four seconds
+// left about one second to answer it. Focus leaving the button or Escape ends
+// the arm sooner, so the longer window does not leave a stale action waiting.
+const CONFIRM_ARM_MS = 10_000;
 
-/** Two-click arm/confirm button — no window.confirm. First click arms it
- *  (showing armedLabel) and self-disarms after CONFIRM_ARM_MS so a stray click
- *  days later can't fire a stale action; a second click while armed calls
- *  onConfirm(disarm), which is responsible for its own busy/error handling and
- *  for calling disarm() again on failure. idleLabel may be a string or a
+/** Two-step confirm button, used instead of window.confirm.
+ *
+ *  The first activation arms it: the label (and the aria-label, when the button
+ *  carries one, as the compact invitation actions do) becomes armedLabel and the
+ *  prompt is announced. A second activation while armed calls onConfirm(disarm).
+ *
+ *  The arm lapses after CONFIRM_ARM_MS, when focus leaves the button, or on
+ *  Escape. A lapse puts the idle label back and announces that nothing changed,
+ *  so neither the button nor the live region keeps claiming an arm that is over.
+ *
+ *  While onConfirm runs, the button shows its idle label, is aria-busy and
+ *  ignores further activations, so it never shows a prompt it would not accept.
+ *  onConfirm handles its own errors and calls disarm() on failure; disarm() is
+ *  quiet because the caller reports the outcome. idleLabel may be a string or a
  *  () => string for a count-dependent label. */
 function armConfirmButton(attrs, idleLabel, armedLabel, onConfirm) {
   const labelText = () => (typeof idleLabel === 'function' ? idleLabel() : idleLabel);
-  let armed = false;
+  let state = 'idle'; // 'idle' | 'armed' | 'busy'
   let armTimer = null;
-  const disarm = () => { armed = false; delete btn.dataset.armed; btn.textContent = labelText(); };
-  const btn = el('button', { type: 'button', ...attrs, onclick: async () => {
-    if (!armed) {
-      armed = true;
-      btn.dataset.armed = 'true';
-      btn.textContent = armedLabel;
-      announce(`${armedLabel} Activate again to confirm.`);
-      armTimer = setTimeout(disarm, CONFIRM_ARM_MS);
-      return;
-    }
-    clearTimeout(armTimer);
-    await onConfirm(disarm);
-  } }, labelText());
+  const prompt = `${armedLabel} Activate again to confirm.`;
+  // Once answered, the prompt leaves the live region, so nothing reading the
+  // page later still finds an invitation to activate again.
+  const clearPrompt = () => {
+    for (const live of document.querySelectorAll('#live, .sheet-live')) if (live.textContent === prompt) live.textContent = '';
+  };
+  // The only writer of the label, accessible name and state attributes, so the
+  // visible text and what assistive tech reads cannot disagree with the state.
+  const show = (next) => {
+    state = next;
+    const text = next === 'armed' ? armedLabel : labelText();
+    btn.textContent = text;
+    if (btn.hasAttribute('aria-label')) btn.setAttribute('aria-label', text);
+    if (next === 'armed') btn.dataset.armed = 'true'; else delete btn.dataset.armed;
+    if (next === 'busy') btn.setAttribute('aria-busy', 'true'); else btn.removeAttribute('aria-busy');
+  };
+  const disarm = () => { clearTimeout(armTimer); armTimer = null; show('idle'); };
+  const lapse = () => {
+    if (state !== 'armed') return;
+    disarm();
+    // A button a re-render already removed has nobody left to tell.
+    if (btn.isConnected) announce(`${labelText()} not confirmed. Nothing changed.`);
+  };
+  const btn = el('button', {
+    type: 'button', ...attrs,
+    onclick: async () => {
+      if (state === 'busy') return;
+      if (state === 'idle') {
+        show('armed');
+        announce(prompt);
+        armTimer = setTimeout(lapse, CONFIRM_ARM_MS);
+        return;
+      }
+      clearTimeout(armTimer); armTimer = null;
+      show('busy');
+      clearPrompt();
+      try { await onConfirm(disarm); }
+      finally { if (state === 'busy') show('idle'); }
+    },
+    onblur: lapse,
+    onkeydown: (event) => {
+      if (event.key !== 'Escape' || state !== 'armed') return;
+      // Consumed here, so a surrounding dialog closes on the next Escape, not this one.
+      event.preventDefault(); event.stopPropagation();
+      lapse();
+    },
+  }, labelText());
   return btn;
 }
 
