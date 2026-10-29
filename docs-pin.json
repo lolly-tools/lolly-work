@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "6cf6ffecc4a761346ce1faf5c70c439311d17417",
+  "commit": "fb7a583d1147b7496e0bd443da0f6f1bfe00df43",
   "manifestSha256": "cc9d93e3e7d5a7d1b7fba6250b2396799079cceb3e4550232cf665f0196e7f54",
   "files": {
     "account-lifecycle.md": {
@@ -33,7 +33,7 @@
       "source": "docs/work/automation-api.md"
     },
     "aws-compatible.md": {
-      "sha256": "15eeb5e5ce36d2721231ab3984234591b1f385a62084aec36cd84ace811e6e46",
+      "sha256": "f6e8f8323b5339fa00cd550648f407250105c2ac73023d5537b70435b6222fb1",
       "source": "docs/work/aws-compatible.md"
     },
     "c2pa.md": {
@@ -145,7 +145,7 @@
       "source": "docs/work/offboarding.md"
     },
     "official-installations.md": {
-      "sha256": "9cfe69b6faaee4ae8c710e5ee8041aa798354c08c6f98cf1956bb873d74c51e8",
+      "sha256": "42913cda796bf9313160048674ea325dd4a5f6de24ff3b2d5dbb3d2d0b9df4ec",
       "source": "docs/work/official-installations.md"
     },
     "operations.md": {
@@ -249,7 +249,7 @@
       "source": "scripts/export-work-docs.ts"
     },
     "ready-made-package.md": {
-      "sha256": "40b705ab3f440cfd3e7a6c472ae057caa62d6266417600e9a52301c0339a800d",
+      "sha256": "441e8d9f0ca495cbd3b2221e7bd500d27268ed1d2d6ba84075b27d94a94b245c",
       "source": "docs/work/ready-made-package.md"
     },
     "release-1-1-2.md": {
