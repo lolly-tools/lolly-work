@@ -115,6 +115,9 @@ def app_phase(args, guest: Guest, profile: str, base: str) -> None:
 
     # Refusals: a digest labelled as another release, and a release signed from main.
     definition = json.loads(guest.run("cat /usr/share/lolly-appliance/release-definition.json").stdout)
+    # What runs now, which a refusal, a restore or a revert must leave or put back. It is
+    # the image's own release unless the machine was updated before this phase.
+    started = json.loads(guest.run("cat /var/lib/lolly/update/state.json").stdout)["installed"]["serverImage"]
     other = next_patch(args.to_version)
     mislabelled = {**definition, "version": other, "serverImage": SIGNED_AT_TAG[args.to_version]}
     put_json(guest, "/root/def-mislabelled.json", mislabelled)
@@ -136,7 +139,7 @@ def app_phase(args, guest: Guest, profile: str, base: str) -> None:
         ok(f"an older release is refused as an update, pointing at the rollback (1.1.1 on {args.from_version})",
            result.returncode != 0 and "is older than" in result.stderr and "lolly-update rollback" in result.stderr,
            (result.stderr.strip().splitlines() or [""])[-1][:200])
-    ok("the refusals changed nothing", pin(running_server(guest, profile)) == pin(definition["serverImage"]) and schema_rows(guest, profile) == rows_before)
+    ok("the refusals changed nothing", pin(running_server(guest, profile)) == pin(started) and schema_rows(guest, profile) == rows_before)
 
     # A render before the update, to find again after the restore.
     web = sign_in(args, base)
@@ -177,7 +180,7 @@ def app_phase(args, guest: Guest, profile: str, base: str) -> None:
     result, seconds = sh(guest, "lolly-update rollback --restore")
     print("\n".join("  | " + line for line in (result.stdout + result.stderr).strip().splitlines()), flush=True)
     ok(f"rollback --restore returns to {args.from_version} with the database as it was", result.returncode == 0
-       and pin(running_server(guest, profile)) == pin(definition["serverImage"]) and schema_rows(guest, profile) == rows_before,
+       and pin(running_server(guest, profile)) == pin(started) and schema_rows(guest, profile) == rows_before,
        f"{seconds:.0f} s, {schema_rows(guest, profile)} rows")
     web = sign_in(args, base)
     status, _, _ = web.call("GET", "/api/auth/session")
@@ -191,7 +194,7 @@ def app_phase(args, guest: Guest, profile: str, base: str) -> None:
     print("\n".join("  | " + line for line in text.strip().splitlines()), flush=True)
     ok("an update that does not become ready in time reverts, restoring its backup", result.returncode != 0
        and "Restoring the backup taken before the update" in text and f"Reverted: Lolly Work {args.from_version} is ready again" in text
-       and pin(running_server(guest, profile)) == pin(definition["serverImage"]) and schema_rows(guest, profile) == rows_before,
+       and pin(running_server(guest, profile)) == pin(started) and schema_rows(guest, profile) == rows_before,
        f"{seconds:.0f} s")
     status = guest.run("lolly-update status").stdout
     ok("the failed attempt is recorded and not retried by the timer", "reverted" in status)
