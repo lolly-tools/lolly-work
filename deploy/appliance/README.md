@@ -200,9 +200,9 @@ profile's runtime, waits for it to be ready and reverts on failure.
   (`auto`, `check` or `off`), `LOLLY_UPDATE_CHANNEL`, `LOLLY_UPDATE_TIMEOUT`.
 - **Not yet in the channel.** PostgreSQL and Caddy pins move only with an
   administrator's definition: the release workflow does not yet publish a
-  signed appliance definition. No chart has been published yet (the first is
-  1.1.3), so until then a k3s appliance waits, and an administrator may apply a
-  verified release with `--keep-chart`.
+  signed appliance definition. Charts are published from 1.1.3 on; for an
+  earlier release, which has none, a k3s appliance waits, and an
+  administrator may apply a verified release with `--keep-chart`.
 
 **The host: `transactional-update`, `rebootmgr` and `health-checker`.** The
 host updates itself through `transactional-update` at 01:00 into a new root
@@ -326,7 +326,7 @@ deploy/appliance/test/boot-qemu.sh out/lolly-appliance-<version>-aarch64.qcow2 -
 deploy/appliance/test/accept.py --key key --state run/state.json
 ssh -p 2222 root@127.0.0.1 systemctl reboot
 deploy/appliance/test/accept.py --key key --state run/state.json --after-reboot
-deploy/appliance/test/accept-updates.py --key key --state run/state.json --phase app --from 1.1.1 --to 1.1.2
+deploy/appliance/test/accept-updates.py --key key --state run/state.json --phase app --from 1.1.2 --to 1.1.3
 deploy/appliance/test/accept-updates.py --key key --state run/state.json --phase host
 kill "$(cat run/qemu.pid)"
 ```
@@ -364,6 +364,38 @@ page. Host updates come from `transactional-update` in `rebootmgr`'s window, as
 on any Leap 16.1 Immutable machine.
 
 ## Measured
+
+### Lolly Work 1.1.3
+
+29 October 2026, the first release with a published chart (`chart-v1.1.3`).
+All four aarch64 images were built in the Lima VM from the Work 1.1.3 release
+commit `129d9294` with `release.json` pinned by `scripts/marketplace-cohort.ts`:
+1.1.3 for both profiles, and 1.1.2 for both profiles as the update's starting
+point. Each image booted under QEMU 11.1 with HVF on an Apple M4 (2 vCPU,
+4 GiB, the 1442 MTU, Combustion through `fw_cfg`), one at a time.
+
+| | k3s | podman |
+|---|---|---|
+| 1.1.3 first boot, Work `/readyz` 200 after the kernel started | 63 s | 37 s |
+| 1.1.3 after a reboot | 45 s | 11 s |
+| Memory at first readiness (used, available) | 1173 MiB, 2734 MiB | 745 MiB, 3163 MiB |
+| Disk used (btrfs) | 4.96 GB | 3.20 GB |
+| `accept.py`, first boot and after the reboot | PASS 24, PASS 19 | PASS 27, PASS 22 |
+| Update 1.1.2 -> 1.1.3 (one migration, backup first), peak memory | 50 s, 1382 MiB | 21 s, 863 MiB |
+| `rollback --restore` to 1.1.2 | 27 s | 6 s |
+| `accept-updates.py --phase app --from 1.1.2 --to 1.1.3` | PASS 24 | PASS 23 |
+| qcow2 | 1.91 GB | 1.69 GB |
+
+On k3s the channel now verifies the chart as well as the image: `lolly-update
+check` downloads `chart-v1.1.3`, checks its Sigstore bundle against
+`publish-helm.yml@refs/heads/main`, its sha256 against `chart-release.json` and
+its `Chart.yaml`, and the update installs it (sha256 `1c2a3fd974c6b503...`),
+with no `--keep-chart`. The renders on 1.1.3 were byte-identical to the 1.1.1
+ones below (SVG `28358ad6a32f5995...`, PNG `da253330e924b789...`). The host
+phase was not repeated, because no host code changed. x86_64 for 1.1.3 waits
+for the CI build of the pinned release.
+
+### Lolly Work 1.1.1
 
 Lolly Work 1.1.1 (chart 1.1.2), 27 October 2026, both aarch64 images built
 from this directory and run one at a time, each with 2 vCPU and 4 GiB memory
@@ -489,8 +521,6 @@ The rest of M1, in order:
   Caddy pins move only with an administrator's `--definition`. The fix is an
   attestation on the server image (`cosign attest`, same identity) that
   `lolly-update` reads.
-- **The first published chart** (1.1.3): until then the k3s channel waits, and
-  the positive chart verification has not run against a real bundle.
 - **Secrets in containerd's metadata (k3s).** Kubernetes hands Work its
   environment with the Secret values resolved, and containerd keeps each
   container's spec, `DATABASE_URL` included, in its metadata database under

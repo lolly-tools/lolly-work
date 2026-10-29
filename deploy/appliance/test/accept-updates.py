@@ -48,6 +48,10 @@ SIGNED_ON_MAIN = {
 }
 
 
+def version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
 def next_patch(version: str) -> str:
     """A release number the image is not signed as, for the mislabelled-release refusal."""
     major, minor, patch = version.split(".")
@@ -117,11 +121,21 @@ def app_phase(args, guest: Guest, profile: str, base: str) -> None:
     result, _ = sh(guest, f"lolly-update apply --definition /root/def-mislabelled.json{keep_chart}")
     ok("a release image presented as another version is refused", result.returncode != 0 and f"is not signed as Lolly Work {other}" in result.stderr,
        (result.stderr.strip().splitlines() or [""])[-1][:200])
-    main_signed = {**definition, "version": "1.1.1", "serverImage": SIGNED_ON_MAIN["1.1.1"]}
+    # 1.1.1's image was signed from main. Past 1.1.1 a definition labelled 1.1.1 is a
+    # downgrade, refused before any signature is read, so present it as the target.
+    main_label = "1.1.1" if version_tuple(args.from_version) <= (1, 1, 1) else args.to_version
+    main_signed = {**definition, "version": main_label, "serverImage": SIGNED_ON_MAIN["1.1.1"]}
     put_json(guest, "/root/def-main-signed.json", main_signed)
     result, _ = sh(guest, f"lolly-update apply --definition /root/def-main-signed.json{keep_chart}")
-    ok("an image signed outside its release tag is refused (1.1.1 was signed from main)",
-       result.returncode != 0 and "is not signed as Lolly Work 1.1.1" in result.stderr, (result.stderr.strip().splitlines() or [""])[-1][:200])
+    ok(f"an image signed outside its release tag is refused (1.1.1's, signed from main, presented as {main_label})",
+       result.returncode != 0 and f"is not signed as Lolly Work {main_label}" in result.stderr, (result.stderr.strip().splitlines() or [""])[-1][:200])
+    if main_label != "1.1.1":
+        older = {**definition, "version": "1.1.1", "serverImage": SIGNED_ON_MAIN["1.1.1"]}
+        put_json(guest, "/root/def-older.json", older)
+        result, _ = sh(guest, f"lolly-update apply --definition /root/def-older.json{keep_chart}")
+        ok(f"an older release is refused as an update, pointing at the rollback (1.1.1 on {args.from_version})",
+           result.returncode != 0 and "is older than" in result.stderr and "lolly-update rollback" in result.stderr,
+           (result.stderr.strip().splitlines() or [""])[-1][:200])
     ok("the refusals changed nothing", pin(running_server(guest, profile)) == pin(definition["serverImage"]) and schema_rows(guest, profile) == rows_before)
 
     # A render before the update, to find again after the restore.
