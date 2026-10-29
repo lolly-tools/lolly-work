@@ -14,7 +14,7 @@ or FAIL line per check:
             keeps, and a host update that breaks Lolly Work, which
             health-checker rolls back
 
-  deploy/appliance/test/accept-updates.py --key KEY --state STATE --phase app --from 1.1.1 --to 1.1.2 \\
+  deploy/appliance/test/accept-updates.py --key KEY --state STATE --phase app --from 1.1.2 --to 1.1.3 \\
       --postgres-alt docker.io/library/postgres:17@sha256:...
   deploy/appliance/test/accept-updates.py --key KEY --state STATE --phase host
 
@@ -36,11 +36,22 @@ SIGNED_AT_TAG = {
     # Lolly Work release images and the identity their signatures name
     # (from each release's release-source-images.json and its certificate).
     "1.1.2": "ghcr.io/lolly-tools/lolly-work-server:1.1.2@sha256:68ef78a1605c5530f6c2939e584cb8875fdcd5a8bdb0112b35c0515b2ddc0504",
+    "1.1.3": "ghcr.io/lolly-tools/lolly-work-server:1.1.3@sha256:9a9b03cc311f343d3e75c1b47e3bc13c72fe269ac69b10d2d56532c20d9eb363",
 }
+# Releases whose Helm chart is published (release chart-v<version>, signed by
+# publish-helm.yml). A k3s appliance verifies such a chart instead of keeping
+# the installed one; 1.1.3 is the first.
+CHART_PUBLISHED = {"1.1.3"}
 SIGNED_ON_MAIN = {
     # 1.1.1's server image was signed by a dispatch from main, not at its tag.
     "1.1.1": "ghcr.io/lolly-tools/lolly-work-server:1.1.1@sha256:5fa8b86328bf453635791fc104f4cf6179fc3d3c02a1516da4dea07bd6ae1e55",
 }
+
+
+def next_patch(version: str) -> str:
+    """A release number the image is not signed as, for the mislabelled-release refusal."""
+    major, minor, patch = version.split(".")
+    return f"{major}.{minor}.{int(patch) + 1}"
 
 
 def sh(guest: Guest, command: str, timeout: int = 3600):
@@ -74,7 +85,8 @@ def sign_in(args, base: str) -> Web:
 
 def app_phase(args, guest: Guest, profile: str, base: str) -> None:
     pin = lambda ref: re.sub(r":[^:@/]+@", "@", ref)  # noqa: E731
-    keep_chart = " --keep-chart" if profile == "k3s" else ""
+    chart = profile == "k3s" and args.to_version in CHART_PUBLISHED
+    keep_chart = " --keep-chart" if profile == "k3s" and not chart else ""
     status = guest.run("lolly-update status").stdout
     ok(f"lolly-update status starts at {args.from_version}", f"Lolly Work:     {args.from_version}" in status, status.splitlines()[1] if status else "")
     rows_before = schema_rows(guest, profile)
@@ -86,6 +98,12 @@ def app_phase(args, guest: Guest, profile: str, base: str) -> None:
         ok(f"the channel offers {args.to_version}, verified against the release workflow at its tag",
            result.returncode == 0 and f"Lolly Work {args.to_version} is available (verified)" in result.stdout
            and f"release.yml@refs/tags/v{args.to_version}" in result.stdout, (result.stdout + result.stderr).strip().splitlines()[-1])
+    elif chart:
+        ok(f"the channel offers {args.to_version} with its published chart, both verified (release.yml at the tag, publish-helm.yml on main)",
+           result.returncode == 0 and f"Lolly Work {args.to_version} is available (verified)" in result.stdout
+           and f"release.yml@refs/tags/v{args.to_version}" in result.stdout
+           and f"Verified chart lolly-work-{args.to_version}.tgz" in result.stdout and "publish-helm.yml@refs/heads/main" in result.stdout,
+           (result.stdout + result.stderr).strip().splitlines()[-1][:200])
     else:
         ok(f"the channel verifies {args.to_version}, and k3s waits for its signed chart, which is not published",
            f"release.yml@refs/tags/v{args.to_version}" in result.stdout and f"chart-v{args.to_version}" in result.stderr,
@@ -93,10 +111,11 @@ def app_phase(args, guest: Guest, profile: str, base: str) -> None:
 
     # Refusals: a digest labelled as another release, and a release signed from main.
     definition = json.loads(guest.run("cat /usr/share/lolly-appliance/release-definition.json").stdout)
-    mislabelled = {**definition, "version": "1.1.3", "serverImage": SIGNED_AT_TAG[args.to_version]}
+    other = next_patch(args.to_version)
+    mislabelled = {**definition, "version": other, "serverImage": SIGNED_AT_TAG[args.to_version]}
     put_json(guest, "/root/def-mislabelled.json", mislabelled)
     result, _ = sh(guest, f"lolly-update apply --definition /root/def-mislabelled.json{keep_chart}")
-    ok("a release image presented as another version is refused", result.returncode != 0 and "is not signed as Lolly Work 1.1.3" in result.stderr,
+    ok("a release image presented as another version is refused", result.returncode != 0 and f"is not signed as Lolly Work {other}" in result.stderr,
        (result.stderr.strip().splitlines() or [""])[-1][:200])
     main_signed = {**definition, "version": "1.1.1", "serverImage": SIGNED_ON_MAIN["1.1.1"]}
     put_json(guest, "/root/def-main-signed.json", main_signed)
@@ -127,6 +146,10 @@ def app_phase(args, guest: Guest, profile: str, base: str) -> None:
         print("RESULT FAIL (the update did not apply; the rest of this phase depends on it)")
         return
     rows_after = schema_rows(guest, profile)
+    if chart:
+        installed_chart = json.loads(guest.run("cat /var/lib/lolly/update/state.json").stdout)["installed"].get("chart") or {}
+        ok(f"the published chart {args.to_version} is installed", installed_chart.get("version") == args.to_version,
+           f"chart {installed_chart.get('version')} sha256 {str(installed_chart.get('sha256'))[:16]}...")
     ok("the new release runs and its migrations are applied", pin(running_server(guest, profile)) == pin(SIGNED_AT_TAG[args.to_version])
        and migrations and rows_after == rows_before + int(migrations.group(1)), f"{rows_before} -> {rows_after} rows")
     web = sign_in(args, base)
@@ -252,8 +275,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--https", default="127.0.0.1:8443")
     parser.add_argument("--state", required=True)
     parser.add_argument("--phase", choices=("app", "host"), required=True)
-    parser.add_argument("--from", dest="from_version", default="1.1.1")
-    parser.add_argument("--to", dest="to_version", default="1.1.2")
+    parser.add_argument("--from", dest="from_version", default="1.1.2")
+    parser.add_argument("--to", dest="to_version", default="1.1.3")
     parser.add_argument("--postgres-alt", default="docker.io/library/postgres:17@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe")
     args = parser.parse_args(argv)
     guest = Guest(args.ssh_port, args.key, args.ssh_host)
