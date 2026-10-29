@@ -1,6 +1,6 @@
 services:
   content:
-    image: ghcr.io/lolly-tools/lolly-work-server@sha256:5fa8b86328bf453635791fc104f4cf6179fc3d3c02a1516da4dea07bd6ae1e55
+    image: ghcr.io/lolly-tools/lolly-work-server@sha256:9a9b03cc311f343d3e75c1b47e3bc13c72fe269ac69b10d2d56532c20d9eb363
     user: 0:0
     read_only: true
     cap_drop: &a1
@@ -11,8 +11,8 @@ services:
       - CHOWN
     environment:
       LW_DISTRIBUTION_INIT: "1"
-      LW_SHELL_URL: https://lolli.li/lolly-web-1.1.1-ynh1.tar.gz
-      LW_SHELL_SHA256: bc78012aa407983ecc818e63be98ae1b45ed7db1dcad3f4c8d4ffe0c371116c1
+      LW_SHELL_URL: https://lolli.li/lolly-web-1.1.3-ynh1.tar.gz
+      LW_SHELL_SHA256: 1ff9a26889d10984ce377e6890283859a9ba7bca2981d8df1e49e572e792925d
       LW_SOURCE_CATALOG_PUBLIC_KEY: '{"kty":"EC","crv":"P-256","x":"fHdyfof2ppicYg3eoDbeNxdnxjbt9KhBLsjVGso6eqo","y":"SWK6wsAVjRAad2w8MxmIkTGdgNMFHhhSNdeEqfH5cVg"}'
     command:
       - node
@@ -204,7 +204,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 60s
   server:
-    image: ghcr.io/lolly-tools/lolly-work-server@sha256:5fa8b86328bf453635791fc104f4cf6179fc3d3c02a1516da4dea07bd6ae1e55
+    image: ghcr.io/lolly-tools/lolly-work-server@sha256:9a9b03cc311f343d3e75c1b47e3bc13c72fe269ac69b10d2d56532c20d9eb363
     read_only: true
     cap_drop: *a1
     security_opt: *a2
@@ -212,8 +212,8 @@ services:
       NODE_ENV: production
       LW_DISTRIBUTION_START: "1"
       LW_CONFIG: /app/state/instance.json
-      LW_SHELL_SHA256: bc78012aa407983ecc818e63be98ae1b45ed7db1dcad3f4c8d4ffe0c371116c1
-      LW_CATALOG_GENERATION: "3"
+      LW_SHELL_SHA256: 1ff9a26889d10984ce377e6890283859a9ba7bca2981d8df1e49e572e792925d
+      LW_CATALOG_GENERATION: "4"
       LW_SOURCE_CATALOG_PUBLIC_KEY: '{"kty":"EC","crv":"P-256","x":"fHdyfof2ppicYg3eoDbeNxdnxjbt9KhBLsjVGso6eqo","y":"SWK6wsAVjRAad2w8MxmIkTGdgNMFHhhSNdeEqfH5cVg"}'
       LOLLY_DOMAIN: ${LOLLY_DOMAIN:?set LOLLY_DOMAIN}
       LOLLY_AUTH_MODE: ${LOLLY_AUTH_MODE:-password}
