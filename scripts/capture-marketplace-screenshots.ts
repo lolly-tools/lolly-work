@@ -28,7 +28,9 @@ export interface ListingShot {
 
 export const LISTING_SHOTS: readonly ListingShot[] = Object.freeze([
   { file: 'sign-in.png', title: 'Built-in email and password sign-in', path: '/api/auth/login?returnTo=%2F', ready: '#pw-email', catalogue: false },
-  { file: 'tool-gallery.png', title: 'The matched Lolly web shell with the neutral tool catalogue', path: '/#/tools', ready: '[data-shots-settled]', catalogue: true },
+  // A tool card, not [data-shots-settled]: the web app stamps that marker only in its docs
+  // capture mode, so a gallery opened as a person would never gets it.
+  { file: 'tool-gallery.png', title: 'The matched Lolly web shell with the neutral tool catalogue', path: '/#/tools', ready: '[data-tool-id]', catalogue: true },
   { file: 'tool-editor.png', title: 'A neutral community tool open for editing', path: '/#/tool/chart', ready: '#tool-canvas', catalogue: true },
   { file: 'console-overview.png', title: 'The Work console overview', path: '/admin#/overview', ready: '#main', catalogue: false },
   { file: 'console-tool-policy.png', title: 'Tool policy in the Work console', path: '/admin#/instance?tab=tools', ready: '#inst-panel', catalogue: false },
