@@ -392,8 +392,33 @@ check` downloads `chart-v1.1.3`, checks its Sigstore bundle against
 its `Chart.yaml`, and the update installs it (sha256 `1c2a3fd974c6b503...`),
 with no `--keep-chart`. The renders on 1.1.3 were byte-identical to the 1.1.1
 ones below (SVG `28358ad6a32f5995...`, PNG `da253330e924b789...`). The host
-phase was not repeated, because no host code changed. x86_64 for 1.1.3 waits
-for the CI build of the pinned release.
+phase was not repeated, because no host code changed.
+
+**x86_64 on MulgaDC Spinifex**, the same evening: the CI build of the pinned
+release (`appliance.yml` run 40952317334 on `d73ea067`; both raw disks match
+`SHA256SUMS` and carry `release.json` 1.1.3), imported as the
+[AWS-compatible guide](https://lolly.tools/info/operate/aws-compatible.html)
+describes: written to a new 20 GiB volume with `conv=sparse` in 51 s,
+Combustion in the `ignition` partition, snapshot, `register-image --boot-mode
+uefi`, launched as a `c6a.large` with a 40 GB disk.
+
+| x86_64 k3s, Spinifex | |
+|---|---|
+| Root SSH, Work `/readyz` 200 after launch | 57 s, 110 s (101 s after the kernel started) |
+| After a reboot | `/readyz` 96 s after the reboot command (73 s after the kernel started) |
+| Memory at first readiness, after the reboot | 1510 MiB used, 2400 available; 1339 used, 2571 available |
+| `accept.py`, first boot and after the reboot | 23 and 18 PASS; the one FAIL each time is Cockpit, which answers only from local networks (200 through an SSH tunnel) |
+| Update 1.1.2 -> 1.1.3, peak memory | 59 s, 1559 MiB; chart-v1.1.3 verified and installed, 66 -> 67 migrations |
+| `rollback --restore` to 1.1.2 | 46 s, 66 rows, the owner signs in and renders |
+
+There is no 1.1.2 x86_64 image, so the update machine was Work's CI build of
+1.1.1, moved to 1.1.2 with `lolly-update apply --version 1.1.2 --keep-chart`
+(37 s) before `accept-updates.py --phase app --from 1.1.2 --to 1.1.3`. That
+run passed 21 checks; its 3 failures compared the running release with the
+image's own definition (1.1.1) instead of the release the phase started from,
+which `accept-updates.py` now reads from the machine's update state. Renders
+were byte-identical to the aarch64 ones. Everything created was deleted
+afterwards.
 
 ### Lolly Work 1.1.1
 
