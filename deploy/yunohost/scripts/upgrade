@@ -25,6 +25,12 @@ if [ -z "${proxy_secret:-}" ]; then
     proxy_secret=$(ynh_string_random --length=48)
     ynh_app_setting_set --key=proxy_secret --value="$proxy_secret"
 fi
+# Installs from before 1.1.3~ynh2 have no catalogue signing key, so their web app
+# listed no tools. Generate one now; an existing key is kept.
+if [ -z "${catalog_signing_key:-}" ]; then
+    catalog_signing_key=$(lollywork_new_catalog_key)
+    ynh_app_setting_set --key=catalog_signing_key --value="$catalog_signing_key"
+fi
 
 #=================================================
 # DOWNLOAD, CHECK AND UNPACK SOURCE
@@ -35,6 +41,12 @@ ynh_script_progression "Upgrading source files..."
 # and the shell is replaced by its own source next.
 ynh_setup_source --dest_dir="$install_dir" --full_replace --keep="instance.json .env shell"
 ynh_setup_source --source_id="shell" --dest_dir="$install_dir/shell" --full_replace
+
+shell_seq=$(lollywork_shell_catalog_seq)
+if [ "$shell_seq" -gt "${catalog_generation:-0}" ]; then
+    catalog_generation=$shell_seq
+    ynh_app_setting_set --key=catalog_generation --value="$catalog_generation"
+fi
 
 #=================================================
 # INSTALL DEPENDENCIES

@@ -3,7 +3,9 @@
     "name": "__INSTANCE_NAME__",
     "baseUrl": "https://__DOMAIN__",
     "pack": "__DATA_DIR__/pack",
-    "shellDir": "__INSTALL_DIR__/shell"
+    "shellDir": "__INSTALL_DIR__/shell",
+    "catalogPublicationGeneration": __CATALOG_GENERATION__,
+    "catalogPublicKey": __CATALOG_PUBLIC_KEY__
   },
   "idp": {
     "issuer": "",
