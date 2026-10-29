@@ -11,12 +11,12 @@ type: application
 # Chart version: the Lolly release version, the same number as appVersion and
 # Work's package.json, so people install one version of everything. Chart-only
 # changes ship with the next release; tests/helm-chart.test.ts fails on drift.
-version: 1.1.2
+version: 1.1.3
 
 # The lolly-work server version this chart is designed against. Used as the
 # default image tag when image.tag is left empty. Keep in sync with the app's
 # package.json "version".
-appVersion: "1.1.2"
+appVersion: "1.1.3"
 
 home: https://lolly.work
 sources:
@@ -45,4 +45,4 @@ annotations:
     - kind: added
       description: Official chart distribution, package documentation and Rancher configuration questions.
     - kind: changed
-      description: Default server and render worker image tags follow Work 1.1.2.
+      description: Default server and render worker image tags follow Work 1.1.3.
