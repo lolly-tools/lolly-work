@@ -140,12 +140,14 @@ function helmFetch(index: unknown, archive: Uint8Array, seen: RequestInit[] = []
 }
 
 test('a publication through the chart repository is recorded only after the anonymous check passes', async () => {
+  // The chart carries the release number (helm-chart.test.ts), so the attempt is the cohort's own release.
+  const version = release.version as string, escaped = version.replace(/\./g, '\\.');
   const archive = new TextEncoder().encode('chart archive bytes'), sha256 = createHash('sha256').update(archive).digest('hex');
-  const entry = { version: '0.3.2', appVersion: '1.1.1', digest: sha256, urls: ['https://github.com/lolly-tools/lolly-work/releases/download/chart-v0.3.2/lolly-work-0.3.2.tgz'] };
+  const entry = { version, appVersion: version, digest: sha256, urls: [`https://github.com/lolly-tools/lolly-work/releases/download/chart-v${version}/lolly-work-${version}.tgz`] };
   const record = readRecord(), before = JSON.stringify(record);
-  const attempt: Attempt = { release: '1.1.1', package: '0.3.2', outcome: 'published', date: '2026-12-31', evidence: 'https://github.com/lolly-tools/lolly-work/releases/tag/chart-v0.3.2' };
+  const attempt: Attempt = { release: version, package: version, outcome: 'published', date: '2026-12-31', evidence: `https://github.com/lolly-tools/lolly-work/releases/tag/chart-v${version}` };
   const failures: [unknown, Uint8Array, RegExp][] = [
-    [{ apiVersion: 'v1', entries: { 'lolly-work': [] } }, archive, /does not list chart 0\.3\.2/],
+    [{ apiVersion: 'v1', entries: { 'lolly-work': [] } }, archive, new RegExp(`does not list chart ${escaped}`)],
     [{ apiVersion: 'v1', entries: { 'lolly-work': [{ ...entry, appVersion: '1.1.0' }] } }, archive, /names application 1\.1\.0/],
     [{ apiVersion: 'v1', entries: { 'lolly-work': [{ ...entry, urls: ['https://example.test/chart.tgz'] }] } }, archive, /not its immutable release/],
     [{ apiVersion: 'v1', entries: { 'lolly-work': [entry] } }, new TextEncoder().encode('other bytes'), /the index names/],
@@ -159,7 +161,7 @@ test('a publication through the chart repository is recorded only after the anon
   assert.match(result.checked!, /archive matches/);
   for (const init of seen) assert.equal(new Headers(init.headers).get('authorization'), null, 'the chart check never signs in');
   const helm = result.record.channels.find(item => item.id === 'helm-repository')!;
-  assert.equal(carried(helm)?.package, '0.3.2');
+  assert.equal(carried(helm)?.package, version);
   assert.equal(channelState(helm), 'current');
   const failed = await recordAttempt(record, 'helm-repository', { ...attempt, outcome: 'failed', note: 'Index update failed', evidence: undefined }, (async () => { throw new Error('a failure needs no check'); }) as typeof fetch);
   assert.equal(channelState(failed.record.channels.find(item => item.id === 'helm-repository')!), 'failed');

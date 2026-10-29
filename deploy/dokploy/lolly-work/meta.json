@@ -1,7 +1,7 @@
 {
   "id": "lolly-work",
   "name": "Lolly Work",
-  "version": "1.1.1",
+  "version": "1.1.3",
   "description": "Official open-source Lolly control plane with a neutral web shell, durable PostgreSQL and built-in sign-in or OIDC. Configure your domain and named owner before deploying.",
   "logo": "lolly-work.svg",
   "links": {

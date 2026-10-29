@@ -8,17 +8,17 @@ edit the table by hand.
 ## Versions by channel
 
 <!-- channel-table:begin (generated from channels.json by node scripts/marketplace-channels.ts) -->
-Qualified release cohort: Work 1.1.1, from [`release.json`](release.json).
+Qualified release cohort: Work 1.1.3, from [`release.json`](release.json).
 
 | Channel | Route | Carries | Latest attempt | State | Still open |
 |---|---|---|---|---|---|
-| Container images (GHCR) | Image registry | [1.1.1](https://github.com/lolly-tools/lolly-work/releases/tag/v1.1.1) | published on 2026-10-15: Signed amd64 and arm64 images; both digests in release.json resolve without signing in. | current | Runtime qualification of the render worker's arm64 image; the server's arm64 image passes only the CI container qualification. |
+| Container images (GHCR) | Image registry | [1.1.1](https://github.com/lolly-tools/lolly-work/releases/tag/v1.1.1) | published on 2026-10-15: Signed amd64 and arm64 images; both digests in release.json resolve without signing in. | behind | Runtime qualification of the render worker's arm64 image; the server's arm64 image passes only the CI container qualification. |
 | Helm chart repository | Project repository | Nothing yet | None | prepared | First publication of the chart, as 1.1.3 with the Lolly 1.1.3 release, anonymous download and signature checks, then a live Rancher installation and upgrade. |
 | Artifact Hub | Public catalogue | Nothing yet | None | prepared | A project organisation and repository, then Verified publisher, then Official status. |
-| Neutral Compose package (VM or private server) | Direct recipe | [1.1.1](https://github.com/lolly-tools/lolly-work/tree/265ea5d31d4da010d535fd27092f6deb150bf1d9/deploy/marketplaces) | published on 2026-10-16: CI boots the pinned package, signs in, exports, restarts and restores its database. | current | An installed cross-version upgrade and recovery on a second host. |
-| UpCloud quick start | Direct recipe | [1.1.1](https://github.com/lolly-tools/lolly-work/blob/265ea5d31d4da010d535fd27092f6deb150bf1d9/deploy/marketplaces/QUALIFICATION.md) | published on 2026-10-16: Reference installation on Ubuntu 24.04 amd64 in Frankfurt, created through the provider API. | current | An installed cross-version upgrade, recovery on a second host, organisation OIDC and a boot through the infrastructure module. |
+| Neutral Compose package (VM or private server) | Direct recipe | [1.1.1](https://github.com/lolly-tools/lolly-work/tree/265ea5d31d4da010d535fd27092f6deb150bf1d9/deploy/marketplaces) | published on 2026-10-16: CI boots the pinned package, signs in, exports, restarts and restores its database. | behind | An installed cross-version upgrade and recovery on a second host. |
+| UpCloud quick start | Direct recipe | [1.1.1](https://github.com/lolly-tools/lolly-work/blob/265ea5d31d4da010d535fd27092f6deb150bf1d9/deploy/marketplaces/QUALIFICATION.md) | published on 2026-10-16: Reference installation on Ubuntu 24.04 amd64 in Frankfurt, created through the provider API. | behind | An installed cross-version upgrade, recovery on a second host, organisation OIDC and a boot through the infrastructure module. |
 | Evroc quick start | Direct recipe | Nothing yet | None | prepared | Boot and application acceptance on an Evroc account. |
-| YunoHost package (beta) | Direct recipe | [1.1.1 (1.1.1~ynh1)](https://github.com/lolly-tools/lolly-work_ynh/tree/v1.1.1-ynh1) | published on 2026-10-15: Beta tag; its pinned archives download. All seven package tests passed on amd64 Bookworm. | current | Runtime acceptance (the 1.1.1 run fails its level check), arm64 installation; the beta label stays. |
+| YunoHost package (beta) | Direct recipe | [1.1.1 (1.1.1~ynh1)](https://github.com/lolly-tools/lolly-work_ynh/tree/v1.1.1-ynh1) | published on 2026-10-15: Beta tag; its pinned archives download. All seven package tests passed on amd64 Bookworm. | behind | Runtime acceptance (the 1.1.1 run fails its level check), arm64 installation; the beta label stays. |
 | YunoHost app catalogue | Public catalogue | Nothing yet | None | prepared | Catalogue registration, which waits for a maintainer's authorisation. |
 | Dokploy templates | Public catalogue | Nothing yet | None | prepared | Isolated Dokploy import and acceptance, a second-version installed upgrade, then the catalogue pull request. |
 <!-- channel-table:end -->
