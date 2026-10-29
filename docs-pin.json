@@ -1,8 +1,8 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "b6db266a15b5e34c4cae21cbddfde334ca3acdf5",
-  "manifestSha256": "e5636f6833ece3ace3e15522bcf8921df3449d3a7a147833b4f1b0e5dfbb2208",
+  "commit": "6cf6ffecc4a761346ce1faf5c70c439311d17417",
+  "manifestSha256": "cc9d93e3e7d5a7d1b7fba6250b2396799079cceb3e4550232cf665f0196e7f54",
   "files": {
     "account-lifecycle.md": {
       "sha256": "37f7cf8213f0fb6805c7fd5e0a3e263a4afa24a68abd547e4904f640cc2cc4d0",
@@ -77,7 +77,7 @@
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
-      "sha256": "24b95a4550ced425ff8c6cbae558fb6069b0fc24cfa1b36d9714648bea455910",
+      "sha256": "3d14e91f0dad8336c80817fd6ad48a369574c563ee81b247342e5880e6aba2cc",
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
@@ -121,7 +121,7 @@
       "source": "docs/work/img/README.md"
     },
     "install.md": {
-      "sha256": "46bcc61330a2a07db1a0dafb9e5a59f5cd9825abdf7956bc6b4c4ff68b1c9db1",
+      "sha256": "42a48077712bfaae8ff5c3a59e6ad67835efa7696515cdcc15628fc6df1d90df",
       "source": "docs/work/install.md"
     },
     "instance-pack-production.md": {
@@ -145,7 +145,7 @@
       "source": "docs/work/offboarding.md"
     },
     "official-installations.md": {
-      "sha256": "72cafa61810b5be273e4b21b30c7ec2e00d9bb2b7a4e74dba4b4d4fe4d9b1df3",
+      "sha256": "9cfe69b6faaee4ae8c710e5ee8041aa798354c08c6f98cf1956bb873d74c51e8",
       "source": "docs/work/official-installations.md"
     },
     "operations.md": {
@@ -165,7 +165,7 @@
       "source": "docs/work/permissions.md"
     },
     "platform-deployment.md": {
-      "sha256": "7bbe5d5a1b310d208c13b8534ea70cdb67bbb731e281dd79906b0cb0466e8edc",
+      "sha256": "7e14e352fcaf631085e7e54adf6c3f1a204beb7c13ce0e75e47591bee653f42f",
       "source": "docs/work/platform-deployment.md"
     },
     "production-readiness.md": {
@@ -245,7 +245,7 @@
       "source": "docs/work/providers/webdav.md"
     },
     "README.md": {
-      "sha256": "3458ddc4f4cf47ff572db73f50147487852a52dbf4b859852874a9ab7c7359d9",
+      "sha256": "4590d6f26bed43309ec48ac73d966c9e4033bc5f1451fde53adfa051b466d3fb",
       "source": "scripts/export-work-docs.ts"
     },
     "ready-made-package.md": {
@@ -253,8 +253,12 @@
       "source": "docs/work/ready-made-package.md"
     },
     "release-1-1-2.md": {
-      "sha256": "0577170a2b0ca3f34a4ec6712db56bd0005e0712706c0381410c727e69d88055",
+      "sha256": "c8eeb569632fc146429e295d64b13f189036e381ebdc5200dad323e6392d2bc4",
       "source": "docs/work/release-1-1-2.md"
+    },
+    "release-1-1-3.md": {
+      "sha256": "94bd4b7575227f4690032939dbf8903607fc2306d37b6be75e96792245b6b7d8",
+      "source": "docs/work/release-1-1-3.md"
     },
     "renders.md": {
       "sha256": "4e55244dbbede592d0295d49120142ba7758158f2c968b4f130fd303adf276b2",
@@ -269,7 +273,7 @@
       "source": "docs/work/security-platform.md"
     },
     "self-host.md": {
-      "sha256": "6757c9e6eed48116c55203b5c8c4782d31dd0445146b4f370c511f70e7da464d",
+      "sha256": "9bb2e64ae448febf2675711e96cff24e6ba8ce0113b01886dbade9e5ec1ab3d3",
       "source": "docs/work/self-host.md"
     },
     "sharing.md": {
@@ -477,7 +481,7 @@
       "source": "docs/shots/work/tool-policy.svg"
     },
     "status.md": {
-      "sha256": "c18c8c6c0e7290670982edf99bb8e5920dc516a2583217e4a7f838e07664db37",
+      "sha256": "994f767b60e08bd7d8a52d1cf49f4545781111dd469f2078a2b3d4a9b221076c",
       "source": "docs/work/status.md"
     },
     "team-projects.md": {

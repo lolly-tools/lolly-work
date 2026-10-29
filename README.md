@@ -9,8 +9,9 @@ just config + a pack mount.
 > Lolly renders on-device by design; everything hosted lives here (the public MCP server is
 > the one exception).
 
-The [1.1.2 release](docs/release-1-1-2.md) records the matched Lolly source,
+The [1.1.3 release](docs/release-1-1-3.md) records the matched Lolly source,
 component versions, migrations and the checks required before publication. The
+[1.1.2 release](docs/release-1-1-2.md) keeps its own page, and the
 [1.1.1](docs/past-releases.md#111) and [1.1.0](docs/past-releases.md#110) releases keep
 their own records in [past releases](docs/past-releases.md).
 
