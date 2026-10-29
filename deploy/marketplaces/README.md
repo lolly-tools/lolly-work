@@ -58,8 +58,8 @@ For Lolly and Work release `X.Y.Z`:
 ## The web app archive
 
 `release.json` records the archive's size (`shell.archiveBytes`) and its expanded
-size before the separate pack copy (`shell.expandedBytes`); the 1.1.1 archive is
-724 MB and expands to 1.5 GB. Initialisation streams the archive to disk, verifies its
+size before the separate pack copy (`shell.expandedBytes`); the 1.1.3 archive is
+752 MB and expands to 1.6 GB. Initialisation streams the archive to disk, verifies its
 full checksum, refuses unsafe archive paths/links and installs a new content
 directory. Allow at least 6 GB free for extraction, content copies and container
 layers, plus PostgreSQL growth, backups and retained previous releases. Downloads

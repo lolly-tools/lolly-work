@@ -33,11 +33,9 @@ architecture, network and acceptance limits.
 - Screenshots: the 1280 x 720 PNG files in [`assets/`](assets/README.md),
   captured from the neutral CI fixture with their source run recorded in
   `assets/screenshots.json`. They show fixture data only; never substitute
-  captures of a production instance. The shell gallery and tool views are
-  withheld for 1.1.1 because its shell refuses the installation's catalogue
-  signature in a browser. The content service now gives the shell the
-  installation's key, so refresh the captures before submitting; submit a listing
-  only with captures of the release it names.
+  captures of a production instance. The 1.1.3 captures include the shell
+  gallery and tool views, which 1.1.1 withheld. Submit a listing only with
+  captures of the release it names.
 
 ## Helm and Artifact Hub
 

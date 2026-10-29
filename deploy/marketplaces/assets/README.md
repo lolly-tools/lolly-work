@@ -10,8 +10,8 @@ member data, private brand packs and SUSE content never belong here.
 | File | Shows |
 |---|---|
 | `sign-in.png` | Built-in email and password sign-in, before anyone signs in |
-| `tool-gallery.png` | Withheld for 1.1.1: the shell's tool gallery |
-| `tool-editor.png` | Withheld for 1.1.1: the neutral Chart tool open for editing |
+| `tool-gallery.png` | The matched Lolly web app's tool gallery with the neutral catalogue |
+| `tool-editor.png` | The neutral Chart tool open for editing |
 | `console-overview.png` | The Work console overview for the fixture owner |
 | `console-tool-policy.png` | Tool policy in the Work console |
 
@@ -22,26 +22,24 @@ SHA-256 of every captured file. `tests/marketplace-screenshots.test.ts` checks t
 files against that record, and the record against `release.json`: a release change
 fails the test until the captures are refreshed.
 
-## Shell views withheld for 1.1.1
+## Shell views and the catalogue key
 
-In a browser, the neutral 1.1.1 shell refuses the installation's catalogue with
-"Catalog refused: signature does not verify against the pinned key". Work signs each
-caller's tool index with the installation's own key, while the checksum-pinned public
-shell has the publisher's key built in. Signed in, the gallery says it couldn't load
-the tools and a tool view shows only the refusal. The fixture's API checks still pass
-because they never verify that signature in a browser.
+The 1.1.1 listing withheld the gallery and editor views. In a browser the neutral
+1.1.1 shell refused the installation's catalogue with "Catalog refused: signature does
+not verify against the pinned key", because Work signs each caller's tool index with
+the installation's own key while the checksum-pinned public shell has the publisher's
+key built in.
 
-Since the content service gives the served shell the installation's key on first
-start (see [the maintenance notes](../README.md)), a signed-in browser lists the tools,
-and the capture run fails if the gallery shows none. The withheld views come back with
-the next capture run.
+The 1.1.3 web app also accepts the key that the Work instance serving it publishes at
+`/api/v1/catalog/public-key`, on the same origin only, so a signed-in browser lists the
+tools. Helm qualification run
+[40946250552](https://github.com/lolly-tools/lolly-work/actions/runs/40946250552)
+captured all five views for 1.1.3.
 
-`screenshots.json` records the two shell views as withheld, with the shell's own
-refusal message as the reason, and the capture run uploads what the browser showed
-under `diagnostics/`. A shell view is never captured while the shell shows a refusal,
-and a refusal for any other reason fails the capture run. The same recipes save both
-views once a release's shell accepts the installation's catalogue. A listing needs
-that release: these views are what an operator opens first.
+A shell view is still never captured while the shell shows a refusal: the capture
+records it as withheld, with the shell's own refusal message as the reason, and the run
+uploads what the browser showed under `diagnostics/`. A refusal for any other reason
+fails the capture run. The gallery capture waits for the first tool card.
 
 ## Refresh the captures
 
