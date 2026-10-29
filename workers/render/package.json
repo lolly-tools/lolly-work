@@ -1,7 +1,7 @@
 {
   "name": "lolly-work-render-worker",
   "private": true,
-  "version": "0.0.1",
+  "version": "1.1.3",
   "description": "Isolated Chromium render worker for the lolly-work control plane \u2014 renders hooked/HTML-heavy tools the in-process jsdom fast path can't. Kept OUT of the zero-dependency control plane so Playwright never enters that supply chain.",
   "type": "module",
   "license": "MPL-2.0",

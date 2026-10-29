@@ -104,7 +104,7 @@ The release source ZIP works too: extract it and open its root folder before you
 run the package-manager commands.
 
 ```bash
-git clone --branch v1.1.2 --depth 1 https://github.com/lolly-tools/lolly-work.git
+git clone --branch v1.1.3 --depth 1 https://github.com/lolly-tools/lolly-work.git
 cd lolly-work
 # Install the pinned package manager once (or use Corepack).
 npm install --global pnpm@11.26.0
@@ -399,11 +399,11 @@ check comes first.
 cd deploy/compose
 printf 'LW_SESSION_SECRET=%s\nLW_LINK_SECRET=%s\nPG_PASSWORD=%s\n' \
   "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
-# Use the published 1.1.2 server image; no local build is needed.
+# Use the published 1.1.3 server image; no local build is needed.
 cat > release-images.yaml <<'YAML'
 services:
   server:
-    image: ghcr.io/lolly-tools/lolly-work-server:1.1.2
+    image: ghcr.io/lolly-tools/lolly-work-server:1.1.3
 YAML
 docker compose -f docker-compose.yml -f release-images.yaml pull
 docker compose -f docker-compose.yml -f release-images.yaml up -d --no-build

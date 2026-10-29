@@ -60,6 +60,17 @@ test('the chart carries the release version: version equals appVersion equals Wo
   assert.equal(chart.version, work, 'Chart.yaml version');
 });
 
+// The render worker and the admission adapter ship as their own images, so their packages
+// carry the release number too (Andy, 2026-10-29). The appliance and the ready-made package
+// take theirs from deploy/marketplaces/release.json, which marketplace-cohort.ts writes from
+// the published release, so they follow once a release is pinned and are not checked here.
+test('the render worker and admission adapter carry the release version', () => {
+  const work = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  for (const path of ['../workers/render/package.json', '../services/admission/package.json']) {
+    assert.equal(JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')).version, work, path);
+  }
+});
+
 test('chart application version matches Work and defaults server, migration and worker images together', { skip: noHelm }, () => {
   const appVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   const chart = parse(readFileSync(join(CHART, 'Chart.yaml'), 'utf8'));

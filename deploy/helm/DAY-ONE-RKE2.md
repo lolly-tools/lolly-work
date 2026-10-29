@@ -104,7 +104,7 @@ provenance-attested and cosign-signed:
 `ghcr.io/lolly-tools/lolly-work-server:0.2.0` and
 `ghcr.io/lolly-tools/lolly-work-render-worker:0.2.0`. This records the historical
 release, not a current registry pull or cluster qualification. The current
-chart's empty `image.tag`/`renderWorker.image.tag` default to `appVersion` (= `1.1.2`,
+chart's empty `image.tag`/`renderWorker.image.tag` default to `appVersion` (= `1.1.3`,
 kept in step with `package.json`). Those defaults describe the shared release
 candidate; they do not prove that its images have been published or qualified.
 Select compatible signed application and worker

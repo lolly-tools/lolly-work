@@ -1,7 +1,7 @@
 {
   "name": "lolly-work",
   "private": true,
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Lolly control plane \u2014 identity, provisioning, governance, serving, telemetry. MPL-2.0.",
   "type": "module",
   "license": "MPL-2.0",
