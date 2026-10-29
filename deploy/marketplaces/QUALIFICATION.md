@@ -1,5 +1,68 @@
 # Neutral package reference qualification
 
+## Lolly Work 1.1.3 package, Spinifex, 2026-10-29
+
+This run qualified the package this change pins: Work 1.1.3 (server
+`sha256:9a9b03cc…b363`, source `129d9294`) with the published 1.1.3 web app archive
+`lolly-web-1.1.3-ynh1.tar.gz` (752,098,780 bytes, SHA-256
+`1ff9a26889d10984ce377e6890283859a9ba7bca2981d8df1e49e572e792925d`, signed catalogue
+generation 4), downloaded by the content service from `lolli.li` as an installation
+would. An agent ran it on the maintainer's behalf on a dedicated, disposable VM in the
+MulgaDC Spinifex sandbox, and everything it created was deleted afterwards. This is a
+reference installation, not marketplace admission or a platform certification.
+
+| Input | Tested value |
+|---|---|
+| Provider / region | MulgaDC Spinifex sandbox, `us-west-1`, through its EC2 API |
+| OS / architecture | Debian 13 image `ami-debian-13-x86_64`, kernel 6.12.113, native amd64 |
+| Compute / disk | `m6a.large`: 2 vCPU, 8 GB RAM, 40 GB root volume |
+| Network | Docker's MTU set to 1442 before the first start, as the package guide says |
+| Docker / Compose | 26.1.5 / 2.26.1 (Debian packages) |
+| HTTPS | Caddy's internal CA on `work.example.test`; the browser trusted only that chain |
+| Sign-in | Built-in password and a host-issued owner link |
+| Rendering | No Chromium worker; checked `asset-export` SVG |
+
+The generated Compose file was installed unchanged (SHA-256
+`cdc8556f5e045d84f516a24dc14664cb2984ad0b9eecb9716aa5b8dc9feafb18`); only the Caddyfile
+gained `tls internal`. The browser check ran headless Chromium 156.0.8078.4 from the 1.1.3
+render worker image with SwiftShader WebGPU, and the drivers are the ones used for 1.1.2
+(browser check `f61f4713…`, API acceptance `74dd0c45…`).
+
+Each run started on fresh volumes unless noted. Every check passed:
+
+- **As shipped.** Ready in about four minutes, including the archive download and the
+  content service's key step. API: owner setup link, password setup, owner session,
+  anonymous catalogue refused (401), signed-in catalogue of 69 tools, a project, an
+  `asset-export` SVG render with the same bytes as the earlier references
+  (`b2224c0b…bd03`) and evidence, an idempotent replay, and a QR Code job refused with
+  `HOOKED_TOOL_NEEDS_CHROMIUM` as documented. Browser: sign-in through the password
+  form, the catalogue reported `verified`, the gallery listed 43 tools and QR Code
+  opened and drew.
+- **Without the key step.** The content service ran without
+  `LW_SOURCE_CATALOG_PUBLIC_KEY`, so the archive was installed unchanged (no
+  `catalogue-key.json`; the publisher key is still the one in the web app's files and
+  the installation key is in none of them). Every API and browser check passed as
+  above. The 1.1.3 web app fetched the installation's key from
+  `/api/v1/catalog/public-key` on the same origin, the key the server's key file
+  holds, and verified the catalogue with it. With 1.1.2 this same setup showed "Couldn't
+  load the tools". The key step is therefore no longer needed for 1.1.3 web apps.
+- **Update from the 1.1.1 package.** The current 1.1.1 package (the `main` pin, with
+  the key step) was installed and passed every check, then updated in place to this
+  package, keeping `.env`, the project name and the volumes. The update took under
+  four minutes. Afterwards `catalogPublicationGeneration` was 4 (from 3), the
+  installation key was unchanged and still owned by the server's user with mode 600,
+  the 1.1.1 content was kept beside the new content, and the owner session, the saved
+  project, the catalogue and the whole browser check passed.
+
+The listing screenshots for 1.1.3 come from Helm qualification run
+[40946250552](https://github.com/lolly-tools/lolly-work/actions/runs/40946250552),
+which booted the package on amd64 and arm64 and captured all five views, the gallery
+and editor included.
+
+Not covered: public ACME, member sign-in, a provider reboot, restore into a separate
+installation, an arm64 provider VM and organisation OIDC. The receipts and drivers are
+retained outside Git.
+
 ## Browser check of the catalogue key step, Spinifex, 2026-10-27
 
 This run tested the content service's catalogue key step with a matched Work and Lolly
