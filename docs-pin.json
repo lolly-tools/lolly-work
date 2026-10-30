@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "fb7a583d1147b7496e0bd443da0f6f1bfe00df43",
+  "commit": "2ca374836dee0985a72c472f39c59a7717419852",
   "manifestSha256": "cc9d93e3e7d5a7d1b7fba6250b2396799079cceb3e4550232cf665f0196e7f54",
   "files": {
     "account-lifecycle.md": {
@@ -145,7 +145,7 @@
       "source": "docs/work/offboarding.md"
     },
     "official-installations.md": {
-      "sha256": "42913cda796bf9313160048674ea325dd4a5f6de24ff3b2d5dbb3d2d0b9df4ec",
+      "sha256": "6726589dbfa03eb303256891951cce891273a5ece6e9ea5ea5f4b3fe3ca94a1c",
       "source": "docs/work/official-installations.md"
     },
     "operations.md": {
