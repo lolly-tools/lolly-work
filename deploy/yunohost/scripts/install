@@ -14,6 +14,8 @@ proxy_secret=$(ynh_string_random --length=48)
 ynh_app_setting_set --key=session_secret --value="$session_secret"
 ynh_app_setting_set --key=link_secret --value="$link_secret"
 ynh_app_setting_set --key=proxy_secret --value="$proxy_secret"
+catalog_signing_key=$(lollywork_new_catalog_key)
+ynh_app_setting_set --key=catalog_signing_key --value="$catalog_signing_key"
 
 # Governance settings the admin can change later in the config panel; the
 # instance.json template reads them, at install and at every upgrade.
@@ -33,6 +35,9 @@ ynh_script_progression "Setting up source files..."
 
 ynh_setup_source --dest_dir="$install_dir"
 ynh_setup_source --source_id="shell" --dest_dir="$install_dir/shell"
+
+catalog_generation=$(lollywork_shell_catalog_seq)
+ynh_app_setting_set --key=catalog_generation --value="$catalog_generation"
 
 #=================================================
 # INSTALL DEPENDENCIES

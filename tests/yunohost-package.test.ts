@@ -22,6 +22,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { generateKeyPairSync } from 'node:crypto';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
@@ -48,6 +49,9 @@ const SAMPLE = {
   data_dir: '/home/yunohost.app/lolly-work', instance_name: 'Example Org', db_user: 'lolly_work', db_pwd: 'pw',
   db_name: 'lolly_work', session_secret: 's'.repeat(64), link_secret: 'l'.repeat(64), proxy_secret: 'p'.repeat(48),
   access_mode: 'gated', telemetry: 'standard', guest_links: 'true', hooks_fast_path: 'true',
+  catalog_signing_key: JSON.stringify(generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ format: 'jwk' })),
+  catalog_generation: '4',
+  catalog_public_key: readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'yunohost', 'conf', 'catalog-public-key.json'), 'utf8').trim(),
 };
 
 const servers: Server[] = [];
@@ -67,9 +71,12 @@ test('templates: only placeholders the scripts can fill', () => {
     assert.deepEqual(unknown, [], `${file} uses placeholders nothing defines: ${unknown.join(', ')}`);
   }
   // The settings the template needs are the ones install writes and upgrade defaults.
-  for (const key of ['access_mode', 'telemetry', 'guest_links', 'hooks_fast_path', 'session_secret', 'link_secret', 'proxy_secret']) {
+  for (const key of ['access_mode', 'telemetry', 'guest_links', 'hooks_fast_path', 'session_secret', 'link_secret', 'proxy_secret',
+    'catalog_signing_key', 'catalog_generation']) {
     assert.match(read('scripts/install'), new RegExp(`ynh_app_setting_set --key=${key} `), `install must write the ${key} setting`);
   }
+  // catalog_public_key is not a setting: lollywork_add_config reads the pinned file.
+  assert.match(read('scripts/_common.sh'), /catalog_public_key=\$\(tr -d '\\n' < "\$YNH_APP_BASEDIR\/conf\/catalog-public-key\.json"\)/);
   for (const key of ['access_mode', 'telemetry', 'guest_links', 'hooks_fast_path', 'instance_name']) {
     assert.match(read('scripts/upgrade'), new RegExp(`ynh_app_setting_set_default --key=${key} `), `upgrade must default the ${key} setting`);
   }
@@ -77,6 +84,27 @@ test('templates: only placeholders the scripts can fill', () => {
   const panel = read('config_panel.toml');
   for (const key of ['instance_name', 'access_mode', 'guest_links', 'telemetry', 'hooks_fast_path']) assert.match(panel, new RegExp(`\\[main\\.[a-z]+\\.${key}\\]`));
   assert.match(read('scripts/config'), /lollywork_add_config/);
+});
+
+test('catalogue signing: every install and upgrade publishes a signed catalogue', () => {
+  // Without LW_CATALOG_SIGNING_KEY the server answers 404 for tools/index.sig.json and
+  // /api/v1/catalog/public-key, so the key-pinned web app lists no tools (1.1.3~ynh1).
+  assert.match(read('conf/.env'), /^LW_CATALOG_SIGNING_KEY='__CATALOG_SIGNING_KEY__'$/m);
+  const install = read('scripts/install');
+  assert.match(install, /catalog_signing_key=\$\(lollywork_new_catalog_key\)/);
+  assert.ok(install.indexOf('lollywork_shell_catalog_seq') > install.indexOf('--source_id="shell"'), 'the generation is read after the shell is unpacked');
+  const upgrade = read('scripts/upgrade');
+  assert.match(upgrade, /if \[ -z "\$\{catalog_signing_key:-\}" \]; then\n\s+catalog_signing_key=\$\(lollywork_new_catalog_key\)/, 'upgrade gives an older install a key and keeps an existing one');
+  assert.match(upgrade, /if \[ "\$shell_seq" -gt "\$\{catalog_generation:-0\}" \]; then/, 'the generation never goes down');
+  // The pinned publisher key is the one the ready-made package pins, public only.
+  const pinned = JSON.parse(SAMPLE.catalog_public_key) as Record<string, string>;
+  const release = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'marketplaces', 'release.json'), 'utf8')) as { sourceCatalogPublicKey: Record<string, string> };
+  assert.deepEqual(pinned, { kty: 'EC', crv: 'P-256', x: release.sourceCatalogPublicKey.x, y: release.sourceCatalogPublicKey.y });
+  assert.ok(!('d' in pinned));
+  // The rendered configuration carries both, so production mode can publish.
+  const doc = JSON.parse(renderTemplate(read('conf/instance.json'), SAMPLE)) as { instance: Record<string, unknown> };
+  assert.equal(doc.instance.catalogPublicationGeneration, 4);
+  assert.deepEqual(doc.instance.catalogPublicKey, pinned);
 });
 
 test('instance.json: renders to a configuration the server accepts, shaped for YunoHost', () => {
