@@ -5,6 +5,15 @@ telemetry analytics. Open source under the **Mozilla Public License 2.0** ([MPL-
 designed to be hosted by an organisation (SUSE first), brand-agnostic so any deployment is
 just config + a pack mount.
 
+Work supports **content sovereignty**: control over how content is created, governed, stored
+and moved across the systems an organisation chooses. Lolly supplies the creative tools; Work
+supplies the organisation-controlled shared services. An existing DAM can remain the source
+of record while people make new content from its selected assets. Migration is optional.
+
+[Content sovereignty](https://lolly.tools/info/start/content-sovereignty.html) ·
+[Use Lolly with your existing DAM](https://lolly.tools/info/manage/use-with-dam.html) ·
+[SUSE's Brandfolder experience](https://lolly.tools/info/start/suse-brandfolder.html)
+
 > **The compass:** OSS = individual freedom · OSS + control plane = organizational freedom.
 > Lolly renders on-device by design; everything hosted lives here (the public MCP server is
 > the one exception).

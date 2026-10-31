@@ -1,8 +1,8 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "2ca374836dee0985a72c472f39c59a7717419852",
-  "manifestSha256": "cc9d93e3e7d5a7d1b7fba6250b2396799079cceb3e4550232cf665f0196e7f54",
+  "commit": "cd0e477559743196c9349e0d23c2df7b2afa8fb8",
+  "manifestSha256": "8352593d05946f1f30700fdd2415d7045fcb28a5699416d1c7c1019c894cde81",
   "files": {
     "account-lifecycle.md": {
       "sha256": "37f7cf8213f0fb6805c7fd5e0a3e263a4afa24a68abd547e4904f640cc2cc4d0",
@@ -41,7 +41,7 @@
       "source": "docs/work/c2pa.md"
     },
     "catalog.md": {
-      "sha256": "567f82f06d33ee0d8f066735b50544c568bb5838600eb87ca116a54805cb9b2f",
+      "sha256": "a041adc1525fece4f9c5e89a0f0571e5c53b7d06fba3dec3c10090ab97b855d7",
       "source": "docs/work/catalog.md"
     },
     "cli.md": {
@@ -141,7 +141,7 @@
       "source": "docs/work/metrics.md"
     },
     "offboarding.md": {
-      "sha256": "2753b20db9cc23d690ad7b482d4c65cf7cb2e01c639d5e65128f60edc7f734d8",
+      "sha256": "05304c511318a48c974b07d84cb4fb15da5ccd1869a0eefe7b7a1db807a45b60",
       "source": "docs/work/offboarding.md"
     },
     "official-installations.md": {
@@ -153,7 +153,7 @@
       "source": "docs/work/operations.md"
     },
     "overview.md": {
-      "sha256": "019cf2e93c3153d72886023b8ed708b44b85acabe9136ba72660d13ae461beed",
+      "sha256": "ed5fcb63b5a9a371ad7ad357eb4179fceefc39282d20c8e1d7504a9793e4af4a",
       "source": "docs/work/overview.md"
     },
     "past-releases.md": {
@@ -169,7 +169,7 @@
       "source": "docs/work/platform-deployment.md"
     },
     "production-readiness.md": {
-      "sha256": "b64dbf1ee7ba46d7547bdc5f573f8988deee9713101007a3fa45aeb94af388d5",
+      "sha256": "21187d0fd1eae4bd93b6a00ca083e2e9980f4e28ed6ba1492b1642802b11c9a9",
       "source": "docs/work/production-readiness.md"
     },
     "project-portability.md": {
@@ -181,7 +181,7 @@
       "source": "docs/work/providers/acquia-dam.md"
     },
     "providers/brandfolder.md": {
-      "sha256": "1ace1c265c0ab73691036818aff529964c9c9307747bf5375f56d7bde8b78160",
+      "sha256": "bb7e8f1de16f18a4d1395ed861aeedd87c627357dd1ca797be5e57f3aff6db01",
       "source": "docs/work/providers/brandfolder.md"
     },
     "providers/canto.md": {
@@ -229,7 +229,7 @@
       "source": "docs/work/providers/penpot.md"
     },
     "providers/README.md": {
-      "sha256": "a82e70b2fbcd51e29d0797b5ea025e41e95956c2e66c21a7cce0b5cb470db0b8",
+      "sha256": "e46be5b8a1d9e36b0b94aa21192bf5bf02a104f0b7afe21dd4521d1f583bac5a",
       "source": "docs/work/providers/README.md"
     },
     "providers/s3.md": {
@@ -481,7 +481,7 @@
       "source": "docs/shots/work/tool-policy.svg"
     },
     "status.md": {
-      "sha256": "994f767b60e08bd7d8a52d1cf49f4545781111dd469f2078a2b3d4a9b221076c",
+      "sha256": "ab8c8a96ef7360c2d49618906f4912663cb5a7f2ff258ffa7e3936000d9eb8af",
       "source": "docs/work/status.md"
     },
     "team-projects.md": {
