@@ -11,7 +11,7 @@ import { assess, main, probe } from '../scripts/production-readiness.ts';
 const config = () => ({
   instance: { baseUrl: 'https://work.example.test' },
   idp: { issuer: 'https://idp.example.test', clientId: 'client' },
-  policy: { defaultAccessMode: 'gated', telemetry: 'off', guestLinks: { enabled: false }, nearby: { enabled: false }, retention: { auditDays: 180, telemetryDays: 30 } },
+  policy: { defaultAccessMode: 'gated', telemetry: 'off', guestLinks: { enabled: false }, nearby: { enabled: false }, retention: { auditDays: 180, telemetryDays: 30, deletedDocumentsDays: 30 } },
 });
 const byId = (report: ReturnType<typeof assess>, id: string) => report.checks.find(c => c.id === id);
 
@@ -20,6 +20,7 @@ test('valid configuration remains incomplete without live evidence and approvals
   assert.equal(byId(report, 'config.schema')?.status, 'pass');
   assert.equal(byId(report, 'config.identity')?.status, 'pass');
   assert.equal(byId(report, 'config.audit-retention')?.status, 'pass');
+  assert.equal(byId(report, 'config.deleted-document-retention')?.status, 'pass');
   assert.equal(report.result, 'incomplete');
   for (const id of ['identity', 'release', 'security', 'operations', 'privacy-ai', 'change']) {
     assert.equal(byId(report, `evidence.${id}`)?.status, 'unverified');
@@ -31,6 +32,7 @@ test('insecure effective settings fail, while missing retention decisions remain
   const report = assess(JSON.stringify(cfg), 'config');
   for (const id of ['gated', 'auth-bypass', 'session', 'telemetry', 'sharing']) assert.equal(byId(report, `config.${id}`)?.status, 'fail');
   assert.equal(byId(report, 'config.audit-retention')?.status, 'unverified');
+  assert.equal(byId(report, 'config.deleted-document-retention')?.status, 'unverified');
   assert.equal(report.result, 'failed');
 });
 

@@ -20,9 +20,10 @@ config:
       enabled: false
     nearby:
       enabled: false
-    # Supply retention.telemetryDays / retention.auditDays in the environment
-    # values after approval of the retention schedule. Omitting them keeps the
-    # application's indefinite-retention default; that is not an approval.
+    # Supply retention.telemetryDays / retention.auditDays /
+    # retention.deletedDocumentsDays in the environment values after approval
+    # of the retention schedule. Omitting them keeps the application's
+    # indefinite-retention default; that is not an approval.
   dev:
     enabled: false
     users: []

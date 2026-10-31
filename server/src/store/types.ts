@@ -1610,6 +1610,10 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Pas
   trimAudit(uptoSeq: number): Promise<number>;
   /** Delete telemetry events older than beforeIso; returns how many went. */
   trimTelemetry(beforeIso: string): Promise<number>;
+  /** Delete up to `limit` sessions tombstoned before beforeIso, with their
+   *  revisions, collaboration state, comments, notices, document agents,
+   *  versions and folder placements; returns how many sessions went. */
+  purgeDeletedSessions(beforeIso: string, limit: number): Promise<number>;
   /** Erasure (plans/35 wave 3): drop the id->identity mapping from stored
    *  telemetry - events stay, attribution goes. Returns how many were scrubbed. */
   scrubTelemetryUser(userId: string): Promise<number>;

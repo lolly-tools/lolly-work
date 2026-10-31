@@ -1036,6 +1036,30 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       }
       return before - events.length;
     },
+    async purgeDeletedSessions(beforeIso, limit) {
+      // The same rows Postgres removes by hand and by cascade.
+      const ids = [...sessions.values()].filter((s) => s.deletedAt && s.deletedAt < beforeIso)
+        .sort((a, b) => (a.deletedAt as string).localeCompare(b.deletedAt as string) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .slice(0, limit).map((s) => s.id);
+      for (const id of ids) {
+        await versionMethods.deleteSessionVersions(id);
+        for (const [k, t] of commentThreads) {
+          if (t.sessionId !== id) continue;
+          commentThreads.delete(k);
+          for (const s of mentionSends.keys()) if ((JSON.parse(s) as string[])[0] === t.id) mentionSends.delete(s);
+        }
+        for (const [k, r] of commentReads) if (r.sessionId === id) commentReads.delete(k);
+        for (const k of commentReadFloors.keys()) if (k.endsWith(` ${id}`)) commentReadFloors.delete(k);
+        for (const [k, n] of commentNotices) if (n.sessionId === id) commentNotices.delete(k);
+        for (const [k, a] of documentAgents) if (a.sessionId === id) documentAgents.delete(k);
+        for (const k of collabReceipts.keys()) if ((JSON.parse(k) as string[])[0] === id) collabReceipts.delete(k);
+        for (const folder of projectFolders.values()) folder.items = folder.items.filter((item) => item.kind !== 'session' || item.ref !== id);
+        collabCheckpoints.delete(id); collabJournal.delete(id); collabSnapshots.delete(id); collabOwners.delete(id);
+        sessionRevisions.delete(id);
+        sessions.delete(id);
+      }
+      return ids.length;
+    },
     async scrubTelemetryUser(userId) {
       let n = 0;
       for (let i = 0; i < events.length; i++) {

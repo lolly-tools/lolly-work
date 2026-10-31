@@ -4312,7 +4312,7 @@ export function buildApp(deps: AppDeps): App {
     const actor = await requireAction(req, res, 'instance.config');
     if (!actor) return;
     const result = await runRetention({ config, store, blobs });
-    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept || result.approvalArtifactsRemoved || result.renderOutputsExpired || result.renderOutputsRemoved) {
+    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept || result.approvalArtifactsRemoved || result.renderOutputsExpired || result.renderOutputsRemoved || result.documentsPurged) {
       await audit(`user:${actor.id}`, 'retention.run', 'instance', { ...result });
     }
     sendJson(res, 200, result);

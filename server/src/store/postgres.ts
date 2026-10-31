@@ -1716,6 +1716,31 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const { rowCount } = await pool.query('delete from telemetry_events where at < $1', [beforeIso]);
       return rowCount ?? 0;
     },
+    async purgeDeletedSessions(beforeIso, limit) {
+      // Under the versions lock: the cascade deletes version contents, whose
+      // triggers keep the instance total. session_revisions has no cascade and
+      // folder items name sessions by ref, so both go first by hand.
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select pg_advisory_xact_lock($1)', [SESSION_VERSIONS_LOCK_KEY]);
+        const { rows } = await client.query(
+          `select id from sessions where deleted_at is not null and deleted_at < $1
+            order by deleted_at, id collate "C" limit $2 for update skip locked`, [beforeIso, limit]);
+        const ids = rows.map((r) => r.id as string);
+        if (!ids.length) { await client.query('commit'); return 0; }
+        await client.query('delete from session_revisions where session_id = any($1::text[])', [ids]);
+        await client.query(`delete from project_folder_items where kind = 'session' and ref = any($1::text[])`, [ids]);
+        const { rowCount } = await client.query('delete from sessions where id = any($1::text[])', [ids]);
+        await client.query('commit');
+        return rowCount ?? 0;
+      } catch (err) {
+        await client.query('rollback');
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
     async scrubTelemetryUser(userId) {
       const { rowCount } = await pool.query('update telemetry_events set user_id = null where user_id = $1', [userId]);
       return rowCount ?? 0;

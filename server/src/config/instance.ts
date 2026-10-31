@@ -271,7 +271,7 @@ export interface InstanceConfig {
      *  chain verifiable (the anchor) and never pass the SIEM cursor. */
     /** Days to keep each kind of record; 0 keeps everything. `renderOutputDays`
      *  removes durable render output bytes and keeps their records. */
-    retention: { telemetryDays: number; auditDays: number; renderOutputDays: number };
+    retention: { telemetryDays: number; auditDays: number; renderOutputDays: number; deletedDocumentsDays: number };
     activity: ActivityPolicy;
     /** Invites from inside Lolly (plans/74): who may invite new people by
      *  email, which domains, how long an invitation stays open and which
@@ -665,7 +665,7 @@ const DEFAULTS: InstanceConfig = {
     submit: { maxBytes: 64 * 1024 * 1024, quota: { bytes: 0, count: 0 } },
     catalog: { versionKeep: 0 },
     fleet: {},
-    retention: { telemetryDays: 0, auditDays: 0, renderOutputDays: 0 },
+    retention: { telemetryDays: 0, auditDays: 0, renderOutputDays: 0, deletedDocumentsDays: 0 },
     activity: { mode: 'delegated', auditSessionUpdates: true },
     projectFiles: { ...PROJECT_FILE_DEFAULTS },
     uploads: { ...UPLOAD_DEFAULTS },
@@ -1027,7 +1027,7 @@ export function parseConfig(json: string): InstanceConfig {
   }
   if (!['off', 'owner-only', 'delegated'].includes(cfg.policy.activity.mode)) throw new Error('invalid policy.activity.mode');
   if (typeof cfg.policy.activity.auditSessionUpdates !== 'boolean') throw new Error('policy.activity.auditSessionUpdates must be true or false');
-  for (const k of ['telemetryDays', 'auditDays', 'renderOutputDays'] as const) {
+  for (const k of ['telemetryDays', 'auditDays', 'renderOutputDays', 'deletedDocumentsDays'] as const) {
     const v = cfg.policy.retention[k];
     if (!Number.isInteger(v) || v < 0) throw new Error(`invalid policy.retention.${k}: ${v} (days, 0 = keep forever)`);
   }
