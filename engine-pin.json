@@ -1,22 +1,22 @@
 {
-  "generatedFrom": "2ca374836dee0985a72c472f39c59a7717419852",
+  "generatedFrom": "2b2636b7e833b373e0c42023525e49b7db41f1d3",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.5.0",
     "tarball": "lolly-tools-core-1.5.0.tgz",
-    "tarballSha256": "51e3e9a0887233b0c2084f92d34f10cfb271dac3cec8c225b7c71e8aba01a935",
-    "contentHash": "e173603885b791f6857e21b478369aa4abd91d174fd55d88d5d0db0bd9e25d7d"
+    "tarballSha256": "e616eec7769481274f7a7835d79d235bafd200b084fb3e41a1ce59df1cfd4a18",
+    "contentHash": "f7a648b9451e1833c2c37a6d9f2251da939d5abc890afd33d51e3c85f4cd3763"
   },
   "engine": {
-    "version": "1.285.0",
-    "tarball": "lolly-engine-1.285.0.tgz",
-    "tarballSha256": "06f4b0b4627fb35eed838ac661c748aae6ada52a0b694072c1509798b0d1b672",
-    "contentHash": "9d1ce8c077d240e2c7182a3817707ddce846337d1e40e8a0c6bf2f943371b978"
+    "version": "1.296.0",
+    "tarball": "lolly-engine-1.296.0.tgz",
+    "tarballSha256": "df51b2337d5efa98fee3a62a6774031b407e2f77173f51214c7ba5099a6bc42f",
+    "contentHash": "28fe2603f64013f09fee765bc6f338f75001dd95dd2cad1bfde5ef32014eeadc"
   },
   "schemas": {
     "asset-ref.schema.json": "1e610bd8369b1f4756306709af95bb009aa39981a9776343f92f1c00c51bc3cd",
     "asset.schema.json": "d1a83aa58837bb37149612bf74b3405d9af96374d3bab39a52666c9895f1d38e",
-    "blocks-wire-order.json": "cfbaa6283095455665b7f7c1125b5cde0a5ec53754e3e7abb4594b3bbe0f0897",
+    "blocks-wire-order.json": "f31d8d7789985f7431cacac493bd0428e2e9bce16f8d6f4da4514ae7c4445a10",
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "8747d7dea7721ae0a6a0fce9e58ce188dd86faab94c44a15304fc70042095e22",
@@ -47,6 +47,6 @@
     "text-frame-v1.schema.json": "4da9745015da8dfd75e60f7e15300604eeedd4902bca7a049d063a396455f069",
     "text-measure-v1.schema.json": "6a3b17fdc8d7d8769d723724b73dabd3d5d74c77df577480a9c42cfcb0a0e976",
     "tokens.schema.json": "012f3050656230bb609eb841c6a7e42a3cfa4088c7c3b938a561a81d3fa13dcc",
-    "tool.schema.json": "81bee1d6cb0da5b280e10455338080f8a7278fd4317630ac1348b0bd2527465f"
+    "tool.schema.json": "55f1b4f3b9db2e926ad1f93ded4b955a5d2142d27b97a9794ac659e4126d0bda"
   }
 }
