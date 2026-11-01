@@ -40,7 +40,7 @@ export type {
   InRealmOnlyHookName, HookInitDoneMsg, HookInvokeDoneMsg, HookReportMsg, HookHostCallMsg, HookLogMsg, HookWorkerOut,
   HookWorkerPort, HookWorkerCoreOpts,
 } from './hook-worker-core.ts';
-export type { HookExecutor, Hooks, RuntimeViewState } from './runtime.ts';
+export type { HookExecutor, Hooks, RuntimeViewState, CanvasSize } from './runtime.ts';
 // Emoji (1.196): the runtime draws every emoji in a rendered tree from the
 // chosen pinned pack. TYPES ONLY here on purpose - the pinned Unicode tables are
 // half a megabyte, so the modules themselves stay behind the runtime's dynamic
@@ -60,7 +60,7 @@ export {
   PSD_BLEND_TO_CSS, CSS_TO_PSD_BLEND, XCF_MODE_TO_CSS, psdBlendToCss, xcfModeToCss,
 } from './raster-layers.ts';
 export type { CssBlendMode, RasterLayer, LayeredRasterDoc, InflateFn } from './raster-layers.ts';
-export { buildInputModel, summarizeInputs, normalizeTableValue, deriveExportFilename, matchesShowIf, tokenRestoreRefsOf, DEFAULT_FILE_MAX_BYTES } from './inputs.ts';
+export { buildInputModel, summarizeInputs, CREDENTIAL_READABLE_TYPES, normalizeTableValue, deriveExportFilename, matchesShowIf, tokenRestoreRefsOf, DEFAULT_FILE_MAX_BYTES } from './inputs.ts';
 export type { TableValue, TableColumnEditor, ShowIf, InputWriteOptions } from './inputs.ts';
 export { parseUrlState, serializeUrlState, serializeHdr, encodeBlocksCompact, encodeTableCompact, decodeTableCompact, RESERVED, HDR_DEFAULTS, VIDEO_CODEC_STRINGS, parseVideoParams, hasVideoParams } from './url-mode.ts';
 // The `s=` state address + the still-export frame filter both shells apply (plan 112).
@@ -129,6 +129,7 @@ export {
   UNITS, CSS_DPI, isUnit, parseDimension,
   toInches, isPhysical, toPixels, toPoints, toCssPx, toCssLength, toUnit,
 } from './units.ts';
+export { canvasSizeOf } from './units.ts';
 export {
   frameRect, framingStyle, normalizeFraming, isNeutralFraming, isTilted,
   framingQuad, projectFramingPoint, minZoomForCover, FRAMING_PERSPECTIVE,
@@ -889,6 +890,24 @@ export {
   // that keeps every screen-parallel document on the path it always took.
   cameraTilted, kfMatrix3dCss, projectSurfacePoint,
 } from './keyframes.ts';
+// 1.291 (plans/330) - path handles: the curved travel between two positions, the split
+// that keeps it whole and the inverse projection that lets the drawn path be edited.
+export { kfPathCurves, kfSubdividePath, kfUnprojectCentre } from './keyframes.ts';
+export type { KfHandle, KfPathSplit } from './keyframes.ts';
+// 1.290 (plans/328) - the appearance channels as paint: fill and stroke colour in OKLab,
+// stroke width, corner radius and trim, written as `--lolly-kf-*` custom properties.
+export { KF_LOOK_CHANNELS, KF_FILL_CHANNELS, KF_STROKE_CHANNELS, KF_LOOK_VARS, isKfLookChannel } from './kf-look.ts';
+export { kfLookUsed, kfLookPose, kfLookVars, kfColourKey, kfColourCss, kfOklabOf, kfTrimSpan, kfOutlinePath } from './kf-look.ts';
+// 1.296 (plans/329) - spring eases and design-system motion tokens on the `kf` wire:
+// `esp(k)(c)(m)` springs, `et(<path>)` bindings and the table the shell installs.
+export { KF_EASE_REF_MAX, setKfEaseTokens, kfEaseTokensSnapshot, kfBindEase } from './keyframes.ts';
+export { kfEaseKind, kfEaseTokenPath, kfEaseResolved, kfEaseSpring, kfEaseSpringName } from './keyframes.ts';
+export type { KfEaseKind, KfEaseTokenOptions } from './keyframes.ts';
+export { KF_SPRING_PRESETS, kfSpring, kfSpringToken, kfSpringSettleMs } from './kf-spring.ts';
+export type { KfSpring, KfSpringPresetName } from './kf-spring.ts';
+export { readMotionTokens, readHostMotionTokens, motionEaseMap } from './motion-tokens.ts';
+export type { MotionTokens, MotionCurveToken, MotionDurationToken } from './motion-tokens.ts';
+export type { KfOklab, KfTrimSpan, KfLookVarOpts, KfOutlineShape } from './kf-look.ts';
 export type {
   KfChannel, KfCameraChannel, KfPose, KfEasePresetToken, KfEasePreset, KfEaseSubdivision,
   KfKey, KfKeyInput, KfTrack, KfParseOptions,
@@ -1101,6 +1120,9 @@ export { compileRenovated, DECK_RENOVATE_VERSION, AVERAGE_GLYPH_EM, ESTIMATE_LIN
 export type { CompileRenovatedInputV1, CompileRenovatedOptsV1, RenovateDesignSystemV1 } from './deck-compile.ts';
 export { framePreviewSvg, wrapByAverageWidth } from './frame-preview-svg.ts';
 export type { FramePreviewOptsV1 } from './frame-preview-svg.ts';
+// Additive 1.288: where a Design row's stroke sits and its per-side widths, read as the renderer reads them.
+export { designStrokeAlign, designStrokeOutset, designStrokeSides } from './design-stroke.ts';
+export type { DesignStrokeAlign, DesignStrokeSides } from './design-stroke.ts';
 
 // Plan 274 work package 4 follow-ups: the cover-slide test the first pass reads
 // a title slide by, and the hint options a caller narrows the hints with.

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "cd0e477559743196c9349e0d23c2df7b2afa8fb8",
+  "commit": "2b2636b7e833b373e0c42023525e49b7db41f1d3",
   "manifestSha256": "8352593d05946f1f30700fdd2415d7045fcb28a5699416d1c7c1019c894cde81",
   "files": {
     "account-lifecycle.md": {
@@ -73,7 +73,7 @@
       "source": "docs/work/deployment.md"
     },
     "design-system-administration.md": {
-      "sha256": "e14e82bfbe31b729286b4dc71773b5588d9753b63abf28af58b251eee95b129e",
+      "sha256": "081eda7a2b5271dd79cc5bcf24eaaa86128de3e9e6034cfee0039bc48627c25e",
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {

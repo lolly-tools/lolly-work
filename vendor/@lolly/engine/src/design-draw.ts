@@ -26,7 +26,8 @@ import type { DesignBoxRowV1, TextMeasureFontsV1, TextMeasureSpecV1 } from '@lol
 import { DESIGN_LINE_HEIGHT, designTextPad, layoutDesignText } from './deck-compile.ts';
 import type { DesignTextRunV1 } from './design-text.ts';
 import { strikeGeometry, underlineGeometry, underlineInkGaps, underlineSpans, type DrawStrike, type DrawUnderline, type StrikeMetrics } from './text-decoration.ts';
-import { DICTIONARY_SCRIPT, drawDesignText, textMeasureSpecOfRow, type DesignTextDrawV1, type TextShaperV1 } from './design-text-measure.ts';
+import { DICTIONARY_SCRIPT, drawDesignText, textMeasureSpecOfRow, type DesignTextDrawRunV1, type DesignTextDrawV1, type TextShaperV1 } from './design-text-measure.ts';
+import { translateTextPath } from './text-spacing.ts';
 import { segmentEmojiText } from './emoji-segment.ts';
 import { decodeAuthoredPaths } from './geom/authored-url.ts';
 import type { Contour } from './geom/path.ts';
@@ -40,6 +41,7 @@ import { colorToHexString } from './css-color.ts';
 import { gradientSpecStops, parseGradientSpec } from './gradient-spec.ts';
 import { parsePenpotColor } from './draw-color.ts';
 import * as pmath from './geom/portable-math.ts';
+import { designStrokeAlign, designStrokeHasSides, designStrokeSides, designStrokeSidesApply, strokeRing, strokeSidesEqual, type DesignCornerRadii } from './design-stroke.ts';
 
 export const DESIGN_DRAW_VERSION = 0;
 
@@ -52,12 +54,25 @@ export type DrawPaint =
   | { kind: 'linear'; x1: number; y1: number; x2: number; y2: number; stops: DrawStop[] }
   /** The ellipse through the box corners, as Design writes its radial form. */
   | { kind: 'radial'; stops: DrawStop[] };
-/** `inside` is a CSS border: the stroke lies within the box, as Design draws a box outline. Absent is centred on the edge. */
-export interface DrawStroke { color: string; opacity?: number; width: number; cap?: string; join?: string; dash?: [number, number]; align?: 'inside' }
+/**
+ * `inside` is a CSS border: the stroke lies within the box, as Design draws a box outline.
+ * On a box, `center` and `outside` are the same border on a box grown by half or all of
+ * the width, the fill then covering the box inside the stroke (`strokeRing`). On a pen
+ * shape, `inside` and `outside` keep the stroke to one side of a closed outline. Absent is
+ * centred on the edge (the preview reading's box, or a pen shape's default).
+ * `sides` are a box's per-side widths `[top, right, bottom, left]` when they differ;
+ * `width` is then the widest of them.
+ */
+export interface DrawStroke {
+  color: string; opacity?: number; width: number; cap?: string; join?: string; dash?: [number, number];
+  align?: 'inside' | 'center' | 'outside';
+  sides?: [number, number, number, number];
+}
 /** The turn (degrees, clockwise) and mirror about the box centre, composed `rotate() scale()`. */
 export interface DrawPose { rot: number; flipH: boolean; flipV: boolean }
 export type DrawShape =
-  | { kind: 'rect'; radius: number }
+  /** `corners`, when present, are eight radii (each corner across then down, clockwise from the top left) and win over `radius`. */
+  | { kind: 'rect'; radius: number; corners?: DesignCornerRadii }
   | { kind: 'ellipse' }
   | { kind: 'path'; contours: Contour[]; evenOdd: boolean;
     /** Box-local, evaluated SVG commands retained by the legacy Lottie reading for exact quantization and move-only paths. */
@@ -301,11 +316,17 @@ function dashOf(row: DesignBoxRowV1, width: number, cap: string | undefined): [n
   return undefined;
 }
 
+/** A row's widest stroke side, or its `strokeW` as it was always read when it sets no side of its own. */
+const strokeWidest = (row: DesignBoxRowV1): number => (designStrokeHasSides(row) ? Math.max(...designStrokeSides(row)) : rowNum(row, 'strokeW'));
+
 function strokeOf(row: DesignBoxRowV1, color: ColorOf, defaults?: { cap: string; join: string }): DrawStroke | undefined {
-  const width = rowNum(row, 'strokeW');
+  // A box with per-side widths strokes when any side does, and its width is the widest.
+  const sides = !defaults && designStrokeSidesApply(row) && designStrokeHasSides(row) ? designStrokeSides(row) : null;
+  const width = sides && !strokeSidesEqual(sides) ? Math.max(...sides) : sides ? sides[0] : rowNum(row, 'strokeW');
   const paint = color(rowStr(row, 'stroke'));
   if (!paint || !(width > 0)) return undefined;
   const stroke: DrawStroke = { ...paint, width };
+  if (sides && !strokeSidesEqual(sides)) stroke.sides = sides;
   if (defaults) {
     stroke.cap = rowStr(row, 'strokeCap') || defaults.cap;
     stroke.join = rowStr(row, 'strokeJoin') || defaults.join;
@@ -404,7 +425,7 @@ export function designDrawFindings(row: DesignBoxRowV1, opts: Pick<DesignDrawCom
   if (NON_STATIC.has(kind)) found.push('non-static-kind');
   if (opts.colors === 'resolved' && unresolvedColor(row, opts.resolveColor)) found.push('color-unresolved');
   // A CSS dashed or dotted border spaces its marks to fit each side; an SVG dash pattern does not.
-  if (opts.semantics !== 'preview' && kind !== 'path' && rowStr(row, 'stroke') && rowNum(row, 'strokeW') > 0 && /^(dashed|dotted)$/.test(rowStr(row, 'strokeDash'))) found.push('border-style');
+  if (opts.semantics !== 'preview' && kind !== 'path' && rowStr(row, 'stroke') && strokeWidest(row) > 0 && /^(dashed|dotted)$/.test(rowStr(row, 'strokeDash'))) found.push('border-style');
   return found;
 }
 
@@ -460,8 +481,20 @@ function pictureOf(row: DesignBoxRowV1, area: DrawBox, clip: DrawArea | undefine
   return { ref, fit, x, y, zoom, area, element, ...(clip ? { clip } : {}), label };
 }
 
-/** The box inside an inside stroke, and the outline CSS clips its content to there. */
+/**
+ * The box inside a box's stroke, and the outline CSS clips its content to there: the
+ * stroke's inner edge (`strokeRing`), which is the box less the border for an inside
+ * stroke, the box less half of it for a centred one and the box itself for an outside one.
+ */
 export function paddingArea(box: DrawBox, shape: Exclude<DrawShape, { kind: 'path' }>, stroke: DrawStroke | undefined): DrawArea {
+  if (stroke && (stroke.sides || stroke.align === 'center' || stroke.align === 'outside')) {
+    const w = stroke.width;
+    const ring = strokeRing(box, shape, stroke.align ?? 'inside', stroke.sides ?? [w, w, w, w]);
+    if (ring.inner) return ring.inner;
+    // A stroke that fills the box leaves no room inside: a box of no size at its centre.
+    const cx = ring.outer.box.x + ring.outer.box.w / 2, cy = ring.outer.box.y + ring.outer.box.h / 2;
+    return { box: { x: cx, y: cy, w: 0, h: 0 }, shape: shape.kind === 'ellipse' ? shape : { kind: 'rect', radius: 0 } };
+  }
   const inset = stroke ? Math.min(stroke.width, box.w / 2, box.h / 2) : 0;
   return {
     box: { x: box.x + inset, y: box.y + inset, w: box.w - inset * 2, h: box.h - inset * 2 },
@@ -674,22 +707,30 @@ export function compileDesignRow(row: DesignBoxRowV1, offset: { x: number; y: nu
     // Design paints a path's `bg` and outline; a gradient is not applied to path boxes.
     // A path box does not clip its children, so its picture is clipped by the picture alone.
     const picture = design ? pictureOf(row, box, undefined) : undefined;
+    const contours = pathContours(row, box, opts.thumbScale);
+    const stroke = strokeOf(row, color, { cap: 'round', join: 'round' });
+    // An inside or outside stroke keeps to one side of a closed outline; an open path has no inside, so it stays centred.
+    const align = design ? designStrokeAlign(row) : 'center';
+    if (stroke && align !== 'center' && contours.length > 0 && contours.every((c) => c.closed)) stroke.align = align;
     return {
       ...base, op: 'shape',
-      shape: { kind: 'path', contours: pathContours(row, box, opts.thumbScale), evenOdd: rowStr(row, 'fillRule') === 'evenodd' },
+      shape: { kind: 'path', contours, evenOdd: rowStr(row, 'fillRule') === 'evenodd' },
       fills: fill,
-      ...(() => { const stroke = strokeOf(row, color, { cap: 'round', join: 'round' }); return stroke ? { stroke } : {}; })(),
+      ...(stroke ? { stroke } : {}),
       ...(picture ? { picture } : {}),
     };
   }
   // A circle is an ellipse the editor keeps square, and a pill is a rectangle rounded
   // to half its short side, the two Design's own `radiusFor` maps to 50% and 9999px.
-  const shape: DrawShape = outlineOf(row, box, opts.semantics);
+  const shape = outlineOf(row, box, opts.semantics);
   const stroke = strokeOf(row, color);
-  // A CSS border lies inside the box, and the gradient image is sized to the padding box within the border.
-  if (design && stroke) stroke.align = 'inside';
-  const inset = design && stroke ? Math.min(stroke.width, box.w / 2, box.h / 2) : 0;
-  const grad = gradientOf(row, inset ? { x: box.x + inset, y: box.y + inset, w: box.w - inset * 2, h: box.h - inset * 2 } : box);
+  // A CSS border lies inside the box (or inside the grown box of a centred or outside
+  // stroke), and the gradient image is sized to the padding box within the border.
+  if (design && stroke) stroke.align = designStrokeAlign(row);
+  if (!design && stroke) delete stroke.sides;
+  const ringed = design && stroke && (stroke.sides || stroke.align !== 'inside');
+  const inset = design && stroke && !ringed ? Math.min(stroke.width, box.w / 2, box.h / 2) : 0;
+  const grad = gradientOf(row, ringed ? paddingArea(box, shape, stroke).box : inset ? { x: box.x + inset, y: box.y + inset, w: box.w - inset * 2, h: box.h - inset * 2 } : box);
   // Design paints `bg` under the gradient, so a row with both draws both, in that order.
   const fills: DrawPaint[] = [...fill, ...(grad ? [grad] : [])];
   // The picture fills the box inside the border, which clips it to the inner corner radius.
@@ -749,7 +790,7 @@ export function compileDesignDraw(rows: readonly DesignBoxRowV1[], size: { width
     framePaint(head, page, opts);
     // A page export shows none of a board's shadow, and its opacity and blend composite the
     // page onto whatever the consumer draws it over, so those stay findings.
-    const dashed = rowStr(head, 'stroke') && rowNum(head, 'strokeW') > 0 && /^(dashed|dotted)$/.test(rowStr(head, 'strokeDash'));
+    const dashed = rowStr(head, 'stroke') && strokeWidest(head) > 0 && /^(dashed|dotted)$/.test(rowStr(head, 'strokeDash'));
     if (rowStr(head, 'shadow') || leadingNumber(head.opacity, 100) < 100 || BLENDS.has(rowStr(head, 'blend')) || dashed) {
       page.findings.push({ id: rowStr(head, 'id'), feature: 'frame-paint' });
     }
@@ -784,13 +825,28 @@ export async function layoutDesignDrawText(page: DesignDrawPage, shaper: TextSha
 }
 
 /** The host text-to-path call, typed as in `HostV1.text.toPath`. */
-export type DrawTextToPath = (opts: { text: string; fontUrl: string; fontSize: number; features?: string[]; letterSpacing?: number; variations?: string[]; clusters?: boolean }) => Promise<{ d: string; clusters?: Array<{ start: number; d: string }> }>;
+export type DrawTextToPath = (opts: { text: string; fontUrl: string; fontSize: number; features?: string[]; letterSpacing?: number; variations?: string[]; clusters?: boolean }) => Promise<{ d: string; clusters?: Array<{ start: number; d: string; x?: number }> }>;
 /** Internal host facts, not a tool capability or a renderer-produced result. */
 export type DrawStrikeMetrics = (fontUrl: string, variations?: string[]) => Promise<StrikeMetrics | null>;
+
+/** One run's outline from its own origin, and its clusters when they were asked for. */
+interface RunOutline { d: string; clusters?: Array<{ start: number; d: string }> }
+
+const runFace = (face: DesignTextDrawRunV1['face']): string => JSON.stringify([face.family, face.weight, face.italic, face.file, face.variations ?? null]);
 
 /**
  * Outline every laid-out run with the host's `text.toPath`, in the face file and axes
  * the measure chose, so the words travel as shapes and the drawing needs no font.
+ *
+ * Neighbouring runs of a line in one face are outlined as one stretch, as the measure
+ * shaped them, and each run takes the clusters that start in it, moved to its own
+ * origin. So the kern across a run boundary stays, and a ligature that crosses one
+ * (`off{#cc0000|ice}`: the "fi" forms across the span) is drawn whole in the run it
+ * starts in, which the measure gave its whole advance, while the next run starts at its
+ * own first cluster. That is how Chromium places and paints such a ligature.
+ * A stretch the host returns no clusters for, or shapes right to left, is outlined run
+ * by run instead, as is a stretch the host cannot outline as a whole.
+ *
  * Strike-through uses the same face instance's metrics. Underline needs only the size
  * and baseline; skip-ink reads each cluster's outline, so a host that returns no
  * clusters leaves the underline reported. A run the host cannot outline stays text.
@@ -802,6 +858,43 @@ export async function outlineDesignDrawText(page: DesignDrawPage, toPath: DrawTe
     if (!words || !layout) continue;
     const m = layout.measure;
     const features = [...(words.spec.ligatures === false || m.tracking !== 0 ? ['liga=0', 'clig=0'] : []), ...(words.spec.alternates ? ['salt=1'] : [])];
+    const axesOf = (face: DesignTextDrawRunV1['face']) => (face.variations ? Object.entries(face.variations).map(([axis, value]) => `${axis}=${value}`) : undefined);
+    const outline = (text: string, face: DesignTextDrawRunV1['face'], clusters: boolean) => {
+      const variations = axesOf(face);
+      return toPath({ text, fontUrl: face.file, fontSize: m.size, ...(features.length ? { features } : {}), ...(m.tracking ? { letterSpacing: m.tracking } : {}), ...(variations ? { variations } : {}), ...(clusters ? { clusters: true } : {}) });
+    };
+    /** A run outlined on its own; null when the host cannot outline the run. */
+    const alone = async (run: DesignTextDrawRunV1, clusters: boolean): Promise<RunOutline | null> => {
+      if (!run.text.trim()) return { d: '' };
+      if (!run.face.file) return null;
+      try {
+        const shaped = await outline(run.text, run.face, clusters);
+        return { d: shaped.d, ...(shaped.clusters ? { clusters: shaped.clusters } : {}) };
+      } catch { return null; }
+    };
+    /**
+     * A stretch of runs in one face outlined whole, each run given the clusters that start
+     * in it, moved from the stretch's origin to the run's. Null when it cannot be split.
+     */
+    const whole = async (stretch: readonly DesignTextDrawRunV1[]): Promise<RunOutline[] | null> => {
+      const text = stretch.map((run) => run.text).join('');
+      let shaped: Awaited<ReturnType<DrawTextToPath>>;
+      try { shaped = await outline(text, stretch[0]!.face, true); } catch { return null; }
+      if (!shaped.clusters) return null;
+      const out: RunOutline[] = stretch.map(() => ({ d: '', clusters: [] }));
+      let k = 0, from = 0, pen = -Infinity;
+      for (const cluster of [...shaped.clusters].sort((a, b) => a.start - b.start)) {
+        if (!Number.isInteger(cluster.start) || cluster.start < 0 || cluster.start >= text.length) return null;
+        // Right-to-left shaping puts a run's clusters outside its slot, which runs left to right.
+        if (cluster.x !== undefined) { if (cluster.x < pen) return null; pen = cluster.x; }
+        while (cluster.start >= from + stretch[k]!.text.length) from += stretch[k++]!.text.length;
+        const d = translateTextPath(cluster.d, stretch[0]!.x - stretch[k]!.x);
+        if (cluster.d && !d) return null;
+        out[k]!.d += d;
+        out[k]!.clusters!.push({ start: cluster.start - from, d });
+      }
+      return out;
+    };
     let decorated = false, missing = false;
     words.outlines = [];
     delete words.strikes;
@@ -810,13 +903,15 @@ export async function outlineDesignDrawText(page: DesignDrawPage, toPath: DrawTe
       const row: Array<string | null> = [];
       const strikes: Array<DrawStrike | null> = [];
       const underlines: Array<DrawUnderline | null> = [];
+      const bands: Array<ReturnType<typeof underlineGeometry>> = [];
       for (const run of line.runs) {
         const origin = op.box.x + line.x + run.x;
         const band = run.underline ? underlineGeometry(m.size, op.box.y + line.baseline) : null;
         if (run.underline && !band) decorated = true;
+        bands.push(band);
         // Spaces carry the line with nothing to clear; a run that stays text draws its own.
         underlines.push(band && !run.text.trim() ? { y: band.y, height: band.height, spans: underlineSpans(origin, run.width, [], band.dilation) } : null);
-        const variations = run.face.variations ? Object.entries(run.face.variations).map(([axis, value]) => `${axis}=${value}`) : undefined;
+        const variations = axesOf(run.face);
         let strike: DrawStrike | null = null;
         if (run.strike) {
           if (strikeMetrics && run.face.file) {
@@ -828,16 +923,27 @@ export async function outlineDesignDrawText(page: DesignDrawPage, toPath: DrawTe
           if (!strike) decorated = true;
         }
         strikes.push(strike);
-        if (!run.text.trim() || !run.face.file) { row.push(run.text.trim() ? null : ''); if (run.text.trim()) missing = true; continue; }
-        try {
-          const shaped = await toPath({ text: run.text, fontUrl: run.face.file, fontSize: m.size, ...(features.length ? { features } : {}), ...(m.tracking ? { letterSpacing: m.tracking } : {}), ...(variations ? { variations } : {}), ...(band ? { clusters: true } : {}) });
-          row.push(shaped.d);
-          if (band) {
-            const gaps = underlineInkGaps(run.text, shaped.clusters, band);
-            if (gaps) underlines[underlines.length - 1] = { y: band.y, height: band.height, spans: underlineSpans(origin, run.width, gaps, band.dilation) };
-            else decorated = true;
-          }
-        } catch { row.push(null); missing = true; }
+      }
+      const outlines: Array<RunOutline | null> = [];
+      for (let a = 0; a < line.runs.length;) {
+        let z = a + 1;
+        while (z < line.runs.length && runFace(line.runs[z]!.face) === runFace(line.runs[a]!.face)) z++;
+        const stretch = line.runs.slice(a, z);
+        const split = stretch.length > 1 && stretch[0]!.face.file && stretch.some((run) => run.text.trim()) ? await whole(stretch) : null;
+        if (split) outlines.push(...split);
+        else for (let k = a; k < z; k++) outlines.push(await alone(line.runs[k]!, !!bands[k]));
+        a = z;
+      }
+      for (const [i, run] of line.runs.entries()) {
+        const got = outlines[i];
+        if (!got) { row.push(null); missing = true; continue; }
+        row.push(got.d);
+        const band = bands[i];
+        if (band && run.text.trim()) {
+          const gaps = underlineInkGaps(run.text, got.clusters, band);
+          if (gaps) underlines[i] = { y: band.y, height: band.height, spans: underlineSpans(op.box.x + line.x + run.x, run.width, gaps, band.dilation) };
+          else decorated = true;
+        }
       }
       // Spaces hanging past the line end are fragments of their own with nothing to clear,
       // so their line runs on from the last run's, in each fragment's own ink. A strike
