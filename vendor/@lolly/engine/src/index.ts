@@ -143,6 +143,8 @@ export {
   FINISH_MASK_CMYK, buildCmykPaletteMap, cmykKey, paletteHasFinish,
 } from './cmyk-palette.ts';
 export type { BrandPaletteEntry, PaletteHit, PaletteSpotHit } from './cmyk-palette.ts';
+export { iccSeparation, separationLattice, DEVICE_SEPARATION, NEUTRAL_EPSILON } from './cmyk-separation.ts';
+export type { CmykSeparation, SeparateRgb } from './cmyk-separation.ts';
 export {
   parseColor, parseColorToSrgb8, convertColor, gamutMapSrgb,
   colorToSrgb, colorToSrgb8, colorToHexString, formatColor,
@@ -195,6 +197,9 @@ export type {
 // property is compared with a value read from the output bytes, and the report is
 // bound to those bytes by SHA-256 (plan 203 rank 12).
 export { verifyExport, compareExport, exportRequestFromJob } from './preflight-output.ts';
+export { PDF_ACCESSIBILITY_RULES, PDF_ACCESSIBILITY_RULE_IDS, PDF_ACCESSIBILITY_STATEMENTS, pdfAccessibilityOutcome, pdfAccessibilityRows, pdfAccessibilityCounts, pdfAccessibilityHeadline, summarisePdfAccessibility, pdfAccessibilityOutcomeLabel, pdfAccessibilityText } from './pdf-accessibility.ts';
+export type { PdfAccessibilityReader, PdfAccessibilitySummary, PdfAccessibilityRow, PdfAccessibilityOutcome } from './pdf-accessibility.ts';
+export type { VerifyExportReaders } from './preflight-output.ts';
 export type { ExportRequest, ExportCheck, ExportReport, ExportValue } from './preflight-output.ts';
 export { inspectOutput } from './output-facts.ts';
 export type { OutputFacts } from './output-facts.ts';
@@ -248,11 +253,18 @@ export type {
 export { analysePcm, fftInPlace } from './audio-analyse.ts';
 export type { AudioAnalysis, AudioAnalyseOpts, AudioFrames } from './audio-analyse.ts';
 export { cleanAudioPcm, resamplePcm, cleanAudioPreview } from './audio-clean.ts';
+export { planRepair, repairRequested } from './audio-repair.ts';
+export type { AudioRepairOpts, RepairStage, RepairStageId, RepairStrength } from './audio-repair.ts';
 // Captions (host.speech, v1.96) - spoken-word timings in, subtitle cues out. The
 // grouping and VTT/SRT timestamp maths live here so the browser and a headless
 // export break caption lines at the same words.
 export { groupWordsToCues, cuesForSlide, cuesToVtt, cuesToSrt, cueAt } from './captions.ts';
-export type { CaptionCue, GroupWordsOpts } from './captions.ts';
+export type { CaptionCue, GroupWordsOpts, CaptionIssue } from './captions.ts';
+export { CaptionFormatError } from './captions.ts';
+export { cuesToScc, sccToCues, frameToTimecode, timecodeToFrame, withOddParity, hasOddParity, SCC_LIMITS } from './captions-scc.ts';
+export type { SccReadOptions, SccReadResult, SccWriteOptions, SccWriteResult } from './captions-scc.ts';
+export { cuesToTtml, ttmlToCues, parseTtmlTime, TTML_LIMITS, IMSC11_TEXT_PROFILE } from './captions-ttml.ts';
+export type { TtmlReadOptions, TtmlReadResult, TtmlWriteOptions, TtmlTiming } from './captions-ttml.ts';
 // Text AI-likelihood signals (plans/125) - a string in, a tiered SIGNAL (never a
 // verdict) out: byte-level artifact tells on digital text, chatbot-boilerplate
 // phrase evidence, English-gated writing-style heuristics, per-finding heat
@@ -495,6 +507,10 @@ export type { DashSegment, DashFitOpts } from './dash-fit.ts';
 export { emitEmf } from './emf.ts';
 export { emitEps } from './eps.ts';
 export { emitDxf } from './dxf.ts';
+export { importDxf, flattenDxf, looksLikeDxf, dxfReportLines, dxfUnits, aciToHex, DXF_LIMITS } from './dxf-import.ts';
+export type { DxfRaw, DxfReader, DxfImport, DxfImportOptions, DxfReport, DxfStroke, DxfText, DxfUnits } from './dxf-import.ts';
+export { dxfToDesign, DXF_MAX_BOXES } from './dxf-design.ts';
+export type { DxfDesignResult } from './dxf-design.ts';
 export { emitWmf } from './wmf.ts';
 export { buildPptxParts, EMU_PER_PX } from './pptx.ts';
 export type {
@@ -621,6 +637,7 @@ export { embedWavInfo } from './riff-meta.ts';
 export { parseDataRows, rowsToCsv, DEFAULT_ROW_LIMIT } from './data-import.ts';
 export { expandDerivedFormats } from './derived-formats.ts';
 export { readXlsx, listXlsxSheets, DEFAULT_XLSX_ROW_LIMIT } from './xlsx-import.ts';
+export type { XlsxCellFormatter, XlsxCellFormatRequest, XlsxCellFormatResult, XlsxCellKind, XlsxDateCell } from './xlsx-import.ts';
 export { writeXlsx, colLetters } from './xlsx-write.ts';
 export { writeEpub } from './epub.ts';
 export {
@@ -783,8 +800,8 @@ export { inpaintTelea } from './inpaint.ts';
 export { healFrame, spotHealPremultiplied, healCoverageBounds } from './heal.ts';
 export type { HealFrame, HealMode, HealOptions } from './heal.ts';
 // Matte edges pulled onto the photo (plans/289 M4): the guided filter both mattes run after the model.
-export { boxMean, guidedFilter, refineMatte, resizeMask } from './guided-matte.ts';
-export type { MatteRefineOptions } from './guided-matte.ts';
+export { boxMean, decontaminateEdgeColour, guidedFilter, refineMatte, resizeMask } from './guided-matte.ts';
+export type { DecontaminateOptions, MatteRefineOptions } from './guided-matte.ts';
 export type { InpaintFrame } from './inpaint.ts';
 // Colour grading - the .cube/.3dl readers, the tetrahedral sampler, the RGBA
 // frame apply and the film grain + vignette pass, promoted out of the darkroom
@@ -920,6 +937,7 @@ export { ENGINE_VERSION } from './version.ts';
 export { base64ToBytes } from './bytes.ts';
 export { createTruePeakLimiter, activitySpans } from './audio-dynamics.ts';
 export { createLoudnessMeter, integratedLoudness, normalizeGain, LOUDNESS_RATE } from './audio-loudness.ts';
+export type { R128Report } from './audio-loudness.ts';
 export { parseFxChain, serializeFxChain, processFxPcm, FX_PRESETS, FX_CHAIN_MAX_CHARS } from './audio-fx.ts';
 export { satisfiesRange, parseVersion } from './semver-range.ts';
 export { encodeFsToken, decodeFsToken } from './fs-token.ts';
@@ -1273,6 +1291,13 @@ export { readCameraRawPreset } from './camera-raw-preset.ts';
 export type { CameraRawPreset } from './camera-raw-preset.ts';
 export { readPremiereXml, writePremiereXml, premiereSequenceValues, framesToSeconds, secondsToFrames } from './premiere-xml.ts';
 export type { InterchangeRate, InterchangeClip, InterchangeSequence } from './premiere-xml.ts';
+export { readEdl } from './timeline-edl.ts';
+export type { EdlOptions } from './timeline-edl.ts';
+export { readOtio } from './timeline-otio.ts';
+export { readFcpxml } from './timeline-fcpxml.ts';
+export { readTimeline, detectTimelineFormat } from './timeline-import.ts';
+export type { TimelineFormat, TimelineReadOptions } from './timeline-import.ts';
+export { timecodeToFrames, framesToTimecode } from './timeline-common.ts';
 export { readIdmlSpreads } from './idml-read.ts';
 
 export { createDesignLayoutEvaluator, hasDesignLayout, validateDesignLayout, designLayoutSourceEdit, parseLayoutTrack } from './design-layout.ts';
