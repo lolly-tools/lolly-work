@@ -146,6 +146,8 @@ test('the probe follows the render gates: worker formats, hooked tools, unmet ho
   const html = toolServerFormats({ ...tool, svgTemplate: false }, { caps: renderCapabilities(true), allowHooksInFastPath: true, tokens: false });
   assert.equal(html.renderer, 'chromium-worker', 'an HTML-layout template renders in the worker');
   assert.deepEqual(html.formats, ['svg', 'png', 'jpg', 'pdf']);
+  const hookSvg = toolServerFormats({ ...tool, hooks: true, svgTemplate: false }, { caps: renderCapabilities(true), allowHooksInFastPath: true, tokens: false });
+  assert.notEqual(hookSvg.renderer, 'chromium-worker', 'a fast-path hooked tool may write its SVG from hooks, so it is not sent to the worker');
 });
 
 test('effective schemas drop hidden inputs, lock values, narrow choices and attribute each change', () => {

@@ -260,12 +260,14 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // A hooked tool can't run in the in-process jsdom fast path (its hooks.js may
   // use real browser APIs). It renders in-process only when the pack is curated
   // to allow it; otherwise it goes to the isolated Chromium worker, and 501s only
-  // when no worker is configured. An HTML-layout template needs a browser's
-  // layout too, so it also goes to the worker when there is one, and otherwise
-  // 501s like toolServerFormats says. Decision applied AFTER policy/baking below.
+  // when no worker is configured. A hook-less template with no <svg> lays out
+  // HTML, which needs a browser's layout too, so it also goes to the worker when
+  // there is one, and otherwise 501s like toolServerFormats says. A hooked tool's
+  // hooks may write the SVG themselves (qr-code's {{{svgContent}}}), so its
+  // template text says nothing. Decision applied AFTER policy/baking below.
   const hooked = !!tool.hooksSource && !deps.config.render.allowHooksInFastPath;
-  const svgTemplate = isSvgTemplate(tool.template);
-  const inWorker = hooked || (!svgTemplate && !!deps.worker);
+  const htmlLayout = !tool.hooksSource && !isSvgTemplate(tool.template);
+  const inWorker = hooked || (htmlLayout && !!deps.worker);
 
   // Parse the shared URL-mode query (unpacking a packed z= first).
   const expanded = await engine.expandQuery(req.query);
@@ -404,7 +406,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
           `Tool "${req.toolId}" requires host.${unmet.join(', host.')} and the in-process render host does not provide ` +
           `${unmet.length === 1 ? 'it' : 'them'} (configure render.worker.url + LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
       }
-      if (!svgTemplate) {
+      if (htmlLayout) {
         throw new RenderError('SVG_TEMPLATE_REQUIRED', 501,
           `Tool "${req.toolId}" lays out HTML; the in-process render path exports SVG templates only ` +
           `(configure render.worker.url + LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);

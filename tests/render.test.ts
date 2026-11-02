@@ -117,7 +117,7 @@ before(async () => {
   pack = await mkdtemp(join(tmpdir(), 'lw-render-'));
   await mkdir(join(pack, 'catalog', 'tools'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({
-    version: 3, tools: [{ id: 'test-card' }, { id: 'locked-card' }, { id: 'wm-card' }, { id: 'fmt-card' }, { id: 'hidden-card' }, { id: 'hooky' }, { id: 'needy' }, { id: 'htmly' }],
+    version: 3, tools: [{ id: 'test-card' }, { id: 'locked-card' }, { id: 'wm-card' }, { id: 'fmt-card' }, { id: 'hidden-card' }, { id: 'hooky' }, { id: 'needy' }, { id: 'htmly' }, { id: 'hooksvg' }],
   }));
   await writeCard('test-card');
   await writeCard('locked-card');
@@ -159,6 +159,14 @@ before(async () => {
   await mkdir(htmlyDir, { recursive: true });
   await writeFile(join(htmlyDir, 'tool.json'), JSON.stringify(cardManifest('htmly'), null, 2));
   await writeFile(join(htmlyDir, 'template.html'), '<div class="card" style="background:{{bg}}"><h1>{{title}}</h1></div>');
+  // A hooked tool whose hooks write the SVG (qr-code's shape): its template text
+  // has no <svg>, yet it renders in process when the pack allows fast-path hooks.
+  const hooksvgDir = join(pack, 'tools', 'hooksvg');
+  await mkdir(hooksvgDir, { recursive: true });
+  await writeFile(join(hooksvgDir, 'tool.json'), JSON.stringify({ ...cardManifest('hooksvg'), hooks: { onInit: true } }, null, 2));
+  await writeFile(join(hooksvgDir, 'template.html'), '{{{svgContent}}}');
+  await writeFile(join(hooksvgDir, 'hooks.js'),
+    'function onInit(ctx) { return { svgContent: \'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><text>HOOK_SVG</text></svg>\' }; }\n');
 
   main = await makeServer({}, [LOCK_OVERLAY, WM_OVERLAY, FMT_OVERLAY, HIDDEN_OVERLAY]);
   hooksAllowed = await makeServer({ render: { allowHooksInFastPath: true } });
@@ -494,6 +502,11 @@ test('(f3) an HTML-layout tool renders through the worker and 501s with a named 
   assert.equal(new URLSearchParams(sawQuery).get('title'), 'Red Hat');
   const svgCard = await fetch(`${srv.base}/render/test-card.svg?title=INPROCESS`, { headers: { cookie: workerCookie } });
   assert.ok((await svgCard.text()).includes('INPROCESS'), 'an SVG template still renders in process');
+  sawToolId = '';
+  const hookSvg = await fetch(`${srv.base}/render/hooksvg.svg`, { headers: { cookie: workerCookie } });
+  assert.equal(hookSvg.status, 200, await hookSvg.clone().text());
+  assert.ok((await hookSvg.text()).includes('HOOK_SVG'), 'a fast-path hooked tool that writes its own SVG renders in process');
+  assert.equal(sawToolId, '', 'and never reaches the worker');
   await closeServer(worker);
 });
 

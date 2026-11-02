@@ -88,13 +88,16 @@ export function toolServerFormats(
   if (hooked && !deployment.caps.hookedTools) {
     return all('HOOKED_TOOL_NEEDS_CHROMIUM', 'This tool runs scripts that need the Chromium render worker, and this deployment does not run one.');
   }
-  // An HTML-layout template renders in the worker when there is one.
-  const browserNeeded = hooked || (!tool.svgTemplate && deployment.caps.hookedTools);
+  // A hook-less template with no <svg> lays out HTML, so it renders in the worker
+  // when there is one. A hooked tool's hooks may write the SVG themselves.
+  const htmlLayout = !tool.hooks && !tool.svgTemplate;
+  const browserNeeded = hooked || (htmlLayout && deployment.caps.hookedTools);
   if (!browserNeeded) {
     const host = new Set<string>([...IN_PROCESS_HOST_APIS, ...(deployment.tokens ? ['tokens'] : [])]);
     const unmet = (tool.requires ?? []).filter(api => !host.has(api));
     if (unmet.length) return all('TOOL_REQUIRES_UNMET', `Server rendering needs host APIs this deployment does not provide: ${unmet.join(', ')}.`);
-    if (!tool.svgTemplate) return all('SVG_TEMPLATE_REQUIRED', 'This tool lays out HTML, which needs the Chromium render worker, and this deployment does not run one. The web app can still export this tool.');
+    if (htmlLayout) return all('SVG_TEMPLATE_REQUIRED', 'This tool lays out HTML, which needs the Chromium render worker, and this deployment does not run one. The web app can still export this tool.');
+    if (!tool.svgTemplate) return all('SVG_TEMPLATE_REQUIRED', 'Server rendering needs an SVG template. The web app can still export this tool.');
   }
   const available: string[] = [];
   const unavailable: UnavailableFormat[] = [];
