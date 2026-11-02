@@ -5,7 +5,7 @@
  * first, CLI follows).
  *
  *   LW_BASE=https://lolly.example lw login --email admin@test   # dev provider
- *   lw whoami | summary | fleet | links [--all] | links revoke <id>
+ *   lw whoami | summary | fleet | links [--all] | links create <toolId> [key=value ...] [--open] | links revoke <id>
  *   lw msg send --title "…" [--severity action --groups a,b --max-engine 1.52.99]
  *   lw audit verify
  *
@@ -32,6 +32,8 @@ const OPTIONS = {
     role: { type: 'string' },
     expires: { type: 'string' },
     all: { type: 'boolean' },
+    open: { type: 'boolean' },
+    hours: { type: 'string' },
     title: { type: 'string' },
     body: { type: 'string' },
     kind: { type: 'string' },
@@ -633,6 +635,25 @@ switch (cmd) {
   }
 
   case 'links': {
+    if (sub === 'create') {
+      // A link to a tool render, its params as key=value pairs (a share link's
+      // own params). --open lets recipients change them: each new set they put on
+      // the link renders a new asset, within the tool's policy.
+      const toolId = positionals[2] ?? fail('usage: lw links create <toolId> [key=value ...] [--kind embed|share|download] [--format <format>] [--open] [--hours <n>]');
+      const params = Object.fromEntries(positionals.slice(3).map((pair) => {
+        const eq = pair.indexOf('=');
+        if (eq < 1) fail(`not a key=value pair: ${pair}`);
+        return [pair.slice(0, eq), pair.slice(eq + 1)];
+      }));
+      const link = await call('/api/v1/links', { method: 'POST', body: {
+        kind: values.kind ?? 'embed',
+        target: { toolId, params, ...(values.format ? { format: values.format } : {}), ...(values.open ? { open: true } : {}) },
+        ...(values.hours ? { ttlHours: Number(values.hours) } : {}),
+      } }) as { id: string; url: string; expiresAt: string; open?: boolean };
+      out(link);
+      if (!values.json) console.log(`${link.url}\n${link.open ? 'open: recipients may change its params' : 'fixed params'}, expires ${link.expiresAt}  ${link.id}`);
+      break;
+    }
     if (sub === 'revoke') {
       const id = positionals[2] ?? fail('usage: lw links revoke <id>');
       await call(`/api/v1/links/${id}/revoke`, { method: 'POST' });
@@ -1593,7 +1614,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   c2pa init [--org N] [--out dir]   mint a C2PA signing identity (root+leaf) for real signed exports
   export [--out file]        dump governance (grants, overlays, chains, providers, flags) as canonical JSON
   apply <file> [--dry-run] [--prune]   apply a governance document (dry-run shows the diff; prune removes store-only entries)
-  links [--all] · links revoke <id>
+  links [--all] · links create <toolId> [key=value ...] [--open] · links revoke <id>
   destinations                list the fixed organization targets available to this principal (no secrets)
   renders submit <request.json> [--idempotency-key <key>]   submit a recoverable single render
   renders [list|show <id>|cancel <id>|retry <id>] · renders output <id> --out <file>

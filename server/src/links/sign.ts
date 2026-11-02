@@ -41,6 +41,15 @@ export interface LinkTarget {
   params?: Record<string, unknown>;
   /** Render format for a tool target; the format ref for an asset target. */
   format?: string;
+  /**
+   * Recipients may change the render: an opt-in on a `share`, `embed` or
+   * `download` link to a tool. The link then lays the recipient's own URL params
+   * (the tool's inputs, size and format) over the baked ones, and each new set
+   * renders a new asset. Policy still holds: locked and hidden inputs stay as the
+   * tool's policy sets them. Covered by the signature like the rest of the target,
+   * so editing the URL cannot switch it on.
+   */
+  open?: boolean;
 }
 
 export interface LinkRecord {

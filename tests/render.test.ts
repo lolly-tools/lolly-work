@@ -285,6 +285,82 @@ test('(e) share link serves rendered bytes with a public cache header; revoked â
   assert.equal((await fetch(path)).status, 410);
 });
 
+test('(e3) an open link renders the recipient\'s params as a new asset, within the tool\'s policy', async () => {
+  const cookie = await login(main.base, 'admin@test');
+  const mint = (body: object, as = cookie) => fetch(`${main.base}/api/v1/links`, {
+    method: 'POST', headers: { cookie: as, 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const pathOf = async (res: Response) => ((await res.json()) as { url: string }).url.replace('http://localhost', main.base);
+
+  const made = await mint({ kind: 'embed', target: { toolId: 'test-card', params: { title: 'BAKED' }, format: 'svg', open: true } });
+  assert.equal(made.status, 201);
+  const madeBody = await made.clone().json() as { open?: boolean };
+  assert.equal(madeBody.open, true, 'the mint says the link is open');
+  const path = await pathOf(made);
+  const baked = await fetch(path);
+  assert.ok((await baked.text()).includes('BAKED'), 'with no params of its own it renders the baked ones');
+  const changed = await fetch(`${path}&title=CHANGED`);
+  assert.equal(changed.status, 200);
+  const changedSvg = await changed.text();
+  assert.ok(changedSvg.includes('CHANGED') && !changedSvg.includes('BAKED'), 'a recipient\'s param replaces the baked one');
+  assert.notEqual(changed.headers.get('etag'), baked.headers.get('etag'), 'each param set is its own asset');
+  const png = await fetch(`${path}&title=CHANGED&format=png`);
+  assert.equal(png.status, 200);
+  assert.equal(png.headers.get('content-type'), 'image/png', 'a recipient may pick another format');
+
+  const { loadEngine } = await import('../server/src/render/contract.ts');
+  const packed = await mint({ kind: 'embed', target: { toolId: 'test-card', params: { z: await (await loadEngine()).packQuery('title=PACKED') }, format: 'svg', open: true } });
+  const packedPath = await pathOf(packed);
+  assert.ok((await (await fetch(packedPath)).text()).includes('PACKED'), 'a packed link renders its packed state');
+  const unpacked = await (await fetch(`${packedPath}&title=OVER`)).text();
+  assert.ok(unpacked.includes('OVER') && !unpacked.includes('PACKED'), 'and a recipient\'s param still wins over it');
+
+  const closed = await mint({ kind: 'share', target: { toolId: 'test-card', params: { title: 'FIXED' }, format: 'svg' } });
+  const closedSvg = await (await fetch(`${await pathOf(closed)}&title=CHANGED`)).text();
+  assert.ok(closedSvg.includes('FIXED') && !closedSvg.includes('CHANGED'), 'a link without the opt-in keeps its baked params');
+
+  const locked = await mint({ kind: 'embed', target: { toolId: 'locked-card', params: { title: 'L' }, format: 'svg', open: true } });
+  const lockedPath = await pathOf(locked);
+  const refused = await fetch(`${lockedPath}&bg=ff0000`);
+  assert.equal(refused.status, 422, 'a locked input stays locked on an open link');
+  assert.equal((await refused.json() as { error: { code: string } }).error.code, 'INPUT_LOCKED');
+  assert.ok((await (await fetch(`${lockedPath}&title=FREE`)).text()).includes('FREE'), 'its other inputs still change');
+
+  const marketer = await login(main.base, 'marketer@test');
+  assert.equal((await mint({ kind: 'share', target: { toolId: 'test-card', params: { title: 'x' } } }, marketer)).status, 201, 'a member may mint a link');
+  const notOpen = await mint({ kind: 'share', target: { toolId: 'test-card', open: true } }, marketer);
+  assert.equal(notOpen.status, 403, 'but opening one needs export.server for the tool');
+  assert.match((await notOpen.json() as { error: { message: string } }).error.message, /export\.server/);
+  assert.equal((await mint({ kind: 'guest-edit', target: { toolId: 'test-card', open: true } })).status, 400);
+  assert.equal((await mint({ kind: 'share', target: { assetId: 'demo/logo', open: true } })).status, 400);
+  assert.equal((await mint({ kind: 'share', target: { toolId: 'test-card', open: 'yes' } })).status, 400);
+});
+
+test('(e4) lw links create mints a link, and --open lets recipients change it', async () => {
+  const { spawn } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const home = await mkdtemp(join(tmpdir(), 'lw-links-cli-'));
+  const lw = (...args: string[]) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../cli/lw.ts', import.meta.url)), ...args, '--base', main.base],
+      { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HOME: home, LW_TOKEN: '' } });
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', (b) => { stdout += b; }); child.stderr.on('data', (b) => { stderr += b; });
+    child.once('error', reject); child.once('close', (code) => resolve({ code, stdout, stderr }));
+  });
+  const saved = await lw('login', '--cookie', await login(main.base, 'admin@test'));
+  assert.equal(saved.code, 0, saved.stderr);
+  const made = await lw('links', 'create', 'test-card', 'title=FROMCLI', '--open', '--format', 'svg', '--json');
+  assert.equal(made.code, 0, made.stderr);
+  const link = JSON.parse(made.stdout) as { url: string; open?: boolean };
+  assert.equal(link.open, true);
+  const path = link.url.replace('http://localhost', main.base);
+  assert.ok((await (await fetch(path)).text()).includes('FROMCLI'), 'the link renders the params it was minted with');
+  assert.ok((await (await fetch(`${path}&title=RECIPIENT`)).text()).includes('RECIPIENT'), 'and the recipient\'s own');
+  const fixed = JSON.parse((await lw('links', 'create', 'test-card', 'title=FIXEDCLI', '--json')).stdout) as { url: string; open?: boolean };
+  assert.equal(fixed.open, undefined, 'without --open the link keeps its params');
+  assert.equal((await lw('links', 'create', 'test-card', 'notapair')).code, 1, 'a param must be key=value');
+});
+
 test('(e2) download link serves an attachment', async () => {
   const cookie = await login(main.base, 'admin@test');
   const mint = await fetch(`${main.base}/api/v1/links`, {
