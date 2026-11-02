@@ -47,3 +47,13 @@ test('nested asset references preserve document structure and never rewrite lite
   assert.equal(query.get('title'), 'user/team/fil_a');
   assert.equal(document.boxes[0]!.image.id, 'user/team/fil_a');
 });
+
+test('a colour that names a design token reaches the worker as its reference, not as JSON', async () => {
+  const engine = await loadEngine();
+  const colours = [{ id: 'ink', type: 'color', value: undefined }, { id: 'bg', type: 'color', value: undefined }];
+  const parsed = engine.parseUrlState('ink=%7Bcolor.brand.mint%7D&bg=08211d', { inputs: [{ id: 'ink', type: 'color' }, { id: 'bg', type: 'color' }] } as never).values;
+  assert.deepEqual(parsed.ink, { ref: '{color.brand.mint}', _unresolved: true }, 'the engine parses a token reference to an unresolved ref');
+  const query = new URLSearchParams(workerQuery(engine, colours as never, parsed, base));
+  assert.equal(query.get('ink'), '{color.brand.mint}', 'the browser gets the reference to resolve against the brand');
+  assert.equal(query.get('bg'), '#08211d', 'a plain colour stays a colour');
+});

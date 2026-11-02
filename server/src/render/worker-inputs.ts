@@ -21,9 +21,14 @@ function projectAsset(value: unknown, baseUrl: string, files?: RenderFileScope, 
   return value;
 }
 
-/** Preserve the engine's asset wire grammar when passing parsed inputs to a browser. */
+/** Preserve the engine's wire grammar for assets and colours when passing parsed
+ *  inputs to a browser. A colour that names a design token ({color.brand.mint})
+ *  parses to `{ ref, _unresolved }` for the browser to resolve against the brand;
+ *  as JSON the shell cannot read it and falls back to the input's default, so
+ *  the engine writes it back as its reference. */
 export function workerQuery(engine: EngineApi, model: ReturnType<EngineApi['buildInputModel']>, values: Record<string, unknown>, baseUrl: string, files?: RenderFileScope): string {
   const assetIds = new Set(model.filter(input => input.type === 'asset').map(input => input.id));
+  const colorIds = new Set(model.filter(input => input.type === 'color').map(input => input.id));
   const query = new URLSearchParams();
   for (const [key, original] of Object.entries(values)) {
     if (original === undefined || original === null) continue;
@@ -31,6 +36,8 @@ export function workerQuery(engine: EngineApi, model: ReturnType<EngineApi['buil
     if (assetIds.has(key)) {
       const serialized = engine.serializeUrlState([{ id: key, type: 'asset', value }], { keepUserIds: true, inlineBakedAssets: true });
       for (const [name, data] of new URLSearchParams(serialized)) query.set(name, data);
+    } else if (colorIds.has(key)) {
+      for (const [name, data] of new URLSearchParams(engine.serializeUrlState([{ id: key, type: 'color', value }], { keepUserIds: true, inlineBakedAssets: true }))) query.set(name, data);
     } else query.set(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
   }
   return query.toString();
