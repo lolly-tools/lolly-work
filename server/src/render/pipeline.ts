@@ -44,7 +44,7 @@ import {
 // The format ceiling lives in capabilities.ts (shared with org-config's
 // advertisement - plans/23 §3.A); re-exported so render callers keep one import.
 export { RENDER_TIER, WORKER_RASTER_FORMATS, renderCapabilities, type RenderFormat, type RenderCapabilities } from './capabilities.ts';
-import { renderCapabilities } from './capabilities.ts';
+import { isSvgTemplate, renderCapabilities } from './capabilities.ts';
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
  *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
@@ -94,7 +94,7 @@ export interface RenderDeps {
   /** Durable attempts collect fresh observations; cached bytes cannot attest a new attempt. */
   captureEvidence?: boolean;
   /** The Chromium render worker, when configured (config.render.worker.url set +
-   *  LW_RENDER_WORKER_SECRET present). Absent ⇒ hooked tools still 501. */
+   *  LW_RENDER_WORKER_SECRET present). Absent ⇒ hooked and HTML-layout tools 501. */
   worker?: WorkerConfig;
   /** The instance C2PA signing identity, when configured. Present ⇒ every export
    *  carries a signed Content Credential; absent ⇒ unsigned provenance. */
@@ -260,8 +260,12 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // A hooked tool can't run in the in-process jsdom fast path (its hooks.js may
   // use real browser APIs). It renders in-process only when the pack is curated
   // to allow it; otherwise it goes to the isolated Chromium worker, and 501s only
-  // when no worker is configured. Decision applied AFTER policy/baking below.
+  // when no worker is configured. An HTML-layout template needs a browser's
+  // layout too, so it also goes to the worker when there is one, and otherwise
+  // 501s like toolServerFormats says. Decision applied AFTER policy/baking below.
   const hooked = !!tool.hooksSource && !deps.config.render.allowHooksInFastPath;
+  const svgTemplate = isSvgTemplate(tool.template);
+  const inWorker = hooked || (!svgTemplate && !!deps.worker);
 
   // Parse the shared URL-mode query (unpacking a packed z= first).
   const expanded = await engine.expandQuery(req.query);
@@ -311,7 +315,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const context: RenderEvidence['context'] = {
     paramsHash: evidenceHash(bakedValues), profileHash: evidenceHash(req.profile), groupsHash: evidenceHash([...new Set(groups)].sort()),
     policyVersion, catalogVersion, format, widthPx: pxW, heightPx: pxH, watermark,
-    renderer: hooked ? 'chromium-worker' : 'work-jsdom',
+    renderer: inWorker ? 'chromium-worker' : 'work-jsdom',
     rasterizer: format === 'svg' ? 'none' : deps.worker && !LEGACY_RESVG ? 'chromium-worker' : 'resvg',
     signerCertificateHash: deps.signer ? sha256Hex(deps.signer.certDer) : null,
   };
@@ -336,14 +340,14 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const cached = cacheable ? cacheGet(cacheKey) : undefined;
   if (cached) return { bytes: cached.bytes, mime: cached.mime, cacheKey, ...(cached.provenance ? { provenance: cached.provenance } : {}) };
 
-  // Render path: hooked tool → Chromium worker (or 501 when none); otherwise the
-  // in-process jsdom fast path. Both converge on an SVG string post-processed
+  // Render path: hooked or HTML-layout tool → Chromium worker (or 501 when none);
+  // otherwise the in-process jsdom fast path. Both converge on an SVG string post-processed
   // identically below (watermark → provenance → raster).
   let workerEvidence: import('./worker-client.ts').WorkerEvidence | undefined;
   let svgStr: string;
   let runtimeEvidence: RenderEvidence['runtime'];
   let productionInputs: Record<string, string> | undefined;
-  if (hooked) {
+  if (inWorker) {
     if (!deps.worker) {
       throw new RenderError('HOOKED_TOOL_NEEDS_CHROMIUM', 501,
         `Tool "${req.toolId}" ships hooks; the in-process render path runs hook-less tools only ` +
@@ -400,6 +404,11 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
           `Tool "${req.toolId}" requires host.${unmet.join(', host.')} and the in-process render host does not provide ` +
           `${unmet.length === 1 ? 'it' : 'them'} (configure render.worker.url + LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
       }
+      if (!svgTemplate) {
+        throw new RenderError('SVG_TEMPLATE_REQUIRED', 501,
+          `Tool "${req.toolId}" lays out HTML; the in-process render path exports SVG templates only ` +
+          `(configure render.worker.url + LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
+      }
       // A curated pack's hooks run in a node:vm context (vm-hooks.ts), not the
       // server's realm - no process.env, no ambient fetch, no require.
       const runtime = await engine.createRuntime(tool, host, bakedValues,
@@ -437,7 +446,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     });
   }
 
-  const sourceObserved = !hooked || files.every(file => workerEvidence?.resources.some(r => {
+  const sourceObserved = !inWorker || files.every(file => workerEvidence?.resources.some(r => {
     try { return new URL(r.url).pathname.endsWith(`/tools/${file.path}`) && r.sha256 === file.sha256; } catch { return false; }
   }));
   requireGovernedInputs(governed, sourceObserved ? productionInputs ?? {} : {});
@@ -524,20 +533,20 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   if (production && inspection?.checks.find(c => c.id === 'mime')?.state !== 'pass') throw new ProductionError(['output-mime-mismatch']);
   const productionReport = production ? await inspectWorkProduction(out.bytes, production, {
     ...(sourceObserved ? { sourceSha256: sourceHash } : {}),
-    ...(hooked ? {} : { contextSha256: evidenceHash(context) }),
+    ...(inWorker ? {} : { contextSha256: evidenceHash(context) }),
     ...(productionInputs ? { inputs: productionInputs } : {}),
     resources: Object.fromEntries([...resourceDigests].filter(([, hashes]) => hashes.size === 1).map(([key, hashes]) => [key, [...hashes][0]!])),
   }, req.signal) : undefined;
   const evidence = observation ? finishRenderEvidence({
     engine: { version: engine.ENGINE_VERSION, documentApiVersion: engine.DOCUMENT_API_VERSION, scope: 'control-plane' },
-    tool: { id: req.toolId, version: tool.manifest.version, sourceHash, files, scope: hooked ? 'control-plane-validation' : 'local-runtime' },
+    tool: { id: req.toolId, version: tool.manifest.version, sourceHash, files, scope: inWorker ? 'control-plane-validation' : 'local-runtime' },
     context, resolved, ...(runtimeEvidence ? { runtime: runtimeEvidence } : {}), assets: observation.assets,
     ...(inspection ? { inspection } : {}),
     ...(productionReport ? { production: productionReport } : {}),
     ...(brandReport ? { brandRules: brandReport } : {}),
     ...(workerEvidence ? { worker: workerEvidence } : {}),
     limitations: ['engine-dependency-graph-unavailable', 'dependencies-not-locked', 'unobserved-template-and-global-resources',
-      ...(hooked ? workerEvidence ? ['worker-runtime-profile-api-unattested', ...workerEvidence.limitations] : ['worker-tool-and-assets-unattested', 'worker-profile-and-inputs-unattested'] : []),
+      ...(inWorker ? workerEvidence ? ['worker-runtime-profile-api-unattested', ...workerEvidence.limitations] : ['worker-tool-and-assets-unattested', 'worker-profile-and-inputs-unattested'] : []),
       ...(tool.manifest.hooks ? ['hooks-not-isolated'] : []),
       ...(format !== 'svg' ? ['rasterizer-fonts-unattested'] : []),
       ...observation.limitations].sort(),

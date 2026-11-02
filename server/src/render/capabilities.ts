@@ -47,12 +47,19 @@ export const IN_PROCESS_HOST_APIS = ['color', 'profile', 'assets', 'state', 'cli
  *  with a stable code and a sentence a person or an agent can act on. */
 export interface UnavailableFormat { format: string; code: string; reason: string }
 
+/** Whether a template draws SVG, the only thing the in-process host exports
+ *  (render/host.ts takes the first <svg>). jsdom has no layout engine, so an
+ *  HTML-layout template renders only in the Chromium worker. */
+export function isSvgTemplate(template: unknown): boolean {
+  return typeof template === 'string' && /<svg\b/i.test(template);
+}
+
 /** What a loaded tool declares that decides where, and whether, it renders. */
 export interface ToolRenderFacts {
   formats: string[];
   /** The tool ships hooks (a hooks.js the engine loaded). */
   hooks: boolean;
-  /** The template is SVG, which is what the in-process path rasterises. */
+  /** The template is SVG (isSvgTemplate), which the in-process path exports. */
   svgTemplate: boolean;
   requires?: string[];
 }
@@ -77,15 +84,17 @@ export function toolServerFormats(
 ): ToolServerFormats {
   const formats = [...new Set(tool.formats.map(format => format.toLowerCase() === 'jpeg' ? 'jpg' : format.toLowerCase()))];
   const all = (code: string, reason: string): ToolServerFormats => ({ renderer: null, formats: [], unavailable: formats.map(format => ({ format, code, reason })) });
-  const browserNeeded = tool.hooks && !deployment.allowHooksInFastPath;
-  if (browserNeeded && !deployment.caps.hookedTools) {
+  const hooked = tool.hooks && !deployment.allowHooksInFastPath;
+  if (hooked && !deployment.caps.hookedTools) {
     return all('HOOKED_TOOL_NEEDS_CHROMIUM', 'This tool runs scripts that need the Chromium render worker, and this deployment does not run one.');
   }
+  // An HTML-layout template renders in the worker when there is one.
+  const browserNeeded = hooked || (!tool.svgTemplate && deployment.caps.hookedTools);
   if (!browserNeeded) {
     const host = new Set<string>([...IN_PROCESS_HOST_APIS, ...(deployment.tokens ? ['tokens'] : [])]);
     const unmet = (tool.requires ?? []).filter(api => !host.has(api));
     if (unmet.length) return all('TOOL_REQUIRES_UNMET', `Server rendering needs host APIs this deployment does not provide: ${unmet.join(', ')}.`);
-    if (!tool.svgTemplate) return all('SVG_TEMPLATE_REQUIRED', 'Server rendering needs an SVG template. The web app can still export this tool.');
+    if (!tool.svgTemplate) return all('SVG_TEMPLATE_REQUIRED', 'This tool lays out HTML, which needs the Chromium render worker, and this deployment does not run one. The web app can still export this tool.');
   }
   const available: string[] = [];
   const unavailable: UnavailableFormat[] = [];

@@ -143,6 +143,9 @@ test('the probe follows the render gates: worker formats, hooked tools, unmet ho
   assert.match(needy.unavailable[0]!.reason, /text/);
   assert.equal(toolServerFormats({ ...tool, requires: ['tokens'] }, { caps: renderCapabilities(false), allowHooksInFastPath: false, tokens: true }).renderer, 'work-jsdom');
   assert.equal(toolServerFormats({ ...tool, svgTemplate: false }, { caps: renderCapabilities(false), allowHooksInFastPath: false, tokens: false }).unavailable[0]!.code, 'SVG_TEMPLATE_REQUIRED');
+  const html = toolServerFormats({ ...tool, svgTemplate: false }, { caps: renderCapabilities(true), allowHooksInFastPath: true, tokens: false });
+  assert.equal(html.renderer, 'chromium-worker', 'an HTML-layout template renders in the worker');
+  assert.deepEqual(html.formats, ['svg', 'png', 'jpg', 'pdf']);
 });
 
 test('effective schemas drop hidden inputs, lock values, narrow choices and attribute each change', () => {
