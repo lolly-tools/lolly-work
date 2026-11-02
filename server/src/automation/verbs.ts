@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts';
 import { withRenderHost } from '../render/host.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
-import { toolServerFormats, type RenderCapabilities, type ToolServerFormats } from '../render/capabilities.ts';
+import { isSvgTemplate, toolServerFormats, type RenderCapabilities, type ToolServerFormats } from '../render/capabilities.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
 import { applyInputPolicy, effectiveValidation } from './effective-contract.ts';
 
@@ -64,7 +64,7 @@ export async function describeTool(ctx: AutomationContext, toolId: string, deplo
     toolId, name: typeof tool.manifest.name === 'string' ? tool.manifest.name : toolId, version: tool.manifest.version,
     apiVersion: engine.DOCUMENT_API_VERSION, engineVersion: engine.ENGINE_VERSION, raw: engine.documentSchema(tool),
     server: toolServerFormats({ formats: tool.manifest.render.formats, hooks: !!tool.hooksSource,
-      svgTemplate: typeof template === 'string' && /<svg\b/i.test(template), requires: tool.manifest.requires ?? [] }, deployment),
+      svgTemplate: isSvgTemplate(template), requires: tool.manifest.requires ?? [] }, deployment),
   };
 }
 

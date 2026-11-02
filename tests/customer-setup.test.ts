@@ -62,13 +62,16 @@ test('hooked tools are inspected without executing code and require a worker whe
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('an HTML-only template is not advertised as server renderable merely because a worker is configured', async () => {
+test('an HTML-only template is advertised as server renderable only when a worker can lay it out', async () => {
   const root = await fixture();
   try {
     await writeFile(join(root, 'tools', 'card', 'template.html'), '<html><body>{{title}}</body></html>');
-    const local = await inspectPack(root, { workerConfigured: true });
+    const local = await inspectPack(root, {});
     assert.equal(local.compatible, true); assert.deepEqual(local.tools[0]?.serverFormats, []);
-    assert.equal((await inspectPack(root, { workerConfigured: true, requireServerRendering: true })).compatible, false);
+    assert.ok(local.tools[0]?.diagnostics.includes('This tool needs a Chromium worker for server rendering.'));
+    assert.equal((await inspectPack(root, { requireServerRendering: true })).compatible, false);
+    const workered = await inspectPack(root, { workerConfigured: true, requireServerRendering: true });
+    assert.equal(workered.compatible, true); assert.deepEqual(workered.tools[0]?.serverFormats, ['svg', 'png', 'pdf']);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

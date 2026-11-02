@@ -117,7 +117,7 @@ before(async () => {
   pack = await mkdtemp(join(tmpdir(), 'lw-render-'));
   await mkdir(join(pack, 'catalog', 'tools'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({
-    version: 3, tools: [{ id: 'test-card' }, { id: 'locked-card' }, { id: 'wm-card' }, { id: 'fmt-card' }, { id: 'hidden-card' }, { id: 'hooky' }, { id: 'needy' }],
+    version: 3, tools: [{ id: 'test-card' }, { id: 'locked-card' }, { id: 'wm-card' }, { id: 'fmt-card' }, { id: 'hidden-card' }, { id: 'hooky' }, { id: 'needy' }, { id: 'htmly' }, { id: 'hooksvg' }],
   }));
   await writeCard('test-card');
   await writeCard('locked-card');
@@ -152,6 +152,21 @@ before(async () => {
   await writeFile(join(needyDir, 'template.html'),
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200" width="400" height="200"><text x="20" y="110">{{title}}</text></svg>');
   await writeFile(join(needyDir, 'hooks.js'), 'async function onInit({ host }) { await host.text.preload([]); return {}; }\n');
+
+  // A hook-less tool whose template lays out HTML: jsdom has no layout, so only
+  // the Chromium worker can export it.
+  const htmlyDir = join(pack, 'tools', 'htmly');
+  await mkdir(htmlyDir, { recursive: true });
+  await writeFile(join(htmlyDir, 'tool.json'), JSON.stringify(cardManifest('htmly'), null, 2));
+  await writeFile(join(htmlyDir, 'template.html'), '<div class="card" style="background:{{bg}}"><h1>{{title}}</h1></div>');
+  // A hooked tool whose hooks write the SVG (qr-code's shape): its template text
+  // has no <svg>, yet it renders in process when the pack allows fast-path hooks.
+  const hooksvgDir = join(pack, 'tools', 'hooksvg');
+  await mkdir(hooksvgDir, { recursive: true });
+  await writeFile(join(hooksvgDir, 'tool.json'), JSON.stringify({ ...cardManifest('hooksvg'), hooks: { onInit: true } }, null, 2));
+  await writeFile(join(hooksvgDir, 'template.html'), '{{{svgContent}}}');
+  await writeFile(join(hooksvgDir, 'hooks.js'),
+    'function onInit(ctx) { return { svgContent: \'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><text>HOOK_SVG</text></svg>\' }; }\n');
 
   main = await makeServer({}, [LOCK_OVERLAY, WM_OVERLAY, FMT_OVERLAY, HIDDEN_OVERLAY]);
   hooksAllowed = await makeServer({ render: { allowHooksInFastPath: true } });
@@ -450,6 +465,49 @@ test('(o) automation batch yields a ZIP with a per-row output manifest', async (
   const result = await fetch(`${main.base}/api/v1/jobs/${id}/result`, { headers });
   assert.equal(result.headers.get('content-type'), 'application/zip');
   assert.deepEqual([...new Uint8Array(await result.arrayBuffer()).slice(0, 4)], [0x50, 0x4b, 0x03, 0x04]);
+});
+
+test('(f3) an HTML-layout tool renders through the worker and 501s with a named code without one', async () => {
+  const cookie = await login(main.base, 'admin@test');
+  const refused = await fetch(`${main.base}/render/htmly.svg?title=x`, { headers: { cookie } });
+  assert.equal(refused.status, 501);
+  assert.equal((await refused.json() as { error: { code: string } }).error.code, 'SVG_TEMPLATE_REQUIRED');
+
+  const SECRET = 'worker-shared-key';
+  let sawToolId = '', sawQuery = '';
+  const worker = mockServer((req, res) => {
+    void (async () => {
+      if (req.url === '/healthz') { res.writeHead(200); res.end('{}'); return; }
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const job = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { toolId: string; query: string; brandRevision: string };
+      sawToolId = job.toolId; sawQuery = job.query;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><text>HTML_VIA_WORKER</text></svg>', brandRevision: job.brandRevision }));
+    })().catch(() => { res.writeHead(500); res.end(); });
+  });
+  await new Promise<void>((r) => worker.listen(0, () => r()));
+  const waddr = worker.address();
+  const srv = await makeServer(
+    { render: { allowHooksInFastPath: true, worker: { url: `http://127.0.0.1:${typeof waddr === 'object' && waddr ? waddr.port : 0}`, timeoutMs: 5000 } } },
+    [],
+    { renderWorker: SECRET },
+  );
+  const workerCookie = await login(srv.base, 'admin@test');
+  const res = await fetch(`${srv.base}/api/v1/render`, { method: 'POST', headers: { cookie: workerCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ toolId: 'htmly', format: 'svg', inputs: { title: 'Red Hat' } }) });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.ok((await res.text()).includes('HTML_VIA_WORKER'), 'served the SVG the worker returned');
+  assert.equal(sawToolId, 'htmly', 'a hook-less HTML tool goes to the worker even when fast-path hooks are allowed');
+  assert.equal(new URLSearchParams(sawQuery).get('title'), 'Red Hat');
+  const svgCard = await fetch(`${srv.base}/render/test-card.svg?title=INPROCESS`, { headers: { cookie: workerCookie } });
+  assert.ok((await svgCard.text()).includes('INPROCESS'), 'an SVG template still renders in process');
+  sawToolId = '';
+  const hookSvg = await fetch(`${srv.base}/render/hooksvg.svg`, { headers: { cookie: workerCookie } });
+  assert.equal(hookSvg.status, 200, await hookSvg.clone().text());
+  assert.ok((await hookSvg.text()).includes('HOOK_SVG'), 'a fast-path hooked tool that writes its own SVG renders in process');
+  assert.equal(sawToolId, '', 'and never reaches the worker');
+  await closeServer(worker);
 });
 
 test('(g) hooked tool still 501s when no worker is configured', async () => {
