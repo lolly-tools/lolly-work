@@ -243,6 +243,10 @@ const STATE_COOKIE = 'lw_state';
 /** The signed half of the password forms' double-submit token (`lw/form`). */
 const FORM_COOKIE = 'lw_form';
 const LINK_KINDS: LinkKind[] = ['share', 'embed', 'download', 'guest-edit'];
+/** The query params an open link keeps for itself: its signature, its password
+ *  and a guest's name, plus the packed forms, which would carry state past the
+ *  readable params a recipient sets. */
+const OPEN_LINK_OWN_PARAMS = new Set(['s', 'pw', 'name', 'z', 'zx']);
 /** The RFC 9745 `Deprecation` date (2026-10-17) sent when a credential arrives
  *  in a query string: `?token=` on a job result and `?pw=` on a link (plan 80
  *  E0b). A URL reaches access logs, proxies and CDN logs. Both still work for
@@ -2770,6 +2774,23 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 403, denialCode(action), `not allowed: ${action}`);
     }
     if (body.target.toolId && !await automationMayUse({ user, groups: user.groups, profile: {}, principal: `user:${user.id}` }, body.target.toolId)) return sendError(res, 403, 'FORBIDDEN', 'you cannot use this tool');
+    // An open link (target.open) lets its recipients render the tool with inputs
+    // of their own on the server. A link only hands on what its minter could
+    // already do, so the minter needs export.server for the tool.
+    if (body.target.open !== undefined) {
+      if (typeof body.target.open !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'target.open must be true or false');
+      if (!body.target.open) {
+        const { open: _closed, ...closed } = body.target;
+        body.target = closed;
+      } else {
+        if (kind === 'guest-edit' || !body.target.toolId || body.target.assetId || body.target.collectionId) {
+          return sendError(res, 400, 'INVALID_INPUT', 'only a share, embed or download link to a tool can let recipients change it');
+        }
+        if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'export.server', [`tool:${body.target.toolId}`, '*'], grants)) {
+          return sendError(res, 403, 'FORBIDDEN', 'letting recipients change a link needs export.server for the tool');
+        }
+      }
+    }
     if (kind === 'guest-edit' && !config.policy.guestLinks.enabled) {
       return sendError(res, 403, 'GUEST_LINKS_DISABLED', 'guest links are disabled on this deployment');
     }
@@ -2858,9 +2879,10 @@ export function buildApp(deps: AppDeps): App {
     await store.putLink(link);
     await audit(`user:${user.id}`, 'link.create', `link:${link.id}`, {
       kind, toolId: body.target.toolId ?? null, assetId: body.target.assetId ?? null,
-      collectionId: body.target.collectionId ?? null,
+      collectionId: body.target.collectionId ?? null, ...(link.target.open ? { open: true } : {}),
     });
-    sendJson(res, 201, { id: link.id, kind, url: `${config.instance.baseUrl}${linkPath(link, secrets.link)}`, expiresAt: new Date(link.exp * 1000).toISOString() });
+    sendJson(res, 201, { id: link.id, kind, url: `${config.instance.baseUrl}${linkPath(link, secrets.link)}`, expiresAt: new Date(link.exp * 1000).toISOString(),
+      ...(link.target.open ? { open: true } : {}) });
   });
 
   router.add('POST', '/api/v1/links/:id/revoke', async (req, res, ctx) => {
@@ -3157,11 +3179,22 @@ export function buildApp(deps: AppDeps): App {
     // above). Each request still rechecks the live link before private caching.
     const toolId = link.target.toolId;
     if (!toolId) return sendError(res, 400, 'UNRENDERABLE_TARGET', 'this link has no tool to render');
-    const fmt = (link.target.format || 'svg').toLowerCase();
-    const q = new URLSearchParams();
+    let fmt = (link.target.format || 'svg').toLowerCase();
+    let q = new URLSearchParams();
     for (const [k, v] of Object.entries(link.target.params ?? {})) {
       if (v == null) continue;
       q.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+    }
+    // An open link lays the recipient's params over the baked ones, so each new
+    // set renders a new asset; renderTool still applies the tool's policy. A
+    // packed z= is unpacked first, or its state would win over theirs.
+    if (link.target.open) {
+      if (q.has('z')) q = new URLSearchParams(await (await loadEngine()).expandQuery(q.toString()));
+      for (const [k, v] of ctx.url.searchParams) {
+        if (OPEN_LINK_OWN_PARAMS.has(k)) continue;
+        if (k === 'format') fmt = v.toLowerCase();
+        else q.set(k, v);
+      }
     }
     try {
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner() }, {
