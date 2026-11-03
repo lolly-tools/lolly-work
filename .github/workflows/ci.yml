@@ -400,7 +400,9 @@ jobs:
             ${{ runner.temp }}/${{ matrix.image }}.oci.tar.sha256
             ${{ runner.temp }}/${{ matrix.image }}-image.json
           compression-level: 0
-          retention-days: 3
+          # One day (Andy, 2026-11-03): about 0.7 GB per image per commit, and a busy
+          # week of commits filled the organisation's artifact storage that day.
+          retention-days: 1
           if-no-files-found: error
       - name: Stop owned host BuildKit
         if: always()
