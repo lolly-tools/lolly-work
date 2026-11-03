@@ -12,4 +12,17 @@ ynh_app_config_apply() {
     lollywork_add_config
 }
 
+validate__nextcloud_enabled() {
+    # Only a switched-on connection must be complete. The other fields are read from
+    # the values being applied.
+    [[ "${nextcloud_enabled:-false}" == "true" ]] || return 0
+    lollywork_nextcloud_check || true
+}
+
+get__nextcloud_detected() {
+    local found
+    found=$(lollywork_detect_nextcloud)
+    echo "${found:-No Nextcloud app found on this server}"
+}
+
 ynh_app_config_run "$1"

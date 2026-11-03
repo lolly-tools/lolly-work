@@ -24,7 +24,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { createServer as createHttpServer, type Server } from 'node:http';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -51,6 +51,7 @@ const SAMPLE = {
   access_mode: 'gated', telemetry: 'standard', guest_links: 'true', hooks_fast_path: 'true',
   catalog_signing_key: JSON.stringify(generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ format: 'jwk' })),
   catalog_generation: '4',
+  nextcloud_providers: '[]', nextcloud_destinations: '[]', nextcloud_private_origins: '[]', nextcloud_credential: '',
   catalog_public_key: readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'yunohost', 'conf', 'catalog-public-key.json'), 'utf8').trim(),
 };
 
@@ -362,4 +363,126 @@ test('package: the files YunoHost and its catalog expect, and nothing stray', ()
   assert.match(read('tests.toml'), /install\.subdir/);
   const allowed = new Set(['LICENSE', 'README.md', 'conf', 'config_panel.toml', 'doc', 'manifest.toml', 'scripts', 'tests.toml']);
   for (const entry of readdirSync(PKG)) assert.ok(allowed.has(entry), `unexpected ${entry} in deploy/yunohost/`);
+});
+
+// The Nextcloud connection: detection, prefilled settings, and the instance.json
+// fragments the server accepts. Bash functions run for real; `yunohost` and the
+// settings helpers are stand-ins for a host.
+const NEXTCLOUD_HELPERS = String.raw`
+set -e
+ynh_print_info() { echo "info: $*" >&2; }
+ynh_print_warn() { echo "warn: $*" >&2; }
+ynh_app_setting_set() { echo "set ${'$'}{1#--key=}=${'$'}{2#--value=}" >> "$LOLLY_TEST_DIR/settings"; }
+ynh_app_setting_set_default() {
+    local key="${'$'}{1#--key=}"
+    if [[ -z "${'$'}{!key:-}" ]]; then printf -v "$key" '%s' "${'$'}{2#--value=}"; ynh_app_setting_set "$@"; fi
+}
+yunohost() { cat "$LOLLY_TEST_DIR/apps.json"; }
+source "$PKG/scripts/_common.sh"
+`;
+
+function nextcloudRun(body: string, appsJson: string, env: Record<string, string> = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'lolly-work-nextcloud-'));
+  writeFileSync(join(dir, 'apps.json'), appsJson);
+  writeFileSync(join(dir, 'settings'), '');
+  const result = spawnSync('bash', ['-c', NEXTCLOUD_HELPERS + body], {
+    encoding: 'utf8', env: { ...process.env, PKG, LOLLY_TEST_DIR: dir, app: 'lolly-work', domain: 'work.example.org', ...env },
+  });
+  const settings = readFileSync(join(dir, 'settings'), 'utf8');
+  rmSync(dir, { recursive: true, force: true });
+  return { ...result, settings };
+}
+
+const APPS = JSON.stringify({ apps: [
+  { id: 'wordpress', domain_path: 'blog.example.org/' },
+  { id: 'nextcloud', domain_path: 'cloud.example.org/' },
+] });
+const CONNECTED = {
+  nextcloud_enabled: 'true', nextcloud_url: 'https://cloud.example.org', nextcloud_username: 'lolly-federation',
+  nextcloud_app_password: 'abcde-fghij-klmno-pqrst-uvwxy', nextcloud_catalog_folder: 'Lolly brand',
+  nextcloud_catalog_groups: 'brand marketing', nextcloud_delivery_folder: 'Lolly delivery/Approved', nextcloud_delivery_groups: 'admins',
+};
+
+test('nextcloud: a Nextcloud app on the same server is detected and its address prefilled, nothing switched on', () => {
+  const r = nextcloudRun('lollywork_nextcloud_defaults', APPS);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.settings, /^set nextcloud_url=https:\/\/cloud\.example\.org$/m);
+  assert.match(r.settings, /^set nextcloud_enabled=false$/m);
+  assert.match(r.stderr, /Found Nextcloud at https:\/\/cloud\.example\.org/);
+  const sub = nextcloudRun('lollywork_detect_nextcloud', JSON.stringify({ apps: [{ id: 'nextcloud__2', domain_path: 'example.org/nextcloud' }] }));
+  assert.equal(sub.stdout, 'https://example.org/nextcloud');
+  const none = nextcloudRun('lollywork_detect_nextcloud', JSON.stringify({ apps: [{ id: 'wordpress', domain_path: 'blog.example.org/' }] }));
+  assert.equal(none.stdout, '');
+  const garbled = nextcloudRun('lollywork_detect_nextcloud', 'not json');
+  assert.equal(garbled.status, 0);
+  assert.equal(garbled.stdout, '');
+  // An address the admin already entered is not overwritten by detection.
+  const kept = nextcloudRun('lollywork_nextcloud_defaults', APPS, { nextcloud_url: 'https://other.example.net' });
+  assert.doesNotMatch(kept.settings, /nextcloud_url=/);
+});
+
+test('nextcloud: the settings render a WebDAV catalog source and delivery destination the server accepts', () => {
+  const r = nextcloudRun(`lollywork_nextcloud_vars
+printf '%s\n' "$nextcloud_providers" "$nextcloud_destinations" "$nextcloud_private_origins" "$nextcloud_credential"`, APPS, CONNECTED);
+  assert.equal(r.status, 0, r.stderr);
+  const [providers, destinations, origins, credential] = r.stdout.trim().split('\n') as [string, string, string, string];
+  assert.equal(credential, 'lolly-federation:abcde-fghij-klmno-pqrst-uvwxy');
+  const rendered = renderTemplate(read('conf/instance.json'), {
+    ...SAMPLE, nextcloud_providers: providers, nextcloud_destinations: destinations, nextcloud_private_origins: origins, nextcloud_credential: credential,
+  });
+  const cfg = parseConfig(rendered);
+  assert.equal(cfg.catalogProviders.length, 1);
+  const source = cfg.catalogProviders[0]!;
+  assert.equal(source.kind, 'webdav');
+  assert.equal(source.credentialRef, 'LW_PROVIDER_NEXTCLOUD');
+  assert.deepEqual(source.options, { baseUrl: 'https://cloud.example.org', flavor: 'nextcloud', username: 'lolly-federation', root: 'Lolly brand', recursive: true });
+  assert.deepEqual(source.exposure, { groups: ['brand', 'marketing'] });
+  assert.equal(cfg.delivery.destinations.length, 1);
+  const destination = cfg.delivery.destinations[0]!;
+  assert.equal(destination.kind, 'webdav');
+  assert.equal(destination.credentialRef, 'LW_DESTINATION_NEXTCLOUD');
+  assert.deepEqual(destination.options, { url: 'https://cloud.example.org/remote.php/dav/files/lolly-federation/Lolly%20delivery/Approved' });
+  assert.deepEqual(destination.groups, ['admins']);
+  assert.deepEqual(cfg.network.providers.allowedPrivateOrigins, ['https://cloud.example.org'], 'a Nextcloud on this host resolves to a private address');
+  // The credential reaches both environment variables, and never the JSON.
+  const env = renderTemplate(read('conf/.env'), { ...SAMPLE, nextcloud_credential: credential });
+  assert.match(env, /^LW_PROVIDER_NEXTCLOUD='lolly-federation:abcde-fghij-klmno-pqrst-uvwxy'$/m);
+  assert.match(env, /^LW_DESTINATION_NEXTCLOUD='lolly-federation:abcde-fghij-klmno-pqrst-uvwxy'$/m);
+  assert.ok(!rendered.includes('abcde-fghij'));
+});
+
+test('nextcloud: off, incomplete or empty delivery folder never breaks the configuration', () => {
+  const off = nextcloudRun(`lollywork_nextcloud_vars\nprintf '%s|%s|%s|%s' "$nextcloud_providers" "$nextcloud_destinations" "$nextcloud_private_origins" "$nextcloud_credential"`, APPS, { ...CONNECTED, nextcloud_enabled: 'false' });
+  assert.equal(off.stdout, '[]|[]|[]|');
+  const partial = nextcloudRun(`lollywork_nextcloud_vars\nprintf '%s|%s' "$nextcloud_providers" "$nextcloud_credential"`, APPS, { ...CONNECTED, nextcloud_app_password: '' });
+  assert.equal(partial.status, 0, partial.stderr);
+  assert.equal(partial.stdout, '[]|');
+  assert.match(partial.stderr, /incomplete/);
+  const noDelivery = nextcloudRun(`lollywork_nextcloud_vars\nprintf '%s|%s' "$nextcloud_providers" "$nextcloud_destinations"`, APPS, { ...CONNECTED, nextcloud_delivery_folder: '' });
+  assert.match(noDelivery.stdout, /"kind":"webdav".*\|\[\]$/);
+});
+
+test('nextcloud: values that could change the JSON, the URL or the credential are refused', () => {
+  for (const [key, value] of [
+    ['nextcloud_url', 'http://cloud.example.org'], ['nextcloud_url', 'https://user:pw@cloud.example.org'], ['nextcloud_url', 'https://cloud.example.org/?x=1'],
+    ['nextcloud_username', 'a:b'], ['nextcloud_username', 'a"b'], ['nextcloud_app_password', "ab'cdefghi"], ['nextcloud_app_password', 'short'],
+    ['nextcloud_catalog_folder', '../etc'], ['nextcloud_catalog_folder', 'a"b'], ['nextcloud_delivery_folder', 'a/../b'],
+    ['nextcloud_catalog_groups', 'a" b'], ['nextcloud_delivery_groups', 'Admins;'],
+  ] as const) {
+    const r = nextcloudRun('lollywork_nextcloud_check', APPS, { ...CONNECTED, [key]: value });
+    assert.notEqual(r.status, 0, `${key}=${value} was accepted`);
+  }
+  assert.equal(nextcloudRun('lollywork_nextcloud_check', APPS, CONNECTED).status, 0);
+});
+
+test('nextcloud: the config panel, scripts and template are wired together', () => {
+  const panel = read('config_panel.toml');
+  for (const key of ['nextcloud_enabled', 'nextcloud_url', 'nextcloud_username', 'nextcloud_app_password', 'nextcloud_catalog_folder', 'nextcloud_catalog_groups', 'nextcloud_delivery_folder', 'nextcloud_delivery_groups']) {
+    assert.match(panel, new RegExp(`\\[main\\.nextcloud\\.${key}\\]`));
+  }
+  assert.match(panel, /\[main\.nextcloud\.nextcloud_app_password\][^[]*type = "password"/);
+  assert.match(read('scripts/install'), /lollywork_nextcloud_defaults/);
+  assert.match(read('scripts/upgrade'), /lollywork_nextcloud_defaults/);
+  assert.match(read('scripts/config'), /get__nextcloud_detected/);
+  assert.match(read('scripts/_common.sh'), /yunohost app list --output-as json/);
 });

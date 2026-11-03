@@ -57,3 +57,87 @@ services = ["__APP__"]
         no = "false"
         help.en = "On for the shipped pack, whose tools the Lolly project curates. Turn it off if you point the instance pack at tools you do not control: hooked tools then answer 501 until a Chromium render worker is attached."
         help.fr = "Activé pour le pack fourni, dont les outils sont maintenus par le projet Lolly. Désactivez-le si vous pointez le pack d'instance vers des outils que vous ne contrôlez pas : les outils avec hooks répondent alors 501 jusqu'à ce qu'un worker Chromium soit attaché."
+
+    [main.nextcloud]
+    name.en = "Nextcloud"
+    name.fr = "Nextcloud"
+    help.en = "Connect a Nextcloud as a WebDAV brand source and as a delivery destination. Create a dedicated Nextcloud account, share the brand folder with it, then create an app password under Nextcloud Settings > Security and paste it here. The Nextcloud may run on this server or anywhere that answers over HTTPS. The browser-side WebDAV connection in the Lolly app is separate and needs CORS on the Nextcloud."
+    help.fr = "Connecter un Nextcloud comme source de marque WebDAV et comme destination de livraison. Créez un compte Nextcloud dédié, partagez-lui le dossier de marque, puis créez un mot de passe d'application dans Nextcloud, Paramètres > Sécurité, et collez-le ici."
+
+        [main.nextcloud.nextcloud_detected]
+        ask.en = "Nextcloud found on this server"
+        ask.fr = "Nextcloud trouvé sur ce serveur"
+        type = "string"
+        readonly = true
+        bind = "null"
+
+        [main.nextcloud.nextcloud_enabled]
+        ask.en = "Connect Nextcloud"
+        ask.fr = "Connecter Nextcloud"
+        type = "boolean"
+        yes = "true"
+        no = "false"
+        help.en = "Creates a WebDAV catalog source and a WebDAV delivery destination named Nextcloud. Both are managed here and show as read-only in the console."
+        help.fr = "Crée une source de catalogue WebDAV et une destination de livraison WebDAV nommées Nextcloud. Les deux sont gérées ici et en lecture seule dans la console."
+
+        [main.nextcloud.nextcloud_url]
+        ask.en = "Nextcloud address"
+        ask.fr = "Adresse de Nextcloud"
+        type = "string"
+        optional = true
+        help.en = "For example https://cloud.example.org, with a path if Nextcloud lives under one. Prefilled when a Nextcloud app is installed on this server."
+        pattern.regexp = '^$|^https://([A-Za-z0-9-]+\.)*[A-Za-z0-9-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*$'
+        pattern.error = "An https address without credentials, query or trailing slash"
+
+        [main.nextcloud.nextcloud_username]
+        ask.en = "Nextcloud login name"
+        ask.fr = "Identifiant Nextcloud"
+        type = "string"
+        optional = true
+        help.en = "The login of the dedicated account. It can differ from the display name; Settings > Personal info shows both."
+        pattern.regexp = '^$|^[A-Za-z0-9._@-]{1,128}$'
+        pattern.error = "Letters, digits and . _ @ - only"
+
+        [main.nextcloud.nextcloud_app_password]
+        ask.en = "App password"
+        ask.fr = "Mot de passe d'application"
+        type = "password"
+        optional = true
+        help.en = "From Nextcloud Settings > Security > Devices and sessions. Never the account password: accounts with two-factor sign-in reject it, and an app password can be revoked on its own. Leave empty to keep the saved one."
+        help.fr = "Depuis Nextcloud, Paramètres > Sécurité. Jamais le mot de passe du compte. Laisser vide pour conserver celui déjà enregistré."
+
+        [main.nextcloud.nextcloud_catalog_folder]
+        ask.en = "Brand folder to read"
+        ask.fr = "Dossier de marque à lire"
+        type = "string"
+        optional = true
+        help.en = "A folder in that account's files, shared with it read-only. Lolly Work reads it and never writes to it."
+        pattern.regexp = '^$|^[A-Za-z0-9 ._-]+(/[A-Za-z0-9 ._-]+)*$'
+        pattern.error = "A folder path with plain names"
+
+        [main.nextcloud.nextcloud_catalog_groups]
+        ask.en = "Groups that see these files"
+        ask.fr = "Groupes qui voient ces fichiers"
+        type = "string"
+        optional = true
+        help.en = "An asterisk for every member, or YunoHost group names separated by spaces."
+        pattern.regexp = '^$|^(\*|[a-z0-9_-]+( [a-z0-9_-]+)*)$'
+        pattern.error = "An asterisk, or group names separated by spaces"
+
+        [main.nextcloud.nextcloud_delivery_folder]
+        ask.en = "Delivery folder"
+        ask.fr = "Dossier de livraison"
+        type = "string"
+        optional = true
+        help.en = "An existing, writable folder in that account's files. Work writes approved exports beneath it and never creates folders. Leave empty to skip the delivery destination."
+        pattern.regexp = '^$|^[A-Za-z0-9 ._-]+(/[A-Za-z0-9 ._-]+)*$'
+        pattern.error = "A folder path with plain names"
+
+        [main.nextcloud.nextcloud_delivery_groups]
+        ask.en = "Groups that may deliver"
+        ask.fr = "Groupes autorisés à livrer"
+        type = "string"
+        optional = true
+        help.en = "An asterisk for every member, or YunoHost group names separated by spaces. The default is admins."
+        pattern.regexp = '^$|^(\*|[a-z0-9_-]+( [a-z0-9_-]+)*)$'
+        pattern.error = "An asterisk, or group names separated by spaces"

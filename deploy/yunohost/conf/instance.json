@@ -59,5 +59,8 @@
   "render": { "allowHooksInFastPath": __HOOKS_FAST_PATH__ },
   "rateLimit": { "enabled": true, "trustedProxyHops": 1 },
   "dev": { "enabled": false, "users": [] },
-  "blobs": { "driver": "pg" }
+  "blobs": { "driver": "pg" },
+  "catalogProviders": __NEXTCLOUD_PROVIDERS__,
+  "delivery": { "destinations": __NEXTCLOUD_DESTINATIONS__ },
+  "network": { "providers": { "allowedPrivateOrigins": __NEXTCLOUD_PRIVATE_ORIGINS__ } }
 }

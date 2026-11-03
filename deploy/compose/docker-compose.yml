@@ -13,6 +13,10 @@ services:
       LW_SESSION_SECRET: ${LW_SESSION_SECRET:?set in .env}
       LW_LINK_SECRET: ${LW_LINK_SECRET:?set in .env}
       LW_IDP_CLIENT_SECRET: ${LW_IDP_CLIENT_SECRET:-}
+      # Credential for blobs.driver "s3" in instance.json: <accessKeyId>:<secretAccessKey>.
+      # Empty keeps the default Postgres blob store. The optional `garage` profile
+      # below provides a store for it; see deploy/compose/README.md.
+      LW_BLOBS_S3_CREDENTIAL: ${LW_BLOBS_S3_CREDENTIAL:-}
       # PG_PASSWORD is read here AND by the db service below, so the two can
       # never disagree. It falls back to the literal `lolly` so a tyre-kick is
       # still one command, but set it in .env for anything real: the fallback is
@@ -69,5 +73,25 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  # Optional S3-compatible blob store (Garage, AGPL, written in Rust, runs on one
+  # node). Not started by a plain `docker compose up`: add `--profile garage`.
+  # It speaks S3 on the compose network only (no published port), so the server
+  # reaches it at http://garage:3900. The image holds no shell, so the one-time
+  # layout, bucket and key steps run with `docker compose exec garage /garage ...`
+  # (deploy/compose/README.md). GARAGE_RPC_SECRET is a 64-hex-character secret
+  # generated once (`openssl rand -hex 32`) and kept in .env.
+  garage:
+    profiles: ["garage"]
+    image: dxflrs/garage:v1.0.1
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?set GARAGE_RPC_SECRET in .env (openssl rand -hex 32)}
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  garage-meta:
+  garage-data:
