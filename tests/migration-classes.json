@@ -65,5 +65,6 @@
   "0074_automation_callbacks.sql": "additive",
   "0075_resumable_uploads.sql": "maintenance",
   "0076_file_references.sql": "maintenance",
-  "0076_session_version_history.sql": "maintenance"
+  "0076_session_version_history.sql": "maintenance",
+  "0077_edge_purge_outbox.sql": "additive"
 }

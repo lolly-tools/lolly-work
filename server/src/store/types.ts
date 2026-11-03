@@ -429,6 +429,37 @@ export interface AutomationCallbackResult {
   retryAfterMs?: number;
 }
 
+/** One edge (CDN) purge waiting in the outbox (plan 80 section 6.3): tags or
+ *  absolute URLs for one configured provider. Rows are written when public
+ *  bytes change and drained by edge/outbox.ts within the provider's budget. */
+export type EdgePurgeKind = 'tags' | 'urls';
+export type EdgePurgeState = 'pending' | 'done' | 'failed';
+export interface EdgePurgeRecord {
+  id: string;
+  providerId: string;
+  kind: EdgePurgeKind;
+  items: string[];
+  /** Why the purge was asked for, such as `policy.overlay.edit` or `operator`. */
+  reason: string;
+  state: EdgePurgeState;
+  attempt: number;
+  nextAttemptAt: string;
+  leaseOwner?: string;
+  leaseUntil?: string;
+  leaseToken: number;
+  lastError?: string;
+  /** The provider's receipt: counts and request ids, never a credential. */
+  receipt?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  settledAt?: string;
+}
+export interface EdgePurgeInput { providerId: string; kind: EdgePurgeKind; items: string[]; reason: string; notBeforeMs?: number }
+/** `pending` schedules another attempt `retryAfterMs` from now; the other states are final. */
+export interface EdgePurgeResult { state: EdgePurgeState; error?: string; receipt?: Record<string, unknown>; retryAfterMs?: number }
+/** An edge provider credential sealed with sealSecret; only the fingerprint is ever shown. */
+export interface EdgeCredentialRecord { ciphertext: Uint8Array; fingerprint: string; updatedAt: string }
+
 /** The upsert input carries the IdP-authoritative groups as `groups`; the store
  *  reinterprets them as idpGroups, preserves stored localGroups, and derives the
  *  effective union + role. So callers never construct the split themselves. */
@@ -1481,6 +1512,19 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
   settleAutomationCallback(callback: AutomationCallbackRecord, result: AutomationCallbackResult): Promise<boolean>;
   /** When the earliest pending entry falls due, or null when none is pending. */
   nextAutomationCallbackAt(): Promise<string | null>;
+
+  // Edge purge outbox (edge/outbox.ts). A claim takes due pending rows for one
+  // provider and kind with a lease; settling is fenced by the lease token.
+  enqueueEdgePurges(entries: EdgePurgeInput[]): Promise<EdgePurgeRecord[]>;
+  claimEdgePurges(owner: string, leaseMs: number, providerId: string, kind: EdgePurgeKind, limit: number): Promise<EdgePurgeRecord[]>;
+  settleEdgePurge(record: EdgePurgeRecord, result: EdgePurgeResult): Promise<boolean>;
+  /** When the earliest pending row falls due (or its lease ends), or null when none is pending. */
+  nextEdgePurgeAt(): Promise<string | null>;
+  /** Newest first. */
+  listEdgePurges(limit: number): Promise<EdgePurgeRecord[]>;
+  /** null clears the stored credential. */
+  putEdgeCredential(providerId: string, cred: EdgeCredentialRecord | null): Promise<void>;
+  getEdgeCredential(providerId: string): Promise<EdgeCredentialRecord | null>;
 
   // Organization delivery history. Reads and idempotency lookup are scoped to
   // the requesting principal; destination credentials never enter this store.

@@ -48,7 +48,7 @@ import {
   type ProjectTransferMetadata,
   type CommentNotice,
   type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
-  type ApiTokenRecord, type AutomationCallbackRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationCallbackRecord, type AutomationJobRecord, type EdgeCredentialRecord, type EdgePurgeRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type SessionRevisionCommitResult, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -127,6 +127,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   };
   const automationJobs = new Map<string, AutomationJobRecord>();
   const automationCallbacks = new Map<string, AutomationCallbackRecord>(); // by job id, as Postgres keeps one per job
+  const edgePurges = new Map<string, EdgePurgeRecord>();
+  const edgeCredentials = new Map<string, EdgeCredentialRecord>();
   /** Match Postgres: a job that settles with a callback URL gets its outbox entry in the same write. */
   const storeAutomationJob = (job: AutomationJobRecord, extra: Partial<AutomationJobRecord> = {}): void => {
     const stored: AutomationJobRecord = { ...structuredClone(job), ...extra };
@@ -797,6 +799,54 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const times = [...automationCallbacks.values()].filter(c => c.state === 'pending')
         .map(c => c.leaseUntil && c.leaseUntil > c.nextAttemptAt ? c.leaseUntil : c.nextAttemptAt).sort();
       return times[0] ?? null;
+    },
+
+    async enqueueEdgePurges(entries) {
+      const now = Date.now(), at = new Date(now).toISOString();
+      return entries.map(entry => {
+        const record: EdgePurgeRecord = { id: `edp_${randomId(16)}`, providerId: entry.providerId, kind: entry.kind, items: [...entry.items], reason: entry.reason,
+          state: 'pending', attempt: 0, nextAttemptAt: new Date(now + Math.max(0, entry.notBeforeMs ?? 0)).toISOString(), leaseToken: 0, createdAt: at, updatedAt: at };
+        edgePurges.set(record.id, record);
+        return structuredClone(record);
+      });
+    },
+    async claimEdgePurges(owner, leaseMs, providerId, kind, limit) {
+      const now = Date.now();
+      const due = [...edgePurges.values()]
+        .filter(r => r.state === 'pending' && r.providerId === providerId && r.kind === kind && Date.parse(r.nextAttemptAt) <= now && (!r.leaseUntil || Date.parse(r.leaseUntil) < now))
+        .sort((a, b) => a.nextAttemptAt.localeCompare(b.nextAttemptAt) || a.createdAt.localeCompare(b.createdAt)).slice(0, Math.max(0, limit));
+      return due.map(r => {
+        Object.assign(r, { leaseOwner: owner, leaseUntil: new Date(now + leaseMs).toISOString(), leaseToken: r.leaseToken + 1, attempt: r.attempt + 1, updatedAt: new Date(now).toISOString() });
+        return structuredClone(r);
+      });
+    },
+    async settleEdgePurge(record, result) {
+      const live = edgePurges.get(record.id);
+      if (!live || live.state !== 'pending' || live.leaseOwner !== record.leaseOwner || live.leaseToken !== record.leaseToken) return false;
+      const at = new Date().toISOString();
+      Object.assign(live, { state: result.state, updatedAt: at,
+        nextAttemptAt: result.retryAfterMs !== undefined ? new Date(Date.now() + result.retryAfterMs).toISOString() : live.nextAttemptAt });
+      if (result.error !== undefined) live.lastError = result.error; else delete live.lastError;
+      if (result.receipt !== undefined) live.receipt = structuredClone(result.receipt);
+      if (result.state !== 'pending') live.settledAt = at;
+      delete live.leaseOwner; delete live.leaseUntil;
+      return true;
+    },
+    async nextEdgePurgeAt() {
+      const times = [...edgePurges.values()].filter(r => r.state === 'pending')
+        .map(r => r.leaseUntil && r.leaseUntil > r.nextAttemptAt ? r.leaseUntil : r.nextAttemptAt).sort();
+      return times[0] ?? null;
+    },
+    async listEdgePurges(limit) {
+      return [...edgePurges.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, Math.max(0, limit)).map(r => structuredClone(r));
+    },
+    async putEdgeCredential(providerId, cred) {
+      if (cred) edgeCredentials.set(providerId, { ciphertext: new Uint8Array(cred.ciphertext), fingerprint: cred.fingerprint, updatedAt: cred.updatedAt });
+      else edgeCredentials.delete(providerId);
+    },
+    async getEdgeCredential(providerId) {
+      const cred = edgeCredentials.get(providerId);
+      return cred ? { ciphertext: new Uint8Array(cred.ciphertext), fingerprint: cred.fingerprint, updatedAt: cred.updatedAt } : null;
     },
 
     async putDelivery(delivery) {

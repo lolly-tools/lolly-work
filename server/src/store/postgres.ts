@@ -51,7 +51,7 @@ import {
   type ProjectTransferMetadata,
   type CommentNotice, type CommentNoticeWrite,
   type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
-  type ApiTokenRecord, type AutomationCallbackOutcome, type AutomationCallbackRecord, type AutomationCallbackState, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationCallbackOutcome, type AutomationCallbackRecord, type AutomationCallbackState, type AutomationJobRecord, type EdgePurgeRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -208,6 +208,20 @@ function callbackFromRow(r: Record<string, unknown>): AutomationCallbackRecord {
     ...(r.last_outcome ? { lastOutcome: r.last_outcome as AutomationCallbackRecord['lastOutcome'] } : {}),
     ...(r.last_status !== null && r.last_status !== undefined ? { lastStatus: Number(r.last_status) } : {}),
     ...(r.last_error ? { lastError: r.last_error as string } : {}),
+    createdAt: iso(r.created_at), updatedAt: iso(r.updated_at), ...(r.settled_at ? { settledAt: iso(r.settled_at) } : {}),
+  };
+}
+
+function edgePurgeFromRow(r: Record<string, unknown>): EdgePurgeRecord {
+  const iso = (v: unknown): string => new Date(v as string).toISOString();
+  return {
+    id: r.id as string, providerId: r.provider_id as string, kind: r.kind as EdgePurgeRecord['kind'],
+    items: Array.isArray(r.items) ? (r.items as string[]) : [], reason: r.reason as string,
+    state: r.state as EdgePurgeRecord['state'], attempt: Number(r.attempt ?? 0), nextAttemptAt: iso(r.next_attempt_at),
+    ...(r.lease_owner ? { leaseOwner: r.lease_owner as string } : {}), ...(r.lease_until ? { leaseUntil: iso(r.lease_until) } : {}),
+    leaseToken: Number(r.lease_token ?? 0),
+    ...(r.last_error ? { lastError: r.last_error as string } : {}),
+    ...(r.receipt ? { receipt: r.receipt as Record<string, unknown> } : {}),
     createdAt: iso(r.created_at), updatedAt: iso(r.updated_at), ...(r.settled_at ? { settledAt: iso(r.settled_at) } : {}),
   };
 }
@@ -1394,6 +1408,56 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async nextAutomationCallbackAt() {
       const { rows } = await pool.query(`select min(greatest(next_attempt_at, coalesce(lease_until, next_attempt_at))) as at from automation_callbacks where state='pending'`);
       return rows[0]?.at ? new Date(rows[0].at as string).toISOString() : null;
+    },
+
+    async enqueueEdgePurges(entries) {
+      const out: EdgePurgeRecord[] = [];
+      for (const entry of entries) {
+        const { rows } = await pool.query(
+          `insert into edge_purge_outbox (id, provider_id, kind, items, reason, state, attempt, next_attempt_at, lease_token, created_at, updated_at)
+           values ($1, $2, $3, $4::text[], $5, 'pending', 0, now() + ($6 * interval '1 millisecond'), 0, now(), now()) returning *`,
+          [`edp_${randomId(16)}`, entry.providerId, entry.kind, entry.items, entry.reason, Math.max(0, entry.notBeforeMs ?? 0)]);
+        out.push(edgePurgeFromRow(rows[0]!));
+      }
+      return out;
+    },
+    async claimEdgePurges(owner, leaseMs, providerId, kind, limit) {
+      const { rows } = await pool.query(
+        `update edge_purge_outbox o set lease_owner=$1, lease_until=now()+($2 * interval '1 millisecond'), lease_token=o.lease_token+1, attempt=o.attempt+1, updated_at=now()
+         from (select id from edge_purge_outbox where state='pending' and provider_id=$3 and kind=$4 and next_attempt_at <= now() and (lease_until is null or lease_until < now())
+           order by next_attempt_at, created_at for update skip locked limit $5) candidate
+         where o.id=candidate.id returning o.*`, [owner, leaseMs, providerId, kind, Math.max(0, limit)]);
+      return rows.map(edgePurgeFromRow).sort((a, b) => a.nextAttemptAt.localeCompare(b.nextAttemptAt) || a.createdAt.localeCompare(b.createdAt));
+    },
+    async settleEdgePurge(record, result) {
+      const { rowCount } = await pool.query(
+        `update edge_purge_outbox set state=$4::text, last_error=$5, receipt=coalesce($6::jsonb, receipt),
+           next_attempt_at=case when $7::double precision is null then next_attempt_at else now()+($7::double precision * interval '1 millisecond') end,
+           lease_owner=null, lease_until=null, updated_at=now(), settled_at=case when $4::text='pending' then null else now() end
+         where id=$1 and lease_owner=$2 and lease_token=$3 and state='pending'`,
+        [record.id, record.leaseOwner ?? null, record.leaseToken, result.state, result.error ?? null,
+          result.receipt !== undefined ? JSON.stringify(result.receipt) : null, result.retryAfterMs ?? null]);
+      return (rowCount ?? 0) > 0;
+    },
+    async nextEdgePurgeAt() {
+      const { rows } = await pool.query(`select min(greatest(next_attempt_at, coalesce(lease_until, next_attempt_at))) as at from edge_purge_outbox where state='pending'`);
+      return rows[0]?.at ? new Date(rows[0].at as string).toISOString() : null;
+    },
+    async listEdgePurges(limit) {
+      const { rows } = await pool.query('select * from edge_purge_outbox order by created_at desc, id desc limit $1', [Math.max(0, limit)]);
+      return rows.map(edgePurgeFromRow);
+    },
+    async putEdgeCredential(providerId, cred) {
+      if (!cred) { await pool.query('delete from edge_provider_credentials where provider_id = $1', [providerId]); return; }
+      await pool.query(
+        `insert into edge_provider_credentials (provider_id, ciphertext, fingerprint, updated_at) values ($1, $2, $3, $4)
+         on conflict (provider_id) do update set ciphertext = excluded.ciphertext, fingerprint = excluded.fingerprint, updated_at = excluded.updated_at`,
+        [providerId, Buffer.from(cred.ciphertext), cred.fingerprint, cred.updatedAt]);
+    },
+    async getEdgeCredential(providerId) {
+      const { rows } = await pool.query('select ciphertext, fingerprint, updated_at from edge_provider_credentials where provider_id = $1', [providerId]);
+      const r = rows[0];
+      return r ? { ciphertext: new Uint8Array(r.ciphertext as Buffer), fingerprint: r.fingerprint as string, updatedAt: new Date(r.updated_at as string).toISOString() } : null;
     },
 
     async putDelivery(delivery) {

@@ -2006,6 +2006,50 @@ export async function runStoreConformance(store: Store): Promise<void> {
 
   await runCommentReadsAndNoticesConformance(store);
   await runErasureConformance(store);
+  await runEdgePurgeConformance(store);
+}
+
+/** Edge purge outbox and sealed edge credentials (migration 0077): rows fall
+ *  due on the store's clock, a claim takes one provider and kind with a lease,
+ *  settling is fenced by the lease token, and a credential is replaced or cleared. */
+async function runEdgePurgeConformance(store: Store): Promise<void> {
+  assert.deepEqual(await store.listEdgePurges(10), []);
+  assert.equal(await store.nextEdgePurgeAt(), null);
+  const [tags, urls, later] = await store.enqueueEdgePurges([
+    { providerId: 'eu-cdn', kind: 'tags', items: ['t_a', 'b_0123456789abcdef'], reason: 'conformance' },
+    { providerId: 'eu-cdn', kind: 'urls', items: ['https://work.example.eu/a.png'], reason: 'conformance' },
+    { providerId: 'eu-cdn', kind: 'tags', items: ['t_later'], reason: 'conformance', notBeforeMs: 3_600_000 },
+  ]);
+  assert.match(tags!.id, /^edp_[A-Za-z0-9_-]+$/);
+  assert.deepEqual([tags!.state, tags!.attempt, tags!.leaseToken, tags!.items], ['pending', 0, 0, ['t_a', 'b_0123456789abcdef']]);
+  assert.ok(Date.parse(later!.nextAttemptAt) - Date.now() > 3_500_000);
+  assert.ok(await store.nextEdgePurgeAt());
+  assert.deepEqual(await store.claimEdgePurges('edge-a', 60_000, 'other', 'tags', 10), [], 'a claim is per provider');
+  const claimed = await store.claimEdgePurges('edge-a', 60_000, 'eu-cdn', 'tags', 10);
+  assert.deepEqual(claimed.map(r => [r.id, r.attempt, r.leaseToken, r.leaseOwner]), [[tags!.id, 1, 1, 'edge-a']], 'only due rows of that kind are claimed');
+  assert.deepEqual(await store.claimEdgePurges('edge-b', 60_000, 'eu-cdn', 'tags', 10), [], 'a leased row is not claimed twice');
+  assert.equal(await store.settleEdgePurge({ ...claimed[0]!, leaseToken: 99 }, { state: 'done' }), false, 'a wrong token cannot record');
+  assert.equal(await store.settleEdgePurge(claimed[0]!, { state: 'pending', error: 'answered 503', retryAfterMs: 0 }), true);
+  const retry = await store.claimEdgePurges('edge-b', 60_000, 'eu-cdn', 'tags', 1);
+  assert.deepEqual(retry.map(r => [r.id, r.attempt, r.leaseToken, r.lastError]), [[tags!.id, 2, 2, 'answered 503']]);
+  assert.equal(await store.settleEdgePurge(claimed[0]!, { state: 'done' }), false, 'the old claim cannot record after a new one');
+  const receipt = { provider: 'eu-cdn', kind: 'tags', items: 2, requests: 2, ids: [] };
+  assert.equal(await store.settleEdgePurge(retry[0]!, { state: 'done', receipt }), true);
+  const done = (await store.listEdgePurges(10)).find(r => r.id === tags!.id)!;
+  assert.deepEqual([done.state, done.receipt, done.leaseOwner, !!done.settledAt], ['done', receipt, undefined, true]);
+  const [url] = await store.claimEdgePurges('edge-a', 60_000, 'eu-cdn', 'urls', 5);
+  assert.equal(url!.id, urls!.id);
+  assert.equal(await store.settleEdgePurge(url!, { state: 'failed', error: 'No attempts remain' }), true);
+  assert.equal((await store.listEdgePurges(10)).length, 3);
+  assert.equal((await store.listEdgePurges(1)).length, 1);
+
+  assert.equal(await store.getEdgeCredential('eu-cdn'), null);
+  await store.putEdgeCredential('eu-cdn', { ciphertext: new Uint8Array([1, 2, 3]), fingerprint: 'aaaaaaaaaaaa', updatedAt: '2026-11-03T00:00:00.000Z' });
+  await store.putEdgeCredential('eu-cdn', { ciphertext: new Uint8Array([4, 5, 6, 7]), fingerprint: 'bbbbbbbbbbbb', updatedAt: '2026-11-03T01:00:00.000Z' });
+  const cred = await store.getEdgeCredential('eu-cdn');
+  assert.deepEqual([[...cred!.ciphertext], cred!.fingerprint, cred!.updatedAt], [[4, 5, 6, 7], 'bbbbbbbbbbbb', '2026-11-03T01:00:00.000Z']);
+  await store.putEdgeCredential('eu-cdn', null);
+  assert.equal(await store.getEdgeCredential('eu-cdn'), null);
 }
 
 /** Comment reads, inbox notices and mention sends (plan 76 M4, migrations 0051
