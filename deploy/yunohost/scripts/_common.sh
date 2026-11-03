@@ -13,8 +13,18 @@ shell_headers_inc="/etc/nginx/conf.d/$domain.d/$app.shell-headers.inc"
 # nginx -t runs inside ynh_config_add_nginx, so the includes have to exist first.
 lollywork_add_nginx() {
     ynh_config_add --template="proxy.inc" --destination="$proxy_inc"
-    ynh_config_add --template="shell-headers.inc" --destination="$shell_headers_inc"
+    lollywork_add_shell_headers
     ynh_config_add_nginx
+}
+
+# The shell header set mirrors the open-source package's security-headers.inc, whose
+# connect-src carries __LOLLY_CSP_MODELS_HOST__: lolli.li while the models come from
+# there, empty when a server keeps its own. This package always uses lolli.li, so the
+# policy it serves is unchanged.
+lollywork_add_shell_headers() {
+    # shellcheck disable=SC2034 # read by ynh_config_add as __LOLLY_CSP_MODELS_HOST__
+    local lolly_csp_models_host=" https://lolli.li"
+    ynh_config_add --template="shell-headers.inc" --destination="$shell_headers_inc"
 }
 
 # The Nextcloud app on this YunoHost, if there is one: prints its address as an https

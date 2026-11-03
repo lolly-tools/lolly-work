@@ -49,6 +49,8 @@ const SAMPLE = {
   data_dir: '/home/yunohost.app/lolly-work', instance_name: 'Example Org', db_user: 'lolly_work', db_pwd: 'pw',
   db_name: 'lolly_work', session_secret: 's'.repeat(64), link_secret: 'l'.repeat(64), proxy_secret: 'p'.repeat(48),
   access_mode: 'gated', telemetry: 'standard', guest_links: 'true', hooks_fast_path: 'true',
+  // Set by lollywork_add_shell_headers, the open-source package's models host.
+  lolly_csp_models_host: ' https://lolli.li',
   catalog_signing_key: JSON.stringify(generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ format: 'jwk' })),
   catalog_generation: '4',
   nextcloud_providers: '[]', nextcloud_destinations: '[]', nextcloud_private_origins: '[]', nextcloud_credential: '',
@@ -76,6 +78,8 @@ test('templates: only placeholders the scripts can fill', () => {
     'catalog_signing_key', 'catalog_generation']) {
     assert.match(read('scripts/install'), new RegExp(`ynh_app_setting_set --key=${key} `), `install must write the ${key} setting`);
   }
+  // The models host is not a setting either: this package always serves the hosted models.
+  assert.match(read('scripts/_common.sh'), /local lolly_csp_models_host=" https:\/\/lolli\.li"/);
   // catalog_public_key is not a setting: lollywork_add_config reads the pinned file.
   assert.match(read('scripts/_common.sh'), /catalog_public_key=\$\(tr -d '\\n' < "\$YNH_APP_BASEDIR\/conf\/catalog-public-key\.json"\)/);
   for (const key of ['access_mode', 'telemetry', 'guest_links', 'hooks_fast_path', 'instance_name']) {
