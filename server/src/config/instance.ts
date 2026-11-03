@@ -33,6 +33,7 @@ import { AUTH_PARAM_ALLOWLIST, oidcUrl, type OidcPolicy, type ClaimMap } from '.
 import type { AdmissionPolicy, EmailVerification } from '../iam/admission.ts';
 import type { RoleGroups } from '../rbac/evaluate.ts';
 import { validateSharingPolicy } from '../policy/sharing.ts';
+import { EDGE_DEFAULTS, hostOf, validateEdgeConfig, type EdgeConfig } from '../edge/config.ts';
 
 /** The project's release host, which serves the shell's on-device models
  *  (instance.modelOrigin's default). */
@@ -386,6 +387,13 @@ export interface InstanceConfig {
     destinations: ConfigDeliveryDestination[];
   };
   /**
+   * CDN providers in front of this instance's hostnames (edge/config.ts, plan
+   * 80). Jurisdiction is decided per hostname: under "eu-only" (the default) a
+   * non-EU provider may front only a hostname marked publicOnly, and the load
+   * fails otherwise. Credentials are env refs or sealed rows, never this file.
+   */
+  edge: EdgeConfig;
+  /**
    * Where instance-owned catalog bytes live (plans/26 §2, plans/27 §5): the
    * materialized-out-of-a-DAM assets and, later, collab staging. `pg` (default)
    * keeps the zero-moving-parts single-node deploy - PG works everywhere the
@@ -672,6 +680,7 @@ const DEFAULTS: InstanceConfig = {
     extCache: { maxBytes: 64 * 1024 * 1024, maxItemBytes: 2 * 1024 * 1024 },
   },
   delivery: { maxBytes: 64 * 1024 * 1024, destinations: [] },
+  edge: EDGE_DEFAULTS,
   blobs: { driver: 'pg' },
   notify: { people: { email: false } },
   siem: { batchSize: 200, intervalSeconds: 30 },
@@ -1207,6 +1216,8 @@ export function parseConfig(json: string): InstanceConfig {
     const m: unknown = p.sync?.maxAssets;
     if (m !== undefined && !wholeIn(m, 1, 10_000_000)) throw new Error(`catalog provider ${p.id} sync.maxAssets must be a whole number, 1-10000000`);
   }
+  // Fail closed: a provider the jurisdiction rule does not allow stops the load here.
+  cfg.edge = validateEdgeConfig((raw as Record<string, unknown>).edge, [hostOf(cfg.instance.baseUrl), hostOf(cfg.instance.appUrl)].filter((h): h is string => !!h));
   if (!Number.isFinite(cfg.delivery.maxBytes) || cfg.delivery.maxBytes <= 0) {
     throw new Error(`invalid delivery.maxBytes: ${cfg.delivery.maxBytes}`);
   }
