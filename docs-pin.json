@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "ca1f9d6ef70eebe37b6bee1cbdf7aa76ed175ddc",
+  "commit": "7edaf3704a9aa3c3f26e2b5e793b0881056d298f",
   "manifestSha256": "3774c23af521a818239f958d5d8e86d7d5d52278e9972933f5d399659855beed",
   "files": {
     "account-lifecycle.md": {
@@ -13,7 +13,7 @@
       "source": "docs/work/admission-policy.md"
     },
     "ai-policy.md": {
-      "sha256": "ac6175d4412a71d3ca1a5585cefeba97c888bc23c2806a6d6d68e6656e82b3c1",
+      "sha256": "d642c54cd5cc8801d163ab551c6cff7b47a45c0879a009088f9c79decf9f39b3",
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
@@ -121,7 +121,7 @@
       "source": "docs/work/img/README.md"
     },
     "install.md": {
-      "sha256": "42a48077712bfaae8ff5c3a59e6ad67835efa7696515cdcc15628fc6df1d90df",
+      "sha256": "b200528334abddbc8c2bb26e498526f89207ae60e1d38c850ecbffd0e4b315a5",
       "source": "docs/work/install.md"
     },
     "instance-pack-production.md": {
