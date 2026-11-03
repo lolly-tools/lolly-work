@@ -1,8 +1,8 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "2c05b3c81e7d9220d009eaa2d1b3c24a96475ec4",
-  "manifestSha256": "8352593d05946f1f30700fdd2415d7045fcb28a5699416d1c7c1019c894cde81",
+  "commit": "ca1f9d6ef70eebe37b6bee1cbdf7aa76ed175ddc",
+  "manifestSha256": "3774c23af521a818239f958d5d8e86d7d5d52278e9972933f5d399659855beed",
   "files": {
     "account-lifecycle.md": {
       "sha256": "37f7cf8213f0fb6805c7fd5e0a3e263a4afa24a68abd547e4904f640cc2cc4d0",
@@ -17,7 +17,7 @@
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
-      "sha256": "73b140cdd75ac0aafbf51f7c961a3b13069a7d95b702648f57cbe4c10b7b0af4",
+      "sha256": "4167c8ae39c87ae69901feb8687743416aa2242f5619707a422cc071aaa0e2e1",
       "source": "docs/work/api.md"
     },
     "approvals.md": {
@@ -29,7 +29,7 @@
       "source": "docs/work/audit.md"
     },
     "automation-api.md": {
-      "sha256": "7176f83eabc362d1be01f5f0b1faadde318da4bfa19f1bc654487a2e7141507b",
+      "sha256": "f921742cf0bbee4e3074de7078964090cb22efa4994124559a64e0c004b7417c",
       "source": "docs/work/automation-api.md"
     },
     "aws-compatible.md": {
@@ -53,7 +53,7 @@
       "source": "docs/work/cloud-deployment.md"
     },
     "configuration.md": {
-      "sha256": "7aa27ce6bdbc8177665783501f48cc645b0592204ae1918225205d7ae90363ff",
+      "sha256": "6dfe3470a4494105287b907915d1e4ff703b16e442f503faaceda2b2b3c2f0cd",
       "source": "docs/work/configuration.md"
     },
     "customer-setup.md": {
@@ -77,7 +77,7 @@
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
-      "sha256": "3d14e91f0dad8336c80817fd6ad48a369574c563ee81b247342e5880e6aba2cc",
+      "sha256": "2453d2e3f845e4c48afba11ed8614ab6f5ed949d798863de64fb83babd1d3808",
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
@@ -145,7 +145,7 @@
       "source": "docs/work/offboarding.md"
     },
     "official-installations.md": {
-      "sha256": "6726589dbfa03eb303256891951cce891273a5ece6e9ea5ea5f4b3fe3ca94a1c",
+      "sha256": "9b236bb1bd61ea5b47711a49a9bdab956e9c63df339c9aeaaadd0b858a21eafe",
       "source": "docs/work/official-installations.md"
     },
     "operations.md": {
@@ -249,7 +249,7 @@
       "source": "scripts/export-work-docs.ts"
     },
     "ready-made-package.md": {
-      "sha256": "441e8d9f0ca495cbd3b2221e7bd500d27268ed1d2d6ba84075b27d94a94b245c",
+      "sha256": "28ec4e7c8a947129b94211b5c1822be4d930df2ca17710b7310cc9a81aec0563",
       "source": "docs/work/ready-made-package.md"
     },
     "release-1-1-2.md": {

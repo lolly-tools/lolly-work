@@ -309,7 +309,7 @@
           "slug": "ready-made-package",
           "path": "ready-made-package.md",
           "title": "Install the ready-made package",
-          "summary": "One Docker Compose folder with Work, PostgreSQL, the matching web app and automatic HTTPS, for a fresh VM, UpCloud or Dokploy, with backup, restore and update steps."
+          "summary": "One Docker Compose folder with Work, PostgreSQL, the matching web app and automatic HTTPS, for a fresh VM, UpCloud, Dokploy or Coolify, with backup, restore and update steps."
         },
         {
           "slug": "platform-deployment",
