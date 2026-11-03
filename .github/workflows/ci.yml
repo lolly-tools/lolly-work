@@ -301,6 +301,17 @@ jobs:
           driver: remote
           endpoint: ${{ steps.host-buildkit.outputs.endpoint }}
 
+      - name: Make room for the render worker's matched shell build
+        # The worker job builds the image, installs two dependency trees and builds and
+        # signs a full Lolly shell from the pinned source. The November 2026 Lolly pin left
+        # 46 MB free on the runner, so drop the preinstalled toolchains no step here uses,
+        # as appliance.yml does.
+        if: matrix.image == 'render-worker'
+        timeout-minutes: 5
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Build the image (no push)
         env:
           IMAGE: ${{ matrix.image }}
