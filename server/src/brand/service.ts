@@ -33,7 +33,11 @@ export function parseBrandChange(value: unknown): BrandChange {
 
 /** One service owns compatibility routes, previews, mutations and request snapshots. */
 export function createBrandService(config: InstanceConfig, store: Store, blobs: BlobStore,
-  options: { inspectSource?: (sourceId: string) => Promise<string[]> } = {}) {
+  options: {
+    inspectSource?: (sourceId: string) => Promise<string[]>;
+    /** After a committed change, with the snapshot from before it (edge purges of the old revision). */
+    onCommitted?: (prior: BrandSnapshot) => void;
+  } = {}) {
   const adapter = createBrandSources(config.instance.pack, config.instance.brandTokens);
   const context = new AsyncLocalStorage<BrandSnapshot>();
   const mutable = store.brandPersistence === 'durable' || config.dev.enabled;
@@ -135,6 +139,7 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     return { ...result, reviewToken: digest(result) };
   };
   const apply = async (actor: UserRecord, change: BrandChange, revision: number, reviewToken: string) => {
+    const prior = await snapshot();
     const reviewed = await preview(actor, change);
     if (reviewed.revision !== revision || reviewed.reviewToken !== reviewToken) throw new BrandError('The preview is stale. Review the change again.', 409, 'STALE_PREVIEW');
     if (reviewed.blockers.length) throw new BrandError(reviewed.blockers.join(' '));
@@ -155,6 +160,7 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
       subject: change.sourceId, payload: { before, after: { ...next, revision: revision + 1 }, replacement: reviewed.impact.to.id } };
     const result = await store.casBrandState(revision, next, audit);
     if (!result) throw new BrandError('The preview is stale. Review the change again.', 409, 'STALE_PREVIEW');
+    options.onCommitted?.(prior);
     return { ok: true, revision: result.revision, impact: reviewed.impact };
   };
   const publishDownload = async (bytes: Buffer, actor: string, expected: BrandSnapshot, seed = false) => {
@@ -172,6 +178,7 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     const result = await store.casBrandState(expected.state.revision, next, { at: meta.uploadedAt, actor,
       action: seed ? 'instance.pack.seed' : 'instance.pack.update', subject: 'instance', payload: { sourceId: expected.source.id, checksum: meta.checksum } });
     if (!result && !seed) throw new BrandError('The design system changed during upload. Review the active source and upload again.', 409, 'STALE_PREVIEW');
+    if (result) options.onCommitted?.(expected);
     return result ? meta : null;
   };
   let seeding: Promise<void> | undefined;

@@ -14,6 +14,7 @@ import { createPostgresBlobStore } from './blobs/postgres.ts';
 import { createS3BlobStore } from './blobs/s3.ts';
 import { runMigrations, pendingMigrations, migrationDatabaseUrl } from './store/migrate.ts';
 import { buildApp } from './api/app.ts';
+import type { EdgePurgeOutbox } from './edge/outbox.ts';
 import { parseBackgroundPollMs, parseRenderConcurrency, type RenderRunner } from './renders/runner.ts';
 import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
@@ -212,6 +213,7 @@ const renderConcurrency = parseRenderConcurrency(process.env.LW_RENDER_CONCURREN
 if (renderConcurrency !== undefined) console.log(`[lolly-work] durable render concurrency ${renderConcurrency}`);
 if (config.render.worker.dispatch === 'pull') console.log('[lolly-work] render worker dispatch: pull (workers lease jobs over /api/internal/render/lease)');
 let renderRunner: RenderRunner | undefined;
+let edgeOutbox: EdgePurgeOutbox | undefined;
 const app = buildApp({ config, store, secrets, blobs, otel, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
   // A saved comment write tells the people in that session's live room (plan 76 M4).
   roomEvents: (id, frame) => collab.notifyComment(id, frame),
@@ -219,12 +221,19 @@ const app = buildApp({ config, store, secrets, blobs, otel, listCollabRooms: () 
   versionRooms: collab.versions,
   collabSocketTicket: (cookie, id) => collab.issueSocketTicket(cookie, id),
   onRenderRunner: (runner) => { renderRunner = runner; },
+  onEdgeOutbox: (outbox) => { edgeOutbox = outbox; },
   ...(backgroundPollMs !== undefined ? { backgroundPollMs } : {}),
   ...(renderConcurrency !== undefined ? { renderConcurrency } : {}),
 });
 // Poll persisted requests at boot as well as after submission. Other replicas
 // may run the same loop: the store owns claims and fencing.
 renderRunner?.start();
+// Edge purges (edge/outbox.ts): only when instance.json configures a provider.
+// The outbox wakes itself when a row falls due, so an idle instance sets no timer.
+if (edgeOutbox) {
+  edgeOutbox.start();
+  console.log(`[lolly-work] edge providers: ${config.edge.providers.map(p => `${p.id} (${p.kind}${p.publicOnly ? ', public only' : ''}) ${p.hostnames.join(',')}`).join('; ')}`);
+}
 
 // External anchoring of the audit chain (plan Rec 5): emit the head hash so any
 // log pipeline captures it off-box. On by default (boot + hourly); intervalMinutes
@@ -335,6 +344,7 @@ const shutdown = async (signal: string): Promise<void> => {
   shuttingDown = true;
   console.log(`[lolly-work] ${signal} — draining ${collab.rooms()} live collab room(s)`);
   server.close(); // stop accepting; in-flight requests finish
+  edgeOutbox?.stop(); // queued purges stay in the outbox for the next process
   // Save live rooms while render resources drain, including uninterruptible work.
   await Promise.all([renderRunner?.stop(), (async () => {
     try {

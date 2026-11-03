@@ -3,7 +3,7 @@ import { join, relative } from 'node:path';
 import { sha256Hex } from '../lib/crypto.ts';
 import { cachePolicy, tag } from '@lolly-tools/core/delivery-v1';
 import { sendBytes, sendFile, INERT_BYTE_HEADERS } from '../api/file-delivery.ts';
-import { type createRouter, sendError } from '../api/router.ts';
+import { type createRouter, sendError, setDeliveryTags } from '../api/router.ts';
 import type { BrandService } from './service.ts';
 import type { InstancePackMeta } from '../catalog/instance-pack.ts';
 import { pickBrandLogoUrl } from './logo.ts';
@@ -53,16 +53,20 @@ export function createBrandChrome(name: string, brand: BrandService) {
     register(router: ReturnType<typeof createRouter>) {
       const rules = (data: Awaited<ReturnType<typeof get>>, immutable = false) => ({
         'cache-control': cachePolicy(immutable ? 'public-immutable' : 'public-revalidate').cacheControl,
-        'cache-tag': tag('b', data.address.slice(0, 16)), 'surrogate-key': tag('b', data.address.slice(0, 16)),
         'x-content-type-options': 'nosniff',
       });
+      // The brand revision tag lets a brand change evict copies an edge holds.
+      // The router sends it only on public answers, and only with an edge configured.
+      const tagged = (res: import('node:http').ServerResponse, data: Awaited<ReturnType<typeof get>>) => setDeliveryTags(res, [tag('b', data.address.slice(0, 16))]);
       const css: import('../api/router.ts').Handler = async (req, res) => {
         const data = await get();
+        tagged(res, data);
         const text = authThemeCss(data.tokens, data.font).replaceAll('/api/brand/font/', `/api/brand/r/${data.address}/font/`);
         sendBytes(req, res, Buffer.from(text), { contentType: 'text/css; charset=utf-8', headers: rules(data) });
       };
       const json: import('../api/router.ts').Handler = async (req, res) => {
         const data = await get();
+        tagged(res, data);
         if (!data.tokens) return sendError(res, 404, 'NO_BRAND', 'No unambiguous design tokens are configured for this source.');
         sendBytes(req, res, Buffer.from(JSON.stringify({ name, tokens: data.tokens, fontsBase: `/api/brand/r/${data.address}/font/`,
           logos: { light: data.light ? `/api/brand/r/${data.address}/logo/light` : null, dark: data.dark ? `/api/brand/r/${data.address}/logo/dark` : null },
@@ -70,6 +74,7 @@ export function createBrandChrome(name: string, brand: BrandService) {
       };
       const logo: import('../api/router.ts').Handler = async (req, res, ctx) => {
         const data = await get();
+        tagged(res, data);
         if (ctx.params.revision && ctx.params.revision !== data.address) return sendError(res, 404, 'NOT_FOUND', 'No current brand at this revision.');
         const file = ctx.params.variant === 'light' ? data.light : ctx.params.variant === 'dark' ? data.dark : null;
         if (!file || !await sendFile(req, res, data.source.root, relative(data.source.root, file), { contentType: 'image/svg+xml',
@@ -77,6 +82,7 @@ export function createBrandChrome(name: string, brand: BrandService) {
       };
       const font: import('../api/router.ts').Handler = async (req, res, ctx) => {
         const data = await get(), file = ctx.params.file ?? '';
+        tagged(res, data);
         if (ctx.params.revision && ctx.params.revision !== data.address) return sendError(res, 404, 'NOT_FOUND', 'No current brand at this revision.');
         if (!/^[A-Za-z0-9._[\]-]+\.woff2$/.test(file)) return sendError(res, 400, 'INVALID_INPUT', 'Bad font name.');
         if (!await sendFile(req, res, data.source.root, `catalog/fonts/webfonts/${file}`, { contentType: 'font/woff2', ranges: true,

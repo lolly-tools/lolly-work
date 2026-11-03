@@ -19,6 +19,7 @@ import { closeSync, constants, fchmodSync, fsyncSync, mkdirSync, openSync, readF
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileSource, fileStateStore, resumableUpload, UploadClientError, type UploadTarget } from './upload-client.ts';
+import { runEdgeProbe } from '../server/src/edge/probe.ts';
 
 const CONFIG_DIR = join(homedir(), '.config', 'lolly-work');
 const SESSION_FILE = join(CONFIG_DIR, 'session');
@@ -98,6 +99,11 @@ const OPTIONS = {
     project: { type: 'string' },
     scope: { type: 'string' },
     'content-type': { type: 'string' },
+    // `lw edge purge --tag b_... --url https://...` (repeatable) and `lw edge probe`.
+    tag: { type: 'string', multiple: true },
+    url: { type: 'string', multiple: true },
+    path: { type: 'string', multiple: true },
+    origin: { type: 'string' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -1579,6 +1585,86 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
     break;
   }
 
+  case 'edge': {
+    type Finding = { id: string; status: 'pass' | 'fail' | 'warn' | 'info'; message: string };
+    type EdgeProvider = { id: string; kind: string; hostnames: string[]; publicOnly: boolean; euEligible: boolean; jurisdiction: Record<string, string>;
+      credential: { source: string; present: boolean; fingerprint?: string } };
+    type EdgeStatus = { jurisdiction: string; instanceTag: string | null; tagHeaders: string[]; providers: EdgeProvider[];
+      purges: Array<{ id: string; provider: string; kind: string; items: number; reason: string; state: string; attempts: number; lastError?: string }> };
+    const print = (findings: Finding[]): void => {
+      for (const f of findings) console.log(`${f.status.toUpperCase().padEnd(5)} ${f.id.padEnd(30)} ${f.message}`);
+    };
+    switch (sub) {
+      case undefined:
+      case 'status': {
+        const status = await call('/api/v1/edge') as EdgeStatus;
+        out(status);
+        if (!values.json) {
+          console.log(`jurisdiction ${status.jurisdiction} · instance tag ${status.instanceTag ?? '(none)'} · tag headers ${status.tagHeaders.join(', ') || '(none)'}`);
+          for (const p of status.providers) {
+            console.log(`${p.id.padEnd(16)} ${p.kind.padEnd(10)} ${p.hostnames.join(',')}${p.publicOnly ? ' (public only)' : ''} · company ${p.jurisdiction.company}, edge ${p.jurisdiction.edgeLocations}, logs ${p.jurisdiction.logs}`
+              + ` · credential ${p.credential.source} ${p.credential.present ? (p.credential.fingerprint ?? 'set') : 'MISSING'}`);
+          }
+          if (!status.providers.length) console.log('(no edge provider configured in instance.json)');
+          for (const r of status.purges) console.log(`  ${r.id} ${r.provider} ${r.kind} ×${r.items} ${r.state} (attempt ${r.attempts}) ${r.reason}${r.lastError ? ` · ${r.lastError}` : ''}`);
+        }
+        break;
+      }
+      case 'probe': {
+        const host = positionals[2];
+        if (!host || !/^[a-z0-9.-]+$/.test(host)) fail('usage: lw edge probe <hostname> [--origin https://origin.example] [--json]');
+        // Read-only. Zone checks need an owner session on --base; without one only the HTTP checks run.
+        let provider: EdgeProvider | undefined;
+        let zone: { findings: Finding[] } | null = null;
+        const statusRes = await response('/api/v1/edge');
+        if (statusRes.ok) {
+          const status = await statusRes.json() as EdgeStatus;
+          provider = status.providers.find(p => p.hostnames.includes(host));
+          if (provider) {
+            const verifyRes = await response(`/api/v1/edge/providers/${encodeURIComponent(provider.id)}/verify`);
+            const body = await verifyRes.json().catch(() => null) as { findings?: Finding[]; error?: { message?: string } } | null;
+            zone = { findings: verifyRes.ok && body?.findings ? body.findings : [{ id: 'zone', status: 'fail', message: body?.error?.message ?? `zone check answered ${verifyRes.status}` }] };
+          }
+        }
+        const http = await runEdgeProbe({ base: `https://${host}`, ...(values.origin ? { origin: values.origin } : {}), publicOnly: !!provider?.publicOnly });
+        const findings: Finding[] = [...http, ...(zone?.findings ?? [{ id: 'zone', status: 'info', message: statusRes.ok ? `${host} is not a configured edge hostname on ${base}; zone settings were not read.` : `Sign in as an owner on ${base} to check zone settings too.` }])];
+        out({ host, provider: provider?.id ?? null, findings });
+        if (!values.json) print(findings);
+        if (findings.some(f => f.status === 'fail')) process.exit(1);
+        break;
+      }
+      case 'purge': {
+        const tags = values.tag ?? [], urls = values.url ?? [], paths = values.path ?? [];
+        if (!tags.length && !urls.length && !paths.length) fail('usage: lw edge purge [--tag <tag>]... [--url https://host/path]... [--path /path]...');
+        const r = await call('/api/v1/edge/purge', { method: 'POST', body: { tags, urls, paths } }) as { queued: Array<{ id: string; provider: string; kind: string; items: number }>; refused: string[] };
+        out(r);
+        if (!values.json) {
+          for (const q of r.queued) console.log(`queued ${q.id}: ${q.provider} ${q.kind} ×${q.items}`);
+          for (const refused of r.refused) console.log(`refused ${refused}`);
+        }
+        break;
+      }
+      case 'credential': {
+        const id = positionals[2];
+        if (!id) fail('usage: lw edge credential <provider-id> [--rm]   (prompts for the API key or token)');
+        if (values.rm) {
+          out(await call(`/api/v1/edge/providers/${encodeURIComponent(id)}/credential`, { method: 'DELETE' }));
+          if (!values.json) console.log(`credential removed for ${id}`);
+          break;
+        }
+        const secret = await promptHidden(`API key or token for ${id}: `);
+        if (!secret) fail('no credential entered');
+        const r = await call(`/api/v1/edge/providers/${encodeURIComponent(id)}/credential`, { method: 'PUT', body: { secret } }) as { fingerprint: string; ok: boolean; findings: Finding[] };
+        out(r);
+        if (!values.json) { console.log(`credential stored (${r.fingerprint}); zone checks ${r.ok ? 'pass' : 'FAIL'}`); print(r.findings); }
+        break;
+      }
+      default:
+        fail('usage: lw edge [status] · lw edge probe <hostname> [--origin <url>] · lw edge purge --tag/--url/--path · lw edge credential <id> [--rm]');
+    }
+    break;
+  }
+
   default: {
     // No command (or -h) is a request for the list, exit 0. An unknown command
     // is an error and must exit non-zero, or a scripted deploy reads it as
@@ -1641,6 +1727,10 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   scim token create --idp <provider-id> | list | revoke <id>   provisioning bearers for an IdP (SCIM /scim/v2)
   preview --groups a,b   what a member in those groups would receive
   msg send --title "…" [--body --kind --severity --groups a,b --shells tauri --max-engine 1.52.99]
+  edge [status]              configured CDN providers, credential fingerprints and recent purges (owner)
+  edge probe <hostname> [--origin <url>]   read-only: private answers uncached, headers intact, transforms refused, zone settings
+  edge purge [--tag t]... [--url u]... [--path p]...   queue a purge on every configured provider (owner)
+  edge credential <id> [--rm]   seal a provider API key or token (prompts; never argv)
 
   --base <url> or LW_BASE — instance to talk to · --json for machine output`);
     if (unknown) process.exit(1);

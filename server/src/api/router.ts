@@ -4,7 +4,7 @@
  * node:http, a container, and a Vercel function wrapper.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { cachePolicy, type DeliveryClass, type CachePolicyOptions } from '@lolly-tools/core/delivery-v1';
+import { cachePolicy, renderTags, type DeliveryClass, type CachePolicyOptions } from '@lolly-tools/core/delivery-v1';
 import { appendVary, encodeText } from './file-delivery.ts';
 
 export type Handler = (req: IncomingMessage, res: ServerResponse, ctx: RouteCtx) => void | Promise<void>;
@@ -39,10 +39,58 @@ export function carriesCredential(req: IncomingMessage): boolean {
 /** The options a handler passed with setDeliveryClass, for the route conformance test. */
 export function deliveryOptionsOf(res: ServerResponse): CachePolicyOptions { return classOptions.get(res) ?? {}; }
 
-/** Install before dispatch, so auth errors and early raw responses are covered too. */
-export function guardDelivery(req: IncomingMessage, res: ServerResponse): void {
+/** Every purge-tag header a provider or a reference proxy reads. The guard
+ *  removes them all and adds back only the configured providers' headers, on
+ *  answers a shared cache may store. */
+export const PURGE_TAG_HEADERS = ['cache-tag', 'cdn-tag', 'surrogate-key', 'edge-cache-tag'] as const;
+const tags = new WeakMap<ServerResponse, string[]>();
+/** Delivery-v1 tags for this response (`b_...`, `t_...`, `h_...`). Sent only when
+ *  the answer is public and an edge provider is configured. */
+export function setDeliveryTags(res: ServerResponse, values: string[]): void { tags.set(res, [...(tags.get(res) ?? []), ...values]); }
+
+/** What the guard needs to know about the configured edge providers. */
+export interface EdgeDelivery {
+  /** Lower-case header names of the configured providers (`cdn-tag`, `cache-tag`). */
+  tagHeaders: readonly string[];
+  /** Added to every tagged answer, so one purge can evict everything this instance put on an edge. */
+  instanceTag?: string;
+  /** Hostnames that serve public classes only. */
+  publicOnlyHosts: ReadonlySet<string>;
+}
+const publicOnly = new WeakSet<ServerResponse>();
+/** The request's Host, lower-cased and without a port. Never X-Forwarded-Host, which a client can set. */
+export function requestHost(req: IncomingMessage): string {
+  const host = String(req.headers.host ?? '').trim().toLowerCase();
+  return host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.replace(/:\d+$/, '');
+}
+/** True when this response belongs to a request on a public-only edge hostname. */
+export function servesPublicOnly(res: ServerResponse): boolean { return publicOnly.has(res); }
+const PUBLIC_ONLY_BODY = Buffer.from(JSON.stringify({ error: { code: 'PUBLIC_HOST_ONLY', message: 'This hostname serves public files only.' } }));
+
+/** Render the tags a provider header carries, dropping any that break the delivery-v1 grammar. */
+function edgeTagValue(values: Array<string | undefined>): string | null {
+  const valid: string[] = [];
+  for (const value of new Set(values)) {
+    if (!value || valid.length >= 12) continue;
+    try { renderTags([value], 'comma'); valid.push(value); } catch { /* an invalid tag is left out, never sent */ }
+  }
+  try { return valid.length ? renderTags(valid, 'comma') : null; } catch { return null; }
+}
+
+/** Install before dispatch, so auth errors and early raw responses are covered too.
+ *  On a public-only edge hostname every credential is removed from the request
+ *  first, so nothing there can act as a person, and any answer that is not
+ *  public becomes an empty 404 before a byte of it is written. */
+export function guardDelivery(req: IncomingMessage, res: ServerResponse, edge?: EdgeDelivery): void {
   if (requests.has(res)) return;
   requests.set(res, req);
+  if (edge?.publicOnlyHosts.size && edge.publicOnlyHosts.has(requestHost(req))) {
+    publicOnly.add(res);
+    for (const name of Object.keys(req.headers)) {
+      const lower = name.toLowerCase();
+      if (['cookie', 'authorization', 'x-lolly-client'].includes(lower) || lower.startsWith('x-lw-')) delete req.headers[name];
+    }
+  }
   const original = res.writeHead;
   res.writeHead = function (this: ServerResponse, status: number, ...args: unknown[]) {
     const passed = (typeof args[0] === 'string' ? args[1] : args[0]) as Record<string, string | number | string[]> | undefined;
@@ -70,6 +118,29 @@ export function guardDelivery(req: IncomingMessage, res: ServerResponse): void {
       merged.set('surrogate-control', policy.surrogateControl ?? policy.cdnCacheControl);
     } else merged.delete('surrogate-control');
     if (!merged.has('referrer-policy')) merged.set('referrer-policy', 'no-referrer');
+    // Tags only ever describe an answer a shared cache may store, and only the
+    // configured providers' headers carry them. A tag a handler wrote itself is
+    // dropped, so a private or credentialed answer never carries one.
+    for (const name of PURGE_TAG_HEADERS) merged.delete(name);
+    const tagValue = shared && edge?.tagHeaders.length && [200, 206, 304].includes(status)
+      ? edgeTagValue([...(tags.get(res) ?? []), `x_${cls}`, edge.instanceTag]) : null;
+    if (tagValue) for (const name of edge!.tagHeaders) merged.set(name, tagValue);
+    // writeHead merges headers set earlier with setHeader, so a removed header must be removed there too.
+    // In-process callers (agents/project-requests.ts) pass a minimal response without removeHeader.
+    const removable = typeof res.removeHeader === 'function';
+    if (removable) for (const name of ['surrogate-control', ...PURGE_TAG_HEADERS]) if (!merged.has(name) && res.getHeader(name) !== undefined) res.removeHeader(name);
+    if (publicOnly.has(res) && !shared && status < 400) {
+      if (removable) for (const name of Object.keys(res.getHeaders())) res.removeHeader(name);
+      const end = res.end;
+      const head = req.method === 'HEAD';
+      res.write = function (...chunk: unknown[]) { const done = chunk.find(arg => typeof arg === 'function') as (() => void) | undefined; done?.(); return true; } as ServerResponse['write'];
+      res.end = function (this: ServerResponse, ...chunk: unknown[]) {
+        const done = chunk.find(arg => typeof arg === 'function') as (() => void) | undefined;
+        return Reflect.apply(end, this, head ? [done] : [PUBLIC_ONLY_BODY, done]);
+      } as ServerResponse['end'];
+      return original.call(this, 404, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(PUBLIC_ONLY_BODY.length),
+        'cache-control': cachePolicy('person-private').cacheControl, 'cdn-cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' });
+    }
     return typeof args[0] === 'string'
       ? Reflect.apply(original, this, [status, args[0], Object.fromEntries(merged)])
       : original.call(this, status, Object.fromEntries(merged));
@@ -105,6 +176,12 @@ export function createRouter(): {
         const params = match(route.segments, parts);
         if (!params) continue;
         classes.set(res, route.delivery);
+        // A person-private route never answers a public class, so on a
+        // public-only hostname its handler does not run at all.
+        if (publicOnly.has(res) && route.delivery === 'person-private') {
+          sendError(res, 404, 'PUBLIC_HOST_ONLY', 'This hostname serves public files only.');
+          return route.path;
+        }
         await route.handler(req, res, { params, url });
         return route.path;
       }

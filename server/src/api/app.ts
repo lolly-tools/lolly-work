@@ -38,9 +38,9 @@ import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConf
 import type { ApiTokenRecord, InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
+import { createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, servesPublicOnly, setDeliveryClass, setDeliveryTags, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
 import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
-import { cachePolicy, publicStaticDeliveryClass, type DeliveryClass } from '@lolly-tools/core/delivery-v1';
+import { cachePolicy, publicStaticDeliveryClass, tag as deliveryTag, type DeliveryClass, type TagPrefix } from '@lolly-tools/core/delivery-v1';
 import { shellDirectories } from '../lib/shell-release.ts';
 import { readShotCred } from './shot-provenance.ts';
 import { CONSOLE_ASSET_HEADERS, consoleDocumentHeaders } from './console-headers.ts';
@@ -159,7 +159,11 @@ import {
   INSTANCE_SCOPE, type CatalogTagRule, type CensusInput,
 } from '../catalog/tag-rules.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
-import { createBrandService, BrandError } from '../brand/service.ts';
+import { createBrandService, BrandError, type BrandSnapshot } from '../brand/service.ts';
+import { EDGE_DEFAULTS, edgeTagHeaders, publicOnlyHosts } from '../edge/config.ts';
+import { EdgePurgeOutbox, type EdgePurgeRequest } from '../edge/outbox.ts';
+import { createEdgeAdapter, envEdgeCredentials, resolveEdgeCredential } from '../edge/registry.ts';
+import { registerEdgeRoutes } from '../edge/routes.ts';
 import { createBrandRuleService } from '../brand/rule-service.ts';
 import { managedRuleContext, projectRuleOverlay, requestRuleContext, sourceRules, hash as brandPolicyHash } from '../brand/rules.ts';
 import { registerBrandRoutes } from '../brand/routes.ts';
@@ -264,6 +268,11 @@ const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-l
  *  health-adjacent route. Serves the instance manifest and the fleet drift
  *  line (plans/34 waves 1a + 1d). */
 let cachedPinnedEngine: string | null | undefined;
+/** Delivery tags for values that pass the delivery-v1 grammar; any other value is left out rather than failing the response. */
+function safeTags(pairs: Array<[TagPrefix, string]>): string[] {
+  return pairs.flatMap(([prefix, value]) => { try { return [deliveryTag(prefix, value)]; } catch { return []; } });
+}
+
 function pinnedEngineVersion(): string | null {
   if (cachedPinnedEngine !== undefined) return cachedPinnedEngine;
   try {
@@ -344,6 +353,13 @@ export interface AppDeps {
   /** How many durable renders this process drives at once (main.ts reads
    *  LW_RENDER_CONCURRENCY). Unset keeps the runner's default of 2. */
   renderConcurrency?: number;
+  /** Test injection for edge provider credentials by provider id. Production
+   *  reads each provider's credentialRef variable, or its sealed stored row. */
+  edgeSecrets?: ReadonlyMap<string, string>;
+  /** Test injection for edge provider API calls. */
+  edgeFetch?: typeof fetch;
+  /** Long-lived hosts start the edge purge outbox; function hosts leave purges queued. */
+  onEdgeOutbox?: (outbox: EdgePurgeOutbox) => void;
 }
 
 type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -363,7 +379,10 @@ export function buildApp(deps: AppDeps): App {
   configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
   const blobs = deps.blobs ?? createMemoryBlobStore();
   const otel = deps.otel ?? NOOP_OTEL;
+  // Assigned once the edge outbox exists, further down.
+  let onBrandCommitted: (prior: BrandSnapshot) => void = () => {};
   const brand = createBrandService(deploymentConfig, store, blobs, {
+    onCommitted: (prior) => onBrandCommitted(prior),
     ...(productionMode(deploymentConfig) ? { inspectSource: async (source: string) => {
       const report = await inspectPack(deploymentConfig.instance.pack, { source,
         workerConfigured: !!deploymentConfig.render.worker.url && !!secrets.renderWorker,
@@ -750,6 +769,51 @@ export function buildApp(deps: AppDeps): App {
   const auditMacKey = deriveAuditMacKey(secrets.session);
   const log = createLogger(process.env, undefined, otel.signals.logs ? otel.log : undefined);
   const linkPasswordAttempts = createLinkPasswordAttempts();
+
+  // ── edge (CDN) providers (plan 80 section 8; wave 1 is public classes only) ──
+  // config/instance.ts already refused any provider the jurisdiction rule does
+  // not allow. Credentials come from each provider's credentialRef variable,
+  // read once here, or from a sealed row opened only when a call needs it.
+  const edgeConfig = config.edge ?? EDGE_DEFAULTS;
+  const edgeEnv = deps.edgeSecrets ?? envEdgeCredentials(edgeConfig.providers);
+  const edgeDelivery = edgeConfig.providers.length ? {
+    tagHeaders: edgeTagHeaders(edgeConfig),
+    instanceTag: safeTags([['o', sha256Hex(config.instance.baseUrl).slice(0, 16)]])[0]!,
+    publicOnlyHosts: publicOnlyHosts(edgeConfig),
+  } : undefined;
+  const edgeCredentialSource = { env: edgeEnv, sealed: (id: string) => store.getEdgeCredential(id), ...(secrets.credential ? { masterSecret: secrets.credential } : {}) };
+  const edgeAdapterFor = async (provider: (typeof edgeConfig.providers)[number]) => {
+    const credential = await resolveEdgeCredential(provider, edgeCredentialSource);
+    return credential ? createEdgeAdapter(provider, credential, deps.edgeFetch ?? fetchImpl) : null;
+  };
+  const edgeOutbox = new EdgePurgeOutbox(store, {
+    providers: edgeConfig.providers,
+    adapterFor: edgeAdapterFor,
+    onSettled: async (row, result) => {
+      await audit('system:edge', result.state === 'done' ? 'edge.purge.done' : 'edge.purge.failed', `edge-provider:${row.providerId}`, {
+        purge: row.id, kind: row.kind, items: row.items.length, reason: row.reason, attempts: row.attempt, ...(result.error ? { error: result.error } : {}),
+      });
+    },
+  });
+  /** Queue a purge for every configured provider. Never awaited by the change that asked for it. */
+  const queueEdgePurge = (request: EdgePurgeRequest): void => {
+    if (!edgeOutbox.configured) return;
+    void edgeOutbox.enqueue(request).catch((error: Error) => log('warn', 'edge purge could not be queued', { reason: request.reason, error: error.message }));
+  };
+  onBrandCommitted = (prior) => {
+    if (!edgeOutbox.configured) return;
+    void (async () => {
+      const after = await brand.snapshot();
+      const tags: Array<['b' | 'h', string]> = [];
+      // Revision-addressed brand files of the old revision, and the hashed pack it offered.
+      if (after.revision !== prior.revision) tags.push(['b', sha256Hex(prior.revision).slice(0, 16)]);
+      const before = /^brand-download\/([0-9a-f]{64})\.lolly$/.exec(prior.state.download.blobId ?? '')?.[1];
+      const now = /^brand-download\/([0-9a-f]{64})\.lolly$/.exec(after.state.download.blobId ?? '')?.[1];
+      if (before && (before !== now || (!prior.state.download.suppressed && after.state.download.suppressed))) tags.push(['h', before.slice(0, 16)]);
+      if (tags.length) queueEdgePurge({ tags: safeTags(tags), reason: 'brand.change' });
+    })().catch((error: Error) => log('warn', 'edge purge after a brand change could not be queued', { error: error.message }));
+  };
+  if (edgeOutbox.configured) deps.onEdgeOutbox?.(edgeOutbox);
 
   let setupMemo: { revision: string; expires: number; report: Promise<SetupReport> } | undefined;
   const setupReport = async () => {
@@ -4037,7 +4101,10 @@ export function buildApp(deps: AppDeps): App {
     const policy = cachePolicy(immutable ? 'public-immutable' : 'instance-private'), etag = `"${checksum}"`;
     const headers = { etag, 'cache-control': policy.cacheControl, 'x-content-type-options': 'nosniff',
       ...(offer?.meta?.uploadedAt ? { 'last-modified': new Date(offer.meta.uploadedAt).toUTCString() } : {}),
-      ...(immutable ? { 'cache-tag': `o_${checksum.slice(0, 16)},h_${sha256Hex(config.instance.baseUrl).slice(0, 16)}`, 'surrogate-key': `o_${checksum.slice(0, 16)} h_${sha256Hex(config.instance.baseUrl).slice(0, 16)}` } : {}) };
+    };
+    // h_ names these bytes, so re-hosting the pack can evict the old copy; the
+    // router adds the instance tag (o_) and sends tags only on public answers.
+    if (immutable) setDeliveryTags(res, safeTags([['h', checksum.slice(0, 16)]]));
     if (matchesEtag(req.headers['if-none-match'], etag)) { res.writeHead(304, headers); res.end(); return; }
     if (req.method === 'HEAD') { res.writeHead(200, { ...headers, 'content-type': 'application/octet-stream', 'content-length': String(head.size) }); res.end(); return; }
     const blob = offer?.blobId ? await blobs.get(offer.blobId) : null;
@@ -5837,6 +5904,8 @@ export function buildApp(deps: AppDeps): App {
         }
         const delivery = everyone ? 'public-bounded' : 'instance-private';
         setDeliveryClass(res, delivery, everyone ? { boundedAgeSec: 3600 } : {});
+        // t_ lets a visibility change evict a card an edge holds (plan 80 section 6.2).
+        if (card.kind === 'tool') setDeliveryTags(res, safeTags([['t', card.toolId]]));
         sendBytes(req, res, bytes, { contentType: contentType(card.rel),
           headers: { 'cache-control': cachePolicy(delivery, everyone ? { boundedAgeSec: 3600 } : {}).cacheControl,
             'x-content-type-options': 'nosniff' } });
@@ -8135,6 +8204,8 @@ export function buildApp(deps: AppDeps): App {
     // policyVersion, but a value set BACK to a previously-rendered one would
     // hit old bytes - same reasoning as the bulk-edit bust).
     invalidateRenderByTool(toolId);
+    // Its public share card may now be hidden from some groups.
+    queueEdgePurge({ tags: safeTags([['t', toolId]]), paths: [`/catalog/og/${toolId}.png`], reason: 'policy.overlay.edit' });
     await audit(`user:${user.id}`, 'policy.overlay.edit', `tool:${toolId}`, {
       version: overlay.version,
       before: existing ?? null,
@@ -8284,6 +8355,8 @@ export function buildApp(deps: AppDeps): App {
     const summary = diffSummary(diff);
     if (dryRun) return sendJson(res, 200, { dryRun: true, prune, hash, diff: summary }, { 'cache-control': 'no-store' });
     await commitConfigApply(store, diff, user.id);
+    const changedTools = [...diff.overlays.create, ...diff.overlays.update, ...diff.overlays.delete].map((o) => o.toolId);
+    if (changedTools.length) queueEdgePurge({ tags: safeTags(changedTools.map((id): ['t', string] => ['t', id])), reason: 'config.apply' });
     await audit(`user:${user.id}`, 'config.apply', `config:${hash.slice(0, 16)}`, { prune, hash, ...summary });
     sendJson(res, 200, { dryRun: false, prune, hash, applied: summary });
   });
@@ -10897,6 +10970,11 @@ export function buildApp(deps: AppDeps): App {
   const brandCard = async (packUrl: string | null) => brandChrome.card(packUrl, await readPackMeta());
   brandChrome.register(router);
   registerBrandRoutes(router, { brand, rules: brandRules, member: async req => (await memberOf(req)) ?? (await serviceAccountOf(req)) });
+  registerEdgeRoutes(router, {
+    config: edgeConfig, instanceTag: edgeDelivery?.instanceTag, outbox: edgeOutbox, store, adapterFor: edgeAdapterFor,
+    envCredentials: new Set(edgeEnv.keys()), requireOwner: (req, res) => requireAction(req, res, 'instance.config'), audit,
+    ...(secrets.credential ? { credentialSecret: secrets.credential } : {}), fetchImpl: deps.edgeFetch ?? fetchImpl,
+  });
 
   // ── SCIM provisioning (plans/31 §8) ───────────────────────────────────────
   // Two surfaces. The ADMIN half (/api/v1/scim/tokens) mints and revokes the
@@ -11314,7 +11392,12 @@ export function buildApp(deps: AppDeps): App {
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse, span: RequestSpan | undefined): Promise<void> => {
-    guardDelivery(req, res);
+    guardDelivery(req, res, edgeDelivery);
+    // A public-only edge hostname (edge/config.ts) answers reads of public classes and nothing else.
+    if (servesPublicOnly(res) && req.method !== 'GET' && req.method !== 'HEAD') {
+      res.setHeader('allow', 'GET, HEAD');
+      return sendError(res, 405, 'PUBLIC_HOST_ONLY', 'This hostname serves public files only.');
+    }
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
     const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);

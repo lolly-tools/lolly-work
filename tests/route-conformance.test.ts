@@ -276,6 +276,8 @@ function conforms(where: string, route: RouteDescription, path: string, res: Sam
     assert.equal(cdn, 'no-store', `${label}: a private answer must tell every CDN layer no-store`);
     assert.equal(surrogate, undefined, `${label}: a private answer must not carry Surrogate-Control`);
   }
+  // This app configures no edge provider, so no answer carries a purge tag, public or not.
+  for (const name of ['cache-tag', 'cdn-tag', 'surrogate-key', 'edge-cache-tag']) assert.equal(res.headers[name], undefined, `${label}: carries ${name}`);
   if (res.status >= 400 || delivery === 'person-private' || res.headers['set-cookie']) {
     assert.equal(control, PRIVATE, `${label}: expected ${PRIVATE}`);
     return;
