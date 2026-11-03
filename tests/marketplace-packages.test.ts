@@ -49,6 +49,37 @@ test('generated adapters retain exact shared runtime scripts after Compose inter
   assert.equal(profile.renderWorker.enabled, false);
 });
 
+test('the Coolify recipe uses magic variables, no build or host ports, and keeps the shared scripts', () => {
+  const packages = deploymentPackages(), text = packages.coolify, compose = parse(text), dokploy = parse(packages.dokploy);
+  for (const header of ['documentation', 'slogan', 'category', 'tags', 'port']) assert.match(text, new RegExp(`^# ${header}: \\S`, 'm'));
+  assert.match(text, /^# port: 8787$/m);
+  assert.doesNotMatch(text, /^\s+(build|ports|expose):/m);
+  assert.doesNotMatch(text, /^\s+restart: no$/m, 'a bare no is a boolean in YAML 1.1');
+  assert.doesNotMatch(text, /[&*]a\d/, 'no YAML anchors');
+  const server = compose.services.server.environment as string[];
+  assert.equal(server[0], 'SERVICE_FQDN_SERVER_8787', 'routes the domain to the internal port');
+  assert.ok(server.includes('LOLLY_DOMAIN=${SERVICE_FQDN_SERVER}'), 'the hostname has no scheme or port');
+  assert.ok(server.includes('LOLLY_OWNER_EMAIL=${LOLLY_OWNER_EMAIL:?}'));
+  assert.ok(!/SERVICE_\w*_\w*_\w*_\d+/.test(text.replace(/SERVICE_PASSWORD_64_\w+/g, '')), 'ID tokens contain no underscore before a port');
+  const secrets = Object.fromEntries(server.filter(e => /^LW_(SESSION|LINK|CREDENTIAL)_SECRET=/.test(e)).map(e => e.split('=')));
+  assert.deepEqual(secrets, { LW_SESSION_SECRET: '${SERVICE_PASSWORD_64_SESSION}', LW_LINK_SECRET: '${SERVICE_PASSWORD_64_LINK}', LW_CREDENTIAL_SECRET: '${SERVICE_PASSWORD_64_CREDENTIAL}' });
+  assert.ok(server.includes('DATABASE_URL=postgres://lolly:${SERVICE_PASSWORD_64_POSTGRES}@db:5432/lollywork'));
+  assert.ok((compose.services.db.environment as string[]).includes('POSTGRES_PASSWORD=${SERVICE_PASSWORD_64_POSTGRES}'));
+  assert.equal(compose.services.content.exclude_from_hc, true);
+  assert.equal(compose.services.content.restart, 'no');
+  assert.equal(compose.services.caddy, undefined);
+  for (const name of ['content', 'db', 'server']) {
+    assert.equal(compose.services[name].ports, undefined);
+    assert.equal(compose.services[name].build, undefined);
+    assert.equal(compose.services[name].image, dokploy.services[name].image);
+  }
+  for (const service of ['content', 'server']) {
+    assert.equal(compose.services[service].command[3].replaceAll('$$', '$'), readFileSync(new URL(`../deploy/marketplaces/${service === 'content' ? 'content-init' : 'server-start'}.mjs`, import.meta.url), 'utf8'));
+  }
+  assert.deepEqual(compose.services.server.volumes, dokploy.services.server.volumes);
+  assert.ok(!/postgres:\/\/[^$]*:[^$@]+@/.test(text.replace(/\$\{[^}]+\}/g, '')), 'no literal credentials');
+});
+
 test('every qualified architecture keeps a required native Compose qualification leg', () => {
   const workflow = parse(readFileSync(new URL('../.github/workflows/helm-qualification.yml', import.meta.url), 'utf8'));
   const job = workflow.jobs['neutral-compose'];

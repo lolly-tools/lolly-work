@@ -229,12 +229,13 @@ const readCompose = (path: string) =>
   parseYaml(readFileSync(join(REPO, path), 'utf8')) as { services: Record<string, ComposeService> };
 const VM_COMPOSE = readCompose('deploy/marketplaces/compose.yaml');
 const DOKPLOY_COMPOSE = readCompose('deploy/dokploy/lolly-work/docker-compose.yml');
+const COOLIFY_COMPOSE = readCompose('deploy/coolify/lolly-work/docker-compose.yml');
 
 test('the external services inventory names every registry and archive host the packages use', () => {
   assert.ok(MIRRORS, 'official-installations.md has an External services and mirrors section');
   const images = [
     ...Object.entries(release).filter(([key]) => key.endsWith('Image')).map(([, value]) => String(value)),
-    ...[VM_COMPOSE, DOKPLOY_COMPOSE].flatMap((c) => Object.values(c.services).flatMap((s) => (s.image ? [s.image] : []))),
+    ...[VM_COMPOSE, DOKPLOY_COMPOSE, COOLIFY_COMPOSE].flatMap((c) => Object.values(c.services).flatMap((s) => (s.image ? [s.image] : []))),
   ];
   assert.ok(images.length >= 4, 'release.json pins the server, worker, PostgreSQL and Caddy images');
   for (const prefix of new Set(images.map(registryPrefix))) {

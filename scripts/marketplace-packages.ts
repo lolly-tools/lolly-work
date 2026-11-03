@@ -67,7 +67,47 @@ export function deploymentPackages() {
   };
   // Compose substitutes dollars even in list-form commands and quoted YAML.
   const yaml = (value: unknown) => stringify(value, { lineWidth: 0 });
-  return { compose: yaml(compose), dokploy: yaml(dokploy), template, meta, caddyfile };
+  return { compose: yaml(compose), dokploy: yaml(dokploy), coolify: coolifyCompose(services, yaml), template, meta, caddyfile };
+}
+
+// Coolify generates these values once per service and keeps them across deploys.
+// SERVICE_PASSWORD_64_* is 64 alphanumeric characters: URL-safe for DATABASE_URL and
+// well above the server's 32-character minimum. The ID is one token (no underscores).
+const coolifySecrets: Record<string, string> = {
+  POSTGRES_PASSWORD: 'SERVICE_PASSWORD_64_POSTGRES',
+  LW_SESSION_SECRET: 'SERVICE_PASSWORD_64_SESSION',
+  LW_LINK_SECRET: 'SERVICE_PASSWORD_64_LINK',
+  LW_CREDENTIAL_SECRET: 'SERVICE_PASSWORD_64_CREDENTIAL',
+};
+
+function coolifyCompose(services: Record<string, any>, yaml: (value: unknown) => string) {
+  const generated = (text: string) => {
+    let out = text;
+    for (const [name, magic] of Object.entries(coolifySecrets)) out = out.replaceAll('${' + name + ':?set ' + name + '}', '${' + magic + '}');
+    return out;
+  };
+  const list = (environment: Record<string, string>) => Object.entries(environment).map(([key, value]) => `${key}=${generated(String(value))}`);
+  // Independent copies: Coolify's parser should not meet YAML anchors or aliases.
+  const [content, db, server] = [services.content, services.db, services.server].map(service => JSON.parse(JSON.stringify(service)));
+  // The proxy routes the generated or operator-set domain to the server's internal port.
+  // The bare SERVICE_FQDN_SERVER_8787 entry registers the route; ${SERVICE_FQDN_SERVER}
+  // is the hostname without a scheme, which is what LOLLY_DOMAIN requires.
+  server.environment = ['SERVICE_FQDN_SERVER_8787', ...list({ ...server.environment, LOLLY_DOMAIN: '${SERVICE_FQDN_SERVER}', LOLLY_OWNER_EMAIL: '${LOLLY_OWNER_EMAIL:?}' })];
+  db.environment = list(db.environment);
+  content.environment = list(content.environment);
+  content.exclude_from_hc = true;
+  delete server.expose;
+  const header = [
+    '# documentation: https://github.com/lolly-tools/lolly-work/blob/main/deploy/coolify/README.md',
+    '# slogan: Lolly Work is the open-source Lolly control plane: a neutral web shell, durable PostgreSQL and built-in sign-in or OIDC.',
+    '# category: productivity',
+    '# tags: lolly, collaboration, design, productivity, postgresql',
+    '# port: 8787',
+    '',
+  ].join('\n');
+  // Quote "no": YAML 1.1 readers take a bare no as false.
+  const body = yaml({ services: { content, db, server }, volumes: { content: {}, keys: {}, state: {}, pgdata: {} } }).replace(/^(\s+restart): no$/gm, '$1: "no"');
+  return header + '\n' + body;
 }
 
 export function writePackages(check = false) {
@@ -81,6 +121,7 @@ export function writePackages(check = false) {
     'deploy/marketplaces/Caddyfile': packages.caddyfile,
     'deploy/dokploy/lolly-work/docker-compose.yml': packages.dokploy,
     'deploy/dokploy/lolly-work/template.toml': packages.template,
+    'deploy/coolify/lolly-work/docker-compose.yml': packages.coolify,
     'deploy/dokploy/lolly-work/meta.json': JSON.stringify(packages.meta, null, 2) + '\n',
   };
   for (const [name, content] of Object.entries(files)) {
