@@ -4,10 +4,12 @@
 import type { FlagGovernance } from './feature-flags.ts';
 
 /** The same names as the Lolly shell's list, so every capability the shell
- * guards can be approved here. `sing` is Rondocode's singing voices. */
+ * guards can be approved here. `sing` is Rondocode's singing voices. `agents`
+ * is the desktop app's Ask an agent and Allow AI control: an agent CLI the
+ * person has installed, run under their own account with its provider. */
 export const AI_CAPABILITIES = [
   'speech', 'transcription', 'upscale', 'matte', 'ocr', 'depth',
-  'reword', 'ai-detect', 'embedding', 'watermark', 'sing',
+  'reword', 'ai-detect', 'embedding', 'watermark', 'sing', 'agents',
 ] as const;
 export type AiCapability = typeof AI_CAPABILITIES[number];
 export interface AiConfig { enabled: boolean; capabilities: AiCapability[] }

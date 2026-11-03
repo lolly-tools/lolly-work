@@ -106,3 +106,13 @@ test('sing can be approved like the other shell capabilities, and stays off by d
   assert.equal(lease.status, 200);
   assert.deepEqual(await lease.json(), { version: 1, enabled: true, capabilities: ['ocr', 'sing'], maxAgeSeconds: 60 });
 });
+
+test('agents (the desktop Ask an agent) can be approved, stays off by default, and is matched exactly', () => {
+  assert.deepEqual(config().policy.ai.capabilities, []);
+  const approved = config({ enabled: true, capabilities: ['agents'] }).policy.ai;
+  assert.deepEqual(approved, { enabled: true, capabilities: ['agents'] });
+  assert.deepEqual(resolveAiPolicy(approved, new Map()), { version: 1, enabled: false, capabilities: [], maxAgeSeconds: 60 });
+  for (const capabilities of [['agent'], ['Agents'], ['agents', 'agents']]) {
+    assert.throws(() => config({ enabled: true, capabilities }), /policy.ai.capabilities/, capabilities.join(','));
+  }
+});
