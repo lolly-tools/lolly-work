@@ -23,7 +23,10 @@ after(() => { for (const s of servers) s.close(); });
 
 test('the header map is the YunoHost package\'s shell header set, name for name and value for value', () => {
   const inc = readFileSync(new URL('../deploy/yunohost/conf/shell-headers.inc', import.meta.url), 'utf8');
-  const fromInc = Object.fromEntries([...inc.matchAll(/^more_set_headers "([^:]+): (.*)";$/gm)].map((m) => [m[1]!.toLowerCase(), m[2]!]));
+  // The package fills the open-source models-host placeholder with lolli.li
+  // (lollywork_add_shell_headers), so the server serves that same value.
+  const fromInc = Object.fromEntries([...inc.matchAll(/^more_set_headers "([^:]+): (.*)";$/gm)]
+    .map((m) => [m[1]!.toLowerCase(), m[2]!.replace('__LOLLY_CSP_MODELS_HOST__', ' https://lolli.li')]));
   assert.deepEqual({ ...SHELL_SECURITY_HEADERS }, fromInc);
 });
 
