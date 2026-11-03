@@ -91,6 +91,7 @@ export const INPUTS: Readonly<Record<Suite, readonly string[]>> = {
   helm: [
     '.github/workflows/release.yml',
     'deploy/compose/',
+    'deploy/coolify/',
     'deploy/dokploy/',
     'deploy/helm/',
     'deploy/kubewarden/',
