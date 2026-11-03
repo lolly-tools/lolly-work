@@ -80,6 +80,8 @@ which is why the upgrade baseline moved to `1.1.0~ynh3`.
 - **One service, one database.** Node 24 (YunoHost's `nodejs` resource) runs `server/src/main.ts` behind the domain's nginx; PostgreSQL from the `database` resource; migrations at boot.
 - **Two sources.** `main` is this repository at the release tag (no `node_modules`; the install runs `pnpm install --frozen-lockfile --prod`). `shell` is the Lolly web app build the open-source `lolly` YunoHost package installs, served at `/` and seeded as the instance pack.
 - **YunoHost SSO, no passwords.** `proxyAuth` in the server (docs/identity.md, "Reverse-proxy sign-in"): SSOwat's `YNH_USER` / `YNH_USER_EMAIL` / `YNH_USER_FULLNAME` headers plus a shared secret nginx injects, and an anonymous read of the host's LDAP for groups and this app's role permissions.
+- **Nextcloud, optional.** Install and upgrade detect a Nextcloud app and prefill its address; the config panel's Nextcloud section then writes a config-managed WebDAV catalog source and delivery destination into `instance.json` (`_common.sh`, `lollywork_nextcloud_vars`). See [`doc/ADMIN.md`](doc/ADMIN.md#nextcloud-on-the-same-server).
+- **No edge cache.** The package does not add an nginx response cache. Everything cacheable by URL sits behind SSOwat and carries the portal cookie, and the routes visitors reach are signed or private. A public-class cache needs the content-addressed `/e/` route (CDN delivery plan, E3), which does not exist yet; revisit it then.
 - **Whole domain**, `multi_instance`; declared architectures `amd64` + `arm64`, with beta runtime checks completed on `amd64` only.
 
 ## Cutting a release

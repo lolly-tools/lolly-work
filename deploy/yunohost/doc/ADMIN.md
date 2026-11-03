@@ -25,6 +25,18 @@ The instance starts with the neutral starter brand and the full community tool s
 
 Instance name, access mode (gated, per-tool, open), guest edit links, telemetry level, and whether tool hooks run in the server's in-process renderer. Each change rewrites `instance.json` and restarts the service. Finer governance (which groups see which tools, locked inputs, approval chains, brand sources, deliveries) is in the console.
 
+## Nextcloud on the same server
+
+Install and upgrade look for a Nextcloud app (`yunohost app list`) and prefill its address in **Configuration > Nextcloud**. The connection is never switched on for you, because it needs an app password only you can create:
+
+1. In Nextcloud, create a dedicated account, for example `lolly-federation`, and share the brand folder with it read-only.
+2. As that account, create an app password under **Settings > Security**. Never use the account password.
+3. In the Lolly Work configuration panel, turn on **Connect Nextcloud** and fill in the address, the login name, the app password, the brand folder to read and, optionally, an existing writable delivery folder.
+
+Applying the panel adds a WebDAV catalog source and a WebDAV delivery destination, both named Nextcloud, to `instance.json`. They are config-managed, so the console shows them read-only; change them here. The delivery destination is limited to the `admins` group by default. The app password lives in the app settings and in `.env`, and reaches the server only as the `LW_PROVIDER_NEXTCLOUD` and `LW_DESTINATION_NEXTCLOUD` environment variables. The panel adds the Nextcloud origin to the providers' allowed private origins, because a Nextcloud on this host resolves to a private address.
+
+Lolly Work takes a whole domain, so the Nextcloud is on another domain or subdomain of this server. The server talks to it directly. The WebDAV connection that the Lolly web app can make from the browser is separate: it is cross-origin from this domain and needs CORS on the Nextcloud and a matching entry in the page's content policy.
+
 ## Running it
 
 - Service: `lolly-work` (`yunohost service status lolly-work`, log in `/var/log/lolly-work/`).

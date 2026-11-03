@@ -21,6 +21,7 @@ ynh_app_setting_set_default --key=access_mode --value="gated"
 ynh_app_setting_set_default --key=telemetry --value="standard"
 ynh_app_setting_set_default --key=guest_links --value="true"
 ynh_app_setting_set_default --key=hooks_fast_path --value="true"
+lollywork_nextcloud_defaults
 if [ -z "${proxy_secret:-}" ]; then
     proxy_secret=$(ynh_string_random --length=48)
     ynh_app_setting_set --key=proxy_secret --value="$proxy_secret"
