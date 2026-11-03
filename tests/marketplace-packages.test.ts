@@ -56,6 +56,7 @@ test('the Coolify recipe uses magic variables, no build or host ports, and keeps
   assert.doesNotMatch(text, /^\s+(build|ports|expose):/m);
   assert.doesNotMatch(text, /^\s+restart: no$/m, 'a bare no is a boolean in YAML 1.1');
   assert.doesNotMatch(text, /[&*]a\d/, 'no YAML anchors');
+  assert.doesNotMatch(text, /:\?set /, 'every required secret maps to a Coolify generator');
   const server = compose.services.server.environment as string[];
   assert.equal(server[0], 'SERVICE_FQDN_SERVER_8787', 'routes the domain to the internal port');
   assert.ok(server.includes('LOLLY_DOMAIN=${SERVICE_FQDN_SERVER}'), 'the hostname has no scheme or port');
