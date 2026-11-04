@@ -354,6 +354,12 @@
           "summary": "What the OpenTofu and Terraform modules create, how the two providers differ, moving a PostgreSQL database safely, and capacity and recovery checks."
         },
         {
+          "slug": "edge-cdn",
+          "path": "edge-cdn.md",
+          "title": "Put a CDN in front of Work",
+          "summary": "Serve Work's public files through Bunny or Cloudflare: the per-hostname jurisdiction rule, configuration and credentials, the settings that must stay off, purges and the probe."
+        },
+        {
           "slug": "aws-compatible",
           "path": "aws-compatible.md",
           "title": "Run Work on AWS or MulgaDC Spinifex",

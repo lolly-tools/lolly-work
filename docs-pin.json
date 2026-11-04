@@ -1,8 +1,8 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "7edaf3704a9aa3c3f26e2b5e793b0881056d298f",
-  "manifestSha256": "3774c23af521a818239f958d5d8e86d7d5d52278e9972933f5d399659855beed",
+  "commit": "b31e3eb76c1ba7cbc81ed396e4627fa36df85305",
+  "manifestSha256": "f99e3a6e60af2d2199f3818894a496ce775249d56b40fcf4cc8f04bd791ae69b",
   "files": {
     "account-lifecycle.md": {
       "sha256": "37f7cf8213f0fb6805c7fd5e0a3e263a4afa24a68abd547e4904f640cc2cc4d0",
@@ -53,7 +53,7 @@
       "source": "docs/work/cloud-deployment.md"
     },
     "configuration.md": {
-      "sha256": "6dfe3470a4494105287b907915d1e4ff703b16e442f503faaceda2b2b3c2f0cd",
+      "sha256": "a25bb85331e60f05c1a31acbf6cf2b124357b2dbb6db1e9eb1b8e3c3428ecd0f",
       "source": "docs/work/configuration.md"
     },
     "customer-setup.md": {
@@ -77,12 +77,16 @@
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
-      "sha256": "2453d2e3f845e4c48afba11ed8614ab6f5ed949d798863de64fb83babd1d3808",
+      "sha256": "58be88adaa2bd8e50367dde18861f3111e7790871fd3849b59b12e389e1017ed",
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
       "sha256": "1acb4e155059b4696d45070548354453abb738cbb02258166935ecb82e1002da",
       "source": "docs/work/document-agents.md"
+    },
+    "edge-cdn.md": {
+      "sha256": "9cb177a6996c1dc5dd2196932a786a6eaeceaa5f47b5cacacb3b075f5853f85d",
+      "source": "docs/work/edge-cdn.md"
     },
     "enterprise-identity.md": {
       "sha256": "cc09cec6abfd987c6c619043fcd93f179ef0e8c99c4d64a7a472ce37d1eca99e",
@@ -245,7 +249,7 @@
       "source": "docs/work/providers/webdav.md"
     },
     "README.md": {
-      "sha256": "4590d6f26bed43309ec48ac73d966c9e4033bc5f1451fde53adfa051b466d3fb",
+      "sha256": "1b12ec2938b933580a3567769602d258d036682cfa60557f4c09bfa3af261ed8",
       "source": "scripts/export-work-docs.ts"
     },
     "ready-made-package.md": {
