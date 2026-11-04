@@ -190,7 +190,17 @@ def change_list(gh, live, new):
         if before == after:
             report.append({"repository": repository, "commits": 0})
             continue
-        compare = gh.json(f"repos/{repository}/compare/{before}...{after}")
+        try:
+            compare = gh.json(f"repos/{repository}/compare/{before}...{after}")
+        except Refusal as exc:
+            # GitHub cannot compare two commits that share no history, as after suse-lolly's history reset of
+            # 2026-11-04. This list only informs the operator; whether the new commit may ship is decided elsewhere
+            # (it must be on main), so say why there is no list instead of refusing the deploy.
+            if exc.code != "GITHUB_NOT_FOUND":
+                raise
+            report.append({"repository": repository, "before": before[:12], "after": after[:12],
+                           "note": "no shared history with the live release, so no commit list"})
+            continue
         commits = [c for c in compare.get("commits", []) if isinstance(c, dict)]
         files = [f.get("filename") for f in compare.get("files", []) if isinstance(f, dict) and isinstance(f.get("filename"), str)]
         report.append({"repository": repository, "status": compare.get("status"), "commits": compare.get("total_commits", len(commits)),

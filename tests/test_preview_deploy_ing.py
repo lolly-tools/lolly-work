@@ -98,6 +98,36 @@ process.on('exit', () => process.stderr.write('connects=' + calls + '\\n'));
         self.assertIn("connects=1", done.stderr)
 
 
+class ChangeListHistory(unittest.TestCase):
+    """The change list only informs the operator. A commit pair GitHub cannot compare (no shared history, as after a
+    history reset) is reported with a note; any other GitHub error still refuses."""
+
+    class Gh:
+        def __init__(self, code):
+            self.code = code
+
+        def json(self, path, **_):
+            raise C.Refusal(self.code, f"GitHub answered for {path}")
+
+    def run_list(self, code):
+        import preview_ing_github as IG
+        live = {"suse": "a" * 40, "lolly": "b" * 40, "work": "c" * 40}
+        new = {"suse": "d" * 40, "lolly": "b" * 40, "work": "c" * 40}
+        with contextlib.redirect_stdout(io.StringIO()):
+            return IG.change_list(self.Gh(code), live, new)
+
+    def test_unrelated_histories_are_noted_not_refused(self):
+        report = self.run_list("GITHUB_NOT_FOUND")
+        [suse] = [item for item in report if item.get("before") == "a" * 12]
+        self.assertEqual((suse["after"], suse["note"]), ("d" * 12, "no shared history with the live release, so no commit list"))
+        self.assertTrue(all(item.get("commits") == 0 for item in report if item is not suse))
+
+    def test_other_github_errors_still_refuse(self):
+        with self.assertRaises(C.Refusal) as caught:
+            self.run_list("GITHUB_FAILED")
+        self.assertEqual(caught.exception.code, "GITHUB_FAILED")
+
+
 class IngRules(unittest.TestCase):
     def setUp(self):
         self.key = F.make_key()
