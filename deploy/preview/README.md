@@ -699,6 +699,16 @@ The smoke signs in with a **Work service token** (Andy, 2026-10-27), or else a m
 
 `status` prints `smokeSession` (`present`, or why not) and `smokeCredential` (`token` or `cookie`).
 
+After `LIVE`, once the result is recorded, the Mac deletes the build's suse-lolly artifacts and those of every older or
+failed lolly.ing build (`artifacts` event; the rule is under Retention below). suse-lolly is private, so its artifact
+storage is billed by the GB-hour, and Andy holds it to a hard $5 a month (2026-11-04). Nothing reads them again: the
+image is imported and pinned, and a rollback never fetches an archive. Every other result keeps them, because a retry
+of the same build binds them again (a refusal after the fetch, the backup window, a busy node, `ROLLED_BACK`). A ship
+that finds its commits already live deletes what the live build's run left, by the run ID the node records (`ci-run`).
+A GitHub error there is reported and never changes the result, the record or the exit code. Once a build's artifacts
+are gone, `deploy` and `ship` of the live commit still answer `ALREADY_LIVE`. Going back to that build after a manual
+`rollback` takes a new build (`ship`); `deploy` of it refuses `RUN_NOT_FOUND`.
+
 ### Rollback (PROPOSAL 4.6; Andy 2026-10-27)
 
 - **Nothing or only additive migrations:** automatic, as on lolly.tools, after a failed smoke or watch, or from
@@ -720,6 +730,8 @@ The smoke signs in with a **Work service token** (Andy, 2026-10-27), or else a m
   reference (`CONVERSION_REVERTED`). A forward fix that already contains the migration may follow instead with
   `deploy <fix> --clear-hold`, with no restore and no lost writes.
 - `status` prints the restore point of the last migrating deploy as `backup`.
+- A rollback, automatic or manual, never fetches an archive: the previous image stays pinned on the node (Retention
+  below), so the build artifacts are not needed once a build is live.
 
 ### Cut-over (PROPOSAL 4.8)
 
@@ -754,6 +766,14 @@ Keep the old claims until two image deploys have passed.
   runbooks are listed for Andy and never removed.
 - **Claims:** a report only, as for lolly.tools.
 - **Spool:** `gc --execute` deletes archives a refused or interrupted run left in the node's spool.
+- **suse-lolly artifacts** (`gc-artifacts`): read from the repository's artifact listing page by page, then each run
+  by ID. Only `lolly-ing-*` artifacts of the build workflow's own runs (dispatched on `main` in suse-lolly) are
+  considered. Deleted: those of a finished run that did not succeed, and of every successful run at or before the
+  live build's run (the node's `ci-run` record, read only when the records describe the live image). Kept: a running
+  build's, a successful build newer than the live one (a candidate), every successful build while the live run is
+  unknown, and anything of another workflow, branch, event or repository. `gc --execute` deletes them after the report
+  check and before the node's own checks, since it touches only GitHub; a GitHub error never stops the node's gc. The
+  workflow's own cleanup job deletes each run's intermediate artifacts, and all of a failed run's, as the run ends.
 - The first lolly.ing `gc --execute` arms lolly.ing's own post-deploy retention (`retention-armed-lolly.ing`).
 
 ### What the lolly.ing path may change, and what it never touches
@@ -761,7 +781,8 @@ Keep the old claims until two image deploys have passed.
 It may import and pin the instance image, create generation ConfigMaps, create its own check, classifier and migrate
 Jobs and, before a migration or at the cut-over, one backup Job from the existing CronJob, run the restore rehearsal in
 its own namespace when configured, and patch the target Deployment's image, config ConfigMap reference and annotations,
-plus, once at the cut-over, which Secret its catalog signing key reference names. The Jobs it creates reference the
+plus, once at the cut-over, which Secret its catalog signing key reference names. On GitHub it dispatches the private
+build and deletes suse-lolly artifacts nothing reads again (above); nothing else. The Jobs it creates reference the
 database Secret (and the backup Job the CronJob's own Secrets); the tool process itself never reads or changes a
 Secret's value, a PVC, Postgres directly, the edge or DNS; never execs into a Pod; never restores the live database; and
 never changes any `instance.json` field other than the generation.

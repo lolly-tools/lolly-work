@@ -986,6 +986,7 @@ class IngDeploys(IngEndToEnd):
         code, events = self.cli("deploy", W_NEXT)
         self.assertEqual(self.done(events)["result"], "ALREADY_LIVE", events)  # already live: nothing to qualify again
         self.cli("rollback")
+        self.add_run(build, 1210)  # run 1200's artifacts went once it was live (IngArtifacts): the same commits built again
         code, events = self.cli("deploy", W_NEXT)
         self.assertEqual((code, self.done(events)["code"]), (1, "CI_PENDING"), events)
 
@@ -1903,6 +1904,181 @@ class IngCutover(IngEndToEnd):
         self.assertEqual(self.writes("migrate"), [["migrate", [IF.ADDITIVE], fixture("classify-0077.json")["manifest"]]])
         self.assertEqual((self.live()[0], self.signing_ref()), (IF.LEGACY_IMAGE, IF.LEGACY_SIGNING_SECRET))
         self.assertFalse([p for p in self.writes("patch") if any(op["path"].endswith("preview-maintenance-applied") for op in p[1])])
+
+
+class IngArtifacts(IngEndToEnd):
+    """suse-lolly is private and its artifact storage has a hard $5 monthly budget (Andy, 2026-11-04). Once a build is
+    live nothing reads its artifacts again: its image is pinned on the node, and a rollback returns to the previous image
+    pinned there. Until then a retry binds them, so they stay."""
+
+    def artifact(self, run_id, name, n, size=1000):
+        return {"id": run_id * 10 + n, "name": name, "expired": False, "size_in_bytes": size, "expires_at": "2026-11-05T00:00:00Z"}
+
+    def add_other_run(self, run_id, names=("lolly-ing-gate", "lolly-ing-work-server"), **fields):
+        """A run of the private workflow, or of another one or on another branch, holding only the named artifacts."""
+        branch = fields.pop("head_branch", "main")
+        self.gh = json.loads(self.gh_path.read_text())
+        run = IF.ing_run(run_id, S_HEAD, work=W_NEXT, **fields)
+        run["head_branch"] = branch
+        foreign = branch != "main" or run["path"] != ".github/workflows/lolly-ing-preview.yml"
+        self.gh.setdefault("otherRuns" if foreign else "ingRuns", []).append(run)
+        self.gh["artifacts"][str(run_id)] = [self.artifact(run_id, name, n + 3) for n, name in enumerate(names)]
+        self.write_gh()
+
+    def remaining(self):
+        """Run ID -> the artifact names it still holds."""
+        return {int(run): sorted(item["name"] for item in items)
+                for run, items in json.loads(self.gh_path.read_text())["artifacts"].items() if items}
+
+    def deletes(self):
+        return [c["path"] for c in json.loads(self.gh_path.read_text())["calls"] if c["method"] == "DELETE"]
+
+    def artifact_events(self, events, name="artifacts"):
+        return [e for e in events if e.get("event") == name]
+
+    def mixed_runs(self):
+        """Around the new build's run 1100: an older successful build, a failed one, a newer candidate, a running one,
+        another workflow's, another branch's, and an unrelated artifact name in an older build."""
+        self.add_run(self.old, 1050)
+        self.gh = json.loads(self.gh_path.read_text())
+        self.gh["artifacts"]["1050"].append(self.artifact(1050, "coverage-report", 7))
+        self.write_gh()
+        self.add_other_run(1080, conclusion="failure")
+        self.pending_build(run_id=1200)
+        self.add_other_run(1300, status="in_progress", conclusion=None)
+        self.add_other_run(1400, path=".github/workflows/other.yml")
+        self.add_other_run(1500, head_branch="ci/try")
+
+    KEPT = {1050: ["coverage-report"], 1200: ["lolly-ing-instance-archive", "lolly-ing-instance-manifest"],
+            1300: ["lolly-ing-gate", "lolly-ing-work-server"], 1400: ["lolly-ing-gate", "lolly-ing-work-server"],
+            1500: ["lolly-ing-gate", "lolly-ing-work-server"]}
+
+    def test_a_live_build_deletes_its_artifacts_and_older_or_failed_builds_but_keeps_candidates_and_running_builds(self):
+        self.mixed_runs()
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.remaining(), self.KEPT)
+        self.assertEqual(sorted(self.deletes()), sorted(f"repos/{IF.SUSE_REPO}/actions/artifacts/{n}"
+                                                        for n in (10501, 10502, 10803, 10804, 11001, 11002)))
+        [note] = self.artifact_events(events)
+        self.assertEqual((note["when"], note["liveRun"], note["deleted"], note["runs"], note["failed"]),
+                         ("live", 1100, 6, [1050, 1080, 1100], []))
+        self.assertEqual(self.records()[-1]["result"], "LIVE")  # recorded before the cleanup
+
+    def test_the_listing_is_read_page_by_page(self):
+        """`gh api --paginate` undercounts on this endpoint (2026-11-03); every page is read by number."""
+        self.add_other_run(1080, names=[f"lolly-ing-work-server-{n}" for n in range(130)], conclusion="failure")
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.remaining(), {})
+        pages = [c["path"] for c in json.loads(self.gh_path.read_text())["calls"]
+                 if c["path"].startswith(f"repos/{IF.SUSE_REPO}/actions/artifacts?")]
+        self.assertEqual([p.split("page=")[-1] for p in pages], ["1", "2"])
+
+    def test_a_rolled_back_build_keeps_its_artifacts_and_a_retry_binds_them(self):
+        code, events = self.cli("deploy", W_NEW, "--drill-fail-smoke")
+        self.assertEqual((code, self.done(events)["result"]), (2, "ROLLED_BACK"), events)
+        self.assertEqual((self.deletes(), self.artifact_events(events)), ([], []))
+        self.assertEqual(self.remaining()[1100], ["lolly-ing-instance-archive", "lolly-ing-instance-manifest"])
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        self.assertEqual(self.remaining(), {})
+
+    def test_a_refusal_after_the_fetch_keeps_the_artifacts(self):
+        """The archive reached the node's spool, then the unit refused: a later deploy still binds this build."""
+        self.behave(bootKeyByImage={self.old["image"]: A.RELEASE_PUBLIC_KEY_THUMBPRINT})
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual(self.done(events)["code"], "RELEASE_KEY")
+        self.assertEqual(len(self.spool()), 1)
+        self.assertEqual((self.deletes(), self.remaining()[1100]), ([], ["lolly-ing-instance-archive", "lolly-ing-instance-manifest"]))
+
+    def test_a_rollback_after_the_artifacts_are_gone_uses_the_image_pinned_on_the_node(self):
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((self.done(events)["result"], self.remaining()), ("LIVE", {}))
+        before = len(json.loads(self.gh_path.read_text())["calls"])
+        code, events = self.cli("rollback")
+        self.assertEqual((code, self.done(events)["result"]), (2, "ROLLED_BACK"), events)
+        self.assertEqual(self.live()[0], self.old["image"])
+        after = json.loads(self.gh_path.read_text())["calls"][before:]
+        self.assertFalse([c for c in after if "/artifacts" in c["path"] or c["method"] == "LOCATION"], after)
+        self.assertEqual(len(self.writes("import")), 1)  # the deploy's import only; the rollback imported nothing
+
+    def test_deploy_of_the_live_commit_is_already_live_after_its_artifacts_are_gone(self):
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((self.done(events)["result"], self.remaining()), ("LIVE", {}))
+        writes = len(self.cluster()["writes"])
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"), events)
+        self.assertEqual(len(self.cluster()["writes"]), writes)
+        self.cli("rollback")
+        code, events = self.cli("deploy", W_NEW)  # no longer live, and nothing left to bind: ship builds it again
+        self.assertEqual((code, self.done(events)["code"]), (1, "RUN_NOT_FOUND"), events)
+
+    def test_a_github_error_in_the_cleanup_never_changes_the_result(self):
+        self.update_gh(deleteFails=[11002])
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        [note] = self.artifact_events(events)
+        self.assertEqual((note["deleted"], note["failed"]), (1, [{"id": 11002, "code": "GITHUB_FAILED"}]))
+        self.assertEqual(self.remaining(), {1100: ["lolly-ing-instance-archive"]})
+        self.update_gh(artifactListFails=True)
+        code, events = self.cli("rollback")
+        self.assertEqual(self.done(events)["result"], "ROLLED_BACK")
+        self.add_run(self.new, 1110)  # the same Work commit built again, now that the old build is live
+        code, events = self.cli("deploy", W_NEW)
+        self.assertEqual((code, self.done(events)["result"]), (0, "LIVE"), events)
+        [note] = self.artifact_events(events)
+        self.assertEqual((note["code"], note.get("deleted")), ("GITHUB_FAILED", None))
+        self.assertEqual(self.records()[-1]["result"], "LIVE")
+
+    def test_ship_of_the_live_sources_deletes_what_the_live_build_left(self):
+        """A run that went live while this Mac was not following it (DETACHED) left its artifacts; the next ship, which
+        finds the commits live, deletes them by the run ID the node records."""
+        self.add_run(self.old, 800)  # the live build's own run, as its records name it
+        code, events = self.cli("ship", W_OLD)
+        self.assertEqual((code, self.done(events)["result"]), (0, "ALREADY_LIVE"), events)
+        self.assertEqual(self.remaining(), {1100: ["lolly-ing-instance-archive", "lolly-ing-instance-manifest"]})  # a candidate
+        self.assertEqual(self.cluster()["writes"], [])
+
+    def test_gc_reports_first_then_deletes_failed_and_superseded_builds_artifacts(self):
+        """The live build is run 800 (its records). Run 1100 is a newer candidate and stays."""
+        self.add_run(self.old, 790)
+        self.add_other_run(780, conclusion="cancelled")
+        self.add_other_run(1300, status="in_progress", conclusion=None)
+        code, events = self.cli("gc", "--execute")
+        self.assertEqual(self.done(events)["code"], "GC_REPORT_FIRST")
+        self.assertEqual(self.deletes(), [])  # refused before anything was deleted
+        code, events = self.cli("gc")
+        [report] = self.artifact_events(events, "gc-artifacts")
+        self.assertEqual(report["liveRun"], 800)
+        self.assertEqual(sorted((e["run"], e["name"], e["why"]) for e in report["remove"]),
+                         [(780, "lolly-ing-gate", "failed"), (780, "lolly-ing-work-server", "failed"),
+                          (790, "lolly-ing-instance-archive", "superseded"), (790, "lolly-ing-instance-manifest", "superseded")])
+        self.assertEqual(sorted({(e["run"], e["why"]) for e in report["keep"]}), [(1100, "candidate"), (1300, "running")])
+        self.assertEqual(self.deletes(), [])
+        code, events = self.cli("gc", "--execute")
+        self.assertEqual((code, self.done(events)["result"]), (0, "GC_DONE"), events)
+        [done] = self.artifact_events(events, "gc-artifacts-deleted")
+        self.assertEqual((done["deleted"], done["runs"], done["failed"]), (4, [780, 790], []))
+        self.assertEqual(sorted(self.remaining()), [1100, 1300])
+
+    def test_gc_deletes_only_failed_builds_artifacts_while_the_live_run_is_unknown(self):
+        state = self.cluster()
+        del state["deployment"]["metadata"]["annotations"]["lolly.tools/preview-ci-run"]
+        self.set_cluster(state)
+        self.add_run(self.old, 790)
+        self.add_other_run(780, conclusion="failure")
+        self.cli("gc")
+        code, events = self.cli("gc", "--execute")
+        self.assertEqual((code, self.done(events)["result"]), (0, "GC_DONE"), events)
+        self.assertEqual(sorted(self.remaining()), [790, 1100])
+
+    def test_a_github_error_never_stops_the_nodes_gc(self):
+        self.update_gh(artifactListFails=True)
+        code, events = self.cli("gc")
+        self.assertEqual(self.artifact_events(events, "gc-artifacts")[0]["code"], "GITHUB_FAILED")
+        code, events = self.cli("gc", "--execute")
+        self.assertEqual((code, self.done(events)["result"]), (0, "GC_DONE"), events)
 
 
 if __name__ == "__main__":

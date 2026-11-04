@@ -3,7 +3,8 @@
 
 Every call goes through the `gh` CLI as an argument list (never a shell string), except
 `Gh.location`, which reads an artifact's download address with gh's own token because gh
-follows redirects. The only write is the preview workflow dispatch. Nothing here approves an environment gate.
+follows redirects. The writes are the preview workflow dispatch and, for lolly.ing, deleting the private build's
+artifacts once nothing reads them (`Gh.delete`). Nothing here approves an environment gate.
 """
 
 from __future__ import annotations
@@ -64,6 +65,10 @@ class Gh:
 
     def post(self, path, body):
         self._run(["--method", "POST", path, "--input", "-"], stdin=json.dumps(body).encode(), limit=65536)
+
+    def delete(self, path):
+        """DELETE one API path; GitHub answers 204 with no body."""
+        self._run(["--method", "DELETE", path], limit=65536)
 
     def location(self, path, opener=None, timeout=60):
         """Where GitHub redirects a GET of path, without following it: for an artifact, its signed download address,

@@ -4,8 +4,9 @@
 A build is bound by its run ID: workflow path, event (workflow_dispatch),
 repository and head repository, branch, head commit (the suse-lolly commit it
 built) and success (R22 S6). Its manifest and archive are read only from that
-run's own artifacts, never looked up by name across the repository. The only
-write is the workflow dispatch. The signing environment has no reviewer (Andy,
+run's own artifacts, never looked up by name across the repository. The writes
+are the workflow dispatch and deleting the build's artifacts once nothing reads
+them (`clean_artifacts`, `artifact_plan`). The signing environment has no reviewer (Andy,
 2026-10-27), so what lets a build happen is the qualification rule in
 `qualify`: green full CI for the Work commit, and for the Lolly commit it pins
 either its own full CI or a fast lane above one.
@@ -25,6 +26,8 @@ from preview_common import RUN_ID, SHA, Refusal, emit, require, strict_json
 ANCHORS = A.ING
 DEPENDENCY_FILES = re.compile(r"(^|/)(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|Cargo\.lock|Cargo\.toml|"
                               r"requirements[^/]*\.txt|Dockerfile)$")
+ARTIFACT_PREFIX = "lolly-ing-"  # every artifact the private workflow uploads
+ARTIFACT_PAGES = 20  # 2,000 artifacts; suse-lolly keeps a few days' worth at most
 
 
 def ing_runs(gh, ssha=None):
@@ -197,3 +200,103 @@ def change_list(gh, live, new):
     for item in report:
         emit("change-list", **item)
     return report
+
+
+# Artifact storage -------------------------------------------------------------------------
+# suse-lolly is private, so GitHub bills its artifact storage by the GB-hour, and Andy holds it to a hard $5 a month
+# (2026-11-04). The workflow's cleanup job deletes a run's intermediate artifacts as it ends, and all of a failed run's.
+# What is left is the manifest and archive of a successful build, which only a deploy of that build reads: once a build
+# is live its image is pinned on the node, and a rollback (automatic or manual) returns to the previous image pinned
+# there and never fetches an archive again. Until a build is live, a retry still binds its artifacts (a refusal after
+# the fetch, the backup window, a busy node), so they stay.
+def own_run(run):
+    """A run of the lolly.ing build workflow, dispatched on main in suse-lolly itself: the only runs whose artifacts this
+    command deletes. Another workflow's, another branch's or event's, or a fork's run is never touched."""
+    return (isinstance(run, dict) and isinstance(run.get("id"), int) and run.get("path") == ANCHORS["buildWorkflowPath"]
+            and run.get("event") in ANCHORS["buildEvents"] and run.get("head_branch") == ANCHORS["branch"]
+            and G._same_repository(run, ANCHORS["repository"]))
+
+
+def live_run_of(status):
+    """The private run that built the live image, from the node's records when they describe it; else None."""
+    preview = status.get("preview") or {}
+    run = preview.get("ci-run")
+    if preview.get("image") == (status.get("deployment") or {}).get("image") and preview.get("phase") in A.SETTLED_PHASES \
+            and isinstance(run, str) and RUN_ID.fullmatch(run) is not None:
+        return int(run)
+    return None
+
+
+def artifact_plan(gh, live_run):
+    """Which lolly.ing artifacts nothing reads again, from a page-by-page listing of the repository's artifacts.
+
+    Deleted: every artifact of a finished build that did not succeed (nothing binds it), and of every successful build at
+    or before live_run, the live build's run ID (its image and the previous ones are on the node). Kept: a running build's
+    (its later jobs read them), a successful build newer than the live one (a candidate a retry still binds), any build
+    when the live run is unknown, and anything of another workflow, branch, event or repository."""
+    by_run = {}
+    for page in range(1, ARTIFACT_PAGES + 1):
+        listing = gh.json(f"repos/{ANCHORS['repository']}/actions/artifacts", per_page=100, page=page)
+        items = listing.get("artifacts") if isinstance(listing, dict) else None
+        items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+        for item in items:
+            run = item.get("workflow_run") if isinstance(item.get("workflow_run"), dict) else {}
+            if (type(item.get("id")) is int and item.get("expired") is False and isinstance(item.get("name"), str)
+                    and item["name"].startswith(ARTIFACT_PREFIX) and type(run.get("id")) is int):
+                by_run.setdefault(run["id"], {})[item["id"]] = item
+        if len(items) < 100:
+            break
+    plan = {"liveRun": live_run, "delete": [], "keep": []}
+    for run_id in sorted(by_run):
+        try:
+            run = gh.json(f"repos/{ANCHORS['repository']}/actions/runs/{run_id}")
+        except Refusal:
+            run = None
+        if not (own_run(run) and run["id"] == run_id):
+            why = "unreadable" if run is None else "foreign"
+        elif run.get("status") != "completed":
+            why = "running"
+        elif run.get("conclusion") != "success":
+            why = "failed"
+        elif isinstance(live_run, int) and run_id <= live_run:
+            why = "live" if run_id == live_run else "superseded"
+        else:
+            why = "candidate"
+        for item in by_run[run_id].values():
+            size = item.get("size_in_bytes") if type(item.get("size_in_bytes")) is int else 0
+            entry = {"run": run_id, "id": item["id"], "name": item["name"], "bytes": size, "why": why}
+            plan["delete" if why in ("failed", "live", "superseded") else "keep"].append(entry)
+    plan["deleteBytes"] = sum(entry["bytes"] for entry in plan["delete"])
+    return plan
+
+
+def delete_artifacts(gh, plan):
+    """Delete what artifact_plan listed, one by one. One already gone (expired, or deleted by the workflow) counts as
+    deleted; any other failure is reported and the rest still go."""
+    deleted, failed = [], []
+    for entry in plan["delete"]:
+        try:
+            gh.delete(f"repos/{ANCHORS['repository']}/actions/artifacts/{int(entry['id'])}")
+            deleted.append(entry)
+        except Refusal as exc:
+            if exc.code == "GITHUB_NOT_FOUND":
+                deleted.append(entry)
+            else:
+                failed.append(dict(entry, code=exc.code))
+    return deleted, failed
+
+
+def clean_artifacts(gh, live_run, when):
+    """After a build is live: delete its artifacts and every older or failed build's. Best effort, after the result is
+    recorded: a GitHub error here never changes the deploy's result, record or exit code."""
+    try:
+        plan = artifact_plan(gh, live_run)
+        deleted, failed = delete_artifacts(gh, plan)
+    except Exception as exc:  # noqa: BLE001 - storage cleanup must never turn a recorded result into a crash
+        emit("artifacts", when=when, liveRun=live_run, code=getattr(exc, "code", type(exc).__name__),
+             note="nothing more was deleted; the artifacts expire after one day, or gc deletes them")
+        return None
+    emit("artifacts", when=when, liveRun=live_run, deleted=len(deleted), deletedBytes=sum(e["bytes"] for e in deleted),
+         runs=sorted({e["run"] for e in deleted}), failed=[{"id": e["id"], "code": e["code"]} for e in failed][:20],
+         kept=len(plan["keep"]))
+    return {"deleted": deleted, "failed": failed, "kept": plan["keep"]}

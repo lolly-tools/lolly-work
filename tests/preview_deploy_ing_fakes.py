@@ -777,6 +777,30 @@ def gh_ing_route(gh, method, route, query, data, out):
                 gh["onDispatch"] = None
             return 0
         return None
+    if method == "DELETE":
+        match = re.fullmatch(rf"repos/{SUSE_REPO}/actions/artifacts/(\d+)", route)
+        if not match:
+            return 1
+        artifact_id = int(match.group(1))
+        if artifact_id in gh.get("deleteFails", []):
+            print("gh: Server Error (HTTP 500)", file=sys.stderr)
+            return 1
+        for run_id, items in gh.get("artifacts", {}).items():
+            if any(item["id"] == artifact_id for item in items):
+                gh["artifacts"][run_id] = [item for item in items if item["id"] != artifact_id]
+                return 0
+        print("gh: Not Found (HTTP 404)", file=sys.stderr)
+        return 1
+    if route == f"repos/{SUSE_REPO}/actions/artifacts":  # the repository's artifacts, newest first, page by page
+        if gh.get("artifactListFails"):
+            print("gh: Server Error (HTTP 502)", file=sys.stderr)
+            return 1
+        items = [dict(item, workflow_run={"id": int(run_id), "head_branch": "main"})
+                 for run_id, run_items in gh.get("artifacts", {}).items() for item in run_items]
+        items.sort(key=lambda item: item["id"], reverse=True)
+        per_page, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+        out.write(json.dumps({"total_count": len(items), "artifacts": items[(page - 1) * per_page:page * per_page]}))
+        return 0
     if route == f"repos/{SUSE_REPO}/git/ref/heads/main":
         out.write(json.dumps({"ref": "refs/heads/main", "object": {"type": "commit", "sha": gh["suseMainHead"]}}))
         return 0
@@ -809,7 +833,8 @@ def gh_ing_route(gh, method, route, query, data, out):
         return 0
     match = re.fullmatch(rf"repos/{SUSE_REPO}/actions/runs/(\d+)", route)
     if match:
-        run = next(r for r in gh["ingRuns"] if r["id"] == int(match.group(1)))
+        # otherRuns: another workflow's or branch's runs, which the workflow's main listing never shows
+        run = next(r for r in gh["ingRuns"] + gh.get("otherRuns", []) if r["id"] == int(match.group(1)))
         sequence = gh.get("statusSequence", {}).get(str(run["id"]))
         if sequence:
             run["status"] = sequence.pop(0)

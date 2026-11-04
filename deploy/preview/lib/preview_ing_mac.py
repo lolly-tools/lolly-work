@@ -285,6 +285,9 @@ def cmd_deploy(context, wsha, dispatch):
                 and live.get("lolly") == lsha):
             emit("done", result="ALREADY_LIVE", image=status["deployment"]["image"], source=wsha)
             context.record("ship", "ALREADY_LIVE", sha=wsha, image=status["deployment"]["image"])
+            live_run = IG.live_run_of(status)
+            if live_run:  # a run that went live while this Mac was not following it (DETACHED) left its artifacts
+                IG.clean_artifacts(gh, live_run, "already-live")
             return 0
     qualified = None
     if dispatch:
@@ -302,7 +305,15 @@ def cmd_deploy(context, wsha, dispatch):
             run = G.wait_for_run(gh, anchors, run["id"], build["pollSeconds"], build["timeoutMinutes"])
             bound = IG.bind_ing_run(gh, run, wsha)
     else:
-        bound = IG.latest_ing_run(gh, wsha)
+        try:
+            bound = IG.latest_ing_run(gh, wsha)
+        except Refusal as exc:
+            # A build's artifacts are deleted once it is live (clean_artifacts), so the live commit may leave nothing to bind.
+            if exc.code != "RUN_NOT_FOUND" or not (converted and preview.get("phase") == "accepted" and preview.get("source") == wsha):
+                raise
+            emit("done", result="ALREADY_LIVE", image=status["deployment"]["image"], source=wsha)
+            context.record("deploy", "ALREADY_LIVE", sha=wsha, image=status["deployment"]["image"])
+            return 0
     release = bound["release"]
     require(G.contains(gh, anchors["repository"], release["suse"], G.branch_head(gh, anchors["repository"], anchors["branch"]))
             and G.contains(gh, A.ING["lollyRepository"], release["lolly"], G.branch_head(gh, A.ING["lollyRepository"], "main")),
@@ -316,6 +327,7 @@ def cmd_deploy(context, wsha, dispatch):
         require(preview.get("phase") == "accepted", "RECORDS_STALE", "this build is live but its phase is " + str(preview.get("phase")))
         emit("done", result="ALREADY_LIVE", image=release["image"], source=wsha)
         context.record("ship" if dispatch else "deploy", "ALREADY_LIVE", sha=wsha, image=release["image"])
+        IG.clean_artifacts(gh, max(bound["run"], IG.live_run_of(status) or 0), "already-live")
         return 0
     qualified = qualified or IG.qualify(gh, wsha, lsha)  # deploy: the same rule, once there is something to change
     live_expect = _json(preview.get("expect")) or {}
@@ -329,8 +341,13 @@ def cmd_deploy(context, wsha, dispatch):
                               release=release)
     request["liveSource"] = preview.get("source")
     result = context.start_and_follow(request)
-    return M._finish(context, "ship" if dispatch else "deploy", result, sha=wsha, ciRun=bound["run"],
+    code = M._finish(context, "ship" if dispatch else "deploy", result, sha=wsha, ciRun=bound["run"],
                      backup=(result.get("backup") or {}).get("record"), **qualified)
+    if result.get("result") == "LIVE":
+        # The image is imported and pinned, and a rollback never fetches an archive: nothing reads this build's artifacts
+        # again. Any other result keeps them, because a retry of the same build binds them.
+        IG.clean_artifacts(gh, bound["run"], "live")
+    return code
 
 
 def cmd_rollback(context):
@@ -477,8 +494,11 @@ def cmd_plan_apply(context, sha, plan_path, reviewed):
 
 
 def cmd_gc(context, execute):
-    """Report first. --execute removes only images this command imported and ConfigMaps it made; never claims."""
+    """Report first. --execute removes only images this command imported and ConfigMaps it made; never claims. It also
+    deletes suse-lolly artifacts nothing reads again (preview_ing_github.artifact_plan)."""
     report = context.read("gc", legacyClaims=context.profile["gc"]["legacyClaims"])
+    live_run = IG.live_run_of(context.read("status"))
+    artifacts = gc_artifacts(context, live_run)
     emit("gc-images", keep=report["images"]["keep"], remove=report["images"]["remove"], removeBytes=report["images"]["removeBytes"],
          untouched=report["images"]["untouched"], retentionArmed=report["retentionArmed"])
     configs = report["configMaps"]
@@ -497,10 +517,29 @@ def cmd_gc(context, execute):
         return 0
     require(any(row.get("result") == "GC_REPORT" and row.get("site") == "lolly.ing" for row in context.records()), "GC_REPORT_FIRST",
             "run gc without --execute first and read its report")
+    if artifacts and artifacts["delete"]:
+        # GitHub only, so before the node's own checks: a busy node or the backup window never keeps them.
+        deleted, failed = IG.delete_artifacts(context.gh, artifacts)
+        emit("gc-artifacts-deleted", deleted=len(deleted), deletedBytes=sum(e["bytes"] for e in deleted),
+             runs=sorted({e["run"] for e in deleted}), failed=[{"id": e["id"], "code": e["code"]} for e in failed][:20])
     request = context.request("gc", context.deploy_id("gc"))
     context.backup_window("gc")
     context.check_target()
     return M._finish(context, "gc --execute", context.start_and_follow(request))
+
+
+def gc_artifacts(context, live_run):
+    """Report the suse-lolly artifacts gc would delete. A GitHub error is reported and never stops the node's gc."""
+    try:
+        plan = IG.artifact_plan(context.gh, live_run)
+    except Refusal as exc:
+        emit("gc-artifacts", code=exc.code, reason=exc.message[:200], note="the node's gc goes on; nothing is deleted on GitHub")
+        return None
+    emit("gc-artifacts", liveRun=live_run, remove=[{key: e[key] for key in ("run", "name", "bytes", "why")} for e in plan["delete"]],
+         removeBytes=plan["deleteBytes"], keep=[{key: e[key] for key in ("run", "name", "why")} for e in plan["keep"]],
+         note="--execute deletes them: failed builds' and those of the live build and older ones, whose images are on the "
+              "node; a rollback never fetches an archive" + ("" if live_run else ". The live run is unknown, so only failed builds' go"))
+    return plan
 
 
 def dispatch(context, args):
