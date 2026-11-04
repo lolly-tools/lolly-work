@@ -90,5 +90,7 @@ description:
       - Admin console with dashboards, people, messages and fleet views
       - Deploys with Docker Compose, systemd, Kubernetes or YunoHost
     screenshots:
-      - deploy/marketplaces/assets/console-overview.png
-      - deploy/marketplaces/assets/console-tool-policy.png
+      - docs/shots/overview-dashboard.svg
+      - docs/shots/tool-policy.svg
+      - docs/shots/approvals-inbox.svg
+      - docs/shots/catalog-assets.svg
