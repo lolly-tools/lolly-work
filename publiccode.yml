@@ -1,0 +1,94 @@
+publiccodeYmlVersion: "0"
+
+name: Lolly Work
+applicationSuite: Lolly
+url: "https://github.com/lolly-tools/lolly-work"
+landingURL: "https://lolly.work"
+softwareVersion: "1.1.3"
+releaseDate: "2026-10-29"
+logo: console/icon.svg
+
+platforms:
+  - web
+
+categories:
+  - digital-asset-management
+  - identity-management
+  - workflow-management
+  - content-management
+  - design-system
+
+developmentStatus: stable
+softwareType: "standalone/web"
+
+organisation:
+  uri: "https://github.com/lolly-tools"
+  name: "lolly-tools"
+
+legal:
+  license: MPL-2.0
+
+maintenance:
+  type: community
+  contacts:
+    - name: Andy Fitzsimon
+      email: fitzy+security@suse.com
+
+localisation:
+  localisationReady: false
+  availableLanguages:
+    - en
+
+dependsOn:
+  open:
+    - name: Lolly
+      versionMin: "1.1.3"
+    - name: PostgreSQL
+    - name: Node.js
+      versionMin: "24"
+      optional: true
+    - name: Chromium render worker
+      optional: true
+
+description:
+  en:
+    shortDescription: Self-hosted server and admin console that adds sign-in, governance, shared catalogs and server rendering to Lolly.
+    longDescription: |
+      Lolly Work is the control plane for Lolly. Lolly makes graphics,
+      documents and video on each person's own device. Work adds the services
+      that have to be hosted: one sign-in, a governed library of assets and
+      tools, rules about what people may change, signed links, server renders
+      and audit records.
+
+      An organisation runs Work on its own infrastructure. It serves the Lolly
+      web app, an admin console and an API from one address. Administrators
+      choose which tools each group sees, lock inputs to approved choices, set
+      up approval chains and connect an existing asset library, which can stay
+      the source of record. Work is brand-agnostic: a deployment is
+      configuration plus a mounted design-system pack.
+
+      Work needs PostgreSQL for shared installs. It can be run from a
+      Docker Compose file, from systemd on a single host, on Kubernetes with a
+      Helm chart, or as a YunoHost package. Recipes for Coolify and Dokploy
+      are provided and are not yet qualified on a running target. A local demo
+      with sample data starts with one command.
+
+      Work is released with the same version number as Lolly and uses that
+      version of the Lolly engine unmodified. It is licensed under MPL-2.0.
+    documentation: "https://lolly.tools/info/"
+    apiDocumentation: "https://github.com/lolly-tools/lolly-work/blob/main/docs/api.md"
+    features:
+      - Single sign-in through OpenID Connect, with SCIM provisioning of users and groups
+      - Roles and fine-grained grants for who can see, change and approve
+      - Tool policies that hide tools or lock inputs to approved choices
+      - Governed shared catalog of assets, with connectors to existing asset libraries
+      - Approval chains with separation of duties
+      - Signed, expiring and revocable links for sharing, embedding and download
+      - Server-side rendering for holders of the export permission
+      - Live co-editing and team projects
+      - Hash-chained audit log, usage analytics and Prometheus metrics
+      - Admin console with dashboards, people, messages and fleet views
+      - Deploys with Docker Compose, systemd, Kubernetes or YunoHost
+    screenshots:
+      - deploy/marketplaces/assets/console-overview.png
+      - deploy/marketplaces/assets/console-tool-policy.png
