@@ -68,6 +68,7 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 - [Configure your first Work instance](customer-setup.md)
 - [How a Work deployment fits together](deployment.md)
 - [Run Work on UpCloud or Evroc](cloud-deployment.md)
+- [Put a CDN in front of Work](edge-cdn.md)
 - [Run Work on AWS or MulgaDC Spinifex](aws-compatible.md)
 - [WebAssembly and Kubewarden choices](wasm-deployment.md)
 - [Admission policy with Kubewarden](admission-policy.md)
