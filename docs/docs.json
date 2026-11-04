@@ -116,7 +116,7 @@
           "slug": "offboarding",
           "path": "offboarding.md",
           "title": "Leave a DAM",
-          "summary": "Leave a DAM vendor without losing assets or links: pin early, pick the Canto or Image Relay driver, check readiness by kind, then cut over."
+          "summary": "Plan DAM offboarding to self-hosted Lolly Work with S3, MinIO or Ceph: verify originals, preserve references, rehearse recovery and cut over supported sources."
         },
         {
           "slug": "approvals",
@@ -181,50 +181,50 @@
         {
           "slug": "provider-brandfolder",
           "path": "providers/brandfolder.md",
-          "title": "Brandfolder",
-          "summary": "Federate a Brandfolder read-only; Brandfolder stays the source of truth."
+          "title": "Brandfolder integration with Lolly",
+          "summary": "Connect Brandfolder to Lolly Work: onboarding, approved assets and attachment checks, plus offboarding to self-hosted storage with S3, MinIO or Ceph."
         },
         {
           "slug": "provider-optimizely-cmp",
           "path": "providers/optimizely-cmp.md",
-          "title": "Optimizely CMP",
-          "summary": "The web DAM you keep, not one you exit: federate in, and optionally publish exports back out."
+          "title": "Optimizely CMP integration with Lolly",
+          "summary": "Connect Optimizely CMP to Lolly Work with scoped onboarding and optional export publishing. Understand offboarding limits before planning self-hosted S3 storage."
         },
         {
           "slug": "provider-imagerelay",
           "path": "providers/imagerelay.md",
-          "title": "Image Relay",
-          "summary": "Read-only federation with mapped expiry, and which driver to leave through after a move to Canto."
+          "title": "Image Relay integration with Lolly",
+          "summary": "Connect Image Relay to Lolly Work with mapped expiry and scoped access. Plan offboarding to self-hosted S3 storage, including tenants moved to Canto."
         },
         {
           "slug": "provider-canto",
           "path": "providers/canto.md",
-          "title": "Canto",
-          "summary": "Native Canto tenants and migrated Image Relay tenants, and how to tell which driver you exit through."
+          "title": "Canto integration with Lolly",
+          "summary": "Connect Canto to Lolly Work: onboarding, approval and expiry checks, original-file qualification and offboarding to self-hosted S3, MinIO or Ceph storage."
         },
         {
           "slug": "provider-acquia-dam",
           "path": "providers/acquia-dam.md",
-          "title": "Acquia DAM / Widen",
-          "summary": "Widen's own release and expiry dates and approval statuses, with no custom-field mapping."
+          "title": "Acquia DAM / Widen integration with Lolly",
+          "summary": "Connect Acquia DAM (Widen) to Lolly Work with approval, release and expiry checks. Plan offboarding to a self-hosted library using S3-compatible storage."
         },
         {
           "slug": "provider-intelligencebank",
           "path": "providers/intelligencebank.md",
-          "title": "IntelligenceBank",
-          "summary": "The v3 Graph API only; native expiry, review dates and workflow states map straight across."
+          "title": "IntelligenceBank integration with Lolly",
+          "summary": "Connect IntelligenceBank to Lolly Work: onboarding with workflow and availability checks, then qualified offboarding to a self-hosted library with S3 storage."
         },
         {
           "slug": "provider-cloudinary",
           "path": "providers/cloudinary.md",
-          "title": "Cloudinary",
-          "summary": "Read-only shared media by immutable asset ID, with original downloads and explicit tenant qualification."
+          "title": "Cloudinary integration with Lolly",
+          "summary": "Connect Cloudinary to Lolly Work: onboarding with folder, metadata and original-file checks, plus conditional offboarding to self-hosted S3-compatible storage."
         },
         {
           "slug": "provider-orange-logic",
           "path": "providers/orange-logic.md",
-          "title": "Orange Logic",
-          "summary": "Public Search v4 and permitted renditions, with protected originals explicitly unavailable."
+          "title": "Orange Logic integration with Lolly",
+          "summary": "Connect Orange Logic renditions to Lolly Work with scoped onboarding. Understand offboarding limits and self-hosted S3 storage; protected originals block cutover."
         },
         {
           "slug": "provider-penpot",
