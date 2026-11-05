@@ -50,7 +50,7 @@ export interface VercelRoute {
 
 /** Top-level path segments the lolly-work router owns today. */
 export const FUNCTION_PREFIX_BASELINE: readonly string[] = [
-  'activate', 'admin', 'api', 'catalog', 'connect', 'healthz', 'l', 'metrics', 'readyz', 'render', 'scim', 'tools',
+  'activate', 'admin', 'api', 'catalog', 'compat', 'connect', 'healthz', 'l', 'metrics', 'readyz', 'render', 'scim', 'tools',
 ];
 
 /** Paths the OSS deployment serves from its own functions, which the shell
@@ -69,7 +69,7 @@ export const SHELL_FUNCTION_PATHS = '^/(api/(?:ca|penpot|mcp)(?:/.*)?|api/fetch-
  *  against that sw.js. (`/api/` and `/catalog/` are bypassed already, and
  *  `/tools/<id>/<file>` paths end in a file name.) */
 export const SHELL_SW_BYPASS_PREFIXES: readonly string[] = [
-  'activate', 'admin', 'connect', 'e', 'healthz', 'l', 'metrics', 'o', 'readyz', 'render', 'scim',
+  'activate', 'admin', 'compat', 'connect', 'e', 'healthz', 'l', 'metrics', 'o', 'readyz', 'render', 'scim',
 ];
 
 /** Top-level paths a WebSocket upgrade arrives on: the collab gateway's

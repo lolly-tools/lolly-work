@@ -70,6 +70,9 @@ export interface DeliveryRecord {
   /** Durable automation output this delivery consumes directly. Absent for a
    * manual shell upload. The referenced job cannot be deleted while retained. */
   sourceJobId?: string;
+  /** Durable render this delivery consumes directly. Output retention keeps its
+   * bytes while any delivery names the render. */
+  sourceRenderId?: string;
   /** Private, immutable source identity, rechecked before every project-file egress. */
   projectSource?: { projectId: string; fileId: string; checksum: string };
   /** Private progress, never signed storage URLs or credentials. */

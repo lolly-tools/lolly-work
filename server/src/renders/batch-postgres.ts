@@ -1,3 +1,4 @@
+import { randomId } from '../lib/crypto.ts';
 import type { RenderBatchRecord, RenderRecord, RenderStore } from './types.ts';
 
 interface Queryable {
@@ -5,7 +6,51 @@ interface Queryable {
 }
 export interface RenderDatabase extends Queryable { connect(): Promise<Queryable & { release(): void }> }
 
-type BatchStore = Pick<RenderStore, 'insertRenderBatch' | 'getRenderBatch' | 'listRenderBatches' | 'cancelRenderBatch'>;
+type BatchStore = Pick<RenderStore, 'insertRenderBatch' | 'getRenderBatch' | 'findRenderBatchByKey' | 'listRenderBatches' | 'cancelRenderBatch'>;
+
+export async function inTransaction<T>(pool: RenderDatabase, body: (db: Queryable) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const result = await body(client);
+    await client.query('commit');
+    return result;
+  } catch (error) { await client.query('rollback').catch(() => {}); throw error; }
+  finally { client.release(); }
+}
+
+/** A row that just reached a terminal state, as the updating statement returned it. */
+export interface FinishedRenderRow { id: string; principal: string; callback_url: string | null }
+export const FINISHED_RENDER_COLUMNS = `id, principal, request->>'callbackUrl' as callback_url`;
+
+/**
+ * Store the outbox entries a terminal transition owes, in the transaction that
+ * made it. A batch's entry is due when its last row finishes. Taking the batch
+ * row's lock first decides the race between two last rows: read committed gives
+ * the statement after the lock a fresh snapshot, so whichever transaction gets
+ * the lock second sees the other's row as finished. Writers always lock a render
+ * before its batch, so this ordering cannot deadlock against a batch cancel.
+ */
+export async function appendFinishedCallbacks(db: Queryable, finished: readonly FinishedRenderRow[]): Promise<void> {
+  if (!finished.length) return;
+  for (const render of finished) {
+    if (!render.callback_url) continue;
+    await db.query(`insert into automation_callbacks (id, render_id, principal, url, state, next_attempt_at, created_at, updated_at)
+      values ($1,$2,$3,$4,'pending',now(),now(),now()) on conflict (render_id) do nothing`,
+      [`cbk_${randomId(16)}`, render.id, render.principal, render.callback_url]);
+  }
+  const { rows: batches } = await db.query(`select b.id, b.principal, b.request->>'callbackUrl' as url from render_batches b
+    where b.request ? 'callbackUrl' and exists (select 1 from render_batch_rows m where m.batch_id=b.id and m.render_id=any($1::text[]))
+    order by b.id for update of b`, [finished.map((render) => render.id)]);
+  for (const batch of batches) {
+    await db.query(`insert into automation_callbacks (id, render_batch_id, principal, url, state, next_attempt_at, created_at, updated_at)
+      select $1,$2,$3,$4,'pending',now(),now(),now()
+      where not exists (select 1 from render_batch_rows m join renders r on r.id=m.render_id
+        where m.batch_id=$2 and r.state in ('queued','running'))
+      on conflict (render_batch_id) do nothing`,
+      [`cbk_${randomId(16)}`, batch.id, batch.principal, batch.url]);
+  }
+}
 
 /** No parent counter to drift: one statement snapshots the parent and all child states. */
 export function createPostgresBatchStore(pool: RenderDatabase, renderFromRow: (row: Record<string, unknown>) => RenderRecord): BatchStore {
@@ -26,16 +71,7 @@ export function createPostgresBatchStore(pool: RenderDatabase, renderFromRow: (r
     const { rows } = await db.query(`select b.*,${children} from render_batches b where b.id=$1 and b.principal=$2`, [id, principal]);
     return rows[0] ? fromRow(rows[0]) : null;
   };
-  const transaction = async <T>(body: (db: Queryable) => Promise<T>): Promise<T> => {
-    const client = await pool.connect();
-    try {
-      await client.query('begin');
-      const result = await body(client);
-      await client.query('commit');
-      return result;
-    } catch (error) { await client.query('rollback').catch(() => {}); throw error; }
-    finally { client.release(); }
-  };
+  const transaction = <T>(body: (db: Queryable) => Promise<T>): Promise<T> => inTransaction(pool, body);
   return {
     async insertRenderBatch(batch) {
       return transaction(async (db) => {
@@ -71,6 +107,10 @@ export function createPostgresBatchStore(pool: RenderDatabase, renderFromRow: (r
       });
     },
     getRenderBatch: (id, principal) => get(pool, id, principal),
+    async findRenderBatchByKey(principal, key) {
+      const { rows } = await pool.query(`select b.*,${children} from render_batches b where b.principal=$1 and b.idempotency_key=$2`, [principal, key]);
+      return rows[0] ? fromRow(rows[0]) : null;
+    },
     async listRenderBatches(principal, limit, offset) {
       const { rows } = await pool.query(`select b.*,${children} from
         (select * from render_batches where principal=$1 order by created_at desc,id desc limit $2 offset $3) b
@@ -79,9 +119,10 @@ export function createPostgresBatchStore(pool: RenderDatabase, renderFromRow: (r
     },
     async cancelRenderBatch(id, principal) {
       return transaction(async (db) => {
-        await db.query(`update renders r set state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp(),lease_token=null,lease_until=null
+        const { rows } = await db.query(`update renders r set state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp(),lease_token=null,lease_until=null
           from render_batch_rows m where m.batch_id=$1 and m.principal=$2 and r.id=m.render_id and r.principal=m.principal
-          and r.state in ('queued','running')`, [id, principal]);
+          and r.state in ('queued','running') returning r.id, r.principal, r.request->>'callbackUrl' as callback_url`, [id, principal]);
+        await appendFinishedCallbacks(db, rows as unknown as FinishedRenderRow[]);
         return get(db, id, principal);
       });
     },

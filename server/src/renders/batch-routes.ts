@@ -1,21 +1,25 @@
 import { readJson, sendError, sendJson, type createRouter, type Handler } from '../api/router.ts';
-import { batchProgress, batchWire, newRenderBatch, parseRenderBatchSpec } from './batch.ts';
-import type { RoutesDeps } from './routes.ts';
-import { RenderResourceError, type RenderBatchRecord } from './types.ts';
+import { INERT_BYTE_HEADERS } from '../api/file-delivery.ts';
+import { RENDER_ARCHIVE_MAX_BYTES, archivePlan, writeBatchArchive } from './archive.ts';
+import { batchProgress, batchRequestHash, batchWire, newRenderBatch, parseBatchBinding, parseRenderBatchSpec, rowsFromBinding } from './batch.ts';
+import { assertCallbackAllowed, parseRenderSpec } from './request.ts';
+import { principalFor, type RoutesDeps } from './routes.ts';
+import { RenderResourceError, type RenderBatchRecord, type RenderBatchSpec } from './types.ts';
 
 export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createRouter>, 'add'>, deps: RoutesDeps): void {
   const { store } = deps;
-  const add = (method: string, path: string, handler: (principal: string, ...args: Parameters<Handler>) => Promise<void>): void => {
+  const principalOf = principalFor(deps);
+  const add = (method: string, path: string, handler: (principal: string, ...args: Parameters<Handler>) => Promise<void>, options: { outputToken?: boolean; personPrivate?: boolean } = {}): void => {
     router.add(method, `/api/v1/render-batches${path}`, async (req, res, ctx) => {
       try {
-        const principal = await deps.authenticate(req);
+        const principal = await principalOf(req, options.outputToken ? ctx.params.id : undefined);
         if (!principal) return sendError(res, 401, 'UNAUTHORIZED', 'an authenticated user or service token is required');
         await handler(principal, req, res, ctx);
       } catch (e) {
         if (e instanceof RenderResourceError) return sendError(res, e.status, e.code, e.message);
         throw e;
       }
-    });
+    }, options.personPrivate ? { delivery: 'person-private' } : undefined);
   };
   const find = async (id: string, principal: string): Promise<RenderBatchRecord> => {
     const batch = await store.getRenderBatch(id, principal);
@@ -25,6 +29,7 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
   const submit = async (batch: RenderBatchRecord) => {
     if (!deps.kick) throw new RenderResourceError('RENDER_RUNNER_UNAVAILABLE', 503, 'durable batches require the long-lived server');
     await deps.authorize(batch.principal, batch.request);
+    assertCallbackAllowed(batch.request, deps.callbackAllowed);
     // Reusing a successful row keeps its exact bytes. Only new attempts need current input validation.
     for (const row of batch.rows) {
       if (row.render.state !== 'queued') continue;
@@ -47,9 +52,39 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
     return value;
   };
 
+  /** A bound batch's rows, read once at submission. The source is read only for a
+   *  caller who holds the grants, and not at all for a replay of a batch that exists. */
+  const boundRequest = async (principal: string, body: Record<string, unknown>, idempotencyKey?: string): Promise<{ replay: RenderBatchRecord } | { spec: RenderBatchSpec }> => {
+    const { bind, rows, ...base } = body;
+    if (rows !== undefined) throw new RenderResourceError('INVALID_INPUT', 400, 'a batch takes rows or bind, not both');
+    const binding = parseBatchBinding(bind);
+    const request = parseRenderSpec(base);
+    await deps.authorize(principal, request);
+    if (idempotencyKey !== undefined) {
+      const existing = await store.findRenderBatchByKey(principal, idempotencyKey);
+      if (existing) {
+        if (existing.requestHash !== batchRequestHash({ ...request, bind: binding, rows: [] })) throw new RenderResourceError('IDEMPOTENCY_KEY_REUSED', 409, 'Idempotency-Key already identifies a different batch request');
+        return { replay: existing };
+      }
+    }
+    if (!deps.resolveBinding) throw new RenderResourceError('DATA_BINDING_ERROR', 400, 'this deployment cannot read data sources');
+    let resolved: Record<string, unknown>[];
+    try { resolved = await deps.resolveBinding(principal, request, binding); }
+    catch (e) {
+      if (e instanceof RenderResourceError) throw e;
+      throw new RenderResourceError('DATA_BINDING_ERROR', 400, (e as Error).message);
+    }
+    return { spec: parseRenderBatchSpec({ ...base, bind: binding, rows: rowsFromBinding(resolved, binding.keyField) }) };
+  };
+
   add('POST', '', async (principal, req, res) => {
-    const batch = newRenderBatch(principal, parseRenderBatchSpec(await readJson(req)), key(req));
-    const saved = await submit(batch);
+    const body = await readJson(req) as Record<string, unknown> | null;
+    const idempotencyKey = key(req);
+    const request = body && typeof body === 'object' && !Array.isArray(body) && body.bind !== undefined
+      ? await boundRequest(principal, body, idempotencyKey) : { spec: parseRenderBatchSpec(body) };
+    const saved = 'replay' in request
+      ? { record: request.replay, reused: true }
+      : await submit(newRenderBatch(principal, request.spec, idempotencyKey));
     sendJson(res, saved.reused ? 200 : 202, batchWire(saved.record), { location: `/api/v1/render-batches/${saved.record.id}` });
   });
   add('GET', '', async (principal, _req, res, ctx) => {
@@ -69,7 +104,8 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
   add('GET', '/:id', async (principal, _req, res, ctx) => {
     const batch = await find(ctx.params.id!, principal);
     await deps.authorize(principal, batch.request);
-    sendJson(res, 200, batchWire(batch));
+    const callback = await store.renderCallbackSummary(batch.id);
+    sendJson(res, 200, { ...batchWire(batch), ...(callback ? { callback } : {}) });
   });
   add('GET', '/:id/manifest', async (principal, _req, res, ctx) => {
     const batch = await find(ctx.params.id!, principal);
@@ -77,12 +113,35 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
     sendJson(res, 200, { manifestVersion: 1, ...batchWire(batch) }, {
       'content-disposition': `attachment; filename="${batch.id}.json"`, 'cache-control': 'private, no-store',
     });
-  });
+  }, { outputToken: true });
+  add('GET', '/:id/archive', async (principal, _req, res, ctx) => {
+    const batch = await find(ctx.params.id!, principal);
+    await deps.authorize(principal, batch.request);
+    const { progress } = batchProgress(batch);
+    if (progress.done !== progress.total) throw new RenderResourceError('BATCH_NOT_FINISHED', 409, 'the archive is available once every row has finished');
+    const plan = archivePlan(batch);
+    if (!plan.members) throw new RenderResourceError('BATCH_HAS_NO_OUTPUT', 409, 'no row of this batch has an output to archive');
+    if (plan.bytes > RENDER_ARCHIVE_MAX_BYTES) throw new RenderResourceError('ARCHIVE_TOO_LARGE', 413, `this batch holds ${plan.bytes} bytes, more than one archive carries; download the rows from their own output URLs`);
+    res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': 'application/zip', 'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff', 'content-disposition': `attachment; filename="${batch.id}.zip"` });
+    // The status has gone out, so a failure from here closes the connection. A
+    // truncated ZIP has no central directory, and no extractor mistakes it for a whole one.
+    try {
+      await writeBatchArchive(batch, deps.blobs, (chunk) => new Promise<boolean>((resolve) => {
+        if (res.destroyed) return resolve(false);
+        if (res.write(chunk)) return resolve(true);
+        const done = (): void => { res.off('drain', done); res.off('close', done); resolve(!res.destroyed); };
+        res.once('drain', done); res.once('close', done);
+      }));
+      res.end();
+    } catch { res.destroy(); }
+  }, { outputToken: true, personPrivate: true });
   add('DELETE', '/:id', async (principal, _req, res, ctx) => {
     const batch = await store.cancelRenderBatch(ctx.params.id!, principal);
     if (!batch) throw new RenderResourceError('NOT_FOUND', 404, 'render batch not found');
     if (!batchProgress(batch).progress.cancelled) throw new RenderResourceError('BATCH_TERMINAL', 409, 'completed batch history is retained');
     for (const row of batch.rows) if (row.render.state === 'cancelled') deps.cancel?.(row.render.id);
+    deps.callbacksChanged?.();
     await deps.audit(principal, 'render.batch.cancel', batch.id, {});
     sendJson(res, 200, batchWire(batch));
   });

@@ -32,6 +32,7 @@ import type { ProviderRecord, ProviderState } from '../catalog/providers/types.t
 import type { DeliveryRecord } from '../delivery/types.ts';
 import type { PasskeyStore } from '../iam/passkeys/types.ts';
 import type { RenderStore } from '../renders/types.ts';
+import type { RenderApiStore } from '../render-api/types.ts';
 import type { UploadStore } from '../uploads/scoped.ts';
 import type { ProjectFileLimits, ProjectFileRecord, ProjectFileReservation } from '../projects/files.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
@@ -324,6 +325,10 @@ export interface ApiTokenRecord {
   label: string;
   /** The role the synthetic principal carries; the evaluator owns the vocabulary. */
   role: string;
+  /** What the token may reach (iam/token-scopes.ts). Absent means its role's full reach. */
+  scopes?: string[];
+  /** The only tools it may name. Absent means any tool its role and grants allow. */
+  tools?: string[];
   /** sha256 hex of the opaque secret - never the secret itself. */
   tokenHash: string;
   /** 'user:<id>' who minted it. */
@@ -387,12 +392,15 @@ export interface AutomationCallbackSummary {
   lastStatus?: number;
   nextAttemptAt?: string;
 }
-/** Durable callback outbox entry. A job that settles (done or failed) with a
- *  callback URL gets one in the same write; a dispatcher claims due entries with
- *  a lease, so an entry no process finished is sent again after a restart. */
+/** Durable callback outbox entry. A job, render or render batch that reaches a
+ *  terminal state with a callback URL gets one in the same write; a dispatcher
+ *  claims due entries with a lease, so an entry no process finished is sent
+ *  again after a restart. Exactly one of the subject ids is set. */
 export interface AutomationCallbackRecord {
   id: string;
-  jobId: string;
+  jobId?: string;
+  renderId?: string;
+  renderBatchId?: string;
   principal: string;
   url: string;
   state: AutomationCallbackState;
@@ -1246,7 +1254,7 @@ export interface CatalogDeliverySnapshot {
   bytes: Buffer; until: number; toolIds: string[]; assetIds: string[];
 }
 
-export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, SubjectStore, UploadStore {
+export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, PasskeyStore, SubjectStore, UploadStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
   createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;

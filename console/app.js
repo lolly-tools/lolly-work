@@ -968,6 +968,8 @@ function activityLine(item, names) {
     case 'agent.disconnect': push('disconnected from ', s?.type === 'session' ? actSessionObj(s.id, 'design') : s ? actProjectObj(s.id) : 'the workspace'); break;
     case 'agent.tool-call': push(p.outcome === 'rejected' ? 'was refused ' : p.outcome === 'partial' ? 'partially completed ' : 'used ', bold(p.tool), p.code ? ` (${p.code})` : ''); break;
     case 'agent.project-write': push('ran ', bold(p.tool), ' in ', s ? actProjectObj(s.id) : 'a project'); break;
+    case 'mcp.connect': push('connected over MCP'); break;
+    case 'mcp.tool-call': push(p.outcome === 'rejected' ? 'was refused ' : 'used ', bold(p.tool), ' over MCP', p.code ? ` (${p.code})` : ''); break;
     case 'collab.invite': push('invited ', p.invitee ? actUserObj(p.invitee, names) : 'a teammate', ' to co-edit ', s ? actSessionObj(s.id, p.toolId) : 'a session'); break;
     // Invitations and access requests (plans/74 invite spec 4.4). A step
     // taken before anyone is admitted is audited as `anonymous`, which the

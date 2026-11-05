@@ -10,7 +10,7 @@ import { renderCapabilities, type RenderCapabilities } from '../render/capabilit
 import { approvalArtifactPolicy } from '../approvals/export-review.ts';
 import { TRANSFER_PART_BYTES } from '../uploads/parts.ts';
 import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
-import { evaluate, grantDecision, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { projectInjectables, flagInjectableGovernance, injectablesForVersion } from '../injectables/registry.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
@@ -430,7 +430,7 @@ export function assembleOrgConfig(opts: {
     profilePolicy,
     tools,
     can,
-    ...(approvalArtifacts.enabled && can['export.request'] ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, ...(opts.approvalRecording ? { recordInCredentials: true } : {}) } } } : {}),
+    ...(approvalArtifacts.enabled && (can['export.request'] || mayActOnSomeApproval(principal, grants)) ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, ...(opts.approvalRecording ? { recordInCredentials: true } : {}) } } } : {}),
     sharing: {
       groups: sharingGroups, projectFiles: opts.projectFiles === true,
       instance: { enabled: sharingPolicy.instanceAudience, maxRole: sharingPolicy.instanceMaxRole },
