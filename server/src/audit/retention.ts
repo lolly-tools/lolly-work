@@ -24,6 +24,7 @@ import type { InstanceConfig } from '../config/instance.ts';
 import { sweepExpiredProjectFiles } from '../projects/files.ts';
 import { sweepExpiredUploads } from '../uploads/scoped.ts';
 import { approvalArtifactPolicy, sweepApprovalArtifacts } from '../approvals/export-review.ts';
+import { sweepRenderOutputs } from '../renders/retention.ts';
 import type { Store } from '../store/types.ts';
 import type { AuditEvent } from './chain.ts';
 
@@ -37,6 +38,10 @@ export interface RetentionResult {
   uploadsSwept?: number;
   /** Files removed from decided approval requests past their retention, on the same condition. */
   approvalArtifactsRemoved?: number;
+  /** Durable render outputs marked expired and removed. Present only when the
+   *  policy states a retention and the run was given the BlobStore. */
+  renderOutputsExpired?: number;
+  renderOutputsRemoved?: number;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -45,7 +50,7 @@ const SCAN_BATCH = 500;
 export async function runRetention(
   { config, store, blobs, now = () => new Date() }: { config: InstanceConfig; store: Store; blobs?: BlobStore; now?: () => Date },
 ): Promise<RetentionResult> {
-  const { telemetryDays, auditDays } = config.policy.retention;
+  const { telemetryDays, auditDays, renderOutputDays } = config.policy.retention;
   const result: RetentionResult = { telemetryTrimmed: 0, auditTrimmed: 0 };
 
   // Not a policy choice: an expired upload is litter whatever the org keeps,
@@ -53,6 +58,12 @@ export async function runRetention(
   if (blobs) result.projectFilesSwept = await sweepExpiredProjectFiles(store, blobs, { now: now().getTime(), limit: 500 });
   if (blobs) result.uploadsSwept = await sweepExpiredUploads(store, blobs, { now: now().getTime(), limit: 500 });
   if (blobs) result.approvalArtifactsRemoved = await sweepApprovalArtifacts(store, blobs, approvalArtifactPolicy(config), { now: now().getTime() });
+
+  if (blobs && renderOutputDays > 0) {
+    const swept = await sweepRenderOutputs({ store, blobs, days: renderOutputDays, now });
+    result.renderOutputsExpired = swept.expired;
+    result.renderOutputsRemoved = swept.purged;
+  }
 
   if (telemetryDays > 0) {
     const cutoff = new Date(now().getTime() - telemetryDays * DAY_MS).toISOString();

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Durable callback outbox. A settled job's callback is a stored entry, written in
- * the same store call that settles the job, never a closure in one process. Any
- * process claims due entries with a lease, so an entry that no process finished
- * is sent again after a restart, with the same id.
+ * Durable callback outbox for automation jobs, durable renders and render
+ * batches. A finished subject's callback is a stored entry, written in the same
+ * store call that settles it, never a closure in one process. Any process claims
+ * due entries with a lease, so an entry that no process finished is sent again
+ * after a restart, with the same id.
  *
  * Every attempt of one callback carries that id in `x-lolly-delivery-id` and in
  * the signed body: the same idempotency key contract as a signed-HTTPS delivery
@@ -13,9 +14,10 @@
  * have acted on it, and the retry reuses the id.
  */
 import { createHmac, randomUUID } from 'node:crypto';
+import { defaultRenderCallbackBody, type RenderCallbackContext, type RenderCallbackSubject } from '../renders/callback-body.ts';
 import type { AutomationCallbackRecord, AutomationCallbackResult, AutomationJobRecord, Store } from '../store/types.ts';
 
-export type CallbackOutboxStore = Pick<Store, 'claimAutomationCallback' | 'settleAutomationCallback' | 'nextAutomationCallbackAt' | 'getAutomationJob'>;
+export type CallbackOutboxStore = Pick<Store, 'claimAutomationCallback' | 'settleAutomationCallback' | 'nextAutomationCallbackAt' | 'getAutomationJob' | 'getRender' | 'getRenderBatch'>;
 
 /** The header that carries the idempotency key, shared with signed-HTTPS delivery. */
 export const CALLBACK_ID_HEADER = 'x-lolly-delivery-id';
@@ -32,6 +34,13 @@ export interface CallbackOutboxOptions {
   resultUrl?: (job: AutomationJobRecord) => string;
   /** Mint the token a receiver sends as `x-lw-job-token`. Each attempt mints a fresh one. */
   resultToken?: (job: AutomationJobRecord) => string;
+  /** The instance's base URL, for the absolute URLs in a render or batch callback. */
+  baseUrl?: string;
+  /** Mint the token a receiver sends as `x-lw-render-token`. Each attempt mints a fresh one. */
+  renderToken?: (id: string, principal: string) => string;
+  /** The signed body for a finished render or batch. Replace this to speak another
+   *  receiver contract through the same signing, delivery id and retry ladder. */
+  renderBody?: (subject: RenderCallbackSubject, context: RenderCallbackContext) => Record<string, unknown> | Promise<Record<string, unknown>>;
   leaseMs?: number;
   timeoutMs?: number;
   retryDelaysMs?: readonly number[];
@@ -128,13 +137,12 @@ export class CallbackOutbox {
       await settle({ state: 'failed', outcome: callback.lastOutcome ?? 'not-sent', error: `${callback.lastError ? `${callback.lastError} ` : ''}No attempts remain (limit ${limit}).` });
       return;
     }
-    const job = await this.store.getAutomationJob(callback.jobId, callback.principal);
-    if (!job) { await settle({ state: 'failed', outcome: 'not-sent', error: 'The job no longer exists.' }); return; }
-    const { secret, allowed, resultUrl, resultToken } = this.options;
+    const payload = await this.payload(callback);
+    if (typeof payload === 'string') { await settle({ state: 'failed', outcome: 'not-sent', error: payload }); return; }
+    const { secret, allowed } = this.options;
     if (!secret) { await settle({ state: 'failed', outcome: 'not-sent', error: 'No webhook signing secret is configured.' }); return; }
     if (!allowed?.(callback.url)) { await settle({ state: 'failed', outcome: 'not-sent', error: 'This instance does not approve the callback URL.' }); return; }
-    const done = job.state === 'done';
-    const body = JSON.stringify({ jobId: job.id, state: job.state, resultUrl: done ? (resultUrl?.(job) ?? `/api/v1/jobs/${job.id}/result`) : null, resultToken: done ? (resultToken?.(job) ?? null) : null, deliveryId: callback.id });
+    const body = JSON.stringify(payload);
     const timestamp = String(Date.now());
     const signature = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');
     let response: Response;
@@ -151,6 +159,24 @@ export class CallbackOutbox {
     }
     if (response.ok) { await settle({ state: 'acknowledged', outcome: 'acknowledged', status: response.status }); return; }
     await settle(this.next(callback, { outcome: 'refused', status: response.status, error: `The receiver answered ${response.status}.` }));
+  }
+
+  /** The body to sign for this entry's subject, or why its subject is gone. */
+  private async payload(callback: AutomationCallbackRecord): Promise<Record<string, unknown> | string> {
+    const { resultUrl, resultToken, baseUrl = '', renderToken, renderBody = defaultRenderCallbackBody } = this.options;
+    const context = (id: string): RenderCallbackContext => ({ deliveryId: callback.id, baseUrl, outputToken: renderToken?.(id, callback.principal) ?? null });
+    if (callback.renderId) {
+      const render = await this.store.getRender(callback.renderId, callback.principal);
+      return render ? renderBody({ kind: 'render', render }, context(render.id)) : 'The render no longer exists.';
+    }
+    if (callback.renderBatchId) {
+      const batch = await this.store.getRenderBatch(callback.renderBatchId, callback.principal);
+      return batch ? renderBody({ kind: 'render-batch', batch }, context(batch.id)) : 'The render batch no longer exists.';
+    }
+    const job = callback.jobId ? await this.store.getAutomationJob(callback.jobId, callback.principal) : null;
+    if (!job) return 'The job no longer exists.';
+    const done = job.state === 'done';
+    return { jobId: job.id, state: job.state, resultUrl: done ? (resultUrl?.(job) ?? `/api/v1/jobs/${job.id}/result`) : null, resultToken: done ? (resultToken?.(job) ?? null) : null, deliveryId: callback.id };
   }
 
   /** Another attempt after the scheduled wait, or failed once none remain. */
