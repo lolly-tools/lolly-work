@@ -37,12 +37,16 @@ const assertShellMode = (table, origin) => {
   assert.match(table[1].dest, /^https:\/\//, 'shell mode: the shell catch-all is proxied before the function row');
   assert.deepEqual(table.flatMap((r, i) => (r.dest === '/api/index' ? [i] : [])), [2], 'the function row is the only one and the last');
   assert.equal(table[2].src, '^/(.*)$');
-  for (const prefix of prefixes.filter(p => p !== 'tools')) {
+  for (const prefix of prefixes.filter(p => p !== 'tools' && p !== 'brand')) {
     for (const path of [`/${prefix}`, `/${prefix}/x/y`]) assert.equal(resolveRoute(table, path)?.to, 'function', `${path} must reach the function`);
   }
   assert.deepEqual(resolveRoute(table, '/tools/qr-code/tool.json'), { to: 'function', path: '/tools/qr-code/tool.json' });
+  // A brand page address and its list are the server's; the bare /brand page and the files beside it are the shell's.
+  for (const path of ['/brand/acme', '/brand/acme/', '/brand/acme/logos/primary.svg', '/brand/acme/mcp', '/.well-known/lolly-brand.json']) {
+    assert.deepEqual(resolveRoute(table, path), { to: 'function', path }, `${path} must reach the function`);
+  }
   assert.deepEqual(resolveRoute(table, '/catalog/tools/index.sig.json'), { to: 'function', path: '/catalog/tools/index.sig.json' });
-  for (const path of ['/', '/tools', '/t/qr-code', '/info/index.html', '/sw.js', '/api/ca/sign', '/api/penpot/x', '/api/mcp', '/api/fetch-image']) {
+  for (const path of ['/', '/tools', '/brand', '/brand/horizontal.svg', '/t/qr-code', '/info/index.html', '/sw.js', '/api/ca/sign', '/api/penpot/x', '/api/mcp', '/api/fetch-image']) {
     assert.deepEqual(resolveRoute(table, path), { to: 'proxy', url: `${origin}${path}` }, `${path} must go to the shell origin`);
   }
   // The instance's session cookie never leaves for the shell origin.
