@@ -2,7 +2,7 @@
 
 The complete documentation lives at <https://lolly.tools/info>. These generated guides are bundled for the console at `/admin#/docs` and offline installations. Existing console slugs and relative guide links remain available.
 
-Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/work), then follow the [bundle update instructions](https://github.com/lolly-tools/lolly/blob/main/docs/work/README.md). Do not edit this generated copy. The repository's `docs-pin.json` records the selected canonical commit and all file hashes; run `pnpm run verify:docs-pin` to verify the bundle. Keep the selected documentation appropriate for the Work release.
+Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/work), then follow the [bundle update instructions](https://github.com/lolly-tools/lolly/blob/main/docs/work/README.md). Do not edit this generated copy. The repository's `docs-pin.json` records the selected canonical commit and all file hashes; run `pnpm run verify:docs-pin` to verify the bundle. Keep the selected documentation appropriate for the Lolly Work release.
 
 ## Start
 
@@ -11,7 +11,7 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 ## Automate
 
 - [Invite an agent](document-agents.md)
-- [Automate with the Work API](automation-api.md)
+- [Automate with the Lolly Work API](automation-api.md)
 - [Lolly Work API reference](api.md)
 - [lw CLI: administer Lolly Work](cli.md)
 - [Upload large files](resumable-uploads.md)
@@ -37,14 +37,14 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 - [WebDAV / Nextcloud](providers/webdav.md)
 - [S3 / S3-compatible](providers/s3.md)
 - [Git raw manifest](providers/git.md)
-- [Brandfolder](providers/brandfolder.md)
-- [Optimizely CMP](providers/optimizely-cmp.md)
-- [Image Relay](providers/imagerelay.md)
-- [Canto](providers/canto.md)
-- [Acquia DAM / Widen](providers/acquia-dam.md)
-- [IntelligenceBank](providers/intelligencebank.md)
-- [Cloudinary](providers/cloudinary.md)
-- [Orange Logic](providers/orange-logic.md)
+- [Brandfolder integration with Lolly](providers/brandfolder.md)
+- [Optimizely CMP integration with Lolly](providers/optimizely-cmp.md)
+- [Image Relay integration with Lolly](providers/imagerelay.md)
+- [Canto integration with Lolly](providers/canto.md)
+- [Acquia DAM / Widen integration with Lolly](providers/acquia-dam.md)
+- [IntelligenceBank integration with Lolly](providers/intelligencebank.md)
+- [Cloudinary integration with Lolly](providers/cloudinary.md)
+- [Orange Logic integration with Lolly](providers/orange-logic.md)
 - [Penpot](providers/penpot.md)
 - [Dropbox](providers/dropbox.md)
 - [Google Drive](providers/gdrive.md)
@@ -65,15 +65,15 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 - [Official installation routes](official-installations.md)
 - [Set up enterprise identity](enterprise-identity.md)
 - [Sign-in provider recipes](identity-providers.md)
-- [Configure your first Work instance](customer-setup.md)
-- [How a Work deployment fits together](deployment.md)
-- [Run Work on UpCloud or Evroc](cloud-deployment.md)
-- [Put a CDN in front of Work](edge-cdn.md)
-- [Run Work on AWS or MulgaDC Spinifex](aws-compatible.md)
+- [Configure your first Lolly Work instance](customer-setup.md)
+- [How a Lolly Work deployment fits together](deployment.md)
+- [Run Lolly Work on UpCloud or Evroc](cloud-deployment.md)
+- [Put a CDN in front of Lolly Work](edge-cdn.md)
+- [Run Lolly Work on AWS or MulgaDC Spinifex](aws-compatible.md)
 - [WebAssembly and Kubewarden choices](wasm-deployment.md)
 - [Admission policy with Kubewarden](admission-policy.md)
-- [Work instance configuration](configuration.md)
-- [Configure Work export signing](c2pa.md)
+- [Lolly Work instance configuration](configuration.md)
+- [Configure Lolly Work export signing](c2pa.md)
 - [Keep Lolly Work running](operations.md)
 - [Metrics and alerts](metrics.md)
 - [Build a verified instance pack](instance-pack-production.md)
@@ -85,6 +85,6 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 ## Trust
 
 - [Lolly Work security overview](security-platform.md)
-- [Work storage and data lifecycle](data-lifecycle.md)
+- [Lolly Work storage and data lifecycle](data-lifecycle.md)
 
-Work prose and screenshot credentials retain MPL-2.0 and any third-party notices. See [LICENSE](LICENSE).
+Lolly Work prose and screenshot credentials retain MPL-2.0 and any third-party notices. See [LICENSE](LICENSE).

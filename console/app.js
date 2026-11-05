@@ -22,6 +22,7 @@ import { createTagPanel } from './catalog-tags.js';
 import { createSubmitPanel } from './catalog-submit.js';
 import { buildThemeMaps, themeFromTokens, resolveCssColor } from './brand-theme.js';
 import { dayBound, localDateValue, zoneName } from './lifecycle-dates.js';
+import { renderDocPathChoices } from './docs-path-chooser.js';
 
 const $app = document.getElementById('app');
 const $tip = document.getElementById('tip');
@@ -5837,6 +5838,7 @@ async function apiText(path) {
 // text ('../catalog.md', 'canto.md') works both here and in the repo.
 let docPathToSlug = new Map();
 let docCurrentDir = '';
+let docCurrentSlug = '';
 
 function resolveDocPath(dir, href) {
   const out = [];
@@ -6008,6 +6010,8 @@ function mdToNodes(text, { skipTitle = true } = {}) {
       i--;
       const head = mdCells(rows[0]);
       const body = rows.slice(1).filter((r) => !/^\s*\|[\s|:-]+\|?\s*$/.test(r)).map(mdCells);
+      const paths = renderDocPathChoices(head, body, { el, inline: mdInline, anchorHref: anchor => `#/docs?doc=${docCurrentSlug}&anchor=${encodeURIComponent(anchor)}` });
+      if (paths) { nodes.push(paths); continue; }
       nodes.push(el('div', { class: 'doc-tbl' }, el('table', {},
         el('thead', {}, mdRow(head, 'th')),
         el('tbody', {}, ...body.map((r) => mdRow(r, 'td'))))));
@@ -6121,6 +6125,7 @@ async function viewDocs(main, params) {
   const current = flat.find((d) => d.slug === target.slug) ?? flat[0];
   // Rebuilt per view so a manifest change lands without a reload.
   docPathToSlug = new Map(flat.map((d) => [d.path ?? `${d.slug}.md`, d.slug]));
+  docCurrentSlug = current.slug;
   docCurrentDir = (current.path ?? '').includes('/') ? current.path.replace(/\/[^/]*$/, '') : '';
 
   // Left rail: the manifest's own grouping, plus the open-source docs when a
