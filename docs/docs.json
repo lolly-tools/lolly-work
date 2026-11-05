@@ -137,6 +137,12 @@
           "summary": "Who sees a team project, what each project role allows, saving from Lolly, shared files and subfolders, and saving conflicts."
         },
         {
+          "slug": "move-from-render-api",
+          "path": "move-from-render-api.md",
+          "title": "Move from a hosted render API",
+          "summary": "Move image production from Bannerbear or Placid to your own server, one template at a time: read the account, import or rebuild designs, keep your request shapes, and compare before you cut over."
+        },
+        {
           "slug": "renders",
           "path": "renders.md",
           "title": "Render jobs and batches",

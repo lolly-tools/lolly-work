@@ -203,7 +203,7 @@ routes share the `auth` rate-limit bucket.
 | `GET /api/v1/users`, `GET /api/v1/users/:id` | admin/owner role | |
 | `POST /api/v1/users/:id/revoke-sessions` | `grant.edit` | sign-out-everywhere: bumps the user's session epoch, every prior cookie and token fails its next request |
 | `DELETE /api/v1/users/:id` | `instance.config` (**owner**) | erasure: deletes the row + de-attributes telemetry; `409` while they own unarchived projects, and `409 ERASE_UPLOADS_REMAIN` when some of their [uploads](#uploads) could not be removed first (run it again) |
-| `POST /api/v1/retention/run` | `instance.config` (**owner**) | apply the stated retention policy now, and remove expired unfinished project-file uploads (`projectFilesSwept`) expired [scoped uploads](#uploads) (`uploadsSwept`) and the files of decided approval requests past their retention (`approvalArtifactsRemoved`) |
+| `POST /api/v1/retention/run` | `instance.config` (**owner**) | apply the stated retention policy now, including the purge of documents deleted longer ago than `policy.retention.deletedDocumentsDays` (`documentsPurged`, present when that is set), and remove expired unfinished project-file uploads (`projectFilesSwept`), expired [scoped uploads](#uploads) (`uploadsSwept`) and the files of decided approval requests past their retention (`approvalArtifactsRemoved`). With `policy.retention.renderOutputDays` set, it also runs one pass of [output retention](renders.md#hosting-and-recovery) (`renderOutputsExpired`, `renderOutputsRemoved`) |
 | `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/:name` | `grant.edit` | |
 | `PUT /api/v1/users/:id/local-groups` | `grant.edit` | |
 | `POST /api/v1/users/:id/disabled` | `grant.edit` | |
@@ -1259,6 +1259,7 @@ source. Google Drive is the only browser-consent kind in this version.
 | `GET /api/v1/destinations` | authenticated; results filtered by `delivery.create` per target | safe fixed-target descriptors visible to this caller; never endpoints, bucket names, prefixes or credential refs |
 | `POST /api/v1/destinations/:id/deliveries?name=…&format=…` | `delivery.create` on `destination:<id>` | verified Lolly export as the raw body; `201` after immediate delivery, or `202 awaiting-approval` when the target binds a chain |
 | `POST /api/v1/destinations/:id/deliveries?projectId=…&fileId=…&checksum=…` | signed-in person + current project viewer access + `delivery.create` | empty body; verified shared original, only with explicit `projectFiles` on a DAM destination |
+| `POST /api/v1/renders/:id/deliveries` | render owner with the tool and `export.server` + `delivery.create` on the body’s `destinationId` | deliver a succeeded durable render's retained output by reference, under the same rules as the job route below |
 | `POST /api/v1/jobs/:id/deliveries` | job owner + `delivery.create` on the body’s `destinationId` | deliver a completed render job’s retained output by reference; JSON `{destinationId,name,format?}` |
 | `GET /api/v1/deliveries` | authenticated | caller's own delivery history remains readable after permission loss |
 | `GET /api/v1/deliveries/:id` | authenticated | caller's own delivery receipt; another principal receives 404 |
@@ -1307,7 +1308,8 @@ messages and comment notices arrive.
 | `GET /api/v1/approvals/approvers` | member |
 | `POST /api/v1/approvals/:id/act` | `approval.act` |
 | `POST /api/v1/approvals/:id/withdraw` | member (submitter) |
-| `GET /api/v1/approvals/:id/artifact` | an eligible reviewer or someone who acted; the requester once approved |
+| `GET /api/v1/approvals/:id/artifact` | an eligible reviewer or someone who acted; the requester once approved. An approved request answers with the approved file and `x-lolly-approval-record`; `?file=reviewed` answers with the bytes as reviewed |
+| `POST /api/v1/approvals/match` | member; the [state of a request](approvals.md#check-the-state-of-a-request) for these inputs |
 | `GET /api/v1/inbox` | member - `{ messages, unread }` with `ETag: "ib-<16 hex>"` and `cache-control: private, no-cache`; a matching `If-None-Match` answers `304`, so a shell can check often for one header. `messages` holds the caller's messages and comment notices; `unread` counts both, and the tag moves when either changes |
 | `POST /api/v1/inbox/:id/ack` | member - dismisses the message for the caller. For a comment notice (`cn_…`) it deletes the caller's own notice row and nothing else, so the next reply in that thread shows a notice again |
 | `GET/POST /api/v1/messages` | `message.send` |

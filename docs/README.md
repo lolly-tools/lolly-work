@@ -30,6 +30,7 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 - [Approvals](approvals.md)
 - [Share renders and links](sharing.md)
 - [Team projects](team-projects.md)
+- [Move from a hosted render API](move-from-render-api.md)
 - [Render jobs and batches](renders.md)
 - [Organisation delivery destinations](delivery.md)
 - [Manage organisation AI policy](ai-policy.md)
