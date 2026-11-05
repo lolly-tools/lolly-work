@@ -408,6 +408,11 @@ export interface InstanceConfig {
   /** Instance-side catalog submit configuration. Only the scan hook lives here;
    *  everything an ORG tunes about submit lives under `policy.submit`. */
   submit: { scanHook?: SubmitScanHook };
+  /** Automation egress beyond the org's own notify webhook. `callbacks.allowedOrigins`
+   *  lists exact HTTPS origins a job, durable render or render batch may name as
+   *  its callback URL, beside the exact `notify.webhook.url`. Empty keeps callbacks
+   *  to that one endpoint. Signed with LW_WEBHOOK_SECRET, required at boot when set. */
+  automation: { callbacks: { allowedOrigins: string[] } };
   /** Notification egress (plans/35 wave 1). Absent = dormant, zero egress.
    *  Both channels are the org talking to itself - its relay, its endpoint -
    *  never phone-home. Secrets ride env (LW_SMTP_PASSWORD, LW_WEBHOOK_SECRET),
@@ -682,6 +687,7 @@ const DEFAULTS: InstanceConfig = {
   delivery: { maxBytes: 64 * 1024 * 1024, destinations: [] },
   edge: EDGE_DEFAULTS,
   blobs: { driver: 'pg' },
+  automation: { callbacks: { allowedOrigins: [] } },
   notify: { people: { email: false } },
   siem: { batchSize: 200, intervalSeconds: 30 },
   featureFlags: {},
@@ -1147,6 +1153,13 @@ export function parseConfig(json: string): InstanceConfig {
       throw new Error('notify.people.fromName must be a name of 1 to 60 characters on one line');
     }
     people.fromName = name;
+  }
+  const callbackOrigins = cfg.automation?.callbacks?.allowedOrigins;
+  if (!Array.isArray(callbackOrigins)) throw new Error('automation.callbacks.allowedOrigins must be an array of HTTPS origins');
+  for (const origin of callbackOrigins) {
+    let u: URL | null = null;
+    try { u = new URL(String(origin)); } catch { /* refused below */ }
+    if (!u || u.protocol !== 'https:' || u.origin !== origin) throw new Error(`invalid automation.callbacks.allowedOrigins entry: ${origin} (an exact https origin, such as https://hooks.example.com)`);
   }
   if (cfg.notify.webhook) {
     let u: URL | null = null;

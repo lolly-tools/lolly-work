@@ -387,12 +387,15 @@ export interface AutomationCallbackSummary {
   lastStatus?: number;
   nextAttemptAt?: string;
 }
-/** Durable callback outbox entry. A job that settles (done or failed) with a
- *  callback URL gets one in the same write; a dispatcher claims due entries with
- *  a lease, so an entry no process finished is sent again after a restart. */
+/** Durable callback outbox entry. A job, render or render batch that reaches a
+ *  terminal state with a callback URL gets one in the same write; a dispatcher
+ *  claims due entries with a lease, so an entry no process finished is sent
+ *  again after a restart. Exactly one of the subject ids is set. */
 export interface AutomationCallbackRecord {
   id: string;
-  jobId: string;
+  jobId?: string;
+  renderId?: string;
+  renderBatchId?: string;
   principal: string;
   url: string;
   state: AutomationCallbackState;

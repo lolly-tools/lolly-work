@@ -201,7 +201,10 @@ const AUTOMATION_JOB_SELECT = `select j.*, c.id as cb_id, c.state as cb_state, c
 function callbackFromRow(r: Record<string, unknown>): AutomationCallbackRecord {
   const iso = (v: unknown): string => new Date(v as string).toISOString();
   return {
-    id: r.id as string, jobId: r.job_id as string, principal: r.principal as string, url: r.url as string,
+    id: r.id as string, principal: r.principal as string, url: r.url as string,
+    ...(r.job_id ? { jobId: r.job_id as string } : {}),
+    ...(r.render_id ? { renderId: r.render_id as string } : {}),
+    ...(r.render_batch_id ? { renderBatchId: r.render_batch_id as string } : {}),
     state: r.state as AutomationCallbackRecord['state'], attempt: Number(r.attempt ?? 0), nextAttemptAt: iso(r.next_attempt_at),
     ...(r.lease_owner ? { leaseOwner: r.lease_owner as string } : {}), ...(r.lease_until ? { leaseUntil: iso(r.lease_until) } : {}),
     leaseToken: Number(r.lease_token ?? 0),

@@ -1,14 +1,16 @@
 import { readJson, sendError, sendJson, type createRouter, type Handler } from '../api/router.ts';
 import { batchProgress, batchWire, newRenderBatch, parseRenderBatchSpec } from './batch.ts';
-import type { RoutesDeps } from './routes.ts';
+import { assertCallbackAllowed } from './request.ts';
+import { principalFor, type RoutesDeps } from './routes.ts';
 import { RenderResourceError, type RenderBatchRecord } from './types.ts';
 
 export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createRouter>, 'add'>, deps: RoutesDeps): void {
   const { store } = deps;
-  const add = (method: string, path: string, handler: (principal: string, ...args: Parameters<Handler>) => Promise<void>): void => {
+  const principalOf = principalFor(deps);
+  const add = (method: string, path: string, handler: (principal: string, ...args: Parameters<Handler>) => Promise<void>, options: { outputToken?: boolean } = {}): void => {
     router.add(method, `/api/v1/render-batches${path}`, async (req, res, ctx) => {
       try {
-        const principal = await deps.authenticate(req);
+        const principal = await principalOf(req, options.outputToken ? ctx.params.id : undefined);
         if (!principal) return sendError(res, 401, 'UNAUTHORIZED', 'an authenticated user or service token is required');
         await handler(principal, req, res, ctx);
       } catch (e) {
@@ -25,6 +27,7 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
   const submit = async (batch: RenderBatchRecord) => {
     if (!deps.kick) throw new RenderResourceError('RENDER_RUNNER_UNAVAILABLE', 503, 'durable batches require the long-lived server');
     await deps.authorize(batch.principal, batch.request);
+    assertCallbackAllowed(batch.request, deps.callbackAllowed);
     // Reusing a successful row keeps its exact bytes. Only new attempts need current input validation.
     for (const row of batch.rows) {
       if (row.render.state !== 'queued') continue;
@@ -69,7 +72,8 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
   add('GET', '/:id', async (principal, _req, res, ctx) => {
     const batch = await find(ctx.params.id!, principal);
     await deps.authorize(principal, batch.request);
-    sendJson(res, 200, batchWire(batch));
+    const callback = await store.renderCallbackSummary(batch.id);
+    sendJson(res, 200, { ...batchWire(batch), ...(callback ? { callback } : {}) });
   });
   add('GET', '/:id/manifest', async (principal, _req, res, ctx) => {
     const batch = await find(ctx.params.id!, principal);
@@ -77,12 +81,13 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
     sendJson(res, 200, { manifestVersion: 1, ...batchWire(batch) }, {
       'content-disposition': `attachment; filename="${batch.id}.json"`, 'cache-control': 'private, no-store',
     });
-  });
+  }, { outputToken: true });
   add('DELETE', '/:id', async (principal, _req, res, ctx) => {
     const batch = await store.cancelRenderBatch(ctx.params.id!, principal);
     if (!batch) throw new RenderResourceError('NOT_FOUND', 404, 'render batch not found');
     if (!batchProgress(batch).progress.cancelled) throw new RenderResourceError('BATCH_TERMINAL', 409, 'completed batch history is retained');
     for (const row of batch.rows) if (row.render.state === 'cancelled') deps.cancel?.(row.render.id);
+    deps.callbacksChanged?.();
     await deps.audit(principal, 'render.batch.cancel', batch.id, {});
     sendJson(res, 200, batchWire(batch));
   });

@@ -1,6 +1,7 @@
 import { randomId } from '../lib/crypto.ts';
+import type { AutomationCallbackOutcome, AutomationCallbackState } from '../store/types.ts';
 import type { RenderRecord, RenderStore } from './types.ts';
-import { createPostgresBatchStore, type RenderDatabase } from './batch-postgres.ts';
+import { appendFinishedCallbacks, createPostgresBatchStore, FINISHED_RENDER_COLUMNS, inTransaction, type FinishedRenderRow, type RenderDatabase } from './batch-postgres.ts';
 
 export function renderFromRow(r: Record<string, unknown>): RenderRecord {
   return {
@@ -42,10 +43,19 @@ export function createPostgresRenderStore(pool: RenderDatabase): RenderStore {
       return rows.map(renderFromRow);
     },
     async claimRender(leaseMs) {
-      await pool.query(`update renders set state='failed', finished_at=clock_timestamp(), updated_at=clock_timestamp(),
-        lease_token=null, lease_until=null,
-        error='{"code":"ATTEMPTS_EXHAUSTED","message":"render exhausted its attempts before completion"}'::jsonb
-        where attempt>=max_attempts and ((state='running' and lease_until<=clock_timestamp()) or (state='queued' and available_at<=clock_timestamp()))`);
+      // Most passes find nothing exhausted, so the cheap read decides whether a
+      // transaction is needed. Exhausting a render settles it, and it may owe a callback.
+      const exhaustedWhere = `attempt>=max_attempts and ((state='running' and lease_until<=clock_timestamp()) or (state='queued' and available_at<=clock_timestamp()))`;
+      const { rows: due } = await pool.query(`select exists (select 1 from renders where ${exhaustedWhere}) as due`);
+      if (due[0]?.due) {
+        await inTransaction(pool, async (db) => {
+          const { rows: finished } = await db.query(`update renders set state='failed', finished_at=clock_timestamp(), updated_at=clock_timestamp(),
+            lease_token=null, lease_until=null,
+            error='{"code":"ATTEMPTS_EXHAUSTED","message":"render exhausted its attempts before completion"}'::jsonb
+            where ${exhaustedWhere} returning ${FINISHED_RENDER_COLUMNS}`);
+          await appendFinishedCallbacks(db, finished as unknown as FinishedRenderRow[]);
+        });
+      }
       const { rows } = await pool.query(
         `with candidate as (
            select id from renders where attempt<max_attempts and
@@ -63,23 +73,28 @@ export function createPostgresRenderStore(pool: RenderDatabase): RenderStore {
       return rowCount === 1;
     },
     async settleRender(id, token, outcome) {
-      if (outcome.state === 'succeeded') {
-        const { rowCount } = await pool.query(
-          `update renders set state='succeeded',output=$3::jsonb,error=null,lease_token=null,lease_until=null,
-             finished_at=clock_timestamp(),updated_at=clock_timestamp()
-           where id=$1 and lease_token=$2 and state='running' and lease_until>clock_timestamp()`,
-          [id, token, JSON.stringify(outcome.output)]);
-        return rowCount === 1;
-      }
-      const { rowCount } = await pool.query(
-        `update renders set
-           state=case when $4::integer is not null and attempt<max_attempts then 'queued' else 'failed' end,
-           finished_at=case when $4::integer is not null and attempt<max_attempts then null else clock_timestamp() end,
-           available_at=clock_timestamp()+(coalesce($4,0) * interval '1 millisecond'),
-           error=$3::jsonb,lease_token=null,lease_until=null,updated_at=clock_timestamp()
-         where id=$1 and lease_token=$2 and state='running' and lease_until>clock_timestamp()`,
-        [id, token, JSON.stringify(outcome.error), outcome.retryAfterMs ?? null]);
-      return rowCount === 1;
+      return inTransaction(pool, async (db) => {
+        if (outcome.state === 'succeeded') {
+          const { rows } = await db.query(
+            `update renders set state='succeeded',output=$3::jsonb,error=null,lease_token=null,lease_until=null,
+               finished_at=clock_timestamp(),updated_at=clock_timestamp()
+             where id=$1 and lease_token=$2 and state='running' and lease_until>clock_timestamp() returning ${FINISHED_RENDER_COLUMNS}`,
+            [id, token, JSON.stringify(outcome.output)]);
+          await appendFinishedCallbacks(db, rows as unknown as FinishedRenderRow[]);
+          return rows.length === 1;
+        }
+        const { rows } = await db.query(
+          `update renders set
+             state=case when $4::integer is not null and attempt<max_attempts then 'queued' else 'failed' end,
+             finished_at=case when $4::integer is not null and attempt<max_attempts then null else clock_timestamp() end,
+             available_at=clock_timestamp()+(coalesce($4,0) * interval '1 millisecond'),
+             error=$3::jsonb,lease_token=null,lease_until=null,updated_at=clock_timestamp()
+           where id=$1 and lease_token=$2 and state='running' and lease_until>clock_timestamp() returning state, ${FINISHED_RENDER_COLUMNS}`,
+          [id, token, JSON.stringify(outcome.error), outcome.retryAfterMs ?? null]);
+        // A failure that will be retried has not finished.
+        await appendFinishedCallbacks(db, rows.filter((row) => row.state === 'failed') as unknown as FinishedRenderRow[]);
+        return rows.length === 1;
+      });
     },
     async renderQueue() {
       // state='queued' implies the partial index renders_claim's predicate, so
@@ -92,11 +107,26 @@ export function createPostgresRenderStore(pool: RenderDatabase): RenderStore {
         oldestClaimableAt: r.oldest ? new Date(r.oldest as string).toISOString() : null }));
     },
     async cancelRender(id, principal) {
-      const { rows } = await pool.query(
-        `update renders set state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp(),lease_token=null,lease_until=null
-         where id=$1 and principal=$2 and state in ('queued','running') returning *`, [id, principal]);
-      if (rows[0]) return renderFromRow(rows[0]);
+      const cancelled = await inTransaction(pool, async (db) => {
+        const { rows } = await db.query(
+          `update renders set state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp(),lease_token=null,lease_until=null
+           where id=$1 and principal=$2 and state in ('queued','running') returning *, request->>'callbackUrl' as callback_url`, [id, principal]);
+        await appendFinishedCallbacks(db, rows as unknown as FinishedRenderRow[]);
+        return rows[0] ?? null;
+      });
+      if (cancelled) return renderFromRow(cancelled);
       return this.getRender(id, principal);
+    },
+    async renderCallbackSummary(id) {
+      const { rows } = await pool.query('select * from automation_callbacks where render_id=$1 or render_batch_id=$1', [id]);
+      const c = rows[0];
+      if (!c) return null;
+      return {
+        id: c.id as string, state: c.state as AutomationCallbackState, attempts: Number(c.attempt ?? 0),
+        ...(c.last_outcome ? { lastOutcome: c.last_outcome as AutomationCallbackOutcome } : {}),
+        ...(c.last_status !== null && c.last_status !== undefined ? { lastStatus: Number(c.last_status) } : {}),
+        ...(c.state === 'pending' ? { nextAttemptAt: new Date(c.next_attempt_at as string).toISOString() } : {}),
+      };
     },
   };
 }

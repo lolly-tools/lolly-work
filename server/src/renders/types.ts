@@ -1,6 +1,7 @@
 import type { ProductionRequest, ProductionReport } from '../render/production.ts';
 import type { RenderEvidence, RenderIdentity } from '../render/evidence.ts';
 import type { OutputInspection, OutputVerification } from '../render/output-inspection.ts';
+import type { AutomationCallbackSummary } from '../store/types.ts';
 
 /** Recoverable single-tool requests. Full dependency locking is plan 40's next slice. */
 export interface RenderSpec {
@@ -11,6 +12,10 @@ export interface RenderSpec {
   inputs: Record<string, unknown>;
   priority: number;
   maxAttempts: number;
+  /** Where to send the signed callback when this request finishes. Part of the
+   *  request hash, and left out of the render identity: where a result is
+   *  announced says nothing about what was rendered. */
+  callbackUrl?: string;
 }
 
 export interface RenderResult {
@@ -75,6 +80,8 @@ export interface RenderStore {
    *  is the earliest `availableAt` among those a runner could claim now; a render
    *  waiting out a retry delay counts as queued but not as claimable. */
   renderQueue(): Promise<RenderQueueEntry[]>;
+  /** The callback outbox entry of a render or batch, once it has one. */
+  renderCallbackSummary(id: string): Promise<AutomationCallbackSummary | null>;
 }
 
 export interface RenderQueueEntry { toolId: string; queued: number; oldestClaimableAt: string | null }

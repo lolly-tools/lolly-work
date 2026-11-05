@@ -126,7 +126,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     for (const [k, r] of accessRequests) if (gone(r)) accessRequests.delete(k);
   };
   const automationJobs = new Map<string, AutomationJobRecord>();
-  const automationCallbacks = new Map<string, AutomationCallbackRecord>(); // by job id, as Postgres keeps one per job
+  const automationCallbacks = new Map<string, AutomationCallbackRecord>(); // by subject id, as Postgres keeps one per subject
   const edgePurges = new Map<string, EdgePurgeRecord>();
   const edgeCredentials = new Map<string, EdgeCredentialRecord>();
   /** Match Postgres: a job that settles with a callback URL gets its outbox entry in the same write. */
@@ -263,7 +263,18 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
     storageKind: 'memory',
-    ...createMemoryRenderStore(),
+    ...createMemoryRenderStore({
+      appendCallback(subject, principal, url) {
+        const id = subject.renderId ?? subject.renderBatchId!;
+        if (automationCallbacks.has(id)) return;
+        const at = new Date().toISOString();
+        automationCallbacks.set(id, { id: `cbk_${randomId(16)}`, ...subject, principal, url, state: 'pending', attempt: 0, nextAttemptAt: at, leaseToken: 0, createdAt: at, updatedAt: at });
+      },
+      callbackSummary(id) {
+        const callback = automationCallbacks.get(id);
+        return callback ? automationCallbackSummary(callback) : null;
+      },
+    }),
     ...createMemoryUploadStore(),
     ...createMemoryOidcLogout(),
     ...passkeys.store,
@@ -785,7 +796,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return structuredClone(due);
     },
     async settleAutomationCallback(callback, result) {
-      const live = automationCallbacks.get(callback.jobId);
+      const live = automationCallbacks.get(callback.jobId ?? callback.renderId ?? callback.renderBatchId!);
       if (!live || live.id !== callback.id || live.state !== 'pending' || live.leaseOwner !== callback.leaseOwner || live.leaseToken !== callback.leaseToken) return false;
       const at = new Date().toISOString();
       Object.assign(live, { state: result.state, lastOutcome: result.outcome, nextAttemptAt: result.retryAfterMs !== undefined ? new Date(Date.now() + result.retryAfterMs).toISOString() : live.nextAttemptAt, updatedAt: at });

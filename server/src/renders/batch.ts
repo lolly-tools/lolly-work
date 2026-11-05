@@ -4,8 +4,9 @@ import { RenderResourceError, type RenderBatchRecord, type RenderBatchSpec, type
 
 function invalid(message: string): never { throw new RenderResourceError('INVALID_INPUT', 400, message); }
 
+/** A row's own request. The callback stays on the parent: a batch calls back once, when it finishes. */
 export function batchRowRequest(request: RenderBatchSpec, inputs: Record<string, unknown>): RenderSpec {
-  const { rows: _rows, ...base } = request;
+  const { rows: _rows, callbackUrl: _callbackUrl, ...base } = request;
   return { ...base, inputs: { ...base.inputs, ...inputs } };
 }
 

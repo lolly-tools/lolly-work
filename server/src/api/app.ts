@@ -208,6 +208,8 @@ import { mayRenderTool, mayUseTool, PolicyRefusal } from '../automation/effectiv
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
 import { registerRenderRoutes } from '../renders/routes.ts';
+import { renderOutputTokens } from '../renders/output-token.ts';
+import { callbackUrlAllowed } from '../automation/callback-policy.ts';
 import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
@@ -450,16 +452,17 @@ export function buildApp(deps: AppDeps): App {
     const token = automationResultToken(job);
     return jobWire(job, automationResultUrl(job, token), job.state === 'done' ? token : undefined);
   };
+  const renderTokens = renderOutputTokens(secrets.link, linkKeys(secrets));
   const automationJobs = new AutomationQueue({
     store,
     blobs,
     fetchImpl,
     callbackSecret: secrets.webhook,
-    // Callback egress is an instance decision, never an arbitrary request-time
-    // URL. Reuse the configured webhook endpoint as the initial allowlist.
-    callbackAllowed: (url) => url === config.notify.webhook?.url,
+    // Callback egress is an instance decision, never an arbitrary request-time URL.
+    callbackAllowed: (url) => callbackUrlAllowed(config, url),
     resultUrl: automationResultUrl,
     resultToken: automationResultToken,
+    renderCallbacks: { baseUrl: config.instance.baseUrl, renderToken: renderTokens.mint },
     ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
   });
   // The Chromium render worker is active only when both the URL and the shared
@@ -566,6 +569,9 @@ export function buildApp(deps: AppDeps): App {
   // and an authenticated relay without its password can never send.
   if (config.notify.webhook && !secrets.webhook) {
     throw new Error('notify.webhook is configured but LW_WEBHOOK_SECRET is not set');
+  }
+  if (config.automation.callbacks.allowedOrigins.length && !secrets.webhook) {
+    throw new Error('automation.callbacks.allowedOrigins is configured but LW_WEBHOOK_SECRET is not set');
   }
   if (config.notify.smtp?.user && !secrets.smtpPassword) {
     throw new Error('notify.smtp names a user but LW_SMTP_PASSWORD is not set');
@@ -10348,6 +10354,7 @@ export function buildApp(deps: AppDeps): App {
   };
   const durableRenders = new RenderRunner({
     store, blobs,
+    onSettled: () => automationJobs.sendCallbacks(),
     ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
     ...(deps.renderConcurrency !== undefined ? { concurrency: deps.renderConcurrency } : {}),
     execute: async (record, signal) => brand.run(async () => {
@@ -10376,6 +10383,9 @@ export function buildApp(deps: AppDeps): App {
     validate: validateRenderRequest,
     ...(deps.onRenderRunner ? { kick: () => durableRenders.kick(), cancel: (id: string) => durableRenders.cancel(id) } : {}),
     audit: async (principal, action, id, facts) => { await audit(principal, action, `${id.startsWith('rbt_') ? 'render-batch' : 'render'}:${id}`, facts); },
+    callbackAllowed: (url) => !!secrets.webhook && callbackUrlAllowed(config, url),
+    callbacksChanged: () => automationJobs.sendCallbacks(),
+    outputTokenPrincipal: renderTokens.principal,
   });
   deps.onRenderRunner?.(durableRenders);
 
