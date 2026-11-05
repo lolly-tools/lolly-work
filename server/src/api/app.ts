@@ -210,6 +210,7 @@ import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type Collect
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
+import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes } from '../automation/discovery.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
 import { mayRenderTool, mayUseTool, PolicyRefusal, policyErrors } from '../automation/effective-contract.ts';
@@ -10779,7 +10780,8 @@ export function buildApp(deps: AppDeps): App {
       catch (e) {
         if (e instanceof UploadReferenceError) return sendError(res, e.status, e.code, e.message);
         if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
-        return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message);
+        if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
+        return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
       }
     });
   }
@@ -10813,7 +10815,8 @@ export function buildApp(deps: AppDeps): App {
       res.end(Buffer.from(packed.bytes));
     } catch (e) {
       if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
-      return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message);
+      if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
+      return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
     }
   });
 
@@ -11736,7 +11739,7 @@ export function buildApp(deps: AppDeps): App {
         return;
       }
       const status = (err as { status?: number }).status ?? 500;
-      if (!res.headersSent) sendError(res, status, err instanceof BrandError ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
+      if (!res.headersSent) sendError(res, status, err instanceof BrandError || err instanceof ToolLoadRefusal ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', withoutServerPaths((err as Error).message));
     }
   };
   // One server span per request when OTLP traces are on; otherwise the handler directly.

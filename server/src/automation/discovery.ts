@@ -35,6 +35,7 @@ import { RENDER_TIER, WORKER_RASTER_FORMATS, type RenderCapabilities, type Unava
 import { workerEndpoint, type WorkerConfig } from '../render/worker-client.ts';
 import { describeTool, type ToolDescription } from './verbs.ts';
 import { effectiveInputSchema, mayRenderTool, mayUseTool, policyFormats, type PolicyEffect, type ToolCaller } from './effective-contract.ts';
+import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 
 /** The discovery documents' own version. A field is only ever added within it. */
 export const DISCOVERY_VERSION = 1;
@@ -243,7 +244,10 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
     }
     let described: ToolDescription;
     try { described = await describe(toolId); }
-    catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+    catch (e) {
+      if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
+      return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
+    }
     const tool = { name: described.name, version: described.version };
     if (view === 'raw') {
       return sendWithEtag(req, res, { apiVersion: described.apiVersion, schema: described.raw, view, toolId, tool,

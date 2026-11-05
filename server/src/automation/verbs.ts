@@ -3,6 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts';
+import { loadToolOrRefuse } from '../render/tool-load.ts';
 import { withRenderHost } from '../render/host.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { isSvgTemplate, toolServerFormats, type RenderCapabilities, type ToolServerFormats } from '../render/capabilities.ts';
@@ -41,7 +42,7 @@ function requireDeclaredFormat(tool: LoadedTool, format: unknown): void {
 
 async function load(pack: string, toolId: string): Promise<{ engine: Awaited<ReturnType<typeof loadEngine>>; tool: LoadedTool }> {
   const engine = await loadEngine();
-  const tool = await engine.loadTool(toolId, (path) => readFile(join(pack, 'tools', path), 'utf8'));
+  const tool = await loadToolOrRefuse(toolId, (id) => engine.loadTool(id, (path) => readFile(join(pack, 'tools', path), 'utf8')));
   return { engine, tool };
 }
 

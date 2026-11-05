@@ -4,6 +4,7 @@ import { sha256Hex } from '../lib/crypto.ts';
 import { RenderResourceError, type RenderRecord, type RenderStore } from './types.ts';
 import { evidenceHash, renderIdentity, type RenderEvidence, type RenderIdentity } from '../render/evidence.ts';
 import { outputVerificationProblems, OutputVerificationError, verificationTarget, parseOutputVerification } from '../render/output-inspection.ts';
+import { withoutServerPaths } from '../render/tool-load.ts';
 
 export interface RenderExecution { bytes: Uint8Array; mime: string; cacheKey: string; evidence?: RenderEvidence }
 
@@ -257,7 +258,7 @@ export class RenderRunner {
       const retryAfterMs = transient ? Math.min(30_000, (this.options.retryDelayMs ?? 1_000) * 2 ** (record.attempt - 1)) : undefined;
       await store.settleRender(record.id, token, {
         state: 'failed',
-        error: { code, message: typeof e?.message === 'string' ? e.message.slice(0, 500) : 'render failed',
+        error: { code, message: typeof e?.message === 'string' ? withoutServerPaths(e.message).slice(0, 500) : 'render failed',
           ...(error instanceof OutputVerificationError && error.inspection ? { inspection: error.inspection } : {}),
           ...(error instanceof ProductionError && error.production ? { production: error.production, ...(error.attempts ? { productionAttempts: error.attempts } : {}) } : {}) },
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),

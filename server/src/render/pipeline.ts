@@ -47,6 +47,7 @@ import {
 // advertisement - plans/23 §3.A); re-exported so render callers keep one import.
 export { RENDER_TIER, WORKER_RASTER_FORMATS, renderCapabilities, type RenderFormat, type RenderCapabilities } from './capabilities.ts';
 import { isSvgTemplate, renderCapabilities } from './capabilities.ts';
+import { loadToolOrRefuse, ToolLoadRefusal } from './tool-load.ts';
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
  *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
@@ -177,6 +178,15 @@ async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedR
   return value;
 }
 
+/** A failed tool load, as the render error the routes already answer. */
+async function loadForRender<T>(toolId: string, load: (toolId: string) => Promise<T>): Promise<T> {
+  try { return await loadToolOrRefuse(toolId, load); }
+  catch (e) {
+    if (e instanceof ToolLoadRefusal) throw new RenderError(e.code, e.status, e.message);
+    throw e;
+  }
+}
+
 export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<RenderOutput> {
   const production = parseProductionRequest(req.production);
   if (!production?.repair) {
@@ -185,7 +195,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     return out;
   }
   const engine = await loadEngine(), plan = production.repair;
-  const tool = await engine.loadTool(req.toolId, path => readFile(join(deps.config.instance.pack, 'tools', path), 'utf8'));
+  const tool = await loadForRender(req.toolId, id => engine.loadTool(id, path => readFile(join(deps.config.instance.pack, 'tools', path), 'utf8')));
   const expanded = await engine.expandQuery(req.query), state = engine.parseUrlState(expanded, tool.manifest);
   const declared = new Set((tool.manifest.inputs as { id: string }[]).map(input => input.id));
   if (Object.keys(plan.permitted).some(key => !declared.has(key))) throw new ProductionError(['repair-input-not-declared']);
@@ -256,15 +266,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     files.push({ path: p, sha256: sha256Hex(text), size: Buffer.byteLength(text) });
     return text;
   };
-  let tool: LoadedTool;
-  try {
-    tool = await engine.loadTool(req.toolId, fetchFile);
-  } catch (e) {
-    if ((e as { code?: string }).code === 'ENOENT') {
-      throw new RenderError('TOOL_NOT_FOUND', 404, `No such tool: ${req.toolId}`);
-    }
-    throw new RenderError('TOOL_LOAD_FAILED', 400, `Tool "${req.toolId}" failed to load: ${(e as Error).message}`);
-  }
+  const tool: LoadedTool = await loadForRender(req.toolId, id => engine.loadTool(id, fetchFile));
 
   // A hooked tool can't run in the in-process jsdom fast path (its hooks.js may
   // use real browser APIs). It renders in-process only when the pack is curated
