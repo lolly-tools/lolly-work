@@ -34,6 +34,12 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_URL_QUERY = 8192;
 /** A record whose renders never appeared after this long lost its submitter. */
 const INCOMPLETE_AFTER_MS = 300_000;
+/** The URL API keeps its rows under this prefix, so a token cannot put another image behind a public URL. */
+const URL_API_KEY_PREFIX = 'placid-url:';
+/** How long a failed URL render stands before a later request tries again. */
+const URL_RETRY_WINDOW_MS = 60_000;
+/** Renders one request may step past. A pointer row moves with them, so the next request starts further on. */
+const MAX_URL_GENERATIONS = 16;
 const DOCS = '/info/work-move-from-render-api.html';
 
 type ViewStore = RenderApiStore & Pick<RenderStore, 'getRender' | 'renderCallbackSummary'>;
@@ -219,6 +225,7 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
     const key = req.headers['idempotency-key'];
     if (Array.isArray(key)) throw new RenderApiRefusal('INVALID_INPUT', 400, 'one Idempotency-Key required');
     if (key !== undefined && (!key.trim() || key.length > 200)) throw new RenderApiRefusal('INVALID_INPUT', 400, 'Idempotency-Key must be 1 to 200 characters');
+    if (key?.startsWith(URL_API_KEY_PREFIX)) throw new RenderApiRefusal('INVALID_INPUT', 400, `Idempotency-Key must not start with ${URL_API_KEY_PREFIX}`);
     return key;
   };
 
@@ -288,7 +295,7 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
 
   const placidRecord = async (principal: string, id: string): Promise<RenderApiRecord> => {
     const record = /^\d{1,15}$/.test(id) ? await store.getRenderApiRecordBySeq(Number(id)) : null;
-    if (!record || record.principal !== principal || record.source !== 'placid') throw new RenderApiRefusal('NOT_FOUND', 404, 'no such image');
+    if (!record || record.principal !== principal || record.source !== 'placid' || record.echo.urlApi) throw new RenderApiRefusal('NOT_FOUND', 404, 'no such image');
     return record;
   };
   add('POST', '/compat/placid/api/rest/images', async (req, res) => {
@@ -317,8 +324,8 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
     res.writeHead(204).end();
   });
 
-  /** Sends a render's retained bytes, checked against their receipt. */
-  const sendOutput = async (res: ServerResponse, render: RenderRecord, name: string): Promise<void> => {
+  /** A render's retained bytes, checked against their receipt. */
+  const readOutput = async (render: RenderRecord): Promise<Buffer> => {
     if (render.state !== 'succeeded' || !render.output) throw new RenderApiRefusal('RENDER_NOT_SUCCEEDED', 409, 'this image has no finished output');
     if (render.output.expiredAt) throw new RenderApiRefusal('OUTPUT_EXPIRED', 410, 'output retention has removed this image');
     const blob = await deps.blobs.get(render.output.ref);
@@ -327,9 +334,15 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
     try { bytes = await readBlobBody(blob.body, render.output.size); }
     catch { throw new RenderApiRefusal('OUTPUT_INTEGRITY', 409, 'this image no longer matches its receipt'); }
     if (bytes.byteLength !== render.output.size || sha256Hex(bytes) !== render.output.sha256) throw new RenderApiRefusal('OUTPUT_INTEGRITY', 409, 'this image no longer matches its receipt');
-    res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': render.output.mime, 'content-length': String(bytes.byteLength),
-      etag: `"${render.output.sha256}"`, 'content-disposition': `inline; filename="${name.replace(/[^A-Za-z0-9._-]/g, '_')}"` });
+    return bytes;
+  };
+  const writeOutput = (res: ServerResponse, render: RenderRecord, name: string, bytes: Buffer): void => {
+    res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': render.output!.mime, 'content-length': String(bytes.byteLength),
+      etag: `"${render.output!.sha256}"`, 'content-disposition': `inline; filename="${name.replace(/[^A-Za-z0-9._-]/g, '_')}"` });
     res.end(bytes);
+  };
+  const sendOutput = async (res: ServerResponse, render: RenderRecord, name: string): Promise<void> => {
+    writeOutput(res, render, name, await readOutput(render));
   };
   const recordOutput = async (res: ServerResponse, record: RenderApiRecord, file: string): Promise<void> => {
     const format = formatOfFile(file);
@@ -393,11 +406,17 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
     if (!deps.config.urlApi.actAs) throw new RenderApiRefusal('URL_API_NOT_CONFIGURED', 503, 'set renderApi.urlApi.actAs to the service token these renders act as');
     const principal = `service:svc_${deps.config.urlApi.actAs}`;
     const mapped = mapPlacidUrl(uuid, ctx.url.searchParams, lookup);
-    const plan = parseRenderSpec({ toolId: mapping.toolId, format: mapped.formats[0], inputs: mapped.inputs, priority: 9 });
+    // Default priority, because an `allowUnsigned` template lets anyone queue this render.
+    // Under load the URL answers 503 with Retry-After, and the render still finishes.
+    const plan = parseRenderSpec({ toolId: mapping.toolId, format: mapped.formats[0], inputs: mapped.inputs });
     const problems = await deps.policyProblems(principal, mapping.toolId, mapped.inputs, plan.format);
     if (problems.length) throw new RenderApiRefusal(problems[0]!.code, 422, problems.map((problem) => `${problem.path.replace(/^\//, '')} ${problem.message}`).join('; '), { problems });
-    // The same URL is one render until the brand or catalog changes, as "generated on first request" implies.
-    const key = `placid-url:${sha256Hex(canonicalJson({ uuid, inputs: mapped.inputs, format: plan.format, epoch: await deps.renderEpoch() }))}`;
+    // The same URL is one render until the brand or catalog changes, as "generated on first
+    // request" implies. A stored render can only be replayed, so one row points at this URL's
+    // current render, and each next render is keyed on the one it replaces. An expired output
+    // or a failure therefore costs one step, however many have gone before, and a concurrent
+    // request for the same URL reaches the same next render.
+    const key = `${URL_API_KEY_PREFIX}${sha256Hex(canonicalJson({ uuid, inputs: mapped.inputs, format: plan.format, epoch: await deps.renderEpoch() }))}`;
     const finish = async (requestKey: string): Promise<RenderRecord> => {
       let { record } = await deps.submit(principal, plan, requestKey);
       const deadline = Date.now() + SYNC_LIMIT_MS;
@@ -408,17 +427,41 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
       }
       return record;
     };
+    const stillBusy = (): never => {
+      res.setHeader('retry-after', '2');
+      throw new RenderApiRefusal('RENDER_BUSY', 503, 'this image is still being made: try again shortly');
+    };
     await waiting(async () => {
-      let record = await finish(key);
-      // One failed render must not poison a URL for good.
-      if (record.state === 'failed' || record.state === 'cancelled') record = await finish(`${key}:retry:${record.id}`);
-      if (record.state === 'queued' || record.state === 'running') {
-        res.setHeader('retry-after', '2');
-        throw new RenderApiRefusal('RENDER_BUSY', 503, 'this image is still being made: try again shortly');
+      const { record: pointer } = await store.insertRenderApiRecord({
+        id: randomId(12), source: 'placid', template: uuid, principal, formats: [plan.format], renders: {},
+        metadata: null, echo: { urlApi: true }, createdAt: new Date().toISOString(), idempotencyKey: key,
+      });
+      const pinned = pointer.renders[plan.format];
+      let current = pinned ? await store.getRender(pinned, principal) : null;
+      current ??= await finish(key);
+      for (let step = 0; step < MAX_URL_GENERATIONS; step++) {
+        if (current.state === 'queued' || current.state === 'running') {
+          current = await finish(current.idempotencyKey ?? key);
+          if (current.state === 'queued' || current.state === 'running') return stillBusy();
+        }
+        if (current.id !== pinned) await store.setRenderApiRenders(pointer.id, { [plan.format]: current.id });
+        if (current.state !== 'succeeded') {
+          // A durable render has already spent its attempts, so a failure stands for a short
+          // window: a broken tool is not re-rendered on every request, and a later one tries again.
+          const finished = Date.parse(current.finishedAt ?? current.updatedAt);
+          if (Date.now() - finished < URL_RETRY_WINDOW_MS) throw new RenderApiRefusal('RENDER_FAILED', 502, current.error?.message ?? 'this image could not be made');
+        } else {
+          let bytes: Buffer | null = null;
+          try { bytes = await readOutput(current); }
+          catch (error) { if (!(error instanceof RenderApiRefusal)) throw error; }
+          if (bytes) {
+            setDeliveryClass(res, 'link', { boundedAgeSec: 300 });
+            return writeOutput(res, current, fileName(undefined, plan.format), bytes);
+          }
+        }
+        current = await finish(`${key}:after:${current.id}`);
       }
-      if (record.state !== 'succeeded') throw new RenderApiRefusal('RENDER_FAILED', 502, record.error?.message ?? 'this image could not be made');
-      setDeliveryClass(res, 'link', { boundedAgeSec: 300 });
-      await sendOutput(res, record, fileName(undefined, plan.format));
+      return stillBusy();
     });
   }, { delivery: 'link' });
 

@@ -18,6 +18,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { mintServiceSecret } from '../server/src/iam/service-tokens.ts';
 import { prepareRenderApi } from '../server/src/render-api/routes.ts';
 import { checkRenderApiConfig } from '../server/src/render-api/mapping.ts';
+import { sweepRenderOutputs } from '../server/src/renders/retention.ts';
 import type { RenderRunner } from '../server/src/renders/runner.ts';
 
 const WEBHOOK_SECRET = 'render-api-webhook-secret';
@@ -46,7 +47,7 @@ const TEMPLATES = [
 
 interface Sent { url: string; body: Record<string, unknown>; headers: Record<string, string> }
 
-async function harness(options: { enabled?: boolean; signedDays?: number; allowedOrigins?: string[]; actAs?: string; autoRun?: boolean } = {}) {
+async function harness(options: { enabled?: boolean; signedDays?: number; allowedOrigins?: string[]; actAs?: string; autoRun?: boolean; retentionDays?: number } = {}) {
   const store = createMemoryStore(); const blobs = createMemoryBlobStore();
   const sent: Sent[] = [];
   process.env.PLACID_OLD_TOKEN = PRIVATE_TOKEN;
@@ -56,7 +57,7 @@ async function harness(options: { enabled?: boolean; signedDays?: number; allowe
   }) as typeof fetch;
   const config = parseConfig(JSON.stringify({
     instance: { name: 'Move', baseUrl: 'https://work.test', pack },
-    policy: { defaultAccessMode: 'gated' }, rateLimit: { enabled: false },
+    policy: { defaultAccessMode: 'gated', ...(options.retentionDays ? { retention: { renderOutputDays: options.retentionDays } } : {}) }, rateLimit: { enabled: false },
     automation: { callbacks: { allowedOrigins: options.allowedOrigins ?? ['https://hook.example'] } },
     renderApi: { enabled: options.enabled ?? true, templates: TEMPLATES, resultUrls: { signedDays: options.signedDays ?? 30 }, urlApi: options.actAs ? { actAs: options.actAs } : {} },
     dev: { enabled: true, users: [{ email: 'owner@test', name: 'Owner', groups: ['owner'] }] },
@@ -347,6 +348,148 @@ test('Placid URL API needs a token to act as, and stops when that token is revok
   const h = await harness({ actAs: 'ci' }); t.after(() => h.close());
   await h.store.revokeApiToken('ci', new Date().toISOString());
   assert.equal((await fetch(`${h.base}/compat/placid/u/open?title[text]=x`)).status, 403);
+});
+
+const DAY_MS = 86_400_000;
+const urlRenders = async (h: Awaited<ReturnType<typeof harness>>) => h.store.listRenders('service:svc_ci', 100, 0);
+
+test('Placid URL API: one URL keeps working across repeated retention expiries, one render each time', async (t) => {
+  const start = Date.parse('2026-11-02T06:00:00.000Z');
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const h = await harness({ actAs: 'ci', retentionDays: 1 }); t.after(() => h.close());
+  const url = `${h.base}/compat/placid/u/open?title[text]=Cycle`;
+  const sweep = (at: number) => sweepRenderOutputs({ store: h.store, blobs: h.blobs, days: 1, now: () => new Date(at), graceMs: 0 });
+
+  const first = await fetch(url);
+  assert.equal(first.status, 200, await first.clone().text());
+  assert.match(await first.text(), /Cycle/);
+  assert.equal((await fetch(url)).status, 200);
+  assert.equal((await urlRenders(h)).length, 1, 'the same URL is one render');
+
+  for (let cycle = 1; cycle <= 3; cycle++) {
+    const at = start + cycle * 2 * DAY_MS;
+    t.mock.timers.setTime(at);
+    const swept = await sweep(at);
+    assert.ok(swept.expired >= 1, `cycle ${cycle}: retention expired the earlier output`);
+    const after = await fetch(url);
+    assert.equal(after.status, 200, `cycle ${cycle}: ${await after.clone().text()}`);
+    assert.match(await after.text(), /Cycle/);
+    assert.equal((await fetch(url)).status, 200, `cycle ${cycle}: and again`);
+    assert.equal((await urlRenders(h)).length, cycle + 1, `cycle ${cycle}: one new render, not one per request`);
+    // A later pass removes the bytes of what the first pass marked, and the URL does not notice.
+    await sweep(at + 1000);
+    assert.equal((await fetch(url)).status, 200, `cycle ${cycle}: after the bytes went`);
+  }
+  assert.equal((await urlRenders(h)).filter((render) => !render.output?.expiredAt).length, 1, 'only the newest output is still kept');
+});
+
+test('Placid URL API: a lost output costs one fresh render, with or without retention', async (t) => {
+  const h = await harness({ actAs: 'ci' }); t.after(() => h.close());
+  const url = `${h.base}/compat/placid/u/open?title[text]=Lost`;
+  assert.equal((await fetch(url)).status, 200);
+  const newest = async () => (await urlRenders(h)).find((render) => !render.output?.expiredAt)!;
+  for (let round = 1; round <= 2; round++) {
+    await h.store.expireRenderOutputs(new Date(Date.now() + DAY_MS).toISOString(), new Date().toISOString(), 100);
+    assert.equal((await fetch(url)).status, 200, `expiry round ${round}`);
+    assert.equal((await fetch(url)).status, 200);
+    assert.equal((await urlRenders(h)).length, 1 + round, 'requests after the first reuse the fresh render');
+  }
+  const gone = await newest();
+  await h.blobs.delete(gone.output!.ref);
+  assert.equal((await fetch(url)).status, 200, 'bytes lost with no mark on the record');
+  assert.equal((await fetch(url)).status, 200);
+  assert.equal((await urlRenders(h)).length, 4);
+});
+
+test('Placid URL API: a failure stands for a window, a long outage never ends the URL, and recovery settles', async (t) => {
+  let at = Date.parse('2026-11-02T06:00:30.000Z');
+  t.mock.timers.enable({ apis: ['Date'], now: at });
+  const h = await harness({ actAs: 'ci', autoRun: false }); t.after(() => h.close());
+  const claimOne = async () => {
+    for (let i = 0; i < 400; i++) {
+      const claimed = await h.store.claimRender(10_000);
+      if (claimed) return claimed;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.fail('nothing to claim');
+  };
+  const fail = async () => { const claimed = await claimOne(); await h.store.settleRender(claimed.id, claimed.leaseToken!, { state: 'failed', error: { code: 'WORKER_DOWN', message: 'the worker is down' } }); };
+  const url = `${h.base}/compat/placid/u/open?title[text]=Flaky`;
+  const firstTry = fetch(url);
+  await fail();
+  const refused = await firstTry;
+  assert.equal(refused.status, 502, await refused.clone().text());
+  assert.equal((await urlRenders(h)).length, 1);
+  assert.equal((await fetch(url)).status, 502, 'inside the window a failure answers at once');
+  assert.equal((await urlRenders(h)).length, 1, 'and starts no more work');
+  // More failed windows than one request may step past, because the pointer moves with them.
+  const OUTAGE = 20;
+  for (let window = 1; window <= OUTAGE; window++) {
+    at += 61_000; t.mock.timers.setTime(at);
+    const attempt = fetch(url);
+    await fail();
+    assert.equal((await attempt).status, 502, `window ${window}`);
+    assert.equal((await urlRenders(h)).length, window + 1, `window ${window}: one attempt`);
+  }
+  at += 61_000; t.mock.timers.setTime(at);
+  const later = fetch(url);
+  for (let i = 0; i < 400 && (await urlRenders(h)).length < OUTAGE + 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  await h.tick();
+  const recovered = await later;
+  assert.equal(recovered.status, 200, await recovered.clone().text());
+  assert.match(await recovered.text(), /Flaky/);
+  // Recovered: later windows reuse this render rather than going back through the failures.
+  for (const minutes of [2, 30]) {
+    at += minutes * 60_000; t.mock.timers.setTime(at);
+    assert.equal((await fetch(url)).status, 200);
+    assert.equal((await urlRenders(h)).length, OUTAGE + 2, 'no new render once the URL has recovered');
+  }
+});
+
+test('Placid URL API: its pointer row is not a Placid image', async (t) => {
+  const h = await harness({ actAs: 'ci' }); t.after(() => h.close());
+  assert.equal((await fetch(`${h.base}/compat/placid/u/open?title[text]=Row`)).status, 200);
+  const [row] = await h.store.listRenderApiRecords('service:svc_ci', 'placid', 10, 0);
+  assert.equal(row!.echo.urlApi, true);
+  assert.equal((await h.call(`/compat/placid/api/rest/images/${row!.seq}`)).status, 404);
+  assert.equal((await h.call(`/compat/placid/api/rest/images/${row!.seq}`, 'DELETE')).status, 404);
+  assert.equal((await h.call(`/compat/requests/${row!.id}`, 'DELETE')).status, 204, 'the owner or an admin can still remove it');
+  assert.equal((await fetch(`${h.base}/compat/placid/u/open?title[text]=Row`)).status, 200, 'and the URL recovers its render');
+  assert.equal((await urlRenders(h)).length, 1);
+});
+
+test('Placid URL API: a client key cannot claim a URL row, so a token cannot put another image behind a public URL', async (t) => {
+  const h = await harness({ actAs: 'ci' }); t.after(() => h.close());
+  const refused = await h.call('/compat/placid/api/rest/images', 'POST', { template_uuid: 'plc', layers: { title: { text: 'Other' } } }, { authorization: `Bearer ${h.secret}`, 'idempotency-key': 'placid-url:anything' });
+  assert.equal(refused.status, 400, await refused.clone().text());
+  assert.equal((await h.store.listRenderApiRecords('service:svc_ci', 'placid', 10, 0)).length, 0);
+});
+
+test('URL renders run at default priority, and only token holders can ask for an immediate render', async (t) => {
+  const h = await harness({ actAs: 'ci' }); t.after(() => h.close());
+  assert.equal((await fetch(`${h.base}/compat/placid/u/open?title[text]=Anyone`)).status, 200);
+  assert.equal((await urlRenders(h))[0]!.request.priority, 0, 'an unsigned URL cannot jump the queue');
+  const made = await (await h.call('/compat/placid/api/rest/images', 'POST', { template_uuid: 'plc', layers: { title: { text: 'Now' } }, create_now: true })).json() as { lolly: { renders: { svg: string } } };
+  assert.equal((await h.store.getRender(made.lolly.renders.svg, 'service:svc_ci'))!.request.priority, 9);
+});
+
+test('an idempotent replay after expiry returns the stored record, and a new request makes a fresh render', async (t) => {
+  const h = await harness({ retentionDays: 1 }); t.after(() => h.close());
+  const headers = { authorization: `Bearer ${h.secret}`, 'idempotency-key': 'keep' };
+  const body = { template: 'bbfive' };
+  const first = await (await h.call('/compat/bannerbear/sync/v5/images', 'POST', body, headers)).json() as { uid: string; files: { svg: string } };
+  assert.equal((await fetch(h.local(first.files.svg))).status, 200);
+  const expired = await h.store.expireRenderOutputs(new Date(Date.now() + DAY_MS).toISOString(), new Date().toISOString(), 100);
+  assert.equal(expired.length, 1);
+  assert.equal((await fetch(h.local(first.files.svg))).status, 410, 'a result URL names one output, and retention ended it');
+  const polled = await (await h.call(`/compat/bannerbear/v5/images/${first.uid}`)).json() as { status: string; files: { svg: string | null } };
+  assert.equal(polled.status, 'completed'); assert.equal(polled.files.svg, null, 'a poll says plainly that no file remains');
+  const replay = await (await h.call('/compat/bannerbear/sync/v5/images', 'POST', body, headers)).json() as { uid: string; files: { svg: string | null } };
+  assert.equal(replay.uid, first.uid, 'a client-chosen key keeps its meaning: same request, same record');
+  assert.equal(replay.files.svg, null);
+  const fresh = await (await h.call('/compat/bannerbear/sync/v5/images', 'POST', body)).json() as { uid: string; files: { svg: string } };
+  assert.notEqual(fresh.uid, first.uid);
+  assert.equal((await fetch(h.local(fresh.files.svg))).status, 200, 'a request with no key is new work');
 });
 
 test('other vendor routes answer 501 with the reason', async (t) => {
