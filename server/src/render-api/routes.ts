@@ -417,8 +417,10 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
     // or a failure therefore costs one step, however many have gone before, and a concurrent
     // request for the same URL reaches the same next render.
     const key = `${URL_API_KEY_PREFIX}${sha256Hex(canonicalJson({ uuid, inputs: mapped.inputs, format: plan.format, epoch: await deps.renderEpoch() }))}`;
-    const finish = async (requestKey: string): Promise<RenderRecord> => {
-      let { record } = await deps.submit(principal, plan, requestKey);
+    const finish = async (requestKey: string, whenNew?: () => Promise<void>): Promise<RenderRecord> => {
+      const submitted = await deps.submit(principal, plan, requestKey);
+      if (!submitted.reused) await whenNew?.();
+      let { record } = submitted;
       const deadline = Date.now() + SYNC_LIMIT_MS;
       while (record.state === 'queued' || record.state === 'running') {
         if (Date.now() >= deadline) break;
@@ -440,6 +442,7 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
       let current = pinned ? await store.getRender(pinned, principal) : null;
       current ??= await finish(key);
       for (let step = 0; step < MAX_URL_GENERATIONS; step++) {
+        let whenNew: (() => Promise<void>) | undefined;
         if (current.state === 'queued' || current.state === 'running') {
           current = await finish(current.idempotencyKey ?? key);
           if (current.state === 'queued' || current.state === 'running') return stillBusy();
@@ -453,13 +456,23 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
         } else {
           let bytes: Buffer | null = null;
           try { bytes = await readOutput(current); }
-          catch (error) { if (!(error instanceof RenderApiRefusal)) throw error; }
+          catch (error) {
+            if (!(error instanceof RenderApiRefusal)) throw error;
+            // Retention removing an output is normal. Bytes that changed or vanished are not, so
+            // the request that makes the replacement records why, once per replaced render.
+            if (error.code === 'OUTPUT_INTEGRITY' || error.code === 'OUTPUT_UNAVAILABLE') {
+              const replaced = current;
+              const reason = error.code;
+              whenNew = () => deps.audit(principal, 'render-api.url-output-replaced', `render-api:${pointer.id}`,
+                { replacedRender: replaced.id, reason, expectedSha256: replaced.output!.sha256 });
+            }
+          }
           if (bytes) {
             setDeliveryClass(res, 'link', { boundedAgeSec: 300 });
             return writeOutput(res, current, fileName(undefined, plan.format), bytes);
           }
         }
-        current = await finish(`${key}:after:${current.id}`);
+        current = await finish(`${key}:after:${current.id}`, whenNew);
       }
       return stillBusy();
     });

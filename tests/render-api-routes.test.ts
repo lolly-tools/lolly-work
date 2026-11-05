@@ -401,6 +401,41 @@ test('Placid URL API: a lost output costs one fresh render, with or without rete
   assert.equal((await urlRenders(h)).length, 4);
 });
 
+test('Placid URL API: changed or missing bytes are replaced and audited once, and an expiry writes no entry', async (t) => {
+  const h = await harness({ actAs: 'ci', retentionDays: 30 }); t.after(() => h.close());
+  const url = `${h.base}/compat/placid/u/open?title[text]=Seal`;
+  const entries = async () => (await h.store.listAudit()).filter((event) => event.action === 'render-api.url-output-replaced');
+  assert.equal((await fetch(url)).status, 200);
+  assert.equal((await entries()).length, 0, 'an ordinary render writes no entry');
+  const [row] = await h.store.listRenderApiRecords('service:svc_ci', 'placid', 10, 0);
+  const [altered] = await urlRenders(h);
+  await h.blobs.put(altered!.output!.ref, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg">altered</svg>'), altered!.output!.mime);
+
+  const racing = await Promise.all([fetch(url), fetch(url)]);
+  assert.deepEqual(racing.map((response) => response.status), [200, 200], 'the URL keeps working');
+  for (const response of racing) assert.match(await response.text(), /Seal/, 'and never serves the altered bytes');
+  assert.equal((await urlRenders(h)).length, 2, 'two requests share one replacement');
+  const first = await entries();
+  assert.equal(first.length, 1, 'and one entry');
+  assert.equal(first[0]!.subject, `render-api:${row!.id}`);
+  assert.equal(first[0]!.actor, 'service:svc_ci');
+  assert.deepEqual(first[0]!.payload, { replacedRender: altered!.id, reason: 'OUTPUT_INTEGRITY', expectedSha256: altered!.output!.sha256 });
+  assert.equal((await fetch(url)).status, 200);
+  assert.equal((await entries()).length, 1, 'a later request reuses the replacement and writes nothing');
+
+  const missing = (await urlRenders(h)).find((render) => render.id !== altered!.id)!;
+  await h.blobs.delete(missing.output!.ref);
+  assert.equal((await fetch(url)).status, 200);
+  const second = await entries();
+  assert.equal(second.length, 2);
+  assert.deepEqual(second[1]!.payload, { replacedRender: missing.id, reason: 'OUTPUT_UNAVAILABLE', expectedSha256: missing.output!.sha256 });
+
+  await h.store.expireRenderOutputs(new Date(Date.now() + DAY_MS).toISOString(), new Date().toISOString(), 100);
+  assert.equal((await fetch(url)).status, 200);
+  assert.equal((await urlRenders(h)).length, 4, 'an expiry still makes a fresh render');
+  assert.equal((await entries()).length, 2, 'and retention doing its work writes no entry');
+});
+
 test('Placid URL API: a failure stands for a window, a long outage never ends the URL, and recovery settles', async (t) => {
   let at = Date.parse('2026-11-02T06:00:30.000Z');
   t.mock.timers.enable({ apis: ['Date'], now: at });
