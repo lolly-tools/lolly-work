@@ -3354,6 +3354,7 @@ export function buildApp(deps: AppDeps): App {
     size: delivery.size,
     sha256: delivery.sha256,
     sourceJobId: delivery.sourceJobId ?? null,
+    sourceRenderId: delivery.sourceRenderId ?? null,
     state: delivery.state,
     attempt: delivery.attempt,
     approvalId: delivery.approvalId ?? null,
@@ -3688,7 +3689,42 @@ export function buildApp(deps: AppDeps): App {
   // Publish one completed automation render by REFERENCE. The result blob is
   // already the immutable output owned by the job, so this path never asks the
   // caller to download and upload it again and never creates a second blob.
-  router.add('POST', '/api/v1/jobs/:id/deliveries', async (req, res, ctx) => {
+  /** A finished output a delivery sends by reference: where its bytes are, what
+   *  they must match and how the receipt names them. The two loaders below differ
+   *  in what they own; everything after them is one path. */
+  interface RetainedOutput {
+    format: string; ref: string; sha256: string; mime?: string;
+    facts: { sourceJobId: string } | { sourceRenderId: string };
+    codes: { undeliverable: string; gone: string; corrupt: string };
+  }
+  const loadJobOutput = async (id: string, owner: string, res: ServerResponse): Promise<RetainedOutput | null> => {
+    const job = await store.getAutomationJob(id, owner);
+    if (!job) { sendError(res, 404, 'NOT_FOUND', 'no such automation job'); return null; }
+    if (job.state !== 'done') { sendError(res, 409, 'JOB_NOT_DONE', 'the automation job has not completed'); return null; }
+    const format = job.verb === 'render' && typeof job.request.format === 'string'
+      ? job.request.format.trim().toLowerCase()
+      : '';
+    if (!format || !job.resultRef || !job.resultSha256) {
+      sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'only a completed render output can be delivered');
+      return null;
+    }
+    return { format, ref: job.resultRef, sha256: job.resultSha256, ...(job.resultMime ? { mime: job.resultMime } : {}), facts: { sourceJobId: job.id },
+      codes: { undeliverable: 'JOB_OUTPUT_NOT_DELIVERABLE', gone: 'JOB_OUTPUT_GONE', corrupt: 'JOB_OUTPUT_CORRUPT' } };
+  };
+  const loadRenderOutput = async (id: string, owner: string, res: ServerResponse): Promise<RetainedOutput | null> => {
+    const render = await store.getRender(id, owner);
+    if (!render) { sendError(res, 404, 'NOT_FOUND', 'no such render'); return null; }
+    try { await currentRenderCaller(owner, render.request); }
+    catch (e) {
+      if (!(e instanceof RenderResourceError)) throw e;
+      sendError(res, e.status, e.code, e.message);
+      return null;
+    }
+    if (render.state !== 'succeeded' || !render.output) { sendError(res, 409, 'RENDER_NOT_SUCCEEDED', 'render has no successful output'); return null; }
+    return { format: render.request.format, ref: render.output.ref, sha256: render.output.sha256, mime: render.output.mime, facts: { sourceRenderId: render.id },
+      codes: { undeliverable: 'OUTPUT_NOT_DELIVERABLE', gone: 'OUTPUT_UNAVAILABLE', corrupt: 'OUTPUT_INTEGRITY' } };
+  };
+  const deliverRetainedOutput = (load: typeof loadJobOutput): Handler => async (req, res, ctx) => {
     const body = (await readJson(req, 32 * 1024)) as {
       destinationId?: unknown;
       name?: unknown;
@@ -3723,16 +3759,10 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 403, 'HUMAN_APPROVAL_REQUIRED', 'this destination requires a member to request human approval');
     }
 
-    const jobPrincipal = user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`;
-    const job = await store.getAutomationJob(ctx.params.id as string, jobPrincipal);
-    if (!job) return sendError(res, 404, 'NOT_FOUND', 'no such automation job');
-    if (job.state !== 'done') return sendError(res, 409, 'JOB_NOT_DONE', 'the automation job has not completed');
-    const format = job.verb === 'render' && typeof job.request.format === 'string'
-      ? job.request.format.trim().toLowerCase()
-      : '';
-    if (!format || !job.resultRef || !job.resultSha256) {
-      return sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'only a completed render output can be delivered');
-    }
+    const owner = user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`;
+    const output = await load(ctx.params.id as string, owner, res);
+    if (!output) return;
+    const { format } = output;
     if (body?.format !== undefined && (typeof body.format !== 'string' || body.format.trim().toLowerCase() !== format)) {
       return sendError(res, 409, 'OUTPUT_FORMAT_MISMATCH', 'format must match the immutable render output');
     }
@@ -3740,13 +3770,13 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 415, 'FORMAT_NOT_ALLOWED', `${format} is not allowed for this destination`);
     }
     const mime = deliveryContentType(format);
-    if (job.resultMime && job.resultMime.split(';', 1)[0] !== mime.split(';', 1)[0]) {
-      return sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'the render output MIME does not match its format');
+    if (output.mime && output.mime.split(';', 1)[0] !== mime.split(';', 1)[0]) {
+      return sendError(res, 409, output.codes.undeliverable, 'the render output MIME does not match its format');
     }
     const maxBytes = Math.min(config.delivery.maxBytes, destination.maxBytes ?? config.delivery.maxBytes);
-    const source = await blobs.get(job.resultRef);
-    if (!source) return sendError(res, 410, 'JOB_OUTPUT_GONE', 'the retained render output is no longer available');
-    if (!source.stat.size) return sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'the render output is empty');
+    const source = await blobs.get(output.ref);
+    if (!source) return sendError(res, 410, output.codes.gone, 'the retained render output is no longer available');
+    if (!source.stat.size) return sendError(res, 409, output.codes.undeliverable, 'the render output is empty');
     if (source.stat.size > maxBytes) {
       return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `delivery exceeds the ${maxBytes} byte cap`);
     }
@@ -3757,8 +3787,8 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `delivery exceeds the ${maxBytes} byte cap`);
     }
     const sha256 = sha256Hex(bytes);
-    if (bytes.length !== source.stat.size || sha256 !== job.resultSha256) {
-      return sendError(res, 409, 'JOB_OUTPUT_CORRUPT', 'the retained render output failed its integrity check');
+    if (bytes.length !== source.stat.size || sha256 !== output.sha256) {
+      return sendError(res, 409, output.codes.corrupt, 'the retained render output failed its integrity check');
     }
     const gate = await verifyLollyExport(bytes, format);
     if (!gate.ok) return sendError(res, 422, 'NOT_LOLLY_EXPORT', gate.detail ?? 'only Lolly exports may be delivered');
@@ -3766,7 +3796,7 @@ export function buildApp(deps: AppDeps): App {
     const version = destinationVersion(destination);
     const requestHash = sha256Hex(JSON.stringify({
       destinationId, version, name, format, contentType: mime, size: bytes.length, sha256,
-      sourceJobId: job.id,
+      ...output.facts,
     }));
     const idempotencyKey = String(req.headers['idempotency-key'] ?? '').trim();
     if (idempotencyKey.length > 200) return sendError(res, 400, 'INVALID_INPUT', 'Idempotency-Key is at most 200 characters');
@@ -3795,8 +3825,8 @@ export function buildApp(deps: AppDeps): App {
       size: bytes.length,
       sha256,
       requestHash,
-      sourceRef: job.resultRef,
-      sourceJobId: job.id,
+      sourceRef: output.ref,
+      ...output.facts,
       state: approvalChain ? 'awaiting-approval' : 'queued',
       attempt: 0,
       ...(approvalId ? { approvalId } : {}),
@@ -3831,14 +3861,14 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 502, 'DELIVERY_STAGE_FAILED', (error as Error).message);
     }
     await audit(principal, 'delivery.created', `delivery:${id}`, {
-      destinationId, name, format, size: bytes.length, sha256, sourceJobId: job.id,
+      destinationId, name, format, size: bytes.length, sha256, ...output.facts,
       ...(approvalId ? { approvalId } : {}),
     });
     if (approvalChain && approvalId) {
       const approval = await store.getApproval(approvalId);
       const step = approval ? currentStep(approval) : null;
       await audit(principal, 'approval.submit', `approval:${approvalId}`, {
-        chainId: approvalChain.id, subjectType: 'delivery', deliveryId: id, sourceJobId: job.id,
+        chainId: approvalChain.id, subjectType: 'delivery', deliveryId: id, ...output.facts,
       });
       if (step) {
         await store.putMessage({
@@ -3870,7 +3900,9 @@ export function buildApp(deps: AppDeps): App {
     sendJson(res, 201, deliveryWire(completed), {
       location: `/api/v1/deliveries/${id}`, 'cache-control': 'private, no-store',
     });
-  });
+  };
+  router.add('POST', '/api/v1/jobs/:id/deliveries', deliverRetainedOutput(loadJobOutput));
+  router.add('POST', '/api/v1/renders/:id/deliveries', deliverRetainedOutput(loadRenderOutput));
 
   router.add('GET', '/api/v1/deliveries', async (req, res) => {
     const user = await requireDeliveryActor(req, res);
