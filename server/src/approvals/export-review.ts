@@ -9,10 +9,15 @@
  * Who gets the bytes (mayReadArtifact): eligible reviewers and people who already
  * acted, at any time. The requester sees the facts and digest, and receives the
  * bytes only once the request is approved. A rejected or withdrawn request never
- * releases them. Work adds nothing to the file, and never watermarks it.
+ * releases them. Work never watermarks the file.
  *
  * approvedArtifactBytes is the one way approved bytes leave. Keep it that way:
  * anything that changes what an approved download holds belongs in that function.
+ * The frozen reviewed bytes never change. When the requester chose to, the instance
+ * allows it and this server can sign, the approved file is those bytes plus a signed
+ * credential update recording the approval (approval-recorder.ts): made once, kept
+ * under its own parts and handed out unchanged after that. In every other case the
+ * approved file is the reviewed bytes, and the record says why.
  *
  * The inputs digest (render/inputs-digest.ts) comes from values the requesting app
  * states, and those values are discarded. It says "these are the inputs the app
@@ -22,9 +27,10 @@ import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { canonicalJson, deriveKey, hmac, macEquals, sha256Hex } from '../lib/crypto.ts';
 import { UNSAFE_TEXT } from '../projects/files.ts';
-import { removeTransferParts, transferChunks, TRANSFER_MAX_BYTES, TRANSFER_PART_BYTES, type TransferPart, type TransferParts } from '../uploads/parts.ts';
+import { removeTransferParts, sha256 as sha256Bytes, transferChunks, TRANSFER_MAX_BYTES, TRANSFER_PART_BYTES, type TransferPart, type TransferParts } from '../uploads/parts.ts';
 import { uploadPartId, uploadParts, type UploadRecord } from '../uploads/scoped.ts';
 import type { Approval } from './engine.ts';
+import type { ApprovalRecorder } from './approval-recorder.ts';
 
 const MIB = 1024 * 1024;
 
@@ -40,13 +46,18 @@ export interface ApprovalArtifactPolicy {
   closedRetentionDays: number;
   /** Days an approved request keeps its file; 0 keeps it for as long as the record. */
   approvedRetentionDays: number;
+  /** Whether a request may ask for the approval to be recorded in the approved file's
+   *  Content Credentials. It also needs a signing identity and an engine that can. */
+  recordInCredentials: boolean;
 }
 /** On by default, unlike general uploads: nothing is stored until an admin binds a
  *  chain to a tool and someone asks for a review, and the budget bounds what a
  *  request can add to the blob store. */
 export const APPROVAL_ARTIFACT_DEFAULTS: Readonly<ApprovalArtifactPolicy> = {
-  enabled: true, maxFileBytes: 64 * MIB, instanceBudgetBytes: 1024 * MIB, closedRetentionDays: 30, approvedRetentionDays: 0,
+  enabled: true, maxFileBytes: 64 * MIB, instanceBudgetBytes: 1024 * MIB, closedRetentionDays: 30, approvedRetentionDays: 0, recordInCredentials: true,
 };
+/** The largest file an update is written for. Signing holds the whole file in memory. */
+export const APPROVAL_RECORD_MAX_BYTES = 128 * MIB;
 /** Every part's checksum rides in the approval's jsonb doc, so a file this size is
  *  still a small record. */
 export const APPROVAL_ARTIFACT_MAX_FILE_BYTES = Math.min(512 * MIB, TRANSFER_MAX_BYTES);
@@ -56,6 +67,15 @@ export function approvalArtifactPolicy(config: { policy?: { approvalArtifacts?: 
 }
 
 export type ArtifactPreview = 'image' | 'video' | 'audio' | 'pdf' | 'none';
+
+/** What became of the approval record for one approved file. */
+export type ApprovalCredentialRecord =
+  | { state: 'recorded'; sha256: string; size: number; parts: TransferPart[]; settledAt: string }
+  /** The approved file is the reviewed bytes. `reason` is a stable code: `opted-out`,
+   *  `not-offered`, `instance-off`, `no-signing-identity`, `engine-unsupported`,
+   *  `too-large`, or the engine's own (`no-route`, `no-credential`, `write-failed`,
+   *  `readback-failed`, `artwork-changed`). */
+  | { state: 'not-recorded'; reason: string; settledAt: string };
 
 export interface ExportReviewSubject {
   apiVersion: 'work/export-review-v1';
@@ -76,9 +96,14 @@ export interface ExportReviewSubject {
   /** What the requesting app reports about the file. */
   widthPx?: number;
   heightPx?: number;
+  /** The person's choice at the request. Absent when the instance did not offer one. */
+  recordInCredentials?: boolean;
   fingerprint: string;
   origin: 'member-session' | 'agent-delegated';
   frozenAt: string;
+  /** Set once, when the approved file is settled. Outside the fingerprint: it records
+   *  what happened after the decision the fingerprint binds. */
+  credentialRecord?: ApprovalCredentialRecord;
   removedAt?: string;
   removedBecause?: 'withdrawn' | 'retention';
   /** The transfer manifest for reading the stored parts back. Never sent to clients. */
@@ -96,6 +121,7 @@ export interface ExportReviewRequest {
   sessionId?: string;
   widthPx?: number;
   heightPx?: number;
+  recordInCredentials?: boolean;
 }
 
 const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= 1_000_000;
@@ -127,6 +153,10 @@ export function parseExportReview(value: unknown): ExportReviewRequest | null {
     if (v[key] === undefined) continue;
     if (!positiveInt(v[key])) return null;
     out[key] = v[key];
+  }
+  if (v.recordInCredentials !== undefined) {
+    if (typeof v.recordInCredentials !== 'boolean') return null;
+    out.recordInCredentials = v.recordInCredentials;
   }
   return out;
 }
@@ -165,7 +195,7 @@ export function artifactMedia(format: string, head: Uint8Array): { mediaType: st
 
 export const artifactPartId = (approvalId: string, n: number): string => `approval-artifact/${approvalId}/${n}`;
 
-type Frozen = Omit<ExportReviewSubject, 'fingerprint' | 'parts' | 'origin' | 'frozenAt' | 'removedAt' | 'removedBecause' | 'apiVersion'>;
+type Frozen = Omit<ExportReviewSubject, 'fingerprint' | 'parts' | 'origin' | 'frozenAt' | 'credentialRecord' | 'removedAt' | 'removedBecause' | 'apiVersion'>;
 
 /** The fingerprint a reviewer's decision is bound to: the file and its stated facts. */
 export function exportReviewFingerprint(facts: Frozen): string {
@@ -190,6 +220,7 @@ export async function describeExportReview(
     ...(inputs.inputsGap ? { inputsGap: inputs.inputsGap } : {}),
     ...(request.sessionId ? { sessionId: request.sessionId } : {}),
     ...(request.widthPx ? { widthPx: request.widthPx } : {}), ...(request.heightPx ? { heightPx: request.heightPx } : {}),
+    ...(request.recordInCredentials !== undefined ? { recordInCredentials: request.recordInCredentials } : {}),
   };
   return { apiVersion: 'work/export-review-v1', ...facts, fingerprint: exportReviewFingerprint(facts), origin, frozenAt: now, parts: upload.parts };
 }
@@ -223,11 +254,103 @@ export function reviewedArtifactBytes(blobs: BlobStore, approval: Approval): Art
   return { chunks: transferChunks(artifactTransfer(blobs, approval)), size: subject.size, sha256: subject.sha256, mediaType: subject.mediaType, name: subject.name };
 }
 
-/** The bytes an approved request releases, and the only way they leave. Today they
- *  are exactly the reviewed bytes. */
-export function approvedArtifactBytes(blobs: BlobStore, approval: Approval): ArtifactFile {
+export interface ApprovedFileDeps {
+  blobs: BlobStore;
+  store: { getApproval(id: string): Promise<Approval | null>; putApproval(approval: Approval): Promise<void> };
+  policy: ApprovalArtifactPolicy;
+  recorder: ApprovalRecorder;
+  /** Told once when a request's approved file is settled. */
+  onSettled?(approval: Approval): void | Promise<void>;
+}
+
+const approvedPartId = (approvalId: string, sha256: string, n: number): string => `approval-artifact/${approvalId}/approved/${sha256.slice(0, 16)}/${n}`;
+
+async function readReviewedBytes(blobs: BlobStore, approval: Approval): Promise<Buffer> {
+  const out: Uint8Array[] = [];
+  for await (const chunk of reviewedArtifactBytes(blobs, approval).chunks) out.push(chunk);
+  return Buffer.concat(out);
+}
+
+/** Write an update's bytes as parts under a path of their own. Every part is verified
+ *  as it is read back, the same as the reviewed file. */
+async function storeApprovedParts(blobs: BlobStore, approvalId: string, bytes: Uint8Array, sha256: string): Promise<TransferPart[]> {
+  const parts: TransferPart[] = [];
+  for (let at = 0, n = 0; at < bytes.length; at += TRANSFER_PART_BYTES, n++) {
+    const chunk = bytes.subarray(at, at + TRANSFER_PART_BYTES);
+    const part = { size: chunk.length, checksum: sha256Bytes(chunk) };
+    await blobs.put(approvedPartId(approvalId, sha256, n), Buffer.from(chunk), 'application/octet-stream', { size: part.size, sha256: part.checksum });
+    parts.push(part);
+  }
+  return parts;
+}
+
+/** What the approved file should be, before anything is stored. */
+async function settleRecord(deps: ApprovedFileDeps, approval: Approval): Promise<ApprovalCredentialRecord> {
+  const subject = approval.exportReview!;
+  const settledAt = new Date().toISOString();
+  const skip = (reason: string): ApprovalCredentialRecord => ({ state: 'not-recorded', reason, settledAt });
+  if (subject.recordInCredentials === false) return skip('opted-out');
+  if (subject.recordInCredentials !== true) return skip('not-offered');
+  if (!deps.policy.recordInCredentials) return skip('instance-off');
+  const unavailable = await deps.recorder.unavailable();
+  if (unavailable) return skip(unavailable);
+  if (subject.size > APPROVAL_RECORD_MAX_BYTES) return skip('too-large');
+  const reviewed = await readReviewedBytes(deps.blobs, approval);
+  // The last action is the one that took the request to approved.
+  const decidedAt = approval.actions.at(-1)?.at ?? settledAt;
+  const outcome = await deps.recorder.record(reviewed, subject.format, { approvalId: approval.id, decidedAt });
+  if (outcome.status !== 'recorded') {
+    if (outcome.detail) console.error(`[approvals] the record for ${approval.id} was not written: ${outcome.reason}: ${outcome.detail}`);
+    return skip(outcome.reason);
+  }
+  const parts = await storeApprovedParts(deps.blobs, approval.id, outcome.bytes, outcome.sha256);
+  return { state: 'recorded', sha256: outcome.sha256, size: outcome.bytes.length, parts, settledAt };
+}
+
+const settling = new Map<string, Promise<Approval>>();
+
+/**
+ * Settle an approved request's file once, and return the request as stored. Called
+ * when the decision is made and again by a download that finds it unsettled, which is
+ * how a restart between the two recovers. One writer per process; a second replica
+ * that lost the same narrow race reads the first record back and drops its own parts.
+ */
+export function settleApprovedFile(deps: ApprovedFileDeps, approval: Approval): Promise<Approval> {
   if (approval.state !== 'approved') throw new Error('only an approved request releases its file');
-  return reviewedArtifactBytes(blobs, approval);
+  if (approval.exportReview?.credentialRecord) return Promise.resolve(approval);
+  const running = settling.get(approval.id);
+  if (running) return running;
+  const work = (async () => {
+    const record = await settleRecord(deps, approval);
+    const fresh = await deps.store.getApproval(approval.id) ?? approval;
+    const winner = fresh.exportReview?.credentialRecord;
+    if (winner) {
+      if (record.state === 'recorded' && (winner.state !== 'recorded' || winner.sha256 !== record.sha256)) {
+        await removeTransferParts({ blobs: deps.blobs, partId: n => approvedPartId(approval.id, record.sha256, n) }, record.parts.length);
+      }
+      return fresh;
+    }
+    const next: Approval = { ...fresh, exportReview: { ...fresh.exportReview!, credentialRecord: record } };
+    await deps.store.putApproval(next);
+    await deps.onSettled?.(next);
+    return next;
+  })().finally(() => settling.delete(approval.id));
+  settling.set(approval.id, work);
+  return work;
+}
+
+/** The bytes an approved request releases, and the only way they leave: the signed
+ *  update once one is recorded, otherwise exactly the reviewed bytes. */
+export async function approvedArtifactBytes(deps: ApprovedFileDeps, approval: Approval): Promise<ArtifactFile> {
+  const settled = await settleApprovedFile(deps, approval);
+  const subject = settled.exportReview!;
+  const record = subject.credentialRecord;
+  if (record?.state !== 'recorded') return reviewedArtifactBytes(deps.blobs, settled);
+  const transfer: TransferParts = {
+    blobs: deps.blobs, partId: n => approvedPartId(settled.id, record.sha256, n),
+    manifest: { size: record.size, checksum: record.sha256, parts: record.parts },
+  };
+  return { chunks: transferChunks(transfer), size: record.size, sha256: record.sha256, mediaType: subject.mediaType, name: subject.name };
 }
 
 /** Who this person is to the file. `null` is the 404 that says nothing to anyone else. */
@@ -265,14 +388,23 @@ export function checkArtifactReviewToken(token: unknown, secrets: Array<string |
 
 /** What a client sees of the subject: everything but the part table. */
 export function exportReviewWire(approval: Approval) {
-  const { parts: _parts, ...subject } = approval.exportReview!;
-  return { ...subject, artifactUrl: `/api/v1/approvals/${encodeURIComponent(approval.id)}/artifact` };
+  const { parts: _parts, credentialRecord, ...subject } = approval.exportReview!;
+  let record: Record<string, unknown> | undefined;
+  if (credentialRecord?.state === 'recorded') {
+    const { parts: _recordParts, ...facts } = credentialRecord;
+    record = facts;
+  } else if (credentialRecord) record = credentialRecord;
+  return { ...subject, ...(record ? { credentialRecord: record } : {}), artifactUrl: `/api/v1/approvals/${encodeURIComponent(approval.id)}/artifact` };
 }
 
 /** Bytes every request still holding its file holds. A linear read, which request
  *  volume keeps small; the creating request pays for it, not a reader. */
 export function heldArtifactBytes(approvals: Approval[]): number {
-  return approvals.reduce((sum, a) => sum + (a.exportReview && !a.exportReview.removedAt ? a.exportReview.size : 0), 0);
+  return approvals.reduce((sum, a) => {
+    if (!a.exportReview || a.exportReview.removedAt) return sum;
+    const record = a.exportReview.credentialRecord;
+    return sum + a.exportReview.size + (record?.state === 'recorded' ? record.size : 0);
+  }, 0);
 }
 
 /** Take back the bytes and keep the record: id, facts and digest stay as evidence
@@ -282,6 +414,8 @@ export async function removeArtifactBytes(
 ): Promise<Approval> {
   const subject = approval.exportReview!;
   await removeTransferParts({ blobs, partId: n => artifactPartId(approval.id, n) }, subject.parts.length);
+  const record = subject.credentialRecord;
+  if (record?.state === 'recorded') await removeTransferParts({ blobs, partId: n => approvedPartId(approval.id, record.sha256, n) }, record.parts.length);
   return { ...approval, exportReview: { ...subject, removedAt: now, removedBecause: because } };
 }
 

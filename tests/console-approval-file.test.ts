@@ -128,3 +128,24 @@ test('an older request says no file is attached; a catalog submission does not',
   assert.doesNotMatch(submission.textContent, /No file is attached/);
   p.close();
 });
+
+test('the card says what approving does to the file, and "recorded" only after the server confirmed it', async () => {
+  const p = page();
+  const text = (a: unknown, actionable = true) => (p.render(a, actionable).querySelector('.appr-file-facts')?.textContent ?? '') as string;
+  assert.match(text(approval({ exportReview: file({ recordInCredentials: true }) })), /If approved, the file's Content Credentials record the approval id, the date and this digest/);
+  assert.match(text(approval({ exportReview: file({ recordInCredentials: false }) })), /The requester chose not to record this approval/);
+  assert.doesNotMatch(text(approval()), /Content Credentials/, 'nothing is promised where nothing was offered');
+
+  const approved = (record: unknown) => approval({ state: 'approved', relation: 'mine', mine: true, exportReview: file({ recordInCredentials: true, credentialRecord: record }) });
+  const done = text(approved({ state: 'recorded', sha256: 'e'.repeat(64), size: 99, settledAt: 'x' }), false);
+  assert.match(done, /recorded in this file's Content Credentials/);
+  assert.match(done, /Reviewed SHA-256/);
+  assert.match(done, /Approved file SHA-256 eeeeeeeeeeee/);
+  for (const [reason, words] of [['no-signing-identity', /no signing identity/], ['no-route', /format cannot carry/], ['no-credential', /no Content Credentials to update/], ['opted-out', /chose not to record/], ['engine-unsupported', /cannot record approvals in files yet/]] as const) {
+    const line = text(approved({ state: 'not-recorded', reason, settledAt: 'x' }), false);
+    assert.match(line, words);
+    assert.match(line, /The approved file is the file as reviewed/);
+    assert.doesNotMatch(line, /recorded in this file/, 'never claims a recording');
+  }
+  p.close();
+});
