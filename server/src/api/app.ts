@@ -5545,6 +5545,7 @@ export function buildApp(deps: AppDeps): App {
         title: `Approval requested: ${approval.title}`,
         body: `${user.email} asked for your review on the “${currentStep(approval)?.name ?? 'first'}” step.`,
         cta: { label: 'Review', url: '/admin#/approvals' },
+        ...(approval.exportReview ? { data: { kind: 'export-review', approvalId: approval.id } } : {}),
         dismissible: true,
       });
     }
@@ -5663,6 +5664,7 @@ export function buildApp(deps: AppDeps): App {
         title: `Approval ${next.state}: ${next.title}`,
         body: `${displayName(user)} ${next.state} your request${comment ? `: “${comment}”` : '.'}`,
         cta: { label: next.exportReview && next.state === 'approved' ? 'Get the approved file' : 'View', url: '/admin#/approvals' },
+        ...(next.exportReview ? { data: { kind: 'export-review', approvalId: next.id } } : {}),
         dismissible: true,
       });
       const creator = await store.getUser(next.createdBy);

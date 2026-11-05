@@ -199,6 +199,21 @@ export function mayEditCollab(ctx: PrincipalCtx, grants: Grant[]): boolean {
 }
 
 /**
+ * Whether `ctx` could act on some approval: `approval.act` from the role, or an allow
+ * grant on any resource. A reviewer's grant is usually scoped, for example to
+ * `chain:brand-review`, so asking about `*` alone would miss the person it was written for.
+ *
+ * This only tells the shell that reviewing can apply to this person. It gives no right to
+ * act: each approvals route still decides on its own request and, for acting, on the
+ * step's approver groups.
+ */
+export function mayActOnSomeApproval(ctx: PrincipalCtx, grants: Grant[]): boolean {
+  if (evaluate(ctx, 'approval.act', ['*'], grants)) return true;
+  return grants.some(grant => grant.action === 'approval.act' && grant.effect === 'allow'
+    && evaluate(ctx, 'approval.act', [grant.resource, '*'], grants));
+}
+
+/**
  * Whether `ctx` may be in a live collab room at all - `collab.join`, which
  * UNLIKE `collab.edit` is a real action with its own row in the role table and
  * its own grants (see `ROLE_ACTIONS` above, and `tests/collab/permissions.test.ts`
