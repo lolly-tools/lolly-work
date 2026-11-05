@@ -297,7 +297,7 @@ test('a chain bound to a tool is writable, must exist, reaches shells and binds 
     assert.equal((await put('brand')).status, 200);
     const config = await (await fetch(`${w.base}/api/v1/org-config`, { headers: { cookie: w.author } })).json() as { tools: Record<string, { approvalChain?: string }>; approvals?: { exportReview: { maxFileBytes: number; partBytes: number } } };
     assert.equal(config.tools['qr-code']!.approvalChain, 'brand');
-    assert.deepEqual(config.approvals, { exportReview: { maxFileBytes: APPROVAL_ARTIFACT_DEFAULTS.maxFileBytes, partBytes: PART } });
+    assert.deepEqual(config.approvals, { exportReview: { maxFileBytes: APPROVAL_ARTIFACT_DEFAULTS.maxFileBytes, partBytes: PART, match: true } });
     const viewerConfig = await (await fetch(`${w.base}/api/v1/org-config`, { headers: { cookie: w.viewer } })).json() as { approvals?: unknown };
     assert.equal(viewerConfig.approvals, undefined, 'only someone who may request or review');
     const bytes = png();
@@ -318,7 +318,7 @@ test('a reviewer who holds only approval.act gets the capability, the row and th
 
     // A viewer in the group: export.request is denied, and the only grant is scoped to one chain.
     const config = await configOf(w.granted);
-    assert.deepEqual(config.approvals, { exportReview: { maxFileBytes: APPROVAL_ARTIFACT_DEFAULTS.maxFileBytes, partBytes: PART } }, 'the limits, and no other field');
+    assert.deepEqual(config.approvals, { exportReview: { maxFileBytes: APPROVAL_ARTIFACT_DEFAULTS.maxFileBytes, partBytes: PART, match: true } }, 'the limits and the match route, and no other field');
     assert.equal(config.can['export.request'], false, 'still cannot request');
     assert.equal(config.can['export.download'], (await configOf(w.viewer)).can['export.download'], 'no other bit moves');
     assert.equal('approval.act' in config.can, false, 'the action itself is not published');

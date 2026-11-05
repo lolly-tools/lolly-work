@@ -45,6 +45,9 @@ export interface RenderEvidence {
   worker?: WorkerEvidence;
   /** Resolved facts that the context does not name; absent on older receipts. */
   resolved?: ResolvedRenderFacts;
+  /** How `enforce.watermark: until-approved` came out; absent under any other rule.
+   *  `context.watermark` still states whether the mark was applied. */
+  untilApproved?: { marked: boolean; note: string; approvalId: string | null; inputsDigest: string };
 }
 
 export interface ResolvedRenderFacts {

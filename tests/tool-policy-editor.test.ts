@@ -220,23 +220,32 @@ test('failed and pending saves retain the draft and prevent leaving mid-request'
   } finally { p.cleanup(); }
 });
 
-test('watermark UI offers enforced options and preserves a warned legacy until-approved value', async () => {
-  for (const legacy of [false, true]) {
-    const p = page(legacy ? { enforce: { watermark: 'until-approved', formats: ['svg'] } } : {});
+test('watermark UI offers Until approved and says when it needs a chain', async () => {
+  for (const saved of [false, true]) {
+    const p = page(saved ? { enforce: { watermark: 'until-approved', formats: ['svg'] } } : {});
     try {
       const select = p.find('.policy-fields > .formrow select');
-      assert.deepEqual(Array.from(select.options, (o: any) => o.value), legacy
-        ? ['', 'never', 'always', 'until-approved'] : ['', 'never', 'always']);
-      if (legacy) {
-        assert.match(p.find('.policy-warning').textContent, /not enforced/);
+      assert.deepEqual(Array.from(select.options, (o: any) => o.value), ['', 'never', 'always', 'until-approved']);
+      const warning = p.find('.policy-warning');
+      if (saved) {
+        assert.match(warning.textContent, /No approval chain is set/);
+        assert.doesNotMatch(warning.textContent, /not enforced/);
         await p.save();
         assert.deepEqual(p.calls[0]?.body.enforce, { formats: ['svg'], watermark: 'until-approved' });
         select.value = 'always'; select.dispatchEvent(new p.w.Event('change'));
+        assert.equal(warning.textContent, '', 'other rules need no note');
         await p.save();
         assert.deepEqual(p.calls.at(-1)?.body.enforce, { formats: ['svg'], watermark: 'always' });
-      }
+      } else assert.equal(warning.textContent, '');
     } finally { p.cleanup(); }
   }
+});
+
+test('Until approved with a bound chain says what it does', async () => {
+  const p = page({ enforce: { watermark: 'until-approved', escalation: 'brand' } });
+  try {
+    assert.match(p.find('.policy-warning').textContent, /show PREVIEW until a reviewer approves/);
+  } finally { p.cleanup(); }
 });
 
 test('the approval chain for a tool is chosen from the list, keeps a saved chain and normalizes through the writer', async () => {

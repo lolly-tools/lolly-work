@@ -112,6 +112,7 @@ import {
   freezeArtifactBytes, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
 } from '../approvals/export-review.ts';
 import { renderInputsDigest } from '../render/inputs-digest.ts';
+import { approvedExportReview, registerExportReviewMatch } from '../approvals/export-review-match.ts';
 import { registerFileRoutes } from '../uploads/file-routes.ts';
 import { createFileReference, creationRefusal, fileWire, FORMAT_TYPES, optimizeReport } from '../uploads/files.ts';
 import { liveUpload, readUploadReference, removeUpload, removeUploadsOwnedBy, uploadOwner, uploadPolicy, UploadReferenceError, type UploadRecord } from '../uploads/scoped.ts';
@@ -415,7 +416,7 @@ export function buildApp(deps: AppDeps): App {
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
-      const out = await renderToolUnscoped({ ...args[0], brandRevision: snap.revision, managedRules, workerFiles: files,
+      const out = await renderToolUnscoped({ ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
         workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
@@ -3285,15 +3286,16 @@ export function buildApp(deps: AppDeps): App {
         principal: null, profile: {}, overlays: await store.listOverlays(),
       });
       const etag = `W/"r-${result.cacheKey.slice(0, 16)}"`;
-      if (result.evidence?.brandRules) setDeliveryClass(res, 'person-private');
-      if (!result.evidence?.brandRules && matchesEtag(req.headers['if-none-match'], etag)) {
+      if (result.evidence?.brandRules || result.watermarkNote) setDeliveryClass(res, 'person-private');
+      if (!result.evidence?.brandRules && !result.watermarkNote && matchesEtag(req.headers['if-none-match'], etag)) {
         res.writeHead(304, { ...INERT_BYTE_HEADERS, etag });
         res.end();
         return;
       }
       const headers: Record<string, string> = {
-        ...INERT_BYTE_HEADERS, 'content-type': result.mime, etag, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : cachePolicy('link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) }).cacheControl,
+        ...INERT_BYTE_HEADERS, 'content-type': result.mime, etag, 'cache-control': result.evidence?.brandRules || result.watermarkNote ? 'private, no-store' : cachePolicy('link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) }).cacheControl,
         'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
+        ...(result.watermarkNote ? { 'x-lolly-watermark': result.watermarkNote } : {}),
         ...provenanceHeader(result.provenance),
       };
       if (link.kind === 'download') headers['content-disposition'] = `attachment; filename="${toolId}${result.evidence?.brandRules?.disposition === 'draft' ? '-DRAFT' : ''}.${fmt}"`;
@@ -5484,6 +5486,12 @@ export function buildApp(deps: AppDeps): App {
 
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
+  registerExportReviewMatch(router, {
+    store, memberOf, enabled: () => approvalArtifactPolicy(config).enabled,
+    mayUse: async (user, toolId) => mayUseTool(user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode),
+    readInputs: exportReviewInputs,
+  });
+
   router.add('POST', '/api/v1/approvals', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
@@ -10836,7 +10844,8 @@ export function buildApp(deps: AppDeps): App {
     }
     try {
       const result = await execute();
-      res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': result.mime, 'x-lolly-cache-key': result.cacheKey, 'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested' });
+      res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': result.mime, 'x-lolly-cache-key': result.cacheKey, 'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
+        ...(result.watermarkNote ? { 'x-lolly-watermark': result.watermarkNote } : {}) });
       res.end(Buffer.from(result.bytes));
     } catch (e) { if (e instanceof RenderError) return sendError(res, e.status, e.code, e.message); throw e; }
   });
@@ -10957,16 +10966,17 @@ export function buildApp(deps: AppDeps): App {
         profile: renderProfileOf(user),
         overlays,
       }, user);
-      if (result.evidence?.brandRules) setDeliveryClass(res, 'person-private');
+      if (result.evidence?.brandRules || result.watermarkNote) setDeliveryClass(res, 'person-private');
       const etag = signer ? `W/"r-${result.cacheKey.slice(0, 16)}"` : `"r-${sha256Hex(Buffer.from(result.bytes)).slice(0, 32)}"`;
-      if (!result.evidence?.brandRules && matchesEtag(req.headers['if-none-match'], etag)) {
+      if (!result.evidence?.brandRules && !result.watermarkNote && matchesEtag(req.headers['if-none-match'], etag)) {
         res.writeHead(304, { ...INERT_BYTE_HEADERS, etag, 'cache-control': cachePolicy('instance-private').cacheControl });
         res.end();
         return;
       }
       res.writeHead(200, {
-        ...INERT_BYTE_HEADERS, 'content-type': result.mime, etag, 'x-lolly-cache-key': result.cacheKey, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : cachePolicy('instance-private').cacheControl,
+        ...INERT_BYTE_HEADERS, 'content-type': result.mime, etag, 'x-lolly-cache-key': result.cacheKey, 'cache-control': result.evidence?.brandRules || result.watermarkNote ? 'private, no-store' : cachePolicy('instance-private').cacheControl,
         'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
+        ...(result.watermarkNote ? { 'x-lolly-watermark': result.watermarkNote } : {}),
         ...provenanceHeader(result.provenance),
       });
       res.end(Buffer.from(result.bytes));

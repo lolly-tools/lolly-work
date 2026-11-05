@@ -106,13 +106,16 @@ test('an overlay watermark "never" turns the preview mark off, even when the cal
 
   const always = await f.render({ overlays: withPolicy('always') });
   assert.equal(marked(always.bytes), true, 'always marks a render nobody asked to mark');
-  assert.equal(marked((await f.render({ watermarkPreview: true, overlays: withPolicy('until-approved') })).bytes), true,
-    'until-approved is not linked to approval state yet, so it behaves like no rule');
+  assert.equal(marked((await f.render({ overlays: withPolicy('until-approved') })).bytes), true,
+    'until-approved marks a render nobody asked to mark while no approval matches');
 
   for (const preview of [false, true]) {
     assert.equal(shouldWatermark('never', preview), false);
     assert.equal(shouldWatermark('always', preview), true);
-    assert.equal(shouldWatermark('until-approved', preview), preview);
+    assert.equal(shouldWatermark('never', preview, true), false);
+    assert.equal(shouldWatermark('always', preview, true), true);
+    assert.equal(shouldWatermark('until-approved', preview), true, 'nothing approved keeps the mark');
+    assert.equal(shouldWatermark('until-approved', preview, true), false, 'an approved match lifts the mark for every caller');
     assert.equal(shouldWatermark(undefined, preview), preview);
   }
 });
