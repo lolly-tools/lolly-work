@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "2dc143b58b5fdebec0e365f7236a30050f018309",
+  "commit": "4bd14992f72e7803d45efe7cc1b2057dbe0166f7",
   "manifestSha256": "36aa65e6092c83ed18b2fd4dd993aad233419d3206a3b381aa89314f193ac1b9",
   "files": {
     "account-lifecycle.md": {
@@ -29,15 +29,15 @@
       "source": "docs/work/audit.md"
     },
     "automation-api.md": {
-      "sha256": "b915090180fcd81629c3e8ad591bedacf345c9ff220696a5d93bdaef4116e0f5",
+      "sha256": "4ec8717ad49c411253cb7811a8e13df56f7f4677ba8f93911b314f2f13f5f9bc",
       "source": "docs/work/automation-api.md"
     },
     "aws-compatible.md": {
-      "sha256": "3758849ea5168b04661c6e91d5ae2fe0d4153008f91604b8a6a8b95fb928886a",
+      "sha256": "51c713c8144e7f78631a937bb33e129aa6f66302e2640f6eb8871a0b6313f4c0",
       "source": "docs/work/aws-compatible.md"
     },
     "c2pa.md": {
-      "sha256": "d0a6e80cadcc4d445cd9d2d53a4d93b54b43715c29fe518e8c29a50e45a0e08d",
+      "sha256": "dbe07402dc5c8dbd0c7adf112c9f6f55f07966dd72e0bb32bd9fabbe79b8fc2b",
       "source": "docs/work/c2pa.md"
     },
     "catalog.md": {
@@ -53,15 +53,15 @@
       "source": "docs/work/cloud-deployment.md"
     },
     "configuration.md": {
-      "sha256": "360f438a821ee19b1843fd5ef6f07007ef36203303c9a760461e8bf4e2f447e0",
+      "sha256": "d904fa26b3111da906f000ac7a43f4bd8162b6a15da5f0f3707bab8e07e915c8",
       "source": "docs/work/configuration.md"
     },
     "customer-setup.md": {
-      "sha256": "92a9078fa9d12b1191b20c45b8c7e6a6c72ee4da1466badcf07b9135d3ac6317",
+      "sha256": "a1f6422654cc34697f2938affa0a5b90e67c541919f01154db25d9e856508b6e",
       "source": "docs/work/customer-setup.md"
     },
     "data-lifecycle.md": {
-      "sha256": "4348a14e35e8e75ce2b4aeb65e035e1a0b0834b332db5827b7ddde5f4c2cd1c6",
+      "sha256": "20c06760d3df0817f48fea1059a22d11403839d5786cbe8f0733e2ab3d4b2cc1",
       "source": "docs/work/data-lifecycle.md"
     },
     "delivery.md": {
@@ -85,7 +85,7 @@
       "source": "docs/work/document-agents.md"
     },
     "edge-cdn.md": {
-      "sha256": "e08c741b31cfb2c69e81556e18e44f9d660fe92c4cc8b1a1063bd5a3ed6f190f",
+      "sha256": "4dbc83f3eedb7084d72fa13f3cb1f7bdbc623a9c3d91e90b9220203a3ed44d02",
       "source": "docs/work/edge-cdn.md"
     },
     "enterprise-identity.md": {
@@ -257,11 +257,11 @@
       "source": "docs/work/ready-made-package.md"
     },
     "release-1-1-2.md": {
-      "sha256": "9a6752ba557fb5cc695a9f9f5530bde45a1c9601d70cb6824f259eb49a4736d5",
+      "sha256": "4434711358366f517c187fe85cef17df7b7c7f64cebc960027ea8d9369cf0151",
       "source": "docs/work/release-1-1-2.md"
     },
     "release-1-1-3.md": {
-      "sha256": "66407bdb62a2e415025e658285090d487506cb984d71e271596343fe8aefad26",
+      "sha256": "2e575265db9dc6400ea0edac47a0e93f1d641173db28814e99f6aa922d46db7c",
       "source": "docs/work/release-1-1-3.md"
     },
     "renders.md": {
