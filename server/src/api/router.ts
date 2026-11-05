@@ -147,6 +147,10 @@ export function guardDelivery(req: IncomingMessage, res: ServerResponse, edge?: 
   } as ServerResponse['writeHead'];
 }
 
+/** Runs after a route matches and before its handler. Answering false means the
+ *  guard has already sent the response and the handler must not run. */
+export type RouteGuard = (req: IncomingMessage, res: ServerResponse, route: { method: string; path: string }) => boolean | Promise<boolean>;
+
 /** One registered route. `declared` is false when the route took the
  *  person-private default instead of naming a class. */
 export interface RouteDescription { method: string; path: string; delivery: DeliveryClass; declared: boolean }
@@ -155,12 +159,16 @@ export function createRouter(): {
   add: (method: string, path: string, handler: Handler, options?: { delivery?: DeliveryClass }) => void;
   /** Classes are conservative by default; public routes opt in explicitly. */
   descriptions: () => RouteDescription[];
+  /** Install the check every matched request passes first. One guard per router. */
+  setGuard: (guard: RouteGuard) => void;
   /** Returns the matched route PATTERN (e.g. '/api/v1/users/:id'), or null when
    *  nothing matched - a bounded label for the HTTP request metric. */
   dispatch: (req: IncomingMessage, res: ServerResponse) => Promise<string | null>;
 } {
   const routes: Route[] = [];
+  let guard: RouteGuard | undefined;
   return {
+    setGuard(next) { guard = next; },
     add(method, path, handler, options) {
       routes.push({ method, path, segments: path.split('/').filter(Boolean), handler,
         delivery: options?.delivery ?? 'person-private', declared: options?.delivery !== undefined });
@@ -182,6 +190,7 @@ export function createRouter(): {
           sendError(res, 404, 'PUBLIC_HOST_ONLY', 'This hostname serves public files only.');
           return route.path;
         }
+        if (guard && !(await guard(req, res, { method: route.method, path: route.path }))) return route.path;
         await route.handler(req, res, { params, url });
         return route.path;
       }

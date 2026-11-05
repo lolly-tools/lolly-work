@@ -25,7 +25,11 @@ export interface PrincipalCtx {
 }
 
 export const ROLES = ['viewer', 'member', 'author', 'approver', 'admin', 'owner', 'guest'] as const;
-export type Role = (typeof ROLES)[number];
+/** A role only a service token can hold, never a person, and only with scopes
+ *  (iam/token-scopes.ts). It carries what the automation scopes need, without the
+ *  admin role's wider authority; the scopes then decide which part of it is reachable. */
+export const AUTOMATION_ROLE = 'automation';
+export type Role = (typeof ROLES)[number] | typeof AUTOMATION_ROLE;
 
 /** Actions each role allows by default (on any resource). Cumulative by construction below. */
 const ROLE_ACTIONS: Record<Role, string[]> = (() => {
@@ -99,7 +103,8 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   // key, so it sits with them behind the owner.
   const owner = [...admin, 'instance.config', 'catalog.provider.credential', 'catalog.provider.publish', 'scim.manage', 'token.manage'];
   // Guests get NOTHING by default - their access is entirely link-scoped grants.
-  return { viewer, member, author, approver, admin, owner, guest: [] };
+  const automation = ['catalog.read', 'tool.use', 'export.server', 'delivery.create', 'audit.export'];
+  return { viewer, member, author, approver, admin, owner, guest: [], automation };
 })();
 
 export function roleAllows(role: Role, action: string): boolean {
@@ -110,7 +115,7 @@ export function roleAllows(role: Role, action: string): boolean {
  *  §4). Runs on the effective union (idp ∪ local), so a local group named after
  *  a role escalates exactly like an IdP one. Lives here so the store can derive
  *  role on upsert without importing the HTTP app. */
-export type RoleGroups = Partial<Record<Exclude<Role, 'guest'>, string[]>>;
+export type RoleGroups = Partial<Record<Exclude<Role, 'guest' | typeof AUTOMATION_ROLE>, string[]>>;
 export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role {
   for (const role of ['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const) {
     const names = mapping[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []);

@@ -738,6 +738,12 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.putApiToken({ id: 'tok_1', label: 'ci', role: 'admin', tokenHash: 'hash-a', createdBy: 'user:u1', createdAt: new Date().toISOString() });
   assert.equal((await store.findApiTokenByHash('hash-a'))?.label, 'ci');
   assert.equal(await store.findApiTokenByHash('nope'), null);
+  assert.equal((await store.findApiTokenByHash('hash-a'))?.scopes, undefined, 'a token with no scopes reads back with none');
+  await store.putApiToken({ id: 'tok_scoped', label: 'scoped', role: 'automation', scopes: ['render', 'files'], tools: ['card'], tokenHash: 'hash-scoped', createdBy: 'user:u1', createdAt: new Date().toISOString() });
+  const scoped = await store.findApiTokenByHash('hash-scoped');
+  assert.deepEqual(scoped?.scopes, ['render', 'files']);
+  assert.deepEqual(scoped?.tools, ['card']);
+  assert.deepEqual((await store.getApiToken('tok_scoped'))?.scopes, ['render', 'files']);
   await store.touchApiToken('tok_1', '2026-08-24T12:00:00.000Z');
   assert.equal((await store.listApiTokens()).find((t) => t.id === 'tok_1')?.lastUsedAt, '2026-08-24T12:00:00.000Z');
   assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), true);

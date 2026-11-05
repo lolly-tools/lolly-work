@@ -324,6 +324,10 @@ export interface ApiTokenRecord {
   label: string;
   /** The role the synthetic principal carries; the evaluator owns the vocabulary. */
   role: string;
+  /** What the token may reach (iam/token-scopes.ts). Absent means its role's full reach. */
+  scopes?: string[];
+  /** The only tools it may name. Absent means any tool its role and grants allow. */
+  tools?: string[];
   /** sha256 hex of the opaque secret - never the secret itself. */
   tokenHash: string;
   /** 'user:<id>' who minted it. */
