@@ -206,7 +206,7 @@ test('a rejected request never releases the file to the requester; rejecting nee
   assert.equal(rejected.status, 200, await rejected.clone().text());
   assert.equal((await read(w, approval.id, w.author)).status, 403);
   assert.equal((await read(w, approval.id, w.reviewer)).status, 200, 'the record stays reviewable');
-  assert.throws(() => approvedArtifactBytes(w.blobs, { state: 'rejected' } as Approval), /only an approved request/);
+  await assert.rejects(approvedArtifactBytes({ blobs: w.blobs, store: w.store, policy: APPROVAL_ARTIFACT_DEFAULTS, recorder: { unavailable: async () => null, record: async () => ({ status: 'not-recorded', reason: 'no-route' }) } }, { state: 'rejected' } as Approval), /only an approved request/);
 });
 
 test('withdrawing removes the bytes and keeps the record', async () => {

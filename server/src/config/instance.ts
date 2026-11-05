@@ -1039,6 +1039,7 @@ export function parseConfig(json: string): InstanceConfig {
   const artifacts = cfg.policy.approvalArtifacts;
   if (!artifacts || typeof artifacts !== 'object' || Array.isArray(artifacts)) throw new Error('policy.approvalArtifacts must be an object');
   if (typeof artifacts.enabled !== 'boolean') throw new Error('policy.approvalArtifacts.enabled must be true or false');
+  if (typeof artifacts.recordInCredentials !== 'boolean') throw new Error('policy.approvalArtifacts.recordInCredentials must be true or false');
   for (const k of ['maxFileBytes', 'instanceBudgetBytes'] as const) {
     if (!Number.isSafeInteger(artifacts[k]) || artifacts[k] <= 0) throw new Error(`invalid policy.approvalArtifacts.${k}: ${artifacts[k]} (a whole number above 0)`);
   }

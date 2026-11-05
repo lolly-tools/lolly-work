@@ -49,7 +49,7 @@ export function approvalSubjectRow(approval: import('../approvals/engine.ts').Ap
   const file = approval.exportReview;
   return subjectRow(approval.id, {
     id: approval.id, title: approval.title, subjectType: approval.subjectType, subjectRef: approval.subjectRef, state: approval.state, createdAt: approval.createdAt,
-    ...(file ? { file: { name: file.name, format: file.format, size: file.size, sha256: file.sha256, toolId: file.toolId, removedAt: file.removedAt ?? null } } : {}),
+    ...(file ? { file: { name: file.name, format: file.format, size: file.size, sha256: file.sha256, toolId: file.toolId, ...(file.credentialRecord ? { credentialRecord: file.credentialRecord.state === 'recorded' ? { state: 'recorded', sha256: file.credentialRecord.sha256 } : { state: 'not-recorded', reason: file.credentialRecord.reason } } : {}), removedAt: file.removedAt ?? null } } : {}),
   });
 }
 

@@ -83,6 +83,7 @@ const OPTIONS = {
     idp: { type: 'string' },
     check: { type: 'boolean' },
     out: { type: 'string' },
+    reviewed: { type: 'boolean' },
     in: { type: 'string' },
     org: { type: 'string' },
     days: { type: 'string' },
@@ -333,10 +334,10 @@ switch (cmd) {
       for (const a of approvals) console.log(`${a.id}  ${a.state}  ${a.relation ?? ''}  ${a.title}${a.exportReview ? `  ${a.exportReview.format} ${a.exportReview.sha256.slice(0, 12)}${a.exportReview.removedAt ? ' (file removed)' : ''}` : ''}`);
       break;
     }
-    if (action !== 'artifact') fail('usage: lw approvals [list] | lw approvals artifact <id> --out <file>');
-    const id = positionals[2] ?? fail('usage: lw approvals artifact <id> --out <file>');
-    if (!values.out) fail('usage: lw approvals artifact <id> --out <file>');
-    const res = await response(`/api/v1/approvals/${encodeURIComponent(id)}/artifact`);
+    if (action !== 'artifact') fail('usage: lw approvals [list] | lw approvals artifact <id> --out <file> [--reviewed]');
+    const id = positionals[2] ?? fail('usage: lw approvals artifact <id> --out <file> [--reviewed]');
+    if (!values.out) fail('usage: lw approvals artifact <id> --out <file> [--reviewed]');
+    const res = await response(`/api/v1/approvals/${encodeURIComponent(id)}/artifact${values.reviewed ? '?file=reviewed' : ''}`);
     if (!res.ok) {
       const body = await res.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
       fail(`${res.status} ${body?.error?.code ?? ''} ${body?.error?.message ?? ''}`.trim());
@@ -346,8 +347,16 @@ switch (cmd) {
     if (!digest || createHash('sha256').update(bytes).digest('base64') !== digest) fail('the file did not match its recorded digest; nothing was written');
     writeFileSync(values.out, bytes);
     const sha256 = Buffer.from(digest, 'base64').toString('hex');
-    if (values.json) out({ file: values.out, bytes: bytes.byteLength, sha256 });
-    else console.log(`${values.out} (${bytes.byteLength} bytes, SHA-256 ${sha256})`);
+    // The server states what this file is. The record is in the file only when it
+    // read the write back and says so.
+    const recordHeader = res.headers.get('x-lolly-approval-record');
+    const recorded = recordHeader === 'recorded';
+    const reason = /reason=(\S+)/.exec(recordHeader ?? '')?.[1];
+    if (values.json) out({ file: values.out, bytes: bytes.byteLength, sha256, ...(recordHeader ? { approvalRecord: recorded ? 'recorded' : 'not-recorded', ...(reason ? { reason } : {}) } : {}) });
+    else {
+      console.log(`${values.out} (${bytes.byteLength} bytes, SHA-256 ${sha256})`);
+      if (recordHeader) console.log(recorded ? 'The approval is recorded in this file\'s Content Credentials.' : `The approval is not recorded in this file (${reason ?? 'unknown'}). It is the file as reviewed.`);
+    }
     break;
   }
   case 'renders':

@@ -3667,16 +3667,45 @@ const ARTWORK_AUTOLOAD_BYTES = 16 * 1024 * 1024;
 
 const hexOf = (buffer) => [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('');
 
+// Why an approved file holds no approval record, in plain words. Each ends with the
+// same fact: the approved file is the file as reviewed.
+const APPROVAL_NOT_RECORDED = {
+  'opted-out': 'The requester chose not to record this approval in the file.',
+  'not-offered': 'This approval is not recorded in the file.',
+  'instance-off': 'This instance does not record approvals in files.',
+  'no-signing-identity': 'This server has no signing identity, so the approval is not in the file.',
+  'engine-unsupported': 'This server cannot record approvals in files yet.',
+  'too-large': 'This file is too large to update, so the approval is not in the file.',
+  'no-route': 'This format cannot carry the record yet, so the approval is not in the file.',
+  'no-credential': 'The reviewed file has no Content Credentials to update, so the approval is not in the file.',
+};
+
+// One line on what this approval does to the file. "Recorded" appears only once the
+// server has read the write back; before a decision it says what will be attempted.
+function approvalRecordLine(a, x) {
+  const record = x.credentialRecord;
+  if (record?.state === 'recorded') return 'The approval is recorded in this file\'s Content Credentials: the approval id, the date and the reviewed digest.';
+  if (record) return `${APPROVAL_NOT_RECORDED[record.reason] ?? 'The approval could not be recorded in the file.'} The approved file is the file as reviewed.`;
+  if (a.state === 'approved' || a.state === 'rejected' || a.state === 'withdrawn') return null;
+  if (x.recordInCredentials === true) return 'If approved, the file\'s Content Credentials record the approval id, the date and this digest. Nothing else changes.';
+  if (x.recordInCredentials === false) return 'The requester chose not to record this approval in the file.';
+  return null;
+}
+
 // The file an export review is about, or the plain facts when this person cannot
 // have it yet. The artwork on screen is drawn from the bytes the digest was checked
 // against, so what a reviewer sees is what the record names.
 function exportReviewPanel(a, { actionable }) {
   const x = a.exportReview;
   const state = { token: null, onReady: null };
+  const recorded = x.credentialRecord?.state === 'recorded';
+  const recordLine = approvalRecordLine(a, x);
   const figures = [x.format.toUpperCase(), x.widthPx && x.heightPx ? `${x.widthPx} × ${x.heightPx}` : null, fmtBytes(x.size), x.toolVersion ? `${x.toolId} ${x.toolVersion}` : x.toolId].filter(Boolean).join(' · ');
   const facts = el('div', { class: 'appr-file-facts' },
     el('p', {}, figures),
-    el('p', { class: 'mono', title: x.sha256 }, `SHA-256 ${x.sha256.slice(0, 12)}…${x.sha256.slice(-8)}`));
+    el('p', { class: 'mono', title: x.sha256 }, `${recorded ? 'Reviewed SHA-256' : 'SHA-256'} ${x.sha256.slice(0, 12)}…${x.sha256.slice(-8)}`),
+    recorded ? el('p', { class: 'mono', title: x.credentialRecord.sha256 }, `Approved file SHA-256 ${x.credentialRecord.sha256.slice(0, 12)}…${x.credentialRecord.sha256.slice(-8)}`) : null,
+    recordLine ? el('p', {}, recordLine) : null);
   const stage = el('div', { class: 'appr-file-stage' });
   const actions = el('div', { class: 'appr-file-actions' });
   const panel = el('div', { class: 'appr-file' }, stage, facts, actions);
@@ -3695,7 +3724,11 @@ function exportReviewPanel(a, { actionable }) {
     if (!res.ok) { say(res.status === 410 ? 'This request no longer holds its file.' : 'The file could not be loaded. Reload to try again.', 'alert'); return; }
     const blob = await res.blob();
     let checked = null;
-    if (globalThis.crypto?.subtle) checked = hexOf(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())) === x.sha256;
+    // An approved file may be the signed update. The route states its digest, and it
+    // is checked here the same way. Before a decision only the reviewed digest counts.
+    const stated = /^sha-256=:(.+):$/.exec(res.headers.get('repr-digest') ?? '')?.[1];
+    const expected = a.state === 'approved' && stated ? [...atob(stated)].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('') : x.sha256;
+    if (globalThis.crypto?.subtle) checked = hexOf(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())) === expected;
     if (checked === false) { say('This file does not match its recorded digest. Reject it, or ask for it to be sent again.', 'alert'); return; }
     const url = URL.createObjectURL(blob);
     approvalFileUrls.push(url);
@@ -3706,7 +3739,8 @@ function exportReviewPanel(a, { actionable }) {
     else if (x.preview === 'pdf') stage.replaceChildren(el('a', { href: url, target: '_blank', rel: 'noopener', class: 'btn' }, 'Open the PDF in a new tab'));
     else stage.replaceChildren(el('p', { class: 'muted' }, 'This format has no preview here. Download the file to check it.'));
     actions.replaceChildren(
-      el('a', { href: url, download: x.name, class: mine ? 'btn primary' : 'btn' }, mine ? 'Download approved file' : 'Download'),
+      el('a', { href: url, download: x.name, class: mine ? 'btn primary' : 'btn' }, a.state === 'approved' ? 'Download approved file' : 'Download'),
+      recorded ? el('a', { href: `${x.artifactUrl}?file=reviewed`, download: x.name, class: 'btn' }, 'Download reviewed file') : null,
       checked === null ? el('span', { class: 'muted' }, 'This browser could not check the digest.') : el('span', { class: 'muted' }, 'Digest checked.'));
     if (actionable) {
       state.token = res.headers.get('x-lolly-review-token');

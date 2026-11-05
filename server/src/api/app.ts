@@ -108,7 +108,7 @@ import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
 import {
   approvalArtifactPolicy, approvedArtifactBytes, artifactRefusal, artifactRelation, artifactReviewToken, checkArtifactReviewToken, describeExportReview, exportReviewWire,
-  freezeArtifactBytes, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, type ExportReviewSubject,
+  freezeArtifactBytes, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
 } from '../approvals/export-review.ts';
 import { renderInputsDigest } from '../render/inputs-digest.ts';
 import { registerFileRoutes } from '../uploads/file-routes.ts';
@@ -212,6 +212,7 @@ import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes } from '../aut
 import { mayRenderTool, mayUseTool, PolicyRefusal } from '../automation/effective-contract.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
+import { createApprovalRecorder, type ApprovalRecorder } from '../approvals/approval-recorder.ts';
 import { registerRenderRoutes } from '../renders/routes.ts';
 import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
@@ -346,6 +347,8 @@ export interface AppDeps {
   /** Explicit host ownership: main.ts starts/stops this runner; function hosts
    * omit the callback and cannot accept work they cannot reliably execute. */
   onRenderRunner?: (runner: RenderRunner) => void;
+  /** Writes an approval into an approved file's credentials. Default: the pinned engine and the instance's signing identity. */
+  approvalRecorder?: ApprovalRecorder;
   /** How often the durable render and automation runners look for queued work
    *  (main.ts reads LW_BACKGROUND_POLL_MS). Unset keeps their 1 s default; 0
    *  sets no timer, so work is picked up at boot, on submission and after each
@@ -495,6 +498,7 @@ export function buildApp(deps: AppDeps): App {
     if (c2paSignerCache === undefined) c2paSignerCache = await resolveC2paSigner(config, secrets);
     return c2paSignerCache;
   };
+  const approvalRecorder = deps.approvalRecorder ?? createApprovalRecorder({ signer: async () => await getC2paSigner() ?? null });
   // Per-caller catalog signing (catalog/signing.ts): only with LW_CATALOG_SIGNING_KEY.
   // The key is imported now so a malformed one is reported once at boot, by
   // variable name only; the signature route then answers 503 instead of
@@ -2616,7 +2620,7 @@ export function buildApp(deps: AppDeps): App {
       toolInputs.set(toolId, await readToolInputs(config.instance.pack, toolId));
     }
     const flagServiceMap = flagServiceAnswers ? await flagServiceAnswers : undefined;
-    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
+    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, approvalRecording: approvalArtifactPolicy(config).recordInCredentials && !await approvalRecorder.unavailable(), ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
   };
 
   // A small, uncached lease renewal. Resolve membership on every request so a
@@ -5389,6 +5393,16 @@ export function buildApp(deps: AppDeps): App {
       return { toolVersion, inputsDigest: renderInputsDigest(engine, tool.manifest, state.values as Record<string, unknown>, overlay, user.groups, renderProfileOf(user)) };
     } catch { return { toolVersion, inputsDigest: null, inputsGap: 'values-unreadable' as const }; }
   };
+  const approvedFileDeps: ApprovedFileDeps = {
+    blobs, store, policy: approvalArtifactPolicy(config), recorder: approvalRecorder,
+    onSettled: async (settled) => {
+      const record = settled.exportReview!.credentialRecord!;
+      await audit('system', 'approval.credential', `approval:${settled.id}`, record.state === 'recorded'
+        ? { state: record.state, reviewedSha256: settled.exportReview!.sha256, approvedSha256: record.sha256 }
+        : { state: record.state, reason: record.reason, reviewedSha256: settled.exportReview!.sha256 });
+    },
+  };
+
   /** Check an export-review request and describe its subject, writing nothing. */
   const prepareExportReview = async (req: IncomingMessage, res: ServerResponse, user: UserRecord, chainId: string, raw: unknown): Promise<{ subject: ExportReviewSubject; upload: UploadRecord } | null> => {
     const refuse = (status: number, code: string, message: string) => { sendError(res, status, code, message); return null; };
@@ -5549,9 +5563,18 @@ export function buildApp(deps: AppDeps): App {
     if (!relation) return sendError(res, 404, 'NOT_FOUND', 'no such file');
     const refusal = artifactRefusal(approval, relation);
     if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message);
-    const file = relation === 'requester' ? approvedArtifactBytes(blobs, approval) : reviewedArtifactBytes(blobs, approval);
-    await audit(`user:${user.id}`, 'approval.artifact.read', `approval:${approval.id}`, { relation, sha256: file.sha256, state: approval.state });
+    // An approved request hands out the approved file, and `?file=reviewed` the bytes
+    // as they were reviewed. Before a decision there is only the reviewed file.
+    const asked = new URL(req.url ?? '/', 'http://local').searchParams.get('file');
+    let file = reviewedArtifactBytes(blobs, approval);
+    let record = approval.exportReview.credentialRecord;
+    if (approval.state === 'approved' && asked !== 'reviewed') {
+      file = await approvedArtifactBytes(approvedFileDeps, approval);
+      record = (await store.getApproval(approval.id))?.exportReview?.credentialRecord ?? record;
+    }
+    await audit(`user:${user.id}`, 'approval.artifact.read', `approval:${approval.id}`, { relation, sha256: file.sha256, state: approval.state, file: asked === 'reviewed' || approval.state !== 'approved' ? 'reviewed' : 'approved' });
     res.writeHead(200, {
+      ...(approval.state === 'approved' && asked !== 'reviewed' && record ? { 'x-lolly-approval-record': record.state === 'recorded' ? 'recorded' : `not-recorded; reason=${record.reason}` } : {}),
       ...INERT_BYTE_HEADERS, 'content-type': file.mediaType, 'content-length': String(file.size),
       'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'cache-control': 'private, no-store',
       etag: `"${file.sha256}"`, 'repr-digest': `sha-256=:${Buffer.from(file.sha256, 'hex').toString('base64')}:`,
@@ -5591,6 +5614,12 @@ export function buildApp(deps: AppDeps): App {
     await store.putApproval(next);
     await audit(`user:${user.id}`, body.action === 'approve' ? 'approval.approve' : 'approval.reject',
       `approval:${next.id}`, { state: next.state, step: approval.stepIndex });
+    // The decision stands whatever happens next. A failure here leaves the file
+    // unsettled, and the first download settles it.
+    if (next.state === 'approved' && next.exportReview && !next.exportReview.removedAt) {
+      try { next = await settleApprovedFile(approvedFileDeps, next); }
+      catch (error) { console.error(`[approvals] could not settle the file for ${next.id}: ${(error as Error).message}`); }
+    }
     // A catalog submission's approval carries the asset with it: approved means
     // live, rejected means returned (plans/31 §3). Settled HERE as well as in
     // the catalog review queue, so an approver who works from the approvals
