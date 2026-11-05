@@ -109,7 +109,7 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
   // the public deployment record is unauthenticated, so neither is free to hammer.
   // The record rides this bucket rather than auth so reading it never costs a
   // sign-in attempt.
-  if (/^\/api\/v1\/(?:discovery(?:\/me|\/tools)?$|schema\/|compile$|validate$|inspect$|diff$|measure$|optimize$|package$|render$|renders(?:\/|$)|render-batches(?:\/|$)|batch$|jobs(?:\/|$))/.test(pathname)) return 'automation';
+  if (/^\/api\/v1\/(?:discovery(?:\/me|\/tools)?$|schema\/|intents\/resolve$|compile$|validate$|inspect$|diff$|measure$|optimize$|package$|render$|renders(?:\/|$)|render-batches(?:\/|$)|batch$|jobs(?:\/|$))/.test(pathname)) return 'automation';
   return null;
 }
 

@@ -27,7 +27,7 @@ export type TokenScope = (typeof TOKEN_SCOPES)[number];
 
 /** Plain words for the console, the CLI and the docs. */
 const SCOPE_WORDS: Record<TokenScope, { label: string; description: string }> = {
-  render: { label: 'Render files', description: 'Make files from tools, as single renders or batches, and follow their jobs. Also reads tool schemas.' },
+  render: { label: 'Render files', description: 'Make files from tools, as single renders or batches, and follow their jobs. Also reads tool schemas and resolves visual intents.' },
   documents: { label: 'Work with documents', description: 'Compile, check, inspect, measure, optimize, compare and package documents.' },
   files: { label: 'Send and keep files', description: 'Upload input files and keep file references.' },
   delivery: { label: 'Deliver finished renders', description: 'Send this token\'s own finished renders to organisation destinations and follow those sends.' },
@@ -102,6 +102,8 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'GET /api/v1/jobs/:id/result': WORK,
   'DELETE /api/v1/jobs/:id': WORK,
 
+  // A plan for a render, read with the same rights a render needs.
+  'POST /api/v1/intents/resolve': ['render'],
   'POST /api/v1/render': ['render'],
   'POST /api/v1/batch': ['render'],
   'GET /api/v1/renders': ['render'],

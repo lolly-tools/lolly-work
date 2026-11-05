@@ -213,7 +213,8 @@ import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
-import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes } from '../automation/discovery.ts';
+import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
+import { registerIntentRoutes } from '../automation/intents.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
 import { mayRenderTool, mayUseTool, PolicyRefusal, policyErrors } from '../automation/effective-contract.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
@@ -10738,7 +10739,7 @@ export function buildApp(deps: AppDeps): App {
     }
   };
 
-  registerDiscoveryRoutes(router, {
+  const discoveryDeps: DiscoveryDeps = {
     caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
@@ -10752,7 +10753,9 @@ export function buildApp(deps: AppDeps): App {
       await providersReady;
       return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
     },
-  });
+  };
+  registerDiscoveryRoutes(router, discoveryDeps);
+  registerIntentRoutes(router, discoveryDeps);
   brandPages.register(router, { shell: serveShell });
   registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit });
 
