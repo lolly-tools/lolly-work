@@ -199,6 +199,28 @@ test('approving needs the fingerprint and a token that came with the bytes', asy
   if (messages) assert.ok(messages.some((m: { title?: string; cta?: { label?: string } }) => m.title?.includes('Launch card') && m.cta?.label === 'Get the approved file'));
 });
 
+test('messages about a request with a file name it, so a shell can open it; others stay as they were', async () => {
+  const w = world;
+  const reviewerId = (await w.store.listUsers()).find(user => user.email === 'review@test')!.id;
+  const bytes = png();
+  const created = await json(w, '/api/v1/approvals', { ...request(await send(w, bytes), bytes), nominees: [reviewerId] }, w.author);
+  assert.equal(created.status, 201, await created.clone().text());
+  const approval = await created.json() as { id: string; exportReview: { fingerprint: string } };
+  const inbox = async (cookie: string) => (await (await fetch(`${w.base}/api/v1/inbox`, { headers: { cookie } })).json() as { messages: Array<{ title: string; data?: Record<string, string> }> }).messages;
+  const payload = { kind: 'export-review', approvalId: approval.id };
+  assert.deepEqual((await inbox(w.reviewer)).find(m => m.data?.approvalId === approval.id)?.data, payload, 'the nominee hears, with the id');
+  const token = (await read(w, approval.id, w.reviewer)).headers.get('x-lolly-review-token')!;
+  const decided = await json(w, `/api/v1/approvals/${approval.id}/act`, { action: 'approve', artifactFingerprint: approval.exportReview.fingerprint, reviewToken: token }, w.reviewer);
+  assert.equal(decided.status, 200, await decided.clone().text());
+  assert.deepEqual((await inbox(w.author)).find(m => m.data?.approvalId === approval.id)?.data, payload, 'the requester hears, with the id');
+
+  const plain = await json(w, '/api/v1/approvals', { subjectType: 'asset', subjectRef: 'tool:qr-code', title: 'No file', chainId: 'brand', nominees: [reviewerId] }, w.author);
+  assert.equal(plain.status, 201, await plain.clone().text());
+  const old = (await inbox(w.reviewer)).find(m => m.title.includes('No file'));
+  assert.ok(old, 'a request with no file still reaches its nominee');
+  assert.equal(old.data?.kind, undefined, 'and carries no such payload');
+});
+
 test('a rejected request never releases the file to the requester; rejecting needs no fetch', async () => {
   const w = world;
   const { approval } = await raise(w);
