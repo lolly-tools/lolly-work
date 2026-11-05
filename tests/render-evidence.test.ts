@@ -115,7 +115,7 @@ test('an overlay watermark "never" turns the preview mark off, even when the cal
     assert.equal(shouldWatermark('never', preview, true), false);
     assert.equal(shouldWatermark('always', preview, true), true);
     assert.equal(shouldWatermark('until-approved', preview), true, 'nothing approved keeps the mark');
-    assert.equal(shouldWatermark('until-approved', preview, true), preview, 'approved clears the mark unless a caller asks for a preview');
+    assert.equal(shouldWatermark('until-approved', preview, true), false, 'an approved match lifts the mark for every caller');
     assert.equal(shouldWatermark(undefined, preview), preview);
   }
 });

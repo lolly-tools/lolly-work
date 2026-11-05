@@ -23,23 +23,22 @@ export type WatermarkPolicy = NonNullable<NonNullable<ToolOverlay['enforce']>['w
  * Decide whether one render carries the PREVIEW mark.
  *
  * `never` is the tool owner's explicit rule and wins over everything, including
- * a caller that asks for the preview mark. `always` marks every render. A caller
- * asking for the preview mark gets one under any other rule. `until-approved` marks a
- * render unless an approved export review matches it (`approved`). With no rule, only
- * a caller asking gets the mark.
+ * a caller that asks for the preview mark. `always` marks every render.
+ * `until-approved` marks a render unless an approved export review matches it
+ * (`approved`). An approved match lifts the mark everywhere, including share links and
+ * a caller asking for a preview. With no rule, only a caller asking gets the mark.
  */
 export function shouldWatermark(policy: WatermarkPolicy | undefined, previewRequested: boolean, approved = false): boolean {
   if (policy === 'never') return false;
   if (policy === 'always') return true;
-  if (previewRequested) return true;
-  return policy === 'until-approved' && !approved;
+  if (policy === 'until-approved') return !approved;
+  return previewRequested;
 }
 
 /** Plain words for how an `until-approved` render came out. They go in the record,
  *  never in the artwork. */
-export function untilApprovedNote(marked: boolean, approved: boolean): string {
-  if (!marked) return 'Approved, not marked';
-  return approved ? 'Marked as a preview' : 'Marked until approved';
+export function untilApprovedNote(marked: boolean): string {
+  return marked ? 'Marked until approved' : 'Approved, not marked';
 }
 
 /** Escape the little we inject into attributes/markup (defensive; inputs are static). */

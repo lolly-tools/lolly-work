@@ -67,7 +67,7 @@ async function pipeline(t: { after(fn: () => Promise<void>): void }) {
       exportReview: { toolId: TOOL, format: 'svg', toolVersion: '1.0.0', inputsDigest, fingerprint: 'fp', ...over } } as unknown as Approval);
     return inputsDigest;
   };
-  return { pack, store, render, file };
+  return { pack, store, config, render, file };
 }
 
 test('an unmatched render is marked and a matched one is clean, with the reason on record', async t => {
@@ -132,7 +132,7 @@ test('the cache cannot serve a stale clean file across a decision', async t => {
   assert.equal(marked((await f.render('title=Cached')).bytes), true, 'without the approval the clean file is not served');
 });
 
-test('always and never keep their meaning, a preview request still marks, and a failed lookup leaves the mark on', async t => {
+test('always and never keep their meaning, an approved match beats a preview request, and a failed lookup leaves the mark on', async t => {
   const f = await pipeline(t);
   let lookups = 0;
   const counting = { deps: { approvedExportReview: async () => { lookups++; return { id: 'apr_any' }; } } };
@@ -142,9 +142,15 @@ test('always and never keep their meaning, a preview request still marks, and a 
   assert.equal((await f.render('title=A', 'always')).watermarkNote, undefined);
   assert.equal(marked((await f.render('title=A', 'until-approved', counting)).bytes), false);
   assert.equal(lookups, 1);
-  const preview = await f.render('title=A', 'until-approved', { ...counting, req: { watermarkPreview: true } });
-  assert.equal(marked(preview.bytes), true, 'a caller asking for the preview mark still gets it');
-  assert.equal(preview.watermarkNote, 'Marked as a preview');
+  const approvedPreview = await f.render('title=A', 'until-approved', { ...counting, req: { watermarkPreview: true } });
+  assert.equal(marked(approvedPreview.bytes), false, 'an approved match lifts the mark even when a caller asks for a preview');
+  assert.equal(approvedPreview.watermarkNote, 'Approved, not marked');
+  const unapprovedPreview = await f.render('title=A', 'until-approved', { req: { watermarkPreview: true } });
+  assert.equal(marked(unapprovedPreview.bytes), true, 'a preview request with nothing approved stays marked');
+  assert.equal(unapprovedPreview.watermarkNote, 'Marked until approved');
+  const noRule = await renderTool({ config: f.config }, { toolId: TOOL, format: 'svg', query: 'title=A', principal: { groups: ['admin'] }, profile: {}, overlays: new Map(), watermarkPreview: true });
+  assert.equal(marked(noRule.bytes), true, 'with no rule a caller asking for a preview still gets one');
+  assert.equal(noRule.watermarkNote, undefined);
   const broken = await f.render('title=A', 'until-approved', { deps: { approvedExportReview: async () => { throw new Error('store down'); } } });
   assert.equal(marked(broken.bytes), true);
   const unwired = await f.render('title=A', 'until-approved', { deps: { approvedExportReview: undefined } });
@@ -271,6 +277,42 @@ test('a durable render applies the rule at its attempt and says so on its receip
   const { evidence } = await (await fetch(`${world.base}/api/v1/renders/${after.id}/evidence`, { headers: { cookie: world.owner } })).json() as { evidence: { untilApproved?: { marked: boolean; approvalId: string | null } } };
   assert.equal(evidence.untilApproved?.marked, false);
   assert.match(evidence.untilApproved?.approvalId ?? '', /^apr_/);
+});
+
+test('a share link follows the record: marked, then clean, with no cache able to hold either', async () => {
+  const w = world;
+  const title = 'Shared card';
+  const minted = await post('/api/v1/links', { kind: 'share', target: { toolId: TOOL, format: 'svg', params: { title } }, ttlHours: 1 }, w.owner);
+  assert.equal(minted.status, 201, await minted.clone().text());
+  const { url } = await minted.json() as { url: string };
+  const path = url.replace('http://localhost', w.base);
+  const open = () => fetch(path);
+
+  const before = await open();
+  assert.equal(before.status, 200, await before.clone().text());
+  assert.equal(before.headers.get('x-lolly-watermark'), 'Marked until approved');
+  assert.match(before.headers.get('cache-control') ?? '', /no-store/);
+  const etag = before.headers.get('etag')!;
+  assert.match(await before.text(), MARK);
+
+  const pending = await raise(title);
+  assert.match(await (await open()).text(), MARK, 'a request in review changes nothing');
+  await decide(pending, 'approve');
+
+  const after = await fetch(path, { headers: { 'if-none-match': etag } });
+  assert.equal(after.status, 200, 'an earlier validator cannot answer for the new decision');
+  assert.equal(after.headers.get('x-lolly-watermark'), 'Approved, not marked');
+  assert.match(after.headers.get('cache-control') ?? '', /no-store/);
+  assert.doesNotMatch(await after.text(), MARK, 'the same link is clean on the next open');
+
+  const reopen = await fetch(path, { headers: { 'if-none-match': after.headers.get('etag')! } });
+  assert.equal(reopen.status, 200, 'even a matching validator re-reads the record under this rule');
+  assert.doesNotMatch(await reopen.text(), MARK);
+
+  const stored = (await w.store.getApproval(pending.id))!;
+  await w.store.putApproval({ ...stored, state: 'rejected' });
+  assert.match(await (await open()).text(), MARK, 'without the approval the link is marked again');
+  await w.store.putApproval(stored);
 });
 
 test('a rejected or withdrawn request leaves a real render marked', async () => {

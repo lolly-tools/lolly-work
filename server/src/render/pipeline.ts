@@ -141,7 +141,8 @@ export interface RenderRequest {
   /** All tool overlays (the policy version hashes the full set; the tool's own is derived). */
   overlays: Map<string, ToolOverlay>;
   /** Ask for the preview watermark (link/preview contexts). A tool overlay with
-   *  `enforce.watermark: 'never'` still turns it off. */
+   *  `enforce.watermark: 'never'` still turns it off, and under `until-approved` an
+   *  approved match does too. */
   watermarkPreview?: boolean;
 }
 
@@ -329,7 +330,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     : null;
   const watermark = shouldWatermark(watermarkRule, req.watermarkPreview === true, !!approval);
   const untilApproved = inputsDigest
-    ? { marked: watermark, note: untilApprovedNote(watermark, !!approval), approvalId: approval?.id ?? null, inputsDigest } : undefined;
+    ? { marked: watermark, note: untilApprovedNote(watermark), approvalId: approval?.id ?? null, inputsDigest } : undefined;
   const pxW = toPx(engine, st.width, st.unit, st.dpi);
   const pxH = toPx(engine, st.height, st.unit, st.dpi);
   const context: RenderEvidence['context'] = {
