@@ -26,7 +26,7 @@ export type RenderCallbackSubject =
   | { kind: 'render-batch'; batch: RenderBatchRecord };
 
 export function renderCallbackBody(render: RenderRecord, ctx: RenderCallbackContext): Record<string, unknown> {
-  const succeeded = render.state === 'succeeded' && !!render.output;
+  const succeeded = render.state === 'succeeded' && !!render.output && !render.output.expiredAt;
   return {
     renderId: render.id,
     state: render.state,

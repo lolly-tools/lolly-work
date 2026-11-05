@@ -114,7 +114,8 @@ export function newRenderBatch(principal: string, request: RenderBatchSpec, key?
     createdAt: new Date().toISOString(),
     rows: request.rows.map((row) => {
       const old = prior.get(row.key);
-      return { key: row.key, render: old?.state === 'succeeded'
+      // A row whose output has expired has nothing left to reuse.
+      return { key: row.key, render: old?.state === 'succeeded' && !old.output?.expiredAt
         ? structuredClone(old) : newRender(principal, batchRowRequest(request, row.inputs), undefined, old?.id) };
     }),
   };

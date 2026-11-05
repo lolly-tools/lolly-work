@@ -108,6 +108,7 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     await deps.authorize(principal, r.request);
     if (ctx.params.name !== 'default') throw new RenderResourceError('NOT_FOUND', 404, 'output not found');
     if (r.state !== 'succeeded' || !r.output) throw new RenderResourceError('RENDER_NOT_SUCCEEDED', 409, 'render has no successful output');
+    if (r.output.expiredAt) throw new RenderResourceError('OUTPUT_EXPIRED', 410, 'output retention has removed this output; its record and receipt remain');
     const blob = await deps.blobs.get(r.output.ref);
     if (!blob) throw new RenderResourceError('OUTPUT_UNAVAILABLE', 410, 'retained render output is unavailable');
     let bytes: Buffer;

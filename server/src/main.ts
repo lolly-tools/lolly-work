@@ -24,6 +24,7 @@ import { otelConfigFromEnv, printableEndpoint, SIGNALS } from './observability/o
 import { runRetention } from './audit/retention.ts';
 import { scheduleProjectFileSweep } from './projects/files.ts';
 import { scheduleUploadSweep } from './uploads/scoped.ts';
+import { scheduleRenderOutputSweep } from './renders/retention.ts';
 import { administratorAddresses, createNotifier } from './notify/notify.ts';
 import { notifyOffloadAlerts } from './observability/offload-trigger.ts';
 import { expiringCredentials } from './catalog/credential-expiry.ts';
@@ -271,6 +272,9 @@ if (config.policy.retention.telemetryDays > 0 || config.policy.retention.auditDa
 scheduleProjectFileSweep(store, blobs);
 // Expired scoped uploads (uploads/scoped.ts) on the same schedule.
 scheduleUploadSweep(store, blobs);
+// Durable render outputs (renders/retention.ts): only when the policy states a
+// retention, on the same schedule, and only here, because it needs a process that lasts.
+scheduleRenderOutputSweep(store, blobs, config.policy.retention.renderOutputDays);
 
 // Credential expiry (plans/36 §2): the daily nudge beside the always-on
 // surfaces (provider rows, console chip, the expiry-days gauge). Threshold-

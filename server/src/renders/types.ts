@@ -30,6 +30,10 @@ export interface RenderResult {
   evidence?: RenderEvidence;
   /** The request bound to what this attempt resolved, derived from the receipt above. */
   identity?: RenderIdentity;
+  /** When output retention stopped serving these bytes. The record and receipt stay. */
+  expiredAt?: string;
+  /** When output retention removed the bytes. */
+  purgedAt?: string;
 }
 
 export interface RenderFailure { code: string; message: string; inspection?: OutputInspection; production?: ProductionReport; productionAttempts?: ProductionReport[] }
@@ -84,7 +88,17 @@ export interface RenderStore {
   renderQueue(): Promise<RenderQueueEntry[]>;
   /** The callback outbox entry of a render or batch, once it has one. */
   renderCallbackSummary(id: string): Promise<AutomationCallbackSummary | null>;
+  /** Mark succeeded outputs that finished before `cutoff` as expired, oldest first,
+   *  and return them. An output a delivery names is left alone. */
+  expireRenderOutputs(cutoff: string, expiredAt: string, limit: number): Promise<RenderOutputExpiry[]>;
+  /** Outputs marked before `markedBefore` whose bytes are still stored. A mark on an
+   *  output that a delivery has since named is cleared here, and its bytes stay. */
+  renderOutputsToPurge(markedBefore: string, limit: number): Promise<RenderOutputExpiry[]>;
+  /** Record that an expired output's bytes are gone. */
+  markRenderOutputPurged(id: string): Promise<void>;
 }
+
+export interface RenderOutputExpiry { id: string; ref: string; toolId: string; format: string }
 
 export interface RenderQueueEntry { toolId: string; queued: number; oldestClaimableAt: string | null }
 

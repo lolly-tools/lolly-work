@@ -12,3 +12,6 @@ alter table automation_callbacks add constraint automation_callbacks_one_subject
 -- A delivery can name the durable render whose output it sends by reference.
 alter table deliveries add column source_render_id text references renders(id) on delete restrict;
 create index deliveries_source_render on deliveries(source_render_id) where source_render_id is not null;
+
+-- Finds outputs that retention has not finished with, without reading the history.
+create index renders_output_retention on renders(finished_at, id) where state = 'succeeded' and not (output ? 'purgedAt');

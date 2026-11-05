@@ -83,6 +83,45 @@ export async function runRenderStoreConformance(store: RenderStore): Promise<voi
   assert.notEqual(page[0]!.id, (await store.listRenders(principal, 2, 2))[0]!.id);
 
   await runCallbackConformance(store, principal);
+  await runRetentionConformance(store, principal);
+}
+
+/** Retention marks, then a later pass removes bytes. The record and receipt stay throughout. */
+async function runRetentionConformance(store: RenderStore, principal: string): Promise<void> {
+  const future = new Date(Date.now() + 60_000).toISOString();
+  // Earlier stages of this suite left finished renders; clear them so counts below are exact.
+  const drained = await store.expireRenderOutputs(future, new Date().toISOString(), 1000);
+  for (const old of drained) await store.markRenderOutputPurged(old.id);
+
+  const saved = (await store.insertRender(newRender(principal, spec))).record;
+  const claim = (await store.claimRender(10_000))!;
+  await store.settleRender(saved.id, claim.leaseToken!, { state: 'succeeded', output });
+  const past = new Date(Date.now() - 60_000).toISOString();
+  assert.deepEqual(await store.expireRenderOutputs(past, new Date().toISOString(), 10), [], 'a recent output is not due');
+  assert.deepEqual(await store.renderOutputsToPurge(future, 10), [], 'nothing is removed before it is marked');
+
+  const expiredAt = new Date().toISOString();
+  const marked = await store.expireRenderOutputs(future, expiredAt, 10);
+  assert.deepEqual(marked, [{ id: saved.id, ref: output.ref, toolId: 'card', format: 'svg' }]);
+  assert.deepEqual(await store.expireRenderOutputs(future, expiredAt, 10), [], 'a mark happens once');
+  const record = (await store.getRender(saved.id, principal))!;
+  assert.equal(record.state, 'succeeded');
+  assert.equal(record.output!.expiredAt, expiredAt);
+  assert.deepEqual(record.output!.evidence, output.evidence, 'the receipt stays');
+  assert.equal(record.output!.sha256, output.sha256);
+
+  assert.deepEqual(await store.renderOutputsToPurge(new Date(Date.parse(expiredAt) - 1000).toISOString(), 10), [], 'the bytes wait out the gap after the mark');
+  assert.deepEqual((await store.renderOutputsToPurge(future, 10)).map((o) => o.id), [saved.id]);
+  assert.deepEqual((await store.renderOutputsToPurge(future, 10)).map((o) => o.id), [saved.id], 'still listed until the removal is recorded');
+  await store.markRenderOutputPurged(saved.id);
+  assert.deepEqual(await store.renderOutputsToPurge(future, 10), []);
+  assert.deepEqual(await store.expireRenderOutputs(future, expiredAt, 10), []);
+  assert.ok((await store.getRender(saved.id, principal))!.output!.purgedAt);
+
+  // Failed and cancelled records have no output to expire.
+  const stopped = (await store.insertRender(newRender(principal, spec))).record;
+  await store.cancelRender(stopped.id, principal);
+  assert.deepEqual(await store.expireRenderOutputs(future, expiredAt, 10), []);
 }
 
 /** Every terminal transition stores the callback it owes, in the same call. */

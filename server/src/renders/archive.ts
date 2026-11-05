@@ -16,7 +16,7 @@ import type { RenderBatchRecord, RenderRecord } from './types.ts';
 /** Classic ZIP tops out at 4 GiB; this is the limit a collection zip keeps too. */
 export const RENDER_ARCHIVE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
-const hasOutput = (render: RenderRecord): boolean => render.state === 'succeeded' && !!render.output;
+const hasOutput = (render: RenderRecord): boolean => render.state === 'succeeded' && !!render.output && !render.output.expiredAt;
 
 export function archivePlan(batch: RenderBatchRecord): { members: number; bytes: number } {
   const rows = batch.rows.filter(({ render }) => hasOutput(render));
@@ -53,7 +53,7 @@ export async function writeBatchArchive(batch: RenderBatchRecord, blobs: BlobSto
     const row: ArchiveManifestRow = { key, renderId: render.id, state: render.state, archived: false };
     rows.push(row);
     if (render.error) row.error = { code: render.error.code, message: render.error.message };
-    if (!hasOutput(render)) { row.reason = 'NOT_SUCCEEDED'; continue; }
+    if (!hasOutput(render)) { row.reason = render.output?.expiredAt ? 'OUTPUT_EXPIRED' : 'NOT_SUCCEEDED'; continue; }
     const output = render.output!;
     const blob = await blobs.get(output.ref);
     if (!blob) { row.reason = 'OUTPUT_UNAVAILABLE'; continue; }

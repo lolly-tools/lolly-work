@@ -274,6 +274,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         const callback = automationCallbacks.get(id);
         return callback ? automationCallbackSummary(callback) : null;
       },
+      deliveryNamesRender: (id) => [...deliveries.values()].some((delivery) => delivery.sourceRenderId === id),
     }),
     ...createMemoryUploadStore(),
     ...createMemoryOidcLogout(),

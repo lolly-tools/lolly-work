@@ -3721,6 +3721,7 @@ export function buildApp(deps: AppDeps): App {
       return null;
     }
     if (render.state !== 'succeeded' || !render.output) { sendError(res, 409, 'RENDER_NOT_SUCCEEDED', 'render has no successful output'); return null; }
+    if (render.output.expiredAt) { sendError(res, 410, 'OUTPUT_EXPIRED', 'output retention has removed this output; its record and receipt remain'); return null; }
     return { format: render.request.format, ref: render.output.ref, sha256: render.output.sha256, mime: render.output.mime, facts: { sourceRenderId: render.id },
       codes: { undeliverable: 'OUTPUT_NOT_DELIVERABLE', gone: 'OUTPUT_UNAVAILABLE', corrupt: 'OUTPUT_INTEGRITY' } };
   };
@@ -4286,7 +4287,7 @@ export function buildApp(deps: AppDeps): App {
     const actor = await requireAction(req, res, 'instance.config');
     if (!actor) return;
     const result = await runRetention({ config, store, blobs });
-    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept) {
+    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept || result.renderOutputsExpired || result.renderOutputsRemoved) {
       await audit(`user:${actor.id}`, 'retention.run', 'instance', { ...result });
     }
     sendJson(res, 200, result);

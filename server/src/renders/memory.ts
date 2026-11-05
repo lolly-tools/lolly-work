@@ -1,15 +1,18 @@
 import { randomId } from '../lib/crypto.ts';
 import type { AutomationCallbackSummary } from '../store/types.ts';
-import type { RenderBatchRecord, RenderRecord, RenderStore } from './types.ts';
+import type { RenderBatchRecord, RenderOutputExpiry, RenderRecord, RenderStore } from './types.ts';
 
 /** The render store's two touch points with the rest of the memory store. */
 export interface MemoryRenderStoreLinks {
   /** Store a callback outbox entry; one per subject, as Postgres keeps. */
   appendCallback(subject: { renderId?: string; renderBatchId?: string }, principal: string, url: string): void;
   callbackSummary(id: string): AutomationCallbackSummary | null;
+  /** Whether a delivery names this render, which keeps its output. */
+  deliveryNamesRender(id: string): boolean;
 }
 
 const TERMINAL: readonly RenderRecord['state'][] = ['succeeded', 'failed', 'cancelled'];
+const expiry = (r: RenderRecord): RenderOutputExpiry => ({ id: r.id, ref: r.output!.ref, toolId: r.request.toolId, format: r.request.format });
 
 export function createMemoryRenderStore(links?: MemoryRenderStoreLinks): RenderStore {
   const records = new Map<string, RenderRecord>();
@@ -170,5 +173,24 @@ export function createMemoryRenderStore(links?: MemoryRenderStoreLinks): RenderS
       return clone(r);
     },
     async renderCallbackSummary(id) { return links?.callbackSummary(id) ?? null; },
+    async expireRenderOutputs(cutoff, expiredAt, limit) {
+      const due = [...records.values()]
+        .filter((r) => r.state === 'succeeded' && r.output && !r.output.expiredAt && r.finishedAt! < cutoff && !links?.deliveryNamesRender(r.id))
+        .sort((a, b) => a.finishedAt!.localeCompare(b.finishedAt!) || a.id.localeCompare(b.id)).slice(0, limit);
+      return due.map((r) => { r.output!.expiredAt = expiredAt; r.updatedAt = expiredAt; return expiry(r); });
+    },
+    async renderOutputsToPurge(markedBefore, limit) {
+      const marked = [...records.values()].filter((r) => r.state === 'succeeded' && r.output?.expiredAt && !r.output.purgedAt);
+      const ready: RenderRecord[] = [];
+      for (const r of marked) {
+        if (links?.deliveryNamesRender(r.id)) { delete r.output!.expiredAt; continue; }
+        if (r.output!.expiredAt! < markedBefore) ready.push(r);
+      }
+      return ready.sort((a, b) => a.finishedAt!.localeCompare(b.finishedAt!) || a.id.localeCompare(b.id)).slice(0, limit).map(expiry);
+    },
+    async markRenderOutputPurged(id) {
+      const r = records.get(id);
+      if (r?.output) r.output.purgedAt = new Date().toISOString();
+    },
   };
 }

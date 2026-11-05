@@ -1,6 +1,6 @@
 import { randomId } from '../lib/crypto.ts';
 import type { AutomationCallbackOutcome, AutomationCallbackState } from '../store/types.ts';
-import type { RenderRecord, RenderStore } from './types.ts';
+import type { RenderOutputExpiry, RenderRecord, RenderStore } from './types.ts';
 import { appendFinishedCallbacks, createPostgresBatchStore, FINISHED_RENDER_COLUMNS, inTransaction, type FinishedRenderRow, type RenderDatabase } from './batch-postgres.ts';
 
 export function renderFromRow(r: Record<string, unknown>): RenderRecord {
@@ -18,6 +18,10 @@ export function renderFromRow(r: Record<string, unknown>): RenderRecord {
     ...(r.error ? { error: r.error as RenderRecord['error'] } : {}),
   };
 }
+
+const expiryFromRow = (row: Record<string, unknown>): RenderOutputExpiry => ({
+  id: row.id as string, ref: row.ref as string, toolId: row.tool_id as string, format: row.format as string,
+});
 
 /** SQL owns the lease clock and the compare-and-set; replicas share no JS locks. */
 export function createPostgresRenderStore(pool: RenderDatabase): RenderStore {
@@ -116,6 +120,32 @@ export function createPostgresRenderStore(pool: RenderDatabase): RenderStore {
       });
       if (cancelled) return renderFromRow(cancelled);
       return this.getRender(id, principal);
+    },
+    async expireRenderOutputs(cutoff, expiredAt, limit) {
+      const { rows } = await pool.query(
+        `update renders r set output=r.output || jsonb_build_object('expiredAt',$2::text), updated_at=clock_timestamp()
+         from (select id from renders where state='succeeded' and not (output ? 'purgedAt') and not (output ? 'expiredAt') and finished_at<$1::timestamptz
+           and not exists (select 1 from deliveries d where d.source_render_id=renders.id)
+           order by finished_at,id for update skip locked limit $3) due
+         where r.id=due.id returning r.id, r.output->>'ref' as ref, r.request->>'toolId' as tool_id, r.request->>'format' as format`,
+        [cutoff, expiredAt, limit]);
+      return rows.map(expiryFromRow);
+    },
+    async renderOutputsToPurge(markedBefore, limit) {
+      await pool.query(
+        `update renders r set output=r.output - 'expiredAt', updated_at=clock_timestamp()
+         where r.state='succeeded' and not (r.output ? 'purgedAt') and r.output ? 'expiredAt'
+           and exists (select 1 from deliveries d where d.source_render_id=r.id)`);
+      const { rows } = await pool.query(
+        `select id, output->>'ref' as ref, request->>'toolId' as tool_id, request->>'format' as format from renders
+         where state='succeeded' and not (output ? 'purgedAt') and output ? 'expiredAt' and (output->>'expiredAt')::timestamptz<$1::timestamptz
+           and not exists (select 1 from deliveries d where d.source_render_id=renders.id)
+         order by finished_at,id limit $2`, [markedBefore, limit]);
+      return rows.map(expiryFromRow);
+    },
+    async markRenderOutputPurged(id) {
+      await pool.query(`update renders set output=output || jsonb_build_object('purgedAt',$2::text), updated_at=clock_timestamp()
+        where id=$1 and state='succeeded'`, [id, new Date().toISOString()]);
     },
     async renderCallbackSummary(id) {
       const { rows } = await pool.query('select * from automation_callbacks where render_id=$1 or render_batch_id=$1', [id]);
