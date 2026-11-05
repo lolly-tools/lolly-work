@@ -233,7 +233,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const liveProjectFiles = (now = Date.now()) => [...projectFiles.values()].filter((f) => activeProjectFile(f, now));
 
   return {
-    ...createMemorySubjects({ users, identities, projectMembers, apiTokens, links, passwordLinks, events, installs, audit, roles: () => roleGroups }),
+    ...createMemorySubjects({ users, identities, projectMembers, apiTokens, links, passwordLinks, events, installs, audit, roles: () => roleGroups, approvals }),
     async catalogDeliverySequence(fingerprint, publication) {
       if (!/^[0-9a-f]{64}$/.test(fingerprint) || !/^[0-9a-f]{64}$/.test(publication.digest)
         || !Number.isSafeInteger(publication.generation) || publication.generation < 0) throw new Error('invalid catalog publication');

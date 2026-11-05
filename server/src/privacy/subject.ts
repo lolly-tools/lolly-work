@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { b64u, b64uDecode, deriveKey, hmac, macEquals } from '../lib/crypto.ts';
 
-export const SUBJECT_CATEGORIES = ['identities', 'projects', 'credentials', 'links', 'telemetry', 'fleet', 'audit'] as const;
+export const SUBJECT_CATEGORIES = ['identities', 'projects', 'credentials', 'links', 'approvals', 'telemetry', 'fleet', 'audit'] as const;
 export type SubjectCategory = typeof SUBJECT_CATEGORIES[number];
 export interface SubjectRow { key: string; value: Record<string, unknown> }
 export type OffboardResult =
@@ -40,8 +40,18 @@ export function readSubjectCursor(raw: string | null, userId: string, category: 
   return parsed.after;
 }
 
-export const SUBJECT_OMISSIONS = ['shared content and revisions', 'uploads and render or delivery bytes', 'provider and external copies',
+export const SUBJECT_OMISSIONS = ['shared content and revisions', 'uploads, approval request files and render or delivery bytes', 'provider and external copies',
   'aggregate or erased attribution', 'indirect, email and free-text audit matches', 'service credential descendants', 'group-derived project access', 'backups and device caches'];
+
+/** A person's approval request, without its file: the file is shared review
+ *  evidence and stays with the record, as SUBJECT_OMISSIONS states. */
+export function approvalSubjectRow(approval: import('../approvals/engine.ts').Approval): SubjectRow {
+  const file = approval.exportReview;
+  return subjectRow(approval.id, {
+    id: approval.id, title: approval.title, subjectType: approval.subjectType, subjectRef: approval.subjectRef, state: approval.state, createdAt: approval.createdAt,
+    ...(file ? { file: { name: file.name, format: file.format, size: file.size, sha256: file.sha256, toolId: file.toolId, removedAt: file.removedAt ?? null } } : {}),
+  });
+}
 
 export function subjectRow(key: string, value: Record<string, unknown>): SubjectRow {
   let nodes = 0, omitted = false;

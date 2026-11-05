@@ -239,12 +239,38 @@ test('watermark UI offers enforced options and preserves a warned legacy until-a
   }
 });
 
+test('the approval chain for a tool is chosen from the list, keeps a saved chain and normalizes through the writer', async () => {
+  const dom = new JSDOM('<div id="app"></div>', { url: 'https://work.test/admin#/policy', runScripts: 'outside-only' });
+  const w = dom.window;
+  w.eval(`${consoleSource}; window.testEl = el; window.testField = field;`);
+  const posts: any[] = [];
+  const editor = createToolPolicyEditor({ id: 'card', name: 'Card', inputs: [], overlay: { toolId: 'card', version: 1, enforce: { escalation: 'gone', formats: ['png'] } } }, {
+    el: w.testEl, field: w.testField, onSaved: () => {}, onClose: () => {},
+    chains: async () => [{ id: 'brand', name: 'Brand review' }],
+    api: async (_path: string, options: any) => { posts.push(options.body); return {}; },
+  });
+  w.document.getElementById('app').append(editor.element);
+  await pause();
+  const select = [...editor.element.querySelectorAll('select')].find((s: any) => [...s.options].some((o: any) => o.textContent === 'No chain')) as any;
+  assert.deepEqual([...select.options].map((o: any) => o.textContent), ['No chain', 'Brand review', 'gone (not found)']);
+  assert.equal(select.value, 'gone', 'a chain the list no longer names stays visible and selected');
+  select.value = 'brand';
+  select.dispatchEvent(new w.Event('change', { bubbles: true }));
+  editor.element.querySelector('[data-action="save"]').click();
+  await pause();
+  assert.deepEqual(posts[0].enforce, { formats: ['png'], escalation: 'brand' });
+  assert.equal(normalizeOverlay('card', posts[0])!.enforce!.escalation, 'brand');
+  assert.equal(normalizeOverlay('card', { enforce: { escalation: 'Not A Chain!' } }), null);
+  editor.dispose(); dom.window.close();
+});
+
 test('stored fields unsupported by the policy writer block saves instead of being silently stripped', async () => {
   const p = page({ enforce: { escalation: 'legal', c2pa: 'org-identity', formats: ['svg'] } });
   try {
     p.input('input', 'New name'); await p.save();
     assert.equal(p.calls.length, 0);
-    assert.match(p.find('[role="alert"]').textContent, /enforce.escalation.*enforce.c2pa.*blocked/);
+    assert.match(p.find('[role="alert"]').textContent, /enforce\.c2pa.*blocked/);
+    assert.doesNotMatch(p.find('[role="alert"]').textContent, /enforce\.escalation/, 'the writer keeps a bound chain');
     assert.equal(p.editor.isDirty(), true);
   } finally { p.cleanup(); }
 });

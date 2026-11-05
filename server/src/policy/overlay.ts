@@ -267,7 +267,7 @@ export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 
 
   if (body.enforce !== undefined && body.enforce !== null) {
     if (typeof body.enforce !== 'object' || Array.isArray(body.enforce)) return null;
-    const e = body.enforce as { watermark?: unknown; formats?: unknown };
+    const e = body.enforce as { watermark?: unknown; formats?: unknown; escalation?: unknown };
     const enforce: NonNullable<ToolOverlay['enforce']> = {};
     if (e.watermark !== undefined) {
       if (!WATERMARKS.includes(e.watermark as typeof WATERMARKS[number])) return null;
@@ -277,6 +277,11 @@ export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 
       const formats = Array.isArray(e.formats) ? e.formats.filter((f): f is string => typeof f === 'string' && !!f) : null;
       if (!formats) return null;
       if (formats.length) enforce.formats = formats;
+    }
+    // The chain this tool's exports go through. Writers check that the chain exists.
+    if (e.escalation !== undefined && e.escalation !== null && e.escalation !== '') {
+      if (typeof e.escalation !== 'string' || !/^[a-z0-9][a-z0-9-]{0,127}$/.test(e.escalation)) return null;
+      enforce.escalation = e.escalation;
     }
     if (Object.keys(enforce).length) overlay.enforce = enforce;
   }

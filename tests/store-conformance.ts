@@ -1154,6 +1154,12 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal((await store.listApprovals({ eligibleGroups: ['legal'] })).length, 0);
   const frozen = freezeSourceReview({ purpose: 'Creative review', target: 'launch:print',
     files: [{ assetId: 'inst/hero', version: 1, format: 'png', sha256: 'a'.repeat(64), representation: 'original' }] }, '2026-10-16T12:00:00Z');
+  // An export review rides in the jsonb doc, whole, part table included.
+  const exportApproval = { ...approval, id: 'apr_export', subjectType: 'export-review' as const, subjectRef: 'export-review:f',
+    exportReview: { apiVersion: 'work/export-review-v1' as const, sha256: 'a'.repeat(64), size: 3, name: 'card.png', format: 'png', mediaType: 'image/png', preview: 'image' as const,
+      toolId: 'qr-code', toolVersion: '2.0.0', inputsDigest: 'b'.repeat(64), fingerprint: 'f', origin: 'member-session' as const, frozenAt: approval.createdAt, parts: [{ size: 3, checksum: 'c'.repeat(64) }] } };
+  await store.putApproval(exportApproval);
+  assert.deepEqual((await store.getApproval('apr_export'))!.exportReview, exportApproval.exportReview);
   const sourceApproval = { ...approval, id: 'apr_source', subjectType: 'source-review' as const, subjectRef: `source-review:${frozen.fingerprint}`, sourceReview: frozen };
   await store.putApproval(sourceApproval);
   assert.deepEqual(await store.getApproval(sourceApproval.id), sourceApproval, 'frozen review subject survives the driver round trip');

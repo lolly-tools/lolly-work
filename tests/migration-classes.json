@@ -66,5 +66,6 @@
   "0075_resumable_uploads.sql": "maintenance",
   "0076_file_references.sql": "maintenance",
   "0076_session_version_history.sql": "maintenance",
-  "0077_edge_purge_outbox.sql": "additive"
+  "0077_edge_purge_outbox.sql": "additive",
+  "0080_approval_artifact_uploads.sql": "maintenance"
 }

@@ -21,6 +21,7 @@ export function consoleDocumentHeaders(html: string): Record<string, string> {
       "style-src 'self' 'unsafe-inline'",
       "connect-src 'self'",
       "img-src 'self' data: blob:",
+      "media-src blob:",
       "font-src 'self' data: blob:",
       "object-src 'none'",
       "base-uri 'none'",

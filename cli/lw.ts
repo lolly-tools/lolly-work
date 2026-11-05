@@ -14,6 +14,7 @@
  * ~/.config/lolly-work/session (0600). `--email` uses the dev provider where
  * enabled, and `--cookie 'lw_session=…'` pastes a browser session directly.
  */
+import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { closeSync, constants, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -320,6 +321,33 @@ switch (cmd) {
       if (preview.warnings.includes('LIVE_COLLABORATION')) console.log('Live collaboration was observed; keep editors connected and arrange a separate migration window.');
       if (values.out !== undefined) console.log(`Saved private preview to ${JSON.stringify(values.out)}.`);
     }
+    break;
+  }
+  case 'approvals': {
+    // A person's own requests and inbox. The file route verifies as it streams and
+    // this checks the whole file again against the digest on the record.
+    const action = sub ?? 'list';
+    if (action === 'list') {
+      const { approvals } = await call('/api/v1/approvals') as { approvals: Array<{ id: string; state: string; title: string; relation?: string; exportReview?: { sha256: string; format: string; removedAt?: string } }> };
+      if (values.json) { out(approvals); break; }
+      for (const a of approvals) console.log(`${a.id}  ${a.state}  ${a.relation ?? ''}  ${a.title}${a.exportReview ? `  ${a.exportReview.format} ${a.exportReview.sha256.slice(0, 12)}${a.exportReview.removedAt ? ' (file removed)' : ''}` : ''}`);
+      break;
+    }
+    if (action !== 'artifact') fail('usage: lw approvals [list] | lw approvals artifact <id> --out <file>');
+    const id = positionals[2] ?? fail('usage: lw approvals artifact <id> --out <file>');
+    if (!values.out) fail('usage: lw approvals artifact <id> --out <file>');
+    const res = await response(`/api/v1/approvals/${encodeURIComponent(id)}/artifact`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
+      fail(`${res.status} ${body?.error?.code ?? ''} ${body?.error?.message ?? ''}`.trim());
+    }
+    const bytes = Buffer.from(await res.arrayBuffer());
+    const digest = /^sha-256=:(.+):$/.exec(res.headers.get('repr-digest') ?? '')?.[1];
+    if (!digest || createHash('sha256').update(bytes).digest('base64') !== digest) fail('the file did not match its recorded digest; nothing was written');
+    writeFileSync(values.out, bytes);
+    const sha256 = Buffer.from(digest, 'base64').toString('hex');
+    if (values.json) out({ file: values.out, bytes: bytes.byteLength, sha256 });
+    else console.log(`${values.out} (${bytes.byteLength} bytes, SHA-256 ${sha256})`);
     break;
   }
   case 'renders':
@@ -1702,6 +1730,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   apply <file> [--dry-run] [--prune]   apply a governance document (dry-run shows the diff; prune removes store-only entries)
   links [--all] · links create <toolId> [key=value ...] [--open] · links revoke <id>
   destinations                list the fixed organization targets available to this principal (no secrets)
+  approvals [list] · approvals artifact <id> --out <file>   your requests and inbox; download a request's file (a reviewer's, or yours once approved)
   renders submit <request.json> [--idempotency-key <key>]   submit a recoverable single render
   renders [list|show <id>|cancel <id>|retry <id>] · renders output <id> --out <file>
   renders evidence <id> --out <file>   download the retained execution receipt

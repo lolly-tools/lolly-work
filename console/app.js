@@ -3127,7 +3127,7 @@ function renderToolPolicyEditor(tool, host) {
   const open = () => {
     activeToolPolicyEditor?.dispose();
     const close = () => { activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null; host.replaceChildren(); };
-    activeToolPolicyEditor = createToolPolicyEditor(tool, { el, field, api, announce,
+    activeToolPolicyEditor = createToolPolicyEditor(tool, { el, field, api, announce, chains: () => api('/api/v1/chains').then((reply) => reply.chains),
       onClose: close,
       onSaved: () => { close(); toast(`Policy saved for ${tool.name}`); void route(); },
     });
@@ -3628,7 +3628,9 @@ function renderStepper(a, opts) {
 }
 
 // Inbox footer: comment + approve/reject, preserving the reject-needs-reason UX.
-function approvalFooter(a) {
+// `review` is the export review's panel state: approving a file needs that panel
+// to have loaded the file, because the token that proves it comes with the bytes.
+function approvalFooter(a, review) {
   const clearNeed = () => { comment.classList.remove('need'); comment.removeAttribute('aria-invalid'); };
   const comment = el('input', {
     class: 'cmt', placeholder: 'Reason (required to reject)', 'aria-label': `Reason for ${a.title}`,
@@ -3641,32 +3643,101 @@ function approvalFooter(a) {
     clearNeed();
     err.textContent = '';
     try {
-      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}) } });
+      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}), ...(a.exportReview ? { artifactFingerprint: a.exportReview.fingerprint, ...(review?.token ? { reviewToken: review.token } : {}) } : {}) } });
       toast(action === 'approve' ? `Approved “${a.title}”` : `Rejected “${a.title}”`);
       route();
     } catch (e) { err.textContent = e.message; }
   };
+  const approve = el('button', { class: 'primary', onclick: () => act('approve') }, 'Approve');
+  if (review) {
+    approve.disabled = !review.token;
+    review.onReady = () => { approve.disabled = false; };
+  }
   return el('div', { class: 'appr-foot' },
     el('div', { class: 'appr-act' },
       comment,
-      el('button', { class: 'primary', onclick: () => act('approve') }, 'Approve'),
+      approve,
       armConfirmButton({ class: 'danger' }, 'Reject', 'Really reject?', async (disarm) => { await act('reject'); disarm(); })),
     err);
 }
 
+// Object URLs for the files on screen, released when the view is built again.
+let approvalFileUrls = [];
+const ARTWORK_AUTOLOAD_BYTES = 16 * 1024 * 1024;
+
+const hexOf = (buffer) => [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+// The file an export review is about, or the plain facts when this person cannot
+// have it yet. The artwork on screen is drawn from the bytes the digest was checked
+// against, so what a reviewer sees is what the record names.
+function exportReviewPanel(a, { actionable }) {
+  const x = a.exportReview;
+  const state = { token: null, onReady: null };
+  const figures = [x.format.toUpperCase(), x.widthPx && x.heightPx ? `${x.widthPx} × ${x.heightPx}` : null, fmtBytes(x.size), x.toolVersion ? `${x.toolId} ${x.toolVersion}` : x.toolId].filter(Boolean).join(' · ');
+  const facts = el('div', { class: 'appr-file-facts' },
+    el('p', {}, figures),
+    el('p', { class: 'mono', title: x.sha256 }, `SHA-256 ${x.sha256.slice(0, 12)}…${x.sha256.slice(-8)}`));
+  const stage = el('div', { class: 'appr-file-stage' });
+  const actions = el('div', { class: 'appr-file-actions' });
+  const panel = el('div', { class: 'appr-file' }, stage, facts, actions);
+  const say = (text, role) => { stage.replaceChildren(el('p', { class: 'muted', ...(role ? { role } : {}) }, text)); };
+  const mine = a.relation === 'mine';
+  if (x.removedAt) { say(x.removedBecause === 'withdrawn' ? 'This request was withdrawn, so its file was removed.' : 'This file was removed under the retention policy. Its digest stays on the record.'); return { element: panel, state }; }
+  if (mine && a.state !== 'approved') {
+    say(a.state === 'rejected' ? 'This request was rejected, so the file is not released.' : 'Reviewers see this file. It is released to you once approved.');
+    return { element: panel, state };
+  }
+  const load = async () => {
+    say('Loading the file…', 'status');
+    actions.replaceChildren();
+    let res;
+    try { res = await fetch(x.artifactUrl); } catch { say('The file could not be loaded. Reload to try again.', 'alert'); return; }
+    if (!res.ok) { say(res.status === 410 ? 'This request no longer holds its file.' : 'The file could not be loaded. Reload to try again.', 'alert'); return; }
+    const blob = await res.blob();
+    let checked = null;
+    if (globalThis.crypto?.subtle) checked = hexOf(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())) === x.sha256;
+    if (checked === false) { say('This file does not match its recorded digest. Reject it, or ask for it to be sent again.', 'alert'); return; }
+    const url = URL.createObjectURL(blob);
+    approvalFileUrls.push(url);
+    const label = `File for ${a.title}`;
+    if (x.preview === 'image') stage.replaceChildren(el('img', { src: url, alt: label }));
+    else if (x.preview === 'video') stage.replaceChildren(el('video', { src: url, controls: '', 'aria-label': label }));
+    else if (x.preview === 'audio') stage.replaceChildren(el('audio', { src: url, controls: '', 'aria-label': label }));
+    else if (x.preview === 'pdf') stage.replaceChildren(el('a', { href: url, target: '_blank', rel: 'noopener', class: 'btn' }, 'Open the PDF in a new tab'));
+    else stage.replaceChildren(el('p', { class: 'muted' }, 'This format has no preview here. Download the file to check it.'));
+    actions.replaceChildren(
+      el('a', { href: url, download: x.name, class: mine ? 'btn primary' : 'btn' }, mine ? 'Download approved file' : 'Download'),
+      checked === null ? el('span', { class: 'muted' }, 'This browser could not check the digest.') : el('span', { class: 'muted' }, 'Digest checked.'));
+    if (actionable) {
+      state.token = res.headers.get('x-lolly-review-token');
+      if (state.token) state.onReady?.();
+    }
+  };
+  if (x.size <= ARTWORK_AUTOLOAD_BYTES) void load();
+  else stage.replaceChildren(el('button', { class: 'btn', onclick: load }, `Load the file (${fmtBytes(x.size)})`));
+  return { element: panel, state };
+}
+
+// An older request names a tool or a session, not a file. Say so where a file would
+// be. A catalog submission's subject is the asset itself, which has its own review.
+const namesToolOnly = (a) => a.subjectType === 'asset' && !/^inst\//.test(a.subjectRef ?? '');
+
 // One approval card, identical visual grammar in both sections — only the
 // action affordance differs (inbox: act footer; requests: read-only).
 function renderApprovalCard(a, { actionable }) {
+  const review = a.exportReview ? exportReviewPanel(a, { actionable }) : null;
   return el('div', { class: 'appr-card' },
     el('div', { class: 'appr-head' },
       el('div', { class: 'appr-headmain' },
         el('div', { class: 'appr-title' }, a.title),
         el('div', { class: 'appr-meta' },
           el('span', { class: 'chip' }, a.subjectType),
-          a.subjectRef ? el('span', { class: 'mono' }, a.subjectRef) : null,
+          a.subjectRef && !a.exportReview ? el('span', { class: 'mono' }, a.subjectRef) : null,
           el('span', { class: 'muted' }, a.chainName),
           el('span', { class: 'muted' }, a.mine ? 'raised by you' : ['raised by ', a.createdByName ?? a.createdBy], ' · ', relTime(a.createdAt)))),
       stateChip(a.state)),
+    review ? review.element : null,
+    namesToolOnly(a) ? el('p', { class: 'appr-nofile muted' }, 'No file is attached to this request.') : null,
     a.sourceReview ? el('div', { class: 'appr-meta' },
       el('p', {}, `${a.sourceReview.purpose} · ${a.sourceReview.target}`),
       ...a.sourceReview.files.map(file => el('p', { class: 'mono' }, `${file.assetId} · version ${file.version} · ${file.format} · SHA-256 ${file.sha256} `,
@@ -3683,10 +3754,12 @@ function renderApprovalCard(a, { actionable }) {
             : a.state === 'withdrawn' ? 'Withdrawn, see the steps'
             : `In review, step ${Math.min(a.stepIndex + 1, stepsOf(a).length)} of ${stepsOf(a).length}`),
           renderStepper(a, { actionable })),
-    actionable ? approvalFooter(a) : null);
+    actionable ? approvalFooter(a, review?.state) : null);
 }
 
 async function viewApprovals(main) {
+  for (const url of approvalFileUrls) URL.revokeObjectURL(url);
+  approvalFileUrls = [];
   const { approvals } = await api('/api/v1/approvals');
   const inbox = approvals.filter((a) => a.relation === 'inbox');
   // Open requests first: a member tracking a live request should not scan past

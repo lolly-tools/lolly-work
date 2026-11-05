@@ -7,6 +7,8 @@
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { resolveAiPolicy, type AiPolicy } from './ai.ts';
 import { renderCapabilities, type RenderCapabilities } from '../render/capabilities.ts';
+import { approvalArtifactPolicy } from '../approvals/export-review.ts';
+import { TRANSFER_PART_BYTES } from '../uploads/parts.ts';
 import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
 import { evaluate, grantDecision, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
@@ -102,6 +104,10 @@ export interface OrgConfigPayload {
      *  dialog offers only what the server accepts. */
     instance: { enabled: boolean; maxRole: InstanceShareRole }; customGroups: boolean; maxGrantDays: number | null;
   };
+  /** Present when this caller may send a request with its exported file, and how
+   *  large that file may be (approvals/export-review.ts). Absent, a shell sends the
+   *  older request and says the file is not attached. */
+  approvals?: { exportReview: { maxFileBytes: number; partBytes: number } };
   /** The invite limits (plans/74 `policy.invites`), so the shell offers only
    *  the roles and domains the server accepts and a truthful expiry. Whether
    *  this caller may invite new people at all is `can['user.invite']`.
@@ -406,6 +412,7 @@ export function assembleOrgConfig(opts: {
   can['delivery.create'] = destinations.length > 0;
   // User-made groups can be switched off for the whole instance.
   if (!sharingPolicy.customGroups) can['group.create'] = false;
+  const approvalArtifacts = approvalArtifactPolicy(config);
   return {
     ai: resolveAiPolicy(config.policy.ai, flagGovernance),
     instance: { name: config.instance.name },
@@ -421,6 +428,7 @@ export function assembleOrgConfig(opts: {
     profilePolicy,
     tools,
     can,
+    ...(approvalArtifacts.enabled && can['export.request'] ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES } } } : {}),
     sharing: {
       groups: sharingGroups, projectFiles: opts.projectFiles === true,
       instance: { enabled: sharingPolicy.instanceAudience, maxRole: sharingPolicy.instanceMaxRole },

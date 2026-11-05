@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { roleFromGroups, type RoleGroups } from '../rbac/evaluate.ts';
-import { LastOwnerError, subjectRow, type SubjectCategory, type SubjectStore } from './subject.ts';
+import type { Approval } from '../approvals/engine.ts';
+import { approvalSubjectRow, LastOwnerError, subjectRow, type SubjectCategory, type SubjectStore } from './subject.ts';
 
 interface QueryResult { rows: Record<string, unknown>[]; rowCount: number | null }
 interface Client { query(sql: string, values?: unknown[]): Promise<QueryResult>; release(): void }
@@ -28,6 +29,7 @@ export function createPostgresSubjects(pool: Pool, roles: () => RoleGroups): Sub
         : category === 'projects' ? query('select project_id, role, added_at from project_members where user_id = $1 and project_id > $2 collate "C" order by project_id collate "C" limit $3')
         : category === 'credentials' ? query('select id, label, role, created_at, expires_at, last_used_at, revoked_at from api_tokens where created_by = $1 and id > $2 collate "C" order by id collate "C" limit $3', after)
         : category === 'links' ? query('select id, kind, exp, created_at, revoked_at from links where created_by = $1 and id > $2 collate "C" order by id collate "C" limit $3')
+        : category === 'approvals' ? query('select doc from approvals where created_by = $1 and id > $2 collate "C" order by id collate "C" limit $3')
         : category === 'fleet' ? query('select install_id, first_seen_at, last_seen_at from fleet_installs where user_id_last_seen = $1 and install_id > $2 collate "C" order by install_id collate "C" limit $3')
         : category === 'telemetry' ? query('select id, at, event, attrs from telemetry_events where user_id = $1 and id > $2::bigint order by id limit $3', afterNumber(after))
         : query('select seq, at, action, prev_hash, hash from audit_log where (actor = $1 or subject = $1) and seq > $2::bigint order by seq limit $3', afterNumber(after)))).rows;
@@ -36,6 +38,7 @@ export function createPostgresSubjects(pool: Pool, roles: () => RoleGroups): Sub
         if (category === 'projects') return subjectRow(String(r.project_id), { projectId: r.project_id, role: r.role, addedAt: iso(r.added_at) });
         if (category === 'credentials') return subjectRow(String(r.id), { id: r.id, label: r.label, role: r.role, createdAt: iso(r.created_at), expiresAt: iso(r.expires_at), lastUsedAt: iso(r.last_used_at), revokedAt: iso(r.revoked_at) });
         if (category === 'links') return subjectRow(String(r.id), { id: r.id, kind: r.kind, expiresAt: new Date(Number(r.exp) * 1000).toISOString(), createdAt: iso(r.created_at), revokedAt: iso(r.revoked_at) });
+        if (category === 'approvals') return approvalSubjectRow(r.doc as Approval);
         if (category === 'fleet') return subjectRow(String(r.install_id), { installId: r.install_id, firstSeenAt: iso(r.first_seen_at), lastSeenAt: iso(r.last_seen_at) });
         if (category === 'telemetry') return subjectRow(String(r.id), { at: iso(r.at), event: r.event, attrs: r.attrs });
         return subjectRow(String(r.seq), { sourceSeq: Number(r.seq), at: iso(r.at), action: r.action, sourceHash: r.hash, sourcePrevHash: r.prev_hash });

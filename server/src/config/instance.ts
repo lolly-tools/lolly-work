@@ -27,6 +27,7 @@ import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites
 import { PROJECT_FILE_DEFAULTS, PROJECT_FILE_MAX_BYTES, type ProjectFilePolicy } from '../projects/files.ts';
 import { UPLOAD_DEFAULTS, type UploadPolicy } from '../uploads/scoped.ts';
 import { TRANSFER_MAX_BYTES } from '../uploads/parts.ts';
+import { APPROVAL_ARTIFACT_DEFAULTS, APPROVAL_ARTIFACT_MAX_FILE_BYTES, type ApprovalArtifactPolicy } from '../approvals/export-review.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../delivery/types.ts';
 import { AUTH_PARAM_ALLOWLIST, oidcUrl, type OidcPolicy, type ClaimMap } from '../iam/oidc.ts';
@@ -288,6 +289,10 @@ export interface InstanceConfig {
      *  after `uploadTtlHours`, a finished one `readyTtlHours` after it
      *  finished, and a file reference `fileTtlHours` after it finished. */
     uploads: UploadPolicy;
+    /** The exported file an approval request carries (approvals/export-review.ts).
+     *  On by default, because nothing is stored until a chain is bound to a tool and
+     *  someone asks for a review; separate from `uploads` for that reason. */
+    approvalArtifacts: ApprovalArtifactPolicy;
     /** Access requests (plans/75 G13): who may ask for what, and for how
      *  long a request stays open. See `RequestPolicy`. */
     requests: RequestPolicy;
@@ -650,6 +655,7 @@ const DEFAULTS: InstanceConfig = {
     activity: { mode: 'delegated', auditSessionUpdates: true },
     projectFiles: { ...PROJECT_FILE_DEFAULTS },
     uploads: { ...UPLOAD_DEFAULTS },
+    approvalArtifacts: { ...APPROVAL_ARTIFACT_DEFAULTS },
     requests: { join: false, project: true, ttlDays: 14, joinOpenMax: 50 },
   },
   render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000, dispatch: 'push', pull: { leaseMs: 15000, queueTimeoutMs: 30000 } }, c2pa: { certFile: '', claimGenerator: '' } },
@@ -1030,6 +1036,17 @@ export function parseConfig(json: string): InstanceConfig {
     throw new Error('policy.projectFiles needs maxFileBytes <= projectBudgetBytes <= instanceBudgetBytes');
   }
   if (files.uploadTtlHours > 720) throw new Error(`invalid policy.projectFiles.uploadTtlHours: ${files.uploadTtlHours} (at most 720)`);
+  const artifacts = cfg.policy.approvalArtifacts;
+  if (!artifacts || typeof artifacts !== 'object' || Array.isArray(artifacts)) throw new Error('policy.approvalArtifacts must be an object');
+  if (typeof artifacts.enabled !== 'boolean') throw new Error('policy.approvalArtifacts.enabled must be true or false');
+  for (const k of ['maxFileBytes', 'instanceBudgetBytes'] as const) {
+    if (!Number.isSafeInteger(artifacts[k]) || artifacts[k] <= 0) throw new Error(`invalid policy.approvalArtifacts.${k}: ${artifacts[k]} (a whole number above 0)`);
+  }
+  for (const k of ['closedRetentionDays', 'approvedRetentionDays'] as const) {
+    if (!Number.isSafeInteger(artifacts[k]) || artifacts[k] < 0) throw new Error(`invalid policy.approvalArtifacts.${k}: ${artifacts[k]} (a whole number, 0 keeps the file)`);
+  }
+  if (artifacts.maxFileBytes > APPROVAL_ARTIFACT_MAX_FILE_BYTES) throw new Error(`policy.approvalArtifacts.maxFileBytes cannot exceed ${APPROVAL_ARTIFACT_MAX_FILE_BYTES}`);
+  if (artifacts.maxFileBytes > artifacts.instanceBudgetBytes) throw new Error('policy.approvalArtifacts needs maxFileBytes <= instanceBudgetBytes');
   const uploads = cfg.policy.uploads;
   if (!uploads || typeof uploads !== 'object' || Array.isArray(uploads)) throw new Error('policy.uploads must be an object');
   if (typeof uploads.enabled !== 'boolean') throw new Error('policy.uploads.enabled must be true or false');
