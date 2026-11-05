@@ -31,7 +31,7 @@ const png = (size = 2048) => Buffer.concat([PNG_HEAD, randomBytes(size)]);
 
 interface World {
   base: string; server: Server; store: ReturnType<typeof createMemoryStore>; blobs: ReturnType<typeof createMemoryBlobStore>;
-  author: string; reviewer: string; reviewer2: string; outsider: string; owner: string; viewer: string;
+  author: string; reviewer: string; reviewer2: string; outsider: string; owner: string; viewer: string; granted: string;
 }
 async function boot(policy: Record<string, unknown> = {}): Promise<World> {
   const store = createMemoryStore(), blobs = createMemoryBlobStore();
@@ -42,7 +42,7 @@ async function boot(policy: Record<string, unknown> = {}): Promise<World> {
     dev: { enabled: true, users: [
       { email: 'owner@test', groups: ['owner'] }, { email: 'author@test', groups: ['author'] },
       { email: 'review@test', groups: ['approver', 'review'] }, { email: 'review2@test', groups: ['approver', 'review'] },
-      { email: 'outside@test', groups: ['approver', 'elsewhere'] }, { email: 'viewer@test', groups: ['viewer'] },
+      { email: 'outside@test', groups: ['approver', 'elsewhere'] }, { email: 'viewer@test', groups: ['viewer'] }, { email: 'granted@test', groups: ['viewer', 'granted'] },
     ] } }));
   const app = buildApp({ config, store, blobs, secrets: { session: 'export-review-test', link: 'export-review-link' } });
   const server = createServer((req, res) => void app(req, res));
@@ -52,7 +52,7 @@ async function boot(policy: Record<string, unknown> = {}): Promise<World> {
   const login = async (email: string) => (await fetch(`${base}/api/auth/dev?email=${email}`, { redirect: 'manual' })).headers.getSetCookie().find(value => value.startsWith('lw_session='))!.split(';')[0]!;
   return { base, server, store, blobs,
     author: await login('author@test'), reviewer: await login('review@test'), reviewer2: await login('review2@test'),
-    outsider: await login('outside@test'), owner: await login('owner@test'), viewer: await login('viewer@test') };
+    outsider: await login('outside@test'), owner: await login('owner@test'), viewer: await login('viewer@test'), granted: await login('granted@test') };
 }
 const json = (w: World, path: string, body: unknown, cookie: string, method = 'POST') => fetch(w.base + path, { method, headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
@@ -299,13 +299,54 @@ test('a chain bound to a tool is writable, must exist, reaches shells and binds 
     assert.equal(config.tools['qr-code']!.approvalChain, 'brand');
     assert.deepEqual(config.approvals, { exportReview: { maxFileBytes: APPROVAL_ARTIFACT_DEFAULTS.maxFileBytes, partBytes: PART } });
     const viewerConfig = await (await fetch(`${w.base}/api/v1/org-config`, { headers: { cookie: w.viewer } })).json() as { approvals?: unknown };
-    assert.equal(viewerConfig.approvals, undefined, 'only someone who may request');
+    assert.equal(viewerConfig.approvals, undefined, 'only someone who may request or review');
     const bytes = png();
     const wrongChain = await json(w, '/api/v1/approvals', { ...request(await send(w, bytes), bytes), chainId: 'other' }, w.author);
     assert.equal(wrongChain.status, 400);
     assert.equal((await wrongChain.json() as { error: { code: string } }).error.code, 'CHAIN_NOT_BOUND');
     const discovery = await (await fetch(`${w.base}/api/v1/discovery`)).json() as { approvals?: { exportReview: boolean } };
     assert.equal(discovery.approvals?.exportReview, true);
+  } finally { w.server.close(); }
+});
+
+test('a reviewer who holds only approval.act gets the capability, the row and the file, and nothing else', async () => {
+  const w = await boot();
+  try {
+    await w.store.putChain({ id: 'granted', name: 'Granted', steps: [{ name: 'Review', approvers: { groups: ['granted'] }, rule: 'any' }], onReject: 'return-to-submitter' } as never);
+    await w.store.putGrant({ principal: 'group:granted', action: 'approval.act', resource: 'chain:granted', effect: 'allow' } as never);
+    const configOf = async (cookie: string) => await (await fetch(`${w.base}/api/v1/org-config`, { headers: { cookie } })).json() as { approvals?: unknown; can: Record<string, boolean> };
+
+    // A viewer in the group: export.request is denied, and the only grant is scoped to one chain.
+    const config = await configOf(w.granted);
+    assert.deepEqual(config.approvals, { exportReview: { maxFileBytes: APPROVAL_ARTIFACT_DEFAULTS.maxFileBytes, partBytes: PART } }, 'the limits, and no other field');
+    assert.equal(config.can['export.request'], false, 'still cannot request');
+    assert.equal(config.can['export.download'], (await configOf(w.viewer)).can['export.download'], 'no other bit moves');
+    assert.equal('approval.act' in config.can, false, 'the action itself is not published');
+
+    // The capability gives no right to request: the routes still decide.
+    const mine = png();
+    const parts = [{ size: mine.length, checksum: sha(mine) }];
+    const upload = await json(w, '/api/v1/uploads', { scope: 'approval-artifact', name: 'x.png', contentType: 'image/png', size: mine.length, checksum: sha(mine), parts }, w.granted);
+    assert.equal(upload.status, 403, 'no request upload');
+    assert.equal((await json(w, '/api/v1/approvals', { ...request(await send(w, mine), mine), chainId: 'granted' }, w.granted)).status, 403, 'no request');
+
+    // The request reaches them as a queue row, with the file and the review token.
+    assert.equal((await json(w, '/api/v1/policy/overlays/qr-code', { enforce: { escalation: 'granted' } }, w.owner, 'PUT')).status, 200);
+    const bytes = png();
+    const raised = await json(w, '/api/v1/approvals', { ...request(await send(w, bytes), bytes), chainId: 'granted' }, w.author);
+    assert.equal(raised.status, 201);
+    const approval = await raised.json() as { id: string; exportReview: { artifactUrl: string } };
+    const listed = await (await fetch(`${w.base}/api/v1/approvals`, { headers: { cookie: w.granted } })).json() as { approvals: Array<{ id: string; relation: string }> };
+    assert.deepEqual(listed.approvals.map(row => [row.id, row.relation]), [[approval.id, 'inbox']]);
+    const file = await fetch(w.base + approval.exportReview.artifactUrl, { headers: { cookie: w.granted } });
+    assert.equal(file.status, 200);
+    assert.ok(file.headers.get('x-lolly-review-token'), 'they may decide this step');
+    await file.arrayBuffer();
+
+    // A grant for another group, or a deny, leaves the shell as it was.
+    assert.equal((await configOf(w.viewer)).approvals, undefined, 'a viewer outside the group');
+    await w.store.putGrant({ principal: 'group:granted', action: 'approval.act', resource: '*', effect: 'deny' } as never);
+    assert.equal((await configOf(w.granted)).approvals, undefined, 'a deny wins');
   } finally { w.server.close(); }
 });
 
