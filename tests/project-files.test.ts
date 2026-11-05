@@ -325,13 +325,13 @@ test('expired uploads are swept, parts first, before a new upload and by the ret
   // upload, which expires PROJECT_FILE_IDLE_MS after its begin, is not yet
   // past its own grace.
   const later = await runRetention({ config, store, blobs, now: () => new Date(Date.now() + PROJECT_FILE_SWEEP_GRACE_MS + 5 * 60_000) });
-  assert.deepEqual(later, { telemetryTrimmed: 0, auditTrimmed: 0, projectFilesSwept: 1, uploadsSwept: 0 });
+  assert.deepEqual(later, { telemetryTrimmed: 0, auditTrimmed: 0, projectFilesSwept: 1, uploadsSwept: 0, approvalArtifactsRemoved: 0 });
   assert.equal(await store.getProjectFile(recent.id), null);
   assert.equal(await blobs.head(filePartBlobId(recent, 0)), null);
   assert.equal((await store.listUnfinishedProjectFiles({}, 10)).length, 1, 'the live upload stays');
   const run = await call('root', 'POST', '/api/v1/retention/run');
   assert.equal(run.status, 200);
-  assert.deepEqual(await run.json(), { telemetryTrimmed: 0, auditTrimmed: 0, projectFilesSwept: 0, uploadsSwept: 0 });
+  assert.deepEqual(await run.json(), { telemetryTrimmed: 0, auditTrimmed: 0, projectFilesSwept: 0, uploadsSwept: 0, approvalArtifactsRemoved: 0 });
 });
 
 test('a file keeps only the asset fields the shell sends, and tiny files still fill the budgets', async () => {
