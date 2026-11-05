@@ -62,6 +62,8 @@ export interface RenderStore {
   /** Parent and child states are read from one consistent snapshot. */
   getRenderBatch(id: string, principal: string): Promise<RenderBatchRecord | null>;
   listRenderBatches(principal: string, limit: number, offset: number): Promise<RenderBatchRecord[]>;
+  /** The batch an idempotency key already names, so a replay need not read its data source again. */
+  findRenderBatchByKey(principal: string, key: string): Promise<RenderBatchRecord | null>;
   /** Atomically cancel unfinished children, preserving every terminal child. */
   cancelRenderBatch(id: string, principal: string): Promise<RenderBatchRecord | null>;
   /** Atomic insert; a principal/key collision returns the original immutable request. */
@@ -86,8 +88,19 @@ export interface RenderStore {
 
 export interface RenderQueueEntry { toolId: string; queued: number; oldestClaimableAt: string | null }
 
+/** A governed JSON or CSV source for a batch's rows (automation/bindings.ts).
+ *  `keyField` names the column that holds each row's key and is not an input. */
+export interface RenderBatchBinding {
+  source: string;
+  query?: Record<string, unknown>;
+  as?: Record<string, unknown>;
+  keyField?: string;
+}
+
 export interface RenderBatchSpec extends RenderSpec {
   rows: { key: string; inputs: Record<string, unknown> }[];
+  /** Where the rows came from. They are read once, at submission, and kept in `rows`. */
+  bind?: RenderBatchBinding;
 }
 
 /** Immutable membership; status is derived from the durable child records. */

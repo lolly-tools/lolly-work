@@ -68,6 +68,10 @@ export function createMemoryRenderStore(links?: MemoryRenderStoreLinks): RenderS
       const batch = batches.get(id);
       return batch?.principal === principal ? snapshot(batch) : null;
     },
+    async findRenderBatchByKey(principal, key) {
+      const batch = [...batches.values()].find((b) => b.principal === principal && b.idempotencyKey === key);
+      return batch ? snapshot(batch) : null;
+    },
     async listRenderBatches(principal, limit, offset) {
       return [...batches.values()].filter((b) => b.principal === principal)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))

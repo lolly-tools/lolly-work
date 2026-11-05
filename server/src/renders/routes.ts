@@ -4,7 +4,7 @@ import { readBlobBody, type BlobStore } from '../blobs/types.ts';
 import { readJson, sendError, sendJson, type createRouter, type Handler } from '../api/router.ts';
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { assertCallbackAllowed, newRender, parseRenderSpec, renderWire } from './request.ts';
-import { RenderResourceError, type RenderRecord, type RenderSpec, type RenderStore } from './types.ts';
+import { RenderResourceError, type RenderBatchBinding, type RenderRecord, type RenderSpec, type RenderStore } from './types.ts';
 import { registerRenderBatchRoutes } from './batch-routes.ts';
 import { evidenceHash, renderIdentity } from '../render/evidence.ts';
 
@@ -22,6 +22,8 @@ export interface RoutesDeps {
   callbackAllowed?: (url: string) => boolean;
   /** A cancellation just stored a callback, so look for due callbacks now. */
   callbacksChanged?: () => void;
+  /** Read a governed data source for a bound batch, under the caller's current groups. */
+  resolveBinding?: (principal: string, request: RenderSpec, binding: RenderBatchBinding) => Promise<Record<string, unknown>[]>;
   /** The owner a callback's output token names for this subject, or null. */
   outputTokenPrincipal?: (req: IncomingMessage, id: string) => string | null;
 }

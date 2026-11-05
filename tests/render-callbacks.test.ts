@@ -194,7 +194,14 @@ test('a batch calls back once, when its last row finishes, and its token reads i
   assert.equal(call!.body.manifestUrl, `https://work.test/api/v1/render-batches/${batch.id}/manifest`);
   const manifest = await fetch(`${h.base}/api/v1/render-batches/${batch.id}/manifest`, { headers: { 'x-lw-render-token': call!.body.outputToken as string } });
   assert.equal(manifest.status, 200);
-  assert.equal(((await h.request(`/api/v1/render-batches/${batch.id}`)).status), 200);
+  assert.equal(call!.body.archiveUrl, `https://work.test/api/v1/render-batches/${batch.id}/archive`);
+  const archive = await fetch(`${h.base}/api/v1/render-batches/${batch.id}/archive`, { headers: { 'x-lw-render-token': call!.body.outputToken as string } });
+  assert.equal(archive.status, 200, 'the token reads the archive too');
+  await archive.arrayBuffer();
+  assert.equal((await fetch(`${h.base}/api/v1/render-batches/${batch.id}`, { headers: { 'x-lw-render-token': call!.body.outputToken as string } })).status, 401);
+  const owner = (await h.store.listUsers()).find((u) => u.email === 'one@test')!;
+  await h.store.putGrant({ principal: `user:${owner.id}`, action: 'tool.use', resource: 'tool:card', effect: 'deny' });
+  assert.equal((await fetch(`${h.base}/api/v1/render-batches/${batch.id}/manifest`, { headers: { 'x-lw-render-token': call!.body.outputToken as string } })).status, 403, 'the token reads under the owner\'s current grants');
 });
 
 test('an unanswered callback retries on the ladder with the same delivery id', async (t) => {

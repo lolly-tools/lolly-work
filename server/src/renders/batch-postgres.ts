@@ -6,7 +6,7 @@ interface Queryable {
 }
 export interface RenderDatabase extends Queryable { connect(): Promise<Queryable & { release(): void }> }
 
-type BatchStore = Pick<RenderStore, 'insertRenderBatch' | 'getRenderBatch' | 'listRenderBatches' | 'cancelRenderBatch'>;
+type BatchStore = Pick<RenderStore, 'insertRenderBatch' | 'getRenderBatch' | 'findRenderBatchByKey' | 'listRenderBatches' | 'cancelRenderBatch'>;
 
 export async function inTransaction<T>(pool: RenderDatabase, body: (db: Queryable) => Promise<T>): Promise<T> {
   const client = await pool.connect();
@@ -107,6 +107,10 @@ export function createPostgresBatchStore(pool: RenderDatabase, renderFromRow: (r
       });
     },
     getRenderBatch: (id, principal) => get(pool, id, principal),
+    async findRenderBatchByKey(principal, key) {
+      const { rows } = await pool.query(`select b.*,${children} from render_batches b where b.principal=$1 and b.idempotency_key=$2`, [principal, key]);
+      return rows[0] ? fromRow(rows[0]) : null;
+    },
     async listRenderBatches(principal, limit, offset) {
       const { rows } = await pool.query(`select b.*,${children} from
         (select * from render_batches where principal=$1 order by created_at desc,id desc limit $2 offset $3) b

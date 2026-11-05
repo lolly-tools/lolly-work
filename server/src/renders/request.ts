@@ -8,7 +8,7 @@ function invalid(message: string): never {
 }
 
 /** Bounded JSON only; reject keys unsafe for downstream object-based serializers. */
-function checkInputs(value: unknown, depth = 0, budget = { left: 10_000 }): void {
+export function checkInputs(value: unknown, depth = 0, budget = { left: 10_000 }): void {
   if (--budget.left < 0 || depth > 32) invalid('inputs exceed the structure limit');
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
   if (typeof value === 'number' && Number.isFinite(value)) return;

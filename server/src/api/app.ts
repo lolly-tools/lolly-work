@@ -10385,6 +10385,10 @@ export function buildApp(deps: AppDeps): App {
     audit: async (principal, action, id, facts) => { await audit(principal, action, `${id.startsWith('rbt_') ? 'render-batch' : 'render'}:${id}`, facts); },
     callbackAllowed: (url) => !!secrets.webhook && callbackUrlAllowed(config, url),
     callbacksChanged: () => automationJobs.sendCallbacks(),
+    resolveBinding: async (principal, request, binding) => {
+      const caller = await currentRenderCaller(principal, request);
+      return resolveBindingRows(binding, hostedAssetResolverFor(caller.groups));
+    },
     outputTokenPrincipal: renderTokens.principal,
   });
   deps.onRenderRunner?.(durableRenders);

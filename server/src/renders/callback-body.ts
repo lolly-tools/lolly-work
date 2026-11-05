@@ -47,6 +47,7 @@ export function batchCallbackBody(batch: RenderBatchRecord, ctx: RenderCallbackC
     progress,
     statusUrl: `${ctx.baseUrl}/api/v1/render-batches/${batch.id}`,
     manifestUrl: `${ctx.baseUrl}/api/v1/render-batches/${batch.id}/manifest`,
+    archiveUrl: progress.succeeded ? `${ctx.baseUrl}/api/v1/render-batches/${batch.id}/archive` : null,
     outputToken: ctx.outputToken,
     deliveryId: ctx.deliveryId,
   };
