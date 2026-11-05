@@ -14,8 +14,7 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
   const visibilityText = original.visibility ? showGroups(original.visibility.groups) : '';
   const visibilityInput = el('input', { value: visibilityText, placeholder: 'everyone (or: brand, marketing)' });
   const watermarkSel = el('select', {},
-    ...[['', 'No rule'], ['never', 'Never watermark'], ['always', 'Always watermark'],
-      ...(original.enforce?.watermark === 'until-approved' ? [['until-approved', 'Until approved (not enforced)']] : []),
+    ...[['', 'No rule'], ['never', 'Never watermark'], ['always', 'Always watermark'], ['until-approved', 'Until approved'],
     ].map(([value, label]) => el('option', { value, selected: value === (original.enforce?.watermark ?? '') ? '' : null }, label)));
   const savedChain = original.enforce?.escalation ?? '';
   const chainSel = el('select', {}, el('option', { value: '' }, 'No chain'),
@@ -49,8 +48,9 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
   const isDirty = () => !disposed && snapshot() !== baseline;
   const update = () => {
     draft.textContent = isDirty() ? 'Unsaved changes' : '';
-    watermarkWarning.textContent = watermarkSel.value === 'until-approved'
-      ? 'This saved watermark setting is not enforced. Choose Always watermark to require a watermark.' : '';
+    watermarkWarning.textContent = watermarkSel.value !== 'until-approved' ? ''
+      : chainSel.value ? 'Server renders show PREVIEW until a reviewer approves a file with the same inputs.'
+      : 'No approval chain is set, so nobody can approve this tool and its server renders stay marked. Choose a chain.';
     watermarkWarning.hidden = !watermarkWarning.textContent;
     for (const [id, nodes] of warningNodes) {
       const rules = model[id];

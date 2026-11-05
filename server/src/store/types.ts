@@ -1693,6 +1693,9 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Pas
   putApproval(approval: Approval): Promise<void>;
   getApproval(id: string): Promise<Approval | null>;
   listApprovals(filter?: { createdBy?: string; eligibleGroups?: string[]; state?: ApprovalState }): Promise<Approval[]>;
+  /** Export reviews for this tool, format and inputs digest: approved first, then
+   *  newest, at most 20. Indexed by digest, so a server render can ask on every render. */
+  listExportReviewsForInputs(key: { toolId: string; format: string; inputsDigest: string }): Promise<Approval[]>;
 
   // catalog lifecycle
   putLifecycle(row: LifecycleRow): Promise<void>;

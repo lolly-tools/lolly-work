@@ -107,7 +107,8 @@ export interface OrgConfigPayload {
   /** Present when this caller may send a request with its exported file, and how
    *  large that file may be (approvals/export-review.ts). Absent, a shell sends the
    *  older request and says the file is not attached. */
-  approvals?: { exportReview: { maxFileBytes: number; partBytes: number; recordInCredentials?: boolean } };
+  /** `match` says POST /api/v1/approvals/match answers, so a shell can show where its inputs stand. */
+  approvals?: { exportReview: { maxFileBytes: number; partBytes: number; match: true; recordInCredentials?: boolean } };
   /** The invite limits (plans/74 `policy.invites`), so the shell offers only
    *  the roles and domains the server accepts and a truthful expiry. Whether
    *  this caller may invite new people at all is `can['user.invite']`.
@@ -430,7 +431,7 @@ export function assembleOrgConfig(opts: {
     profilePolicy,
     tools,
     can,
-    ...(approvalArtifacts.enabled && (can['export.request'] || mayActOnSomeApproval(principal, grants)) ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, ...(opts.approvalRecording ? { recordInCredentials: true } : {}) } } } : {}),
+    ...(approvalArtifacts.enabled && (can['export.request'] || mayActOnSomeApproval(principal, grants)) ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, match: true, ...(opts.approvalRecording ? { recordInCredentials: true } : {}) } } } : {}),
     sharing: {
       groups: sharingGroups, projectFiles: opts.projectFiles === true,
       instance: { enabled: sharingPolicy.instanceAudience, maxRole: sharingPolicy.instanceMaxRole },
