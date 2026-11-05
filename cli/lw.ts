@@ -15,7 +15,9 @@
  * enabled, and `--cookie 'lw_session=…'` pastes a browser session directly.
  */
 import { parseArgs } from 'node:util';
-import { closeSync, constants, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, createWriteStream, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileSource, fileStateStore, resumableUpload, UploadClientError, type UploadTarget } from './upload-client.ts';
@@ -76,6 +78,7 @@ const OPTIONS = {
     destination: { type: 'string' },
     format: { type: 'string' },
     'idempotency-key': { type: 'string' },
+    'callback-url': { type: 'string' },
     rm: { type: 'boolean' },
     // SCIM (plans/31 §8): the label for the IdP connector a provisioning token
     // belongs to, carried onto every audit event the token drives.
@@ -331,16 +334,55 @@ switch (cmd) {
     const keyHeaders: Record<string, string> = values['idempotency-key'] ? { 'idempotency-key': values['idempotency-key'] } : {};
     let value: unknown;
     if (action === 'submit') {
-      if (!id) fail(`${cmd} submit <request.json> [--idempotency-key <key>]`);
+      if (!id) fail(`${cmd} submit <request.json> [--idempotency-key <key>] [--callback-url <url>]`);
       let body: unknown;
       try { body = JSON.parse(readFileSync(id, 'utf8')); }
       catch { fail(`cannot read render request JSON: ${id}`); }
+      if (values['callback-url']) {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) fail('--callback-url needs a request that is a JSON object');
+        body = { ...(body as Record<string, unknown>), callbackUrl: values['callback-url'] };
+      }
       value = await call(path, { method: 'POST', body, headers: keyHeaders });
     } else if (action === 'list') {
       value = await call(path);
-    } else if (['show', 'retry', 'cancel', ...(batch ? ['manifest'] : ['output', 'evidence'])].includes(action)) {
+    } else if (['show', 'retry', 'cancel', ...(batch ? ['manifest', 'archive'] : ['output', 'evidence', 'deliver'])].includes(action)) {
       if (!id) fail(`${cmd} ${action} <id>`);
       const resource = `${path}/${encodeURIComponent(id)}`;
+      if (action === 'deliver') {
+        const destinationId = values.destination ?? fail('--destination <id> required');
+        const name = values.name ?? fail('--name required');
+        const delivery = await call(`${resource}/deliveries`, {
+          method: 'POST', headers: keyHeaders,
+          body: { destinationId, name, ...(values.format ? { format: values.format } : {}) },
+        }) as { id: string; state: string; name: string; format: string; destinationId: string; url: string | null };
+        out(delivery);
+        if (!values.json) {
+          console.log(`${delivery.id}  ${delivery.state}  ${delivery.name}.${delivery.format} → ${delivery.destinationId}`);
+          if (delivery.state === 'awaiting-approval') console.log('waiting on the destination approval chain');
+          if (delivery.url) console.log(delivery.url);
+        }
+        break;
+      }
+      if (action === 'archive') {
+        if (!values.out) fail(`${cmd} archive <id> --out <file>`);
+        const res = await response(`${resource}/archive`);
+        if (!res.ok || !res.body) {
+          const body = await res.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
+          fail(`${res.status} ${body?.error?.code ?? ''} ${body?.error?.message ?? ''}`.trim());
+        }
+        // Streamed to a temporary name: a dropped connection leaves no file that looks finished.
+        const partial = `${values.out}.part`;
+        try { await pipeline(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(partial, { mode: 0o600 })); }
+        catch (error) {
+          rmSync(partial, { force: true });
+          fail(`the archive download stopped before it finished: ${(error as Error).message}`);
+        }
+        renameSync(partial, values.out);
+        const bytes = statSync(values.out).size;
+        out({ file: values.out, bytes });
+        if (!values.json) console.log(`${values.out} (${bytes} bytes)`);
+        break;
+      }
       if (action === 'output' || action === 'manifest' || action === 'evidence') {
         if (!values.out) fail(`${cmd} ${action} <id> --out <file>`);
         const res = await response(`${resource}/${action === 'output' ? 'output/default' : action}`);
@@ -357,7 +399,7 @@ switch (cmd) {
       value = await call(`${resource}${action === 'retry' ? '/retry' : ''}`, {
         method: action === 'retry' ? 'POST' : action === 'cancel' ? 'DELETE' : 'GET', headers: keyHeaders,
       });
-    } else fail(`${cmd}: use submit, list, show, ${batch ? 'manifest' : 'output, evidence'}, cancel or retry`);
+    } else fail(`${cmd}: use submit, list, show, ${batch ? 'manifest, archive' : 'output, evidence, deliver'}, cancel or retry`);
     if (values.json) out(value);
     else {
       type Row = { id: string; state: string; attempt: number; request: { toolId: string; format: string }; progress?: { done: number; total: number; succeeded: number; failed: number; cancelled: number }; error?: { message: string } };
@@ -701,7 +743,7 @@ switch (cmd) {
   case 'deliveries': {
     type DeliveryView = {
       id: string; destinationId: string; name: string; format: string; state: string;
-      attempt: number; size: number; sourceJobId: string | null; url: string | null; error: string | null;
+      attempt: number; size: number; sourceJobId: string | null; sourceRenderId?: string | null; url: string | null; error: string | null;
     };
     if (sub === 'publish') {
       const jobId = positionals[2] ?? fail('usage: lw deliveries publish <jobId> --destination <id> --name "…" [--format <format>] [--idempotency-key <key>]');
@@ -733,7 +775,7 @@ switch (cmd) {
       out(delivery);
       if (!values.json) {
         console.log(`${delivery.state.padEnd(18)} ${delivery.id}  ${delivery.name}.${delivery.format} → ${delivery.destinationId}`);
-        console.log(`${delivery.size} B · attempt ${delivery.attempt}${delivery.sourceJobId ? ` · job ${delivery.sourceJobId}` : ''}`);
+        console.log(`${delivery.size} B · attempt ${delivery.attempt}${delivery.sourceJobId ? ` · job ${delivery.sourceJobId}` : ''}${delivery.sourceRenderId ? ` · render ${delivery.sourceRenderId}` : ''}`);
         if (delivery.url) console.log(delivery.url);
         if (delivery.error) console.log(`error: ${delivery.error}`);
       }
@@ -1702,11 +1744,12 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   apply <file> [--dry-run] [--prune]   apply a governance document (dry-run shows the diff; prune removes store-only entries)
   links [--all] · links create <toolId> [key=value ...] [--open] · links revoke <id>
   destinations                list the fixed organization targets available to this principal (no secrets)
-  renders submit <request.json> [--idempotency-key <key>]   submit a recoverable single render
+  renders submit <request.json> [--idempotency-key <key>] [--callback-url <url>]   submit a recoverable single render
   renders [list|show <id>|cancel <id>|retry <id>] · renders output <id> --out <file>
   renders evidence <id> --out <file>   download the retained execution receipt
-  render-batches submit <request.json> [--idempotency-key <key>]   submit durable rows
-  render-batches [list|show <id>|cancel <id>|retry <id>] · render-batches manifest <id> --out <file>
+  renders deliver <id> --destination <id> --name "…" [--idempotency-key <key>]   send a finished output to a destination by reference
+  render-batches submit <request.json> [--idempotency-key <key>] [--callback-url <url>]   submit durable rows
+  render-batches [list|show <id>|cancel <id>|retry <id>] · render-batches manifest <id> --out <file> · render-batches archive <id> --out <file>
   deliveries [list|show <id>|retry <id>]
   deliveries publish <jobId> --destination <id> --name "…" [--idempotency-key <key>]   publish a retained render output by reference
   providers [list] · providers add <id> --kind … --label "…" [--options/--mapping/--exposure {json}]
