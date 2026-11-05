@@ -19,6 +19,8 @@ export interface Metrics {
   orgConfigPoll(): void;
   orgConfigError(): void;
   rateLimited(surface: string): void;
+  /** Requests a scoped service token could not make, by route pattern. */
+  tokenScopeRefused(route: string): void;
   /** Notification egress outcomes (plans/35 wave 1): channel smtp|webhook. */
   notify(channel: string, outcome: 'sent' | 'failed'): void;
   /** Response body bytes the origin wrote, by the route's delivery class
@@ -68,6 +70,7 @@ export function createMetrics(): Metrics {
     orgConfigPoll: () => inc('lw_org_config_poll_total', 'org-config polls served (200+304) — the fleet heartbeat.', {}),
     orgConfigError: () => inc('lw_org_config_poll_errors_total', 'org-config polls that failed to assemble.', {}),
     rateLimited: (surface) => inc('lw_rate_limited_total', 'Requests rejected by the per-IP rate limiter.', { surface }),
+    tokenScopeRefused: (route) => inc('lw_token_scope_refused_total', 'Requests refused because a service token\'s scopes do not cover the route.', { route }),
     notify: (channel, outcome) => inc('lw_notify_total', 'Notification deliveries by channel and outcome.', { channel, outcome }),
     originBytes: (cls, bytes) => inc('lw_origin_bytes_total', 'Response body bytes written by the origin, by delivery class.', { class: cls }, bytes),
     snapshot() {

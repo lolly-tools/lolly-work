@@ -31,6 +31,8 @@ const OPTIONS = {
     cookie: { type: 'string' },
     token: { type: 'string' },
     role: { type: 'string' },
+    scopes: { type: 'string' },
+    tools: { type: 'string' },
     expires: { type: 'string' },
     all: { type: 'boolean' },
     open: { type: 'boolean' },
@@ -559,12 +561,15 @@ switch (cmd) {
   case 'tokens': {
     // Service tokens (plans/35 wave 2): automation identity, owner-minted.
     if (sub === 'create') {
-      const label = values.label ?? fail('usage: lw tokens create --label ci --role admin');
-      const role = values.role ?? fail('--role required (viewer|member|author|approver|admin|owner)');
-      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, role, ...(values.days ? { ttlDays: Number(values.days) } : {}) } }) as { id: string; token: string; role: string; expiresAt: string };
+      const label = values.label ?? fail('usage: lw tokens create --label ci --scopes render[,documents,...] [--tools a,b] [--role r] [--days n]');
+      const list = (raw: string | undefined) => raw?.split(',').map((item) => item.trim()).filter(Boolean);
+      const scopes = list(values.scopes);
+      if (!scopes && !values.role) fail('--scopes or --role required: scopes render, documents, files, delivery, catalog.read, audit.read; roles viewer, member, author, approver, admin, owner');
+      const tools = list(values.tools);
+      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, ...(values.role ? { role: values.role } : {}), ...(scopes ? { scopes } : {}), ...(tools ? { tools } : {}), ...(values.days ? { ttlDays: Number(values.days) } : {}) } }) as { id: string; token: string; role: string; scopes: string[] | null; tools: string[] | null; expiresAt: string };
       out(t);
       if (!values.json) {
-        console.log(`${t.id}  role ${t.role}  expires ${t.expiresAt}`);
+        console.log(`${t.id}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}` : 'all that role can reach'}${t.tools ? `  tools ${t.tools.join(',')}` : ''}  expires ${t.expiresAt}`);
         console.log(`token (shown once, store it now): ${t.token}`);
         console.log('use it: LW_TOKEN=<token> lw … (or --token <token>)');
       }
@@ -577,11 +582,11 @@ switch (cmd) {
       break;
     }
     const { tokens } = await call('/api/v1/tokens') as {
-      tokens: Array<{ id: string; label: string; role: string; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null }>;
+      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null }>;
     };
     out(tokens);
     if (!values.json) for (const t of tokens) {
-      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
+      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
     }
     break;
   }
@@ -1678,7 +1683,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --email <dev-user>   sign in via the dev provider
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
-  tokens [create --label <l> --role <r> | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
+  tokens [create --label <l> --scopes <s,...> [--tools <id,...>] [--role <r>] | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   retention run              apply the stated retention policy and sweep expired uploads now (both also run daily on the long-lived server)

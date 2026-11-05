@@ -82,7 +82,8 @@ import { DECLINE_SHOWN_DAYS, closeRequestsForEmail, requestStateFor } from '../a
 import { acceptedNotice, noticeContext, skippedNotice, welcomeNotice } from '../access/messages.ts';
 import { maskEmail, maskEmailSpoken } from '../access/mask.ts';
 import { registerAccessRoutes } from '../access/routes.ts';
-import { SERVICE_TOKEN_PREFIX, TOKEN_ROLES, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
+import { SERVICE_TOKEN_PREFIX, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
+import { parseTokenAuthority, tokenScopeGuard, tokenScopeVocabulary } from '../iam/token-scopes.ts';
 import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
 import {
@@ -2428,7 +2429,7 @@ export function buildApp(deps: AppDeps): App {
       // always answers first, so nothing a browser sends changes here.
       const token = await presentedServiceToken(req);
       if (!token) return sendError(res, 401, 'UNAUTHORIZED', 'no session');
-      return sendJson(res, 200, { kind: 'service', user: { sub: token.user.sub, role: token.user.role, label: token.record.label } },
+      return sendJson(res, 200, { kind: 'service', user: { sub: token.user.sub, role: token.user.role, label: token.record.label, ...(token.record.scopes ? { scopes: token.record.scopes } : {}) } },
         { 'cache-control': 'no-store' });
     }
     if (p.kind === 'guest') {
@@ -3300,7 +3301,8 @@ export function buildApp(deps: AppDeps): App {
   // `/api/auth/session`, which says which token is calling.
   /** The service token a request presents: null when it presents none, false
    *  when the one it presents is unknown, revoked or expired. */
-  const presentedServiceToken = async (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null> => {
+  const presentedTokens = new WeakMap<IncomingMessage, Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null>>();
+  const readServiceToken = async (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null> => {
     const bearer = bearerFromHeader(req.headers.authorization);
     if (!bearer || !bearer.startsWith(SERVICE_TOKEN_PREFIX)) return null;
     const rec = await store.findApiTokenByHash(hashServiceSecret(bearer));
@@ -3308,6 +3310,18 @@ export function buildApp(deps: AppDeps): App {
     void store.touchApiToken(rec.id, new Date().toISOString());
     return { record: rec, user: serviceAccountFor(rec) };
   };
+  /** One lookup per request: the scope guard and the handler read the same answer. */
+  const presentedServiceToken = (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null> => {
+    const known = presentedTokens.get(req);
+    if (known) return known;
+    const read = readServiceToken(req);
+    presentedTokens.set(req, read);
+    return read;
+  };
+  router.setGuard(tokenScopeGuard({
+    scopesOf: async (req) => { const token = await presentedServiceToken(req); return token ? token.record.scopes ?? null : null; },
+    onRefused: (route) => metrics.tokenScopeRefused(route),
+  }));
   const serviceAccountOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
     const token = await presentedServiceToken(req);
     return token ? token.user : null;
@@ -3915,29 +3929,28 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
-  const tokenWire = (t: { id: string; label: string; role: string; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) =>
-    ({ id: t.id, label: t.label, role: t.role, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
+  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) =>
+    ({ id: t.id, label: t.label, role: t.role, scopes: t.scopes ?? null, tools: t.tools ?? null, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
       legacyUnbounded: t.expiresAt === undefined, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null });
 
   router.add('POST', '/api/v1/tokens', async (req, res) => {
     const actor = await requireAction(req, res, 'token.manage');
     if (!actor) return;
-    const body = (await readJson(req)) as { label?: unknown; role?: unknown; ttlDays?: unknown } | null;
+    const body = (await readJson(req)) as { label?: unknown; role?: unknown; scopes?: unknown; tools?: unknown; ttlDays?: unknown } | null;
     const label = typeof body?.label === 'string' ? body.label.trim().slice(0, 80) : '';
     if (!label) return sendError(res, 400, 'INVALID_INPUT', 'label required - name the automation, not a person');
-    if (typeof body?.role !== 'string' || !TOKEN_ROLES.includes(body.role)) {
-      return sendError(res, 400, 'INVALID_INPUT', `role must be one of: ${TOKEN_ROLES.join(', ')}`);
-    }
+    const authority = parseTokenAuthority(body);
+    if ('error' in authority) return sendError(res, 400, 'INVALID_INPUT', authority.error);
     const { secret, tokenHash } = mintServiceSecret();
     let expiresAt: string;
-    try { expiresAt = credentialExpiry(body.ttlDays); }
+    try { expiresAt = credentialExpiry(body?.ttlDays); }
     catch { return sendError(res, 400, 'INVALID_INPUT', 'ttlDays must be an integer from 1 to 365'); }
     const rec = {
-      id: `tok_${randomId(8)}`, label, role: body.role, tokenHash,
+      id: `tok_${randomId(8)}`, label, ...authority, tokenHash,
       createdBy: `user:${actor.id}`, createdAt: new Date().toISOString(), expiresAt,
     };
     await store.putApiToken(rec);
-    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, role: body.role, expiresAt });
+    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, ...authority, expiresAt });
     // The one and only time the secret exists in a response.
     sendJson(res, 201, { ...tokenWire(rec), token: secret }, { 'cache-control': 'no-store' });
   });
@@ -3945,7 +3958,7 @@ export function buildApp(deps: AppDeps): App {
   router.add('GET', '/api/v1/tokens', async (req, res) => {
     if (!(await requireAction(req, res, 'token.manage'))) return;
     const tokens = (await store.listApiTokens()).map(tokenWire);
-    sendJson(res, 200, { tokens, legacyUnboundedCount: tokens.filter(token => token.legacyUnbounded && !token.revokedAt).length });
+    sendJson(res, 200, { tokens, legacyUnboundedCount: tokens.filter(token => token.legacyUnbounded && !token.revokedAt).length, scopeVocabulary: tokenScopeVocabulary() });
   });
 
   router.add('DELETE', '/api/v1/tokens/:id', async (req, res, ctx) => {

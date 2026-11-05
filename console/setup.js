@@ -12,16 +12,30 @@ export async function tokensView(main, { el, field, api, can, refresh }) {
   for (const kind of ['scim', 'service']) {
     if (!can(kind === 'scim' ? 'scim.manage' : 'token.manage')) continue;
     const path = kind === 'scim' ? '/api/v1/scim/tokens' : '/api/v1/tokens';
-    const { tokens } = await api(path);
+    const { tokens, scopeVocabulary } = await api(path);
     const label = el('input', { required: '', maxlength: 80 });
-    const role = el('select', {}, ...['viewer', 'member', 'author', 'approver', 'admin', 'owner'].map(role => el('option', { value: role, selected: role === 'member' ? '' : null }, role)));
+    const scopeChoices = kind === 'service' ? scopeVocabulary?.scopes ?? [] : [];
+    const roleNames = [...(scopeChoices.length ? ['automation'] : []), 'viewer', 'member', 'author', 'approver', 'admin', 'owner'];
+    const preferred = scopeChoices.length ? 'automation' : 'member';
+    const role = el('select', {}, ...roleNames.map(role => el('option', { value: role, selected: role === preferred ? '' : null }, role)));
+    const scopeBoxes = scopeChoices.map(scope => {
+      const box = el('input', { type: 'checkbox', value: scope.id, checked: scope.id === 'render' ? '' : null });
+      return { box, node: el('label', { class: 'chk' }, box, el('span', {}, scope.label, ' ', el('span', { class: 'muted' }, scope.description))) };
+    });
+    const toolList = el('input', { placeholder: 'qr-code, event-card', maxlength: 2000 });
+    const scopesOfForm = () => scopeBoxes.filter(item => item.box.checked).map(item => item.box.value);
+    const toolsOfForm = () => toolList.value.split(',').map(id => id.trim()).filter(Boolean);
+    const scopeWords = (id) => scopeChoices.find(scope => scope.id === id)?.label ?? id;
     const error = el('p', { class: 'form-err', role: 'alert' });
     const secretHost = el('div');
     const create = el('button', { type: 'submit', class: 'primary' }, 'Create token');
     const form = el('form', { onsubmit: async event => {
       event.preventDefault(); error.textContent = ''; create.disabled = true;
       try {
-        const result = await api(path, { method: 'POST', body: kind === 'scim' ? { idp: label.value.trim() } : { label: label.value.trim(), role: role.value } });
+        const scopes = scopesOfForm();
+        const tools = toolsOfForm();
+        const result = await api(path, { method: 'POST', body: kind === 'scim' ? { idp: label.value.trim() }
+          : { label: label.value.trim(), role: role.value, ...(scopes.length ? { scopes } : {}), ...(tools.length ? { tools } : {}) } });
         const secret = el('textarea', { readonly: '', 'aria-label': 'One-time token', rows: 3 });
         secret.value = result.token;
         secretHost.replaceChildren(el('p', {}, 'Store this token now. It cannot be recovered later.'), secret,
@@ -29,7 +43,11 @@ export async function tokensView(main, { el, field, api, can, refresh }) {
         secret.focus(); secret.select();
       } catch (failure) { error.textContent = failure.message; create.disabled = false; }
     } }, el('div', { class: 'formrow' }, field(kind === 'scim' ? 'Identity provider id' : 'Automation label', label),
-      kind === 'service' ? field('Role', role) : null), el('p', {}, create), error, secretHost);
+      kind === 'service' ? field('Role', role) : null),
+      scopeBoxes.length ? el('fieldset', { class: 'policy-fields stack token-scopes' }, el('legend', {}, 'What this token may do'), el('div', { class: 'chk-list' }, ...scopeBoxes.map(item => item.node)),
+        el('p', { class: 'muted' }, 'With no box ticked, a token gets all that its role can reach. The automation role needs at least one.')) : null,
+      scopeBoxes.length ? field('Only these tools (optional)', toolList) : null,
+      el('p', {}, create), error, secretHost);
     main.append(el('section', { class: 'card stack' }, el('h2', {}, kind === 'scim' ? 'SCIM provisioning' : 'Service automation'),
       kind === 'scim' ? el('p', {}, 'Use primary or a configured OIDC provider id. Tokens expire after 90 days. Provisioning endpoint: ', el('code', {}, `${location.origin}/scim/v2`)) : null,
       form,
@@ -41,7 +59,10 @@ export async function tokensView(main, { el, field, api, can, refresh }) {
           catch (failure) { status.textContent = failure.message; revoke.disabled = false; }
         } }, 'Revoke');
         return el('p', {}, el('strong', {}, token.idp ?? token.label), ' ',
-          token.role ? `${token.role}. ` : '', `Created ${new Date(token.createdAt).toLocaleString()}. `,
+          token.role ? `${token.role}. ` : '',
+          kind === 'service' ? (token.scopes ? `Can: ${token.scopes.map(scopeWords).join(', ')}. ` : 'All that its role can reach. ') : '',
+          token.tools ? `Only these tools: ${token.tools.join(', ')}. ` : '',
+          `Created ${new Date(token.createdAt).toLocaleString()}. `,
           token.expiresAt ? `Expires ${new Date(token.expiresAt).toLocaleString()}. ` : '',
           token.lastUsedAt ? `Last used ${new Date(token.lastUsedAt).toLocaleString()}. ` : 'Not used yet. ',
           token.revokedAt ? 'Revoked' : revoke, ' ', status);

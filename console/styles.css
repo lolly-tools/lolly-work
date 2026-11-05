@@ -698,6 +698,8 @@ label { display: block; font-size: 11px; font-weight: 600; text-transform: upper
 
 /* Tool rules keep their order visible beside the move and remove controls. */
 .policy-fields { border: 0; padding: 0; min-width: 0; margin: 0; }
+.token-scopes { margin-block: var(--sp-6); }
+.token-scopes legend { font-weight: 600; margin-bottom: var(--sp-4); }
 .policy-input { margin-block: 20px; }
 .policy-rule { margin-block: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--grid); }
 .policy-rule-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
