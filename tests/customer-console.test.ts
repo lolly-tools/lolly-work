@@ -89,7 +89,38 @@ test('one-time service credentials clear on acknowledgment and do not fetch deni
     const secret = p.main.querySelector('textarea'); assert.equal(secret.value, token);
     assert.equal(p.main.querySelector('button[type="submit"]').disabled, true);
     assert.equal(p.w.localStorage.length, 0); assert.doesNotMatch(p.w.location.href, /fixture-secret/);
+    const settings = p.main.querySelectorAll('textarea')[1];
+    assert.match(settings.value, /\/api\/v1\/mcp/); assert.match(settings.value, /LW_TOKEN/);
+    assert.ok(!settings.value.includes(token), 'the MCP settings name a variable and never hold the token');
     click(p.main, 'I have stored the token'); assert.equal(secret.value, ''); assert.equal(p.main.querySelector('textarea'), null); assert.equal(refreshed, 1);
+  } finally { p.dom.window.close(); }
+});
+
+test('the service token form offers scopes in plain words and the list reads them back', async () => {
+  const p = page(); const calls: any[] = [];
+  const vocabulary = { version: 1, scopes: [
+    { id: 'render', label: 'Render files', description: 'Make files from tools.' },
+    { id: 'audit.read', label: 'Read the audit trail', description: 'Read audit records.' },
+  ] };
+  const rows = [
+    { id: 'tok_a', label: 'Nightly', role: 'automation', scopes: ['render'], tools: ['card'], createdAt: new Date().toISOString() },
+    { id: 'tok_b', label: 'Legacy', role: 'admin', scopes: null, tools: null, createdAt: new Date().toISOString() },
+  ];
+  try {
+    await tokensView(p.main, { ...p.helpers, can: (action: string) => action === 'token.manage', refresh: () => {},
+      api: async (path: string, options?: any) => { calls.push({ path, ...options }); return options?.method === 'POST' ? { token: 'x' } : { tokens: rows, scopeVocabulary: vocabulary }; } });
+    const text = p.main.textContent;
+    assert.match(text, /Render files/);
+    assert.match(text, /Read the audit trail/);
+    assert.match(text, /Can: Render files\./);
+    assert.match(text, /Only these tools: card\./);
+    assert.match(text, /All that its role can reach\./);
+    assert.equal(p.main.querySelector('select').value, 'automation');
+    const inputs = p.main.querySelectorAll('input');
+    inputs[0].value = 'Nightly render';
+    inputs[inputs.length - 1].value = 'card, other';
+    p.main.querySelector('form').dispatchEvent(new p.w.Event('submit', { cancelable: true })); await pause();
+    assert.deepEqual(calls[1].body, { label: 'Nightly render', role: 'automation', scopes: ['render'], tools: ['card', 'other'] });
   } finally { p.dom.window.close(); }
 });
 

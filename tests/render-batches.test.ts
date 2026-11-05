@@ -105,10 +105,71 @@ async function conformance(store: RenderStore) {
   assert.ok(final.rows.every(({ render }) => render.state === 'cancelled' || render.state === 'succeeded'));
 }
 
+const hooked = parseRenderBatchSpec({ toolId: 'card', format: 'svg', callbackUrl: 'https://hooks.example/batches', rows: [{ key: 'one' }, { key: 'two' }] });
+
+/** A batch owes one callback, stored by the call that finishes its last row. */
+async function callbackConformance(store: RenderStore) {
+  const principal = 'user:batch-callbacks';
+  const batch = (await store.insertRenderBatch(newRenderBatch(principal, hooked))).record;
+  assert.equal(batch.request.callbackUrl, 'https://hooks.example/batches');
+  assert.ok(batch.rows.every(({ render }) => render.request.callbackUrl === undefined), 'rows stay silent');
+  const [a, b] = [(await store.claimRender(10_000))!, (await store.claimRender(10_000))!];
+  await store.settleRender(a.id, a.leaseToken!, { state: 'succeeded', output });
+  assert.equal(await store.renderCallbackSummary(batch.id), null, 'one row is not the whole batch');
+  assert.equal(await store.renderCallbackSummary(a.id), null, 'a row owes no callback of its own');
+  await store.settleRender(b.id, b.leaseToken!, { state: 'failed', error: { code: 'BROKEN', message: 'no' } });
+  const entry = (await store.renderCallbackSummary(batch.id))!;
+  assert.equal(entry.state, 'pending');
+
+  // Retrying makes a new parent with its own callback; the finished one keeps its entry.
+  const finished = (await store.getRenderBatch(batch.id, principal))!;
+  const retried = (await store.insertRenderBatch(newRenderBatch(principal, hooked, undefined, finished))).record;
+  assert.equal(await store.renderCallbackSummary(retried.id), null);
+  const retry = (await store.claimRender(10_000))!;
+  await store.settleRender(retry.id, retry.leaseToken!, { state: 'succeeded', output });
+  assert.ok(await store.renderCallbackSummary(retried.id));
+  assert.deepEqual(await store.renderCallbackSummary(batch.id), entry);
+
+  // A batch cancel that finishes the batch stores the entry too, and exactly once.
+  const stopped = (await store.insertRenderBatch(newRenderBatch(principal, hooked))).record;
+  await store.cancelRenderBatch(stopped.id, principal);
+  const cancelled = (await store.renderCallbackSummary(stopped.id))!;
+  await store.cancelRenderBatch(stopped.id, principal);
+  assert.deepEqual(await store.renderCallbackSummary(stopped.id), cancelled);
+
+  // The last two rows finishing at once must not each decide the other is still running.
+  for (let round = 0; round < 12; round++) {
+    const raced = (await store.insertRenderBatch(newRenderBatch(principal, hooked))).record;
+    const claims = [(await store.claimRender(10_000))!, (await store.claimRender(10_000))!];
+    await Promise.all(claims.map((claim) => store.settleRender(claim.id, claim.leaseToken!, { state: 'succeeded', output })));
+    assert.ok(await store.renderCallbackSummary(raced.id), `round ${round}: the last row stored the callback`);
+  }
+
+  // A cancel racing the last row settles to one entry whichever wins.
+  const contested = (await store.insertRenderBatch(newRenderBatch(principal, hooked))).record;
+  const live = [(await store.claimRender(10_000))!, (await store.claimRender(10_000))!];
+  await Promise.all([store.cancelRenderBatch(contested.id, principal),
+    ...live.map((claim) => store.settleRender(claim.id, claim.leaseToken!, { state: 'succeeded', output }))]);
+  assert.ok(await store.renderCallbackSummary(contested.id));
+
+  // A row that ran out of attempts can be the one that finishes the batch.
+  const fragile = parseRenderBatchSpec({ toolId: 'card', format: 'svg', maxAttempts: 1, callbackUrl: 'https://hooks.example/batches', rows: [{ key: 'one' }] });
+  const lost = (await store.insertRenderBatch(newRenderBatch(principal, fragile))).record;
+  await store.claimRender(30);
+  await delay(60);
+  assert.equal(await store.claimRender(1_000), null);
+  assert.ok(await store.renderCallbackSummary(lost.id), 'an exhausted last row finishes the batch');
+}
+
 test('durable batch memory conformance: atomic children, cancellation, retry and row recovery', async () => conformance(createMemoryStore()));
 test('durable batch Postgres conformance: atomic children, cancellation, retry and row recovery', {
   skip: !process.env.LW_TEST_DATABASE_URL && 'set LW_TEST_DATABASE_URL to run',
 }, async () => withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, conformance));
+
+test('batch callback memory conformance: one entry, stored when the last row finishes', async () => callbackConformance(createMemoryStore()));
+test('batch callback Postgres conformance: one entry, stored when the last row finishes', {
+  skip: !process.env.LW_TEST_DATABASE_URL && 'set LW_TEST_DATABASE_URL to run',
+}, async () => withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, callbackConformance));
 
 test('batch requests bound expansion, preserve row identity and reject ambiguous or unsafe input', () => {
   const valid = { toolId: 'card', format: 'svg', rows: [{ key: 'uk', inputs: { title: 'Hello' } }] };

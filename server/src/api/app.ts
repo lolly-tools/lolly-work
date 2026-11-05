@@ -82,7 +82,8 @@ import { DECLINE_SHOWN_DAYS, closeRequestsForEmail, requestStateFor } from '../a
 import { acceptedNotice, noticeContext, skippedNotice, welcomeNotice } from '../access/messages.ts';
 import { maskEmail, maskEmailSpoken } from '../access/mask.ts';
 import { registerAccessRoutes } from '../access/routes.ts';
-import { SERVICE_TOKEN_PREFIX, TOKEN_ROLES, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
+import { SERVICE_TOKEN_PREFIX, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
+import { parseTokenAuthority, tokenScopeGuard, tokenScopeVocabulary } from '../iam/token-scopes.ts';
 import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
 import {
@@ -209,10 +210,14 @@ import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes } from '../automation/discovery.ts';
-import { mayRenderTool, mayUseTool, PolicyRefusal } from '../automation/effective-contract.ts';
+import { registerOrgMcp } from '../automation/org-mcp.ts';
+import { mayRenderTool, mayUseTool, PolicyRefusal, policyErrors } from '../automation/effective-contract.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
 import { registerRenderRoutes } from '../renders/routes.ts';
+import { prepareRenderApi, registerRenderApi } from '../render-api/routes.ts';
+import { renderOutputTokens } from '../renders/output-token.ts';
+import { callbackUrlAllowed } from '../automation/callback-policy.ts';
 import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
@@ -455,16 +460,18 @@ export function buildApp(deps: AppDeps): App {
     const token = automationResultToken(job);
     return jobWire(job, automationResultUrl(job, token), job.state === 'done' ? token : undefined);
   };
+  const renderTokens = renderOutputTokens(secrets.link, linkKeys(secrets));
+  const renderApi = prepareRenderApi(config.renderApi, secrets, store, config.instance.baseUrl);
   const automationJobs = new AutomationQueue({
     store,
     blobs,
     fetchImpl,
     callbackSecret: secrets.webhook,
-    // Callback egress is an instance decision, never an arbitrary request-time
-    // URL. Reuse the configured webhook endpoint as the initial allowlist.
-    callbackAllowed: (url) => url === config.notify.webhook?.url,
+    // Callback egress is an instance decision, never an arbitrary request-time URL.
+    callbackAllowed: (url) => callbackUrlAllowed(config, url),
     resultUrl: automationResultUrl,
     resultToken: automationResultToken,
+    renderCallbacks: { baseUrl: config.instance.baseUrl, renderToken: renderTokens.mint, renderBody: renderApi.callbackBody },
     ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
   });
   // The Chromium render worker is active only when both the URL and the shared
@@ -571,6 +578,9 @@ export function buildApp(deps: AppDeps): App {
   // and an authenticated relay without its password can never send.
   if (config.notify.webhook && !secrets.webhook) {
     throw new Error('notify.webhook is configured but LW_WEBHOOK_SECRET is not set');
+  }
+  if (config.automation.callbacks.allowedOrigins.length && !secrets.webhook) {
+    throw new Error('automation.callbacks.allowedOrigins is configured but LW_WEBHOOK_SECRET is not set');
   }
   if (config.notify.smtp?.user && !secrets.smtpPassword) {
     throw new Error('notify.smtp names a user but LW_SMTP_PASSWORD is not set');
@@ -2433,7 +2443,7 @@ export function buildApp(deps: AppDeps): App {
       // always answers first, so nothing a browser sends changes here.
       const token = await presentedServiceToken(req);
       if (!token) return sendError(res, 401, 'UNAUTHORIZED', 'no session');
-      return sendJson(res, 200, { kind: 'service', user: { sub: token.user.sub, role: token.user.role, label: token.record.label } },
+      return sendJson(res, 200, { kind: 'service', user: { sub: token.user.sub, role: token.user.role, label: token.record.label, ...(token.record.scopes ? { scopes: token.record.scopes } : {}) } },
         { 'cache-control': 'no-store' });
     }
     if (p.kind === 'guest') {
@@ -3305,7 +3315,8 @@ export function buildApp(deps: AppDeps): App {
   // `/api/auth/session`, which says which token is calling.
   /** The service token a request presents: null when it presents none, false
    *  when the one it presents is unknown, revoked or expired. */
-  const presentedServiceToken = async (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null> => {
+  const presentedTokens = new WeakMap<IncomingMessage, Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null>>();
+  const readServiceToken = async (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null> => {
     const bearer = bearerFromHeader(req.headers.authorization);
     if (!bearer || !bearer.startsWith(SERVICE_TOKEN_PREFIX)) return null;
     const rec = await store.findApiTokenByHash(hashServiceSecret(bearer));
@@ -3313,6 +3324,18 @@ export function buildApp(deps: AppDeps): App {
     void store.touchApiToken(rec.id, new Date().toISOString());
     return { record: rec, user: serviceAccountFor(rec) };
   };
+  /** One lookup per request: the scope guard and the handler read the same answer. */
+  const presentedServiceToken = (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | false | null> => {
+    const known = presentedTokens.get(req);
+    if (known) return known;
+    const read = readServiceToken(req);
+    presentedTokens.set(req, read);
+    return read;
+  };
+  router.setGuard(tokenScopeGuard({
+    scopesOf: async (req) => { const token = await presentedServiceToken(req); return token ? token.record.scopes ?? null : null; },
+    onRefused: (route) => metrics.tokenScopeRefused(route),
+  }));
   const serviceAccountOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
     const token = await presentedServiceToken(req);
     return token ? token.user : null;
@@ -3353,6 +3376,7 @@ export function buildApp(deps: AppDeps): App {
     size: delivery.size,
     sha256: delivery.sha256,
     sourceJobId: delivery.sourceJobId ?? null,
+    sourceRenderId: delivery.sourceRenderId ?? null,
     state: delivery.state,
     attempt: delivery.attempt,
     approvalId: delivery.approvalId ?? null,
@@ -3687,7 +3711,43 @@ export function buildApp(deps: AppDeps): App {
   // Publish one completed automation render by REFERENCE. The result blob is
   // already the immutable output owned by the job, so this path never asks the
   // caller to download and upload it again and never creates a second blob.
-  router.add('POST', '/api/v1/jobs/:id/deliveries', async (req, res, ctx) => {
+  /** A finished output a delivery sends by reference: where its bytes are, what
+   *  they must match and how the receipt names them. The two loaders below differ
+   *  in what they own; everything after them is one path. */
+  interface RetainedOutput {
+    format: string; ref: string; sha256: string; mime?: string;
+    facts: { sourceJobId: string } | { sourceRenderId: string };
+    codes: { undeliverable: string; gone: string; corrupt: string };
+  }
+  const loadJobOutput = async (id: string, owner: string, res: ServerResponse): Promise<RetainedOutput | null> => {
+    const job = await store.getAutomationJob(id, owner);
+    if (!job) { sendError(res, 404, 'NOT_FOUND', 'no such automation job'); return null; }
+    if (job.state !== 'done') { sendError(res, 409, 'JOB_NOT_DONE', 'the automation job has not completed'); return null; }
+    const format = job.verb === 'render' && typeof job.request.format === 'string'
+      ? job.request.format.trim().toLowerCase()
+      : '';
+    if (!format || !job.resultRef || !job.resultSha256) {
+      sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'only a completed render output can be delivered');
+      return null;
+    }
+    return { format, ref: job.resultRef, sha256: job.resultSha256, ...(job.resultMime ? { mime: job.resultMime } : {}), facts: { sourceJobId: job.id },
+      codes: { undeliverable: 'JOB_OUTPUT_NOT_DELIVERABLE', gone: 'JOB_OUTPUT_GONE', corrupt: 'JOB_OUTPUT_CORRUPT' } };
+  };
+  const loadRenderOutput = async (id: string, owner: string, res: ServerResponse): Promise<RetainedOutput | null> => {
+    const render = await store.getRender(id, owner);
+    if (!render) { sendError(res, 404, 'NOT_FOUND', 'no such render'); return null; }
+    try { await currentRenderCaller(owner, render.request); }
+    catch (e) {
+      if (!(e instanceof RenderResourceError)) throw e;
+      sendError(res, e.status, e.code, e.message);
+      return null;
+    }
+    if (render.state !== 'succeeded' || !render.output) { sendError(res, 409, 'RENDER_NOT_SUCCEEDED', 'render has no successful output'); return null; }
+    if (render.output.expiredAt) { sendError(res, 410, 'OUTPUT_EXPIRED', 'output retention has removed this output; its record and receipt remain'); return null; }
+    return { format: render.request.format, ref: render.output.ref, sha256: render.output.sha256, mime: render.output.mime, facts: { sourceRenderId: render.id },
+      codes: { undeliverable: 'OUTPUT_NOT_DELIVERABLE', gone: 'OUTPUT_UNAVAILABLE', corrupt: 'OUTPUT_INTEGRITY' } };
+  };
+  const deliverRetainedOutput = (load: typeof loadJobOutput): Handler => async (req, res, ctx) => {
     const body = (await readJson(req, 32 * 1024)) as {
       destinationId?: unknown;
       name?: unknown;
@@ -3722,16 +3782,10 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 403, 'HUMAN_APPROVAL_REQUIRED', 'this destination requires a member to request human approval');
     }
 
-    const jobPrincipal = user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`;
-    const job = await store.getAutomationJob(ctx.params.id as string, jobPrincipal);
-    if (!job) return sendError(res, 404, 'NOT_FOUND', 'no such automation job');
-    if (job.state !== 'done') return sendError(res, 409, 'JOB_NOT_DONE', 'the automation job has not completed');
-    const format = job.verb === 'render' && typeof job.request.format === 'string'
-      ? job.request.format.trim().toLowerCase()
-      : '';
-    if (!format || !job.resultRef || !job.resultSha256) {
-      return sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'only a completed render output can be delivered');
-    }
+    const owner = user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`;
+    const output = await load(ctx.params.id as string, owner, res);
+    if (!output) return;
+    const { format } = output;
     if (body?.format !== undefined && (typeof body.format !== 'string' || body.format.trim().toLowerCase() !== format)) {
       return sendError(res, 409, 'OUTPUT_FORMAT_MISMATCH', 'format must match the immutable render output');
     }
@@ -3739,13 +3793,13 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 415, 'FORMAT_NOT_ALLOWED', `${format} is not allowed for this destination`);
     }
     const mime = deliveryContentType(format);
-    if (job.resultMime && job.resultMime.split(';', 1)[0] !== mime.split(';', 1)[0]) {
-      return sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'the render output MIME does not match its format');
+    if (output.mime && output.mime.split(';', 1)[0] !== mime.split(';', 1)[0]) {
+      return sendError(res, 409, output.codes.undeliverable, 'the render output MIME does not match its format');
     }
     const maxBytes = Math.min(config.delivery.maxBytes, destination.maxBytes ?? config.delivery.maxBytes);
-    const source = await blobs.get(job.resultRef);
-    if (!source) return sendError(res, 410, 'JOB_OUTPUT_GONE', 'the retained render output is no longer available');
-    if (!source.stat.size) return sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'the render output is empty');
+    const source = await blobs.get(output.ref);
+    if (!source) return sendError(res, 410, output.codes.gone, 'the retained render output is no longer available');
+    if (!source.stat.size) return sendError(res, 409, output.codes.undeliverable, 'the render output is empty');
     if (source.stat.size > maxBytes) {
       return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `delivery exceeds the ${maxBytes} byte cap`);
     }
@@ -3756,8 +3810,8 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `delivery exceeds the ${maxBytes} byte cap`);
     }
     const sha256 = sha256Hex(bytes);
-    if (bytes.length !== source.stat.size || sha256 !== job.resultSha256) {
-      return sendError(res, 409, 'JOB_OUTPUT_CORRUPT', 'the retained render output failed its integrity check');
+    if (bytes.length !== source.stat.size || sha256 !== output.sha256) {
+      return sendError(res, 409, output.codes.corrupt, 'the retained render output failed its integrity check');
     }
     const gate = await verifyLollyExport(bytes, format);
     if (!gate.ok) return sendError(res, 422, 'NOT_LOLLY_EXPORT', gate.detail ?? 'only Lolly exports may be delivered');
@@ -3765,7 +3819,7 @@ export function buildApp(deps: AppDeps): App {
     const version = destinationVersion(destination);
     const requestHash = sha256Hex(JSON.stringify({
       destinationId, version, name, format, contentType: mime, size: bytes.length, sha256,
-      sourceJobId: job.id,
+      ...output.facts,
     }));
     const idempotencyKey = String(req.headers['idempotency-key'] ?? '').trim();
     if (idempotencyKey.length > 200) return sendError(res, 400, 'INVALID_INPUT', 'Idempotency-Key is at most 200 characters');
@@ -3794,8 +3848,8 @@ export function buildApp(deps: AppDeps): App {
       size: bytes.length,
       sha256,
       requestHash,
-      sourceRef: job.resultRef,
-      sourceJobId: job.id,
+      sourceRef: output.ref,
+      ...output.facts,
       state: approvalChain ? 'awaiting-approval' : 'queued',
       attempt: 0,
       ...(approvalId ? { approvalId } : {}),
@@ -3830,14 +3884,14 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 502, 'DELIVERY_STAGE_FAILED', (error as Error).message);
     }
     await audit(principal, 'delivery.created', `delivery:${id}`, {
-      destinationId, name, format, size: bytes.length, sha256, sourceJobId: job.id,
+      destinationId, name, format, size: bytes.length, sha256, ...output.facts,
       ...(approvalId ? { approvalId } : {}),
     });
     if (approvalChain && approvalId) {
       const approval = await store.getApproval(approvalId);
       const step = approval ? currentStep(approval) : null;
       await audit(principal, 'approval.submit', `approval:${approvalId}`, {
-        chainId: approvalChain.id, subjectType: 'delivery', deliveryId: id, sourceJobId: job.id,
+        chainId: approvalChain.id, subjectType: 'delivery', deliveryId: id, ...output.facts,
       });
       if (step) {
         await store.putMessage({
@@ -3869,7 +3923,9 @@ export function buildApp(deps: AppDeps): App {
     sendJson(res, 201, deliveryWire(completed), {
       location: `/api/v1/deliveries/${id}`, 'cache-control': 'private, no-store',
     });
-  });
+  };
+  router.add('POST', '/api/v1/jobs/:id/deliveries', deliverRetainedOutput(loadJobOutput));
+  router.add('POST', '/api/v1/renders/:id/deliveries', deliverRetainedOutput(loadRenderOutput));
 
   router.add('GET', '/api/v1/deliveries', async (req, res) => {
     const user = await requireDeliveryActor(req, res);
@@ -3920,29 +3976,28 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
-  const tokenWire = (t: { id: string; label: string; role: string; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) =>
-    ({ id: t.id, label: t.label, role: t.role, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
+  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) =>
+    ({ id: t.id, label: t.label, role: t.role, scopes: t.scopes ?? null, tools: t.tools ?? null, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
       legacyUnbounded: t.expiresAt === undefined, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null });
 
   router.add('POST', '/api/v1/tokens', async (req, res) => {
     const actor = await requireAction(req, res, 'token.manage');
     if (!actor) return;
-    const body = (await readJson(req)) as { label?: unknown; role?: unknown; ttlDays?: unknown } | null;
+    const body = (await readJson(req)) as { label?: unknown; role?: unknown; scopes?: unknown; tools?: unknown; ttlDays?: unknown } | null;
     const label = typeof body?.label === 'string' ? body.label.trim().slice(0, 80) : '';
     if (!label) return sendError(res, 400, 'INVALID_INPUT', 'label required - name the automation, not a person');
-    if (typeof body?.role !== 'string' || !TOKEN_ROLES.includes(body.role)) {
-      return sendError(res, 400, 'INVALID_INPUT', `role must be one of: ${TOKEN_ROLES.join(', ')}`);
-    }
+    const authority = parseTokenAuthority(body);
+    if ('error' in authority) return sendError(res, 400, 'INVALID_INPUT', authority.error);
     const { secret, tokenHash } = mintServiceSecret();
     let expiresAt: string;
-    try { expiresAt = credentialExpiry(body.ttlDays); }
+    try { expiresAt = credentialExpiry(body?.ttlDays); }
     catch { return sendError(res, 400, 'INVALID_INPUT', 'ttlDays must be an integer from 1 to 365'); }
     const rec = {
-      id: `tok_${randomId(8)}`, label, role: body.role, tokenHash,
+      id: `tok_${randomId(8)}`, label, ...authority, tokenHash,
       createdBy: `user:${actor.id}`, createdAt: new Date().toISOString(), expiresAt,
     };
     await store.putApiToken(rec);
-    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, role: body.role, expiresAt });
+    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, ...authority, expiresAt });
     // The one and only time the secret exists in a response.
     sendJson(res, 201, { ...tokenWire(rec), token: secret }, { 'cache-control': 'no-store' });
   });
@@ -3950,7 +4005,7 @@ export function buildApp(deps: AppDeps): App {
   router.add('GET', '/api/v1/tokens', async (req, res) => {
     if (!(await requireAction(req, res, 'token.manage'))) return;
     const tokens = (await store.listApiTokens()).map(tokenWire);
-    sendJson(res, 200, { tokens, legacyUnboundedCount: tokens.filter(token => token.legacyUnbounded && !token.revokedAt).length });
+    sendJson(res, 200, { tokens, legacyUnboundedCount: tokens.filter(token => token.legacyUnbounded && !token.revokedAt).length, scopeVocabulary: tokenScopeVocabulary() });
   });
 
   router.add('DELETE', '/api/v1/tokens/:id', async (req, res, ctx) => {
@@ -4253,7 +4308,7 @@ export function buildApp(deps: AppDeps): App {
     const actor = await requireAction(req, res, 'instance.config');
     if (!actor) return;
     const result = await runRetention({ config, store, blobs });
-    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept || result.approvalArtifactsRemoved) {
+    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept || result.approvalArtifactsRemoved || result.renderOutputsExpired || result.renderOutputsRemoved) {
       await audit(`user:${actor.id}`, 'retention.run', 'instance', { ...result });
     }
     sendJson(res, 200, result);
@@ -10453,6 +10508,7 @@ export function buildApp(deps: AppDeps): App {
   };
   const durableRenders = new RenderRunner({
     store, blobs,
+    onSettled: () => automationJobs.sendCallbacks(),
     ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
     ...(deps.renderConcurrency !== undefined ? { concurrency: deps.renderConcurrency } : {}),
     execute: async (record, signal) => brand.run(async () => {
@@ -10471,7 +10527,7 @@ export function buildApp(deps: AppDeps): App {
       return result;
     }),
   });
-  registerRenderRoutes(router, {
+  const durable = registerRenderRoutes(router, {
     store, blobs,
     authenticate: async (req) => {
       const caller = await automationCaller(req);
@@ -10481,8 +10537,35 @@ export function buildApp(deps: AppDeps): App {
     validate: validateRenderRequest,
     ...(deps.onRenderRunner ? { kick: () => durableRenders.kick(), cancel: (id: string) => durableRenders.cancel(id) } : {}),
     audit: async (principal, action, id, facts) => { await audit(principal, action, `${id.startsWith('rbt_') ? 'render-batch' : 'render'}:${id}`, facts); },
+    callbackAllowed: (url) => !!secrets.webhook && callbackUrlAllowed(config, url),
+    callbacksChanged: () => automationJobs.sendCallbacks(),
+    resolveBinding: async (principal, request, binding) => {
+      const caller = await currentRenderCaller(principal, request);
+      return resolveBindingRows(binding, hostedAssetResolverFor(caller.groups));
+    },
+    outputTokenPrincipal: renderTokens.principal,
   });
   deps.onRenderRunner?.(durableRenders);
+  registerRenderApi(router, {
+    prepared: renderApi, config: config.renderApi, baseUrl: config.instance.baseUrl, store, blobs,
+    tokenPrincipal: async (req) => { const token = await presentedServiceToken(req); return token ? `service:${token.user.id}` : null; },
+    adminMay: async (req) => {
+      const member = await memberOf(req);
+      return !!member && evaluate({ userId: member.id, groups: member.groups, role: member.role as Role }, 'instance.config', ['*'], await store.listGrants());
+    },
+    submit: durable.submit,
+    authorize: async (principal, request) => { await currentRenderCaller(principal, request); },
+    validate: validateRenderRequest,
+    callbackAllowed: (url) => !!secrets.webhook && callbackUrlAllowed(config, url),
+    policyProblems: async (principal, toolId, inputs, format) => {
+      const caller = await currentRenderCaller(principal, { toolId } as RenderSpec);
+      const { overlays, groups } = await automationPolicy(caller, toolId, format);
+      return policyErrors(inputs, overlays.get(toolId), groups);
+    },
+    cancel: (id) => durableRenders.cancel(id),
+    audit: async (principal, action, subject, facts) => { await audit(principal, action, subject, facts); },
+    renderEpoch: async () => `${brand.current()?.revision ?? 0}:${await instanceCatalogVersion()}`,
+  });
 
   const requireAutomationTools = async (
     res: ServerResponse,
@@ -10618,12 +10701,13 @@ export function buildApp(deps: AppDeps): App {
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
-    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, fileReferences: uploadPolicy(config).enabled,
+    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
     providerRefs: async (groups) => {
       await providersReady;
       return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
     },
   });
+  registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit });
 
   for (const verb of ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize'] as const) {
     router.add('POST', `/api/v1/${verb}`, async (req, res, ctx) => {
@@ -11376,7 +11460,7 @@ export function buildApp(deps: AppDeps): App {
   // reach public docs or the SPA fallback. Absent shellDir means these routes
   // are not added. HEAD handles only public docs, never private GET handlers.
   // serveShell is defined above the tool file routes, which also use it.
-  const RESERVED_PREFIX = /^(api|catalog|tools|render|l|e|o|admin|scim|healthz|activate|connect)(\/|$)/;
+  const RESERVED_PREFIX = /^(api|catalog|compat|tools|render|l|e|o|admin|scim|healthz|activate|connect)(\/|$)/;
   if (shellDir && serveShell) {
     const serveShellDocs = async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<boolean> => {
       const doc = shellDocsPath(rel);

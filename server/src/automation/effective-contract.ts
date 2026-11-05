@@ -32,7 +32,7 @@ export interface PolicyEffect {
 
 /** The account an automation request runs as: a member or service account, or
  *  null for an anonymous caller on an open deployment. */
-export interface ToolCaller { id: string; groups: string[]; role: string }
+export interface ToolCaller { id: string; groups: string[]; role: string; tokenScopes?: readonly string[]; tokenTools?: readonly string[] }
 
 type AccessMode = 'open' | 'gated' | 'per-tool';
 
@@ -42,6 +42,7 @@ type AccessMode = 'open' | 'gated' | 'per-tool';
  *  hides it from everyone. */
 export function mayUseTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode): boolean {
   if (!user) return mode === 'open' && toolVisibleTo(overlays.get(toolId), []);
+  if (user.tokenTools && !user.tokenTools.includes(toolId)) return false;
   const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
   const resources = [`tool:${toolId}`, '*'];
   const decision = grantDecision(principal, 'tool.use', resources, grants);
@@ -54,6 +55,7 @@ export function mayUseTool(user: ToolCaller | null, toolId: string, overlays: Ma
 export function mayRenderTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode): boolean {
   if (!mayUseTool(user, toolId, overlays, grants, mode)) return false;
   if (!user) return mode === 'open';
+  if (user.tokenScopes && !user.tokenScopes.includes('render')) return false;
   return evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'export.server', [`tool:${toolId}`, '*'], grants);
 }
 

@@ -54,6 +54,10 @@ export interface RenderRunnerOptions {
   retryDelayMs?: number;
   maxOutputBytes?: number;
   onError?: (error: unknown) => void;
+  /** Runs after an attempt ends. A hint only: the store has already recorded the
+   *  outcome and any callback it owes, and a process that stops before this runs
+   *  loses nothing. The callback outbox uses this to look without waiting for its timer. */
+  onSettled?: () => void;
 }
 
 /** Polls durable requests. At-least-once execution, fenced immutable publication. */
@@ -124,6 +128,9 @@ export class RenderRunner {
       }
     } finally {
       this.claiming = false; finishClaim();
+      // A claim can exhaust abandoned renders, which owe callbacks. With a timer
+      // the outbox looks on its own clock; without one this is its only cue.
+      if (!this.timer) this.options.onSettled?.();
       if (this.kickAgain && !this.stopped) this.kick();
     }
   }
@@ -262,6 +269,7 @@ export class RenderRunner {
       // Cancellation fences publication immediately, but capacity follows physical completion.
       await physicalWork.catch(() => {});
       this.controllers.delete(record.id);
+      this.options.onSettled?.();
     }
   }
 }

@@ -16,11 +16,14 @@
  */
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
-import { closeSync, constants, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, createWriteStream, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileSource, fileStateStore, resumableUpload, UploadClientError, type UploadTarget } from './upload-client.ts';
 import { runEdgeProbe } from '../server/src/edge/probe.ts';
+import { runRenderApi } from './render-api.ts';
 
 const CONFIG_DIR = join(homedir(), '.config', 'lolly-work');
 const SESSION_FILE = join(CONFIG_DIR, 'session');
@@ -32,6 +35,9 @@ const OPTIONS = {
     cookie: { type: 'string' },
     token: { type: 'string' },
     role: { type: 'string' },
+    'token-env': { type: 'string' },
+    scopes: { type: 'string' },
+    tools: { type: 'string' },
     expires: { type: 'string' },
     all: { type: 'boolean' },
     open: { type: 'boolean' },
@@ -77,6 +83,19 @@ const OPTIONS = {
     destination: { type: 'string' },
     format: { type: 'string' },
     'idempotency-key': { type: 'string' },
+    'callback-url': { type: 'string' },
+    // `lw render-api`: moving off a hosted render API.
+    from: { type: 'string' },
+    'source-url': { type: 'string' },
+    'max-pages': { type: 'string' },
+    'no-previews': { type: 'boolean' },
+    template: { type: 'string' },
+    values: { type: 'string' },
+    reference: { type: 'string' },
+    regions: { type: 'string' },
+    'max-changed': { type: 'string' },
+    tolerance: { type: 'string' },
+    'spend-credits': { type: 'boolean' },
     rm: { type: 'boolean' },
     // SCIM (plans/31 §8): the label for the IdP connector a provisioning token
     // belongs to, carried onto every audit event the token drives.
@@ -359,16 +378,55 @@ switch (cmd) {
     const keyHeaders: Record<string, string> = values['idempotency-key'] ? { 'idempotency-key': values['idempotency-key'] } : {};
     let value: unknown;
     if (action === 'submit') {
-      if (!id) fail(`${cmd} submit <request.json> [--idempotency-key <key>]`);
+      if (!id) fail(`${cmd} submit <request.json> [--idempotency-key <key>] [--callback-url <url>]`);
       let body: unknown;
       try { body = JSON.parse(readFileSync(id, 'utf8')); }
       catch { fail(`cannot read render request JSON: ${id}`); }
+      if (values['callback-url']) {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) fail('--callback-url needs a request that is a JSON object');
+        body = { ...(body as Record<string, unknown>), callbackUrl: values['callback-url'] };
+      }
       value = await call(path, { method: 'POST', body, headers: keyHeaders });
     } else if (action === 'list') {
       value = await call(path);
-    } else if (['show', 'retry', 'cancel', ...(batch ? ['manifest'] : ['output', 'evidence'])].includes(action)) {
+    } else if (['show', 'retry', 'cancel', ...(batch ? ['manifest', 'archive'] : ['output', 'evidence', 'deliver'])].includes(action)) {
       if (!id) fail(`${cmd} ${action} <id>`);
       const resource = `${path}/${encodeURIComponent(id)}`;
+      if (action === 'deliver') {
+        const destinationId = values.destination ?? fail('--destination <id> required');
+        const name = values.name ?? fail('--name required');
+        const delivery = await call(`${resource}/deliveries`, {
+          method: 'POST', headers: keyHeaders,
+          body: { destinationId, name, ...(values.format ? { format: values.format } : {}) },
+        }) as { id: string; state: string; name: string; format: string; destinationId: string; url: string | null };
+        out(delivery);
+        if (!values.json) {
+          console.log(`${delivery.id}  ${delivery.state}  ${delivery.name}.${delivery.format} → ${delivery.destinationId}`);
+          if (delivery.state === 'awaiting-approval') console.log('waiting on the destination approval chain');
+          if (delivery.url) console.log(delivery.url);
+        }
+        break;
+      }
+      if (action === 'archive') {
+        if (!values.out) fail(`${cmd} archive <id> --out <file>`);
+        const res = await response(`${resource}/archive`);
+        if (!res.ok || !res.body) {
+          const body = await res.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
+          fail(`${res.status} ${body?.error?.code ?? ''} ${body?.error?.message ?? ''}`.trim());
+        }
+        // Streamed to a temporary name: a dropped connection leaves no file that looks finished.
+        const partial = `${values.out}.part`;
+        try { await pipeline(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(partial, { mode: 0o600 })); }
+        catch (error) {
+          rmSync(partial, { force: true });
+          fail(`the archive download stopped before it finished: ${(error as Error).message}`);
+        }
+        renameSync(partial, values.out);
+        const bytes = statSync(values.out).size;
+        out({ file: values.out, bytes });
+        if (!values.json) console.log(`${values.out} (${bytes} bytes)`);
+        break;
+      }
       if (action === 'output' || action === 'manifest' || action === 'evidence') {
         if (!values.out) fail(`${cmd} ${action} <id> --out <file>`);
         const res = await response(`${resource}/${action === 'output' ? 'output/default' : action}`);
@@ -385,7 +443,7 @@ switch (cmd) {
       value = await call(`${resource}${action === 'retry' ? '/retry' : ''}`, {
         method: action === 'retry' ? 'POST' : action === 'cancel' ? 'DELETE' : 'GET', headers: keyHeaders,
       });
-    } else fail(`${cmd}: use submit, list, show, ${batch ? 'manifest' : 'output, evidence'}, cancel or retry`);
+    } else fail(`${cmd}: use submit, list, show, ${batch ? 'manifest, archive' : 'output, evidence, deliver'}, cancel or retry`);
     if (values.json) out(value);
     else {
       type Row = { id: string; state: string; attempt: number; request: { toolId: string; format: string }; progress?: { done: number; total: number; succeeded: number; failed: number; cancelled: number }; error?: { message: string } };
@@ -585,15 +643,40 @@ switch (cmd) {
     break;
   }
 
+  case 'render-api': {
+    await runRenderApi(sub, { values: values as Record<string, unknown>, call, response, fail, log: (line) => console.log(line), env: process.env });
+    break;
+  }
+
+  case 'mcp': {
+    // Prints settings only: no request, and the token itself is never read or printed.
+    if (sub !== 'config') fail('usage: lw mcp config [--name lolly-work] [--token-env LW_TOKEN] [--json]');
+    const name = values.name ?? 'lolly-work';
+    const tokenEnv = values['token-env'] ?? 'LW_TOKEN';
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) fail('--token-env must be an environment variable name');
+    const endpoint = `${base}/api/v1/mcp`;
+    const settings = { mcpServers: { [name]: { url: endpoint, headers: { Authorization: `Bearer \${env:${tokenEnv}}` } } } };
+    if (values.json) { console.log(JSON.stringify(settings, null, 2)); break; }
+    console.log(`Put a service token in ${tokenEnv}. These settings name the variable and never hold the token.\n`);
+    console.log('Claude Code:');
+    console.log(`  claude mcp add --transport http ${name} ${endpoint} --header "Authorization: Bearer $${tokenEnv}"\n`);
+    console.log('Other clients (.cursor/mcp.json, for example):');
+    console.log(JSON.stringify(settings, null, 2));
+    break;
+  }
+
   case 'tokens': {
     // Service tokens (plans/35 wave 2): automation identity, owner-minted.
     if (sub === 'create') {
-      const label = values.label ?? fail('usage: lw tokens create --label ci --role admin');
-      const role = values.role ?? fail('--role required (viewer|member|author|approver|admin|owner)');
-      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, role, ...(values.days ? { ttlDays: Number(values.days) } : {}) } }) as { id: string; token: string; role: string; expiresAt: string };
+      const label = values.label ?? fail('usage: lw tokens create --label ci --scopes render[,documents,...] [--tools a,b] [--role r] [--days n]');
+      const list = (raw: string | undefined) => raw?.split(',').map((item) => item.trim()).filter(Boolean);
+      const scopes = list(values.scopes);
+      if (!scopes && !values.role) fail('--scopes or --role required: scopes render, documents, files, delivery, catalog.read, audit.read; roles viewer, member, author, approver, admin, owner');
+      const tools = list(values.tools);
+      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, ...(values.role ? { role: values.role } : {}), ...(scopes ? { scopes } : {}), ...(tools ? { tools } : {}), ...(values.days ? { ttlDays: Number(values.days) } : {}) } }) as { id: string; token: string; role: string; scopes: string[] | null; tools: string[] | null; expiresAt: string };
       out(t);
       if (!values.json) {
-        console.log(`${t.id}  role ${t.role}  expires ${t.expiresAt}`);
+        console.log(`${t.id}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}` : 'all that role can reach'}${t.tools ? `  tools ${t.tools.join(',')}` : ''}  expires ${t.expiresAt}`);
         console.log(`token (shown once, store it now): ${t.token}`);
         console.log('use it: LW_TOKEN=<token> lw … (or --token <token>)');
       }
@@ -606,11 +689,11 @@ switch (cmd) {
       break;
     }
     const { tokens } = await call('/api/v1/tokens') as {
-      tokens: Array<{ id: string; label: string; role: string; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null }>;
+      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null }>;
     };
     out(tokens);
     if (!values.json) for (const t of tokens) {
-      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
+      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
     }
     break;
   }
@@ -730,7 +813,7 @@ switch (cmd) {
   case 'deliveries': {
     type DeliveryView = {
       id: string; destinationId: string; name: string; format: string; state: string;
-      attempt: number; size: number; sourceJobId: string | null; url: string | null; error: string | null;
+      attempt: number; size: number; sourceJobId: string | null; sourceRenderId?: string | null; url: string | null; error: string | null;
     };
     if (sub === 'publish') {
       const jobId = positionals[2] ?? fail('usage: lw deliveries publish <jobId> --destination <id> --name "…" [--format <format>] [--idempotency-key <key>]');
@@ -762,7 +845,7 @@ switch (cmd) {
       out(delivery);
       if (!values.json) {
         console.log(`${delivery.state.padEnd(18)} ${delivery.id}  ${delivery.name}.${delivery.format} → ${delivery.destinationId}`);
-        console.log(`${delivery.size} B · attempt ${delivery.attempt}${delivery.sourceJobId ? ` · job ${delivery.sourceJobId}` : ''}`);
+        console.log(`${delivery.size} B · attempt ${delivery.attempt}${delivery.sourceJobId ? ` · job ${delivery.sourceJobId}` : ''}${delivery.sourceRenderId ? ` · render ${delivery.sourceRenderId}` : ''}`);
         if (delivery.url) console.log(delivery.url);
         if (delivery.error) console.log(`error: ${delivery.error}`);
       }
@@ -1707,7 +1790,8 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --email <dev-user>   sign in via the dev provider
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
-  tokens [create --label <l> --role <r> | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
+  tokens [create --label <l> --scopes <s,...> [--tools <id,...>] [--role <r>] | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
+  mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   retention run              apply the stated retention policy and sweep expired uploads now (both also run daily on the long-lived server)
@@ -1732,11 +1816,16 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   links [--all] · links create <toolId> [key=value ...] [--open] · links revoke <id>
   destinations                list the fixed organization targets available to this principal (no secrets)
   approvals [list] · approvals artifact <id> --out <file>   your requests and inbox; download a request's file (a reviewer's, or yours once approved)
-  renders submit <request.json> [--idempotency-key <key>]   submit a recoverable single render
+  renders submit <request.json> [--idempotency-key <key>] [--callback-url <url>]   submit a recoverable single render
   renders [list|show <id>|cancel <id>|retry <id>] · renders output <id> --out <file>
   renders evidence <id> --out <file>   download the retained execution receipt
-  render-batches submit <request.json> [--idempotency-key <key>]   submit durable rows
-  render-batches [list|show <id>|cancel <id>|retry <id>] · render-batches manifest <id> --out <file>
+  renders deliver <id> --destination <id> --name "…" [--idempotency-key <key>]   send a finished output to a destination by reference
+  render-batches submit <request.json> [--idempotency-key <key>] [--callback-url <url>]   submit durable rows
+  render-batches [list|show <id>|cancel <id>|retry <id>] · render-batches manifest <id> --out <file> · render-batches archive <id> --out <file>
+  render-api inventory --from <bannerbear-v5|bannerbear-v2|placid> --token-env <NAME> --out <dir> [--source-url <url>] [--max-pages <n>] [--no-previews]   read a vendor account, read only, no server needed
+  render-api check --mapping <file>   read a mapping against the effective schema on this instance
+  render-api sample --from <source> --template <id> --token-env <NAME> --values <file> --out <dir> --spend-credits   keep a vendor render as a reference; spends vendor credits
+  render-api compare --from <source> --mapping <file> --template <id> --reference <file> [--values <file>] [--regions <file>] [--max-changed <n>] [--tolerance <n>]   measure a render here against a reference
   deliveries [list|show <id>|retry <id>]
   deliveries publish <jobId> --destination <id> --name "…" [--idempotency-key <key>]   publish a retained render output by reference
   providers [list] · providers add <id> --kind … --label "…" [--options/--mapping/--exposure {json}]
