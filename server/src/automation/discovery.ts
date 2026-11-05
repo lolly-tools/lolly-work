@@ -82,6 +82,8 @@ export interface DiscoveryDeps {
   durableRenders: boolean;
   /** Whether file references (uploads/files.ts) are on: `policy.uploads.enabled`. */
   fileReferences: boolean;
+  /** Whether an approval request can carry its file: `policy.approvalArtifacts.enabled`. */
+  exportReview: boolean;
   /** Which provider reference schemes resolve for these groups. */
   providerRefs(groups: string[]): Promise<{ cms: boolean; net: boolean }>;
 }
@@ -155,6 +157,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
       collaboration: { live: deps.liveCollab },
       agents: { documentMcp: deps.documentAgents, organisationMcp: { endpoint: LINKS.mcp, auth: 'service-token', renderTools: deps.durableRenders } },
       files: { references: deps.fileReferences },
+      approvals: { exportReview: deps.exportReview },
       unavailable: deploymentGaps(deps.caps),
       links: LINKS,
     };

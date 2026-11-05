@@ -23,7 +23,7 @@
  *    no resume in v1.
  */
 
-export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review';
+export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review' | 'export-review';
 
 export type ApprovalState = 'submitted' | 'in_review' | 'approved' | 'rejected' | 'withdrawn';
 
@@ -57,6 +57,8 @@ export interface ApprovalAction {
 export interface Approval {
   /** Server-verified file membership; never an admission or delivery grant. */
   sourceReview?: import('../catalog/source-review.ts').SourceReviewSubject;
+  /** One exact exported file and its frozen facts (approvals/export-review.ts). */
+  exportReview?: import('./export-review.ts').ExportReviewSubject;
   id: string;
   subjectType: SubjectType;
   subjectRef: string;

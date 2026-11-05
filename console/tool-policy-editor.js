@@ -1,5 +1,5 @@
 /** The tool policy form, preserving settings that it does not edit. */
-export function createToolPolicyEditor(tool, { el, field, api, onSaved, onClose, announce = () => {} }) {
+export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, onClose, announce = () => {} }) {
   const original = structuredClone(tool.overlay ?? {});
   const showValue = (value) => value === undefined ? '' : typeof value === 'string' ? value : JSON.stringify(value);
   const showGroups = (groups) => groups.some((group) => group.includes(',') || group.trim().startsWith('['))
@@ -17,6 +17,9 @@ export function createToolPolicyEditor(tool, { el, field, api, onSaved, onClose,
     ...[['', 'No rule'], ['never', 'Never watermark'], ['always', 'Always watermark'],
       ...(original.enforce?.watermark === 'until-approved' ? [['until-approved', 'Until approved (not enforced)']] : []),
     ].map(([value, label]) => el('option', { value, selected: value === (original.enforce?.watermark ?? '') ? '' : null }, label)));
+  const savedChain = original.enforce?.escalation ?? '';
+  const chainSel = el('select', {}, el('option', { value: '' }, 'No chain'),
+    ...(savedChain ? [el('option', { value: savedChain, selected: '' }, savedChain)] : []));
   const watermarkWarning = el('p', { class: 'policy-warning', role: 'status' });
   const rulesHost = el('div');
   const error = el('p', { class: 'form-err', role: 'alert' });
@@ -40,7 +43,7 @@ export function createToolPolicyEditor(tool, { el, field, api, onSaved, onClose,
   };
   let busy = false;
   let disposed = false;
-  const snapshot = () => JSON.stringify({ name: nameInput.value, visibility: visibilityInput.value, watermark: watermarkSel.value,
+  const snapshot = () => JSON.stringify({ name: nameInput.value, visibility: visibilityInput.value, watermark: watermarkSel.value, chain: chainSel.value,
     inputs: Object.entries(model).map(([id, rules]) => [id, rules.map(({ groups, level, value, allow, reason }) => ({ groups, level, value, allow, reason }))]) });
   let baseline = snapshot();
   const isDirty = () => !disposed && snapshot() !== baseline;
@@ -65,12 +68,24 @@ export function createToolPolicyEditor(tool, { el, field, api, onSaved, onClose,
   };
   for (const control of [nameInput, visibilityInput, watermarkSel]) control.addEventListener('input', update);
   watermarkSel.addEventListener('change', update);
+  chainSel.addEventListener('change', update);
+  // The list comes later; until then the saved chain stays selected and saves as it was.
+  if (chains) {
+    chainSel.setAttribute('aria-busy', 'true');
+    void Promise.resolve(chains()).then((list) => {
+      const named = new Map((list ?? []).map((chain) => [chain.id, chain.name || chain.id]));
+      const chosen = chainSel.value;
+      chainSel.replaceChildren(el('option', { value: '' }, 'No chain'),
+        ...[...named].map(([id, label]) => el('option', { value: id, selected: id === chosen ? '' : null }, label)),
+        ...(chosen && !named.has(chosen) ? [el('option', { value: chosen, selected: '' }, `${chosen} (not found)`)] : []));
+    }).catch(() => {}).finally(() => { chainSel.removeAttribute('aria-busy'); });
+  }
   const invalid = (message, control) => { throw Object.assign(new Error(message), { control }); };
   const parseValue = (text) => { try { return JSON.parse(text.trim()); } catch { return text; } };
   const bodyOf = () => {
     const unknown = [
       ...Object.keys(original).filter((key) => !['toolId', 'version', 'name', 'inputAccess', 'visibility', 'enforce', 'defaults'].includes(key)),
-      ...Object.keys(original.enforce ?? {}).filter((key) => !['watermark', 'formats'].includes(key)).map((key) => `enforce.${key}`),
+      ...Object.keys(original.enforce ?? {}).filter((key) => !['watermark', 'formats', 'escalation'].includes(key)).map((key) => `enforce.${key}`),
     ];
     if (unknown.length) invalid(`This policy contains settings the policy writer cannot save: ${unknown.join(', ')}. Saving is blocked to avoid removing them.`);
     const body = structuredClone(original);
@@ -110,6 +125,8 @@ export function createToolPolicyEditor(tool, { el, field, api, onSaved, onClose,
     const enforce = { ...original.enforce };
     delete enforce.watermark;
     if (watermarkSel.value) enforce.watermark = watermarkSel.value;
+    delete enforce.escalation;
+    if (chainSel.value) enforce.escalation = chainSel.value;
     if (Object.keys(enforce).length) body.enforce = enforce;
     return body;
   };
@@ -209,7 +226,7 @@ export function createToolPolicyEditor(tool, { el, field, api, onSaved, onClose,
   const fields = el('fieldset', { class: 'policy-fields' },
     el('legend', { class: 'sr-only' }, `Policy settings for ${tool.name}`),
     el('div', { class: 'formrow' }, field('Policy name (shown to members)', nameInput),
-      field('Visible to groups (empty = everyone)', visibilityInput), field('Watermark', watermarkSel)),
+      field('Visible to groups (empty = everyone)', visibilityInput), field('Watermark', watermarkSel), field('Approval chain for exports', chainSel)),
     watermarkWarning,
     tool.inputs === null ? el('p', { class: 'empty' }, 'This tool’s input list is unavailable. Existing rules and the default rule remain editable.') : null,
     rulesHost);

@@ -22,6 +22,7 @@ import { createSiemForwarder } from './observability/siem.ts';
 import { createOtel, setProcessOtel } from './observability/otel.ts';
 import { otelConfigFromEnv, printableEndpoint, SIGNALS } from './observability/otel-config.ts';
 import { runRetention } from './audit/retention.ts';
+import { approvalArtifactPolicy, sweepApprovalArtifacts } from './approvals/export-review.ts';
 import { scheduleProjectFileSweep } from './projects/files.ts';
 import { scheduleUploadSweep } from './uploads/scoped.ts';
 import { scheduleRenderOutputSweep } from './renders/retention.ts';
@@ -272,6 +273,17 @@ if (config.policy.retention.telemetryDays > 0 || config.policy.retention.auditDa
 scheduleProjectFileSweep(store, blobs);
 // Expired scoped uploads (uploads/scoped.ts) on the same schedule.
 scheduleUploadSweep(store, blobs);
+// Files of decided approval requests past their retention, on the same daily beat.
+{
+  const artifactPolicy = approvalArtifactPolicy(config);
+  if (artifactPolicy.closedRetentionDays > 0 || artifactPolicy.approvedRetentionDays > 0) {
+    const sweepArtifacts = (): void => void sweepApprovalArtifacts(store, blobs, artifactPolicy)
+      .then((n) => { if (n) console.log(`[lolly-work] approval files removed past retention: ${n}`); })
+      .catch((e: Error) => console.error(`[lolly-work] approval file sweep failed: ${e.message}`));
+    sweepArtifacts();
+    setInterval(sweepArtifacts, 24 * 60 * 60 * 1000).unref();
+  }
+}
 // Durable render outputs (renders/retention.ts): only when the policy states a
 // retention, on the same schedule, and only here, because it needs a process that lasts.
 scheduleRenderOutputSweep(store, blobs, config.policy.retention.renderOutputDays);

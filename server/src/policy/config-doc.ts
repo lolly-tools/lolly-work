@@ -181,6 +181,14 @@ export function validateConfigDocument(raw: unknown): { doc: ConfigDocument } | 
     if (!norm) return void errors.push(`chains[${i}] (${c.id}): malformed chain`);
     chains.push(norm);
   });
+  // A document that states its chains must bind tools only to those it states.
+  if (raw.chains !== undefined) {
+    const named = new Set(chains.map((c) => c.id));
+    for (const o of overlays) {
+      const chain = o.enforce?.escalation;
+      if (chain && !named.has(chain)) errors.push(`overlays (${o.toolId}): approval chain "${chain}" is not in this document`);
+    }
+  }
 
   const featureFlags: FlagExport[] = [];
   const rawFlags = Array.isArray(raw.featureFlags) ? raw.featureFlags : [];

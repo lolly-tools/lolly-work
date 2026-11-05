@@ -6,8 +6,9 @@
  * the bytes are then named by reference, never downloaded. The list shows the
  * caller's own uploads, and every route on one upload is its owner's alone and
  * answers 404 to anyone else. Every route answers 404 while
- * `policy.uploads.enabled` is false. A finished upload in scope `file` is a
- * file reference, which its owner also reads back (file-routes.ts).
+ * `policy.uploads.enabled` is false, except for an `approval-artifact` upload,
+ * which `policy.approvalArtifacts.enabled` governs instead. A finished upload in
+ * scope `file` is a file reference, which its owner also reads back (file-routes.ts).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createRouter, readJson, readRaw, sendError, sendJson } from '../api/router.ts';
@@ -22,6 +23,7 @@ import {
   uploadOwner, uploadParts, uploadPolicy, uploadWire, UPLOAD_LIST_LIMIT, UPLOAD_PENDING_LIMIT, type UploadRecord, type UploadScope,
 } from './scoped.ts';
 import { fileMetadata, fileWire, ownsFileReference, type FileMetadata } from './files.ts';
+import { approvalArtifactPolicy } from '../approvals/export-review.ts';
 
 interface Dependencies {
   config: InstanceConfig;
@@ -35,12 +37,15 @@ interface Dependencies {
 /** The action each scope's begin needs: the right to submit to the catalog,
  *  or to use tools, which the document verbs an automation input or a file
  *  reference feeds need. */
-const SCOPE_ACTION: Record<UploadScope, string> = { 'catalog-submission': 'catalog.submit', 'automation-input': 'tool.use', file: 'tool.use' };
+const SCOPE_ACTION: Record<UploadScope, string> = { 'catalog-submission': 'catalog.submit', 'automation-input': 'tool.use', file: 'tool.use', 'approval-artifact': 'export.request' };
 
 export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d: Dependencies): void {
-  /** A signed-in person or a service token; never a guest seat or an anonymous caller. */
-  const caller = async (req: IncomingMessage, res: ServerResponse): Promise<UserRecord | null> => {
-    if (!uploadPolicy(d.config).enabled) { sendError(res, 404, 'NOT_FOUND', 'uploads are off'); return null; }
+  const scopeOn = (scope: UploadScope): boolean => scope === 'approval-artifact' ? approvalArtifactPolicy(d.config).enabled : uploadPolicy(d.config).enabled;
+  const anyScopeOn = (): boolean => uploadPolicy(d.config).enabled || approvalArtifactPolicy(d.config).enabled;
+  /** A signed-in person or a service token; never a guest seat or an anonymous
+   *  caller. `scoped` is for a route that checks the upload's own scope afterwards. */
+  const caller = async (req: IncomingMessage, res: ServerResponse, scoped = false): Promise<UserRecord | null> => {
+    if (!(scoped ? anyScopeOn() : uploadPolicy(d.config).enabled)) { sendError(res, 404, 'NOT_FOUND', 'uploads are off'); return null; }
     const user = (await d.memberOf(req)) ?? (await d.serviceAccountOf(req));
     if (!user) { sendError(res, 401, 'UNAUTHORIZED', 'sign in first'); return null; }
     if (user.role === 'guest' || user.disabledAt) { sendError(res, 403, 'FORBIDDEN', 'uploads need a member or a service token'); return null; }
@@ -49,7 +54,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
   /** The caller's own upload, or a 404 that says nothing about anyone else's. */
   const owned = async (res: ServerResponse, user: UserRecord, id: string): Promise<UploadRecord | null> => {
     const upload = await d.store.getUpload(id);
-    if (!upload || upload.owner !== uploadOwner(user)) { sendError(res, 404, 'NOT_FOUND', 'no such upload'); return null; }
+    if (!upload || upload.owner !== uploadOwner(user) || !scopeOn(upload.scope)) { sendError(res, 404, 'NOT_FOUND', uploadPolicy(d.config).enabled ? 'no such upload' : 'uploads are off'); return null; }
     return upload;
   };
   const running = new RunningDigests();
@@ -71,18 +76,24 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
   }, { delivery: 'person-private' });
 
   router.add('POST', '/api/v1/uploads', async (req, res) => {
-    const user = await caller(req, res);
+    const user = await caller(req, res, true);
     if (!user) return;
     const policy = uploadPolicy(d.config);
     const body = await readJson(req, 512 * 1024) as Record<string, unknown> | null;
     const scope = body && typeof body === 'object' ? body.scope : undefined;
-    if (!isUploadScope(scope)) return sendError(res, 400, 'INVALID_INPUT', 'scope is catalog-submission, automation-input or file');
+    if (!policy.enabled && scope !== 'approval-artifact') return sendError(res, 404, 'NOT_FOUND', 'uploads are off');
+    if (!isUploadScope(scope)) return sendError(res, 400, 'INVALID_INPUT', 'scope is catalog-submission, automation-input, file or approval-artifact');
+    if (!scopeOn(scope)) return sendError(res, 404, 'NOT_FOUND', 'uploads are off');
+    // A decision about a file is a person's act, so its file is a person's upload.
+    if (scope === 'approval-artifact' && user.id.startsWith('svc_')) return sendError(res, 403, 'FORBIDDEN', 'an approval request comes from a person');
     const action = SCOPE_ACTION[scope];
     if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], await d.store.listGrants())) {
       return sendError(res, 403, 'FORBIDDEN', `${action} required`);
     }
     // A catalog original can be no larger than a submission may be.
-    const maxBytes = scope === 'catalog-submission' ? Math.min(policy.maxFileBytes, d.config.policy.submit.maxBytes) : policy.maxFileBytes;
+    const artifactBytes = approvalArtifactPolicy(d.config).maxFileBytes;
+    const maxBytes = scope === 'approval-artifact' ? artifactBytes
+      : scope === 'catalog-submission' ? Math.min(policy.maxFileBytes, d.config.policy.submit.maxBytes) : policy.maxFileBytes;
     if (typeof body?.size === 'number' && Number.isSafeInteger(body.size) && body.size > maxBytes) {
       return sendError(res, 413, 'UPLOAD_TOO_LARGE', `an upload in this scope can be at most ${maxBytes} bytes`, { maxBytes });
     }
@@ -103,8 +114,11 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
     const upload: UploadRecord = { ...input, id: `${uploadIdPrefix(scope)}${randomId(16)}`, owner: uploadOwner(user), createdAt,
       expiresAt: unfinishedUploadExpiry(createdAt, policy.uploadTtlHours, now), ready: false,
       ...(file ? { role: file.role, ...(file.derivedFrom ? { derivedFrom: file.derivedFrom } : {}), ...(file.report ? { report: { by: 'owner' as const, report: file.report } } : {}) } : {}) };
+    // A request's file is here only until the request is created, so it shares the
+    // upload budgets, and they always have room for the largest file a request takes.
+    const fits = scope === 'approval-artifact' ? artifactBytes : 0;
     const outcome = await d.store.reserveUpload(upload, {
-      ownerBudgetBytes: policy.ownerBudgetBytes, instanceBudgetBytes: policy.instanceBudgetBytes, maxPending: UPLOAD_PENDING_LIMIT,
+      ownerBudgetBytes: Math.max(policy.ownerBudgetBytes, fits), instanceBudgetBytes: Math.max(policy.instanceBudgetBytes, fits), maxPending: UPLOAD_PENDING_LIMIT,
     });
     if (outcome === 'owner-budget') return sendError(res, 413, 'UPLOAD_BUDGET', 'your uploads have no room for that file; cancel or use some first');
     if (outcome === 'instance-budget') return sendError(res, 413, 'INSTANCE_UPLOAD_BUDGET', 'this instance has no room for that upload');
@@ -114,7 +128,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
   });
 
   router.add('GET', '/api/v1/uploads/:id', async (req, res, ctx) => {
-    const user = await caller(req, res);
+    const user = await caller(req, res, true);
     if (!user) return;
     const upload = await owned(res, user, ctx.params.id!);
     if (!upload) return;
@@ -124,7 +138,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
 
   // Resume: which parts are stored. Reading this keeps nothing alive.
   router.add('GET', '/api/v1/uploads/:id/parts', async (req, res, ctx) => {
-    const user = await caller(req, res);
+    const user = await caller(req, res, true);
     if (!user) return;
     const upload = await owned(res, user, ctx.params.id!);
     if (!upload) return;
@@ -137,7 +151,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
   }, { delivery: 'person-private' });
 
   router.add('PUT', '/api/v1/uploads/:id/parts/:part', async (req, res, ctx) => {
-    const user = await caller(req, res);
+    const user = await caller(req, res, true);
     if (!user) return;
     const upload = await owned(res, user, ctx.params.id!);
     if (!upload) return;
@@ -159,7 +173,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
   });
 
   router.add('POST', '/api/v1/uploads/:id/finalize', async (req, res, ctx) => {
-    const user = await caller(req, res);
+    const user = await caller(req, res, true);
     if (!user) return;
     const upload = await owned(res, user, ctx.params.id!);
     if (!upload) return;
@@ -177,7 +191,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
   });
 
   router.add('DELETE', '/api/v1/uploads/:id', async (req, res, ctx) => {
-    const user = await caller(req, res);
+    const user = await caller(req, res, true);
     if (!user) return;
     const upload = await owned(res, user, ctx.params.id!);
     if (!upload) return;

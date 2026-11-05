@@ -29,6 +29,9 @@ async function seed(store: Store) {
   await store.putApiToken({ id: 'other', label: 'other', role: 'member', tokenHash: 'other-token-hash', createdBy: `user:${owner.id}`, createdAt: now });
   await store.putApiToken({ id: 'descendant', label: 'descendant', role: 'member', tokenHash: 'descendant-hash', createdBy: 'user:svc_a', createdAt: now });
   await store.createPasswordLink({ tokenHash: 'password-link-hash', email: 'alias@fixture.test', purpose: 'reset', createdBy: `user:${owner.id}`, createdAt: now, expiresAt: '2030-01-01T00:00:00.000Z' });
+  await store.putApproval({ id: 'apr_subject', subjectType: 'export-review', subjectRef: 'export-review:f', title: 'Reviewed card', chainId: 'c', state: 'approved', stepIndex: 1, nominees: [], actions: [], createdBy: subject.id, createdAt: now,
+    chain: { id: 'c', name: 'C', steps: [{ name: 'Review', approvers: { groups: ['review'] }, rule: 'any' }], onReject: 'return-to-submitter' },
+    exportReview: { apiVersion: 'work/export-review-v1', sha256: 'a'.repeat(64), size: 3, name: 'card.png', format: 'png', mediaType: 'image/png', preview: 'image', toolId: 't', toolVersion: '1', inputsDigest: null, fingerprint: 'f', origin: 'member-session', frozenAt: now, parts: [{ size: 3, checksum: 'hidden-content' }] } });
   await store.upsertInstall('device', { shell: 'web', shellVersion: '1', engine: '1', platform: 'linux' }, subject.id);
   await store.putEvents([{ event: 'tool.open', at: now, userId: subject.id, attrs: { toolId: 'sample' } }]);
   await store.appendAudit({ at: now, actor: `user:${subject.id}`, action: 'session.create', subject: 'session:sample', payload: { private: 'hidden-payload' } });

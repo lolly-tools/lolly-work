@@ -23,6 +23,7 @@ import type { BlobStore } from '../blobs/types.ts';
 import type { InstanceConfig } from '../config/instance.ts';
 import { sweepExpiredProjectFiles } from '../projects/files.ts';
 import { sweepExpiredUploads } from '../uploads/scoped.ts';
+import { approvalArtifactPolicy, sweepApprovalArtifacts } from '../approvals/export-review.ts';
 import { sweepRenderOutputs } from '../renders/retention.ts';
 import type { Store } from '../store/types.ts';
 import type { AuditEvent } from './chain.ts';
@@ -35,6 +36,8 @@ export interface RetentionResult {
   projectFilesSwept?: number;
   /** Expired scoped uploads removed (uploads/scoped.ts), on the same condition. */
   uploadsSwept?: number;
+  /** Files removed from decided approval requests past their retention, on the same condition. */
+  approvalArtifactsRemoved?: number;
   /** Durable render outputs marked expired and removed. Present only when the
    *  policy states a retention and the run was given the BlobStore. */
   renderOutputsExpired?: number;
@@ -54,6 +57,7 @@ export async function runRetention(
   // so this runs on every pass (a new reservation also sweeps a batch).
   if (blobs) result.projectFilesSwept = await sweepExpiredProjectFiles(store, blobs, { now: now().getTime(), limit: 500 });
   if (blobs) result.uploadsSwept = await sweepExpiredUploads(store, blobs, { now: now().getTime(), limit: 500 });
+  if (blobs) result.approvalArtifactsRemoved = await sweepApprovalArtifacts(store, blobs, approvalArtifactPolicy(config), { now: now().getTime() });
 
   if (blobs && renderOutputDays > 0) {
     const swept = await sweepRenderOutputs({ store, blobs, days: renderOutputDays, now });

@@ -107,9 +107,14 @@ import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader }
 import { projectSubmissionInput, ProjectSubmissionError } from '../catalog/project-source.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
+import {
+  approvalArtifactPolicy, approvedArtifactBytes, artifactRefusal, artifactRelation, artifactReviewToken, checkArtifactReviewToken, describeExportReview, exportReviewWire,
+  freezeArtifactBytes, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, type ExportReviewSubject,
+} from '../approvals/export-review.ts';
+import { renderInputsDigest } from '../render/inputs-digest.ts';
 import { registerFileRoutes } from '../uploads/file-routes.ts';
 import { createFileReference, creationRefusal, fileWire, FORMAT_TYPES, optimizeReport } from '../uploads/files.ts';
-import { readUploadReference, removeUpload, removeUploadsOwnedBy, uploadOwner, uploadPolicy, UploadReferenceError, type UploadRecord } from '../uploads/scoped.ts';
+import { liveUpload, readUploadReference, removeUpload, removeUploadsOwnedBy, uploadOwner, uploadPolicy, UploadReferenceError, type UploadRecord } from '../uploads/scoped.ts';
 import { effectiveAccessFor } from '../projects/effective-access.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
 import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
@@ -265,7 +270,7 @@ const QUERY_CREDENTIAL_DEPRECATION = '@1792195200';
 const JOB_TOKEN_HEADER = 'x-lw-job-token';
 /** Longest a link's password cookie lasts; never past the link's own expiry. */
 const LINK_ACCESS_MAX_SEC = 12 * 3600;
-const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link', 'source-review'];
+const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link', 'source-review', 'export-review'];
 
 /** The vendored engine version, read off engine-pin.json (the manifest the
  *  re-pin cadence maintains). Read once and cached; null when the file is not
@@ -4303,7 +4308,7 @@ export function buildApp(deps: AppDeps): App {
     const actor = await requireAction(req, res, 'instance.config');
     if (!actor) return;
     const result = await runRetention({ config, store, blobs });
-    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept || result.renderOutputsExpired || result.renderOutputsRemoved) {
+    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept || result.uploadsSwept || result.approvalArtifactsRemoved || result.renderOutputsExpired || result.renderOutputsRemoved) {
       await audit(`user:${actor.id}`, 'retention.run', 'instance', { ...result });
     }
     sendJson(res, 200, result);
@@ -5421,16 +5426,58 @@ export function buildApp(deps: AppDeps): App {
     return seesSourceReview(user, subject);
   };
 
+  // The server's own reading of the values a request reports: the version it
+  // serves, and the digest under the render path's normalisation. The values go
+  // no further than this function, and a digest from the client is never read.
+  const exportReviewInputs = async (user: UserRecord, toolId: string, format: string, query: string | undefined) => {
+    const engine = await loadEngine();
+    let tool: Awaited<ReturnType<typeof engine.loadTool>>;
+    try { tool = await engine.loadTool(toolId, (path: string) => readFile(join(config.instance.pack, 'tools', path), 'utf8')); }
+    catch { return { toolVersion: null, inputsDigest: null, inputsGap: 'tool-not-in-pack' as const }; }
+    const toolVersion = String(tool.manifest.version);
+    if (query === undefined) return { toolVersion, inputsDigest: null, inputsGap: 'values-not-sent' as const };
+    try {
+      const state = engine.parseUrlState(await engine.expandQuery(query), tool.manifest);
+      const rules = await managedRuleContext(brand.current() ?? await brand.snapshot(), toolId, format);
+      const original = (await store.listOverlays()).get(toolId);
+      const overlay = rules ? projectRuleOverlay(original, rules, user.groups) : original;
+      return { toolVersion, inputsDigest: renderInputsDigest(engine, tool.manifest, state.values as Record<string, unknown>, overlay, user.groups, renderProfileOf(user)) };
+    } catch { return { toolVersion, inputsDigest: null, inputsGap: 'values-unreadable' as const }; }
+  };
+  /** Check an export-review request and describe its subject, writing nothing. */
+  const prepareExportReview = async (req: IncomingMessage, res: ServerResponse, user: UserRecord, chainId: string, raw: unknown): Promise<{ subject: ExportReviewSubject; upload: UploadRecord } | null> => {
+    const refuse = (status: number, code: string, message: string) => { sendError(res, status, code, message); return null; };
+    const policy = approvalArtifactPolicy(config);
+    if (!policy.enabled) return refuse(404, 'NOT_FOUND', 'This instance does not take a file with a request.');
+    const request = parseExportReview(raw);
+    if (!request) return refuse(400, 'INVALID_INPUT', 'An export review needs uploadId, checksum, toolId and format.');
+    const grants = await store.listGrants();
+    if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'export.request', [`tool:${request.toolId}`, '*'], grants)) return refuse(403, 'FORBIDDEN', 'export.request required');
+    if (!await automationMayUse({ user, groups: user.groups, profile: {}, principal: `user:${user.id}` }, request.toolId)) return refuse(403, 'FORBIDDEN', 'You cannot use this tool.');
+    const bound = (await store.listOverlays()).get(request.toolId)?.enforce?.escalation;
+    if (bound && bound !== chainId) return refuse(400, 'CHAIN_NOT_BOUND', 'This tool goes through a different approval chain.');
+    const upload = await store.getUpload(request.uploadId);
+    if (!upload || upload.scope !== 'approval-artifact' || upload.owner !== uploadOwner(user)) return refuse(404, 'NOT_FOUND', 'no such upload');
+    if (!upload.ready || !liveUpload(upload)) return refuse(409, 'UPLOAD_NOT_READY', 'Finish sending the file first.');
+    if (upload.checksum !== request.checksum) return refuse(409, 'UPLOAD_CHANGED', 'That upload holds a different file.');
+    if (upload.size > policy.maxFileBytes) return refuse(413, 'UPLOAD_TOO_LARGE', `A request can carry at most ${policy.maxFileBytes} bytes.`);
+    if (heldArtifactBytes(await store.listApprovals()) + upload.size > policy.instanceBudgetBytes) return refuse(413, 'APPROVAL_ARTIFACT_BUDGET', 'This instance has no room for another request file.');
+    const inputs = await exportReviewInputs(user, request.toolId, request.format, request.query);
+    const subject = await describeExportReview(blobs, upload, request, inputs, agentRequests.principal(req) ? 'agent-delegated' : 'member-session', new Date().toISOString());
+    if (!subject) return refuse(422, 'ARTIFACT_FORMAT_MISMATCH', `That file is not a ${request.format} file.`);
+    return { subject, upload };
+  };
+
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
   router.add('POST', '/api/v1/approvals', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const body = (await readJson(req)) as {
-      subjectType?: string; subjectRef?: string; title?: string; chainId?: string; nominees?: unknown; sourceReview?: unknown;
+      subjectType?: string; subjectRef?: string; title?: string; chainId?: string; nominees?: unknown; sourceReview?: unknown; exportReview?: unknown;
     } | null;
     if (!SUBJECT_TYPES.includes(body?.subjectType as never)) {
-      return sendError(res, 400, 'INVALID_INPUT', 'subjectType must be asset|tool-change|config|guest-link|source-review');
+      return sendError(res, 400, 'INVALID_INPUT', 'subjectType must be asset|tool-change|config|guest-link|source-review|export-review');
     }
     if (!body?.title || typeof body.title !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'title required');
     if (!body?.chainId || typeof body.chainId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'chainId required');
@@ -5454,7 +5501,16 @@ export function buildApp(deps: AppDeps): App {
         if (!nominee || !await seesSourceReview(nominee, sourceReview)) return sendError(res, 400, 'NOMINEE_NOT_ELIGIBLE', 'Every nominated reviewer must have current access to the complete subject.');
       }
     } else if (body.sourceReview !== undefined) return sendError(res, 400, 'INVALID_INPUT', 'Use the source-review subject type for source evidence.');
-    const subjectRef = sourceReview ? `source-review:${sourceReview.fingerprint}` : typeof body.subjectRef === 'string' ? body.subjectRef.slice(0, 300) : '';
+    let exportReview: ExportReviewSubject | undefined;
+    let exportUpload: UploadRecord | undefined;
+    if (body.subjectType === 'export-review') {
+      const prepared = await prepareExportReview(req, res, user, chain.id, body.exportReview);
+      if (!prepared) return;
+      ({ subject: exportReview, upload: exportUpload } = prepared);
+    } else if (body.exportReview !== undefined) return sendError(res, 400, 'INVALID_INPUT', 'Use the export-review subject type for an exported file.');
+    const subjectRef = sourceReview ? `source-review:${sourceReview.fingerprint}`
+      : exportReview ? `export-review:${exportReview.fingerprint}`
+      : typeof body.subjectRef === 'string' ? body.subjectRef.slice(0, 300) : '';
     const canReview = (candidate: typeof user) => !candidate.disabledAt && candidate.id !== user.id
       && evaluate({ userId: candidate.id, groups: candidate.groups, role: candidate.role as Role }, 'approval.act', [`chain:${chain.id}`, subjectRef, '*'], grants);
     if (nominees.some(id => !users.some(candidate => candidate.id === id && canReview(candidate)))) {
@@ -5468,8 +5524,19 @@ export function buildApp(deps: AppDeps): App {
       chain, nominees, createdBy: user.id, now: new Date().toISOString(),
     });
     if (sourceReview) approval.sourceReview = sourceReview;
+    if (exportReview && exportUpload) {
+      // The bytes move last, once every check that could refuse has passed. An
+      // interrupted move leaves the upload to expire and no request.
+      try { await freezeArtifactBytes(blobs, exportUpload, approval.id, exportReview); }
+      catch { return sendError(res, 422, 'CHECKSUM_MISMATCH', 'The file did not arrive whole. Send it again.'); }
+      approval.exportReview = exportReview;
+    }
     await store.putApproval(approval);
-    await audit(`user:${user.id}`, 'approval.submit', `approval:${approval.id}`, { chainId: chain.id, subjectType: approval.subjectType });
+    if (exportUpload) await removeUpload(store, blobs, exportUpload).catch(() => false);
+    await audit(`user:${user.id}`, 'approval.submit', `approval:${approval.id}`, {
+      chainId: chain.id, subjectType: approval.subjectType,
+      ...(exportReview ? { sha256: exportReview.sha256, size: exportReview.size, format: exportReview.format, toolId: exportReview.toolId } : {}),
+    });
     if (nominees.length) {
       await store.putMessage({
         id: `msg_${randomId(8)}`,
@@ -5523,6 +5590,31 @@ export function buildApp(deps: AppDeps): App {
     sendJson(res, 200, { approvals });
   });
 
+  // The file a request carries. Reviewers and people who acted read it; the
+  // requester reads it only once approved, through approvedArtifactBytes. Inert
+  // whatever it holds, never watermarked, and checked as it streams.
+  router.add('GET', '/api/v1/approvals/:id/artifact', async (req, res, ctx) => {
+    const user = await memberOf(req);
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const approval = await store.getApproval(ctx.params.id as string);
+    if (!approval?.exportReview) return sendError(res, 404, 'NOT_FOUND', 'no such file');
+    const subject = { userId: user.id, groups: user.groups, role: user.role as Role };
+    const mayAct = evaluate(subject, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*'], await store.listGrants());
+    const relation = artifactRelation(approval, user, mayAct);
+    if (!relation) return sendError(res, 404, 'NOT_FOUND', 'no such file');
+    const refusal = artifactRefusal(approval, relation);
+    if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message);
+    const file = relation === 'requester' ? approvedArtifactBytes(blobs, approval) : reviewedArtifactBytes(blobs, approval);
+    await audit(`user:${user.id}`, 'approval.artifact.read', `approval:${approval.id}`, { relation, sha256: file.sha256, state: approval.state });
+    res.writeHead(200, {
+      ...INERT_BYTE_HEADERS, 'content-type': file.mediaType, 'content-length': String(file.size),
+      'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'cache-control': 'private, no-store',
+      etag: `"${file.sha256}"`, 'repr-digest': `sha-256=:${Buffer.from(file.sha256, 'hex').toString('base64')}:`,
+      ...(relation !== 'requester' && mayAct && eligibleForCurrentStep(approval, user.groups) ? { 'x-lolly-review-token': artifactReviewToken(secrets.session, approval, user.id) } : {}),
+    });
+    Readable.from(file.chunks).on('error', () => res.destroy()).pipe(res);
+  }, { delivery: 'person-private' });
+
   // Act: approve/reject the current step. On a terminal transition, notify the submitter.
   router.add('POST', '/api/v1/approvals/:id/act', async (req, res, ctx) => {
     const user = await memberOf(req);
@@ -5532,14 +5624,21 @@ export function buildApp(deps: AppDeps): App {
     if (approval.sourceReview && !await sourceReviewAvailable(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no available source subject');
     if (approval.createdBy === user.id) return sendError(res, 403, 'SEPARATION_OF_DUTIES', 'A requester cannot act on their own approval.');
     if (!(await requireAction(req, res, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*']))) return;
-    const body = (await readJson(req)) as { action?: string; comment?: string; sourceFingerprint?: string } | null;
+    const body = (await readJson(req)) as { action?: string; comment?: string; sourceFingerprint?: string; artifactFingerprint?: string; reviewToken?: string } | null;
+    if (approval.exportReview) {
+      if (body?.artifactFingerprint !== approval.exportReview.fingerprint) return sendError(res, 409, 'ARTIFACT_SUBJECT_CHANGED', 'Reopen this request before you decide.');
+      if (body?.action === 'approve') {
+        if (approval.exportReview.removedAt) return sendError(res, 410, 'ARTIFACT_REMOVED', 'This request no longer holds its file.');
+        if (!checkArtifactReviewToken(body.reviewToken, [secrets.session, secrets.sessionPrevious], approval, user.id)) return sendError(res, 409, 'ARTIFACT_NOT_LOADED', 'Open the file before you approve it.');
+      }
+    }
     if (approval.sourceReview && body?.sourceFingerprint !== approval.sourceReview.fingerprint) return sendError(res, 409, 'SOURCE_SUBJECT_CHANGED', 'Reopen this review and confirm its exact source subject.');
     if (body?.action !== 'approve' && body?.action !== 'reject') return sendError(res, 400, 'INVALID_INPUT', 'action must be approve or reject');
     const comment = typeof body.comment === 'string' && body.comment.trim() ? body.comment.slice(0, 2000) : undefined;
     let next: Approval;
     try {
       next = applyAction(approval, { id: user.id, groups: user.groups }, body.action, comment, new Date().toISOString());
-      if (approval.sourceReview) next.actions[next.actions.length - 1]!.origin = agentRequests.principal(req) ? 'agent-delegated' : 'member-session';
+      if (approval.sourceReview || approval.exportReview) next.actions[next.actions.length - 1]!.origin = agentRequests.principal(req) ? 'agent-delegated' : 'member-session';
     } catch (err) {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
@@ -5563,7 +5662,7 @@ export function buildApp(deps: AppDeps): App {
         audience: { users: [next.createdBy] },
         title: `Approval ${next.state}: ${next.title}`,
         body: `${displayName(user)} ${next.state} your request${comment ? `: “${comment}”` : '.'}`,
-        cta: { label: 'View', url: '/admin#/approvals' },
+        cta: { label: next.exportReview && next.state === 'approved' ? 'Get the approved file' : 'View', url: '/admin#/approvals' },
         dismissible: true,
       });
       const creator = await store.getUser(next.createdBy);
@@ -5589,6 +5688,9 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
+    // Nobody will decide on a withdrawn file, so its bytes go now. The record and
+    // digest stay.
+    if (next.exportReview) next = await removeArtifactBytes(blobs, next, 'withdrawn', new Date().toISOString());
     await store.putApproval(next);
     await audit(`user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
     // Withdrawing the review of a catalog submission returns the asset too:
@@ -8254,6 +8356,9 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 400, 'INVALID_INPUT',
         'overlay must be {name?, inputAccess?: {input: [{groups[], level, value?, allow?, reason?}]}, visibility?: {groups[]}, enforce?, defaults?}');
     }
+    if (overlay.enforce?.escalation && !await store.getChain(overlay.enforce.escalation)) {
+      return sendError(res, 400, 'CHAIN_NOT_FOUND', `No approval chain named ${overlay.enforce.escalation}.`);
+    }
     await store.putOverlay(overlay);
     // Policy moved: cached renders of this tool are stale (the cache key folds
     // policyVersion, but a value set BACK to a previously-rendered one would
@@ -10596,7 +10701,7 @@ export function buildApp(deps: AppDeps): App {
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
-    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
+    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
     providerRefs: async (groups) => {
       await providersReady;
       return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
@@ -11680,6 +11785,7 @@ function serializeApproval(
     id: a.id,
     subjectType: a.subjectType,
     ...(a.sourceReview ? { sourceReview: a.sourceReview } : {}),
+    ...(a.exportReview ? { exportReview: exportReviewWire(a) } : {}),
     subjectRef: a.subjectRef,
     title: a.title,
     chainId: a.chainId,
