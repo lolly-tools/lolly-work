@@ -60,10 +60,6 @@ members have only the member role needs an explicit allow grant, for example `ap
 `chain:brand-review`, and a deny still wins ([Roles and grants](permissions.md)). Nomination
 choices, new nominations, notifications and the generic inbox also respect these permissions.
 
-The app shows its review queue and review sheet to anyone who holds `export.request` or
-`approval.act`, including a grant on one chain alone. This only tells the app to look: the routes
-still decide who may read a file, request or act.
-
 ## Raise and act
 
 ```
