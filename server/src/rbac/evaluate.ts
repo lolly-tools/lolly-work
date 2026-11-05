@@ -78,6 +78,9 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
     'catalog.provider.read', 'catalog.provider.manage',
     'brand.switch',
     'catalog.injectable.manage',
+    // `brand.page.publish` puts files at a public address, even on a gated
+    // instance, so it is a curation right and grant-narrowable like the rest.
+    'brand.page.publish',
     'policy.edit', 'grant.edit', 'link.revoke', 'link.create-guest',
     // `fleet.manage` is rename/forget on install registry rows (plans/34 wave
     // 3) - bookkeeping under the enrollment covenant, never a remote action,

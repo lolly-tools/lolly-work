@@ -13,7 +13,9 @@
  *     back through /api/v1/files;
  *   - `approval-artifact`: an exported file for an approval request, moved into
  *     the request when it is created (approvals/export-review.ts). A person's
- *     alone, and on or off with `policy.approvalArtifacts`, not `policy.uploads`.
+ *     alone, and on or off with `policy.approvalArtifacts`, not `policy.uploads`;
+ *   - `brand-page`: a brand page bundle, read and removed when it is published
+ *     (brand-pages/routes.ts). On or off with `brandPages.enabled`.
  *
  * Only the owner lists, sends, finishes, names or cancels an upload, and
  * nobody downloads one but a file reference's owner. An unfinished upload
@@ -29,7 +31,7 @@ import type { UserRecord } from '../store/types.ts';
 import { UNSAFE_TEXT } from '../projects/files.ts';
 import { parseTransferManifest, readTransfer, removeTransferParts, TRANSFER_MAX_BYTES, type TransferManifest, type TransferParts } from './parts.ts';
 
-export const UPLOAD_SCOPES = ['catalog-submission', 'automation-input', 'file', 'approval-artifact'] as const;
+export const UPLOAD_SCOPES = ['catalog-submission', 'automation-input', 'file', 'approval-artifact', 'brand-page'] as const;
 export type UploadScope = typeof UPLOAD_SCOPES[number];
 export const isUploadScope = (value: unknown): value is UploadScope => UPLOAD_SCOPES.includes(value as UploadScope);
 

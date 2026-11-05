@@ -21,6 +21,7 @@
  * hidden tool or a hidden input.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { BRAND_PAGE_INDEX_PATH, BRAND_PAGE_PUBLIC_API } from '../brand-pages/types.ts';
 import { cachePolicy } from '@lolly-tools/core/delivery-v1';
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { sendError, sendJson, type createRouter } from '../api/router.ts';
@@ -85,6 +86,8 @@ export interface DiscoveryDeps {
   fileReferences: boolean;
   /** Whether an approval request can carry its file: `policy.approvalArtifacts.enabled`. */
   exportReview: boolean;
+  /** Whether this instance serves brand pages: `brandPages.enabled`. */
+  brandPages: boolean;
   /** Which provider reference schemes resolve for these groups. */
   providerRefs(groups: string[]): Promise<{ cms: boolean; net: boolean }>;
 }
@@ -159,6 +162,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
       agents: { documentMcp: deps.documentAgents, organisationMcp: { endpoint: LINKS.mcp, auth: 'service-token', renderTools: deps.durableRenders } },
       files: { references: deps.fileReferences },
       approvals: { exportReview: deps.exportReview, exportReviewMatch: deps.exportReview },
+      brandPages: deps.brandPages ? { enabled: true, index: BRAND_PAGE_PUBLIC_API, convention: BRAND_PAGE_INDEX_PATH } : { enabled: false },
       unavailable: deploymentGaps(deps.caps),
       links: LINKS,
     };

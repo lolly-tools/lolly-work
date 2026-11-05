@@ -1403,6 +1403,7 @@ const INSTANCE_TABS = [
   { key: 'catalog', label: 'Catalog', icon: 'catalog', render: (h) => viewCatalog(h) },
   { key: 'providers', label: 'Providers', icon: 'providers', render: (h) => viewProviders(h) },
   { key: 'design', label: 'Design system', icon: 'design', render: (h) => viewDesignSystem(h) },
+  { key: 'brand-pages', label: 'Brand pages', icon: 'brandPages', render: (h) => viewBrandPages(h) },
   { key: 'flags', label: 'Feature flags', icon: 'flags', render: (h) => viewFeatureFlags(h) },
   { key: 'injectables', label: 'Injectables', icon: 'injectables', render: (h) => viewInjectables(h) },
 ];
@@ -3247,6 +3248,100 @@ const PROVIDER_INTEGRATIONS = [
   { kind: 'mock', name: 'Mock (dev)', blurb: 'A synthetic in-memory source for local development.', options: '{}' },
 ];
 
+// ── Brand pages ─ one public address for a design system. The console lists what is
+//    published and takes a page down. A folder is made elsewhere (Lolly, the CLI) and
+//    arrives here finished, so this view has no editor and no publish form.
+const BRAND_PAGE_STATE = {
+  live: ['live', 'Live'], pending: ['review', 'Waiting for approval'], superseded: ['', 'Replaced'], unpublished: ['revoked', 'Unpublished'],
+  rejected: ['revoked', 'Rejected'], withdrawn: ['', 'Withdrawn'], failed: ['revoked', 'Did not finish'], staged: ['review', 'Storing'], none: ['', 'Not published'],
+};
+const brandPageChip = (state) => {
+  const [cls, label] = BRAND_PAGE_STATE[state] ?? ['', state];
+  return el('span', { class: `status ${cls}`.trim() }, label);
+};
+const newTabLink = (href, label, attrs = {}) => el('a', { href, target: '_blank', rel: 'noopener noreferrer', ...attrs }, label);
+
+function brandPageHistory(page) {
+  const body = el('div', { class: 'bp-history' }, el('p', { class: 'muted' }, 'Loading…'));
+  let loaded = false;
+  const details = el('details', { class: 'bp-details', ontoggle: async () => {
+    if (!details.open || loaded) return;
+    loaded = true;
+    try {
+      const { revisions } = await api(`/api/v1/brand-pages/${encodeURIComponent(page.slug)}/revisions`);
+      body.replaceChildren(...revisions.map((row) => el('div', { class: 'bp-revision' },
+        el('div', { class: 'bp-revision-main' },
+          el('strong', {}, `Revision ${row.n}`), brandPageChip(row.state),
+          row.preview ? newTabLink(row.preview, 'Preview', { class: 'link-btn', 'aria-label': `Preview revision ${row.n} of ${page.name}` }) : el('span', { class: 'muted' }, 'Files removed')),
+        el('div', { class: 'bp-revision-meta muted' },
+          `${row.publishedByName ?? row.publishedBy} · ${relTime(row.createdAt)} · ${row.fileCount} files · ${fmtBytes(row.size)}`),
+        el('div', { class: 'mono bp-digest' }, `SHA-256 ${row.digest}`))));
+    } catch (e) { body.replaceChildren(el('p', { class: 'form-err', role: 'status' }, e.message)); loaded = false; }
+  } }, el('summary', {}, 'History'), body);
+  return details;
+}
+
+function brandPageCard(page) {
+  const err = errSpan();
+  const live = page.state === 'live';
+  const preview = page.revision?.preview;
+  const removeFiles = el('input', { type: 'checkbox', id: `bp-remove-${page.slug}` });
+  const actions = el('div', { class: 'bp-actions' },
+    live ? newTabLink(page.url, 'Open', { class: 'btn', 'aria-label': `Open the public page for ${page.name}` }) : null,
+    preview ? newTabLink(preview, 'Preview', { class: 'btn', 'aria-label': `Preview ${page.name}` }) : null);
+  const takeDown = live ? el('div', { class: 'bp-takedown' },
+    el('label', { class: 'bp-remove', for: removeFiles.id }, removeFiles, 'Also remove its files'),
+    armConfirmButton({ class: 'danger', 'aria-label': `Unpublish ${page.name}` }, 'Unpublish', 'Really unpublish?', async (disarm) => {
+      err.textContent = '';
+      try {
+        await api(`/api/v1/brand-pages/${encodeURIComponent(page.slug)}/unpublish`, { method: 'POST', body: { removeFiles: removeFiles.checked } });
+        toast(`Unpublished ${page.name}`);
+        route();
+      } catch (e) { err.textContent = e.message; disarm(); }
+    })) : null;
+  return el('div', { class: 'bp-card' },
+    el('div', { class: page.logo ? 'bp-art' : 'bp-art bp-art-empty' }, page.logo ? el('img', { src: page.logo, alt: '', loading: 'lazy' }) : el('span', { class: 'muted' }, 'No logo')),
+    el('div', { class: 'bp-body' },
+      el('div', { class: 'bp-head' },
+        el('h3', { class: 'flush' }, page.name),
+        brandPageChip(page.state)),
+      live ? el('p', { class: 'bp-url' }, newTabLink(page.url, page.url, { class: 'link-btn' })) : el('p', { class: 'mono' }, `/brand/${page.slug}/`),
+      el('p', { class: 'muted' }, page.state === 'unpublished'
+        ? `Unpublished ${relTime(page.unpublishedAt)}${page.unpublishedByName ? ` by ${page.unpublishedByName}` : ''}. Its address answers 410.`
+        : page.revision ? `Revision ${page.revision.n} · ${page.revision.fileCount} files · ${fmtBytes(page.revision.size)} · ${relTime(page.revision.liveAt ?? page.revision.createdAt)}` : ''),
+      page.pending && page.state === 'live' ? el('p', { class: 'muted' }, `Revision ${page.pending} is waiting for approval.`) : null,
+      el('div', { class: 'bp-foot' }, actions, takeDown),
+      err,
+      brandPageHistory(page)));
+}
+
+async function viewBrandPages(main) {
+  let answer;
+  try { answer = await api('/api/v1/brand-pages'); }
+  catch (e) {
+    if (e.status !== 404) throw e;
+    main.append(el('div', { class: 'card stack' },
+      el('h2', { class: 'flush' }, 'Brand pages are off'),
+      el('p', {}, 'A brand page puts one design system at a public address, for people and for agents.'),
+      el('p', { class: 'sub' }, 'Turn this on with brandPages.enabled in the instance config. A published page is public even when this instance needs a sign-in.')));
+    return;
+  }
+  const { pages, limits, approvalChain } = answer;
+  main.append(el('div', { class: 'card stack' },
+    el('div', { class: 'list-bar' },
+      el('h2', { class: 'flush' }, 'Brand pages'),
+      el('span', { class: 'muted' }, `${fmtBytes(limits.usedBytes) || '0 B'} of ${fmtBytes(limits.instanceBudgetBytes)} used`)),
+    el('p', { class: 'sub' }, 'Each page is public, even when this instance needs a sign-in. Anyone can read its files and its read-only MCP endpoint.'),
+    approvalChain ? el('p', { class: 'sub' }, 'A new revision goes live when its approval chain approves it.') : null,
+    pages.length
+      ? el('div', { class: 'bp-list' }, ...pages.map(brandPageCard))
+      : el('p', { class: 'empty' }, 'No brand pages yet.'),
+    el('details', { class: 'bp-details' },
+      el('summary', {}, 'Publish a page'),
+      el('p', {}, 'Make the folder in Lolly, then send it to this instance.'),
+      el('pre', { class: 'mono bp-command' }, 'lolly system publish --out ./brand-page\nlw brand-pages publish ./brand-page'))));
+}
+
 async function viewProviders(main, params = new URLSearchParams()) {
   const [{ providers }, setup] = await Promise.all([api('/api/v1/catalog/providers'), api('/api/v1/catalog/providers/setup')]);
   const panelHost = el('div', {});
@@ -3645,7 +3740,7 @@ function approvalFooter(a, review) {
     clearNeed();
     err.textContent = '';
     try {
-      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}), ...(a.exportReview ? { artifactFingerprint: a.exportReview.fingerprint, ...(review?.token ? { reviewToken: review.token } : {}) } : {}) } });
+      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}), ...(a.brandPage ? { brandPageDigest: a.brandPage.digest } : {}), ...(a.exportReview ? { artifactFingerprint: a.exportReview.fingerprint, ...(review?.token ? { reviewToken: review.token } : {}) } : {}) } });
       toast(action === 'approve' ? `Approved “${a.title}”` : `Rejected “${a.title}”`);
       route();
     } catch (e) { err.textContent = e.message; }
@@ -3760,15 +3855,31 @@ const namesToolOnly = (a) => a.subjectType === 'asset' && !/^inst\//.test(a.subj
 
 // One approval card, identical visual grammar in both sections — only the
 // action affordance differs (inbox: act footer; requests: read-only).
+// A brand page request: what would go public, and the page itself to open first.
+// Approve stays off until the reviewer has opened the page, as it does for a file.
+function brandPageReviewPanel(a, { actionable }) {
+  const state = { token: false, onReady: null };
+  const page = a.brandPage;
+  const element = el('div', { class: 'appr-brand-page' },
+    el('p', {}, `${page.name}, revision ${page.revision}: ${page.files} files, ${fmtBytes(page.size)}${page.held ? `, ${page.held} held back` : ''}.`),
+    el('p', { class: 'mono bp-digest' }, `SHA-256 ${page.digest}`),
+    el('p', {}, newTabLink(page.preview, actionable ? 'Open the page to review it' : 'Open the page', {
+      class: 'link-btn',
+      onclick: () => { state.token = true; state.onReady?.(); },
+    })),
+    actionable ? el('p', { class: 'muted' }, 'Approving makes this page public, even when this instance needs a sign-in.') : null);
+  return { element, state };
+}
+
 function renderApprovalCard(a, { actionable }) {
-  const review = a.exportReview ? exportReviewPanel(a, { actionable }) : null;
+  const review = a.exportReview ? exportReviewPanel(a, { actionable }) : a.brandPage ? brandPageReviewPanel(a, { actionable }) : null;
   return el('div', { class: 'appr-card' },
     el('div', { class: 'appr-head' },
       el('div', { class: 'appr-headmain' },
         el('div', { class: 'appr-title' }, a.title),
         el('div', { class: 'appr-meta' },
-          el('span', { class: 'chip' }, a.exportReview ? 'Exported file' : a.subjectType),
-          a.subjectRef && !a.exportReview ? el('span', { class: 'mono' }, a.subjectRef) : null,
+          el('span', { class: 'chip' }, a.exportReview ? 'Exported file' : a.brandPage ? 'Brand page' : a.subjectType),
+          a.subjectRef && !a.exportReview && !a.brandPage ? el('span', { class: 'mono' }, a.subjectRef) : null,
           el('span', { class: 'muted' }, a.chainName),
           el('span', { class: 'muted' }, a.mine ? 'raised by you' : ['raised by ', a.createdByName ?? a.createdBy], ' · ', relTime(a.createdAt)))),
       stateChip(a.state)),
@@ -6316,6 +6427,7 @@ const NAV_ICONS = {
   grants: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
   preview: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   flags: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
+  brandPages: '<path d="M4 4h16v16H4z"/><path d="M4 9h16"/><path d="M9 14h6"/><path d="M9 17h3"/>',
   injectables: '<path d="M12 2v20"/><path d="M2 12h20"/><path d="M12 2l3 3-3 3-3-3z"/><circle cx="12" cy="12" r="2.5"/>',
   docs: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8"/><path d="M8 11h6"/>',
 };

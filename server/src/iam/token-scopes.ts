@@ -73,6 +73,19 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'HEAD /compat/files/:id/:expires/:signature/:file': ['render'],
   'GET /compat/placid/u/:uuid': ['render'],
 
+  // A published brand page needs no token. A client that sends one anyway must not
+  // lose the page. Publishing, listing, history, preview and unpublish are absent on
+  // purpose: putting files at a public address is a person's or a full token's act.
+  'GET /brand/:slug/*': ANY,
+  'HEAD /brand/:slug/*': ANY,
+  'GET /brand/:slug/mcp': ANY,
+  'HEAD /brand/:slug/mcp': ANY,
+  'POST /brand/:slug/mcp': ANY,
+  'GET /.well-known/lolly-brand.json': ANY,
+  'HEAD /.well-known/lolly-brand.json': ANY,
+  'GET /api/v1/brand-pages/public': ANY,
+  'HEAD /api/v1/brand-pages/public': ANY,
+
   'GET /api/auth/session': ANY,
   'GET /api/v1/discovery': ANY,
   'GET /api/v1/discovery/me': ANY,

@@ -7,7 +7,7 @@ export function consoleAccess(principal: PrincipalCtx, grants: Grant[], activity
   const requirements: Record<string, string[]> = {
     overview: ['telemetry.view'], activity: ['audit.export'], agents: ['audit.export'], fleet: ['fleet.view'], rooms: ['telemetry.view'],
     links: ['link.revoke'], tools: ['policy.edit'], catalog: ['catalog.expire'], providers: ['catalog.provider.read'],
-    injectables: ['catalog.injectable.manage'], flags: ['policy.edit'], design: ['catalog.read'],
+    injectables: ['catalog.injectable.manage'], flags: ['policy.edit'], design: ['catalog.read'], 'brand-pages': ['brand.page.publish'],
     contractors: ['link.create-guest'], grants: ['grant.edit'], preview: ['policy.edit'], audit: ['audit.export'],
     setup: ['instance.config'], tokens: ['token.manage', 'scim.manage'], chains: ['policy.edit'],
   };
@@ -21,7 +21,7 @@ export function consoleAccess(principal: PrincipalCtx, grants: Grant[], activity
     [id, requirements.some(action => actions.includes(action))]));
   views.activity = !!views.activity && activityAvailable(activity, principal.role);
   views.agents = !!views.agents && activityAvailable(activity, principal.role);
-  views.instance = ['tools', 'catalog', 'providers', 'design', 'flags', 'injectables'].some(id => views[id]);
+  views.instance = ['tools', 'catalog', 'providers', 'design', 'brand-pages', 'flags', 'injectables'].some(id => views[id]);
   views.users = principal.role === 'admin' || principal.role === 'owner';
   for (const id of ['messages', 'projects', 'approvals', 'docs', 'verify']) views[id] = true;
   return { actions, views };

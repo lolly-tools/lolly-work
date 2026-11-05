@@ -50,7 +50,7 @@ export interface VercelRoute {
 
 /** Top-level path segments the lolly-work router owns today. */
 export const FUNCTION_PREFIX_BASELINE: readonly string[] = [
-  'activate', 'admin', 'api', 'catalog', 'compat', 'connect', 'healthz', 'l', 'metrics', 'readyz', 'render', 'scim', 'tools',
+  'activate', 'admin', 'api', 'brand', 'catalog', 'compat', 'connect', 'healthz', 'l', 'metrics', 'readyz', 'render', 'scim', 'tools',
 ];
 
 /** Paths the OSS deployment serves from its own functions, which the shell
@@ -69,7 +69,7 @@ export const SHELL_FUNCTION_PATHS = '^/(api/(?:ca|penpot|mcp)(?:/.*)?|api/fetch-
  *  against that sw.js. (`/api/` and `/catalog/` are bypassed already, and
  *  `/tools/<id>/<file>` paths end in a file name.) */
 export const SHELL_SW_BYPASS_PREFIXES: readonly string[] = [
-  'activate', 'admin', 'compat', 'connect', 'e', 'healthz', 'l', 'metrics', 'o', 'readyz', 'render', 'scim',
+  'activate', 'admin', 'brand', 'compat', 'connect', 'e', 'healthz', 'l', 'metrics', 'o', 'readyz', 'render', 'scim',
 ];
 
 /** Top-level paths a WebSocket upgrade arrives on: the collab gateway's
@@ -80,7 +80,13 @@ export const SHELL_SW_BYPASS_PREFIXES: readonly string[] = [
  *  to another origin does not carry a WebSocket. */
 export const UPGRADE_PREFIXES: readonly string[] = ['ws'];
 
-export const FUNCTION_EXACT_PATHS = ['/info/media/agent-collaboration-review.mp4'] as const;
+export const FUNCTION_EXACT_PATHS = ['/info/media/agent-collaboration-review.mp4', '/.well-known/lolly-brand.json'] as const;
+/** Prefixes the shell shares with the server, where a pattern says which paths are
+ *  the server's. The bare /tools is the shell's gallery, and the bare /brand is its
+ *  standards page, with its pictures beside it at names that hold a dot. A brand page
+ *  address has a slug, which never does, so each side keeps its own. */
+const SHARED_PREFIXES: Readonly<Record<string, string>> = { tools: 'tools/.', brand: 'brand/[a-z0-9-]+(?:/|$)' };
+const sharedPatterns = Object.values(SHARED_PREFIXES).join('|');
 const FUNCTION_DEST = '/api/index';
 const restorePath: VercelTransform[] = [{ type: 'request.path', op: 'set', args: '/$1' }];
 const dropHeader = (key: string): VercelTransform => ({ type: 'request.headers', op: 'delete', target: { key } });
@@ -157,7 +163,7 @@ export function vercelRoutes(opts: { shellOrigin?: string; prefixes?: readonly s
     return [{ src: '^/(.*)$', dest: FUNCTION_DEST, transforms: restorePath }];
   }
   const origin = parseShellOrigin(opts.shellOrigin);
-  const prefixes = [...(opts.prefixes ?? FUNCTION_PREFIX_BASELINE)].filter((p) => p !== 'tools').sort();
+  const prefixes = [...(opts.prefixes ?? FUNCTION_PREFIX_BASELINE)].filter((p) => !SHARED_PREFIXES[p]).sort();
   if (!prefixes.length) throw new Error('no function prefixes');
   // A proxy to the shell origin ends routing, but a rewrite to the function does
   // not: Vercel keeps matching later routes against the rewritten path. With the
@@ -165,7 +171,7 @@ export function vercelRoutes(opts: { shellOrigin?: string; prefixes?: readonly s
   // went on to the shell origin as /api/index and came back NOT_FOUND (first
   // lolly.ing deploy, 2026-10-03). So the shell catch-all excludes the function
   // paths itself and the function row comes last, with nothing after it.
-  const functionPaths = `(?:${prefixes.map(escape).join('|')})(?:/|$)|tools/.|${FUNCTION_EXACT_PATHS.map(p => escape(p.slice(1)) + '$').join('|')}`;
+  const functionPaths = `(?:${prefixes.map(escape).join('|')})(?:/|$)|${sharedPatterns}|${FUNCTION_EXACT_PATHS.map(p => escape(p.slice(1)) + '$').join('|')}`;
   return [
     { src: SHELL_FUNCTION_PATHS, dest: `${origin}/$1`, transforms: [dropHeader('cookie')] },
     { src: `^/(?!${functionPaths})(.*)$`, dest: `${origin}/$1`, transforms: [dropHeader('cookie'), dropHeader('authorization')] },
@@ -237,14 +243,14 @@ export interface CaddyRule { name: string; pattern: string; to: 'shell' | 'serve
  *  regular expressions (Go RE2) have no lookahead, so unlike the Vercel table
  *  the order alone keeps the OSS functions away from the `api` prefix. */
 export function caddyRules(prefixes: readonly string[] = FUNCTION_PREFIX_BASELINE): CaddyRule[] {
-  const own = [...new Set([...prefixes, ...UPGRADE_PREFIXES])].filter((p) => p !== 'tools').sort();
+  const own = [...new Set([...prefixes, ...UPGRADE_PREFIXES])].filter((p) => !SHARED_PREFIXES[p]).sort();
   if (!own.length) throw new Error('no function prefixes');
   // Prefixes come from route literals; anything but a plain word would need
   // quoting in a Caddyfile, so it is refused rather than escaped.
   for (const p of own) if (!/^[a-z0-9_-]+$/i.test(p)) throw new Error(`prefix ${JSON.stringify(p)} is not a plain path segment`);
   return [
     { name: 'shell_functions', pattern: SHELL_FUNCTION_PATHS, to: 'shell' },
-    { name: 'control_plane', pattern: `^/(?:(?:${own.join('|')})(?:/|$)|tools/.|${FUNCTION_EXACT_PATHS.map(p => p.slice(1).replaceAll('.', '[.]') + '$').join('|')})`, to: 'server' },
+    { name: 'control_plane', pattern: `^/(?:(?:${own.join('|')})(?:/|$)|${sharedPatterns}|${FUNCTION_EXACT_PATHS.map(p => p.slice(1).replaceAll('.', '[.]') + '$').join('|')})`, to: 'server' },
   ];
 }
 
