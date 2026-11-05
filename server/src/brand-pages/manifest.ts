@@ -19,6 +19,17 @@ export type BrandPageRole = typeof BRAND_PAGE_ROLES[number];
 
 export interface BrandPageFile { path: string; role: BrandPageRole; mediaType: string; sha256: string; size: number }
 export interface BrandPageHeld { item: string; reason: string; kind: 'policy' | 'licence' | 'unknown' | 'content' | 'limit' }
+/** One published logo, its surface and the licence on record. Optional: a page from before this field has none. */
+export interface BrandPageLogo {
+  id: string;
+  name: string;
+  path: string;
+  surface: 'light' | 'dark' | 'any';
+  mono: boolean;
+  primary?: boolean;
+  licence?: string;
+}
+
 export interface BrandPageManifest {
   version: 1;
   id: string;
@@ -30,6 +41,7 @@ export interface BrandPageManifest {
   usage?: { statement?: string; contact?: string; url?: string };
   colourways: { id: string; name: string; modes: string[] }[];
   files: BrandPageFile[];
+  logos?: BrandPageLogo[];
   held: BrandPageHeld[];
   checks: { file: 'checks.json'; variants: number; pairs: number; pairsBelow3: number; rules: number; rulesWithFindings: number };
   publishedAt?: string;
@@ -78,7 +90,7 @@ function count(value: unknown, where: string): number {
  *  covers everything the manifest says. */
 export function parseBrandPageManifest(value: unknown): BrandPageManifest {
   if (!isObject(value)) return refuse('brand.json must be an object');
-  keys(value, 'brand.json', ['version', 'id', 'name', 'revision', 'publishedVersion', 'origin', 'generator', 'usage', 'colourways', 'files', 'held', 'checks', 'publishedAt', 'digest'],
+  keys(value, 'brand.json', ['version', 'id', 'name', 'revision', 'publishedVersion', 'origin', 'generator', 'usage', 'colourways', 'files', 'logos', 'held', 'checks', 'publishedAt', 'digest'],
     ['version', 'id', 'name', 'revision', 'generator', 'colourways', 'files', 'held', 'checks', 'digest']);
   if (value.version !== 1) refuse('this server reads brand.json version 1');
   const generator = value.generator;
@@ -136,7 +148,27 @@ export function parseBrandPageManifest(value: unknown): BrandPageManifest {
   if (value.publishedAt !== undefined) text(value.publishedAt, 'publishedAt', 40);
   pattern(value.digest, 'digest', HEX, 64);
   checkFolder(files as BrandPageFile[]);
+  checkLogos(value.logos, files as BrandPageFile[]);
   return value as unknown as BrandPageManifest;
+}
+
+/** Each logo row follows the schema and points at a logo the folder lists, so a reader can trust the path. */
+function checkLogos(logos: unknown, files: BrandPageFile[]): void {
+  if (logos === undefined) return;
+  if (!Array.isArray(logos) || logos.length > 4096) refuse('logos must list at most 4096 entries');
+  const listed = new Set(files.filter(file => file.role === 'logo').map(file => file.path));
+  for (const logo of logos as unknown[]) {
+    if (!isObject(logo)) return refuse('a logo must be an object');
+    keys(logo, 'a logo', ['id', 'name', 'path', 'surface', 'mono', 'primary', 'licence'], ['id', 'name', 'path', 'surface', 'mono']);
+    text(logo.id, 'a logo id', 400);
+    text(logo.name, 'a logo name', 400);
+    text(logo.path, 'a logo path', 600);
+    if (!listed.has(logo.path as string)) refuse('a logo points at a file the folder does not list as a logo');
+    if (!['light', 'dark', 'any'].includes(logo.surface as string)) refuse('a logo surface is not one this server reads');
+    if (typeof logo.mono !== 'boolean') refuse('a logo mono flag must be true or false');
+    if (logo.primary !== undefined && typeof logo.primary !== 'boolean') refuse('a logo primary flag must be true or false');
+    if (logo.licence !== undefined) text(logo.licence, 'a logo licence', 200);
+  }
 }
 
 /** The digest of the canonical manifest, without `digest` and `publishedAt`. */
@@ -161,7 +193,8 @@ const LAYOUT: Record<BrandPageRole, RegExp> = {
   tokens: /^tokens\/tokens\.json$/,
   'tokens-resolved': new RegExp(`^tokens/${SEGMENT}\\.tokens\\.json$`),
   logo: new RegExp(`^logos/${DIRECTORIES}${SEGMENT}\\.(?:svg|png|jpe?g|webp|pdf)$`),
-  font: new RegExp(`^fonts/${DIRECTORIES}${SEGMENT}\\.(?:woff2?|ttf|otf)$`),
+  // A font's licence text travels beside the font, in this one shape: fonts/<family>-licence.txt.
+  font: new RegExp(`^fonts/(?:${DIRECTORIES}${SEGMENT}\\.(?:woff2?|ttf|otf)|[a-z0-9][a-z0-9-]*-licence\\.txt)$`),
   skill: new RegExp(`^skills/${SEGMENT}/${DIRECTORIES}${SEGMENT}\\.(?:md|json|txt)$`),
   example: new RegExp(`^examples/${DIRECTORIES}${SEGMENT}\\.(?:svg|png)$`),
 };
