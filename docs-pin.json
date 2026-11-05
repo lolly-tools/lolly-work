@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "5d7b1474bf7933231f0303f7d83f6f7803ea55c8",
+  "commit": "1ec19b6fbf8c948c445405340a3f35b2df28afbd",
   "manifestSha256": "18654d37a905c339b79e23d85c26c6db01542b97c0b64a445bff151c4ecfedcb",
   "files": {
     "account-lifecycle.md": {
