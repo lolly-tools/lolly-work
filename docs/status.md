@@ -38,11 +38,14 @@ first and not built yet.
   receiver, Brandfolder or Cloudinary, with an optional approval step. See
   [Organisation delivery destinations](delivery.md).
 - **Approvals.** Ordered chains with `any`, quorum and `all` rules. Separation of duties.
-  Review of a frozen set of source files. See [Approvals](approvals.md).
+  Review of a frozen set of source files, and of one exact exported file, whose approved download
+  is the file reviewed. See [Approvals](approvals.md).
 - **Records.** Content Credentials signing, a hash-chained audit log, telemetry dashboards and
   SIEM forwarding. See [Audit log](audit.md) and [Telemetry and dashboards](telemetry.md).
 - **Agents.** Invite an MCP agent to one document or one project, under your own identity.
-  See [Invite an agent to a document](document-agents.md).
+  See [Invite an agent to a document](document-agents.md). Automation with a service token can
+  [connect over MCP](automation-api.md#connect-an-agent-over-mcp) across the instance, for tools,
+  schemas, validation, durable renders, batches and catalog search.
 - **Setup and packaging.** A six-step guided setup in the console, container images, Compose
   and a Helm chart with an optional render-worker tier. See
   [Configure your first Lolly Work instance](customer-setup.md) and [Install Lolly Work](install.md).
@@ -92,18 +95,17 @@ when you match clients to a release.
 
 ## Not built yet
 
-- **Scoped service tokens.** A token has a role, an expiry, last-use metadata and
-  revocation. Narrower scopes are not built.
+- **Per-token quotas.** A service token can be narrowed by scope and tool, and the automation
+  routes share one per-address rate limit. No per-token quota or usage account exists yet.
 - **Editable defaults.** An overlay stores `defaults` but does not apply them. Clients,
   collaboration, automation and server renders still need one agreed precedence.
-- **Watermarks tied to approval.** `until-approved` is not linked to approval state, and
-  binding an ordinary export to reviewed final bytes is not built. See
+- **Watermarks tied to approval.** `until-approved` is not linked to approval state. See
   [the enforce block](governance.md#the-enforce-block).
-- **Two overlay keys.** `enforce.c2pa` and `enforce.escalation` are declared but the write
-  paths do not accept them.
+- **One overlay key.** `enforce.c2pa` is declared, and the write paths refuse that key.
 - **Ending one chosen session.** An admin can end all of a person's sessions, not one of
   them. See [Sign-in and sessions](identity.md#offboarding-disable-and-revocation).
-- **An organisation-wide MCP endpoint.** Agents connect per document or per project.
+- **Delivery and approvals over the organisation MCP endpoint.** Those stay on the HTTP routes
+  and with people.
 - **Render dependency locking.** Receipts are partial, campaign reconciliation is not built,
   and a durable render resource cannot yet be delivered by reference. See
   [Render jobs and batches](renders.md#what-a-receipt-does-not-prove).
