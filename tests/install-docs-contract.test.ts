@@ -191,8 +191,9 @@ test('the documented port-forward names a port the chart actually creates', () =
 
 test('the Compose stack waits for its database instead of racing it', () => {
   // main.ts awaits runMigrations() at the top level and store/migrate.ts
-  // connects once with no retry, so a plain depends_on lets the server exit
-  // during Postgres initdb - and with no restart policy it stays exited.
+  // retries a refused connect for only about 10 seconds, so a plain depends_on
+  // can let the server exit during Postgres initdb - and with no restart policy
+  // it stays exited.
   const compose = readFileSync(join(REPO, 'deploy/compose/docker-compose.yml'), 'utf8');
   assert.match(compose, /condition:\s*service_healthy/, 'server waits on the db healthcheck');
   assert.match(compose, /pg_isready/, 'db declares a healthcheck');

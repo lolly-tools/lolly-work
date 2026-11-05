@@ -4,14 +4,19 @@
  * hang of 2026-10-03: migrations run over the direct database URL when one is
  * given, the lock is a transaction lock (so a transaction pooler cannot keep it
  * after the client leaves), and a session lock leaked under the old key does
- * not block a boot. The Postgres cases need LW_TEST_DATABASE_URL.
+ * not block a boot. Connecting retries only while the database is not reachable
+ * yet. The Postgres cases need LW_TEST_DATABASE_URL.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer, type AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   assertExpectedPending, describeMigrations, migrationDatabaseUrl, migrationManifest, parseMigrateExpect,
-  readMigrationFiles, runMigrations,
+  pendingMigrations, readMigrationFiles, runMigrations, type MigrationConnector,
 } from '../server/src/store/migrate.ts';
 
 test('LW_MIGRATE_EXPECT parses to a names list, a manifest, or nothing', () => {
@@ -73,6 +78,151 @@ test('migrations prefer DATABASE_URL_UNPOOLED and fall back to DATABASE_URL', ()
   assert.equal(migrationDatabaseUrl({ DATABASE_URL: ' postgres://only ', DATABASE_URL_UNPOOLED: '  ' }), 'postgres://only');
   assert.equal(migrationDatabaseUrl({}), undefined);
 });
+
+// ---------------------------------------------------------------------------
+// Connecting: a new pod's first connections are refused until K3s has programmed
+// its NetworkPolicy (lolly.ing, 2026-11-05), so connecting retries those and only
+// those. Each case runs through the real runMigrations and pendingMigrations with
+// a fake client, so nothing here waits. `outcomes` is one connect() result per
+// client built; the last one repeats.
+
+const FAKE_URL = 'postgres://lolly:hunter2@db.example:5432/work';
+const FAKE_SQL = 'create table fake_a (id int);';
+
+function codedError(code: string | undefined, message = `connect ${code}`): NodeJS.ErrnoException {
+  return Object.assign(new Error(message), code ? { code } : {});
+}
+
+function fakeConnector(outcomes: Array<Error | null>, failOn?: { sql: string; error: Error }) {
+  const seen = { clients: 0, ended: 0, sleeps: [] as number[], logs: [] as string[], statements: [] as string[] };
+  const connector: MigrationConnector = {
+    async newClient(url) {
+      assert.equal(url, FAKE_URL);
+      const outcome = outcomes[Math.min(seen.clients, outcomes.length - 1)];
+      seen.clients++;
+      return {
+        async connect() { if (outcome) throw outcome; },
+        async end() { seen.ended++; },
+        async query(text: string) {
+          seen.statements.push(text);
+          if (failOn && text.includes(failOn.sql)) throw failOn.error;
+          return { rows: text.includes('to_regclass') ? [{ t: 'schema_migrations' }] : [] };
+        },
+      };
+    },
+    async sleep(ms) { seen.sleeps.push(ms); },
+    log(line) { seen.logs.push(line); },
+  };
+  return { connector, seen };
+}
+
+/** The two entry points every caller reaches, over one pending file. */
+const CONNECT_PATHS: Array<[string, (dir: string, connector: MigrationConnector) => Promise<string[]>]> = [
+  ['apply', (dir, connector) => runMigrations(FAKE_URL, dir, {}, connector)],
+  ['check', (dir, connector) => pendingMigrations(FAKE_URL, dir, connector)],
+];
+
+async function withOneMigration(body: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'lw-connect-'));
+  try {
+    await writeFile(join(dir, '0001_a.sql'), FAKE_SQL);
+    await body(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+for (const [path, run] of CONNECT_PATHS) {
+  test(`${path}: refused, then the database opens`, () => withOneMigration(async (dir) => {
+    const refused = codedError('ECONNREFUSED');
+    const { connector, seen } = fakeConnector([refused, refused, null]);
+    assert.deepEqual(await run(dir, connector), ['0001_a.sql']);
+    assert.equal(seen.clients, 3, 'a new client for each attempt');
+    assert.deepEqual(seen.sleeps, [500, 500]);
+    assert.equal(seen.ended, 3, 'both refused clients and the connected one are closed');
+    assert.equal(seen.logs.length, 1, 'one line however many attempts it takes');
+    assert.match(seen.logs[0]!, /ECONNREFUSED/);
+    for (const secret of ['hunter2', 'db.example', FAKE_URL]) assert.ok(!seen.logs[0]!.includes(secret), `the line leaves out ${secret}`);
+  }));
+
+  test(`${path}: EHOSTUNREACH and ENETUNREACH retry the same way`, () => withOneMigration(async (dir) => {
+    for (const code of ['EHOSTUNREACH', 'ENETUNREACH']) {
+      const { connector, seen } = fakeConnector([codedError(code), null]);
+      assert.deepEqual(await run(dir, connector), ['0001_a.sql'], code);
+      assert.equal(seen.clients, 2, code);
+    }
+  }));
+
+  test(`${path}: refused on every attempt ends in the original error`, () => withOneMigration(async (dir) => {
+    const errors = Array.from({ length: 20 }, (_, i) => codedError('ECONNREFUSED', `attempt ${i + 1}`));
+    const { connector, seen } = fakeConnector(errors);
+    await assert.rejects(run(dir, connector), (err) => err === errors[19]);
+    assert.equal(seen.clients, 20);
+    assert.deepEqual(seen.sleeps, Array(19).fill(500), 'no wait after the last attempt');
+    assert.deepEqual(seen.statements, [], 'nothing was ever sent');
+  }));
+
+  test(`${path}: any other connect error fails on the first try`, () => withOneMigration(async (dir) => {
+    for (const error of [
+      codedError('28P01', 'password authentication failed for user "lolly"'),
+      codedError('57P03', 'the database system is starting up'),
+      codedError('ENOTFOUND'),
+      codedError('ETIMEDOUT'),
+      codedError(undefined, 'Connection terminated due to connection timeout'),
+    ]) {
+      const { connector, seen } = fakeConnector([error, null]);
+      await assert.rejects(run(dir, connector), (err) => err === error, error.message);
+      assert.equal(seen.clients, 1, error.message);
+      assert.deepEqual(seen.sleeps, [], error.message);
+      assert.deepEqual(seen.logs, [], error.message);
+      assert.deepEqual(seen.statements, [], error.message);
+    }
+  }));
+
+  // A refused code on a statement means a connection we had was lost. The server
+  // may have run the work already, so this must surface rather than start over.
+  test(`${path}: a refused code after connecting is not retried`, () => withOneMigration(async (dir) => {
+    const { connector, seen } = fakeConnector([null], { sql: 'to_regclass', error: codedError('ECONNREFUSED') });
+    await assert.rejects(run(dir, connector), /ECONNREFUSED/);
+    assert.equal(seen.clients, 1, 'one client, one connect');
+    assert.deepEqual(seen.sleeps, []);
+    assert.deepEqual(seen.logs, []);
+    assert.equal(seen.statements.filter((text) => text.includes('to_regclass')).length, 1, 'the statement ran once');
+    assert.equal(seen.ended, 1);
+  }));
+}
+
+test('a migration that fails, even with a refused code, runs once and is not retried', () => withOneMigration(async (dir) => {
+  for (const error of [codedError('ECONNREFUSED'), codedError('42P01', 'relation "x" does not exist')]) {
+    const { connector, seen } = fakeConnector([codedError('ECONNREFUSED'), null], { sql: FAKE_SQL, error });
+    await assert.rejects(runMigrations(FAKE_URL, dir, {}, connector), new RegExp(`migration 0001_a\\.sql failed: ${error.message}`));
+    assert.equal(seen.clients, 2, 'the only retry was the refused connect before it');
+    assert.equal(seen.sleeps.length, 1);
+    assert.equal(seen.statements.filter((text) => text === FAKE_SQL).length, 1, 'the migration ran once');
+    assert.ok(seen.statements.includes('rollback'));
+  }
+}));
+
+test('the real pg client is refused with a code the retry reads, and the line goes to stderr', (t) => withOneMigration(async (dir) => {
+  // A port just closed: this exercises pg's error shape and client.end() after a
+  // failed connect, which a fake cannot speak for. Only the wait is replaced.
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  await new Promise((resolve) => server.close(resolve));
+  const stderr = t.mock.method(console, 'error', () => undefined);
+  const stdout = t.mock.method(console, 'log', () => undefined);
+  let sleeps = 0;
+  const sleep = async () => { sleeps++; };
+  const url = `postgres://lolly:hunter2@127.0.0.1:${port}/none`;
+  await assert.rejects(pendingMigrations(url, dir, { sleep }), (err: NodeJS.ErrnoException) => err.code === 'ECONNREFUSED');
+  assert.equal(sleeps, 19);
+  assert.equal(stderr.mock.callCount(), 1);
+  assert.equal(stdout.mock.callCount(), 0, 'stdout stays parseable for --check --json');
+  const line = String(stderr.mock.calls[0]!.arguments[0]);
+  assert.match(line, /^migrate: .*ECONNREFUSED/);
+  assert.ok(!line.includes('hunter2') && !line.includes(String(port)), 'neither the password nor the address');
+}));
 
 const pgUrl = process.env.LW_TEST_DATABASE_URL;
 const skip = !pgUrl && 'set LW_TEST_DATABASE_URL to run';

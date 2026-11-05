@@ -9,6 +9,9 @@
  * LW_MIGRATE_EXPECT (none, a.sql,b.sql or sha256:<manifest>) makes the apply
  * refuse unless the pending set is exactly that; see server/src/store/migrate.ts.
  *
+ * Connecting retries for about 10 seconds while the database is not reachable
+ * yet (connectClient in that file); any other failure exits at once.
+ *
  * Reuses server/src/store/migrate.ts so there is one implementation of the SQL
  * and the ordering. Needs DATABASE_URL to point at the target database.
  */

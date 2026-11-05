@@ -132,19 +132,62 @@ export async function assertExpectedPending(expect: MigrateExpectation, pending:
   return new Map(files.map(file => [file.name, file.sha256]));
 }
 
-type MigrationClient = Queryable & { connect(): Promise<void>; end(): Promise<void> };
+export type MigrationClient = Queryable & { connect(): Promise<void>; end(): Promise<void> };
 
-async function connectClient(databaseUrl: string): Promise<MigrationClient> {
-  const { default: pg } = await import('pg');
-  const client = new pg.Client({ connectionString: databaseUrl, connectionTimeoutMillis: PG_CONNECT_TIMEOUT_MS }) as unknown as MigrationClient;
-  await client.connect();
-  return client;
+// K3s programs a new pod's address into its NetworkPolicy a moment after the
+// container starts, and Node connects within milliseconds, so the first attempts
+// are refused while the database is healthy (lolly.ing, measured open by 500 ms).
+// These three codes mean the network has not let us through yet. Everything else
+// (a bad password, a timeout, a server that answered with an error) fails at once.
+// deploy/preview's read-only check (DB_READ_SCRIPT in preview_ing.py) has the same rule.
+const CONNECT_RETRY_CODES: ReadonlySet<string> = new Set(['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH']);
+const CONNECT_ATTEMPTS = 20;
+const CONNECT_RETRY_DELAY_MS = 500;
+
+/** What connecting depends on, so a test can pass fakes instead of waiting. */
+export interface MigrationConnector {
+  newClient(databaseUrl: string): Promise<MigrationClient>;
+  sleep(ms: number): Promise<void>;
+  log(line: string): void;
+}
+
+const PG_CONNECTOR: MigrationConnector = {
+  async newClient(databaseUrl) {
+    const { default: pg } = await import('pg');
+    return new pg.Client({ connectionString: databaseUrl, connectionTimeoutMillis: PG_CONNECT_TIMEOUT_MS }) as unknown as MigrationClient;
+  },
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  // stderr, because other tools parse what scripts/migrate.ts writes to stdout.
+  log: (line) => console.error(line),
+};
+
+/** Connect, retrying only while the database is not reachable yet. This covers
+ *  connecting and nothing after it: once connect() has resolved, no error comes
+ *  back here, so a retry can never run a statement a second time. */
+async function connectClient(databaseUrl: string, connector: Partial<MigrationConnector> = {}): Promise<MigrationClient> {
+  const { newClient, sleep, log } = { ...PG_CONNECTOR, ...connector };
+  for (let attempt = 1; ; attempt++) {
+    // A new client each time: a pg.Client cannot connect twice.
+    const client = await newClient(databaseUrl);
+    try {
+      await client.connect();
+      return client;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (attempt >= CONNECT_ATTEMPTS || !code || !CONNECT_RETRY_CODES.has(code)) throw err;
+      await client.end().catch(() => undefined);
+      // The code only: the error message and the URL both name the database.
+      if (attempt === 1) log(`migrate: database not reachable yet (${code}), retrying every ${CONNECT_RETRY_DELAY_MS} ms, up to ${CONNECT_ATTEMPTS} attempts`);
+      await sleep(CONNECT_RETRY_DELAY_MS);
+    }
+  }
 }
 
 /** Read-only pending-migration check over its own short-lived connection - the
  *  boot guard (LW_AUTO_MIGRATE=false) and `lw migrate --check` use this. */
-export async function pendingMigrations(databaseUrl: string, dir = './migrations'): Promise<string[]> {
-  const client = await connectClient(databaseUrl);
+export async function pendingMigrations(databaseUrl: string, dir = './migrations',
+  connector?: Partial<MigrationConnector>): Promise<string[]> {
+  const client = await connectClient(databaseUrl, connector);
   try {
     return await pendingAgainst(client, dir);
   } finally {
@@ -155,10 +198,10 @@ export async function pendingMigrations(databaseUrl: string, dir = './migrations
 /** Apply the pending migrations. When `env.LW_MIGRATE_EXPECT` is set, refuse
  *  (before any DDL or lock) unless the pending set is exactly the expected one. */
 export async function runMigrations(databaseUrl: string, dir = './migrations',
-  env: Record<string, string | undefined> = process.env): Promise<string[]> {
+  env: Record<string, string | undefined> = process.env, connector?: Partial<MigrationConnector>): Promise<string[]> {
   // A malformed expectation fails before any connection is opened.
   const expectation = parseMigrateExpect(env.LW_MIGRATE_EXPECT);
-  const client = await connectClient(databaseUrl);
+  const client = await connectClient(databaseUrl, connector);
   const applied: string[] = [];
   // One transaction holding the migration lock. Two replicas booting together
   // serialize here: the loser waits, then finds the file already recorded. The
