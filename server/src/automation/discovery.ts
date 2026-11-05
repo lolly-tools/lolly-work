@@ -42,7 +42,7 @@ export const DISCOVERY_VERSION = 1;
 export const BATCH_LIMITS = { rows: 200, concurrency: 4, retries: 3 } as const;
 const PAGE = { default: 25, max: 100 } as const;
 const VERBS = ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize', 'package', 'render', 'batch'] as const;
-const LINKS = { caller: '/api/v1/discovery/me', tools: '/api/v1/discovery/tools', schema: '/api/v1/schema/{toolId}', files: '/api/v1/files' } as const;
+const LINKS = { caller: '/api/v1/discovery/me', tools: '/api/v1/discovery/tools', schema: '/api/v1/schema/{toolId}', files: '/api/v1/files', mcp: '/api/v1/mcp' } as const;
 const TOOL_ID = /^[a-z0-9][a-z0-9._-]*$/i;
 
 export type WorkerState = 'ready' | 'busy' | 'unreachable';
@@ -78,6 +78,8 @@ export interface DiscoveryDeps {
   workerState?: () => Promise<WorkerState>;
   liveCollab: boolean;
   documentAgents: boolean;
+  /** Whether this host runs the durable render runner, which the MCP render tools need. */
+  durableRenders: boolean;
   /** Whether file references (uploads/files.ts) are on: `policy.uploads.enabled`. */
   fileReferences: boolean;
   /** Which provider reference schemes resolve for these groups. */
@@ -151,7 +153,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
       render: { formats: deps.caps.formats, hookedTools: deps.caps.hookedTools, contentCredentials: await deps.contentCredentials().catch(() => false) },
       automation: { verbs: VERBS, async: true, durableRenders: true, batch: BATCH_LIMITS },
       collaboration: { live: deps.liveCollab },
-      agents: { documentMcp: deps.documentAgents },
+      agents: { documentMcp: deps.documentAgents, organisationMcp: { endpoint: LINKS.mcp, auth: 'service-token', renderTools: deps.durableRenders } },
       files: { references: deps.fileReferences },
       unavailable: deploymentGaps(deps.caps),
       links: LINKS,

@@ -31,6 +31,7 @@ const OPTIONS = {
     cookie: { type: 'string' },
     token: { type: 'string' },
     role: { type: 'string' },
+    'token-env': { type: 'string' },
     scopes: { type: 'string' },
     tools: { type: 'string' },
     expires: { type: 'string' },
@@ -555,6 +556,23 @@ switch (cmd) {
       if (!shown.length) console.log('no invitations');
       for (const i of shown) console.log(line(i));
     }
+    break;
+  }
+
+  case 'mcp': {
+    // Prints settings only: no request, and the token itself is never read or printed.
+    if (sub !== 'config') fail('usage: lw mcp config [--name lolly-work] [--token-env LW_TOKEN] [--json]');
+    const name = values.name ?? 'lolly-work';
+    const tokenEnv = values['token-env'] ?? 'LW_TOKEN';
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) fail('--token-env must be an environment variable name');
+    const endpoint = `${base}/api/v1/mcp`;
+    const settings = { mcpServers: { [name]: { url: endpoint, headers: { Authorization: `Bearer \${env:${tokenEnv}}` } } } };
+    if (values.json) { console.log(JSON.stringify(settings, null, 2)); break; }
+    console.log(`Put a service token in ${tokenEnv}. These settings name the variable and never hold the token.\n`);
+    console.log('Claude Code:');
+    console.log(`  claude mcp add --transport http ${name} ${endpoint} --header "Authorization: Bearer $${tokenEnv}"\n`);
+    console.log('Other clients (.cursor/mcp.json, for example):');
+    console.log(JSON.stringify(settings, null, 2));
     break;
   }
 
@@ -1684,6 +1702,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
   tokens [create --label <l> --scopes <s,...> [--tools <id,...>] [--role <r>] | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
+  mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   retention run              apply the stated retention policy and sweep expired uploads now (both also run daily on the long-lived server)

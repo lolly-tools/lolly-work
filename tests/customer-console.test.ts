@@ -89,6 +89,9 @@ test('one-time service credentials clear on acknowledgment and do not fetch deni
     const secret = p.main.querySelector('textarea'); assert.equal(secret.value, token);
     assert.equal(p.main.querySelector('button[type="submit"]').disabled, true);
     assert.equal(p.w.localStorage.length, 0); assert.doesNotMatch(p.w.location.href, /fixture-secret/);
+    const settings = p.main.querySelectorAll('textarea')[1];
+    assert.match(settings.value, /\/api\/v1\/mcp/); assert.match(settings.value, /LW_TOKEN/);
+    assert.ok(!settings.value.includes(token), 'the MCP settings name a variable and never hold the token');
     click(p.main, 'I have stored the token'); assert.equal(secret.value, ''); assert.equal(p.main.querySelector('textarea'), null); assert.equal(refreshed, 1);
   } finally { p.dom.window.close(); }
 });
