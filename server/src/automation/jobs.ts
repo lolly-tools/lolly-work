@@ -6,6 +6,7 @@ import { readBlobBody } from '../blobs/types.ts';
 import type { AutomationJobRecord, Store } from '../store/types.ts';
 import { DurableAutomationRunner, attemptResultRef, type DurableExecutor } from './durable-runner.ts';
 import { CallbackOutbox, type CallbackOutboxOptions, type CallbackOutboxStore } from './callback-outbox.ts';
+import { withoutServerPaths } from '../render/tool-load.ts';
 
 export type AutomationJob = AutomationJobRecord;
 type JobStore = Pick<Store, 'putAutomationJob' | 'getAutomationJob' | 'listAutomationJobs' | 'findAutomationJobByIdempotency' | 'deleteAutomationJob' | 'claimAutomationJob' | 'renewAutomationJob' | 'saveClaimedAutomationJob'> & CallbackOutboxStore;
@@ -209,7 +210,7 @@ export class AutomationQueue {
       }
     }
     if (!output || failure && !job.resultRef) {
-      job.error = failure instanceof Error ? failure.message : String(failure ?? 'automation job failed');
+      job.error = failure instanceof Error ? withoutServerPaths(failure.message) : String(failure ?? 'automation job failed');
       job.state = 'failed';
     }
     if (job.callbackUrl && !this.callbacks) job.callbackFailed = true;

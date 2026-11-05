@@ -4,6 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { Store, AutomationJobRecord } from '../store/types.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import type { JobOutput } from './jobs.ts';
+import { withoutServerPaths } from '../render/tool-load.ts';
 
 export type DurableExecutor = (job: AutomationJobRecord, signal: AbortSignal) => Promise<JobOutput>;
 /** Where the attempt holding lease `token` stores its result. Each attempt owns its path. */
@@ -71,7 +72,7 @@ export class DurableAutomationRunner {
     } catch (error) {
       if (wrote) await this.blobs.delete(ref).catch(() => {});
       if (!controller.signal.aborted) {
-        job.state = 'failed'; job.error = error instanceof Error ? error.message : String(error); job.finishedAt = new Date().toISOString();
+        job.state = 'failed'; job.error = error instanceof Error ? withoutServerPaths(error.message) : String(error); job.finishedAt = new Date().toISOString();
         delete job.resultRef; delete job.resultMime; delete job.resultSha256;
         const retries = Math.max(0, Math.min(3, Math.trunc(Number(job.request.jobRetries ?? 0) || 0)));
         if (job.attempt <= retries) { job.state = 'queued'; delete job.finishedAt; }
