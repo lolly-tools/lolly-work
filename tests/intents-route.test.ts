@@ -129,7 +129,7 @@ test('the answer is the engine\'s, and validates against the engine\'s schema', 
   const res = await t.resolve(token, ask());
   assert.equal(res.status, 200);
   const answer = await json(res);
-  const schema = JSON.parse(readFileSync(fileURLToPath(new URL('../vendor/lolly/schemas/intent-resolution-v1.schema.json', import.meta.url)), 'utf8'));
+  const schema = JSON.parse(readFileSync(fileURLToPath(new URL('../vendor/@lolly-tools/core/schema/intent-resolution-v1.schema.json', import.meta.url)), 'utf8'));
   const validate = new (Ajv2020 as unknown as typeof Ajv2020.default)({ strict: false, validateFormats: false }).compile(schema);
   assert.ok(validate(answer), JSON.stringify(validate.errors));
   assert.equal(answer.format, 'lolly-intent-resolution');
