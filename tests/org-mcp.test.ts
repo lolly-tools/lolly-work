@@ -141,7 +141,7 @@ test('initialize negotiates, keeps no session and says results are data', async 
 test('a scoped token sees only the tools its scopes reach', async () => {
   const t = await boot();
   const work = ['list_tools', 'describe_tool', 'validate'];
-  assert.deepEqual(names(await t.list((await t.mint({ scopes: ['render'] })).token)), [...work, ...RENDER_TOOLS]);
+  assert.deepEqual(names(await t.list((await t.mint({ scopes: ['render'] })).token)), [...work, 'resolve_intent', ...RENDER_TOOLS]);
   assert.deepEqual(names(await t.list((await t.mint({ scopes: ['documents'] })).token)), work);
   const catalog = (await t.mint({ scopes: ['catalog.read'] })).token;
   assert.deepEqual(names(await t.list(catalog)), ['search_assets']);
@@ -380,7 +380,7 @@ test('discovery reports the endpoint, and a function-only host omits the render 
 
   const fn = await boot({ runner: false });
   const { token } = await fn.mint({ scopes: ['render'] });
-  assert.deepEqual(names(await fn.list(token)), ['list_tools', 'describe_tool', 'validate']);
+  assert.deepEqual(names(await fn.list(token)), ['list_tools', 'describe_tool', 'validate', 'resolve_intent']);
   assert.equal((await fn.call(token, 'render_tool', { toolId: 'card', format: 'svg' })).value.code, 'RENDER_RUNNER_UNAVAILABLE');
   const shown = await (await fetch(`${fn.base}/api/v1/discovery`)).json() as { agents: { organisationMcp: { renderTools: boolean } } };
   assert.equal(shown.agents.organisationMcp.renderTools, false);

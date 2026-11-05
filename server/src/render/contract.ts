@@ -26,6 +26,8 @@
  * CI) fails on any drift. See engine-pin.json.
  */
 
+import type { IntentErrorV1, IntentResolutionV1, IntentToolFactsV1, ToolIntentV1 } from '@lolly-tools/core/intent-v1';
+
 // ── HostV1 subset the render plane implements (see @lolly-tools/core host-v1) ──
 
 export interface Profile {
@@ -196,6 +198,10 @@ export interface EngineApi {
   createTokenSet(doc: unknown, opts?: { theme?: string }): TokenSetLike;
   makeColorApi(): Record<string, unknown>;
   ENGINE_VERSION: string;
+  parseVisualIntent(value: unknown): { ok: true } | { ok: false; errors: readonly IntentErrorV1[] };
+  resolveIntent(request: unknown, tools: readonly IntentToolFactsV1[]): Promise<IntentResolutionV1>;
+  parseToolIntents(text: string): { ok: true; intents: ToolIntentV1[] } | { ok: false; errors: readonly { path: string; message: string }[] };
+  IntentInvalidError: new (errors: readonly IntentErrorV1[]) => Error & { errors: readonly IntentErrorV1[] };
   loadTool(toolId: string, fetchFile: (p: string) => Promise<string>, opts?: { lang?: string }): Promise<LoadedTool>;
   createRuntime(tool: LoadedTool, host: unknown, initialState?: Record<string, unknown>, opts?: { hookExecutor?: (tool: LoadedTool, host: unknown) => Promise<unknown> }): Promise<Runtime>;
   parseUrlState(query: string, manifest: unknown): UrlState;

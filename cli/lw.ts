@@ -201,6 +201,39 @@ function out(value: unknown): void {
   if (values.json) console.log(JSON.stringify(value, null, 2));
 }
 
+interface IntentAnswer {
+  outcome: string; intentDigest: string; closed: { purpose: string | null; rulesVersion: string };
+  purposeNeeded: { message: string; purposes: Array<{ purpose: string; meaning: string; tools: string[] }>; surfaces: string[]; roles: string[] } | null;
+  surfaces: Array<{
+    surface: { id: string }; status: string; refusal: { message: string } | null;
+    chosen: {
+      toolId: string; format: string; exportDims: { width: number; height: number; unit: string }; sizeSetBy: string;
+      gaps: Array<{ role?: string; input?: string; message: string }>; unused: Array<{ role: string; message: string }>;
+      defaultsInUse: string[]; notes: Array<{ message: string }>;
+    } | null;
+  }>;
+}
+
+function printIntentAnswer(answer: IntentAnswer): void {
+  console.log(`Intent: ${answer.outcome}${answer.closed.purpose ? ` (${answer.closed.purpose})` : ''}`);
+  console.log(`Rules ${answer.closed.rulesVersion}, ${answer.intentDigest}`);
+  if (answer.purposeNeeded) {
+    console.log(`\n${answer.purposeNeeded.message}\n\nPurposes:`);
+    for (const p of answer.purposeNeeded.purposes) console.log(`  ${p.purpose.padEnd(12)} ${p.meaning}${p.tools.length ? ` [${p.tools.join(', ')}]` : ''}`);
+    console.log(`\nSurfaces: ${answer.purposeNeeded.surfaces.join(', ')}\nRoles: ${answer.purposeNeeded.roles.join(', ')}`);
+  }
+  for (const { surface, status, refusal, chosen } of answer.surfaces) {
+    console.log('');
+    if (!chosen) { console.log(`${surface.id}: refused. ${refusal?.message ?? ''}`); continue; }
+    const size = `${chosen.exportDims.width} x ${chosen.exportDims.height} ${chosen.exportDims.unit}`;
+    console.log(`${surface.id}: ${status}. ${chosen.toolId} as ${chosen.format}, ${size}${chosen.sizeSetBy === 'export' ? ' (pass this size to the render)' : ''}`);
+    for (const gap of chosen.gaps) console.log(`  Needs ${gap.role ?? gap.input}: ${gap.message}`);
+    for (const item of chosen.unused) console.log(`  Not used, ${item.role}: ${item.message}`);
+    if (chosen.defaultsInUse.length) console.log(`  The tool's own wording stays in: ${chosen.defaultsInUse.join(', ')}`);
+    for (const note of chosen.notes) console.log(`  Note: ${note.message}`);
+  }
+}
+
 interface ProjectTransferPreview {
   schema: 'lolly-project-transfer-inventory-v1';
   mode: 'preview';
@@ -665,6 +698,20 @@ switch (cmd) {
       call, fail, log: (line) => console.log(line), out,
       progress: values.json ? undefined : (sent, total) => process.stderr.write(`\r${Math.floor((sent / total) * 100)}% of ${total} bytes${sent === total ? '\n' : ''}`),
     });
+    break;
+  }
+
+  case 'intent': {
+    const file = positionals[2];
+    if (sub !== 'resolve' || !file) fail('usage: lw intent resolve <intent.json|-> [--json]');
+    let body: unknown;
+    try { body = JSON.parse(readFileSync(file === '-' ? 0 : file, 'utf8')); }
+    catch { fail(`cannot read intent JSON: ${file}`); }
+    const answer = await call('/api/v1/intents/resolve', { method: 'POST', body }) as IntentAnswer;
+    out(answer);
+    if (!values.json) printIntentAnswer(answer);
+    // The same exit codes as `lolly intent`: 4 says a surface is not ready, with the full answer either way.
+    if (answer.outcome !== 'ready') process.exitCode = 4;
     break;
   }
 
@@ -1841,6 +1888,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   links [--all] · links create <toolId> [key=value ...] [--open] · links revoke <id>
   destinations                list the fixed organization targets available to this principal (no secrets)
   approvals [list] · approvals artifact <id> --out <file>   your requests and inbox; download a request's file (a reviewer's, or yours once approved)
+  intent resolve <intent.json|-> [--json]   choose the tool for each surface of a visual intent, without rendering (exit 4 unless every surface is ready)
   renders submit <request.json> [--idempotency-key <key>] [--callback-url <url>]   submit a recoverable single render
   renders [list|show <id>|cancel <id>|retry <id>] · renders output <id> --out <file>
   renders evidence <id> --out <file>   download the retained execution receipt

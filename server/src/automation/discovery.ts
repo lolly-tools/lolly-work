@@ -44,7 +44,7 @@ export const DISCOVERY_VERSION = 1;
 export const BATCH_LIMITS = { rows: 200, concurrency: 4, retries: 3 } as const;
 const PAGE = { default: 25, max: 100 } as const;
 const VERBS = ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize', 'package', 'render', 'batch'] as const;
-const LINKS = { caller: '/api/v1/discovery/me', tools: '/api/v1/discovery/tools', schema: '/api/v1/schema/{toolId}', files: '/api/v1/files', mcp: '/api/v1/mcp' } as const;
+const LINKS = { caller: '/api/v1/discovery/me', tools: '/api/v1/discovery/tools', schema: '/api/v1/schema/{toolId}', intents: '/api/v1/intents/resolve', files: '/api/v1/files', mcp: '/api/v1/mcp' } as const;
 const TOOL_ID = /^[a-z0-9][a-z0-9._-]*$/i;
 
 export type WorkerState = 'ready' | 'busy' | 'unreachable';

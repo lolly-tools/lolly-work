@@ -56,14 +56,14 @@ export async function schemaVerb(ctx: AutomationContext, toolId: string): Promis
  *  routes (automation/discovery.ts). */
 export interface ToolDescription {
   toolId: string; name: string; version: string; apiVersion: string; engineVersion: string;
-  raw: Record<string, unknown>; server: ToolServerFormats;
+  raw: Record<string, unknown>; server: ToolServerFormats; manifest: LoadedTool['manifest'];
 }
 export async function describeTool(ctx: AutomationContext, toolId: string, deployment: { caps: RenderCapabilities; allowHooksInFastPath: boolean; tokens: boolean }): Promise<ToolDescription> {
   const { engine, tool } = await load(ctx.pack, toolId);
   const template = tool.template;
   return {
     toolId, name: typeof tool.manifest.name === 'string' ? tool.manifest.name : toolId, version: tool.manifest.version,
-    apiVersion: engine.DOCUMENT_API_VERSION, engineVersion: engine.ENGINE_VERSION, raw: engine.documentSchema(tool),
+    apiVersion: engine.DOCUMENT_API_VERSION, engineVersion: engine.ENGINE_VERSION, raw: engine.documentSchema(tool), manifest: tool.manifest,
     server: toolServerFormats({ formats: tool.manifest.render.formats, hooks: !!tool.hooksSource,
       svgTemplate: isSvgTemplate(template), requires: tool.manifest.requires ?? [] }, deployment),
   };
