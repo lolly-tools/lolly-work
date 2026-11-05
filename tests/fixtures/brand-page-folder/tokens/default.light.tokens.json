@@ -1,0 +1,176 @@
+{
+  "color": {
+    "ramp": {
+      "primary": {
+        "1": {
+          "$type": "color",
+          "$value": "oklch(18% 0.0467 164.85)"
+        },
+        "2": {
+          "$type": "color",
+          "$value": "oklch(25.46% 0.061 164.85)"
+        },
+        "3": {
+          "$type": "color",
+          "$value": "oklch(32.92% 0.074 164.85)"
+        },
+        "4": {
+          "$type": "color",
+          "$value": "oklch(40.37% 0.0861 164.85)"
+        },
+        "5": {
+          "$type": "color",
+          "$value": "oklch(47.83% 0.0975 164.85)"
+        },
+        "6": {
+          "$type": "color",
+          "$value": "oklch(60.12% 0.0808 164.85)"
+        },
+        "7": {
+          "$type": "color",
+          "$value": "oklch(72.42% 0.0624 164.85)"
+        },
+        "8": {
+          "$type": "color",
+          "$value": "oklch(84.71% 0.0413 164.85)"
+        },
+        "9": {
+          "$type": "color",
+          "$value": "oklch(97% 0.0132 164.85)"
+        }
+      },
+      "neutral": {
+        "1": {
+          "$type": "color",
+          "$value": "oklch(18% 0.0096 164.85)"
+        },
+        "2": {
+          "$type": "color",
+          "$value": "oklch(25.46% 0.0125 164.85)"
+        },
+        "3": {
+          "$type": "color",
+          "$value": "oklch(32.92% 0.0152 164.85)"
+        },
+        "4": {
+          "$type": "color",
+          "$value": "oklch(40.37% 0.0177 164.85)"
+        },
+        "5": {
+          "$type": "color",
+          "$value": "oklch(47.83% 0.02 164.85)"
+        },
+        "6": {
+          "$type": "color",
+          "$value": "oklch(60.12% 0.0166 164.85)"
+        },
+        "7": {
+          "$type": "color",
+          "$value": "oklch(72.42% 0.0128 164.85)"
+        },
+        "8": {
+          "$type": "color",
+          "$value": "oklch(84.71% 0.0085 164.85)"
+        },
+        "9": {
+          "$type": "color",
+          "$value": "oklch(97% 0.0027 164.85)"
+        }
+      },
+      "secondary": {
+        "1": {
+          "$type": "color",
+          "$value": "oklch(18% 0.0163 164.85)"
+        },
+        "2": {
+          "$type": "color",
+          "$value": "oklch(25.46% 0.0214 164.85)"
+        },
+        "3": {
+          "$type": "color",
+          "$value": "oklch(32.92% 0.0259 164.85)"
+        },
+        "4": {
+          "$type": "color",
+          "$value": "oklch(40.37% 0.0301 164.85)"
+        },
+        "5": {
+          "$type": "color",
+          "$value": "oklch(47.83% 0.0341 164.85)"
+        },
+        "6": {
+          "$type": "color",
+          "$value": "oklch(60.12% 0.0283 164.85)"
+        },
+        "7": {
+          "$type": "color",
+          "$value": "oklch(72.42% 0.0218 164.85)"
+        },
+        "8": {
+          "$type": "color",
+          "$value": "oklch(84.71% 0.0145 164.85)"
+        },
+        "9": {
+          "$type": "color",
+          "$value": "oklch(97% 0.0046 164.85)"
+        }
+      }
+    },
+    "spectrum": {
+      "blue": {
+        "$type": "color",
+        "$value": "oklch(65% 0.12 242)"
+      },
+      "teal": {
+        "$type": "color",
+        "$value": "oklch(65% 0.12 182)"
+      },
+      "violet": {
+        "$type": "color",
+        "$value": "oklch(65% 0.12 292)"
+      },
+      "amber": {
+        "$type": "color",
+        "$value": "oklch(65% 0.12 83)"
+      },
+      "rose": {
+        "$type": "color",
+        "$value": "oklch(65% 0.12 3)"
+      },
+      "green": {
+        "$type": "color",
+        "$value": "oklch(65% 0.12 153)"
+      }
+    },
+    "semantic": {
+      "primary": {
+        "$type": "color",
+        "$value": "oklch(47.83% 0.0975 164.85)"
+      },
+      "on-primary": {
+        "$type": "color",
+        "$value": "oklch(100% 0 0)"
+      },
+      "secondary": {
+        "$type": "color",
+        "$value": "oklch(47.83% 0.0341 164.85)"
+      },
+      "surface": {
+        "$type": "color",
+        "$value": "oklch(97% 0.0027 164.85)"
+      },
+      "text": {
+        "$type": "color",
+        "$value": "oklch(18% 0.0096 164.85)"
+      },
+      "muted": {
+        "$type": "color",
+        "$value": "oklch(40.37% 0.0177 164.85)"
+      },
+      "edge": {
+        "$type": "color",
+        "$value": "oklch(72.42% 0.0128 164.85)"
+      }
+    }
+  }
+}

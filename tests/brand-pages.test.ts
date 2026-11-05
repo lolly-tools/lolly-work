@@ -7,7 +7,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -721,4 +721,133 @@ test('lw brand-pages publishes a folder, lists it, shows its history and takes i
   symlinkSync('/etc/hosts', join(dir, 'llms.txt'));
   await assert.rejects(runBrandPages('publish', dir, cli), /llms\.txt is not a plain file/);
   await assert.rejects(runBrandPages('nonsense', undefined, cli), /usage: lw brand-pages/);
+});
+
+// ── A folder from the real generator ────────────────────────────────────────────
+//
+// tests/fixtures/brand-page-folder was written by Lolly, not by hand:
+//   node scripts/build-brand-page-fixture.ts --out=<lolly-work>/tests/fixtures/brand-page-folder
+// It holds one of everything the format can carry. Lolly and this parser live in two
+// repositories, and a new key or path once reached this server as a refused publish.
+// When Lolly's format moves on purpose, teach the parser, then regenerate the folder.
+
+const FIXTURE = fileURLToPath(new URL('./fixtures/brand-page-folder', import.meta.url));
+const OWNER_PUBLISHED = 'Owner-published, not an open licence';
+
+test('a folder from the real generator is accepted, and matches its digests', () => {
+  const manifest = JSON.parse(readFileSync(join(FIXTURE, 'brand.json'), 'utf8')) as Record<string, unknown> & { digest: string; files: Array<{ path: string; sha256: string; size: number }> };
+  const parsed = parseBrandPageManifest(manifest);
+  assert.equal(brandPageDigest(manifest), manifest.digest);
+  assert.equal(parsed.id, 'fixture');
+  for (const file of manifest.files) {
+    const bytes = readFileSync(join(FIXTURE, file.path));
+    assert.equal(sha256(bytes), file.sha256, file.path);
+    assert.equal(bytes.byteLength, file.size, file.path);
+  }
+  // Guards the fixture itself, so a thinner folder cannot quietly stop testing these.
+  assert.ok(parsed.logos?.some(logo => logo.licence === OWNER_PUBLISHED && logo.primary === true), 'an owner-published logo');
+  assert.ok(parsed.files.some(file => file.role === 'font' && file.path === 'fonts/fixture-sans-licence.txt'), 'a font licence text');
+  assert.ok(parsed.held.some(row => row.item === 'partner/logo/primary'), 'a logo held back');
+  assert.equal(new Set(parsed.files.map(file => file.role)).size, 14, 'every file role');
+});
+
+test('lw publishes a folder from the real generator, and the instance serves each file', async () => {
+  const t = await harness();
+  const full = await t.token('cli', 'admin');
+  const state = mkdtempSync(join(tmpdir(), 'lw-brand-fixture-'));
+  scratch.push(state);
+  const lines: string[] = [];
+  const headers = { authorization: `Bearer ${full}` };
+  const cli: BrandPagesCli = {
+    values: {}, base: t.base, stateDir: state, headers: () => headers,
+    call: async (path, opts = {}) => {
+      const res = await fetch(`${t.base}${path}`, { method: opts.method ?? 'GET', headers: { ...headers, 'content-type': 'application/json' }, ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}) });
+      const data = await res.json() as { error?: { code: string } };
+      if (!res.ok) throw new Error(`${res.status} ${data.error?.code}`);
+      return data;
+    },
+    fail: (message) => { throw new Error(message); },
+    log: (line) => { lines.push(line); },
+    out: () => {},
+  };
+  await runBrandPages('publish', FIXTURE, cli);
+  assert.ok(lines.includes('published: http://localhost/brand/fixture/'), lines.join('\n'));
+  const manifest = JSON.parse(readFileSync(join(FIXTURE, 'brand.json'), 'utf8')) as { files: Array<{ path: string; sha256: string }> };
+  for (const file of manifest.files) {
+    const res = await fetch(`${t.base}/brand/fixture/${file.path}`);
+    assert.equal(res.status, 200, file.path);
+    assert.equal(sha256(Buffer.from(await res.arrayBuffer())), file.sha256, file.path);
+  }
+  assert.match((await fetch(`${t.base}/brand/fixture/fonts/fixture-sans-licence.txt`)).headers.get('content-type') ?? '', /^text\/plain/);
+  const page = await fetch(`${t.base}/brand/fixture/`);
+  assert.equal(page.headers.get('content-security-policy'), BRAND_PAGE_HTML_CSP);
+  const html = await page.text();
+  assert.ok(html.includes(OWNER_PUBLISHED), 'the page says which logos are owner-published');
+  assert.ok(html.includes('Fixture marks belong to the Fixture project.'), 'the page shows the terms');
+});
+
+test('the pinned engine still writes a folder this server accepts', async (t) => {
+  // A re-pin runs Lolly's own generator here, so a format change fails the re-pin and not a customer.
+  const engine = fileURLToPath(new URL('../vendor/@lolly/engine/src/', import.meta.url));
+  if (!existsSync(join(engine, 'brand-page.ts'))) return t.skip('the pinned engine predates brand pages');
+  const { buildBrandPage } = await import(join(engine, 'brand-page.ts')) as { buildBrandPage(input: unknown): Promise<{ manifest: Record<string, unknown>; files: Array<{ path: string; bytes: Uint8Array }> }> };
+  const { deriveBrandTokens } = await import(join(engine, 'brand-derive.ts')) as { deriveBrandTokens(input: unknown): unknown };
+  const terms = 'These marks belong to Acme.';
+  const built = await buildBrandPage({
+    tokens: deriveBrandTokens({ primary: '#0b6e4f' }), name: 'Acme', id: 'acme',
+    usage: { statement: 'Ask first.', contact: 'brand@example.test' },
+    logos: [
+      { id: 'acme/logo/own', name: 'Own', format: 'svg', bytes: Buffer.from(SVG), license: 'LicenseRef-Acme-Marks', tags: ['logo'], rights: { works: [{
+        id: 'acme/logo/own', creators: [{ name: 'Acme', role: 'owner' }],
+        rights: [{ declaration: 'LicenseRef-Acme-Marks', assertedBy: 'catalog', evidence: 'catalog-entry', status: 'unparsed' }],
+        grants: [{ kind: 'own-work', scope: terms, asserted: true }],
+      }] } },
+      { id: 'acme/logo/open', name: 'Open', format: 'svg', bytes: Buffer.from(SVG), license: 'CC0-1.0', tags: ['logo'] },
+      { id: 'other/logo', name: 'Held', format: 'svg', bytes: Buffer.from(SVG), tags: ['logo'] },
+    ],
+    fonts: [{ family: 'Acme Sans', format: 'ttf', weight: '100 900', bytes: new Uint8Array([0, 1, 0, 0]), license: 'OFL-1.1', licenceText: Buffer.from('The licence text.') }],
+    skills: [{ name: 'acme-brand', label: 'Acme', audience: 'public', description: 'The brand.', discipline: 'brand', files: { 'SKILL.md': '# Brand\n' } }],
+    examples: [{ id: 'poster', name: 'Poster', svg: SVG }],
+  });
+  const parsed = parseBrandPageManifest(JSON.parse(JSON.stringify(built.manifest)));
+  assert.equal(brandPageDigest(built.manifest), parsed.digest);
+});
+
+test('a logos list is read as strictly as the rest of the manifest', () => {
+  const entry = (path: string, role: string) => ({ path, role, mediaType: 'application/octet-stream', sha256: 'a'.repeat(64), size: 1 });
+  const need = [entry('index.html', 'page'), entry('checks.json', 'checks'), entry('logos/a.svg', 'logo'), entry('examples/b.svg', 'example')];
+  const row = { id: 'a', name: 'A', path: 'logos/a.svg', surface: 'light', mono: false };
+  const accepts = (logos: unknown) => parseBrandPageManifest(finish('acme', need, { logos }));
+  assert.equal(accepts([row]).logos?.length, 1);
+  assert.equal(accepts([{ ...row, primary: true, licence: 'CC0 1.0' }]).logos?.[0]?.primary, true);
+  assert.equal(accepts([]).logos?.length, 0);
+  assert.equal(parseBrandPageManifest(finish('acme', need)).logos, undefined, 'a page from before this field still reads');
+  assert.throws(() => accepts([{ ...row, extra: 1 }]), /a logo has an unknown key: extra/);
+  assert.throws(() => accepts({}), /logos must list/);
+  assert.throws(() => accepts(['a']), /a logo must be an object/);
+  for (const key of ['id', 'name', 'path', 'surface', 'mono']) {
+    const { [key as keyof typeof row]: _gone, ...rest } = row;
+    assert.throws(() => accepts([rest]), new RegExp(`a logo needs ${key}`), key);
+  }
+  assert.throws(() => accepts([{ ...row, surface: 'blue' }]), /a logo surface/);
+  assert.throws(() => accepts([{ ...row, mono: 'no' }]), /a logo mono flag/);
+  assert.throws(() => accepts([{ ...row, primary: 1 }]), /a logo primary flag/);
+  assert.throws(() => accepts([{ ...row, licence: 'x'.repeat(201) }]), /a logo licence/);
+  assert.throws(() => accepts([{ ...row, path: 'logos/not-listed.svg' }]), /does not list as a logo/);
+  assert.throws(() => accepts([{ ...row, path: 'examples/b.svg' }]), /does not list as a logo/, 'a listed file under another role is not a logo');
+});
+
+test('a text file under fonts must be a licence text, in the one shape the generator writes', () => {
+  const entry = (path: string, role: string) => ({ path, role, mediaType: 'application/octet-stream', sha256: 'a'.repeat(64), size: 1 });
+  const need = [entry('index.html', 'page'), entry('checks.json', 'checks')];
+  const code = (path: string) => {
+    try { parseBrandPageManifest(finish('acme', [...need, entry(path, 'font')])); return 'accepted'; }
+    catch (error) { return (error as BrandPageRefusal).code; }
+  };
+  assert.equal(code('fonts/outfit-licence.txt'), 'accepted');
+  assert.equal(code('fonts/suse-mono-licence.txt'), 'accepted');
+  assert.equal(code('fonts/suse-100-900-italic.ttf'), 'accepted');
+  for (const path of ['fonts/notes.txt', 'fonts/licence.txt', 'fonts/-licence.txt', 'fonts/Outfit-licence.txt', 'fonts/sub/outfit-licence.txt', 'fonts/outfit-licence.txt.html', 'fonts/outfit-licence.html', 'fonts/outfit-licence.svg', 'other/outfit-licence.txt']) {
+    assert.equal(code(path), 'BUNDLE_PATH_REFUSED', path);
+  }
 });

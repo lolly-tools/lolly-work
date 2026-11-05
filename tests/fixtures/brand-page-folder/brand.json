@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "id": "fixture",
+  "name": "Fixture",
+  "revision": "sha256:af9ddc4f984f0f5a9f66a1235ad73d52cb01d3dad4953dc8c00c068edfd8a5f4",
+  "publishedVersion": "1.0.0",
+  "origin": "https://example.test/brand/fixture",
+  "generator": {
+    "name": "lolly",
+    "engine": "1.309.0",
+    "designMd": "alpha"
+  },
+  "usage": {
+    "statement": "Ask before you change a mark.\n\nFixture marks belong to the Fixture project. Show them unaltered to refer to the project.",
+    "contact": "brand@example.test",
+    "url": "https://example.test/brand-terms"
+  },
+  "colourways": [
+    {
+      "id": "default",
+      "name": "Default",
+      "modes": [
+        "light",
+        "dark"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "role": "agents",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "2c65efad817325ec9f09e2cc0db6d14b43710d7300cce73b83b2d3481bd9d7d2",
+      "size": 2531
+    },
+    {
+      "path": "DESIGN.md",
+      "role": "design-md",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "3f787ab8a582fa957a82ba8d23378eb5d01e6cffe7d98acde323c2b63defc898",
+      "size": 3153
+    },
+    {
+      "path": "assets/page.css",
+      "role": "page-style",
+      "mediaType": "application/octet-stream",
+      "sha256": "1c48071c6f227becbefcbbd88f99a5d679e636c3b93313d2debbfff551f075ef",
+      "size": 9258
+    },
+    {
+      "path": "checks.json",
+      "role": "checks",
+      "mediaType": "application/json",
+      "sha256": "fef86584afae7ccbb89b27f587d93dcb752c50585816bca5cecb8a1498a4be06",
+      "size": 4223
+    },
+    {
+      "path": "design/default.dark.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "6817e88a2edaa7fee7d88c6dfe04c2e52a691441d9d7181fe971d4ff1926a548",
+      "size": 3152
+    },
+    {
+      "path": "design/default.light.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "3f787ab8a582fa957a82ba8d23378eb5d01e6cffe7d98acde323c2b63defc898",
+      "size": 3153
+    },
+    {
+      "path": "examples/poster.svg",
+      "role": "example",
+      "mediaType": "image/svg+xml",
+      "sha256": "0ea6867e76b7cebbe04b43180e17bf81c1f0d6db1df699a26c233a5d03d2e635",
+      "size": 96
+    },
+    {
+      "path": "fonts/fixture-sans-100-900.ttf",
+      "role": "font",
+      "mediaType": "font/ttf",
+      "sha256": "bf5e8ffa51a9e748985800c1d3d7f1a2a6ae7435136593ca8d9637e3f87c699c",
+      "size": 4
+    },
+    {
+      "path": "fonts/fixture-sans-italic.woff2",
+      "role": "font",
+      "mediaType": "font/woff2",
+      "sha256": "78636849015e5d2ab5689e3f2aff050a589cbede7b789470076f450f03acb2bb",
+      "size": 4
+    },
+    {
+      "path": "fonts/fixture-sans-licence.txt",
+      "role": "font",
+      "mediaType": "text/plain; charset=utf-8",
+      "sha256": "c5f3f274ed9a5e28e94da8d6c2039a6d790bbd97dbfeab7b2187c2fb6bd0f7d3",
+      "size": 34
+    },
+    {
+      "path": "index.html",
+      "role": "page",
+      "mediaType": "application/octet-stream",
+      "sha256": "6c280fbbdf040cef8ff983b2a6a1def4f076e6c6e2af83ab7626c5e60f86ea06",
+      "size": 11503
+    },
+    {
+      "path": "index.md",
+      "role": "page-markdown",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "8e3ab4fc3df90221ab1802250d5a8ded9f91ffaaf8081c50aed5035911ce9397",
+      "size": 3149
+    },
+    {
+      "path": "llms.txt",
+      "role": "llms",
+      "mediaType": "text/plain; charset=utf-8",
+      "sha256": "aecc4e60d4d62afbdc353a3c65b1365f23ed2cd7324a81a5b4054b20771a43a9",
+      "size": 1376
+    },
+    {
+      "path": "logos/fixture/logo/mono.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "0a969299c5e6b6de3bf26083ad5b58a361adea6dbf8452eceabe138a5186468f",
+      "size": 112
+    },
+    {
+      "path": "logos/fixture/logo/primary.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "72745d4afc220950dd39cbdea3c8cfdaadc98e90138c3824df28dee9bf15b4ea",
+      "size": 112
+    },
+    {
+      "path": "logos/fixture/logo/reverse.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "9ace0f37504a44782e770d2e668dcfef88f5ccb750b76107ecff102ea073d7e8",
+      "size": 112
+    },
+    {
+      "path": "skills/fixture-brand/SKILL.md",
+      "role": "skill",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "f820def617f34247f83bee73e9756625f8ab1ef1ea63a357aba21a82935e0c74",
+      "size": 43
+    },
+    {
+      "path": "skills/fixture-brand/references/notes.json",
+      "role": "skill",
+      "mediaType": "application/json",
+      "sha256": "e346432021b04179518d9614f3560ccd71354a4ee101ddcb893d6959a9d6301c",
+      "size": 8
+    },
+    {
+      "path": "tokens/default.dark.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "a572d420ceec814d5baaf4d16cbc21811a21b6f2575debdf1012f31087b9b37c",
+      "size": 4197
+    },
+    {
+      "path": "tokens/default.light.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "e8c83b184158febd19ffd13d7bb8bde9da4e3dcdbc3c1bcf65b95ea6f3ceba6c",
+      "size": 4197
+    },
+    {
+      "path": "tokens/tokens.json",
+      "role": "tokens",
+      "mediaType": "application/json",
+      "sha256": "3660f1e5c7b6c92927a87d8ad70f411339577ad4006e4de247265d4955e10d95",
+      "size": 10463
+    }
+  ],
+  "logos": [
+    {
+      "id": "fixture/logo/mono",
+      "name": "Fixture mark, mono",
+      "path": "logos/fixture/logo/mono.svg",
+      "surface": "light",
+      "mono": true,
+      "licence": "CC0 1.0"
+    },
+    {
+      "id": "fixture/logo/primary",
+      "name": "Fixture mark",
+      "path": "logos/fixture/logo/primary.svg",
+      "surface": "light",
+      "mono": false,
+      "licence": "Owner-published, not an open licence",
+      "primary": true
+    },
+    {
+      "id": "fixture/logo/reverse",
+      "name": "Fixture mark, reverse",
+      "path": "logos/fixture/logo/reverse.svg",
+      "surface": "dark",
+      "mono": false,
+      "licence": "Owner-published, not an open licence",
+      "primary": true
+    }
+  ],
+  "held": [
+    {
+      "item": "partner/logo/primary",
+      "reason": "licence not recorded",
+      "kind": "unknown"
+    }
+  ],
+  "checks": {
+    "file": "checks.json",
+    "variants": 2,
+    "pairs": 10,
+    "pairsBelow3": 1,
+    "rules": 0,
+    "rulesWithFindings": 0
+  },
+  "digest": "1c73dcf01b10edcd83fc7df7933f723adf6162c7a8a1b2cc692477bd2005d168"
+}
