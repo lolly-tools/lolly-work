@@ -16,7 +16,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { runRetention } from '../server/src/audit/retention.ts';
+import { auditTimedPurge, runRetention } from '../server/src/audit/retention.ts';
 import { auditHead } from '../server/src/audit/head.ts';
 
 const servers: Server[] = [];
@@ -95,6 +95,39 @@ test('telemetry retention is a dated delete; 0 keeps everything', async () => {
   assert.equal((await store.listEvents()).length, 1);
 
   assert.throws(() => cfg({ policy: { retention: { telemetryDays: -1 } } }), /retention/);
+});
+
+test('deleted documents are purged after deletedDocumentsDays; 0 keeps them', async () => {
+  const store = createMemoryStore();
+  const owner = await store.upsertUserBySub({ sub: 'purger', email: 'purger@example.invalid', groups: [], role: 'member' });
+  await store.putProject({ id: 'p1', name: 'Docs', visibility: 'private', ownerId: owner.id, createdAt: daysAgo(200) });
+  const doc = (id: string, deletedDays?: number) => store.putSession({ id, projectId: 'p1', toolId: 'poster', toolVersion: '1.0.0',
+    inputs: { title: id }, meta: {}, createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: daysAgo(200),
+    ...(deletedDays === undefined ? {} : { deletedAt: daysAgo(deletedDays) }) });
+  await doc('s_old', 120);
+  await doc('s_new', 10);
+  await doc('s_live');
+
+  assert.deepEqual(await runRetention({ config: cfg(), store }), { telemetryTrimmed: 0, auditTrimmed: 0 }, 'the default keeps deleted documents');
+  assert.ok(await store.getSession('s_old'));
+  assert.equal((await store.previewUserErasure(owner.id)).references.sessions, 3, 'tombstones still block account erasure');
+
+  const config = cfg({ policy: { retention: { deletedDocumentsDays: 90 } } });
+  const purged = await runRetention({ config, store });
+  assert.equal(purged.documentsPurged, 1);
+  await auditTimedPurge(store, purged, daysAgo(0));
+  const entries = (await store.listAudit()).filter((event) => event.action === 'retention.run');
+  assert.deepEqual(entries.map((event) => [event.actor, event.subject, event.payload]), [['system', 'instance', { documentsPurged: 1 }]], 'the daily run leaves an audit entry');
+  assert.equal(await store.getSession('s_old'), null, 'the old tombstone is gone');
+  assert.ok(await store.getSession('s_new'), 'a recent deletion waits out the window');
+  assert.ok(await store.getSession('s_live'), 'live documents are never purged');
+  assert.equal((await store.previewUserErasure(owner.id)).references.sessions, 2);
+  const again = await runRetention({ config, store });
+  assert.equal(again.documentsPurged, 0, 'idempotent');
+  await auditTimedPurge(store, again, daysAgo(0));
+  assert.equal((await store.listAudit()).filter((event) => event.action === 'retention.run').length, 1, 'nothing purged writes nothing');
+
+  assert.throws(() => cfg({ policy: { retention: { deletedDocumentsDays: 1.5 } } }), /deletedDocumentsDays/);
 });
 
 // ── erasure over HTTP ────────────────────────────────────────────────────────

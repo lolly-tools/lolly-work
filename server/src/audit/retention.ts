@@ -16,6 +16,11 @@
  *      An unreachable receiver therefore pauses audit retention rather
  *      than losing events, and the lw_siem_lag gauge says why.
  *
+ * Deleted documents are tombstones until `deletedDocumentsDays` passes; the
+ * purge then deletes each row and everything that hangs off it, in bounded
+ * batches. A deleted document has no undelete, so nothing the product can
+ * still reach is lost.
+ *
  * `retentionDays: 0` (the default, versionKeep's idiom) keeps everything -
  * an org states its policy; the product never assumes one.
  */
@@ -42,15 +47,18 @@ export interface RetentionResult {
    *  policy states a retention and the run was given the BlobStore. */
   renderOutputsExpired?: number;
   renderOutputsRemoved?: number;
+  /** Deleted documents purged. Present only when `deletedDocumentsDays` is set. */
+  documentsPurged?: number;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SCAN_BATCH = 500;
+const PURGE_BATCH = 100;
 
 export async function runRetention(
   { config, store, blobs, now = () => new Date() }: { config: InstanceConfig; store: Store; blobs?: BlobStore; now?: () => Date },
 ): Promise<RetentionResult> {
-  const { telemetryDays, auditDays, renderOutputDays } = config.policy.retention;
+  const { telemetryDays, auditDays, renderOutputDays, deletedDocumentsDays } = config.policy.retention;
   const result: RetentionResult = { telemetryTrimmed: 0, auditTrimmed: 0 };
 
   // Not a policy choice: an expired upload is litter whatever the org keeps,
@@ -68,6 +76,16 @@ export async function runRetention(
   if (telemetryDays > 0) {
     const cutoff = new Date(now().getTime() - telemetryDays * DAY_MS).toISOString();
     result.telemetryTrimmed = await store.trimTelemetry(cutoff);
+  }
+
+  if (deletedDocumentsDays > 0) {
+    const cutoff = new Date(now().getTime() - deletedDocumentsDays * DAY_MS).toISOString();
+    result.documentsPurged = 0;
+    for (;;) {
+      const n = await store.purgeDeletedSessions(cutoff, PURGE_BATCH);
+      result.documentsPurged += n;
+      if (n < PURGE_BATCH) break;
+    }
   }
 
   if (auditDays > 0) {
@@ -118,4 +136,14 @@ export async function runRetention(
   }
 
   return result;
+}
+
+/**
+ * The audit entry for a timed run that deleted documents for good. A person's run
+ * through POST /api/v1/retention/run audits its own result, so this is for the daily
+ * run, which has no actor and would otherwise leave only a console line.
+ */
+export async function auditTimedPurge(store: Pick<Store, 'appendAudit'>, result: RetentionResult, at: string): Promise<void> {
+  if (!result.documentsPurged) return;
+  await store.appendAudit({ at, actor: 'system', action: 'retention.run', subject: 'instance', payload: { documentsPurged: result.documentsPurged } });
 }

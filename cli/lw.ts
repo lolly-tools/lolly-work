@@ -573,13 +573,14 @@ switch (cmd) {
 
   case 'retention': {
     if (sub !== 'run') fail('usage: lw retention run');
-    const r = await call('/api/v1/retention/run', { method: 'POST' }) as { telemetryTrimmed: number; auditTrimmed: number; projectFilesSwept?: number; uploadsSwept?: number; approvalArtifactsRemoved?: number };
+    const r = await call('/api/v1/retention/run', { method: 'POST' }) as { telemetryTrimmed: number; auditTrimmed: number; projectFilesSwept?: number; uploadsSwept?: number; approvalArtifactsRemoved?: number; documentsPurged?: number };
     out(r);
     if (!values.json) {
       console.log(`trimmed ${r.telemetryTrimmed} telemetry event(s), ${r.auditTrimmed} audit row(s)`
         + (typeof r.projectFilesSwept === 'number' ? `, swept ${r.projectFilesSwept} expired project-file upload(s)` : '')
         + (typeof r.uploadsSwept === 'number' ? ` and ${r.uploadsSwept} expired scoped upload(s)` : '')
-        + (r.approvalArtifactsRemoved ? `, removed ${r.approvalArtifactsRemoved} approval request file(s) past retention` : ''));
+        + (r.approvalArtifactsRemoved ? `, removed ${r.approvalArtifactsRemoved} approval request file(s) past retention` : '')
+        + (typeof r.documentsPurged === 'number' ? `; purged ${r.documentsPurged} deleted document(s)` : ''));
     }
     break;
   }
@@ -1803,7 +1804,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
-  retention run              apply the stated retention policy and sweep expired uploads now (both also run daily on the long-lived server)
+  retention run              apply the stated retention policy (including the deleted-document purge) and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
   users subject-export <id>  bounded partial metadata page (owner; --category, --cursor, --limit)
   users offboard-preview <id> bounded direct issuance counts and remaining review (owner)

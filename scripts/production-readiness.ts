@@ -118,6 +118,9 @@ export function assess(text: string, format: 'config' | 'manifests'): Report {
       if (Number.isInteger(retention.telemetryDays) && Number(retention.telemetryDays) > 0) {
         check('config.telemetry-retention', true, 'An explicit finite telemetry retention is configured; purpose and schedule approval remain unverified.');
       } else pending('config.telemetry-retention', 'Set or document approved treatment of retained telemetry, including previously collected data.');
+      if (Number.isInteger(retention.deletedDocumentsDays) && Number(retention.deletedDocumentsDays) > 0) {
+        check('config.deleted-document-retention', true, 'Deleted documents are purged after an explicit finite period; approval of the schedule remains unverified.');
+      } else pending('config.deleted-document-retention', 'Deleted documents are kept indefinitely; set policy.retention.deletedDocumentsDays or document the approved exception.');
       if (cfg.siem.url) check('config.siem-transport', !!safeUrl(cfg.siem.url), 'Configured SIEM endpoint must use HTTPS without URL credentials; no receiver request was made.');
       else pending('config.siem-transport', 'No application SIEM destination configured; verify the approved central logging alternative or connect the forwarder.');
       const hook = cfg.submit.scanHook;

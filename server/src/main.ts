@@ -21,7 +21,7 @@ import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
 import { createOtel, setProcessOtel } from './observability/otel.ts';
 import { otelConfigFromEnv, printableEndpoint, SIGNALS } from './observability/otel-config.ts';
-import { runRetention } from './audit/retention.ts';
+import { auditTimedPurge, runRetention } from './audit/retention.ts';
 import { approvalArtifactPolicy, sweepApprovalArtifacts } from './approvals/export-review.ts';
 import { scheduleProjectFileSweep } from './projects/files.ts';
 import { scheduleUploadSweep } from './uploads/scoped.ts';
@@ -255,12 +255,14 @@ if (config.audit.headLog.intervalMinutes > 0) {
 // The same runRetention the POST /api/v1/retention/run route calls, so a
 // serverless deploy crons the route with a service token and gets identical
 // behaviour.
-if (config.policy.retention.telemetryDays > 0 || config.policy.retention.auditDays > 0) {
+const { telemetryDays, auditDays, deletedDocumentsDays } = config.policy.retention;
+if (telemetryDays > 0 || auditDays > 0 || deletedDocumentsDays > 0) {
   const runIt = async (): Promise<void> => {
     const r = await runRetention({ config, store });
-    if (r.telemetryTrimmed || r.auditTrimmed) {
-      console.log(`[lolly-work] retention: trimmed ${r.telemetryTrimmed} telemetry, ${r.auditTrimmed} audit`);
+    if (r.telemetryTrimmed || r.auditTrimmed || r.documentsPurged) {
+      console.log(`[lolly-work] retention: trimmed ${r.telemetryTrimmed} telemetry, ${r.auditTrimmed} audit, purged ${r.documentsPurged ?? 0} deleted document(s)`);
     }
+    await auditTimedPurge(store, r, new Date().toISOString());
   };
   await runIt();
   setInterval(() => void runIt().catch((e: Error) => console.error(`[lolly-work] retention failed: ${e.message}`)), 24 * 60 * 60 * 1000).unref();

@@ -122,7 +122,7 @@ test('activity configuration preserves existing defaults and validates explicit 
   const config = parseConfig(JSON.stringify({ dev: { enabled: true } }));
   assert.deepEqual(config.policy.activity, { mode: 'delegated', auditSessionUpdates: true });
   for (const activity of [{ mode: 'anyone' }, { auditSessionUpdates: 'no' }]) assert.throws(() => parseConfig(JSON.stringify({ dev: { enabled: true }, policy: { activity } })), /activity/);
-  assert.deepEqual(config.policy.retention, { telemetryDays: 0, auditDays: 0, renderOutputDays: 0 });
+  assert.deepEqual(config.policy.retention, { telemetryDays: 0, auditDays: 0, renderOutputDays: 0, deletedDocumentsDays: 0 });
 });
 
 

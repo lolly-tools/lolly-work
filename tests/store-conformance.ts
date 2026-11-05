@@ -2036,6 +2036,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
     { status: 'superseded', at: reqDay(1), by: 'user:u1' }, reqDay(1))).map((r) => r.id), ['req_s1']);
 
   await runCommentReadsAndNoticesConformance(store);
+  await runDeletedSessionPurgeConformance(store);
   await runErasureConformance(store);
   await runEdgePurgeConformance(store);
 }
@@ -2279,4 +2280,72 @@ async function runCommentReadsAndNoticesConformance(store: Store): Promise<void>
   assert.equal(await store.countNoticesByActorSince(actor.id, t(-100 * 1440)), 0);
   assert.deepEqual(await store.getCommentThread('thr_cn_a'), threadA, 'shared threads are unchanged');
   assert.deepEqual(await store.getCommentThreadsByIds(['thr_cn_a', 'thr_cn_c']), [threadA, threadC]);
+}
+
+/**
+ * Deleted-document purge (policy.retention.deletedDocumentsDays): a tombstone
+ * older than the cutoff goes with everything that hangs off it, oldest first
+ * and bounded by the limit; newer tombstones and live documents are untouched.
+ */
+async function runDeletedSessionPurgeConformance(store: Store): Promise<void> {
+  const ago = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString();
+  const user = (sub: string) => store.upsertUserBySub({ sub, email: `${sub}@example.invalid`, groups: [], role: 'member' });
+  const owner = await user('purge-owner'), reader = await user('purge-reader');
+  await store.putProject({ id: 'prj_purge', name: 'Purge', visibility: 'private', ownerId: owner.id, createdAt: ago(90) });
+  await store.putProjectFolder({ id: 'fld_purge', projectId: 'prj_purge', parentId: null, name: 'Drafts', createdAt: ago(90), createdBy: owner.id, items: [] });
+  const ids = ['ses_purge_old', 'ses_purge_older', 'ses_purge_recent', 'ses_purge_live'];
+  for (const [i, id] of ids.entries()) {
+    await store.putSession({ id, projectId: 'prj_purge', toolId: 'poster', toolVersion: '1.0.0', inputs: { title: id }, meta: {},
+      createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: ago(90) });
+    const head = (await store.getSession(id))!;
+    assert.equal(await store.casSession({ ...head, inputs: { title: `${id} v2` }, rev: 2 }, 1), true);
+    await store.appendSessionRevision({ sessionId: id, rev: 2, inputs: { title: `${id} v2` }, meta: {}, actor: owner.id, at: ago(1) });
+    const threadId = `thr_${id}`;
+    assert.equal(await store.createCommentThread({ id: threadId, sessionId: id, anchor: { kind: 'canvas', surface: 'page-1', x: 1, y: 2 },
+      authorId: owner.id, authorName: 'Owner', revision: 1, createdAt: ago(1), updatedAt: ago(1),
+      messages: [{ id: 'm1', authorId: owner.id, authorName: 'Owner', body: 'Note', createdAt: ago(1) }] }), 'created');
+    await store.readCommentState(reader.id, id);
+    await store.markCommentsRead(reader.id, id, [{ threadId, at: ago(0) }]);
+    await store.upsertCommentNotice({ userId: reader.id, threadId, sessionId: id, projectId: 'prj_purge', kind: 'reply', actorId: owner.id,
+      messageId: 'm1', at: ago(0), mentioned: false });
+    assert.equal(await store.createDocumentAgent({ id: `dag_${id}`, sessionId: id, projectId: 'prj_purge', userId: owner.id, createdBy: owner.id,
+      label: 'Helper', role: 'viewer', tokenHash: `purge-hash-${i}`, createdAt: ago(1), expiresAt: ago(-1) }), true);
+    await store.putCollabSnapshot({ sessionId: id, inputs: { title: 'live' }, baseRev: 2, ops: 1, updatedAt: ago(0) });
+    await store.putSessionVersion({ sessionId: id, rev: 2, kind: 'save', inputs: { title: `${id} v2` }, meta: {}, contributors: [] });
+    await store.assignProjectFolderItem('prj_purge', 'fld_purge', 'session', id);
+  }
+  const tombstone = async (id: string, days: number) => store.putSession({ ...(await store.getSession(id))!, deletedAt: ago(days) });
+  await tombstone('ses_purge_old', 40);
+  await tombstone('ses_purge_older', 50);
+  await tombstone('ses_purge_recent', 5);
+
+  const left = async (id: string) => ({
+    session: !!(await store.getSession(id)),
+    revisions: (await store.listSessionRevisions(id)).length,
+    threads: (await store.listCommentThreads(id)).length,
+    reads: Object.keys((await store.readCommentState(reader.id, id)).reads).length,
+    notices: (await store.listCommentNotices(reader.id)).filter((n) => n.sessionId === id).length,
+    agents: (await store.listDocumentAgents(id)).length,
+    snapshot: !!(await store.getCollabSnapshot(id)),
+    versions: (await store.listSessionVersions(id, { limit: 10 })).length,
+    filed: (await store.listProjectFolders('prj_purge')).some((f) => f.items.some((item) => item.ref === id)),
+  });
+  const gone = { session: false, revisions: 0, threads: 0, reads: 0, notices: 0, agents: 0, snapshot: false, versions: 0, filed: false };
+  const kept = await left('ses_purge_recent');
+  assert.ok(kept.session && kept.revisions > 0 && kept.threads && kept.reads && kept.notices && kept.agents && kept.snapshot && kept.versions && kept.filed,
+    'every attached record was seeded');
+
+  assert.equal(await store.purgeDeletedSessions(ago(30), 1), 1, 'the limit bounds a batch');
+  assert.deepEqual(await left('ses_purge_older'), gone, 'the oldest tombstone goes first, with everything attached to it');
+  assert.equal((await left('ses_purge_old')).session, true, 'the next one waits for the next batch');
+  assert.equal(await store.purgeDeletedSessions(ago(30), 10), 1);
+  assert.deepEqual(await left('ses_purge_old'), gone);
+  assert.equal(await store.purgeDeletedSessions(ago(30), 10), 0, 'nothing else is old enough');
+  assert.deepEqual(await left('ses_purge_recent'), kept, 'a newer tombstone is untouched');
+  assert.equal((await left('ses_purge_live')).session, true);
+
+  assert.equal(await store.purgeDeletedSessions(ago(1), 10), 1, 'a later cutoff reaches the newer tombstone');
+  assert.deepEqual(await left('ses_purge_recent'), gone);
+  const live = await left('ses_purge_live');
+  assert.ok(live.session && live.revisions > 0 && live.threads && live.agents && live.versions && live.filed, 'a live document is never purged');
 }
