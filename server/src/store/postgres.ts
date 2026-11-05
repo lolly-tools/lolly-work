@@ -2037,6 +2037,15 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       }
       return out;
     },
+    async listExportReviewsForInputs(key) {
+      const { rows } = await pool.query(
+        `select doc from approvals
+         where doc->'exportReview'->>'inputsDigest' = $1 and doc->'exportReview'->>'toolId' = $2 and doc->'exportReview'->>'format' = $3
+         order by (state = 'approved') desc, created_at desc limit 20`,
+        [key.inputsDigest, key.toolId, key.format],
+      );
+      return rows.map((r) => r.doc as Approval);
+    },
 
     async putLifecycle(row) {
       await pool.query(

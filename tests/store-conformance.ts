@@ -1163,6 +1163,14 @@ export async function runStoreConformance(store: Store): Promise<void> {
   const sourceApproval = { ...approval, id: 'apr_source', subjectType: 'source-review' as const, subjectRef: `source-review:${frozen.fingerprint}`, sourceReview: frozen };
   await store.putApproval(sourceApproval);
   assert.deepEqual(await store.getApproval(sourceApproval.id), sourceApproval, 'frozen review subject survives the driver round trip');
+  // Export reviews are found by tool, format and inputs digest: approved first, then newest.
+  const review = (id: string, state: string, createdAt: string, over: Record<string, unknown> = {}) => ({ ...approval, id, state, createdAt,
+    exportReview: { toolId: 'card', format: 'png', inputsDigest: 'd1', toolVersion: '1.0.0', ...over } }) as typeof approval;
+  for (const row of [review('apr_r1', 'approved', '2026-01-01T00:00:00.000Z'), review('apr_r2', 'in_review', '2026-03-01T00:00:00.000Z'),
+    review('apr_r3', 'rejected', '2026-02-01T00:00:00.000Z'), review('apr_r4', 'approved', '2026-01-01T00:00:00.000Z', { inputsDigest: 'd2' }),
+    review('apr_r5', 'approved', '2026-01-01T00:00:00.000Z', { format: 'svg' }), review('apr_r6', 'approved', '2026-01-01T00:00:00.000Z', { toolId: 'other' })]) await store.putApproval(row);
+  assert.deepEqual((await store.listExportReviewsForInputs({ toolId: 'card', format: 'png', inputsDigest: 'd1' })).map(a => a.id), ['apr_r1', 'apr_r2', 'apr_r3']);
+  assert.deepEqual(await store.listExportReviewsForInputs({ toolId: 'card', format: 'png', inputsDigest: 'nope' }), []);
 
   // catalog lifecycle: put/get/list round-trip, re-put updates in place
   assert.equal(await store.getLifecycle('acme/logo/primary'), null);

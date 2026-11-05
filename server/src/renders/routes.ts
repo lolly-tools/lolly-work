@@ -98,6 +98,7 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': r.output.mime, 'content-length': String(bytes.byteLength),
       'cache-control': 'private, no-store', etag: `"${r.output.sha256}"`, 'x-content-type-options': 'nosniff',
       'x-lolly-brand-check': r.output.evidence?.brandRules?.disposition ?? 'not-requested',
+      ...(r.output.evidence?.untilApproved ? { 'x-lolly-watermark': r.output.evidence.untilApproved.note } : {}),
       'content-disposition': `attachment; filename="${r.id}${r.output.evidence?.brandRules?.disposition === 'draft' ? '-DRAFT' : ''}.${r.request.format}"` });
     res.end(bytes);
   });

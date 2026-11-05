@@ -275,7 +275,7 @@ test('a chain bound to a tool is writable, must exist, reaches shells and binds 
     assert.equal((await put('brand')).status, 200);
     const config = await (await fetch(`${w.base}/api/v1/org-config`, { headers: { cookie: w.author } })).json() as { tools: Record<string, { approvalChain?: string }>; approvals?: { exportReview: { maxFileBytes: number; partBytes: number } } };
     assert.equal(config.tools['qr-code']!.approvalChain, 'brand');
-    assert.deepEqual(config.approvals, { exportReview: { maxFileBytes: APPROVAL_ARTIFACT_DEFAULTS.maxFileBytes, partBytes: PART } });
+    assert.deepEqual(config.approvals, { exportReview: { maxFileBytes: APPROVAL_ARTIFACT_DEFAULTS.maxFileBytes, partBytes: PART, match: true } });
     const viewerConfig = await (await fetch(`${w.base}/api/v1/org-config`, { headers: { cookie: w.viewer } })).json() as { approvals?: unknown };
     assert.equal(viewerConfig.approvals, undefined, 'only someone who may request');
     const bytes = png();

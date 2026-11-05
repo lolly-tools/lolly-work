@@ -7,11 +7,9 @@
  * <rect>. Applied to the SVG BEFORE any PNG rasterisation, so both svg and png
  * carry it.
  *
- * Pure string work (no DOM), so it stays import-clean and runs anywhere.
- *
- * TODO(plans/05): the `until-approved` enforcement state needs the approval
- * store to decide per-render whether the mark stays; that linkage is deliberately
- * NOT built here - this compositor only knows "watermark now" vs "don't".
+ * Pure string work (no DOM), so it stays import-clean and runs anywhere. The approval
+ * record is read by the pipeline (approvals/export-review-match.ts); this module only
+ * takes the answer.
  */
 
 import type { ToolOverlay } from '../policy/overlay.ts';
@@ -25,14 +23,23 @@ export type WatermarkPolicy = NonNullable<NonNullable<ToolOverlay['enforce']>['w
  * Decide whether one render carries the PREVIEW mark.
  *
  * `never` is the tool owner's explicit rule and wins over everything, including
- * a caller that asks for the preview mark. `always` marks every render. With no
- * rule, or with `until-approved` (not linked to approval state yet, see the TODO
- * above), only a caller asking for the preview mark gets one.
+ * a caller that asks for the preview mark. `always` marks every render. A caller
+ * asking for the preview mark gets one under any other rule. `until-approved` marks a
+ * render unless an approved export review matches it (`approved`). With no rule, only
+ * a caller asking gets the mark.
  */
-export function shouldWatermark(policy: WatermarkPolicy | undefined, previewRequested: boolean): boolean {
+export function shouldWatermark(policy: WatermarkPolicy | undefined, previewRequested: boolean, approved = false): boolean {
   if (policy === 'never') return false;
   if (policy === 'always') return true;
-  return previewRequested;
+  if (previewRequested) return true;
+  return policy === 'until-approved' && !approved;
+}
+
+/** Plain words for how an `until-approved` render came out. They go in the record,
+ *  never in the artwork. */
+export function untilApprovedNote(marked: boolean, approved: boolean): string {
+  if (!marked) return 'Approved, not marked';
+  return approved ? 'Marked as a preview' : 'Marked until approved';
 }
 
 /** Escape the little we inject into attributes/markup (defensive; inputs are static). */

@@ -1241,6 +1241,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       }
       return out;
     },
+    async listExportReviewsForInputs(key) {
+      const newest = (a: Approval, b: Approval) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0);
+      return [...approvals.values()]
+        .filter((a) => a.exportReview?.inputsDigest === key.inputsDigest && a.exportReview.toolId === key.toolId && a.exportReview.format === key.format)
+        .sort((a, b) => Number(b.state === 'approved') - Number(a.state === 'approved') || newest(a, b))
+        .slice(0, 20);
+    },
 
     async putLifecycle(row) {
       lifecycle.set(row.assetId, row);

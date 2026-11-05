@@ -32,7 +32,9 @@ import { renderCacheKey } from './cache-key.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 import { createAssetObserver, effectivePolicySha256, evidenceHash, finishRenderEvidence, type RenderEvidence } from './evidence.ts';
 import { inspectOutput, outputVerificationProblems, OutputVerificationError, parseOutputVerification, verificationTarget, type OutputVerification } from './output-inspection.ts';
-import { applyPreviewWatermark, shouldWatermark } from './watermark.ts';
+import { applyPreviewWatermark, shouldWatermark, untilApprovedNote } from './watermark.ts';
+import { renderInputsDigest } from './inputs-digest.ts';
+import type { ExportReviewKey } from '../approvals/export-review-match.ts';
 import { withRenderHost } from './host.ts';
 import { createVmHookExecutor } from './vm-hooks.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
@@ -86,6 +88,9 @@ function renderErrorFromWorker(e: WorkerError): RenderError {
 }
 
 export interface RenderDeps {
+  /** The approved export review matching a render, for `enforce.watermark:
+   *  until-approved`. Absent (unit tests, older callers) nothing matches, so the mark stays. */
+  approvedExportReview?: (key: ExportReviewKey & { toolVersion: string }) => Promise<{ id: string } | null>;
   workerReadToken?: string;
   workerFiles?: RenderFileScope;
   managedRules?: ManagedRuleContext;
@@ -147,6 +152,8 @@ export interface RenderOutput {
   /** Present when the render consumed catalog assets and a resolver was wired. */
   provenance?: ProvenanceDoc;
   evidence?: RenderEvidence;
+  /** Present under `until-approved`: plain words for how this render came out. */
+  watermarkNote?: string;
 }
 
 async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedResolver']): Promise<unknown> {
@@ -197,7 +204,8 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   catch (error) { if (error instanceof ProductionError) error.attempts = run.attempts.map(a => a.report); throw error; }
   const { id: _id, apiVersion: _api, coverage: _coverage, outputSha256: _sha, ...body } = last.evidence!;
   const evidence = finishRenderEvidence({ ...body, productionAttempts: run.attempts.map(a => a.report) }, last.bytes);
-  return { bytes: last.bytes, mime: last.mime, cacheKey: last.cacheKey, ...(last.provenance ? { provenance: last.provenance } : {}), evidence };
+  return { bytes: last.bytes, mime: last.mime, cacheKey: last.cacheKey, ...(last.provenance ? { provenance: last.provenance } : {}), evidence,
+    ...(last.watermarkNote ? { watermarkNote: last.watermarkNote } : {}) };
 }
 
 async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<RenderOutput> {
@@ -311,7 +319,17 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const policyVersion = policyVersionOf(req.overlays, {});
   files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   const sourceHash = evidenceHash(files);
-  const watermark = shouldWatermark(overlay?.enforce?.watermark, req.watermarkPreview === true);
+  // `until-approved` reads the approval record on every render, so a decision takes
+  // effect on the next one. A lookup that fails leaves the mark on.
+  const watermarkRule = overlay?.enforce?.watermark;
+  const inputsDigest = watermarkRule === 'until-approved'
+    ? renderInputsDigest(engine, tool.manifest, st.values as Record<string, unknown>, overlay, groups, req.profile) : null;
+  const approval = inputsDigest
+    ? await deps.approvedExportReview?.({ toolId: req.toolId, toolVersion: String(tool.manifest.version), format, inputsDigest }).catch(() => null) ?? null
+    : null;
+  const watermark = shouldWatermark(watermarkRule, req.watermarkPreview === true, !!approval);
+  const untilApproved = inputsDigest
+    ? { marked: watermark, note: untilApprovedNote(watermark, !!approval), approvalId: approval?.id ?? null, inputsDigest } : undefined;
   const pxW = toPx(engine, st.width, st.unit, st.dpi);
   const pxH = toPx(engine, st.height, st.unit, st.dpi);
   const context: RenderEvidence['context'] = {
@@ -331,7 +349,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     policyVersion,
     format,
     params: bakedValues,
-    context: { ...context, sourceHash, brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
+    context: { ...context, sourceHash, ...(untilApproved ? { untilApproved: untilApproved.approvalId } : {}), brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
       worker: deps.worker ? evidenceHash(deps.worker.url) : null,
       signer: deps.signer ? evidenceHash({ chain: deps.signer.chain.map((cert) => sha256Hex(cert)), claimGenerator: deps.signer.claimGenerator }) : null },
   });
@@ -340,7 +358,8 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // observe a fresh attempt, even when a previous output has the same request key.
   const cacheable = !observer && !tool.manifest.hooks;
   const cached = cacheable ? cacheGet(cacheKey) : undefined;
-  if (cached) return { bytes: cached.bytes, mime: cached.mime, cacheKey, ...(cached.provenance ? { provenance: cached.provenance } : {}) };
+  if (cached) return { bytes: cached.bytes, mime: cached.mime, cacheKey, ...(cached.provenance ? { provenance: cached.provenance } : {}),
+    ...(untilApproved ? { watermarkNote: untilApproved.note } : {}) };
 
   // Render path: hooked or HTML-layout tool → Chromium worker (or 501 when none);
   // otherwise the in-process jsdom fast path. Both converge on an SVG string post-processed
@@ -546,6 +565,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     ...(inspection ? { inspection } : {}),
     ...(productionReport ? { production: productionReport } : {}),
     ...(brandReport ? { brandRules: brandReport } : {}),
+    ...(untilApproved ? { untilApproved } : {}),
     ...(workerEvidence ? { worker: workerEvidence } : {}),
     limitations: ['engine-dependency-graph-unavailable', 'dependencies-not-locked', 'unobserved-template-and-global-resources',
       ...(inWorker ? workerEvidence ? ['worker-runtime-profile-api-unattested', ...workerEvidence.limitations] : ['worker-tool-and-assets-unattested', 'worker-profile-and-inputs-unattested'] : []),
@@ -553,7 +573,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       ...(format !== 'svg' ? ['rasterizer-fonts-unattested'] : []),
       ...observation.limitations].sort(),
   }, out.bytes) : undefined;
-  return { ...out, cacheKey, ...(evidence ? { evidence } : {}) };
+  return { ...out, cacheKey, ...(evidence ? { evidence } : {}), ...(untilApproved ? { watermarkNote: untilApproved.note } : {}) };
 }
 
 /** Rasterise an SVG string to PNG via resvg, longest edge bounded by the cap. */

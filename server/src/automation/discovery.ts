@@ -154,7 +154,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
       collaboration: { live: deps.liveCollab },
       agents: { documentMcp: deps.documentAgents },
       files: { references: deps.fileReferences },
-      approvals: { exportReview: deps.exportReview },
+      approvals: { exportReview: deps.exportReview, exportReviewMatch: deps.exportReview },
       unavailable: deploymentGaps(deps.caps),
       links: LINKS,
     };

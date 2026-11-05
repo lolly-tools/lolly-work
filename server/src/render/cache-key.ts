@@ -1,7 +1,8 @@
 /**
  * Render cache key (plans/07 §4): toolId + toolVersion + engineVersion +
  * catalogVersion + policyVersion + canonical typed values and prepared context.
- * The context includes loaded source content, profile, dimensions and watermark.
+ * The context includes loaded source content, profile, dimensions and watermark, and
+ * under `until-approved` the approval a render matched, so a decision moves the key.
  * This request key is not a complete dependency lock.
  *
  * The render pipeline itself (fourth HostV1 shell - jsdom fast path, with
@@ -18,7 +19,7 @@ export interface RenderKeyParts {
   policyVersion: string;
   format: string;
   params: Record<string, unknown>;
-  /** Output-affecting context: profile, dimensions, watermark, loaded sources and renderer. */
+  /** Output-affecting context: profile, dimensions, watermark and any approval behind it, loaded sources and renderer. */
   context?: Record<string, unknown>;
 }
 
