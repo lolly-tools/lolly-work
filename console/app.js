@@ -3731,7 +3731,7 @@ function renderApprovalCard(a, { actionable }) {
       el('div', { class: 'appr-headmain' },
         el('div', { class: 'appr-title' }, a.title),
         el('div', { class: 'appr-meta' },
-          el('span', { class: 'chip' }, a.subjectType),
+          el('span', { class: 'chip' }, a.exportReview ? 'Exported file' : a.subjectType),
           a.subjectRef && !a.exportReview ? el('span', { class: 'mono' }, a.subjectRef) : null,
           el('span', { class: 'muted' }, a.chainName),
           el('span', { class: 'muted' }, a.mine ? 'raised by you' : ['raised by ', a.createdByName ?? a.createdBy], ' · ', relTime(a.createdAt)))),
