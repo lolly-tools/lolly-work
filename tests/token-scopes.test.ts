@@ -201,6 +201,24 @@ test('each scope reaches its own routes on the automation role', async () => {
   assert.equal(await code(await t.as(audit.token, '/api/v1/schema/card')), 'TOKEN_SCOPE');
 });
 
+test('an MCP tool outside the token\'s scopes is absent, and refused when called by name', async () => {
+  const t = await boot();
+  const { token } = await t.mint({ scopes: ['catalog.read'] });
+  const rpc = async (method: string, params?: unknown) => {
+    const res = await t.as(token, '/api/v1/mcp', 'POST', { jsonrpc: '2.0', id: 1, method, ...(params === undefined ? {} : { params }) });
+    return (await res.json()) as { result: { tools: Array<{ name: string }>; isError?: boolean; content: Array<{ text: string }> } };
+  };
+  assert.deepEqual((await rpc('tools/list')).result.tools.map((tool) => tool.name), ['search_assets']);
+  for (const [name, args] of [['render_tool', { toolId: 'card', format: 'svg' }], ['list_tools', {}], ['describe_tool', { toolId: 'card' }], ['get_batch', { batchId: 'rbt_x' }]] as const) {
+    const { result } = await rpc('tools/call', { name, arguments: args });
+    assert.equal(result.isError, true, name);
+    const refusal = JSON.parse(result.content[0]!.text) as { code: string; status: number };
+    assert.equal(refusal.code, 'TOKEN_SCOPE', name);
+    assert.equal(refusal.status, 403, name);
+  }
+  assert.equal(await code(await t.as(token, '/api/v1/renders', 'POST', renderBody)), 'TOKEN_SCOPE', 'HTTP refuses the same way');
+});
+
 test('a scope never widens: the route opens, then the role still decides', async () => {
   const t = await boot();
   const viewer = await t.mint({ role: 'viewer', scopes: ['render'] });

@@ -205,6 +205,7 @@ import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes } from '../automation/discovery.ts';
+import { registerOrgMcp } from '../automation/org-mcp.ts';
 import { mayRenderTool, mayUseTool, PolicyRefusal } from '../automation/effective-contract.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
@@ -10526,12 +10527,13 @@ export function buildApp(deps: AppDeps): App {
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
-    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, fileReferences: uploadPolicy(config).enabled,
+    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
     providerRefs: async (groups) => {
       await providersReady;
       return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
     },
   });
+  registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit });
 
   for (const verb of ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize'] as const) {
     router.add('POST', `/api/v1/${verb}`, async (req, res, ctx) => {

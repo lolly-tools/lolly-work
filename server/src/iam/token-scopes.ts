@@ -51,6 +51,10 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'GET /api/auth/session': ANY,
   'GET /api/v1/discovery': ANY,
   'GET /api/v1/discovery/me': ANY,
+  // The MCP endpoint itself is open to any scoped token. Each tool call dispatches
+  // the route it mirrors, so this table refuses a tool outside the token's scopes.
+  'GET /api/v1/mcp': ANY,
+  'POST /api/v1/mcp': ANY,
 
   'GET /api/v1/discovery/tools': WORK,
   'GET /api/v1/schema/:toolId': WORK,

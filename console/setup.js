@@ -6,6 +6,18 @@ export async function setupView(main, helpers) {
   return editor;
 }
 
+/** Paste-ready MCP settings. They name an environment variable and never hold the
+ *  token, so the settings can live in a project file. Same shape as `lw mcp config`. */
+export function mcpConfigText(origin, tokenEnv = 'LW_TOKEN') {
+  const endpoint = `${origin}/api/v1/mcp`;
+  return [
+    `Claude Code: claude mcp add --transport http lolly-work ${endpoint} --header "Authorization: Bearer $${tokenEnv}"`,
+    '',
+    'Other clients (.cursor/mcp.json, for example):',
+    JSON.stringify({ mcpServers: { 'lolly-work': { url: endpoint, headers: { Authorization: `Bearer \${env:${tokenEnv}}` } } } }, null, 2),
+  ].join('\n');
+}
+
 export async function tokensView(main, { el, field, api, can, refresh }) {
   main.append(el('h1', {}, 'Provisioning and service tokens'),
     el('p', { class: 'sub' }, 'New secrets display once. Store them in the connector or your secret manager before dismissing them. Revocation takes effect on the next request.'));
@@ -38,7 +50,10 @@ export async function tokensView(main, { el, field, api, can, refresh }) {
           : { label: label.value.trim(), role: role.value, ...(scopes.length ? { scopes } : {}), ...(tools.length ? { tools } : {}) } });
         const secret = el('textarea', { readonly: '', 'aria-label': 'One-time token', rows: 3 });
         secret.value = result.token;
+        const connect = kind === 'service' ? el('textarea', { readonly: '', 'aria-label': 'MCP settings', rows: 15 }) : null;
+        if (connect) connect.value = mcpConfigText(main.ownerDocument.location.origin);
         secretHost.replaceChildren(el('p', {}, 'Store this token now. It cannot be recovered later.'), secret,
+          ...(connect ? [el('p', {}, 'To connect an agent, put the token in LW_TOKEN and use these settings. They do not hold the token.'), connect] : []),
           el('button', { type: 'button', onclick: () => { secret.value = ''; secretHost.replaceChildren(); void refresh(); } }, 'I have stored the token'));
         secret.focus(); secret.select();
       } catch (failure) { error.textContent = failure.message; create.disabled = false; }
