@@ -54,6 +54,9 @@ const ROUTE_CLASSES: Record<string, DeliveryClass> = {
   'GET /connect/pack.lolly': 'instance-private',
   'HEAD /connect/pack.lolly': 'instance-private',
   'GET /render/:spec': 'instance-private',
+  'GET /compat/files/:id/:expires/:signature/:file': 'link',
+  'HEAD /compat/files/:id/:expires/:signature/:file': 'link',
+  'GET /compat/placid/u/:uuid': 'link',
   'GET /tools/*': 'instance-private',
   'HEAD /tools/*': 'instance-private',
 };

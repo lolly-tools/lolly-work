@@ -45,9 +45,34 @@ export const TOKEN_ROLES: readonly string[] = [...ROLES.filter((role) => role !=
 const ANY = 'any' as const;
 const WORK = ['render', 'documents'] as const;
 
+/** The migration API's answers for what it does not cover. A scoped token reaches
+ *  them so a client learns why with a 501, rather than a scope refusal. */
+const MIGRATION_API_UNSUPPORTED = ['/compat/bannerbear/v5/webhooks', '/compat/bannerbear/v5/webhooks/*', '/compat/bannerbear/v5/*', '/compat/bannerbear/v2/*', '/compat/placid/api/rest/*']
+  .flatMap((path) => ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'].map((method): [string, readonly TokenScope[]] => [`${method} ${path}`, ['render']]));
+
 /** `METHOD pattern` to the scopes that open it. `any` is a route that only says
  *  who the caller is and what they can do, so every scoped token may read it. */
 const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>> = {
+  ...Object.fromEntries(MIGRATION_API_UNSUPPORTED),
+
+  'POST /compat/bannerbear/v5/images': ['render'],
+  'GET /compat/bannerbear/v5/images': ['render'],
+  'GET /compat/bannerbear/v5/images/:id': ['render'],
+  'POST /compat/bannerbear/sync/v5/images': ['render'],
+  'POST /compat/bannerbear/v2/images': ['render'],
+  'GET /compat/bannerbear/v2/images/:id': ['render'],
+  'POST /compat/bannerbear/sync/v2/images': ['render'],
+  'GET /compat/bannerbear/v2/auth': ['render'],
+  'POST /compat/placid/api/rest/images': ['render'],
+  'GET /compat/placid/api/rest/images/:id': ['render'],
+  'DELETE /compat/placid/api/rest/images/:id': ['render'],
+  'GET /compat/files/:id/:file': ['render'],
+  'DELETE /compat/requests/:id': ['render'],
+  // These need no token. A client that sends its token anyway must not lose the file.
+  'GET /compat/files/:id/:expires/:signature/:file': ['render'],
+  'HEAD /compat/files/:id/:expires/:signature/:file': ['render'],
+  'GET /compat/placid/u/:uuid': ['render'],
+
   'GET /api/auth/session': ANY,
   'GET /api/v1/discovery': ANY,
   'GET /api/v1/discovery/me': ANY,

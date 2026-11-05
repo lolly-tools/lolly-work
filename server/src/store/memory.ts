@@ -42,6 +42,7 @@ import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryPasskeys } from '../iam/passkeys/memory.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
+import { createMemoryRenderApiStore } from '../render-api/store.ts';
 import { createMemoryUploadStore } from '../uploads/memory.ts';
 import {
   COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, UNRECORDED_CALLBACK_ATTEMPT, automationCallbackSummary, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
@@ -276,6 +277,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       },
       deliveryNamesRender: (id) => [...deliveries.values()].some((delivery) => delivery.sourceRenderId === id),
     }),
+    ...createMemoryRenderApiStore(),
     ...createMemoryUploadStore(),
     ...createMemoryOidcLogout(),
     ...passkeys.store,

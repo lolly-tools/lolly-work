@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileSource, fileStateStore, resumableUpload, UploadClientError, type UploadTarget } from './upload-client.ts';
 import { runEdgeProbe } from '../server/src/edge/probe.ts';
+import { runRenderApi } from './render-api.ts';
 
 const CONFIG_DIR = join(homedir(), '.config', 'lolly-work');
 const SESSION_FILE = join(CONFIG_DIR, 'session');
@@ -82,6 +83,18 @@ const OPTIONS = {
     format: { type: 'string' },
     'idempotency-key': { type: 'string' },
     'callback-url': { type: 'string' },
+    // `lw render-api`: moving off a hosted render API.
+    from: { type: 'string' },
+    'source-url': { type: 'string' },
+    'max-pages': { type: 'string' },
+    'no-previews': { type: 'boolean' },
+    template: { type: 'string' },
+    values: { type: 'string' },
+    reference: { type: 'string' },
+    regions: { type: 'string' },
+    'max-changed': { type: 'string' },
+    tolerance: { type: 'string' },
+    'spend-credits': { type: 'boolean' },
     rm: { type: 'boolean' },
     // SCIM (plans/31 §8): the label for the IdP connector a provisioning token
     // belongs to, carried onto every audit event the token drives.
@@ -598,6 +611,11 @@ switch (cmd) {
       if (!shown.length) console.log('no invitations');
       for (const i of shown) console.log(line(i));
     }
+    break;
+  }
+
+  case 'render-api': {
+    await runRenderApi(sub, { values: values as Record<string, unknown>, call, response, fail, log: (line) => console.log(line), env: process.env });
     break;
   }
 
@@ -1774,6 +1792,10 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   renders deliver <id> --destination <id> --name "…" [--idempotency-key <key>]   send a finished output to a destination by reference
   render-batches submit <request.json> [--idempotency-key <key>] [--callback-url <url>]   submit durable rows
   render-batches [list|show <id>|cancel <id>|retry <id>] · render-batches manifest <id> --out <file> · render-batches archive <id> --out <file>
+  render-api inventory --from <bannerbear-v5|bannerbear-v2|placid> --token-env <NAME> --out <dir> [--source-url <url>] [--max-pages <n>] [--no-previews]   read a vendor account, read only, no server needed
+  render-api check --mapping <file>   read a mapping against the effective schema on this instance
+  render-api sample --from <source> --template <id> --token-env <NAME> --values <file> --out <dir> --spend-credits   keep a vendor render as a reference; spends vendor credits
+  render-api compare --from <source> --mapping <file> --template <id> --reference <file> [--values <file>] [--regions <file>] [--max-changed <n>] [--tolerance <n>]   measure a render here against a reference
   deliveries [list|show <id>|retry <id>]
   deliveries publish <jobId> --destination <id> --name "…" [--idempotency-key <key>]   publish a retained render output by reference
   providers [list] · providers add <id> --kind … --label "…" [--options/--mapping/--exposure {json}]
