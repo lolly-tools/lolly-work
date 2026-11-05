@@ -506,12 +506,13 @@ switch (cmd) {
 
   case 'retention': {
     if (sub !== 'run') fail('usage: lw retention run');
-    const r = await call('/api/v1/retention/run', { method: 'POST' }) as { telemetryTrimmed: number; auditTrimmed: number; projectFilesSwept?: number; uploadsSwept?: number };
+    const r = await call('/api/v1/retention/run', { method: 'POST' }) as { telemetryTrimmed: number; auditTrimmed: number; projectFilesSwept?: number; uploadsSwept?: number; approvalArtifactsRemoved?: number };
     out(r);
     if (!values.json) {
       console.log(`trimmed ${r.telemetryTrimmed} telemetry event(s), ${r.auditTrimmed} audit row(s)`
         + (typeof r.projectFilesSwept === 'number' ? `, swept ${r.projectFilesSwept} expired project-file upload(s)` : '')
-        + (typeof r.uploadsSwept === 'number' ? ` and ${r.uploadsSwept} expired scoped upload(s)` : ''));
+        + (typeof r.uploadsSwept === 'number' ? ` and ${r.uploadsSwept} expired scoped upload(s)` : '')
+        + (r.approvalArtifactsRemoved ? `, removed ${r.approvalArtifactsRemoved} approval request file(s) past retention` : ''));
     }
     break;
   }
