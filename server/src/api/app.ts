@@ -11340,7 +11340,7 @@ export function buildApp(deps: AppDeps): App {
   // reach public docs or the SPA fallback. Absent shellDir means these routes
   // are not added. HEAD handles only public docs, never private GET handlers.
   // serveShell is defined above the tool file routes, which also use it.
-  const RESERVED_PREFIX = /^(api|catalog|tools|render|l|e|o|admin|scim|healthz|activate|connect)(\/|$)/;
+  const RESERVED_PREFIX = /^(api|catalog|compat|tools|render|l|e|o|admin|scim|healthz|activate|connect)(\/|$)/;
   if (shellDir && serveShell) {
     const serveShellDocs = async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<boolean> => {
       const doc = shellDocsPath(rel);

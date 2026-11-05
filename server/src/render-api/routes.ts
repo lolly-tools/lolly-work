@@ -264,6 +264,7 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
   add('POST', '/compat/bannerbear/sync/v5/images', bannerbearCreate('bannerbear-v5', true));
   add('POST', '/compat/bannerbear/v2/images', bannerbearCreate('bannerbear-v2', false));
   add('POST', '/compat/bannerbear/sync/v2/images', bannerbearCreate('bannerbear-v2', true));
+  const TOKEN_ONLY = { delivery: 'person-private' } as const;
   add('GET', '/compat/bannerbear/v5/images', async (req, res, ctx) => {
     const principal = await needToken(req);
     const limit = Number(ctx.url.searchParams.get('limit') ?? 25);
@@ -271,19 +272,19 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(page) || page < 1) throw new RenderApiRefusal('INVALID_INPUT', 400, 'limit must be 1 to 100 and page a positive whole number');
     const records = await store.listRenderApiRecords(principal, 'bannerbear-v5', limit, (page - 1) * limit);
     sendJson(res, 200, await Promise.all(records.map(async (record) => wireFor(await view(record)))));
-  });
+  }, TOKEN_ONLY);
   add('GET', '/compat/bannerbear/v5/images/:id', async (req, res, ctx) => {
     const principal = await needToken(req);
     await answerRecord(res, principal, await ownedRecord(principal, ctx.params.id!, 'bannerbear-v5'));
-  });
+  }, TOKEN_ONLY);
   add('GET', '/compat/bannerbear/v2/images/:id', async (req, res, ctx) => {
     const principal = await needToken(req);
     await answerRecord(res, principal, await ownedRecord(principal, ctx.params.id!, 'bannerbear-v2'));
-  });
+  }, TOKEN_ONLY);
   add('GET', '/compat/bannerbear/v2/auth', async (req, res) => {
     await needToken(req);
     sendJson(res, 200, { message: 'Authorized', project: new URL(baseUrl).host });
-  });
+  }, TOKEN_ONLY);
 
   const placidRecord = async (principal: string, id: string): Promise<RenderApiRecord> => {
     const record = /^\d{1,15}$/.test(id) ? await store.getRenderApiRecordBySeq(Number(id)) : null;
@@ -307,7 +308,7 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
   add('GET', '/compat/placid/api/rest/images/:id', async (req, res, ctx) => {
     const principal = await needToken(req);
     await answerRecord(res, principal, await placidRecord(principal, ctx.params.id!));
-  });
+  }, TOKEN_ONLY);
   add('DELETE', '/compat/placid/api/rest/images/:id', async (req, res, ctx) => {
     const principal = await needToken(req);
     const record = await placidRecord(principal, ctx.params.id!);
@@ -351,8 +352,8 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
     setDeliveryClass(res, 'link', { boundedAgeSec: 300 });
     await recordOutput(res, record, ctx.params.file!);
   };
-  add('GET', '/compat/files/:id/:expires/:signature/:file', capabilityFile);
-  add('HEAD', '/compat/files/:id/:expires/:signature/:file', capabilityFile);
+  add('GET', '/compat/files/:id/:expires/:signature/:file', capabilityFile, { delivery: 'link' });
+  add('HEAD', '/compat/files/:id/:expires/:signature/:file', capabilityFile, { delivery: 'link' });
   // With `signedDays: 0` the same file needs the token that made it.
   add('GET', '/compat/files/:id/:file', async (req, res, ctx) => {
     const principal = await needToken(req);
@@ -362,7 +363,7 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
     const first = record.formats.map((format) => current.renders[format]).find((render) => render?.request);
     if (first?.request) await deps.authorize(principal, first.request);
     await recordOutput(res, record, ctx.params.file!);
-  });
+  }, TOKEN_ONLY);
   // Bannerbear documents no delete, so this one works for every source. An admin may
   // use it too, because the token that made a record may already be gone.
   add('DELETE', '/compat/requests/:id', async (req, res, ctx) => {
@@ -419,18 +420,19 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
       setDeliveryClass(res, 'link', { boundedAgeSec: 300 });
       await sendOutput(res, record, fileName(undefined, plan.format));
     });
-  });
+  }, { delivery: 'link' });
 
   // Everything else on those hosts is named, so a client learns why and where to look.
   const unsupported = (hint: string): Handler => (_req, res) => {
     sendError(res, 501, 'NOT_SUPPORTED_BY_MIGRATION_API', `${hint} See ${DOCS}`);
   };
   const IMAGES_ONLY = 'This migration API covers image creation only.';
+  const NO_REGISTERED_WEBHOOKS = 'Registered V5 webhooks are not supported: their payload and signature could not be confirmed from public documentation. Use callbackUrl on /api/v1/renders.';
   for (const method of ['GET', 'POST', 'PATCH', 'PUT', 'DELETE']) {
-    add(method, '/compat/bannerbear/v5/webhooks', unsupported('Registered V5 webhooks are not supported: their payload and signature could not be confirmed from public documentation. Use callbackUrl on /api/v1/renders.'));
-    add(method, '/compat/bannerbear/v5/webhooks/*', unsupported('Registered V5 webhooks are not supported: their payload and signature could not be confirmed from public documentation. Use callbackUrl on /api/v1/renders.'));
-    add(method, '/compat/bannerbear/v5/*', unsupported(IMAGES_ONLY));
-    add(method, '/compat/bannerbear/v2/*', unsupported(IMAGES_ONLY));
-    add(method, '/compat/placid/api/rest/*', unsupported(IMAGES_ONLY));
+    add(method, '/compat/bannerbear/v5/webhooks', unsupported(NO_REGISTERED_WEBHOOKS), TOKEN_ONLY);
+    add(method, '/compat/bannerbear/v5/webhooks/*', unsupported(NO_REGISTERED_WEBHOOKS), TOKEN_ONLY);
+    add(method, '/compat/bannerbear/v5/*', unsupported(IMAGES_ONLY), TOKEN_ONLY);
+    add(method, '/compat/bannerbear/v2/*', unsupported(IMAGES_ONLY), TOKEN_ONLY);
+    add(method, '/compat/placid/api/rest/*', unsupported(IMAGES_ONLY), TOKEN_ONLY);
   }
 }
