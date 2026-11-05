@@ -47,7 +47,7 @@ function page(artifact: { status?: number; bytes?: Buffer; token?: string | null
       const bytes = artifact.bytes ?? BYTES;
       return { ok: (artifact.status ?? 200) < 400, status: artifact.status ?? 200,
         headers: new Headers(artifact.token === null ? {} : { 'x-lolly-review-token': artifact.token ?? 'tok' }),
-        blob: async () => new Blob([bytes], { type: 'image/png' }) };
+        blob: async () => new Blob([new Uint8Array(bytes)], { type: 'image/png' }) };
     }
     return { ok: true, status: 200, json: async () => ({}) };
   };
