@@ -36,7 +36,9 @@ lw login --email admin@example.test         # the dev provider (dev.enabled only
 | Host the signed instance pack | `instance pack`, `instance pack-rm` | [Hosting the instance pack](#hosting-the-instance-pack) |
 | Let people sign in | `invite add`, `invite ls`, `invite rm` | [Invitations](#invitations) |
 | Give automation its own identity | `tokens` | [Service tokens](#service-tokens) |
+| Connect an agent with a service token | `mcp config` | [MCP settings](#mcp-settings) |
 | Render and recover renders | `renders`, `render-batches` | [Recoverable renders](#recoverable-renders) |
+| See approval requests and get a reviewed file | `approvals`, `approvals artifact` | [Approval files](#approval-files) |
 | Send finished files to a destination | `destinations`, `deliveries` | [Organization delivery](#organization-delivery) |
 | Manage grants and policy as code | `grants`, `export`, `apply` | [Governance](#governance) |
 | Provision people from an identity provider | `scim token` | [SCIM provisioning tokens](#scim-provisioning-tokens) |
@@ -110,15 +112,27 @@ well. See [identity](identity.md#who-may-sign-in).
 ## Service tokens
 
 ```bash
-lw tokens create --label ci --role admin    # owner; the secret prints once - store it now
-lw tokens                                   # list (label, role, last used, revoked)
+lw tokens create --label ci --scopes render,files --tools qr-code   # owner; the secret prints once - store it now
+lw tokens create --label sync --role admin  # no scopes: all that the role can reach
+lw tokens                                   # list (label, role, scopes, tools, last used, revoked)
 lw tokens revoke <id>
 LW_TOKEN=lwt_… lw export --out governance.json    # any command, authenticated as the automation
 ```
 
 A token outranks a stored session cookie when both are present - automation acts as the
 automation, never as whoever last signed in on the machine. Tokens drive the action-gated
-API (export/apply, providers, fleet, audit); the member-workflow commands refuse them.
+API (export/apply, providers, fleet, audit); the member-workflow commands refuse them. A scoped
+token reaches only what its scopes open, and other commands answer `403 TOKEN_SCOPE`. The scopes
+are in the [automation guide](automation-api.md#before-you-start-a-token-and-a-permission).
+
+## MCP settings
+
+```bash
+lw mcp config --base https://work.example.com
+lw mcp config --name brand --token-env WORK_TOKEN --json
+```
+
+This prints settings for an MCP client to reach the [organisation MCP endpoint](automation-api.md#connect-an-agent-over-mcp). The command makes no request. The settings name an environment variable (`LW_TOKEN` unless you pass `--token-env`) and never hold the token.
 
 ## Recoverable renders
 
@@ -153,6 +167,19 @@ The [batch guide](renders.md#batches-with-durable-rows) defines shared inputs an
 row keys. Retry creates a new parent and replaces only unsuccessful rows;
 successful children keep their original output. Download each child through
 `lw renders output <childRenderId> --out <file>`.
+
+## Approval files
+
+```bash
+lw approvals                                # your requests and inbox
+lw approvals artifact <id> --out card.png   # the file an export review carries
+```
+
+`artifact` works for an eligible reviewer, for someone who acted on the request, and for the
+requester once the request is approved. It checks the whole file against its recorded digest before
+writing anything. These commands need a person's session from `lw login`. A service token cannot read
+approvals, because a decision about a file is a person's act. Decide in the console, where the file
+is on screen. See [review an exported file](approvals.md#review-an-exported-file).
 
 ## Organization delivery
 
@@ -204,7 +231,7 @@ the mint is the one moment you can copy the bearer. The IdP then drives `/scim/v
 ## Data lifecycle
 
 ```bash
-lw retention run            # apply the stated retention policy now (trims telemetry + audit, sweeps expired uploads)
+lw retention run            # apply the stated retention policy now (trims telemetry + audit, sweeps expired uploads, removes approval files past retention)
 lw users erase <id>         # erasure: delete the person's row + de-attribute their telemetry
 ```
 
