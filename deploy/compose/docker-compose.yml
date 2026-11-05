@@ -42,11 +42,11 @@ services:
       # LW_ALLOW_STALE_SHELL: "1" under environment above.
       # - ../../shells/web/dist:/app/shell:ro
     # Boot order, not just start order. main.ts awaits runMigrations() at the top
-    # level and store/migrate.ts calls client.connect() with no retry, so a
-    # connect against a Postgres that is still running initdb rejects out of a
-    # top-level await and the process exits. Plain `depends_on` waits only for
-    # the container to START, which on a first `up` is several seconds before
-    # Postgres accepts connections. Two belts:
+    # level and store/migrate.ts retries a refused connect for only about 10
+    # seconds. A Postgres still running initdb can outlast that, and the connect
+    # then rejects out of a top-level await and the process exits. Plain
+    # `depends_on` waits only for the container to START, which on a first `up`
+    # is several seconds before Postgres accepts connections. Two belts:
     #   service_healthy - hold the server until pg_isready passes;
     #   restart         - and recover anyway if the database goes away later.
     depends_on:
