@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { renderDocPathChoices } from '../console/docs-path-chooser.js';
 const require = createRequire(import.meta.url);
 const { JSDOM } = require('jsdom');
 const source = readFileSync(new URL('../console/app.js', import.meta.url), 'utf8')
@@ -21,6 +22,7 @@ function docsFetch(index: unknown, pages: Record<string, string>) {
 function page() {
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin#/users', runScripts: 'outside-only' });
   const w = dom.window;
+  w.renderDocPathChoices = renderDocPathChoices;
   w.requestAnimationFrame = (fn: () => void) => setTimeout(fn, 0);
   w.eval(`${source}\nwindow.helpers = { consoleNavigation, sectionTabs, mdToNodes, viewDocs, docAnchorNode, docSlugAliases: DOC_SLUG_ALIASES, el, setSession: s => { session = s; } };`);
   return { dom, w, helpers: w.helpers };
@@ -190,5 +192,58 @@ test('the console renders every page of the shipped docs bundle and lands every 
       assert.ok(rendered.has(target.slug), `${old} is aliased to ${target.slug}, which the bundle does not list`);
       if (target.anchor) assert.ok(p.helpers.docAnchorNode(rendered.get(target.slug), target.anchor), `${old} is aliased to ${target.slug}#${target.anchor}, which lands nowhere`);
     }
+  } finally { p.dom.window.close(); }
+});
+
+test('offboarding choices keep their order and open local instructions without changing ordinary tables', async () => {
+  const p = page();
+  try {
+    const markdown = `# Leave a DAM
+
+| Destination | How files get there | Continue with |
+|---|---|---|
+| Self-hosted Work | Materialize into owned storage | [Work library](#work-library) |
+| Nextcloud | Export and copy | [Nextcloud library](#nextcloud-library) |
+| Git | Review and commit | [Git catalog](#git-catalog) |
+| Hosted drive | Export and upload | [Hosted drive](#hosted-drive) |
+
+## Work library
+
+Use instance storage.
+
+## Nextcloud library
+
+Connect read-only.
+
+## Git catalog
+
+Commit a manifest.
+
+## Hosted drive
+
+Upload separately.
+
+| Format | Note |
+|---|---|
+| SVG | Original |
+`;
+    p.w.fetch = docsFetch({ sections: [{ docs: [{ slug: 'offboarding', title: 'Leave a DAM', path: 'offboarding.md' }] }] }, { offboarding: markdown });
+    const main = p.w.document.getElementById('app');
+    await p.helpers.viewDocs(main, new URLSearchParams({ doc: 'offboarding' }));
+    const choices = main.querySelectorAll('.doc-path-choice');
+    assert.equal(choices.length, 4);
+    assert.equal(choices[0].open, true);
+    assert.equal(main.querySelectorAll('.doc-path-choice[open]').length, 1);
+    assert.ok(choices[0].querySelector('summary').textContent.includes('Self-hosted Work'));
+    assert.ok(choices[3].querySelector('summary').textContent.includes('Hosted drive'));
+    assert.equal(main.querySelectorAll('.doc-tbl').length, 1, 'unrelated tables retain their usual layout');
+    const links = [...main.querySelectorAll('.doc-path-next a')].map((a: any) => a.getAttribute('href'));
+    for (const href of links) {
+      const query = new URLSearchParams(href.slice('#/docs?'.length));
+      assert.equal(query.get('doc'), 'offboarding');
+      assert.ok(p.helpers.docAnchorNode(main.querySelector('.doc-prose'), query.get('anchor')));
+    }
+    await p.helpers.viewDocs(main, new URLSearchParams(links[1].slice('#/docs?'.length)));
+    assert.equal(main.querySelector('[data-doc-anchor]').textContent, 'Nextcloud library');
   } finally { p.dom.window.close(); }
 });

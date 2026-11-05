@@ -1105,6 +1105,20 @@ html.account-inspector-open { overflow: hidden; }
 .doc-prose ul, .doc-prose ol { margin: 0 0 12px; padding-left: 20px; }
 .doc-prose li { margin-bottom: 4px; }
 .doc-prose a { color: var(--accent); }
+.doc-paths { display: grid; gap: 10px; margin: 0 0 18px; }
+.doc-path-choice { border: 1px solid var(--grid); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.doc-path-choice[open] { border-color: var(--accent); }
+.doc-path-choice summary { display: grid; grid-template-columns: 30px minmax(0, 1fr) 16px; gap: 10px; align-items: center; cursor: pointer; list-style: none; min-height: 64px; padding: 12px; font-weight: 600; }
+.doc-path-choice summary::-webkit-details-marker { display: none; }
+.doc-path-choice summary::after { content: '+'; color: var(--accent); text-align: center; }
+.doc-path-choice[open] summary::after { content: '−'; }
+.doc-path-choice summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; border-radius: 10px; }
+.doc-path-number { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); font-size: 12px; }
+.doc-path-body { padding: 0 16px 4px; }
+.doc-path-next a { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--grid); border-radius: 8px; text-decoration: none; font-weight: 600; background: color-mix(in oklab, var(--accent) 7%, transparent); }
+.doc-path-next a::after { content: '→'; }
+.doc-path-next a:hover { text-decoration: underline; }
+.doc-path-choice:last-child { margin-top: 8px; background: transparent; }
 .doc-prose code { font-family: var(--font-mono, var(--font-mono-sys)); font-size: 12.5px; background: color-mix(in oklab, var(--ink) 6%, transparent); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
 .doc-prose pre {
   background: color-mix(in oklab, var(--ink) 5%, transparent);

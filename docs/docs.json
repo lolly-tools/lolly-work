@@ -116,7 +116,7 @@
           "slug": "offboarding",
           "path": "offboarding.md",
           "title": "Leave a DAM",
-          "summary": "Plan DAM offboarding to self-hosted Lolly Work with S3, MinIO or Ceph: verify originals, preserve references, rehearse recovery and cut over supported sources."
+          "summary": "Choose a DAM offboarding path: self-host Lolly Work, Nextcloud or Git, or export to a hosted drive. Compare transfer steps, originals, links and recovery."
         },
         {
           "slug": "approvals",
@@ -164,7 +164,7 @@
           "slug": "provider-webdav",
           "path": "providers/webdav.md",
           "title": "WebDAV / Nextcloud",
-          "summary": "Guided Nextcloud or generic WebDAV setup: exact groups, an original checksum, credential sealing and sync before activation."
+          "summary": "Connect a self-hosted Nextcloud or WebDAV library to Lolly Work. Guided setup, original checks and a separate file-transfer route for DAM offboarding."
         },
         {
           "slug": "provider-s3",
@@ -176,7 +176,7 @@
           "slug": "provider-git",
           "path": "providers/git.md",
           "title": "Git raw manifest",
-          "summary": "A catalog manifest kept in a git repository and read over raw HTTP from the branch you choose."
+          "summary": "Connect a catalog manifest and files from a Git repository, including a self-hosted forge. Review and commit a curated DAM export before connecting Work."
         },
         {
           "slug": "provider-brandfolder",
@@ -236,19 +236,19 @@
           "slug": "provider-dropbox",
           "path": "providers/dropbox.md",
           "title": "Dropbox",
-          "summary": "A Dropbox folder federated read-only over the registered PKCE consent flow."
+          "summary": "Connect a Dropbox folder to Lolly Work, including files exported from a DAM. Read-only access, recursive listing and stable file identities."
         },
         {
           "slug": "provider-gdrive",
           "path": "providers/gdrive.md",
           "title": "Google Drive",
-          "summary": "Guided folder/group configuration, registered browser consent, saved-file testing, activation and connection recovery."
+          "summary": "Connect a Google Drive folder to Lolly Work, including files exported from a DAM. Guided setup, original-file checks and flat-folder limits."
         },
         {
           "slug": "provider-o365",
           "path": "providers/o365.md",
           "title": "Microsoft 365 / SharePoint",
-          "summary": "A SharePoint library or OneDrive federated read-only through Microsoft Graph."
+          "summary": "Connect OneDrive or SharePoint to Lolly Work, including a separate DAM export and upload. Check folder listing, drive-wide search and member access."
         },
         {
           "slug": "provider-tenant-check",

@@ -1,8 +1,8 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "a3c909cd0ca17fb05cc799a6e8e834b3deab9b9b",
-  "manifestSha256": "ad40690f1374237c78a0333ae6be4e69bd8bd265f7c25baf3f34d33a99c094ca",
+  "commit": "5d7b1474bf7933231f0303f7d83f6f7803ea55c8",
+  "manifestSha256": "18654d37a905c339b79e23d85c26c6db01542b97c0b64a445bff151c4ecfedcb",
   "files": {
     "account-lifecycle.md": {
       "sha256": "37f7cf8213f0fb6805c7fd5e0a3e263a4afa24a68abd547e4904f640cc2cc4d0",
@@ -77,7 +77,7 @@
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
-      "sha256": "222d3ad399bf8d478b4f7aed6e75c984d7620468aa17d2189d5f574a1a331f6e",
+      "sha256": "8cb340f739a8920d79a70ca05aebf18f2b291aee984cc581df463493d70f4f0d",
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
@@ -145,7 +145,7 @@
       "source": "docs/work/metrics.md"
     },
     "offboarding.md": {
-      "sha256": "8958a458d2015cb09f4c6c99780c8bd233dbacf911f5e6a4975c1cf1fc800438",
+      "sha256": "f4c04aac8d8c0c7cf8ae1ea8cdc3591f7058a943661dec8be40aa4eb924fb759",
       "source": "docs/work/offboarding.md"
     },
     "official-installations.md": {
@@ -181,51 +181,51 @@
       "source": "docs/work/project-portability.md"
     },
     "providers/acquia-dam.md": {
-      "sha256": "c614fdccabeecaac2808ed5bca55d294ec983340009002861ffb8a7948203054",
+      "sha256": "744c59835d40a5bf15204a8c6294991a3977eb0c4acbb704ce91b56103e02c1c",
       "source": "docs/work/providers/acquia-dam.md"
     },
     "providers/brandfolder.md": {
-      "sha256": "7192e10428de1b7f6e3916ecad345e13eac0fa5a5079d3117fae86f8f18def40",
+      "sha256": "42c8cac9cecb23b8f4e51d3d3f31c0acde3ff20d7a33f0c19fdf5a37d074449f",
       "source": "docs/work/providers/brandfolder.md"
     },
     "providers/canto.md": {
-      "sha256": "0cd3decc15b2d8f7a3395475f6c6670123dc6a2b762b4d43cf85df959969f393",
+      "sha256": "7e98facd7903a0c8ac63e705f88283e5fec04dd0e67370f6c829c422a1d43670",
       "source": "docs/work/providers/canto.md"
     },
     "providers/cloudinary.md": {
-      "sha256": "cec5d55aef18ae937239fce3a3906961008a2518babf34f763153da82435b301",
+      "sha256": "6b74df7eb517e84a3d063fea3a2fa4b5dd1d3193b94151c545eb2dfeba0706de",
       "source": "docs/work/providers/cloudinary.md"
     },
     "providers/dropbox.md": {
-      "sha256": "bc5473b8c1e6af2fc250be720cd51df83887df3f62e832c5045c4a7352f16c3e",
+      "sha256": "db9351e38ed1786f5f81c1584392ec2bd55d92c67fda8f16d8d1c6b0dca0be6f",
       "source": "docs/work/providers/dropbox.md"
     },
     "providers/gdrive.md": {
-      "sha256": "1987a32418d0e081572adcc3655167ceaddf03713b286af964ffda43db9394b1",
+      "sha256": "ece3455a65f8559215f1cdebf1172cf5adda740360b2871a2015fe9fb09996da",
       "source": "docs/work/providers/gdrive.md"
     },
     "providers/git.md": {
-      "sha256": "2bd18fb54934759952c1baaa14b8846022390d2a6220ad3d3255999c77cef175",
+      "sha256": "52b6457fdddfcd3f1ceffc2ad294067c0562302c77dbb2e8155f7e989407dea5",
       "source": "docs/work/providers/git.md"
     },
     "providers/imagerelay.md": {
-      "sha256": "7f72408381dee5d27223c23359fe59739637043ef91ab847cf1b2f05606ef1af",
+      "sha256": "3e190dc01eb6dec6ed471622173b388fc6cbedfe8b6e6e8f0f87001af1b0adb0",
       "source": "docs/work/providers/imagerelay.md"
     },
     "providers/intelligencebank.md": {
-      "sha256": "dd3047a40bee47e4af96dbe6b26b579d1494ecffd2bca3474d1e90c666e2a88d",
+      "sha256": "25e4c505e6c6f13eef3d579dc146f02c156a3528420681c1ab4922a4aff97143",
       "source": "docs/work/providers/intelligencebank.md"
     },
     "providers/o365.md": {
-      "sha256": "7d0317a125dc12c50a3ce85a11228706bed655b67190e5c02df7cf37b0393489",
+      "sha256": "14121e781128c29336a0ba3e18235b7e6842e13812a98726d47d5ec8ebf01bbe",
       "source": "docs/work/providers/o365.md"
     },
     "providers/optimizely-cmp.md": {
-      "sha256": "a8e207b925a0ad7ec3f852751f414351f4c71b4220ab4e3a15a85fd1dfd50443",
+      "sha256": "1d9d7d0ba5c871a690cba4d47f61e104a51ccd705d93f3792d5c218f28285e52",
       "source": "docs/work/providers/optimizely-cmp.md"
     },
     "providers/orange-logic.md": {
-      "sha256": "c16bdc0fa451144de7be9f702a0baeaed847054370d9066c3fdd51d92a99e109",
+      "sha256": "cd48076e80b9b984cc9c585751dff4d6e73c5128fa0c6ff639861437d2603837",
       "source": "docs/work/providers/orange-logic.md"
     },
     "providers/penpot.md": {
@@ -233,7 +233,7 @@
       "source": "docs/work/providers/penpot.md"
     },
     "providers/README.md": {
-      "sha256": "ffc0389184e32562bc146e828755e7d8a805901367a5f226a69f114c28791870",
+      "sha256": "430ef58b00ed7827d149304e863c68a184daa41018db9c825bda4be7d2c58c3f",
       "source": "docs/work/providers/README.md"
     },
     "providers/s3.md": {
@@ -245,7 +245,7 @@
       "source": "docs/work/providers/tenant-check.md"
     },
     "providers/webdav.md": {
-      "sha256": "fd254bb617326155fa17fff2fb727ee1779dba4b1d8424f2e6b1242eb3f8b6b7",
+      "sha256": "46ba69bc4777641629d6ccb9a33741431a3fdeae6773298a75c126d0196bc83a",
       "source": "docs/work/providers/webdav.md"
     },
     "README.md": {
