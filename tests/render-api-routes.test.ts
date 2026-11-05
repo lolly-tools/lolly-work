@@ -547,3 +547,26 @@ test('idempotency returns the original record, and a public request cannot set t
   const smuggled = await h.call('/api/v1/renders', 'POST', { toolId: 'card', format: 'svg', inputs: {}, compat: { source: 'placid', requestId: first.uid } });
   assert.equal(smuggled.status, 400, 'compat is only set by this module');
 });
+
+test('scoped tokens: render reaches the migration API, and the URL route needs render on the token it acts as', async (t) => {
+  const h = await harness({ actAs: 'reader' }); t.after(() => h.close());
+  const now = new Date().toISOString();
+  const renderer = mintServiceSecret();
+  await h.store.putApiToken({ id: 'renderer', label: 'Renderer', role: 'automation', scopes: ['render'], tokenHash: renderer.tokenHash, createdBy: 'system', createdAt: now });
+  const reader = mintServiceSecret();
+  await h.store.putApiToken({ id: 'reader', label: 'Reader', role: 'automation', scopes: ['catalog.read'], tokenHash: reader.tokenHash, createdBy: 'system', createdAt: now });
+  const bearer = (secret: string) => ({ authorization: `Bearer ${secret}` });
+  const request = { template_uuid: 'plc', layers: { title: { text: 'Scoped' } } };
+
+  const accepted = await h.call('/compat/placid/api/rest/images', 'POST', request, bearer(renderer.secret));
+  assert.equal(accepted.status, 200, await accepted.clone().text());
+
+  const refused = await h.call('/compat/placid/api/rest/images', 'POST', request, bearer(reader.secret));
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.json() as { error: { code: string } }).error.code, 'TOKEN_SCOPE');
+
+  const unsupported = await h.call('/compat/placid/api/rest/videos', 'POST', {}, bearer(renderer.secret));
+  assert.equal(unsupported.status, 501, 'a client learns why, not a scope refusal');
+
+  assert.equal((await fetch(`${h.base}/compat/placid/u/open?title[text]=x`)).status, 403, 'the acting token has no render scope');
+});

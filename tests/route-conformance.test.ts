@@ -148,6 +148,7 @@ const UNDECLARED = [
   'GET /api/v1/jobs/:id',
   'GET /api/v1/jobs/:id/result',
   'GET /api/v1/links',
+  'GET /api/v1/mcp',
   'GET /api/v1/me/identities',
   'GET /api/v1/messages',
   'GET /api/v1/org-config',
