@@ -45,6 +45,7 @@ import {
 } from './types.ts';
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
+import { createPostgresRenderApiStore } from '../render-api/store.ts';
 import { createPostgresUploadStore } from '../uploads/postgres.ts';
 import {
   COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, UNRECORDED_CALLBACK_ATTEMPT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
@@ -61,6 +62,8 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     id: r.id as string,
     label: r.label as string,
     role: r.role as string,
+    ...(r.scopes ? { scopes: r.scopes as string[] } : {}),
+    ...(r.tools ? { tools: r.tools as string[] } : {}),
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
     createdAt: new Date(r.created_at as string).toISOString(),
@@ -201,7 +204,10 @@ const AUTOMATION_JOB_SELECT = `select j.*, c.id as cb_id, c.state as cb_state, c
 function callbackFromRow(r: Record<string, unknown>): AutomationCallbackRecord {
   const iso = (v: unknown): string => new Date(v as string).toISOString();
   return {
-    id: r.id as string, jobId: r.job_id as string, principal: r.principal as string, url: r.url as string,
+    id: r.id as string, principal: r.principal as string, url: r.url as string,
+    ...(r.job_id ? { jobId: r.job_id as string } : {}),
+    ...(r.render_id ? { renderId: r.render_id as string } : {}),
+    ...(r.render_batch_id ? { renderBatchId: r.render_batch_id as string } : {}),
     state: r.state as AutomationCallbackRecord['state'], attempt: Number(r.attempt ?? 0), nextAttemptAt: iso(r.next_attempt_at),
     ...(r.lease_owner ? { leaseOwner: r.lease_owner as string } : {}), ...(r.lease_until ? { leaseUntil: iso(r.lease_until) } : {}),
     leaseToken: Number(r.lease_token ?? 0),
@@ -250,6 +256,7 @@ function deliveryFromRow(r: Record<string, unknown>): DeliveryRecord {
     ...(r.project_source ? { projectSource: r.project_source as DeliveryRecord['projectSource'] } : {}),
     ...(r.provider_progress ? { providerProgress: r.provider_progress as DeliveryRecord['providerProgress'] } : {}),
     ...(r.source_job_id ? { sourceJobId: r.source_job_id as string } : {}),
+    ...(r.source_render_id ? { sourceRenderId: r.source_render_id as string } : {}),
     state: r.state as DeliveryRecord['state'],
     attempt: Number(r.attempt ?? 0),
     ...(r.approval_id ? { approvalId: r.approval_id as string } : {}),
@@ -667,6 +674,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return { scope, kind, hash: row.hash as string, bytes: row.bytes as Buffer, until: Number(row.until_ms), toolIds: row.tool_ids as string[], assetIds: row.asset_ids as string[] };
     },
     ...createPostgresRenderStore(pool),
+    ...createPostgresRenderApiStore(pool),
     ...createPostgresUploadStore(pool),
     ...createPostgresOidcLogout(pool),
     ...createPostgresPasskeys(pool),
@@ -868,10 +876,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // Service tokens (plans/35 wave 2) - the SCIM block's shapes, one row kind over.
     async putApiToken(rec) {
       await pool.query(
-        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
-        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null],
+        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null, rec.scopes ?? null, rec.tools ?? null],
       );
     },
     async listApiTokens() {
@@ -1466,8 +1474,8 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
            id, principal, destination_id, destination_version, name, format,
            content_type, size, sha256, request_hash, source_ref, source_job_id, state, attempt,
            approval_id, idempotency_key, remote_id, url, delivered_sha256, transformation,
-           error, created_at, updated_at, delivered_at, project_source, provider_progress)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+           error, created_at, updated_at, delivered_at, project_source, provider_progress, source_render_id)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
          on conflict (id) do update set
            provider_progress=excluded.provider_progress,
            state=excluded.state, attempt=excluded.attempt, remote_id=excluded.remote_id,
@@ -1483,6 +1491,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
           delivery.createdAt, delivery.updatedAt, delivery.deliveredAt ?? null,
           delivery.projectSource ? JSON.stringify(delivery.projectSource) : null,
           delivery.providerProgress ? JSON.stringify(delivery.providerProgress) : null,
+          delivery.sourceRenderId ?? null,
         ],
       );
     },

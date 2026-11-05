@@ -54,6 +54,9 @@ const ROUTE_CLASSES: Record<string, DeliveryClass> = {
   'GET /connect/pack.lolly': 'instance-private',
   'HEAD /connect/pack.lolly': 'instance-private',
   'GET /render/:spec': 'instance-private',
+  'GET /compat/files/:id/:expires/:signature/:file': 'link',
+  'HEAD /compat/files/:id/:expires/:signature/:file': 'link',
+  'GET /compat/placid/u/:uuid': 'link',
   'GET /tools/*': 'instance-private',
   'HEAD /tools/*': 'instance-private',
 };
@@ -145,6 +148,7 @@ const UNDECLARED = [
   'GET /api/v1/jobs/:id',
   'GET /api/v1/jobs/:id/result',
   'GET /api/v1/links',
+  'GET /api/v1/mcp',
   'GET /api/v1/me/identities',
   'GET /api/v1/messages',
   'GET /api/v1/org-config',

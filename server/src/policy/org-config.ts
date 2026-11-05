@@ -10,7 +10,7 @@ import { renderCapabilities, type RenderCapabilities } from '../render/capabilit
 import { approvalArtifactPolicy } from '../approvals/export-review.ts';
 import { TRANSFER_PART_BYTES } from '../uploads/parts.ts';
 import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
-import { evaluate, grantDecision, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { projectInjectables, flagInjectableGovernance, injectablesForVersion } from '../injectables/registry.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
@@ -108,7 +108,7 @@ export interface OrgConfigPayload {
    *  large that file may be (approvals/export-review.ts). Absent, a shell sends the
    *  older request and says the file is not attached. */
   /** `match` says POST /api/v1/approvals/match answers, so a shell can show where its inputs stand. */
-  approvals?: { exportReview: { maxFileBytes: number; partBytes: number; match: true } };
+  approvals?: { exportReview: { maxFileBytes: number; partBytes: number; match: true; recordInCredentials?: boolean } };
   /** The invite limits (plans/74 `policy.invites`), so the shell offers only
    *  the roles and domains the server accepts and a truthful expiry. Whether
    *  this caller may invite new people at all is `can['user.invite']`.
@@ -318,6 +318,8 @@ export function assembleOrgConfig(opts: {
   /** Whether shared project files are on (projects/files.ts
    *  `projectFilesEnabled`). Absent means off. */
   projectFiles?: boolean;
+  /** This server can write an approval into an approved file's Content Credentials. */
+  approvalRecording?: boolean;
   inboxUnread: number;
 }): OrgConfigPayload {
   const { config, user, overlays, inboxUnread } = opts;
@@ -429,7 +431,7 @@ export function assembleOrgConfig(opts: {
     profilePolicy,
     tools,
     can,
-    ...(approvalArtifacts.enabled && can['export.request'] ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, match: true } } } : {}),
+    ...(approvalArtifacts.enabled && (can['export.request'] || mayActOnSomeApproval(principal, grants)) ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, match: true, ...(opts.approvalRecording ? { recordInCredentials: true } : {}) } } } : {}),
     sharing: {
       groups: sharingGroups, projectFiles: opts.projectFiles === true,
       instance: { enabled: sharingPolicy.instanceAudience, maxRole: sharingPolicy.instanceMaxRole },

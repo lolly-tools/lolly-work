@@ -67,6 +67,9 @@
   "0076_file_references.sql": "maintenance",
   "0076_session_version_history.sql": "maintenance",
   "0077_edge_purge_outbox.sql": "additive",
+  "0078_token_scopes.sql": "additive",
+  "0079_durable_render_parity.sql": "maintenance",
   "0080_approval_artifact_uploads.sql": "maintenance",
+  "0081_render_api_records.sql": "additive",
   "0082_approval_export_review_inputs.sql": "maintenance"
 }

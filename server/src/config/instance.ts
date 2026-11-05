@@ -26,6 +26,8 @@ import { validateOfrepConfig, type OfrepConfig } from '../policy/ofrep.ts';
 import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites.ts';
 import { PROJECT_FILE_DEFAULTS, PROJECT_FILE_MAX_BYTES, type ProjectFilePolicy } from '../projects/files.ts';
 import { UPLOAD_DEFAULTS, type UploadPolicy } from '../uploads/scoped.ts';
+import { checkRenderApiConfig } from '../render-api/mapping.ts';
+import type { RenderApiConfig } from '../render-api/types.ts';
 import { TRANSFER_MAX_BYTES } from '../uploads/parts.ts';
 import { APPROVAL_ARTIFACT_DEFAULTS, APPROVAL_ARTIFACT_MAX_FILE_BYTES, type ApprovalArtifactPolicy } from '../approvals/export-review.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
@@ -267,7 +269,9 @@ export interface InstanceConfig {
     /** Retention (plans/35 wave 3). 0 = keep forever, the default - an org
      *  states its policy, the product never assumes one. Audit trims keep the
      *  chain verifiable (the anchor) and never pass the SIEM cursor. */
-    retention: { telemetryDays: number; auditDays: number };
+    /** Days to keep each kind of record; 0 keeps everything. `renderOutputDays`
+     *  removes durable render output bytes and keeps their records. */
+    retention: { telemetryDays: number; auditDays: number; renderOutputDays: number };
     activity: ActivityPolicy;
     /** Invites from inside Lolly (plans/74): who may invite new people by
      *  email, which domains, how long an invitation stays open and which
@@ -413,6 +417,14 @@ export interface InstanceConfig {
   /** Instance-side catalog submit configuration. Only the scan hook lives here;
    *  everything an ORG tunes about submit lives under `policy.submit`. */
   submit: { scanHook?: SubmitScanHook };
+  /** Automation egress beyond the org's own notify webhook. `callbacks.allowedOrigins`
+   *  lists exact HTTPS origins a job, durable render or render batch may name as
+   *  its callback URL, beside the exact `notify.webhook.url`. Empty keeps callbacks
+   *  to that one endpoint. Signed with LW_WEBHOOK_SECRET, required at boot when set. */
+  automation: { callbacks: { allowedOrigins: string[] } };
+  /** The migration API for people moving off a hosted render API. Off by default.
+   *  Result URLs are signed with LW_RENDER_API_URL_SECRET, required when it is on. */
+  renderApi: RenderApiConfig;
   /** Notification egress (plans/35 wave 1). Absent = dormant, zero egress.
    *  Both channels are the org talking to itself - its relay, its endpoint -
    *  never phone-home. Secrets ride env (LW_SMTP_PASSWORD, LW_WEBHOOK_SECRET),
@@ -602,6 +614,8 @@ export interface Secrets {
    *  (an unsigned webhook is refused at boot: the receiver could never tell a
    *  forgery from the instance). */
   webhook?: string;
+  /** HMAC key for migration API result URLs. Required when they are signed. */
+  renderApiUrls?: string;
   /** HMAC key for SIEM batch signatures - required with siem.url, enforced
    *  where the forwarder is built. */
   siem?: string;
@@ -651,7 +665,7 @@ const DEFAULTS: InstanceConfig = {
     submit: { maxBytes: 64 * 1024 * 1024, quota: { bytes: 0, count: 0 } },
     catalog: { versionKeep: 0 },
     fleet: {},
-    retention: { telemetryDays: 0, auditDays: 0 },
+    retention: { telemetryDays: 0, auditDays: 0, renderOutputDays: 0 },
     activity: { mode: 'delegated', auditSessionUpdates: true },
     projectFiles: { ...PROJECT_FILE_DEFAULTS },
     uploads: { ...UPLOAD_DEFAULTS },
@@ -688,6 +702,8 @@ const DEFAULTS: InstanceConfig = {
   delivery: { maxBytes: 64 * 1024 * 1024, destinations: [] },
   edge: EDGE_DEFAULTS,
   blobs: { driver: 'pg' },
+  automation: { callbacks: { allowedOrigins: [] } },
+  renderApi: { enabled: false, templates: [], resultUrls: { signedDays: 30 }, urlApi: {} },
   notify: { people: { email: false } },
   siem: { batchSize: 200, intervalSeconds: 30 },
   featureFlags: {},
@@ -1011,7 +1027,7 @@ export function parseConfig(json: string): InstanceConfig {
   }
   if (!['off', 'owner-only', 'delegated'].includes(cfg.policy.activity.mode)) throw new Error('invalid policy.activity.mode');
   if (typeof cfg.policy.activity.auditSessionUpdates !== 'boolean') throw new Error('policy.activity.auditSessionUpdates must be true or false');
-  for (const k of ['telemetryDays', 'auditDays'] as const) {
+  for (const k of ['telemetryDays', 'auditDays', 'renderOutputDays'] as const) {
     const v = cfg.policy.retention[k];
     if (!Number.isInteger(v) || v < 0) throw new Error(`invalid policy.retention.${k}: ${v} (days, 0 = keep forever)`);
   }
@@ -1039,6 +1055,7 @@ export function parseConfig(json: string): InstanceConfig {
   const artifacts = cfg.policy.approvalArtifacts;
   if (!artifacts || typeof artifacts !== 'object' || Array.isArray(artifacts)) throw new Error('policy.approvalArtifacts must be an object');
   if (typeof artifacts.enabled !== 'boolean') throw new Error('policy.approvalArtifacts.enabled must be true or false');
+  if (typeof artifacts.recordInCredentials !== 'boolean') throw new Error('policy.approvalArtifacts.recordInCredentials must be true or false');
   for (const k of ['maxFileBytes', 'instanceBudgetBytes'] as const) {
     if (!Number.isSafeInteger(artifacts[k]) || artifacts[k] <= 0) throw new Error(`invalid policy.approvalArtifacts.${k}: ${artifacts[k]} (a whole number above 0)`);
   }
@@ -1165,6 +1182,14 @@ export function parseConfig(json: string): InstanceConfig {
     }
     people.fromName = name;
   }
+  const callbackOrigins = cfg.automation?.callbacks?.allowedOrigins;
+  if (!Array.isArray(callbackOrigins)) throw new Error('automation.callbacks.allowedOrigins must be an array of HTTPS origins');
+  for (const origin of callbackOrigins) {
+    let u: URL | null = null;
+    try { u = new URL(String(origin)); } catch { /* refused below */ }
+    if (!u || u.protocol !== 'https:' || u.origin !== origin) throw new Error(`invalid automation.callbacks.allowedOrigins entry: ${origin} (an exact https origin, such as https://hooks.example.com)`);
+  }
+  cfg.renderApi = checkRenderApiConfig(cfg.renderApi);
   if (cfg.notify.webhook) {
     let u: URL | null = null;
     try { u = new URL(cfg.notify.webhook.url); } catch { /* refused below */ }
@@ -1417,6 +1442,7 @@ export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxy
   // only when the matching notify block is configured, enforced at boot.
   if (env.LW_SMTP_PASSWORD) secrets.smtpPassword = env.LW_SMTP_PASSWORD;
   if (env.LW_WEBHOOK_SECRET) secrets.webhook = env.LW_WEBHOOK_SECRET;
+  if (env.LW_RENDER_API_URL_SECRET) secrets.renderApiUrls = env.LW_RENDER_API_URL_SECRET;
   if (env.LW_SIEM_SECRET) secrets.siem = env.LW_SIEM_SECRET;
   if (env.LW_RENDER_WORKER_SECRET) secrets.renderWorker = env.LW_RENDER_WORKER_SECRET;
   if (env.LW_C2PA_SIGNING_KEY) secrets.c2paSigningKey = env.LW_C2PA_SIGNING_KEY;

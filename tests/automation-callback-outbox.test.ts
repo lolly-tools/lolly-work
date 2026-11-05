@@ -142,6 +142,8 @@ for (const { name, skip, withStore } of drivers) {
         },
         settleAutomationCallback: (callback, result) => store.settleAutomationCallback(callback, result),
         getAutomationJob: (id, principal) => store.getAutomationJob(id, principal),
+        getRender: (id, principal) => store.getRender(id, principal),
+        getRenderBatch: (id, principal) => store.getRenderBatch(id, principal),
       };
       const outbox = outboxFor(flaky, fetchImpl, { retryDelaysMs: [1000] });
       try {

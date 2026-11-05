@@ -11,7 +11,7 @@ export interface AgentSessionCreation { agentId: string; requestId: string; dige
 export type ProjectRequestRunner = (user: UserRecord, method: 'GET' | 'POST' | 'PUT', path: string,
   body?: Record<string, unknown> | Buffer, creation?: AgentSessionCreation, agent?: ProjectAgentRecord) => Promise<Record<string, unknown>>;
 
-class ResponseCapture extends Writable {
+export class ResponseCapture extends Writable {
   statusCode = 200;
   headersSent = false;
   readonly chunks: Buffer[] = [];

@@ -28,7 +28,8 @@ export interface Dependencies {
   projectAccessOf(user: UserRecord, project: ProjectRecord): Promise<ProjectAccess>;
   audit(actor: string, action: string, subject: string, payload: Record<string, unknown>): Promise<unknown>;
 }
-const versions = new Set(['2025-03-26', '2025-06-18', '2025-11-25']);
+export const mcpProtocolVersions = new Set(['2025-03-26', '2025-06-18', '2025-11-25']);
+const versions = mcpProtocolVersions;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const safeRecord = (r: DocumentAgentRecord, rooms?: AgentRoomBridge) => ({ id: r.id, userId: r.userId, sessionId: r.sessionId, label: r.label, role: r.role,
   createdBy: r.createdBy, createdAt: r.createdAt, expiresAt: r.expiresAt, ...(r.revokedAt ? { revokedAt: r.revokedAt } : {}), connected: rooms?.connected(r.id) ?? false });
