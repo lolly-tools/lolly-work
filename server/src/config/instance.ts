@@ -28,6 +28,7 @@ import { PROJECT_FILE_DEFAULTS, PROJECT_FILE_MAX_BYTES, type ProjectFilePolicy }
 import { UPLOAD_DEFAULTS, type UploadPolicy } from '../uploads/scoped.ts';
 import { checkRenderApiConfig } from '../render-api/mapping.ts';
 import type { RenderApiConfig } from '../render-api/types.ts';
+import { BRAND_PAGES_DEFAULTS, checkBrandPagesConfig, type BrandPagesConfig } from '../brand-pages/types.ts';
 import { TRANSFER_MAX_BYTES } from '../uploads/parts.ts';
 import { APPROVAL_ARTIFACT_DEFAULTS, APPROVAL_ARTIFACT_MAX_FILE_BYTES, type ApprovalArtifactPolicy } from '../approvals/export-review.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
@@ -425,6 +426,8 @@ export interface InstanceConfig {
   /** The migration API for people moving off a hosted render API. Off by default.
    *  Result URLs are signed with LW_RENDER_API_URL_SECRET, required when it is on. */
   renderApi: RenderApiConfig;
+  /** Brand pages (brand-pages/routes.ts). Off by default. */
+  brandPages: BrandPagesConfig;
   /** Notification egress (plans/35 wave 1). Absent = dormant, zero egress.
    *  Both channels are the org talking to itself - its relay, its endpoint -
    *  never phone-home. Secrets ride env (LW_SMTP_PASSWORD, LW_WEBHOOK_SECRET),
@@ -480,6 +483,9 @@ export interface RateLimitConfig {
   /** Automation endpoints can be public on an open instance and are expensive
    * even when authenticated; keep a separate, operator-tunable bucket. */
   automation: RateLimitSurfaceConfig;
+  /** A published brand page's files. One page view asks for many, and every view
+   *  revalidates them, so it gets more room than a share link. */
+  brandPage: RateLimitSurfaceConfig;
 }
 
 /** One further IdP beside the primary (plans/36 §3). `id` is the slug the
@@ -680,6 +686,7 @@ const DEFAULTS: InstanceConfig = {
     telemetry: { capacity: 120, refillPerSec: 4 },
     link: { capacity: 30, refillPerSec: 1 },
     automation: { capacity: 120, refillPerSec: 2 },
+    brandPage: { capacity: 240, refillPerSec: 8 },
   },
   dev: { enabled: false, users: [] },
   proxyAuth: {
@@ -704,6 +711,7 @@ const DEFAULTS: InstanceConfig = {
   blobs: { driver: 'pg' },
   automation: { callbacks: { allowedOrigins: [] } },
   renderApi: { enabled: false, templates: [], resultUrls: { signedDays: 30 }, urlApi: {} },
+  brandPages: BRAND_PAGES_DEFAULTS,
   notify: { people: { email: false } },
   siem: { batchSize: 200, intervalSeconds: 30 },
   featureFlags: {},
@@ -1190,6 +1198,7 @@ export function parseConfig(json: string): InstanceConfig {
     if (!u || u.protocol !== 'https:' || u.origin !== origin) throw new Error(`invalid automation.callbacks.allowedOrigins entry: ${origin} (an exact https origin, such as https://hooks.example.com)`);
   }
   cfg.renderApi = checkRenderApiConfig(cfg.renderApi);
+  cfg.brandPages = checkBrandPagesConfig(cfg.brandPages, TRANSFER_MAX_BYTES);
   if (cfg.notify.webhook) {
     let u: URL | null = null;
     try { u = new URL(cfg.notify.webhook.url); } catch { /* refused below */ }
@@ -1232,7 +1241,7 @@ export function parseConfig(json: string): InstanceConfig {
   }
   const rl = cfg.rateLimit;
   if (!Number.isFinite(rl.trustedProxyHops) || rl.trustedProxyHops < 0) throw new Error('rateLimit.trustedProxyHops must be >= 0');
-  for (const s of ['auth', 'telemetry', 'link', 'automation'] as const) {
+  for (const s of ['auth', 'telemetry', 'link', 'automation', 'brandPage'] as const) {
     if (rl[s].capacity <= 0 || rl[s].refillPerSec < 0) throw new Error(`rateLimit.${s} needs capacity>0 and refillPerSec>=0`);
   }
   validateProxyAuth(cfg.proxyAuth);

@@ -45,6 +45,7 @@ import {
 } from './types.ts';
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
+import { createPostgresBrandPageStore } from '../brand-pages/store.ts';
 import { createPostgresRenderApiStore } from '../render-api/store.ts';
 import { createPostgresUploadStore } from '../uploads/postgres.ts';
 import {
@@ -675,6 +676,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     ...createPostgresRenderStore(pool),
     ...createPostgresRenderApiStore(pool),
+    ...createPostgresBrandPageStore(pool),
     ...createPostgresUploadStore(pool),
     ...createPostgresOidcLogout(pool),
     ...createPostgresPasskeys(pool),

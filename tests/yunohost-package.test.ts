@@ -231,7 +231,7 @@ test('manifest: whole domain, Node 24, Postgres, and the permission layout the s
   assert.match(manifest, /^\s*api\.allowed = "visitors"$/m);
   assert.match(manifest, /^\s*api\.auth_header = false$/m);
   assert.match(manifest, /^\s*api\.protected = true$/m);
-  assert.match(manifest, /^\s*api\.additional_urls = \["\/scim", "\/healthz", "\/readyz", "\/metrics", "\/l", "\/render", "\/connect", "\/ws"\]$/m);
+  assert.match(manifest, /^\s*api\.additional_urls = \["\/scim", "\/healthz", "\/readyz", "\/metrics", "\/l", "\/render", "\/connect", "\/ws", "\/brand", "\/\.well-known\/lolly-brand\.json"\]$/m);
   assert.doesNotMatch(manifest, /"re:/, 'permission prefixes follow the current manifest schema');
   // The four roles exist as permissions with no URL, named as the template's pattern expects.
   for (const role of ['owner', 'admin', 'approver', 'author']) {

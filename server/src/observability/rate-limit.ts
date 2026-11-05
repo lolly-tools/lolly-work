@@ -7,7 +7,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { RateLimitConfig } from '../config/instance.ts';
 
-export type Surface = 'auth' | 'telemetry' | 'link' | 'automation';
+export type Surface = 'auth' | 'telemetry' | 'link' | 'automation' | 'brandPage';
 export interface RateLimiter {
   take(surface: Surface, ip: string): { ok: boolean; retryAfterSec: number };
   size(): number;
@@ -64,6 +64,11 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
   // A result URL is read like a public link, the rest of the migration API like automation.
   if (pathname.startsWith('/compat/files/')) return 'link';
   if (pathname.startsWith('/compat/')) return 'automation';
+  // A brand page is public. Its MCP endpoint is read like automation, and its files
+  // like a public page. Only an address in the form of a page counts: the shell's
+  // own /brand page and the files beside it are not this feature.
+  if (/^\/brand\/[a-z0-9-]+\/mcp$/.test(pathname)) return 'automation';
+  if (/^\/brand\/[a-z0-9-]+(?:\/|$)/.test(pathname) || pathname === '/.well-known/lolly-brand.json' || pathname === '/api/v1/brand-pages/public') return 'brandPage';
   if (pathname.startsWith('/api/auth/passkeys/')) return 'auth';
   if (pathname === '/api/auth/login' || pathname === '/api/auth/callback') return 'auth';
   // Linking a sign-in (plans/74) starts the same IdP round trip and may cost

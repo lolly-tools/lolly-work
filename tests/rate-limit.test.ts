@@ -12,6 +12,7 @@ const cfg = (over: Partial<RateLimitConfig> = {}): RateLimitConfig => ({
   enabled: true, trustedProxyHops: 0, maxBuckets: 1000,
   auth: { capacity: 3, refillPerSec: 1 },
   telemetry: { capacity: 5, refillPerSec: 5 },
+  brandPage: { capacity: 5, refillPerSec: 5 },
   link: { capacity: 3, refillPerSec: 1 },
   automation: { capacity: 10, refillPerSec: 1 },
   ...over,
@@ -63,6 +64,14 @@ test('surface classifier: dev provider is NOT throttled; real auth + telemetry +
   assert.equal(rateLimitSurface('POST', '/api/v1/telemetry'), 'telemetry');
   assert.equal(rateLimitSurface('GET', '/api/v1/telemetry'), null); // only POST ingest
   assert.equal(rateLimitSurface('GET', '/l/abc'), 'link');
+  assert.equal(rateLimitSurface('GET', '/brand/acme/'), 'brandPage');
+  assert.equal(rateLimitSurface('GET', '/brand/acme'), 'brandPage');
+  assert.equal(rateLimitSurface('GET', '/brand/acme/logos/primary.svg'), 'brandPage');
+  assert.equal(rateLimitSurface('POST', '/brand/acme/mcp'), 'automation');
+  assert.equal(rateLimitSurface('GET', '/.well-known/lolly-brand.json'), 'brandPage');
+  assert.equal(rateLimitSurface('GET', '/api/v1/brand-pages/public'), 'brandPage');
+  assert.equal(rateLimitSurface('GET', '/brand'), null, 'the shell\'s own page is not this feature');
+  assert.equal(rateLimitSurface('GET', '/brand/mark.svg'), null);
   assert.equal(rateLimitSurface('GET', '/connect/pack.lolly'), 'link'); // public pack download rides the link bucket
   assert.equal(rateLimitSurface('POST', '/api/v1/render'), 'automation');
   assert.equal(rateLimitSurface('GET', '/api/v1/jobs/job-1'), 'automation');

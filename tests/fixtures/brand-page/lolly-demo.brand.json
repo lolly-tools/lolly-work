@@ -1,0 +1,465 @@
+{
+  "version": 1,
+  "id": "lolly-demo",
+  "name": "Lolly Demo",
+  "revision": "sha256:a93bcabeb89de785f8f4f97467c40b52d18ee2bcb291c3dbbde010a236b29f58",
+  "generator": {
+    "name": "lolly",
+    "engine": "1.304.0",
+    "designMd": "alpha"
+  },
+  "colourways": [
+    {
+      "id": "spearmint",
+      "name": "Spearmint",
+      "modes": [
+        "light",
+        "dark"
+      ]
+    },
+    {
+      "id": "morning",
+      "name": "Morning",
+      "modes": [
+        "light",
+        "dark"
+      ]
+    },
+    {
+      "id": "spring",
+      "name": "Spring",
+      "modes": [
+        "light",
+        "dark"
+      ]
+    },
+    {
+      "id": "beach",
+      "name": "Beach",
+      "modes": [
+        "light",
+        "dark"
+      ]
+    },
+    {
+      "id": "afternoon",
+      "name": "Afternoon",
+      "modes": [
+        "light",
+        "dark"
+      ]
+    },
+    {
+      "id": "midnight",
+      "name": "Midnight",
+      "modes": [
+        "light",
+        "dark"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "role": "agents",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "6fb79c039b87d4e4a1f2350829ebf045f434e17a4a5067083c16ddbaee9eabcd",
+      "size": 5124
+    },
+    {
+      "path": "DESIGN.md",
+      "role": "design-md",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "dd05e6882100c51ebda53f9a8c23510e67f5fa0d04a39b673e60f98f84a94e3b",
+      "size": 6190
+    },
+    {
+      "path": "assets/page.css",
+      "role": "page-style",
+      "mediaType": "application/octet-stream",
+      "sha256": "77dfd52995cfb7b2d0745900067ebe2c258503f65f1054e62798788ea561d51d",
+      "size": 25759
+    },
+    {
+      "path": "checks.json",
+      "role": "checks",
+      "mediaType": "application/json",
+      "sha256": "c88d9192d0e1276f68b16558df842d3ac640e1aebd9aaaed305759181ccdd67a",
+      "size": 25167
+    },
+    {
+      "path": "design/afternoon.dark.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "9ab1df2e10340806a738c046a255e27ba5b7987f99d9cb3f222e8245a862cd62",
+      "size": 6189
+    },
+    {
+      "path": "design/afternoon.light.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "5d02907e970fb02ed015694f326f32ff35c88a7aab6173c4db55cd5772621055",
+      "size": 6190
+    },
+    {
+      "path": "design/beach.dark.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "748818bf074e2834243b5d5ca9199ee97374bd3bb0370cc9ead545a4ebb3db33",
+      "size": 6185
+    },
+    {
+      "path": "design/beach.light.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "0cd19996fb94d341ac7797411e72f872b536bc5a3c15c97281d55ba3713c78a5",
+      "size": 6186
+    },
+    {
+      "path": "design/midnight.dark.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "dc4473193e540bba7fb307a61a2ef13d34b9ca43a3afe2d15b276c96121447ae",
+      "size": 6188
+    },
+    {
+      "path": "design/midnight.light.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "cafa5c7a1916094d26b2cef9430db8573cfe23237c00f782e9e42c407002d981",
+      "size": 6189
+    },
+    {
+      "path": "design/morning.dark.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "6f270a73da518240ad256dbb115b29d15eee2dda9da190c5c06703c72d519497",
+      "size": 6187
+    },
+    {
+      "path": "design/morning.light.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "b3d3d1bcf7c51365450e76c65c3d86e40011cb7523d32a9cff56351a25286468",
+      "size": 6188
+    },
+    {
+      "path": "design/spearmint.dark.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "6079d4678dc848f3be3153ca5e346548d927ee1d6decc6cf980d21ffc01a0e4a",
+      "size": 6189
+    },
+    {
+      "path": "design/spearmint.light.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "dd05e6882100c51ebda53f9a8c23510e67f5fa0d04a39b673e60f98f84a94e3b",
+      "size": 6190
+    },
+    {
+      "path": "design/spring.dark.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "4d896ce7210e291a6e1ad81a8f627da9f3ad9ff22a7fd974acee467c3a9c7d23",
+      "size": 6186
+    },
+    {
+      "path": "design/spring.light.DESIGN.md",
+      "role": "design-md-variant",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "09b475a3cd97344bb3917f381fc4dde97af8e83cb2b01acf9dbf1c3a81fd4339",
+      "size": 6187
+    },
+    {
+      "path": "examples/poster.svg",
+      "role": "example",
+      "mediaType": "image/svg+xml",
+      "sha256": "c5a56f709276368d5095322a72b5ea3810a51f8ae4bf76ddf4b890d71df0cb81",
+      "size": 30088
+    },
+    {
+      "path": "examples/slide-content.svg",
+      "role": "example",
+      "mediaType": "image/svg+xml",
+      "sha256": "5427b22206566162ebe995570eed2433573273d92cdf060d769bbecd55b2095a",
+      "size": 76135
+    },
+    {
+      "path": "examples/slide-title.svg",
+      "role": "example",
+      "mediaType": "image/svg+xml",
+      "sha256": "229cebd98eec966a3f4e664fc3042d972fcec111cc84e4d3b9c66798703f8d63",
+      "size": 29988
+    },
+    {
+      "path": "index.html",
+      "role": "page",
+      "mediaType": "application/octet-stream",
+      "sha256": "c68ec9a7202cc8af6c5bcb1332655e386d740d954c64debf087f9201cc584bf7",
+      "size": 85546
+    },
+    {
+      "path": "index.md",
+      "role": "page-markdown",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "f29b204cd3afd529239db4d27fdf9543ae23dc98b0116fb37ac00dfeb7373ace",
+      "size": 7205
+    },
+    {
+      "path": "llms.txt",
+      "role": "llms",
+      "mediaType": "text/plain; charset=utf-8",
+      "sha256": "9468e8b3243f8b5ca3aa8a7d39cf2a695aaa39b623cf19c20c898ffaba1f5803",
+      "size": 4144
+    },
+    {
+      "path": "logos/lolly/logo/horizontal-on-brand.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "71b1e06636787c5e85b19317d54dd9e1a4a2e6a3a76d65309d0926b9abfca8f8",
+      "size": 526
+    },
+    {
+      "path": "logos/lolly/logo/horizontal-reverse.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "e2ddc4333f197315425c1ca90ad1e16b1dd955fa230764e6e9358d3d60ca6fbe",
+      "size": 526
+    },
+    {
+      "path": "logos/lolly/logo/horizontal.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "bf0f76e23a1ce1fa1415693425d338089fc9863d0a8b65fa31e5921166dba6b7",
+      "size": 526
+    },
+    {
+      "path": "logos/lolly/logo/mono-reverse.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "379447b845c70d51226d01a7647f3d32f1b781ef8795f2eea1c13667eed401f8",
+      "size": 15240
+    },
+    {
+      "path": "logos/lolly/logo/mono.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "425752d8624c59562b44c8dcccbe1d4fff5c9e9004db62f98a60b2888acc6165",
+      "size": 17491
+    },
+    {
+      "path": "logos/lolly/logo/primary.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "9f3a029f9c6dcbc9a52efdce19f5b72310ec1ffb007928d07829b13faf2be28d",
+      "size": 19263
+    },
+    {
+      "path": "logos/lolly/logo/reverse.svg",
+      "role": "logo",
+      "mediaType": "image/svg+xml",
+      "sha256": "11c575d9398a21672141a5dc071bf09ca98dbbf1bd42187120d73ba8796c4931",
+      "size": 20085
+    },
+    {
+      "path": "skills/lolly-demo-baseline/SKILL.md",
+      "role": "skill",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "dcb2ba7d030f20ac0a6885c532242802f28f50b5b8f4ee0e57316ecf05278660",
+      "size": 8969
+    },
+    {
+      "path": "skills/lolly-demo-baseline/lolly.json",
+      "role": "skill",
+      "mediaType": "application/json",
+      "sha256": "8c4869057ed7d48606b818d41382d4cbae43a597d1d093556965f56cb23ce006",
+      "size": 6339
+    },
+    {
+      "path": "skills/lolly-demo-brand/SKILL.md",
+      "role": "skill",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "e3cb272317da5807fdc9115241bffb45e44d4de77eebf817c03330d827cfbd70",
+      "size": 2990
+    },
+    {
+      "path": "skills/lolly-demo-brand/lolly.json",
+      "role": "skill",
+      "mediaType": "application/json",
+      "sha256": "32b4a1f73d6f8241ff57105923f2fad8d3ab79b44753dbe5f3061cb087363a83",
+      "size": 4234
+    },
+    {
+      "path": "skills/lolly-demo-motion/SKILL.md",
+      "role": "skill",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "5626c816c2ec8ef7d541602f44c1156e2957644f034cc1ceca3602681a323188",
+      "size": 2027
+    },
+    {
+      "path": "skills/lolly-demo-motion/lolly.json",
+      "role": "skill",
+      "mediaType": "application/json",
+      "sha256": "2a420ede62cfc6001d2b1b0714e23ec8d1eedb0dc483a4d064680a26f096f0a0",
+      "size": 1564
+    },
+    {
+      "path": "skills/lolly-demo-motion/references/exemplars-lolly-loops.json",
+      "role": "skill",
+      "mediaType": "application/json",
+      "sha256": "325a404f200e04f9fa2690fb6acda4ed553af57335cc55cc53124eb03184e24b",
+      "size": 1233
+    },
+    {
+      "path": "skills/lolly-demo-motion/references/exemplars-lolly-songs.json",
+      "role": "skill",
+      "mediaType": "application/json",
+      "sha256": "50c10a10ce1593ca6a185386b9afe4dd5ac6923f255d1ff4165ea692d86eac84",
+      "size": 703
+    },
+    {
+      "path": "skills/lolly-demo-photography/SKILL.md",
+      "role": "skill",
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "1e68b3a82157aefb79c42b62721ae03cbb7d1b89abc878a20d69f4d0678e8b15",
+      "size": 2209
+    },
+    {
+      "path": "skills/lolly-demo-photography/lolly.json",
+      "role": "skill",
+      "mediaType": "application/json",
+      "sha256": "fd3312c65b4bf9dd2afa2f829bd06c6759a946ffb0b05d61734b5de031ea7ed7",
+      "size": 1204
+    },
+    {
+      "path": "skills/lolly-demo-photography/references/exemplars-lolly-luts.json",
+      "role": "skill",
+      "mediaType": "application/json",
+      "sha256": "9bb1d0047885050d2b04385469edc34456e61a9bfd7607b3fb3ad4322cd81d3a",
+      "size": 479
+    },
+    {
+      "path": "tokens/afternoon.dark.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "162cac7367665b3b7dcaaa0048424c5c6b00b6ce5ea8b21561119dfb8cf089cf",
+      "size": 9843
+    },
+    {
+      "path": "tokens/afternoon.light.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "d6176065f0cdd6b11bd7b1b55edfc1824b0bc844a7ab6e0552e7a7bd056bbd13",
+      "size": 9683
+    },
+    {
+      "path": "tokens/beach.dark.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "8d009949d7c41fe873d19a4a539abbb2d340d06db77d624992189405deded5f7",
+      "size": 9843
+    },
+    {
+      "path": "tokens/beach.light.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "3544d34a825c30824edf0883b55848bd09434741fa452aca42ba43885698243c",
+      "size": 9683
+    },
+    {
+      "path": "tokens/midnight.dark.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "8457bfe2a5a83539bfd01673f5659d320294dfeef067927e6c5a4c3c0ea5d8bb",
+      "size": 9843
+    },
+    {
+      "path": "tokens/midnight.light.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "8367ab4f52214dab427f501e7cdf25ca6f0f7b97a861ddc00961632751e7e89d",
+      "size": 9683
+    },
+    {
+      "path": "tokens/morning.dark.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "55a0680ca9c81855e915f4e9fdb3a243c086977ac587b7ebbc2d4ca64c75a9a9",
+      "size": 9843
+    },
+    {
+      "path": "tokens/morning.light.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "b9e4e11d7258585f5f178aa53d62caa0e59c591b900e399b1cd1b4cbc7f8bdbf",
+      "size": 9683
+    },
+    {
+      "path": "tokens/spearmint.dark.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "431dbce6d3e401b1cb4f4ad0be58b3e5fcb81996ce6eef8aca6419f2a1e67032",
+      "size": 9843
+    },
+    {
+      "path": "tokens/spearmint.light.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "b2e649bd2bc29be0ec471cf9d2713e4982a9446dadc5afb5c13cb1dacaffc7cf",
+      "size": 9683
+    },
+    {
+      "path": "tokens/spring.dark.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "f1f4bd4e19c4de78f17f4c3f472dd9a298ba0b819f16c2337424e5dd9897c2e6",
+      "size": 9843
+    },
+    {
+      "path": "tokens/spring.light.tokens.json",
+      "role": "tokens-resolved",
+      "mediaType": "application/json",
+      "sha256": "964e7d6ad7417489f1bbe7e36bc747a2ea9746f74e6a8f40cba24505f09b8ca3",
+      "size": 9683
+    },
+    {
+      "path": "tokens/tokens.json",
+      "role": "tokens",
+      "mediaType": "application/json",
+      "sha256": "7ada0de7a87fcdf241bf30a52bea795f5902d2f3c6ec2a714379031902bff12d",
+      "size": 56412
+    }
+  ],
+  "held": [
+    {
+      "item": "Font Outfit",
+      "reason": "no font file with a recorded licence that allows passing it on",
+      "kind": "unknown"
+    },
+    {
+      "item": "Font SUSE",
+      "reason": "no font file with a recorded licence that allows passing it on",
+      "kind": "unknown"
+    },
+    {
+      "item": "Font SUSE Mono",
+      "reason": "no font file with a recorded licence that allows passing it on",
+      "kind": "unknown"
+    },
+    {
+      "item": "Names on house rule reviews",
+      "reason": "a public file does not name who reviewed a rule",
+      "kind": "policy"
+    }
+  ],
+  "checks": {
+    "file": "checks.json",
+    "variants": 12,
+    "pairs": 60,
+    "pairsBelow3": 0,
+    "rules": 4,
+    "rulesWithFindings": 0
+  },
+  "digest": "7a4d3dcf73913175b609da9aab382f82001223291c2aab70ade29c9a33d778a8"
+}

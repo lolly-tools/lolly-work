@@ -1462,3 +1462,32 @@ html.account-inspector-open { overflow: hidden; }
 .agent-outcome--partial, .agent-coverage { color: color-mix(in oklab, var(--warning) 55%, var(--ink)); }
 .agent-outcome--succeeded { color: var(--good-text); }
 @media (max-width: 600px) { .agent-toolbar { align-items: flex-end; } .agent-toolbar > .sub { flex-basis: 100%; } .agent-heading > a { margin-bottom: var(--sp-2); } }
+
+/* Brand pages: the mark leads each card. */
+.bp-list { display: grid; gap: 14px; }
+.bp-card { display: grid; grid-template-columns: 148px minmax(0, 1fr); gap: 16px; padding: 14px; border: 1px solid var(--hairline); border-radius: var(--radius); }
+/* A page's primary logo is drawn for a light surface, so its ground stays light in both themes. */
+.bp-art { display: grid; place-items: center; align-self: start; height: 112px; padding: 12px; border: 1px solid var(--hairline); border-radius: calc(var(--radius) - 2px); background: #fff; }
+.bp-art.bp-art-empty { background: transparent; }
+.bp-art img { max-width: 100%; max-height: 84px; object-fit: contain; }
+.bp-body { display: grid; gap: 6px; min-width: 0; }
+.bp-body p { margin: 0; }
+.bp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bp-url { overflow-wrap: anywhere; }
+.bp-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; }
+.bp-actions, .bp-takedown { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bp-remove { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; font-weight: 400; letter-spacing: normal; text-transform: none; color: var(--muted); }
+.bp-details { margin-top: 4px; }
+.bp-details > summary { cursor: pointer; }
+.bp-history { display: grid; gap: 10px; margin-top: 8px; }
+.bp-revision { display: grid; gap: 2px; }
+.bp-revision-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bp-digest { overflow-wrap: anywhere; }
+.bp-command { margin: 6px 0 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--hairline); border-radius: calc(var(--radius) - 2px); white-space: pre; }
+.appr-brand-page { display: grid; gap: 4px; }
+.appr-brand-page p { margin: 0; }
+@media (max-width: 560px) {
+  .bp-card { grid-template-columns: minmax(0, 1fr); }
+  .bp-art { height: 96px; }
+  .bp-art img { max-height: 68px; }
+}

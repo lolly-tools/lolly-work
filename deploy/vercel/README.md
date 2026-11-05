@@ -218,7 +218,7 @@ With `LW_SHELL_ORIGIN` set, `scripts/build-vercel-fn.mjs` writes this table (gen
 | Order | Paths | Goes to |
 |---|---|---|
 | 1 | `/api/ca/*`, `/api/penpot/*`, `/api/mcp`, `/api/mcp/*`, `/api/fetch-image` | the shell origin, with the `Cookie` header removed. These are the OSS project's own functions, which the shell calls on its own origin; lolly-work registers nothing under them. `Authorization` is kept, because the Penpot proxy forwards it as the user's own Penpot token |
-| 2 | everything that is not a function path, including `/`, the bare `/tools` gallery, `/t/*`, `/info/*`, `/_app/*` and `sw.js` | the shell origin, proxied, with the `Cookie` and `Authorization` headers removed. Function paths are `/api`, `/catalog`, `/render`, `/l`, `/admin`, `/scim`, `/healthz`, `/readyz`, `/metrics`, `/activate`, `/connect` and everything under them, plus `/tools/<anything>` |
+| 2 | everything that is not a function path, including `/`, the bare `/tools` gallery, the bare `/brand` page and the files beside it, `/t/*`, `/info/*`, `/_app/*` and `sw.js` | the shell origin, proxied, with the `Cookie` and `Authorization` headers removed. Function paths are `/api`, `/catalog`, `/render`, `/l`, `/admin`, `/scim`, `/healthz`, `/readyz`, `/metrics`, `/activate`, `/connect` and everything under them, plus `/tools/<anything>` |
 | 3 | everything else, which is exactly the function paths | this function, with the caller's path restored into `req.url` |
 
 The function row is last on purpose. Vercel ends routing at a proxy to another origin, but
@@ -242,7 +242,8 @@ The shell's service worker must leave this function's pages alone. It stores any
 navigation whose last path segment has no dot as its offline app shell, and answers a 5xx
 navigation with that shell, unless the path is in its `BYPASS_PATTERNS`. Lolly's
 `shells/web/public/sw.js` bypasses `/api/`, `/catalog/` and, since 2026-10-02, `/activate`,
-`/admin`, `/connect`, `/healthz`, `/l`, `/metrics`, `/readyz`, `/render` and `/scim`. Use a
+`/admin`, `/connect`, `/healthz`, `/l`, `/metrics`, `/readyz`, `/render` and `/scim`, and `/brand`
+for its own standards page, which also covers a brand page here. Use a
 shell origin whose `sw.js` has that line; an older one stores the console or a share page as
 the app. `SHELL_SW_BYPASS_PREFIXES` in `scripts/vercel-routes.ts` is the list, and
 `tests/vercel-routes.test.ts` checks it against the router and, with a Lolly checkout beside

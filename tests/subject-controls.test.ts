@@ -32,6 +32,7 @@ async function seed(store: Store) {
   await store.putApproval({ id: 'apr_subject', subjectType: 'export-review', subjectRef: 'export-review:f', title: 'Reviewed card', chainId: 'c', state: 'approved', stepIndex: 1, nominees: [], actions: [], createdBy: subject.id, createdAt: now,
     chain: { id: 'c', name: 'C', steps: [{ name: 'Review', approvers: { groups: ['review'] }, rule: 'any' }], onReject: 'return-to-submitter' },
     exportReview: { apiVersion: 'work/export-review-v1', sha256: 'a'.repeat(64), size: 3, name: 'card.png', format: 'png', mediaType: 'image/png', preview: 'image', toolId: 't', toolVersion: '1', inputsDigest: null, fingerprint: 'f', origin: 'member-session', frozenAt: now, parts: [{ size: 3, checksum: 'hidden-content' }] } });
+  await store.stageBrandPageRevision({ slug: 'sample', name: 'Sample', digest: 'a'.repeat(64), manifest: { files: [] } as never, size: 1, fileCount: 1, publishedBy: subject.id, at: now });
   await store.upsertInstall('device', { shell: 'web', shellVersion: '1', engine: '1', platform: 'linux' }, subject.id);
   await store.putEvents([{ event: 'tool.open', at: now, userId: subject.id, attrs: { toolId: 'sample' } }]);
   await store.appendAudit({ at: now, actor: `user:${subject.id}`, action: 'session.create', subject: 'session:sample', payload: { private: 'hidden-payload' } });

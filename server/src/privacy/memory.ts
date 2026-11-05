@@ -5,12 +5,13 @@ import type { AuditEvent } from '../audit/chain.ts';
 import type { StoredEvent } from '../telemetry/ingest.ts';
 import { roleFromGroups, type RoleGroups } from '../rbac/evaluate.ts';
 import type { Approval } from '../approvals/engine.ts';
-import { approvalSubjectRow, subjectRow, type SubjectStore } from './subject.ts';
+import { approvalSubjectRow, brandPageSubjectRow, subjectRow, type SubjectStore } from './subject.ts';
 
 interface Data {
   users: Map<string, UserRecord>; identities: Map<string, UserIdentityRecord>; projectMembers: Map<string, ProjectMemberRecord>;
   apiTokens: Map<string, ApiTokenRecord>; links: Map<string, LinkRecord>; passwordLinks: Map<string, PasswordLinkRecord>;
   events: StoredEvent[]; installs: Map<string, InstallRow>; audit: AuditEvent[]; roles(): RoleGroups; approvals: Map<string, Approval>;
+  brandPageRevisionsBy(userId: string): import('../brand-pages/types.ts').BrandPageRevisionSummary[];
 }
 
 export function createMemorySubjects(data: Data): SubjectStore {
@@ -31,6 +32,7 @@ export function createMemorySubjects(data: Data): SubjectStore {
         : category === 'links' ? [...links.values()].filter(r => r.createdBy === userId).map(r => subjectRow(r.id, {
           id: r.id, kind: r.kind, expiresAt: new Date(r.exp * 1000).toISOString(), createdAt: r.createdAt, revokedAt: r.revokedAt ?? null }))
         : category === 'approvals' ? [...data.approvals.values()].filter(r => r.createdBy === userId).map(approvalSubjectRow)
+        : category === 'brandPages' ? data.brandPageRevisionsBy(userId).map(brandPageSubjectRow)
         : category === 'fleet' ? [...installs.values()].filter(r => r.userIdLastSeen === userId).map(r => subjectRow(r.installId, {
           installId: r.installId, firstSeenAt: r.firstSeenAt, lastSeenAt: r.lastSeenAt }))
         : category === 'telemetry' ? events.filter(r => r.userId === userId).map(r => subjectRow(String(telemetryIds.get(r)), { at: r.at, event: r.event, attrs: r.attrs }))

@@ -7,8 +7,8 @@
  * caller's own uploads, and every route on one upload is its owner's alone and
  * answers 404 to anyone else. Every route answers 404 while
  * `policy.uploads.enabled` is false, except for an `approval-artifact` upload,
- * which `policy.approvalArtifacts.enabled` governs instead. A finished upload in
- * scope `file` is a file reference, which its owner also reads back (file-routes.ts).
+ * which `policy.approvalArtifacts.enabled` governs instead, and a `brand-page`
+ * upload, which `brandPages.enabled` governs. A finished upload in scope `file` is a file reference, which its owner also reads back (file-routes.ts).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createRouter, readJson, readRaw, sendError, sendJson } from '../api/router.ts';
@@ -24,6 +24,7 @@ import {
 } from './scoped.ts';
 import { fileMetadata, fileWire, ownsFileReference, type FileMetadata } from './files.ts';
 import { approvalArtifactPolicy } from '../approvals/export-review.ts';
+import { BRAND_PAGE_ACTION, brandPagesConfig } from '../brand-pages/types.ts';
 
 interface Dependencies {
   config: InstanceConfig;
@@ -32,16 +33,20 @@ interface Dependencies {
   memberOf(req: IncomingMessage): Promise<UserRecord | null>;
   serviceAccountOf(req: IncomingMessage): Promise<UserRecord | null>;
   audit(actor: string, action: string, subject: string, payload: Record<string, unknown>): Promise<unknown>;
+  /** The request presents a service token limited to scopes. */
+  scopedToken(req: IncomingMessage): Promise<boolean>;
 }
 
 /** The action each scope's begin needs: the right to submit to the catalog,
  *  or to use tools, which the document verbs an automation input or a file
  *  reference feeds need. */
-const SCOPE_ACTION: Record<UploadScope, string> = { 'catalog-submission': 'catalog.submit', 'automation-input': 'tool.use', file: 'tool.use', 'approval-artifact': 'export.request' };
+const SCOPE_ACTION: Record<UploadScope, string> = { 'catalog-submission': 'catalog.submit', 'automation-input': 'tool.use', file: 'tool.use', 'approval-artifact': 'export.request', 'brand-page': BRAND_PAGE_ACTION };
 
 export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d: Dependencies): void {
-  const scopeOn = (scope: UploadScope): boolean => scope === 'approval-artifact' ? approvalArtifactPolicy(d.config).enabled : uploadPolicy(d.config).enabled;
-  const anyScopeOn = (): boolean => uploadPolicy(d.config).enabled || approvalArtifactPolicy(d.config).enabled;
+  const brandPages = () => brandPagesConfig(d.config);
+  const scopeOn = (scope: UploadScope): boolean => scope === 'approval-artifact' ? approvalArtifactPolicy(d.config).enabled
+    : scope === 'brand-page' ? brandPages().enabled : uploadPolicy(d.config).enabled;
+  const anyScopeOn = (): boolean => uploadPolicy(d.config).enabled || approvalArtifactPolicy(d.config).enabled || brandPages().enabled;
   /** A signed-in person or a service token; never a guest seat or an anonymous
    *  caller. `scoped` is for a route that checks the upload's own scope afterwards. */
   const caller = async (req: IncomingMessage, res: ServerResponse, scoped = false): Promise<UserRecord | null> => {
@@ -81,11 +86,13 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
     const policy = uploadPolicy(d.config);
     const body = await readJson(req, 512 * 1024) as Record<string, unknown> | null;
     const scope = body && typeof body === 'object' ? body.scope : undefined;
-    if (!policy.enabled && scope !== 'approval-artifact') return sendError(res, 404, 'NOT_FOUND', 'uploads are off');
-    if (!isUploadScope(scope)) return sendError(res, 400, 'INVALID_INPUT', 'scope is catalog-submission, automation-input, file or approval-artifact');
+    if (!policy.enabled && scope !== 'approval-artifact' && scope !== 'brand-page') return sendError(res, 404, 'NOT_FOUND', 'uploads are off');
+    if (!isUploadScope(scope)) return sendError(res, 400, 'INVALID_INPUT', 'scope is catalog-submission, automation-input, file, approval-artifact or brand-page');
     if (!scopeOn(scope)) return sendError(res, 404, 'NOT_FOUND', 'uploads are off');
     // A decision about a file is a person's act, so its file is a person's upload.
     if (scope === 'approval-artifact' && user.id.startsWith('svc_')) return sendError(res, 403, 'FORBIDDEN', 'an approval request comes from a person');
+    // Publishing has no token scope, so a limited token has no use for this upload.
+    if (scope === 'brand-page' && await d.scopedToken(req)) return sendError(res, 403, 'FORBIDDEN', 'a token limited to scopes cannot publish a brand page');
     const action = SCOPE_ACTION[scope];
     if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], await d.store.listGrants())) {
       return sendError(res, 403, 'FORBIDDEN', `${action} required`);
@@ -93,6 +100,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
     // A catalog original can be no larger than a submission may be.
     const artifactBytes = approvalArtifactPolicy(d.config).maxFileBytes;
     const maxBytes = scope === 'approval-artifact' ? artifactBytes
+      : scope === 'brand-page' ? brandPages().maxBundleBytes
       : scope === 'catalog-submission' ? Math.min(policy.maxFileBytes, d.config.policy.submit.maxBytes) : policy.maxFileBytes;
     if (typeof body?.size === 'number' && Number.isSafeInteger(body.size) && body.size > maxBytes) {
       return sendError(res, 413, 'UPLOAD_TOO_LARGE', `an upload in this scope can be at most ${maxBytes} bytes`, { maxBytes });
@@ -116,7 +124,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
       ...(file ? { role: file.role, ...(file.derivedFrom ? { derivedFrom: file.derivedFrom } : {}), ...(file.report ? { report: { by: 'owner' as const, report: file.report } } : {}) } : {}) };
     // A request's file is here only until the request is created, so it shares the
     // upload budgets, and they always have room for the largest file a request takes.
-    const fits = scope === 'approval-artifact' ? artifactBytes : 0;
+    const fits = scope === 'approval-artifact' ? artifactBytes : scope === 'brand-page' ? brandPages().maxBundleBytes : 0;
     const outcome = await d.store.reserveUpload(upload, {
       ownerBudgetBytes: Math.max(policy.ownerBudgetBytes, fits), instanceBudgetBytes: Math.max(policy.instanceBudgetBytes, fits), maxPending: UPLOAD_PENDING_LIMIT,
     });

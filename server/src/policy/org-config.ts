@@ -12,6 +12,7 @@ import { TRANSFER_PART_BYTES } from '../uploads/parts.ts';
 import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
 import { evaluate, grantDecision, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
+import { brandPagesConfig } from '../brand-pages/types.ts';
 import { projectInjectables, flagInjectableGovernance, injectablesForVersion } from '../injectables/registry.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
 import { passwordIdpOf, type InstanceConfig } from '../config/instance.ts';
@@ -41,6 +42,8 @@ const CLIENT_ACTIONS = [
   // The shell's "Save to a team project" offers "New project" only when this
   // is true; POST /api/v1/projects stays the boundary.
   'project.create',
+  // "Publish to this instance" for a brand page; POST /api/v1/brand-pages stays the boundary.
+  'brand.page.publish',
   // "New group" in the share dialog (lolly plan 299); off when the instance
   // turns user-made groups off. POST /api/v1/share-groups stays the boundary.
   'group.create',
@@ -109,6 +112,9 @@ export interface OrgConfigPayload {
    *  older request and says the file is not attached. */
   /** `match` says POST /api/v1/approvals/match answers, so a shell can show where its inputs stand. */
   approvals?: { exportReview: { maxFileBytes: number; partBytes: number; match: true; recordInCredentials?: boolean } };
+  /** Present when this instance serves brand pages and this caller may publish one.
+   *  `approval` says a chain must approve each revision before it goes live. */
+  brandPages?: { maxBundleBytes: number; maxFileBytes: number; partBytes: number; approval: boolean };
   /** The invite limits (plans/74 `policy.invites`), so the shell offers only
    *  the roles and domains the server accepts and a truthful expiry. Whether
    *  this caller may invite new people at all is `can['user.invite']`.
@@ -207,7 +213,7 @@ export function policyVersionOf(
    *  callers that hash policy only, so their versions are unchanged. */
   deployment?: {
     invites: unknown; guestLinks: boolean; sharing?: unknown; liveCollab?: false; projectFiles?: true; home?: 'tools' | 'projects'; homeUrl?: string;
-    passwordSignIn?: true; projectRequests?: false;
+    passwordSignIn?: true; projectRequests?: false; brandPages?: { maxBundleBytes: number; maxFileBytes: number; approval: boolean };
   },
 ): string {
   const doc = {
@@ -416,6 +422,9 @@ export function assembleOrgConfig(opts: {
   // User-made groups can be switched off for the whole instance.
   if (!sharingPolicy.customGroups) can['group.create'] = false;
   const approvalArtifacts = approvalArtifactPolicy(config);
+  const brandPages = brandPagesConfig(config);
+  // Bit and block read the same way: a shell offers publishing only when both hold.
+  can['brand.page.publish'] = brandPages.enabled && !!can['brand.page.publish'];
   return {
     ai: resolveAiPolicy(config.policy.ai, flagGovernance),
     instance: { name: config.instance.name },
@@ -432,6 +441,7 @@ export function assembleOrgConfig(opts: {
     tools,
     can,
     ...(approvalArtifacts.enabled && (can['export.request'] || mayActOnSomeApproval(principal, grants)) ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, match: true, ...(opts.approvalRecording ? { recordInCredentials: true } : {}) } } } : {}),
+    ...(can['brand.page.publish'] ? { brandPages: { maxBundleBytes: brandPages.maxBundleBytes, maxFileBytes: brandPages.maxFileBytes, partBytes: TRANSFER_PART_BYTES, approval: !!brandPages.approvalChain } } : {}),
     sharing: {
       groups: sharingGroups, projectFiles: opts.projectFiles === true,
       instance: { enabled: sharingPolicy.instanceAudience, maxRole: sharingPolicy.instanceMaxRole },
@@ -482,6 +492,8 @@ export function assembleOrgConfig(opts: {
         // `home` once, at boot, so an open tab keeps its first view until reloaded.
         ...(config.instance.homeView ? { home: config.instance.homeView } : {}),
         ...(config.instance.homeUrl ? { homeUrl: config.instance.homeUrl } : {}),
+        // Only present when on, so deployments without brand pages keep theirs.
+        ...(brandPages.enabled ? { brandPages: { maxBundleBytes: brandPages.maxBundleBytes, maxFileBytes: brandPages.maxFileBytes, approval: !!brandPages.approvalChain } } : {}),
         // `invites.passwordSetup` follows whether password sign-in is on (the
         // caller's role and grants are hashed above), and `requests.project`
         // follows `policy.requests.project`. Each is present only when it

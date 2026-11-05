@@ -129,9 +129,10 @@ ram.runtime = "512M"
     # MCP, SCIM from an identity provider, signed share and render links, the
     # instance card an open-source Lolly client reads, health and metrics. The
     # server authenticates every one of these itself (session cookie, service
-    # token or link signature), so SSOwat passes them through untouched.
+    # token or link signature), so SSOwat passes them through untouched. A brand page
+    # is public once an administrator turns the feature on and publishes one.
     api.url = "/api"
-    api.additional_urls = ["/scim", "/healthz", "/readyz", "/metrics", "/l", "/render", "/connect", "/ws"]
+    api.additional_urls = ["/scim", "/healthz", "/readyz", "/metrics", "/l", "/render", "/connect", "/ws", "/brand", "/.well-known/lolly-brand.json"]
     api.allowed = "visitors"
     api.show_tile = false
     api.auth_header = false

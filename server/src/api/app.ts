@@ -106,6 +106,8 @@ import { registerHistoryRoutes } from '../versions/history.ts';
 import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader } from '../render/read-ticket.ts';
 import { projectSubmissionInput, ProjectSubmissionError } from '../catalog/project-source.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
+import { createBrandPages } from '../brand-pages/routes.ts';
+import { brandPagesConfig } from '../brand-pages/types.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
 import {
   approvalArtifactPolicy, approvedArtifactBytes, artifactRefusal, artifactRelation, artifactReviewToken, checkArtifactReviewToken, describeExportReview, exportReviewWire,
@@ -3483,6 +3485,8 @@ export function buildApp(deps: AppDeps): App {
     }
   };
 
+  const brandPages = createBrandPages({ config, store, blobs, notifier, audit, memberOf, serviceAccountOf, requireAction });
+
   /** Settle the one delivery an approval names. The immutable record is the
    *  approval subject, so the decision cannot be replayed over different bytes
    *  or a changed destination. */
@@ -5657,7 +5661,8 @@ export function buildApp(deps: AppDeps): App {
     if (approval.sourceReview && !await sourceReviewAvailable(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no available source subject');
     if (approval.createdBy === user.id) return sendError(res, 403, 'SEPARATION_OF_DUTIES', 'A requester cannot act on their own approval.');
     if (!(await requireAction(req, res, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*']))) return;
-    const body = (await readJson(req)) as { action?: string; comment?: string; sourceFingerprint?: string; artifactFingerprint?: string; reviewToken?: string } | null;
+    const body = (await readJson(req)) as { action?: string; comment?: string; sourceFingerprint?: string; artifactFingerprint?: string; reviewToken?: string; brandPageDigest?: string } | null;
+    if (approval.brandPage && body?.brandPageDigest !== approval.brandPage.digest) return sendError(res, 409, 'BRAND_PAGE_SUBJECT_CHANGED', 'Reopen this request before you decide.');
     if (approval.exportReview) {
       if (body?.artifactFingerprint !== approval.exportReview.fingerprint) return sendError(res, 409, 'ARTIFACT_SUBJECT_CHANGED', 'Reopen this request before you decide.');
       if (body?.action === 'approve') {
@@ -5692,7 +5697,7 @@ export function buildApp(deps: AppDeps): App {
     // the submitter its own, more specific message, so the generic one below is
     // skipped rather than doubled up.
     const wasDomainSubject = isTerminal(next.state)
-      ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id))
+      ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id) || await brandPages.settleApproval(next, user.id))
       : false;
     if (isTerminal(next.state) && !wasDomainSubject) {
       await store.putMessage({
@@ -5737,6 +5742,7 @@ export function buildApp(deps: AppDeps): App {
     // leaving it `submitted` behind a closed approval would strand it.
     await settleAssetSubmission(next, user.id);
     await settleDeliveryApproval(next, user.id);
+    await brandPages.settleApproval(next, user.id);
     sendJson(res, 200, serializeApproval(next, user.id, undefined, await actorsMap()));
   });
 
@@ -9311,7 +9317,7 @@ export function buildApp(deps: AppDeps): App {
   });
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit, renderFileReader: createRenderFileReader({ secret: linkVerify, store, projectAccessOf }) });
-  registerUploadRoutes(router, { config, store, blobs, memberOf, serviceAccountOf, audit });
+  registerUploadRoutes(router, { config, store, blobs, memberOf, serviceAccountOf, audit, scopedToken: async (req) => { const token = await presentedServiceToken(req); return !!(token && token.record.scopes); } });
   registerFileRoutes(router, { config, store, blobs, memberOf, serviceAccountOf, delegated: (req) => !!agentRequests.principal(req), audit });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
   registerProjectTransferInventoryRoutes(router, { store, memberOf, requireAction, projectAccessOf, delegated: req => !!agentRequests.principal(req) });
@@ -10741,12 +10747,13 @@ export function buildApp(deps: AppDeps): App {
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
-    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
+    liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, brandPages: brandPagesConfig(config).enabled, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
     providerRefs: async (groups) => {
       await providersReady;
       return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
     },
   });
+  brandPages.register(router, { shell: serveShell });
   registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit });
 
   for (const verb of ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize'] as const) {
@@ -11830,6 +11837,7 @@ function serializeApproval(
     subjectType: a.subjectType,
     ...(a.sourceReview ? { sourceReview: a.sourceReview } : {}),
     ...(a.exportReview ? { exportReview: exportReviewWire(a) } : {}),
+    ...(a.brandPage ? { brandPage: { ...a.brandPage, preview: `/api/v1/brand-pages/${a.brandPage.slug}/revisions/${a.brandPage.revision}/preview/` } } : {}),
     subjectRef: a.subjectRef,
     title: a.title,
     chainId: a.chainId,
