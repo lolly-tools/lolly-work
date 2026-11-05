@@ -18,7 +18,7 @@ when a request also carries a person's session cookie.
 
 In the admin console:
 
-- Open **Projects** (`#/projects`) and select the project.
+- Open the **Projects** view (`#/projects`) and select the project.
 - Find **Prepare to move this project** in its detail view and choose **Preview transfer**. Nothing is requested until you do.
 - Choose **Refresh preview** to replace the observation. A failed refresh clears the earlier result.
 - Choose **Download inventory JSON** to save a successful preview's private metadata. It does not copy documents or files, change access or move the project.

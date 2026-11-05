@@ -1,95 +1,95 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "1ec19b6fbf8c948c445405340a3f35b2df28afbd",
-  "manifestSha256": "18654d37a905c339b79e23d85c26c6db01542b97c0b64a445bff151c4ecfedcb",
+  "commit": "2dc143b58b5fdebec0e365f7236a30050f018309",
+  "manifestSha256": "36aa65e6092c83ed18b2fd4dd993aad233419d3206a3b381aa89314f193ac1b9",
   "files": {
     "account-lifecycle.md": {
-      "sha256": "37f7cf8213f0fb6805c7fd5e0a3e263a4afa24a68abd547e4904f640cc2cc4d0",
+      "sha256": "77bf58882a9187762a8e564d7e4c8fb3dd1ccba270f54a42c34bfd7871222216",
       "source": "docs/work/account-lifecycle.md"
     },
     "admission-policy.md": {
-      "sha256": "6153876139e8f6ebc6cec02a332ba20397f48e7d96180f2ed9fa52b3eeb4084d",
+      "sha256": "c6b4cf095b0070f91c491bfdb101266bbf1aed87840c99304a1a2a347ae440e9",
       "source": "docs/work/admission-policy.md"
     },
     "ai-policy.md": {
-      "sha256": "d642c54cd5cc8801d163ab551c6cff7b47a45c0879a009088f9c79decf9f39b3",
+      "sha256": "c52dc91c4899d01b6bb23c7a9bc5de2c5b6e6107d23eaa1c4db60da5102b5b79",
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
-      "sha256": "4167c8ae39c87ae69901feb8687743416aa2242f5619707a422cc071aaa0e2e1",
+      "sha256": "e778431366f4341a387ceb5c06e27442aa6a12b99a6778d10e5510f66bcb7853",
       "source": "docs/work/api.md"
     },
     "approvals.md": {
-      "sha256": "f50e7e919061a7b8de1780af9fae9fd3ea4cc7cc1604e39895557b17cc2b4005",
+      "sha256": "aa8c356f2c10f99e0096962984b4fc6c7b1823867f379eceff98d63c7446f2f7",
       "source": "docs/work/approvals.md"
     },
     "audit.md": {
-      "sha256": "6602756e7e663c3285c7d49513336f583c1e6a600d46805918d09820f5bb74c7",
+      "sha256": "32c28c053abd9bd43c1843c16cf77216e77d5572b21d157138884c500e291887",
       "source": "docs/work/audit.md"
     },
     "automation-api.md": {
-      "sha256": "f921742cf0bbee4e3074de7078964090cb22efa4994124559a64e0c004b7417c",
+      "sha256": "b915090180fcd81629c3e8ad591bedacf345c9ff220696a5d93bdaef4116e0f5",
       "source": "docs/work/automation-api.md"
     },
     "aws-compatible.md": {
-      "sha256": "f6e8f8323b5339fa00cd550648f407250105c2ac73023d5537b70435b6222fb1",
+      "sha256": "3758849ea5168b04661c6e91d5ae2fe0d4153008f91604b8a6a8b95fb928886a",
       "source": "docs/work/aws-compatible.md"
     },
     "c2pa.md": {
-      "sha256": "b53b230e14e745ae3e3c307050b81578f42bc732cbe3453f429b34d0d88a365d",
+      "sha256": "d0a6e80cadcc4d445cd9d2d53a4d93b54b43715c29fe518e8c29a50e45a0e08d",
       "source": "docs/work/c2pa.md"
     },
     "catalog.md": {
-      "sha256": "a041adc1525fece4f9c5e89a0f0571e5c53b7d06fba3dec3c10090ab97b855d7",
+      "sha256": "e98f889cf6aa65fa96f43948824641617b9177d481111b610edadb7a7e05a236",
       "source": "docs/work/catalog.md"
     },
     "cli.md": {
-      "sha256": "df5aaabe789a5e8b3d07e9c2ac12b1217d81a6663fcf0f139239a893e120d47f",
+      "sha256": "06ad5b85743252c7058ba0a1d82ce2d5cfd53dad37af8f3a76d8311d72c5bb42",
       "source": "docs/work/cli.md"
     },
     "cloud-deployment.md": {
-      "sha256": "88439abe39bf187f0fe85cdee21a7b782cfa8b35d1cb1c1a5e965ece99a9cfb0",
+      "sha256": "78ac449ce46625a6dc360514c688ec66d4b96fefde3b15a99704913dfde7391b",
       "source": "docs/work/cloud-deployment.md"
     },
     "configuration.md": {
-      "sha256": "a25bb85331e60f05c1a31acbf6cf2b124357b2dbb6db1e9eb1b8e3c3428ecd0f",
+      "sha256": "360f438a821ee19b1843fd5ef6f07007ef36203303c9a760461e8bf4e2f447e0",
       "source": "docs/work/configuration.md"
     },
     "customer-setup.md": {
-      "sha256": "70db5b8a026468106f61affef670b3cfb3e4c751fcb04c6dda9218315c52f461",
+      "sha256": "92a9078fa9d12b1191b20c45b8c7e6a6c72ee4da1466badcf07b9135d3ac6317",
       "source": "docs/work/customer-setup.md"
     },
     "data-lifecycle.md": {
-      "sha256": "fff9b236aa690dec0ed32083ea2c988bc8685769bec2608c79b407bfeefede33",
+      "sha256": "4348a14e35e8e75ce2b4aeb65e035e1a0b0834b332db5827b7ddde5f4c2cd1c6",
       "source": "docs/work/data-lifecycle.md"
     },
     "delivery.md": {
-      "sha256": "2b6f80096a156ba5f697c53d92b383d39bb1511784fdd4c82e9fb362963fb98d",
+      "sha256": "2043b78c0026907333627f8e48b02d1bb61b77527ceabf515bd5263e8970364e",
       "source": "docs/work/delivery.md"
     },
     "deployment.md": {
-      "sha256": "3d2ce0ff47f1bd1ee327a34d713d9c8cb608330fffc12fd8f98ee91868d1c251",
+      "sha256": "f9aba06bb32a0e812ed94cdccdb54ca64eb717731844d796fa964b5e60c15fc4",
       "source": "docs/work/deployment.md"
     },
     "design-system-administration.md": {
-      "sha256": "081eda7a2b5271dd79cc5bcf24eaaa86128de3e9e6034cfee0039bc48627c25e",
+      "sha256": "38fb585907eda06d51f7351533b6715b879491118b87957372800c0aafcbf1d4",
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
-      "sha256": "8cb340f739a8920d79a70ca05aebf18f2b291aee984cc581df463493d70f4f0d",
+      "sha256": "7bc2b224f592dbbf9951921e5380bb82c9219b4d1cb18ba89166a362b62bb8d3",
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
-      "sha256": "1acb4e155059b4696d45070548354453abb738cbb02258166935ecb82e1002da",
+      "sha256": "193eeb78a028cbe44d5320d40c531be8d942421fb3731f67243c63e162a3e9a9",
       "source": "docs/work/document-agents.md"
     },
     "edge-cdn.md": {
-      "sha256": "9cb177a6996c1dc5dd2196932a786a6eaeceaa5f47b5cacacb3b075f5853f85d",
+      "sha256": "e08c741b31cfb2c69e81556e18e44f9d660fe92c4cc8b1a1063bd5a3ed6f190f",
       "source": "docs/work/edge-cdn.md"
     },
     "enterprise-identity.md": {
-      "sha256": "cc09cec6abfd987c6c619043fcd93f179ef0e8c99c4d64a7a472ce37d1eca99e",
+      "sha256": "c0bd6bdf0bfe56e22bc2c7880efc8636bbb6425ae03e916e523838c4c25c384d",
       "source": "docs/work/enterprise-identity.md"
     },
     "file-preview.md": {
@@ -97,15 +97,15 @@
       "source": "docs/work/file-preview.md"
     },
     "governance.md": {
-      "sha256": "55ae10ae412e84bac0cfb66e2d431a9fc75b0a14c2837b949a6ca2ed5f7d940c",
+      "sha256": "916240627bbd56a8177957b85d37f98b8ee47a61714826ed844ba5b2590a10b6",
       "source": "docs/work/governance.md"
     },
     "identity-providers.md": {
-      "sha256": "34800628aba948582ff2d612ef34ba0b55a71a33280c5f8d737a1e3573b9d843",
+      "sha256": "b68779f8ceafd96bec1ce044e3af80461deb6e1e07b10f299dc0aa42c959df8b",
       "source": "docs/work/identity-providers.md"
     },
     "identity.md": {
-      "sha256": "0d0ea8d57310a68a6660ce9431c2ce9f92a46a9ce5cf7535826bf825a6618ab9",
+      "sha256": "b4d5f07907951ec2949ba403639b3832491a82c0bb27a23efbd2b9951abf2520",
       "source": "docs/work/identity.md"
     },
     "img/helm-icon-color.svg": {
@@ -125,15 +125,15 @@
       "source": "docs/work/img/README.md"
     },
     "install.md": {
-      "sha256": "b200528334abddbc8c2bb26e498526f89207ae60e1d38c850ecbffd0e4b315a5",
+      "sha256": "cf1bdb4e0b508868420cf8770037aa0866580ce4422093697d6f18915591ba99",
       "source": "docs/work/install.md"
     },
     "instance-pack-production.md": {
-      "sha256": "6d09074d942547e6de648c9b2bda8061ce45be2f3ed42bd18a2e6981976169ac",
+      "sha256": "b6e94b65d168366cc504bd8bef37da37a73ce91a4083f412a577b1e7e42db80d",
       "source": "docs/work/instance-pack-production.md"
     },
     "invitations.md": {
-      "sha256": "187c656cad06bd42af7e45164690601e9cdc6f48581e6f89481958bec3dd4133",
+      "sha256": "9f48da0cc4478d49e92aaa8602d5e07d67c8e608256e377b25de11cab0045feb",
       "source": "docs/work/invitations.md"
     },
     "LICENSE": {
@@ -141,151 +141,151 @@
       "source": "docs/work/LICENSE"
     },
     "metrics.md": {
-      "sha256": "26221bb4defb7dd4729c7a4b59f4d4902a814c86bf5be869614a09b89833484f",
+      "sha256": "12997ebaa46199e0cbe058f7a5350bc54d0ce97cdae0d9ad765b8c24d782a37c",
       "source": "docs/work/metrics.md"
     },
     "offboarding.md": {
-      "sha256": "f4c04aac8d8c0c7cf8ae1ea8cdc3591f7058a943661dec8be40aa4eb924fb759",
+      "sha256": "76a6214e9e78ba2f0a32d295e1b59a9e7076798fd70ab4cff6d12fc7428619c5",
       "source": "docs/work/offboarding.md"
     },
     "official-installations.md": {
-      "sha256": "9b236bb1bd61ea5b47711a49a9bdab956e9c63df339c9aeaaadd0b858a21eafe",
+      "sha256": "2633d7e5df87284b5aee2a4bbc86675b4e5cddb6789bab5e38da9fd58d204a85",
       "source": "docs/work/official-installations.md"
     },
     "operations.md": {
-      "sha256": "524d34175d10eb55dd5c0c87a8ffc005e523fb87d6d4af1763c4c440f95a1b02",
+      "sha256": "d67f36751426ffb2f0ee178bd50e04c1c357c4fae4f3536a9c23fcd48deaec9e",
       "source": "docs/work/operations.md"
     },
     "overview.md": {
-      "sha256": "ed5fcb63b5a9a371ad7ad357eb4179fceefc39282d20c8e1d7504a9793e4af4a",
+      "sha256": "d4bec632e5eca48291793aef19ea660d43d78d84cef0c271fe28744f12344f9d",
       "source": "docs/work/overview.md"
     },
     "past-releases.md": {
-      "sha256": "aceab5808386d200ef630d47cfeb53c82f14c17d87f4cd759c809d5596f90a1e",
+      "sha256": "8ca1fe69ba7ffbba8ee045a6f277e0e6c4f1af1b1363b388b87f7839cc2e50e8",
       "source": "docs/work/past-releases.md"
     },
     "permissions.md": {
-      "sha256": "8e59edacd9e12d3ca9e877c16107caf87c4e03c9ce1de87aa2e11e343717e0f5",
+      "sha256": "26f9cae7efd87603f070090e0590ee5100a64cdf38682d19d7f57037555d3514",
       "source": "docs/work/permissions.md"
     },
     "platform-deployment.md": {
-      "sha256": "7e14e352fcaf631085e7e54adf6c3f1a204beb7c13ce0e75e47591bee653f42f",
+      "sha256": "7e17ecf30d6eefbaaad82e6698d9e51b74706619e18f1a9bf75bb93101835a63",
       "source": "docs/work/platform-deployment.md"
     },
     "production-readiness.md": {
-      "sha256": "21187d0fd1eae4bd93b6a00ca083e2e9980f4e28ed6ba1492b1642802b11c9a9",
+      "sha256": "a25c445643dc1ff29b9efe6b026fc59084b26860d834d064faa7c9baf909ddb1",
       "source": "docs/work/production-readiness.md"
     },
     "project-portability.md": {
-      "sha256": "45df464a868130227463d7649d5aa08da8ee6839880fcfcb3d016f79445c6270",
+      "sha256": "672f4408c946d4d9857f6ee217980cb833481330ceb6e318b2633d030d8e884e",
       "source": "docs/work/project-portability.md"
     },
     "providers/acquia-dam.md": {
-      "sha256": "744c59835d40a5bf15204a8c6294991a3977eb0c4acbb704ce91b56103e02c1c",
+      "sha256": "0f40cb2233905e3710a844f2c149dfe822b7570d0580af698e55338f65389072",
       "source": "docs/work/providers/acquia-dam.md"
     },
     "providers/brandfolder.md": {
-      "sha256": "42c8cac9cecb23b8f4e51d3d3f31c0acde3ff20d7a33f0c19fdf5a37d074449f",
+      "sha256": "1e85e8b9f03653ee14339812d641d13e8c4a0d81bdeba26a215edb3a745afb2e",
       "source": "docs/work/providers/brandfolder.md"
     },
     "providers/canto.md": {
-      "sha256": "7e98facd7903a0c8ac63e705f88283e5fec04dd0e67370f6c829c422a1d43670",
+      "sha256": "03f56d939b54e733331cbcdc9fc5d5cee34a184986a085bec4d2ea88cf0686b5",
       "source": "docs/work/providers/canto.md"
     },
     "providers/cloudinary.md": {
-      "sha256": "6b74df7eb517e84a3d063fea3a2fa4b5dd1d3193b94151c545eb2dfeba0706de",
+      "sha256": "d017ab88e7969ea8953d999ea4af32f1efec14b9e49a39ee3ac9b8886732a220",
       "source": "docs/work/providers/cloudinary.md"
     },
     "providers/dropbox.md": {
-      "sha256": "db9351e38ed1786f5f81c1584392ec2bd55d92c67fda8f16d8d1c6b0dca0be6f",
+      "sha256": "6f5a382272f47bec6dc87b27fc5fcb12f98d35dcbc4487f92c0c8404dc3c6f28",
       "source": "docs/work/providers/dropbox.md"
     },
     "providers/gdrive.md": {
-      "sha256": "ece3455a65f8559215f1cdebf1172cf5adda740360b2871a2015fe9fb09996da",
+      "sha256": "95875bf5e149b940d0ff189bdd4f5952304bf43bae48c98a1a4927c2430c6a13",
       "source": "docs/work/providers/gdrive.md"
     },
     "providers/git.md": {
-      "sha256": "52b6457fdddfcd3f1ceffc2ad294067c0562302c77dbb2e8155f7e989407dea5",
+      "sha256": "d50c969b2d626375e478f8230b0da876963be1cb9078e084286b93c4784f1a9a",
       "source": "docs/work/providers/git.md"
     },
     "providers/imagerelay.md": {
-      "sha256": "3e190dc01eb6dec6ed471622173b388fc6cbedfe8b6e6e8f0f87001af1b0adb0",
+      "sha256": "8faa60a78b8bd8f4c473293aad61f9ce3ccdb35ea86dfafe591f26b670ec322b",
       "source": "docs/work/providers/imagerelay.md"
     },
     "providers/intelligencebank.md": {
-      "sha256": "25e4c505e6c6f13eef3d579dc146f02c156a3528420681c1ab4922a4aff97143",
+      "sha256": "9a282f92575ada34459c6d7b269b80c9b61407ac79be20cab669ef437d1ff209",
       "source": "docs/work/providers/intelligencebank.md"
     },
     "providers/o365.md": {
-      "sha256": "14121e781128c29336a0ba3e18235b7e6842e13812a98726d47d5ec8ebf01bbe",
+      "sha256": "b41283b106a05bb184140a820084f72204638dbee8480adab618504889ca885b",
       "source": "docs/work/providers/o365.md"
     },
     "providers/optimizely-cmp.md": {
-      "sha256": "1d9d7d0ba5c871a690cba4d47f61e104a51ccd705d93f3792d5c218f28285e52",
+      "sha256": "979a5b0acd248ef3cf00983c0411d1d94b6f526734d3f2235f198e9688835a84",
       "source": "docs/work/providers/optimizely-cmp.md"
     },
     "providers/orange-logic.md": {
-      "sha256": "cd48076e80b9b984cc9c585751dff4d6e73c5128fa0c6ff639861437d2603837",
+      "sha256": "bd7b73a0aa1b92a9c249d3ad3c286c96f15c81431bc8faef6dfb98d727d24abe",
       "source": "docs/work/providers/orange-logic.md"
     },
     "providers/penpot.md": {
-      "sha256": "d58433457330697b0a63f0385d841e775861311b4563b87210c19768642c6735",
+      "sha256": "fc7f359aeb58f5f303a0ed16367c304bcd51ab9537239f013d3a4c215d8c7c79",
       "source": "docs/work/providers/penpot.md"
     },
     "providers/README.md": {
-      "sha256": "430ef58b00ed7827d149304e863c68a184daa41018db9c825bda4be7d2c58c3f",
+      "sha256": "ce48d52edd5a1b171c648f7be8e33715c6283cbc3e1dbc375af6b86b05879a7c",
       "source": "docs/work/providers/README.md"
     },
     "providers/s3.md": {
-      "sha256": "97a7a16dc32c1912f4fda119b0819fa99720ab50608af6e7db2e1d3d69010220",
+      "sha256": "ec6f1531c4590ed840b6baf1f01959beae540930c821371437fa739e79c3a9f4",
       "source": "docs/work/providers/s3.md"
     },
     "providers/tenant-check.md": {
-      "sha256": "b38b3891c44296b438f76a91dd3c1108815c7cec5175337305572aaf954318d5",
+      "sha256": "ca000f119deb7ea69f3001ef8e2b3a3aa44315da54221b747622d1360946cc7d",
       "source": "docs/work/providers/tenant-check.md"
     },
     "providers/webdav.md": {
-      "sha256": "46ba69bc4777641629d6ccb9a33741431a3fdeae6773298a75c126d0196bc83a",
+      "sha256": "7f58a40374d51efc6a1a8646e9fef3b743dda4c15144b5ba7d01970aff7d8295",
       "source": "docs/work/providers/webdav.md"
     },
     "README.md": {
-      "sha256": "4f37d814aacce581b04f735e62d534488bf6c6935c9477fddf1d4f4b8de2dabb",
+      "sha256": "9c7cacc7231956c5ad63731e5fb7ed6b7baf68f8bdce11f3717d6b42e62f72a4",
       "source": "scripts/export-work-docs.ts"
     },
     "ready-made-package.md": {
-      "sha256": "28ec4e7c8a947129b94211b5c1822be4d930df2ca17710b7310cc9a81aec0563",
+      "sha256": "7a856d69329ed4dae28f956fea137c3eab3a19b42ab146282d88d89df241d4fa",
       "source": "docs/work/ready-made-package.md"
     },
     "release-1-1-2.md": {
-      "sha256": "c8eeb569632fc146429e295d64b13f189036e381ebdc5200dad323e6392d2bc4",
+      "sha256": "9a6752ba557fb5cc695a9f9f5530bde45a1c9601d70cb6824f259eb49a4736d5",
       "source": "docs/work/release-1-1-2.md"
     },
     "release-1-1-3.md": {
-      "sha256": "94bd4b7575227f4690032939dbf8903607fc2306d37b6be75e96792245b6b7d8",
+      "sha256": "66407bdb62a2e415025e658285090d487506cb984d71e271596343fe8aefad26",
       "source": "docs/work/release-1-1-3.md"
     },
     "renders.md": {
-      "sha256": "4e55244dbbede592d0295d49120142ba7758158f2c968b4f130fd303adf276b2",
+      "sha256": "11187b1d27e014214154514f6532c112c2072a87b7902c74534d1cfe1acdffc3",
       "source": "docs/work/renders.md"
     },
     "resumable-uploads.md": {
-      "sha256": "c8a14bcdb9a582dd90ef312dc006279a138c8460f0c9cc088efcb5faa32e3d3d",
+      "sha256": "ba09e47dd1a526094200070c6220f4e652c793565529857c2ebf0926c7276c7a",
       "source": "docs/work/resumable-uploads.md"
     },
     "security-platform.md": {
-      "sha256": "1c024ffb735037cd9126c3cd6bb83f4378c0cd05e822393bc0cb3ae20168c789",
+      "sha256": "5fb3375d15e82abfcb65ef8878c60050146f095ce9e078d1f0420593924f4c62",
       "source": "docs/work/security-platform.md"
     },
     "self-host.md": {
-      "sha256": "9bb2e64ae448febf2675711e96cff24e6ba8ce0113b01886dbade9e5ec1ab3d3",
+      "sha256": "8b818ee7f542f58e61a467a54a9d20a0dadcce8c8b2e426524013ace44f015c7",
       "source": "docs/work/self-host.md"
     },
     "sharing.md": {
-      "sha256": "353c2b38620a90f7da30ec49c9ea9c17da58f8679f91ac565de857b5e7b4258a",
+      "sha256": "14d6b59940723e07bab7922f8e363b4d82f473468a0e3c7da9cdccd3e1cf7d5d",
       "source": "docs/work/sharing.md"
     },
     "shell-deployment-workflow.md": {
-      "sha256": "6d22da5f930040a880be9eccb93d683662ec1c15a3d13e158dbfe12ec6845e67",
+      "sha256": "7f77987fd2f88a8e183bfb2467697555e715ca88eac29d8b0ae91a4fc7a38d49",
       "source": "docs/work/shell-deployment-workflow.md"
     },
     "shots/activity-timeline.dark.svg": {
@@ -461,7 +461,7 @@
       "source": "docs/shots/work/provider-webdav-setup.svg"
     },
     "shots/README.md": {
-      "sha256": "5c8cdb66a50ad73d6ba074c670e78e18492192c9607592d9845a1fc3b25970b9",
+      "sha256": "a845f3eaecf13fad99cf159dac308e219ca057c89f70e28ef4cf2c0dd41e1945",
       "source": "docs/shots/work/README.md"
     },
     "shots/share-links.dark.svg": {
@@ -485,19 +485,19 @@
       "source": "docs/shots/work/tool-policy.svg"
     },
     "status.md": {
-      "sha256": "ab8c8a96ef7360c2d49618906f4912663cb5a7f2ff258ffa7e3936000d9eb8af",
+      "sha256": "3fa15f13edb7f42e1ee3b4f9edabd890b2c2caa4048dbaa5992d692dac10cc10",
       "source": "docs/work/status.md"
     },
     "team-projects.md": {
-      "sha256": "8c88449f7b9e2c9b77bd921d1a3ab3bf69dc417fac583fceb57b2b240ead76d3",
+      "sha256": "c6f27447ab8589dd665ab36fbdd9c5b82ccdfc9f7a79226488d659009715d7ee",
       "source": "docs/work/team-projects.md"
     },
     "telemetry.md": {
-      "sha256": "f20ed07ccf0d43346a1564ccd4510e07b753b97b9a5735c20360b0cf3a9a0861",
+      "sha256": "9015b51976e57e7fd3c868d72a94f70198d2e737e51116794b254eb9bd12ac2d",
       "source": "docs/work/telemetry.md"
     },
     "wasm-deployment.md": {
-      "sha256": "85f6808d0ec4d970ee439f56b9532d21119e2ebcf476c4c9cddbec1f96c90cc0",
+      "sha256": "1fb818ff162a671c05a9a76d1918c44db1ca1f5979c548c8b10926fca0e9507f",
       "source": "docs/work/wasm-deployment.md"
     }
   }

@@ -36,7 +36,7 @@
         {
           "slug": "automation-api",
           "path": "automation-api.md",
-          "title": "Automate with the Work API",
+          "title": "Automate with the Lolly Work API",
           "summary": "Render on-brand files from a script: a token, discovery, the effective schema, the document verbs, jobs, callbacks and batches."
         },
         {
@@ -116,7 +116,7 @@
           "slug": "offboarding",
           "path": "offboarding.md",
           "title": "Leave a DAM",
-          "summary": "Choose a DAM offboarding path: self-host Lolly Work, Nextcloud or Git, or export to a hosted drive. Compare transfer steps, originals, links and recovery."
+          "summary": "Choose a DAM offboarding path: self-host Lolly Work, Nextcloud or Git, or export to a hosted drive. Lolly Compare transfer steps, originals, links and recovery."
         },
         {
           "slug": "approvals",
@@ -176,7 +176,7 @@
           "slug": "provider-git",
           "path": "providers/git.md",
           "title": "Git raw manifest",
-          "summary": "Connect a catalog manifest and files from a Git repository, including a self-hosted forge. Review and commit a curated DAM export before connecting Work."
+          "summary": "Connect a catalog manifest and files from a Git repository, including a self-hosted forge. Review and commit a curated DAM export before connecting Lolly Work."
         },
         {
           "slug": "provider-brandfolder",
@@ -230,7 +230,7 @@
           "slug": "provider-penpot",
           "path": "providers/penpot.md",
           "title": "Penpot",
-          "summary": "Design tokens from a Penpot you host feed a Work design system; boards are imported one at a time."
+          "summary": "Design tokens from a Penpot you host feed a Lolly Work design system; boards are imported one at a time."
         },
         {
           "slug": "provider-dropbox",
@@ -279,19 +279,19 @@
           "slug": "release-1-1-3",
           "path": "release-1-1-3.md",
           "title": "Release 1.1.3",
-          "summary": "The current release: Work 1.1.3 paired with Lolly 1.1.3, what Lolly 1.1.3 needs from Work, changes since 1.1.2, migrations, the first published chart and YunoHost packaging."
+          "summary": "The current release: Lolly Work 1.1.3 paired with Lolly 1.1.3, what Lolly 1.1.3 needs from Lolly Work, changes since 1.1.2, migrations, the first published chart and YunoHost packaging."
         },
         {
           "slug": "release-1-1-2",
           "path": "release-1-1-2.md",
           "title": "Release 1.1.2",
-          "summary": "Work 1.1.2 paired with Lolly 1.1.2, what Lolly 1.1.2 needs from Work, changes since 1.1.1, migrations, images and YunoHost packaging."
+          "summary": "Lolly Work 1.1.2 paired with Lolly 1.1.2, what Lolly 1.1.2 needs from Lolly Work, changes since 1.1.1, migrations, images and YunoHost packaging."
         },
         {
           "slug": "past-releases",
           "path": "past-releases.md",
           "title": "Past releases",
-          "summary": "Work 1.1.1 and 1.1.0 kept as a record: matched components, changes, migrations, image digests and YunoHost packaging."
+          "summary": "Lolly Work 1.1.1 and 1.1.0 kept as a record: matched components, changes, migrations, image digests and YunoHost packaging."
         },
         {
           "slug": "overview",
@@ -309,7 +309,7 @@
           "slug": "ready-made-package",
           "path": "ready-made-package.md",
           "title": "Install the ready-made package",
-          "summary": "One Docker Compose folder with Work, PostgreSQL, the matching web app and automatic HTTPS, for a fresh VM, UpCloud, Dokploy or Coolify, with backup, restore and update steps."
+          "summary": "One Docker Compose folder with Lolly Work, PostgreSQL, the matching web app and automatic HTTPS, for a fresh VM, UpCloud, Dokploy or Coolify, with backup, restore and update steps."
         },
         {
           "slug": "platform-deployment",
@@ -338,31 +338,31 @@
         {
           "slug": "customer-setup",
           "path": "customer-setup.md",
-          "title": "Configure your first Work instance",
+          "title": "Configure your first Lolly Work instance",
           "summary": "A six-step walk through Customer setup: deployment, owner identity, SCIM, assets and a checked sample, then applying the generated configuration."
         },
         {
           "slug": "deployment",
           "path": "deployment.md",
-          "title": "How a Work deployment fits together",
+          "title": "How a Lolly Work deployment fits together",
           "summary": "The parts every Lolly Work deployment runs, which ones you can leave out, the two ways to render, the Helm values to know and offline operation."
         },
         {
           "slug": "cloud-deployment",
           "path": "cloud-deployment.md",
-          "title": "Run Work on UpCloud or Evroc",
+          "title": "Run Lolly Work on UpCloud or Evroc",
           "summary": "What the OpenTofu and Terraform modules create, how the two providers differ, moving a PostgreSQL database safely, and capacity and recovery checks."
         },
         {
           "slug": "edge-cdn",
           "path": "edge-cdn.md",
-          "title": "Put a CDN in front of Work",
-          "summary": "Serve Work's public files through Bunny or Cloudflare: the per-hostname jurisdiction rule, configuration and credentials, the settings that must stay off, purges and the probe."
+          "title": "Put a CDN in front of Lolly Work",
+          "summary": "Serve Lolly Work's public files through Bunny or Cloudflare: the per-hostname jurisdiction rule, configuration and credentials, the settings that must stay off, purges and the probe."
         },
         {
           "slug": "aws-compatible",
           "path": "aws-compatible.md",
-          "title": "Run Work on AWS or MulgaDC Spinifex",
+          "title": "Run Lolly Work on AWS or MulgaDC Spinifex",
           "summary": "Run Lolly Work on AWS or on MulgaDC Spinifex: one VM, managed PostgreSQL and S3, EKS with the chart or the Lolly appliance, behind a load balancer if you like, with the issues two Spinifex test runs found."
         },
         {
@@ -375,18 +375,18 @@
           "slug": "admission-policy",
           "path": "admission-policy.md",
           "title": "Admission policy with Kubewarden",
-          "summary": "What Work pods need from an admission policy, a ready Kubewarden policy set pinned by digest, a preflight check and how the set was qualified."
+          "summary": "What Lolly Work pods need from an admission policy, a ready Kubewarden policy set pinned by digest, a preflight check and how the set was qualified."
         },
         {
           "slug": "configuration",
           "path": "configuration.md",
-          "title": "Work instance configuration",
+          "title": "Lolly Work instance configuration",
           "summary": "Every instance.json key and every LW_* environment variable, with defaults."
         },
         {
           "slug": "c2pa",
           "path": "c2pa.md",
-          "title": "Configure Work export signing",
+          "title": "Configure Lolly Work export signing",
           "summary": "Give a deployment a signing identity so server exports carry a verifiable Content Credential: a self-made root in one command, or your organisation's CA."
         },
         {
@@ -399,13 +399,13 @@
           "slug": "metrics",
           "path": "metrics.md",
           "title": "Metrics and alerts",
-          "summary": "Every metric Work exports on /metrics with its type and labels, the suggested Prometheus alerts and the Grafana dashboard the Helm chart can install."
+          "summary": "Every metric Lolly Work exports on /metrics with its type and labels, the suggested Prometheus alerts and the Grafana dashboard the Helm chart can install."
         },
         {
           "slug": "instance-pack-production",
           "path": "instance-pack-production.md",
           "title": "Build a verified instance pack",
-          "summary": "Derive raw Work packs from signed releases while preserving asset addresses, renditions and release custody."
+          "summary": "Derive raw Lolly Work packs from signed releases while preserving asset addresses, renditions and release custody."
         },
         {
           "slug": "production-readiness",
@@ -417,7 +417,7 @@
           "slug": "shell-deployment-workflow",
           "path": "shell-deployment-workflow.md",
           "title": "Shell deployment workflow",
-          "summary": "Publish a qualified Lolly web app build to a private Work instance without rebuilding its image: prepare the request, then run and resume the deployment."
+          "summary": "Publish a qualified Lolly web app build to a private Lolly Work instance without rebuilding its image: prepare the request, then run and resume the deployment."
         },
         {
           "slug": "telemetry",
@@ -447,7 +447,7 @@
         {
           "slug": "data-lifecycle",
           "path": "data-lifecycle.md",
-          "title": "Work storage and data lifecycle",
+          "title": "Lolly Work storage and data lifecycle",
           "summary": "Store inventory, account-erasure preview, atomic removal and rights-workflow limits."
         }
       ]
