@@ -235,7 +235,8 @@ Jobs belong to the member or service token that created them. Repeating a reques
 ### Callbacks
 
 A job can call you back when it settles. `callbackUrl` is used only when it exactly matches the
-instance's own webhook endpoint, `notify.webhook.url` ([configuration](configuration.md#notify)).
+instance's own webhook endpoint, `notify.webhook.url` ([configuration](configuration.md#notify)), or
+uses an origin listed in [`automation.callbacks.allowedOrigins`](configuration.md#automation).
 Each callback carries `x-lolly-timestamp` and an `x-lolly-signature` header signed with
 `LW_WEBHOOK_SECRET`, and its body is `{ jobId, state, resultUrl, resultToken, deliveryId }`.
 
@@ -329,9 +330,16 @@ requirements.
   cannot reconstruct. Failed required checks return no artifact and keep
   `PRODUCTION_VERIFICATION_FAILED` diagnostics on the render record. See
   [production still checks](renders.md#production-still-checks-and-permitted-repairs).
+- **Callbacks.** `callbackUrl` on a render or batch request sends one signed `POST` when it finishes,
+  through the same outbox as job callbacks, and a batch calls back once. The URL is refused at
+  submission unless this instance accepts that URL. See [be told when a render finishes](renders.md#be-told-when-a-render-finishes).
+- **Delivery.** `POST /api/v1/renders/:id/deliveries` sends a finished output to an organisation
+  destination by reference, under the same rules as a job output
+  ([delivering an automation output](delivery.md#delivering-an-automation-output)).
 - **Render batches.** `POST /api/v1/render-batches` creates a parent and up to 200 independent
-  child renders in one atomic step. Read its ordered rows and output receipts, download a JSON manifest,
-  cancel unfinished rows, or retry a terminal batch while keeping its successful children. The
+  child renders in one atomic step, from typed rows or from a governed data source with `bind`. Read
+  its ordered rows and output receipts, download a JSON manifest or the outputs as one ZIP, cancel
+  unfinished rows, or retry a terminal batch while keeping its successful children. The
   [batch API](renders.md#batches-with-durable-rows) is separate from the `/api/v1/batch` job and
   ZIP contract.
 
@@ -361,18 +369,21 @@ lw mcp config --base https://work.example.com
 | `submit_batch` | Up to 200 rows as one batch | `POST /api/v1/render-batches` | `render` |
 | `get_batch` | Counts and ordered rows | `GET /api/v1/render-batches/:id` | `render` |
 | `search_assets` | Search catalog assets by text | `GET /api/v1/catalog/search` | `catalog.read` |
+| `list_destinations` | The organisation destinations this token may send to | `GET /api/v1/destinations` | `delivery` |
+| `deliver_render` | Send a finished render to a destination | `POST /api/v1/renders/:id/deliveries` | `delivery` and `render` |
 
 - **Only a service token.** A person's session and an invitation key are refused with `401`. A person connects an agent through [a document or project invitation](document-agents.md), which is a different endpoint. A revoked or expired token stops at its next call.
 - **Tools the token can reach.** `tools/list` leaves out a tool its scopes do not open or its role cannot do. A tool called by name gets the route's own refusal, such as `TOKEN_SCOPE` or `FORBIDDEN`. A token with no scopes gets the tools its role allows. A role that may render only through a grant on one tool does not see the render tools listed, and its calls still work.
 - **Policy.** `describe_tool` leaves out hidden inputs and shows locked ones as `readOnly` with their value. A durable render checks policy at each attempt, so a locked input sent to `render_tool` records a failed attempt with `INPUT_LOCKED`. Call `validate` first to see a problem at once.
 - **Errors.** A refused call returns `isError: true` with `{ code, message, status }` and the route's own details, using the same codes as HTTP.
+- **Sending a file.** `deliver_render` sends this token's own finished render, unchanged, and needs a Content Credential on the file, as [delivery](delivery.md) does for any send. A destination with an approval chain refuses a token with `HUMAN_APPROVAL_REQUIRED` and sends nothing, because a token can neither ask for approval nor give one. A member sends those files.
 - **Files.** A file up to 1 MiB comes back in the result, as an image or a resource. A larger one comes back as a link that needs the same token.
 - **Data, not instructions.** Tool descriptions on this endpoint are fixed text. Anything a tool author or policy editor wrote, and the contents of any file, arrive only inside a result. The endpoint tells clients to read results as data.
 - **Records and limits.** The audit log records `mcp.connect` and each `mcp.tool-call` with the token's label, the tool, the outcome and the refusal code, never the input values. Each message counts once against `rateLimit.automation`.
 - **No session.** The endpoint keeps no state between calls, so any replica can answer. `GET` answers `405`.
 - **Hosts without a long-lived server.** A function-only host leaves out the render tools, and discovery reports `agents.organisationMcp.renderTools: false`.
 
-Delivery, approvals, retries and the other document verbs stay on the HTTP routes.
+Approvals, retries, delivery of a `/jobs` result and the other document verbs stay on the HTTP routes.
 
 ## Limits and errors
 
@@ -390,6 +401,8 @@ links.
 | Code | Status | Meaning |
 |---|---|---|
 | `INVALID_INPUT` | 400 | a required field is missing or malformed |
+| `TOOL_NOT_FOUND` | 404 | no tool has this id on this instance |
+| `TOOL_UNAVAILABLE` | 500 | the tool exists, but this server could not read its files |
 | `DOCUMENT_API_ERROR` | 400 | the compile, inspect, diff, measure, optimize or package operation could not be performed |
 | `DATA_BINDING_ERROR` | 400 | a live JSON or CSV provider binding could not resolve, parse, query or validate |
 | `UNSUPPORTED_FORMAT` | 400 | a format this deployment cannot produce (org-config's `render.formats` lists what it can) |
@@ -401,6 +414,8 @@ links.
 | `BRAND_RULE_VIOLATION` | 422 | a render input breaks a reviewed design-system rule for that format |
 | `ROW_VALIDATION_FAILED` | 422 | a batch row does not satisfy the selected tool contract |
 | `IDEMPOTENCY_KEY_REUSED` | 409 | the caller reused an idempotency key for different request bytes |
+| `CALLBACK_URL_NOT_ALLOWED` | 403 | a durable render or batch named a callback URL this instance does not send to |
+| `OUTPUT_EXPIRED` | 410 | [output retention](renders.md#hosting-and-recovery) removed this output; its record and receipt remain |
 | `HOOKED_TOOL_NEEDS_CHROMIUM` | 501 | the tool runs scripts and no worker is configured (org-config's `render.hookedTools` is `false`) |
 | `TOOL_REQUIRES_UNMET` | 501 | the manifest's `requires` lists a `host.*` API the in-process render host lacks (`text`, `compose`, `audio`, the device APIs); route the tool through the Chromium worker |
 | `RENDER_BUSY` | 503 | the render worker is at capacity; retry after `Retry-After` seconds |

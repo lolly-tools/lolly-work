@@ -144,6 +144,7 @@ lw renders output <renderId> --out artwork.svg
 lw renders evidence <renderId> --out evidence.json
 lw renders cancel <renderId>
 lw renders retry <renderId> --idempotency-key campaign-v1-retry
+lw renders deliver <renderId> --destination <id> --name "Launch poster" --idempotency-key poster-v1
 ```
 
 The [render resource guide](renders.md) explains the request JSON, persisted
@@ -151,7 +152,9 @@ status, restart recovery and retained output. Retrying creates a new resource
 linked to the original. Output and evidence downloads require an explicit file
 path. [Execution evidence](renders.md#execution-evidence) records observed source,
 context and asset digests with explicit coverage limits. For new outputs the
-evidence file also holds the [render identity](renders.md#render-identity).
+evidence file also holds the [render identity](renders.md#render-identity). Add
+`--callback-url <url>` to `submit` to [be told when it finishes](renders.md#be-told-when-a-render-finishes).
+`deliver` sends the finished output to an [organisation destination](delivery.md#delivering-an-automation-output).
 
 For multiple rows with individual recovery and output receipts:
 
@@ -159,27 +162,48 @@ For multiple rows with individual recovery and output receipts:
 lw render-batches submit batch.json --idempotency-key campaign-v1 --json
 lw render-batches show <batchId> --json
 lw render-batches manifest <batchId> --out manifest.json
+lw render-batches archive <batchId> --out outputs.zip
 lw render-batches cancel <batchId>
 lw render-batches retry <batchId> --idempotency-key campaign-v1-retry --json
 ```
 
 The [batch guide](renders.md#batches-with-durable-rows) defines shared inputs and
 row keys. Retry creates a new parent and replaces only unsuccessful rows;
-successful children keep their original output. Download each child through
-`lw renders output <childRenderId> --out <file>`.
+successful children keep their original output. `archive` downloads a finished
+batch as one ZIP with a manifest of every row, or download each child through
+`lw renders output <childRenderId> --out <file>`. A request file can name a data
+source with [`bind`](renders.md#fill-the-rows-from-a-data-source) in place of `rows`,
+and `submit` takes `--callback-url <url>` here too.
 
 ## Approval files
 
 ```bash
 lw approvals                                # your requests and inbox
 lw approvals artifact <id> --out card.png   # the file an export review carries
+lw approvals artifact <id> --out card.png --reviewed   # the bytes as reviewed
 ```
 
 `artifact` works for an eligible reviewer, for someone who acted on the request, and for the
 requester once the request is approved. It checks the whole file against its recorded digest before
-writing anything. These commands need a person's session from `lw login`. A service token cannot read
+writing anything, and says whether the approval is recorded in that file. These commands need a person's session from `lw login`. A service token cannot read
 approvals, because a decision about a file is a person's act. Decide in the console, where the file
 is on screen. See [review an exported file](approvals.md#review-an-exported-file).
+
+## Moving from a hosted render API
+
+`lw render-api` reads a Bannerbear or Placid account, keeps references, checks a mapping and measures a
+render against a reference. [Move from a hosted render API](move-from-render-api.md) has the stages.
+
+```bash
+lw render-api inventory --from placid --token-env PLACID_KEY --out ./move
+lw render-api sample --from placid --template <id> --token-env PLACID_KEY --values request.json --out ./refs --spend-credits
+lw render-api check --mapping mapping.json
+lw render-api compare --from placid --mapping mapping.json --template <id> --reference ./refs/<id>.png --values request.json
+```
+
+`inventory` and `sample` need no Work server. `sample` spends credits on your vendor account and refuses
+to run without `--spend-credits`. A vendor key is read from the variable `--token-env` names and is never
+printed. `check` and `compare` exit `2` when a template cannot run or a render differs.
 
 ## Organization delivery
 
@@ -231,7 +255,7 @@ the mint is the one moment you can copy the bearer. The IdP then drives `/scim/v
 ## Data lifecycle
 
 ```bash
-lw retention run            # apply the stated retention policy now (trims telemetry + audit, sweeps expired uploads, removes approval files past retention)
+lw retention run            # apply the stated retention policy now (trims telemetry + audit, purges old deleted documents, sweeps expired uploads, removes approval files past retention)
 lw users erase <id>         # erasure: delete the person's row + de-attribute their telemetry
 ```
 
