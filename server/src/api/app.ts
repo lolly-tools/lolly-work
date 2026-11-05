@@ -204,10 +204,11 @@ import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes } from '../automation/discovery.ts';
-import { mayRenderTool, mayUseTool, PolicyRefusal } from '../automation/effective-contract.ts';
+import { mayRenderTool, mayUseTool, PolicyRefusal, policyErrors } from '../automation/effective-contract.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
 import { registerRenderRoutes } from '../renders/routes.ts';
+import { prepareRenderApi, registerRenderApi } from '../render-api/routes.ts';
 import { renderOutputTokens } from '../renders/output-token.ts';
 import { callbackUrlAllowed } from '../automation/callback-policy.ts';
 import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
@@ -453,6 +454,7 @@ export function buildApp(deps: AppDeps): App {
     return jobWire(job, automationResultUrl(job, token), job.state === 'done' ? token : undefined);
   };
   const renderTokens = renderOutputTokens(secrets.link, linkKeys(secrets));
+  const renderApi = prepareRenderApi(config.renderApi, secrets, store, config.instance.baseUrl);
   const automationJobs = new AutomationQueue({
     store,
     blobs,
@@ -462,7 +464,7 @@ export function buildApp(deps: AppDeps): App {
     callbackAllowed: (url) => callbackUrlAllowed(config, url),
     resultUrl: automationResultUrl,
     resultToken: automationResultToken,
-    renderCallbacks: { baseUrl: config.instance.baseUrl, renderToken: renderTokens.mint },
+    renderCallbacks: { baseUrl: config.instance.baseUrl, renderToken: renderTokens.mint, renderBody: renderApi.callbackBody },
     ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
   });
   // The Chromium render worker is active only when both the URL and the shared
@@ -10406,7 +10408,7 @@ export function buildApp(deps: AppDeps): App {
       return result;
     }),
   });
-  registerRenderRoutes(router, {
+  const durable = registerRenderRoutes(router, {
     store, blobs,
     authenticate: async (req) => {
       const caller = await automationCaller(req);
@@ -10425,6 +10427,26 @@ export function buildApp(deps: AppDeps): App {
     outputTokenPrincipal: renderTokens.principal,
   });
   deps.onRenderRunner?.(durableRenders);
+  registerRenderApi(router, {
+    prepared: renderApi, config: config.renderApi, baseUrl: config.instance.baseUrl, store, blobs,
+    tokenPrincipal: async (req) => { const token = await presentedServiceToken(req); return token ? `service:${token.user.id}` : null; },
+    adminMay: async (req) => {
+      const member = await memberOf(req);
+      return !!member && evaluate({ userId: member.id, groups: member.groups, role: member.role as Role }, 'instance.config', ['*'], await store.listGrants());
+    },
+    submit: durable.submit,
+    authorize: async (principal, request) => { await currentRenderCaller(principal, request); },
+    validate: validateRenderRequest,
+    callbackAllowed: (url) => !!secrets.webhook && callbackUrlAllowed(config, url),
+    policyProblems: async (principal, toolId, inputs, format) => {
+      const caller = await currentRenderCaller(principal, { toolId } as RenderSpec);
+      const { overlays, groups } = await automationPolicy(caller, toolId, format);
+      return policyErrors(inputs, overlays.get(toolId), groups);
+    },
+    cancel: (id) => durableRenders.cancel(id),
+    audit: async (principal, action, subject, facts) => { await audit(principal, action, subject, facts); },
+    renderEpoch: async () => `${brand.current()?.revision ?? 0}:${await instanceCatalogVersion()}`,
+  });
 
   const requireAutomationTools = async (
     res: ServerResponse,

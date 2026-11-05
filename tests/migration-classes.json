@@ -67,5 +67,6 @@
   "0076_file_references.sql": "maintenance",
   "0076_session_version_history.sql": "maintenance",
   "0077_edge_purge_outbox.sql": "additive",
-  "0079_durable_render_parity.sql": "maintenance"
+  "0079_durable_render_parity.sql": "maintenance",
+  "0081_render_api_records.sql": "additive"
 }

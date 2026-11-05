@@ -40,7 +40,7 @@ export interface CallbackOutboxOptions {
   renderToken?: (id: string, principal: string) => string;
   /** The signed body for a finished render or batch. Replace this to speak another
    *  receiver contract through the same signing, delivery id and retry ladder. */
-  renderBody?: (subject: RenderCallbackSubject, context: RenderCallbackContext) => Record<string, unknown>;
+  renderBody?: (subject: RenderCallbackSubject, context: RenderCallbackContext) => Record<string, unknown> | Promise<Record<string, unknown>>;
   leaseMs?: number;
   timeoutMs?: number;
   retryDelaysMs?: readonly number[];

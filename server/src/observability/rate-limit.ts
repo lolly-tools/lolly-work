@@ -61,6 +61,9 @@ export function createRateLimiter(cfg: RateLimitConfig, now: () => number = Date
 export function rateLimitSurface(method: string, pathname: string): Surface | null {
   if (pathname === '/render' || pathname.startsWith('/render/')) return 'automation';
   if (pathname === '/api/workspace/mcp') return 'automation';
+  // A result URL is read like a public link, the rest of the migration API like automation.
+  if (pathname.startsWith('/compat/files/')) return 'link';
+  if (pathname.startsWith('/compat/')) return 'automation';
   if (pathname.startsWith('/api/auth/passkeys/')) return 'auth';
   if (pathname === '/api/auth/login' || pathname === '/api/auth/callback') return 'auth';
   // Linking a sign-in (plans/74) starts the same IdP round trip and may cost

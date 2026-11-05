@@ -38,7 +38,12 @@ export function principalFor(deps: RoutesDeps) {
   };
 }
 
-export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter>, 'add'>, deps: RoutesDeps): void {
+/** What other server modules may do with the durable path once it is registered. */
+export interface DurableRenders {
+  submit(principal: string, request: RenderSpec, key?: string, retryOf?: string): Promise<{ record: RenderRecord; reused: boolean }>;
+}
+
+export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter>, 'add'>, deps: RoutesDeps): DurableRenders {
   registerRenderBatchRoutes(router, deps);
   const { store } = deps;
   const principalOf = principalFor(deps);
@@ -172,4 +177,5 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     const { record, reused } = await submit(principal, old.request, key, old.id);
     sendJson(res, reused ? 200 : 202, renderWire(record), { location: `/api/v1/renders/${record.id}` });
   });
+  return { submit };
 }

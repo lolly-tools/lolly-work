@@ -26,6 +26,8 @@ import { validateOfrepConfig, type OfrepConfig } from '../policy/ofrep.ts';
 import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites.ts';
 import { PROJECT_FILE_DEFAULTS, PROJECT_FILE_MAX_BYTES, type ProjectFilePolicy } from '../projects/files.ts';
 import { UPLOAD_DEFAULTS, type UploadPolicy } from '../uploads/scoped.ts';
+import { checkRenderApiConfig } from '../render-api/mapping.ts';
+import type { RenderApiConfig } from '../render-api/types.ts';
 import { TRANSFER_MAX_BYTES } from '../uploads/parts.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../delivery/types.ts';
@@ -415,6 +417,9 @@ export interface InstanceConfig {
    *  its callback URL, beside the exact `notify.webhook.url`. Empty keeps callbacks
    *  to that one endpoint. Signed with LW_WEBHOOK_SECRET, required at boot when set. */
   automation: { callbacks: { allowedOrigins: string[] } };
+  /** The migration API for people moving off a hosted render API. Off by default.
+   *  Result URLs are signed with LW_RENDER_API_URL_SECRET, required when it is on. */
+  renderApi: RenderApiConfig;
   /** Notification egress (plans/35 wave 1). Absent = dormant, zero egress.
    *  Both channels are the org talking to itself - its relay, its endpoint -
    *  never phone-home. Secrets ride env (LW_SMTP_PASSWORD, LW_WEBHOOK_SECRET),
@@ -604,6 +609,8 @@ export interface Secrets {
    *  (an unsigned webhook is refused at boot: the receiver could never tell a
    *  forgery from the instance). */
   webhook?: string;
+  /** HMAC key for migration API result URLs. Required when they are signed. */
+  renderApiUrls?: string;
   /** HMAC key for SIEM batch signatures - required with siem.url, enforced
    *  where the forwarder is built. */
   siem?: string;
@@ -690,6 +697,7 @@ const DEFAULTS: InstanceConfig = {
   edge: EDGE_DEFAULTS,
   blobs: { driver: 'pg' },
   automation: { callbacks: { allowedOrigins: [] } },
+  renderApi: { enabled: false, templates: [], resultUrls: { signedDays: 30 }, urlApi: {} },
   notify: { people: { email: false } },
   siem: { batchSize: 200, intervalSeconds: 30 },
   featureFlags: {},
@@ -1163,6 +1171,7 @@ export function parseConfig(json: string): InstanceConfig {
     try { u = new URL(String(origin)); } catch { /* refused below */ }
     if (!u || u.protocol !== 'https:' || u.origin !== origin) throw new Error(`invalid automation.callbacks.allowedOrigins entry: ${origin} (an exact https origin, such as https://hooks.example.com)`);
   }
+  cfg.renderApi = checkRenderApiConfig(cfg.renderApi);
   if (cfg.notify.webhook) {
     let u: URL | null = null;
     try { u = new URL(cfg.notify.webhook.url); } catch { /* refused below */ }
@@ -1415,6 +1424,7 @@ export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxy
   // only when the matching notify block is configured, enforced at boot.
   if (env.LW_SMTP_PASSWORD) secrets.smtpPassword = env.LW_SMTP_PASSWORD;
   if (env.LW_WEBHOOK_SECRET) secrets.webhook = env.LW_WEBHOOK_SECRET;
+  if (env.LW_RENDER_API_URL_SECRET) secrets.renderApiUrls = env.LW_RENDER_API_URL_SECRET;
   if (env.LW_SIEM_SECRET) secrets.siem = env.LW_SIEM_SECRET;
   if (env.LW_RENDER_WORKER_SECRET) secrets.renderWorker = env.LW_RENDER_WORKER_SECRET;
   if (env.LW_C2PA_SIGNING_KEY) secrets.c2paSigningKey = env.LW_C2PA_SIGNING_KEY;

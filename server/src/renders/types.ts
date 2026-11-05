@@ -16,6 +16,10 @@ export interface RenderSpec {
    *  request hash, and left out of the render identity: where a result is
    *  announced says nothing about what was rendered. */
   callbackUrl?: string;
+  /** Set only by the migration API, never read from a request: the record this render
+   *  belongs to, so its webhook speaks that vendor's shape. Left out of the render
+   *  identity, which hashes named fields. */
+  compat?: { source: 'bannerbear-v5' | 'bannerbear-v2' | 'placid'; requestId: string };
 }
 
 export interface RenderResult {
