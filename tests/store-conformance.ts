@@ -5,6 +5,7 @@
  * drivers: the seam stays honest.
  */
 import assert from 'node:assert/strict';
+import { newRender, parseRenderSpec } from '../server/src/renders/request.ts';
 import { verifyChain } from '../server/src/audit/chain.ts';
 import { createApproval, type Chain } from '../server/src/approvals/engine.ts';
 import { freezeSourceReview } from '../server/src/catalog/source-review.ts';
@@ -1090,6 +1091,16 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(delivered?.remoteId, 'archive/del_1/poster.png');
   assert.equal(await store.deleteAutomationJob('job_delivery_source', 'user:a'), false,
     'a retained delivery keeps its immutable job output alive');
+  // A delivery can name a durable render instead of a job.
+  const deliveredRender = (await store.insertRender(newRender('user:a', parseRenderSpec({ toolId: 'card', format: 'png', inputs: {} })))).record;
+  await store.putDelivery({
+    id: 'del_render', principal: 'user:a', destinationId: 'archive', destinationVersion: 'v1',
+    name: 'poster', format: 'png', contentType: 'image/png', size: 12, sha256: 'a'.repeat(64),
+    requestHash: 'e'.repeat(64), sourceRef: 'renders/x', sourceRenderId: deliveredRender.id, state: 'queued', attempt: 0,
+    createdAt: deliveryAt, updatedAt: deliveryAt,
+  });
+  assert.equal((await store.getDelivery('del_render', 'user:a'))?.sourceRenderId, deliveredRender.id);
+  assert.equal((await store.getDelivery('del_render', 'user:a'))?.sourceJobId, undefined);
 
   // SIEM cursor + windowed audit reads (plans/35 wave 2)
   assert.equal(await store.getSiemCursor(), 0, 'no deliveries yet reads as zero');

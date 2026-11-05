@@ -1,6 +1,7 @@
 import type { ProductionRequest, ProductionReport } from '../render/production.ts';
 import type { RenderEvidence, RenderIdentity } from '../render/evidence.ts';
 import type { OutputInspection, OutputVerification } from '../render/output-inspection.ts';
+import type { AutomationCallbackSummary } from '../store/types.ts';
 
 /** Recoverable single-tool requests. Full dependency locking is plan 40's next slice. */
 export interface RenderSpec {
@@ -11,6 +12,10 @@ export interface RenderSpec {
   inputs: Record<string, unknown>;
   priority: number;
   maxAttempts: number;
+  /** Where to send the signed callback when this request finishes. Part of the
+   *  request hash, and left out of the render identity: where a result is
+   *  announced says nothing about what was rendered. */
+  callbackUrl?: string;
 }
 
 export interface RenderResult {
@@ -25,6 +30,10 @@ export interface RenderResult {
   evidence?: RenderEvidence;
   /** The request bound to what this attempt resolved, derived from the receipt above. */
   identity?: RenderIdentity;
+  /** When output retention stopped serving these bytes. The record and receipt stay. */
+  expiredAt?: string;
+  /** When output retention removed the bytes. */
+  purgedAt?: string;
 }
 
 export interface RenderFailure { code: string; message: string; inspection?: OutputInspection; production?: ProductionReport; productionAttempts?: ProductionReport[] }
@@ -57,6 +66,8 @@ export interface RenderStore {
   /** Parent and child states are read from one consistent snapshot. */
   getRenderBatch(id: string, principal: string): Promise<RenderBatchRecord | null>;
   listRenderBatches(principal: string, limit: number, offset: number): Promise<RenderBatchRecord[]>;
+  /** The batch an idempotency key already names, so a replay need not read its data source again. */
+  findRenderBatchByKey(principal: string, key: string): Promise<RenderBatchRecord | null>;
   /** Atomically cancel unfinished children, preserving every terminal child. */
   cancelRenderBatch(id: string, principal: string): Promise<RenderBatchRecord | null>;
   /** Atomic insert; a principal/key collision returns the original immutable request. */
@@ -75,12 +86,35 @@ export interface RenderStore {
    *  is the earliest `availableAt` among those a runner could claim now; a render
    *  waiting out a retry delay counts as queued but not as claimable. */
   renderQueue(): Promise<RenderQueueEntry[]>;
+  /** The callback outbox entry of a render or batch, once it has one. */
+  renderCallbackSummary(id: string): Promise<AutomationCallbackSummary | null>;
+  /** Mark succeeded outputs that finished before `cutoff` as expired, oldest first,
+   *  and return them. An output a delivery names is left alone. */
+  expireRenderOutputs(cutoff: string, expiredAt: string, limit: number): Promise<RenderOutputExpiry[]>;
+  /** Outputs marked before `markedBefore` whose bytes are still stored. A mark on an
+   *  output that a delivery has since named is cleared here, and its bytes stay. */
+  renderOutputsToPurge(markedBefore: string, limit: number): Promise<RenderOutputExpiry[]>;
+  /** Record that an expired output's bytes are gone. */
+  markRenderOutputPurged(id: string): Promise<void>;
 }
+
+export interface RenderOutputExpiry { id: string; ref: string; toolId: string; format: string }
 
 export interface RenderQueueEntry { toolId: string; queued: number; oldestClaimableAt: string | null }
 
+/** A governed JSON or CSV source for a batch's rows (automation/bindings.ts).
+ *  `keyField` names the column that holds each row's key and is not an input. */
+export interface RenderBatchBinding {
+  source: string;
+  query?: Record<string, unknown>;
+  as?: Record<string, unknown>;
+  keyField?: string;
+}
+
 export interface RenderBatchSpec extends RenderSpec {
   rows: { key: string; inputs: Record<string, unknown> }[];
+  /** Where the rows came from. They are read once, at submission, and kept in `rows`. */
+  bind?: RenderBatchBinding;
 }
 
 /** Immutable membership; status is derived from the durable child records. */

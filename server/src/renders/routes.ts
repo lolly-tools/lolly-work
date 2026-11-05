@@ -3,8 +3,8 @@ import type { IncomingMessage } from 'node:http';
 import { readBlobBody, type BlobStore } from '../blobs/types.ts';
 import { readJson, sendError, sendJson, type createRouter, type Handler } from '../api/router.ts';
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
-import { newRender, parseRenderSpec, renderWire } from './request.ts';
-import { RenderResourceError, type RenderRecord, type RenderSpec, type RenderStore } from './types.ts';
+import { assertCallbackAllowed, newRender, parseRenderSpec, renderWire } from './request.ts';
+import { RenderResourceError, type RenderBatchBinding, type RenderRecord, type RenderSpec, type RenderStore } from './types.ts';
 import { registerRenderBatchRoutes } from './batch-routes.ts';
 import { evidenceHash, renderIdentity } from '../render/evidence.ts';
 
@@ -18,15 +18,34 @@ export interface RoutesDeps {
   kick?: () => void;
   cancel?: (id: string) => void;
   audit(principal: string, action: string, id: string, facts: Record<string, unknown>): Promise<void>;
+  /** Whether this instance sends callbacks to a URL. Absent refuses every callback URL. */
+  callbackAllowed?: (url: string) => boolean;
+  /** A cancellation just stored a callback, so look for due callbacks now. */
+  callbacksChanged?: () => void;
+  /** Read a governed data source for a bound batch, under the caller's current groups. */
+  resolveBinding?: (principal: string, request: RenderSpec, binding: RenderBatchBinding) => Promise<Record<string, unknown>[]>;
+  /** The owner a callback's output token names for this subject, or null. */
+  outputTokenPrincipal?: (req: IncomingMessage, id: string) => string | null;
+}
+
+/** Authenticate a route, optionally accepting the output token a callback carried.
+ *  That token only names the owner: every handler still checks the owner's current grants. */
+export function principalFor(deps: RoutesDeps) {
+  return async (req: IncomingMessage, outputTokenId: string | undefined): Promise<string | null> => {
+    const principal = await deps.authenticate(req);
+    if (principal || outputTokenId === undefined) return principal;
+    return deps.outputTokenPrincipal?.(req, outputTokenId) ?? null;
+  };
 }
 
 export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter>, 'add'>, deps: RoutesDeps): void {
   registerRenderBatchRoutes(router, deps);
   const { store } = deps;
-  const add = (method: string, path: string, handler: (principal: string, ...args: Parameters<Handler>) => Promise<void>): void => {
+  const principalOf = principalFor(deps);
+  const add = (method: string, path: string, handler: (principal: string, ...args: Parameters<Handler>) => Promise<void>, options: { outputToken?: boolean } = {}): void => {
     router.add(method, path, async (req, res, ctx) => {
       try {
-        const principal = await deps.authenticate(req);
+        const principal = await principalOf(req, options.outputToken ? ctx.params.id : undefined);
         if (!principal) return sendError(res, 401, 'UNAUTHORIZED', 'an authenticated user or service token is required');
         await handler(principal, req, res, ctx);
       } catch (e) {
@@ -44,6 +63,7 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     if (!deps.kick) throw new RenderResourceError('RENDER_RUNNER_UNAVAILABLE', 503, 'durable renders require the long-lived server');
     const proposed = newRender(principal, request, key, retryOf);
     await deps.authorize(principal, request);
+    assertCallbackAllowed(request, deps.callbackAllowed);
     await deps.validate(principal, request);
     const saved = await store.insertRender(proposed);
     if (saved.record.requestHash !== proposed.requestHash) throw new RenderResourceError('IDEMPOTENCY_KEY_REUSED', 409, 'Idempotency-Key already identifies a different render request');
@@ -79,7 +99,8 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
   add('GET', '/api/v1/renders/:id', async (principal, _req, res, ctx) => {
     const r = await find(ctx.params.id!, principal);
     await deps.authorize(principal, r.request);
-    sendJson(res, 200, renderWire(r));
+    const callback = await store.renderCallbackSummary(r.id);
+    sendJson(res, 200, { ...renderWire(r), ...(callback ? { callback } : {}) });
   });
 
   add('GET', '/api/v1/renders/:id/output/:name', async (principal, _req, res, ctx) => {
@@ -87,6 +108,7 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     await deps.authorize(principal, r.request);
     if (ctx.params.name !== 'default') throw new RenderResourceError('NOT_FOUND', 404, 'output not found');
     if (r.state !== 'succeeded' || !r.output) throw new RenderResourceError('RENDER_NOT_SUCCEEDED', 409, 'render has no successful output');
+    if (r.output.expiredAt) throw new RenderResourceError('OUTPUT_EXPIRED', 410, 'output retention has removed this output; its record and receipt remain');
     const blob = await deps.blobs.get(r.output.ref);
     if (!blob) throw new RenderResourceError('OUTPUT_UNAVAILABLE', 410, 'retained render output is unavailable');
     let bytes: Buffer;
@@ -100,7 +122,7 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
       'x-lolly-brand-check': r.output.evidence?.brandRules?.disposition ?? 'not-requested',
       'content-disposition': `attachment; filename="${r.id}${r.output.evidence?.brandRules?.disposition === 'draft' ? '-DRAFT' : ''}.${r.request.format}"` });
     res.end(bytes);
-  });
+  }, { outputToken: true });
 
   add('GET', '/api/v1/renders/:id/evidence', async (principal, _req, res, ctx) => {
     const r = await find(ctx.params.id!, principal);
@@ -129,7 +151,7 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     sendJson(res, 200, { renderId: r.id, evidence, ...(identity ? { identity } : {}) }, {
       'content-disposition': `attachment; filename="${r.id}.evidence.json"`, 'cache-control': 'private, no-store',
     });
-  });
+  }, { outputToken: true });
 
   add('DELETE', '/api/v1/renders/:id', async (principal, _req, res, ctx) => {
     // An owner may stop their work even after losing permission to render it.
@@ -137,6 +159,7 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     if (!r) throw new RenderResourceError('NOT_FOUND', 404, 'render not found');
     if (r.state !== 'cancelled') throw new RenderResourceError('RENDER_TERMINAL', 409, 'completed render history is retained');
     deps.cancel?.(r.id);
+    deps.callbacksChanged?.();
     await deps.audit(principal, 'render.cancel', r.id, {});
     sendJson(res, 200, renderWire(r));
   });

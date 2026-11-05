@@ -5,7 +5,7 @@ import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import type { AutomationJobRecord, Store } from '../store/types.ts';
 import { DurableAutomationRunner, attemptResultRef, type DurableExecutor } from './durable-runner.ts';
-import { CallbackOutbox, type CallbackOutboxStore } from './callback-outbox.ts';
+import { CallbackOutbox, type CallbackOutboxOptions, type CallbackOutboxStore } from './callback-outbox.ts';
 
 export type AutomationJob = AutomationJobRecord;
 type JobStore = Pick<Store, 'putAutomationJob' | 'getAutomationJob' | 'listAutomationJobs' | 'findAutomationJobByIdempotency' | 'deleteAutomationJob' | 'claimAutomationJob' | 'renewAutomationJob' | 'saveClaimedAutomationJob'> & CallbackOutboxStore;
@@ -23,6 +23,8 @@ export interface AutomationQueueOptions {
   /** Mint the token a callback receiver sends as `x-lw-job-token`, so the
    *  credential need not ride in the result URL. */
   resultToken?: (job: AutomationJob) => string;
+  /** How callbacks for durable renders and render batches are worded and signed for. */
+  renderCallbacks?: Pick<CallbackOutboxOptions, 'baseUrl' | 'renderToken' | 'renderBody'>;
   /** The wait after each failed callback attempt (callback-outbox.ts has the default). */
   callbackRetryDelaysMs?: readonly number[];
   /** Process-local drain width. The durable lease/replica runner is plan 40;
@@ -63,6 +65,7 @@ export class AutomationQueue {
         ...(options.callbackAllowed ? { allowed: options.callbackAllowed } : {}),
         ...(options.resultUrl ? { resultUrl: options.resultUrl } : {}),
         ...(options.resultToken ? { resultToken: options.resultToken } : {}),
+        ...options.renderCallbacks,
         ...(options.callbackRetryDelaysMs ? { retryDelaysMs: options.callbackRetryDelaysMs } : {}),
       });
     }
@@ -214,7 +217,8 @@ export class AutomationQueue {
     job.finishedAt = new Date().toISOString(); await this.save(job); this.sendCallbacks();
   }
 
-  private sendCallbacks(): void { void this.callbacks?.poll().catch(() => {}); }
+  /** Look for callbacks that are due. Anything that settles a subject calls this. */
+  sendCallbacks(): void { void this.callbacks?.poll().catch(() => {}); }
 }
 
 export function jobWire(job: AutomationJob, resultUrl = `/api/v1/jobs/${job.id}/result`, resultToken?: string): Record<string, unknown> {

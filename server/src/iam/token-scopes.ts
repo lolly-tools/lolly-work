@@ -78,6 +78,7 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'GET /api/v1/render-batches/:id': ['render'],
   'DELETE /api/v1/render-batches/:id': ['render'],
   'GET /api/v1/render-batches/:id/manifest': ['render'],
+  'GET /api/v1/render-batches/:id/archive': ['render'],
   'POST /api/v1/render-batches/:id/retry': ['render'],
 
   'POST /api/v1/compile': ['documents'],
@@ -100,10 +101,11 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'DELETE /api/v1/files/:id': ['files'],
   'GET /api/v1/files/:id/content': ['files'],
 
-  // Only by reference to a job this token finished. Sending a raw body stays with
-  // a person or an unscoped token.
+  // Only by reference to a job or render this token finished. Sending a raw body
+  // stays with a person or an unscoped token.
   'GET /api/v1/destinations': ['delivery'],
   'POST /api/v1/jobs/:id/deliveries': ['delivery'],
+  'POST /api/v1/renders/:id/deliveries': ['delivery'],
   'GET /api/v1/deliveries': ['delivery'],
   'GET /api/v1/deliveries/:id': ['delivery'],
   'POST /api/v1/deliveries/:id/retry': ['delivery'],

@@ -81,4 +81,91 @@ export async function runRenderStoreConformance(store: RenderStore): Promise<voi
   assert.equal(page.length, 2);
   assert.equal((await store.listRenders(principal, 2, 2)).length, 2);
   assert.notEqual(page[0]!.id, (await store.listRenders(principal, 2, 2))[0]!.id);
+
+  await runCallbackConformance(store, principal);
+  await runRetentionConformance(store, principal);
+}
+
+/** Retention marks, then a later pass removes bytes. The record and receipt stay throughout. */
+async function runRetentionConformance(store: RenderStore, principal: string): Promise<void> {
+  const future = new Date(Date.now() + 60_000).toISOString();
+  // Earlier stages of this suite left finished renders; clear them so counts below are exact.
+  const drained = await store.expireRenderOutputs(future, new Date().toISOString(), 1000);
+  for (const old of drained) await store.markRenderOutputPurged(old.id);
+
+  const saved = (await store.insertRender(newRender(principal, spec))).record;
+  const claim = (await store.claimRender(10_000))!;
+  await store.settleRender(saved.id, claim.leaseToken!, { state: 'succeeded', output });
+  const past = new Date(Date.now() - 60_000).toISOString();
+  assert.deepEqual(await store.expireRenderOutputs(past, new Date().toISOString(), 10), [], 'a recent output is not due');
+  assert.deepEqual(await store.renderOutputsToPurge(future, 10), [], 'nothing is removed before it is marked');
+
+  const expiredAt = new Date().toISOString();
+  const marked = await store.expireRenderOutputs(future, expiredAt, 10);
+  assert.deepEqual(marked, [{ id: saved.id, ref: output.ref, toolId: 'card', format: 'svg' }]);
+  assert.deepEqual(await store.expireRenderOutputs(future, expiredAt, 10), [], 'a mark happens once');
+  const record = (await store.getRender(saved.id, principal))!;
+  assert.equal(record.state, 'succeeded');
+  assert.equal(record.output!.expiredAt, expiredAt);
+  assert.deepEqual(record.output!.evidence, output.evidence, 'the receipt stays');
+  assert.equal(record.output!.sha256, output.sha256);
+
+  assert.deepEqual(await store.renderOutputsToPurge(new Date(Date.parse(expiredAt) - 1000).toISOString(), 10), [], 'the bytes wait out the gap after the mark');
+  assert.deepEqual((await store.renderOutputsToPurge(future, 10)).map((o) => o.id), [saved.id]);
+  assert.deepEqual((await store.renderOutputsToPurge(future, 10)).map((o) => o.id), [saved.id], 'still listed until the removal is recorded');
+  await store.markRenderOutputPurged(saved.id);
+  assert.deepEqual(await store.renderOutputsToPurge(future, 10), []);
+  assert.deepEqual(await store.expireRenderOutputs(future, expiredAt, 10), []);
+  assert.ok((await store.getRender(saved.id, principal))!.output!.purgedAt);
+
+  // Failed and cancelled records have no output to expire.
+  const stopped = (await store.insertRender(newRender(principal, spec))).record;
+  await store.cancelRender(stopped.id, principal);
+  assert.deepEqual(await store.expireRenderOutputs(future, expiredAt, 10), []);
+}
+
+/** Every terminal transition stores the callback it owes, in the same call. */
+async function runCallbackConformance(store: RenderStore, principal: string): Promise<void> {
+  const hook = 'https://hooks.example/renders';
+  const hooked = parseRenderSpec({ toolId: 'card', format: 'svg', inputs: {}, callbackUrl: hook });
+
+  const silent = (await store.insertRender(newRender(principal, spec))).record;
+  const silentClaim = (await store.claimRender(10_000))!;
+  assert.equal(silentClaim.id, silent.id);
+  await store.settleRender(silent.id, silentClaim.leaseToken!, { state: 'succeeded', output });
+  assert.equal(await store.renderCallbackSummary(silent.id), null, 'no callback URL, no entry');
+
+  const winner = (await store.insertRender(newRender(principal, hooked))).record;
+  assert.equal(await store.renderCallbackSummary(winner.id), null, 'nothing is owed before the render finishes');
+  const winning = (await store.claimRender(10_000))!;
+  assert.equal(await store.settleRender(winner.id, 'wrong-token', { state: 'succeeded', output }), false);
+  assert.equal(await store.renderCallbackSummary(winner.id), null, 'a refused settlement stores nothing');
+  assert.equal(await store.settleRender(winner.id, winning.leaseToken!, { state: 'succeeded', output }), true);
+  const stored = (await store.renderCallbackSummary(winner.id))!;
+  assert.equal(stored.state, 'pending');
+  assert.equal(stored.attempts, 0);
+  assert.ok(stored.id.startsWith('cbk_'));
+
+  const flaky = (await store.insertRender(newRender(principal, { ...hooked, maxAttempts: 2 }))).record;
+  const first = (await store.claimRender(10_000))!;
+  await store.settleRender(flaky.id, first.leaseToken!, { state: 'failed', error: { code: 'BUSY', message: 'retry' }, retryAfterMs: 0 });
+  assert.equal(await store.renderCallbackSummary(flaky.id), null, 'a failure that will be retried has not finished');
+  const second = (await store.claimRender(10_000))!;
+  assert.equal(second.id, flaky.id);
+  await store.settleRender(flaky.id, second.leaseToken!, { state: 'failed', error: { code: 'BUSY', message: 'final' }, retryAfterMs: 0 });
+  assert.ok(await store.renderCallbackSummary(flaky.id), 'the last failure owes a callback');
+
+  const stopped = (await store.insertRender(newRender(principal, hooked))).record;
+  assert.equal((await store.cancelRender(stopped.id, principal))!.state, 'cancelled');
+  assert.ok(await store.renderCallbackSummary(stopped.id), 'a cancellation owes a callback');
+  const again = await store.renderCallbackSummary(stopped.id);
+  await store.cancelRender(stopped.id, principal);
+  assert.deepEqual(await store.renderCallbackSummary(stopped.id), again, 'one entry per render');
+
+  const abandoned = (await store.insertRender(newRender(principal, { ...hooked, maxAttempts: 1 }))).record;
+  await store.claimRender(30);
+  await delay(60);
+  assert.equal(await store.claimRender(1_000), null);
+  assert.equal((await store.getRender(abandoned.id, principal))!.error!.code, 'ATTEMPTS_EXHAUSTED');
+  assert.ok(await store.renderCallbackSummary(abandoned.id), 'a render that ran out of attempts owes a callback');
 }
