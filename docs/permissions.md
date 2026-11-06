@@ -101,6 +101,11 @@ otherwise show every governed tool. Those checks use the explicit-grant decision
 (`grantDecision`), which returns `allow`, `deny` or `none`. It matters when you are working out
 why a tool is or is not visible.
 
+For tools the rule is: a matching `tool.use` deny hides the tool, and otherwise the tool shows
+when its overlay's `visibility` admits the person or an allow grant names them. The catalog
+feed, the tool's files, org-config, Preview, server renders and the organisation MCP all ask
+that one question, so a tool Preview reports as hidden is absent from every one of them.
+
 ## Common recipes
 
 ### "Edit but not export"

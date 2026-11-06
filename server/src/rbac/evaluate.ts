@@ -141,7 +141,7 @@ export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role
   return 'member';
 }
 
-function principalMatches(selector: string, ctx: PrincipalCtx): boolean {
+function principalMatches(selector: string, ctx: Pick<PrincipalCtx, 'userId' | 'groups'>): boolean {
   if (selector === '*') return true;
   if (selector.startsWith('group:')) return ctx.groups.includes(selector.slice(6));
   if (selector.startsWith('user:')) return ctx.userId === selector.slice(5);
@@ -157,7 +157,7 @@ function principalMatches(selector: string, ctx: PrincipalCtx): boolean {
  * instead of evaluate().
  */
 export function grantDecision(
-  ctx: PrincipalCtx,
+  ctx: Pick<PrincipalCtx, 'userId' | 'groups'>,
   action: string,
   resourceSelectors: string[],
   grants: Grant[],
