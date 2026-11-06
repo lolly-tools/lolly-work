@@ -89,6 +89,8 @@ export interface Env {
  */
 export async function boot(opts: {
   idp?: Record<string, unknown>; policy?: Record<string, unknown>; instance?: Record<string, unknown>; metrics?: Metrics;
+  /** DNS TXT answers for partner domain proof (partner-domains.test.ts). */
+  resolveTxt?: (name: string) => Promise<string[][]>;
 } = {}): Promise<Env> {
   const pack = await mkdtemp(join(tmpdir(), 'lw-invite-'));
   await mkdir(join(pack, 'catalog', 'assets'), { recursive: true });
@@ -125,6 +127,7 @@ export async function boot(opts: {
   const app = buildApp({
     config, store, blobs: createMemoryBlobStore(), secrets: { session: SESSION_SECRET, link: LINK_SECRET }, fetchImpl: idpFetch(script),
     ...(opts.metrics ? { metrics: opts.metrics } : {}),
+    ...(opts.resolveTxt ? { resolveTxt: opts.resolveTxt } : {}),
   });
   const server = createServer((req, res) => void app(req, res));
   servers.push(server);

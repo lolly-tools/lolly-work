@@ -1515,4 +1515,11 @@ html.account-inspector-open { overflow: hidden; }
 .programme-head { display: flex; align-items: baseline; gap: var(--sp-6); flex-wrap: wrap; }
 .programme-actions { display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: center; }
 .programme-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); max-height: 26rem; overflow: auto; }
+/* Partner domains (plans/82 M1 part 2b): one block per domain, its proof and the record to publish. */
+.domain-list { gap: var(--sp-7); }
+.domain-head { display: flex; gap: var(--sp-6); flex-wrap: wrap; align-items: baseline; }
+.domain-record { padding: var(--sp-6); border: 1px solid var(--hairline); border-radius: var(--radius); }
+.domain-record-fields { display: grid; grid-template-columns: auto 1fr; gap: var(--sp-3) var(--sp-6); margin: 0; align-items: center; }
+.domain-record-fields dd { margin: 0; display: flex; gap: var(--sp-4); align-items: center; flex-wrap: wrap; min-width: 0; }
+.domain-record-fields code { overflow-wrap: anywhere; }
 @media (max-width: 640px) { .programme-tools { grid-template-columns: 1fr; max-height: none; } }

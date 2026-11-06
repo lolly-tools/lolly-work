@@ -62,7 +62,7 @@ import {
   passwordRuleMessage, passwordSetUrl, verifyPassword as verifySignInPassword,
 } from '../iam/password.ts';
 import { buildGitHubAuthorizeUrl, exchangeGitHubCode, fetchGitHubIdentity, GitHubSignInError } from '../iam/github.ts';
-import { bootstrapOwnerGroup, decideAdmission, emailIsVerified, type AdmissionDecision, type AdmissionIdentity, type AdmissionIdp } from '../iam/admission.ts';
+import { bootstrapOwnerGroup, decideAdmission, emailIsVerified, type AdmissionDecision, type AdmissionIdentity, type AdmissionIdp, type AdmissionPartner } from '../iam/admission.ts';
 import {
   accountSignInSeen, identityWire, idpPin, isAccountSignIn, LINKED_STANDING_DAYS, resolveSignIn, signInUpsert, standingGroups,
   subjectHash, unlinkBlock, type SignInResolution,
@@ -94,6 +94,9 @@ import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
 import { isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, programmeGroupsOf, reservedGroupName } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
+import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
+import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
+import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
 import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
@@ -325,6 +328,8 @@ export interface AppDeps {
   store: Store;
   secrets: Secrets;
   fetchImpl?: typeof fetch;
+  /** DNS TXT lookups for partner domain proof (tests pass a stub). */
+  resolveTxt?: TxtLookup;
   providerResolver?: ProviderResolver;
   /** Injectable metrics registry (tests pass a fresh one to assert counter deltas). */
   metrics?: Metrics;
@@ -398,6 +403,7 @@ export function appRouteDescriptions(app: App): ReturnType<DescribeRoutes> {
 
 export function buildApp(deps: AppDeps): App {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
+  const resolveTxt: TxtLookup = deps.resolveTxt ?? dnsResolveTxt;
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
   configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
   const blobs = deps.blobs ?? createMemoryBlobStore();
@@ -1128,6 +1134,21 @@ export function buildApp(deps: AppDeps): App {
     }
     return null;
   };
+  /**
+   * What partner programmes add to admission (plans/82 M1 part 2b): the
+   * domains people can join through now, and whether this address holds a
+   * live membership made through one. A membership added from a list is not
+   * counted: that person's invitation decides, so revoking it still works.
+   */
+  const partnerAdmission = async (email: string): Promise<AdmissionPartner> => {
+    const now = Date.now();
+    const address = email.trim().toLowerCase();
+    const [domains, memberships] = await Promise.all([store.listPartnerDomains(), address ? store.listMemberships() : Promise.resolve([])]);
+    return {
+      domains: admittingDomains(domains, now),
+      member: memberships.some((m) => m.via === 'domain' && m.email === address && !m.endedAt && !(m.endsAt && Date.parse(m.endsAt) <= now)),
+    };
+  };
   const admissionInputs = async (sub: string, email: string, linkedUser?: UserRecord | null, invitationEmails: readonly string[] = []) => {
     const existing = await store.getUserBySub(sub);
     const sameEmail = email.trim() ? await store.findUsersByEmail(email) : [];
@@ -1145,14 +1166,14 @@ export function buildApp(deps: AppDeps): App {
     const invitationView = invitation
       ? { email: invitation.email, expiresAt: invitation.acceptedAt ? null : invitation.expiresAt ?? null, revokedAt: invitation.revokedAt ?? null }
       : null;
-    return { disabled, invitation, invitationView };
+    return { disabled, invitation, invitationView, partner: await partnerAdmission(email) };
   };
   const admitSignIn = async (
     identity: AdmissionIdentity & { sub: string }, idp: AdmissionIdp, resolution?: SignInResolution,
   ): Promise<SignInAdmission> => {
     const linkedUser = resolution && resolution.via !== 'new' ? resolution.user : null;
-    const { disabled, invitation, invitationView } = await admissionInputs(identity.sub, identity.email, linkedUser, identity.invitationEmails);
-    const decision = decideAdmission({ ...identity, disabled }, idp, config.idp.admission, invitationView);
+    const { disabled, invitation, invitationView, partner } = await admissionInputs(identity.sub, identity.email, linkedUser, identity.invitationEmails);
+    const decision = decideAdmission({ ...identity, disabled }, idp, config.idp.admission, invitationView, Date.now(), partner);
     // A sign-in already linked to a member (a link row, or a verified-email
     // match) is admitted on that member's standing when only the lists refuse
     // it: a personal GitHub address need not be listed for a person the
@@ -1182,9 +1203,9 @@ export function buildApp(deps: AppDeps): App {
    */
   const stillAdmitted = async (user: UserRecord): Promise<boolean> => {
     if (user.sub.startsWith('dev:')) return !user.disabledAt;
-    const { disabled, invitationView } = await admissionInputs(user.sub, user.email);
+    const { disabled, invitationView, partner } = await admissionInputs(user.sub, user.email);
     if (decideAdmission({ email: user.email, emailVerified: true, disabled }, { emailVerification: 'trusted' },
-      config.idp.admission, invitationView).ok) return true;
+      config.idp.admission, invitationView, Date.now(), partner).ok) return true;
     if (disabled || !config.idp.admission || config.idp.admission.invitations === false) return false;
     return !!(await store.findInvitationAcceptedBy(user.id));
   };
@@ -1885,8 +1906,10 @@ export function buildApp(deps: AppDeps): App {
     });
     if (ownerGroup && !(await store.listLocalGroups()).some(g => g.name === ownerGroup)) await store.putLocalGroup({ name: ownerGroup, createdAt: new Date().toISOString() });
     const bootstrapped = ownerGroup ? (await store.setLocalGroups(upserted.id, [...new Set([...upserted.localGroups, ownerGroup])]))! : upserted;
-    // The row exists now, so an invitation's groups can be joined to it.
-    const user = await acceptInvitationAtSignIn(bootstrapped, admitted, { provider, idp: idp.id });
+    // The row exists now, so an invitation's groups can be joined to it, and
+    // a partner domain's programme (plans/82 M1 part 2b).
+    const user = await joinThroughDomain(store, audit, await acceptInvitationAtSignIn(bootstrapped, admitted, { provider, idp: idp.id }),
+      { email: identity.email, verified: admitted.ok && admitted.emailVerified, via: admitted.ok ? admitted.via : '' });
     // Whatever else made the account an owner meanwhile (an invitation's
     // groups) is caught here, before a session exists.
     if (opts.ownerAllowed === false && user.role === 'owner') return refuseOwnerSession();
@@ -2109,7 +2132,8 @@ export function buildApp(deps: AppDeps): App {
     });
     if (ownerGroup && !(await store.listLocalGroups()).some(g => g.name === ownerGroup)) await store.putLocalGroup({ name: ownerGroup, createdAt: new Date().toISOString() });
     const bootstrapped = ownerGroup ? (await store.setLocalGroups(upserted.id, [...new Set([...upserted.localGroups, ownerGroup])]))! : upserted;
-    const user = await acceptInvitationAtSignIn(bootstrapped, admitted, { provider: 'proxy' });
+    const user = await joinThroughDomain(store, audit, await acceptInvitationAtSignIn(bootstrapped, admitted, { provider: 'proxy' }),
+      { email: id.email, verified: admitted.ok && admitted.emailVerified, via: admitted.ok ? admitted.via : '' });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
@@ -2294,8 +2318,8 @@ export function buildApp(deps: AppDeps): App {
         }
       }
     }
-    const { disabled, invitationView } = await admissionInputs('', email);
-    const decision = decideAdmission({ email, emailVerified: true, disabled }, { emailVerification: 'claim' }, config.idp.admission, invitationView);
+    const { disabled, invitationView, partner } = await admissionInputs('', email);
+    const decision = decideAdmission({ email, emailVerified: true, disabled }, { emailVerification: 'claim' }, config.idp.admission, invitationView, Date.now(), partner);
     if (!decision.ok) {
       return { status: 409, code: 'NOT_ADMITTED', message: 'this address may not sign in here: invite it first, or add it or its domain to the sign-in rule' };
     }
@@ -5584,6 +5608,26 @@ export function buildApp(deps: AppDeps): App {
       return { status: issued.status === 'created' ? 'created' : 'existing', invitationId: issued.invitation.id, groups: issued.invitation.groups };
     },
     signIn: () => ({ workspace: config.instance.name, url: config.instance.baseUrl, providers: inviteProviders(), note: config.instance.inviteNote ?? null }),
+    resolveTxt,
+  });
+
+  registerDomainRoutes(router, {
+    store, requireAction, audit, resolveTxt,
+    // The workspace's own domains, which never feed a programme: its own
+    // address, the domains a sign-in provider is limited to, and the domains
+    // of the owners' and admins' addresses.
+    ownDomains: async () => {
+      const own = new Map<string, string>();
+      for (const d of [...hostDomains(config.instance.baseUrl), ...hostDomains(config.instance.appUrl)]) own.set(d, "this workspace's address");
+      for (const c of [config.idp, ...config.idp.additional]) if (c.hostedDomain && !own.has(c.hostedDomain)) own.set(c.hostedDomain, 'a sign-in provider is limited to it');
+      for (const e of config.idp.bootstrapOwners ?? []) { const d = domainOfEmail(e); if (d && !own.has(d)) own.set(d, "an owner's address"); }
+      for (const u of await store.listUsers()) {
+        if (u.disabledAt || u.id.startsWith('svc_') || (u.role !== 'admin' && u.role !== 'owner')) continue;
+        const d = domainOfEmail(u.email);
+        if (d && !own.has(d)) own.set(d, "an admin's or owner's address");
+      }
+      return own;
+    },
   });
 
   registerExportReviewMatch(router, {

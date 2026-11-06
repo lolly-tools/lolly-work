@@ -127,6 +127,14 @@ const OPTIONS = {
     url: { type: 'string', multiple: true },
     path: { type: 'string', multiple: true },
     origin: { type: 'string' },
+    // Partner programmes (plans/82 M1 part 2): lw domains, lw people.
+    programme: { type: 'string' },
+    company: { type: 'string' },
+    domain: { type: 'string' },
+    ends: { type: 'string' },
+    assert: { type: 'boolean' },
+    apply: { type: 'boolean' },
+    projects: { type: 'string' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -686,6 +694,111 @@ switch (cmd) {
       for (const i of shown) console.log(line(i));
     }
     break;
+  }
+
+  case 'domains': {
+    // Partner domains (plans/82 M1 part 2b): anyone who signs in with a
+    // verified address at a domain joins a programme. Proof is a DNS TXT
+    // record unless --assert says otherwise, which goes in the audit.
+    type Domain = {
+      domain: string; status: string; proof: string; txt: { name: string; value: string }; members: number;
+      verifiedAt?: string; missingSince?: string; asserted?: { by: { name: string }; at: string; reason?: string };
+      rules: Array<{ programme: { id: string; name: string }; company?: { name: string }; endsAt?: string }>;
+      joined?: Array<{ email: string }>; waiting?: number;
+    };
+    const day = (iso?: string) => (iso ? iso.slice(0, 10) : '');
+    const state = (d: Domain): string => d.status === 'asserted' ? `admin-asserted by ${d.asserted?.by.name ?? '?'} on ${day(d.asserted?.at)}`
+      : d.status === 'verified' ? `DNS verified ${day(d.verifiedAt)}`
+        : d.status === 'paused' ? `paused: record missing since ${day(d.missingSince)}` : 'waiting for the DNS record';
+    const show = (d: Domain): void => {
+      console.log(`${d.domain}  ${state(d)}  ${d.members} joined`);
+      for (const r of d.rules) console.log(`  -> ${r.programme.name}${r.company ? `, ${r.company.name}` : ''}${r.endsAt ? `  ends ${day(r.endsAt)}` : ''}`);
+      if (d.status === 'pending' || d.status === 'paused') console.log(`  publish: ${d.txt.name}  TXT  "${d.txt.value}"`);
+    };
+    const name = (positionals[2] ?? '').trim();
+    if (sub === 'add') {
+      if (!name || !values.programme) fail('usage: lw domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--dry-run]');
+      const body = {
+        programme: values.programme, ...(values.company ? { company: values.company } : {}), ...(values.ends ? { endsAt: values.ends } : {}),
+        ...(values.assert ? { proof: 'admin', ...(values.reason ? { reason: values.reason } : {}) } : {}), ...(values['dry-run'] ? { dryRun: true } : {}),
+      };
+      const r = await call(`/api/v1/partner-domains/${encodeURIComponent(name)}`, { method: 'PUT', body }) as Domain & { dryRun?: boolean; accounts?: Array<{ email: string; joins: boolean; reason?: string }> };
+      out(r);
+      if (!values.json) {
+        if (r.dryRun) {
+          console.log(`${r.domain}: ${r.accounts?.length ?? 0} account(s) here already`);
+          for (const a of r.accounts ?? []) console.log(`  ${a.joins ? 'joins   ' : 'does not'}  ${a.email}${a.reason ? `  ${a.reason}` : ''}`);
+        } else {
+          show(r);
+          if (r.joined?.length) console.log(`joined now: ${r.joined.map((j) => j.email).join(', ')}`);
+          if (r.waiting) console.log(`${r.waiting} more join at their next sign-in with a verified address`);
+        }
+      }
+      break;
+    }
+    if (sub === 'check') {
+      if (!name) fail('usage: lw domains check <domain>');
+      const r = await call(`/api/v1/partner-domains/${encodeURIComponent(name)}/check`, { method: 'POST' }) as Domain;
+      out(r);
+      if (!values.json) show(r);
+      break;
+    }
+    if (sub === 'rm') {
+      if (!name) fail('usage: lw domains rm <domain> [--programme <id>]');
+      out(await call(`/api/v1/partner-domains/${encodeURIComponent(name)}${values.programme ? `?programme=${encodeURIComponent(values.programme)}` : ''}`, { method: 'DELETE' }));
+      if (!values.json) console.log(`removed ${name}${values.programme ? ` from ${values.programme}` : ''}; people who joined through it keep their access until it ends`);
+      break;
+    }
+    if (sub !== undefined && sub !== 'ls' && sub !== 'list') fail('usage: lw domains [ls] | add <domain> --programme <id> | check <domain> | rm <domain>');
+    const r = await call(`/api/v1/partner-domains${values.programme ? `?programme=${encodeURIComponent(values.programme)}` : ''}`) as { domains: Domain[] };
+    out(r);
+    if (!values.json) {
+      if (!r.domains.length) console.log('no partner domains');
+      for (const d of r.domains) show(d);
+    }
+    break;
+  }
+
+  case 'people': {
+    // Adding and ending partner programme people in bulk (plans/82 M1 part 2).
+    // Both preview unless --apply is given.
+    if (sub === 'import') {
+      const programme = positionals[2];
+      const file = positionals[3];
+      if (!programme || !file) fail('usage: lw people import <programme> <file.csv|-> [--apply]');
+      const text = readFileSync(file === '-' ? 0 : file, 'utf8');
+      const r = await call(`/api/v1/programmes/${encodeURIComponent(programme)}/people`, { method: 'POST', body: { text, ...(values.apply ? { apply: true } : {}) } }) as {
+        dryRun: boolean; summary: Record<string, number>; message?: string;
+        rows: Array<{ line: number; email: string; status: string; result?: string; reason?: string }>;
+      };
+      out(r);
+      if (!values.json) {
+        for (const row of r.rows) console.log(`${String(row.line).padStart(4)}  ${(row.result ?? row.status).padEnd(9)}  ${row.email}${row.reason ? `  ${row.reason}` : ''}`);
+        console.log(Object.entries(r.summary).map(([k, v]) => `${v} ${k}`).join(', '));
+        if (r.dryRun) console.log('preview only: run again with --apply to do it');
+        if (r.message) console.log(`\nsend everyone invited this message:\n${r.message}`);
+      }
+      break;
+    }
+    if (sub === 'exit') {
+      const list = positionals[2];
+      const pick = values.programme ? { programme: values.programme } : values.company ? { company: values.company } : values.domain ? { domain: values.domain }
+        : list ? { emails: readFileSync(list === '-' ? 0 : list, 'utf8').split(/[\s,;]+/).filter(Boolean) } : null;
+      if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]');
+      const r = await call('/api/v1/programmes/exit', { method: 'POST', body: { ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
+        dryRun: boolean; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
+        pendingInvitations?: unknown[]; invitationsRevoked?: number; domainRules?: Array<{ domain: string; programme: { name: string } }>;
+      };
+      out(r);
+      if (!values.json) {
+        for (const a of r.accounts) console.log(`${r.dryRun ? 'ends    ' : 'ended   '}  ${a.email ?? a.id}`);
+        for (const s2 of r.skipped) console.log(`left      ${s2.email}  ${s2.reason}`);
+        for (const d of r.domainRules ?? []) console.log(`${r.dryRun ? 'withdraws' : 'withdrew '} ${d.domain} (${d.programme.name})`);
+        console.log(r.dryRun ? `${r.pendingInvitations?.length ?? 0} open invitation(s) would be revoked; run again with --apply to do it` : `${r.invitationsRevoked ?? 0} open invitation(s) revoked`);
+      }
+      break;
+    }
+    fail('usage: lw people import <programme> <file> [--apply] | exit --programme|--company|--domain … [--apply]');
   }
 
   case 'brand-pages': {
@@ -1866,6 +1979,10 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
+  people import <programme> <file.csv|-> [--apply]   add a list to a partner programme: email, name, company, end date (preview unless --apply)
+  people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]   end a partnership in one audited step
+  domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited)
+  domains check <domain> · domains rm <domain> [--programme <id>]   look the DNS record up now; stop new people joining through a domain
   retention run              apply the stated retention policy (including the deleted-document purge) and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
   users subject-export <id>  bounded partial metadata page (owner; --category, --cursor, --limit)

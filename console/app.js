@@ -5603,9 +5603,13 @@ function programmeEditor(p, tools, collections, groups = []) {
 // People, companies and ending a partnership (plans/82 M1 part 2). Every step
 // that changes something shows what it will do first and asks once.
 async function programmePeople(p, host, lastResult = null) {
-  let data;
-  try { data = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`); }
-  catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
+  let data, domains;
+  try {
+    [data, { domains }] = await Promise.all([
+      api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`),
+      api(`/api/v1/partner-domains?programme=${encodeURIComponent(p.id)}`),
+    ]);
+  } catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
   const reload = () => programmePeople(p, host);
   // An end date in a list is a whole day in UTC (it ends at 23:59:59 UTC), so
   // it reads back as that same day wherever the admin is.
@@ -5629,10 +5633,115 @@ async function programmePeople(p, host, lastResult = null) {
     } }, field('New company', companyName), el('div', {}, el('button', {}, 'Add company'))),
     companyErr);
 
+  // Domains (plans/82 M1 part 2b): anyone who signs in with a verified address
+  // at one of these joins. Each says plainly how it was proved.
+  const domainState = (d) => {
+    if (d.status === 'asserted') {
+      return [el('span', { class: 'status review' }, 'Admin-asserted'),
+        el('div', { class: 'muted' }, `By ${d.asserted.by.name}, ${day(d.asserted.at)}${d.asserted.reason ? `. Reason: ${d.asserted.reason}` : ''}`)];
+    }
+    if (d.status === 'verified') {
+      return [el('span', { class: 'status live' }, 'DNS verified'), el('div', { class: 'muted' }, `Record found ${day(d.verifiedAt)}, looked up again every day`)];
+    }
+    if (d.status === 'paused') {
+      return [el('span', { class: 'status revoked' }, 'Paused'),
+        el('div', { class: 'muted' }, `The DNS record was not found on ${day(d.missingSince)}. Nobody new joins until it is back; people already in keep their access.`)];
+    }
+    return [el('span', { class: 'status expired' }, 'Waiting for the DNS record'),
+      el('div', { class: 'muted' }, d.lastError ? `The last lookup failed (${d.lastError}). Lolly Work tries again every hour.` : 'Lolly Work looks for it every hour.')];
+  };
+  const domainRow = (d) => {
+    const rule = d.rules.find((r) => r.programme.id === p.id) ?? {};
+    const rowErr = errSpan();
+    const check = d.proof === 'txt' ? el('button', { onclick: async () => {
+      rowErr.textContent = ''; check.disabled = true;
+      try {
+        const r = await api(`/api/v1/partner-domains/${encodeURIComponent(d.domain)}/check`, { method: 'POST' });
+        toast(r.status === 'verified' ? `${d.domain}: record found${r.joined.length ? `, ${r.joined.length} joined` : ''}` : `${d.domain}: record not found yet`);
+        reload();
+      } catch (ex) { rowErr.textContent = ex.message; check.disabled = false; }
+    } }, 'Check now') : null;
+    const assertBtn = d.proof === 'txt' ? armConfirmButton({}, 'Activate without DNS', 'Activate on your say-so?', async (disarm) => {
+      rowErr.textContent = '';
+      try {
+        const r = await api(`/api/v1/partner-domains/${encodeURIComponent(d.domain)}`, { method: 'PUT', body: { proof: 'admin' } });
+        toast(`${d.domain} is active${r.joined.length ? `: ${r.joined.length} joined` : ''}`); reload();
+      } catch (ex) { rowErr.textContent = ex.message; disarm(); }
+    }) : null;
+    const remove = armConfirmButton({ class: 'danger' }, 'Remove', 'Really remove?', async (disarm) => {
+      rowErr.textContent = '';
+      try { await api(`/api/v1/partner-domains/${encodeURIComponent(d.domain)}?programme=${encodeURIComponent(p.id)}`, { method: 'DELETE' }); toast(`Removed ${d.domain}`); reload(); }
+      catch (ex) { rowErr.textContent = ex.message; disarm(); }
+    });
+    const record = d.status === 'pending' || d.status === 'paused' ? el('div', { class: 'domain-record stack' },
+      el('p', { class: 'flush' }, `Ask whoever runs ${d.domain} to publish this TXT record:`),
+      el('dl', { class: 'domain-record-fields' },
+        el('dt', {}, 'Name'), el('dd', {}, el('code', {}, d.txt.name), ' ', copyButton(() => d.txt.name, 'Copy')),
+        el('dt', {}, 'Value'), el('dd', {}, el('code', {}, d.txt.value), ' ', copyButton(() => d.txt.value, 'Copy')))) : null;
+    return el('div', { class: 'domain-row stack' },
+      el('div', { class: 'domain-head' },
+        el('strong', {}, d.domain),
+        el('span', {}, rule.company ? rule.company.name : 'No company'),
+        el('span', {}, rule.endsAt ? `Ends ${day(rule.endsAt)}` : 'No end date'),
+        el('span', {}, `${d.members} joined`)),
+      el('div', {}, ...domainState(d)),
+      record,
+      el('p', { class: 'flush programme-actions' }, check, assertBtn, remove),
+      rowErr);
+  };
+  const domainInput = el('input', { placeholder: 'partner.example', 'aria-label': 'Domain', autocapitalize: 'off', spellcheck: 'false' });
+  const domainCompany = el('select', { 'aria-label': 'Company' }, el('option', { value: '' }, 'No company'),
+    ...data.companies.map((c) => el('option', { value: c.id }, c.name)));
+  const domainEnds = el('input', { type: 'date', 'aria-label': 'End date' });
+  const domainReason = el('input', { placeholder: 'Optional, for example the partner agreement', 'aria-label': 'Reason' });
+  const domainOut = el('div', { class: 'stack' });
+  const domainErr = errSpan();
+  const domainBody = (extra) => ({ programme: p.id, ...(domainCompany.value ? { company: domainCompany.value } : {}),
+    ...(domainEnds.value ? { endsAt: domainEnds.value } : {}), ...extra });
+  const addDomain = async (body, btn) => {
+    domainErr.textContent = ''; btn.disabled = true;
+    const domain = domainInput.value.trim().toLowerCase();
+    try {
+      const r = await api(`/api/v1/partner-domains/${encodeURIComponent(domain)}`, { method: 'PUT', body: domainBody(body) });
+      const active = r.status === 'verified' || r.status === 'asserted';
+      toast(active ? `Added ${r.domain}${r.joined.length ? `: ${r.joined.length} joined now` : ''}` : `Added ${r.domain}. Publish its DNS record to activate it.`);
+      reload();
+    } catch (ex) { domainErr.textContent = ex.message; btn.disabled = false; }
+  };
+  const domainPreview = async () => {
+    domainErr.textContent = ''; domainOut.replaceChildren();
+    const domain = domainInput.value.trim().toLowerCase();
+    if (!domain) { domainErr.textContent = 'Type a domain.'; domainInput.focus(); return; }
+    try {
+      const dry = await api(`/api/v1/partner-domains/${encodeURIComponent(domain)}`, { method: 'PUT', body: domainBody({ dryRun: true }) });
+      const joins = dry.accounts.filter((a) => a.joins);
+      const viaDns = el('button', { class: 'primary', onclick: () => addDomain({}, viaDns) }, 'Add, proved by DNS');
+      const viaAdmin = armConfirmButton({}, 'Add on my say-so', 'Add without DNS?', (disarm) => addDomain({ proof: 'admin', ...(domainReason.value.trim() ? { reason: domainReason.value.trim() } : {}) }, viaAdmin).finally(disarm));
+      domainOut.replaceChildren(
+        el('p', { class: 'flush' }, dry.accounts.length
+          ? `${dry.accounts.length} ${dry.accounts.length === 1 ? 'person' : 'people'} at ${dry.domain} already sign in here. Once the domain is active, ${joins.length} ${joins.length === 1 ? 'joins' : 'join'} straight away.`
+          : `Nobody at ${dry.domain} signs in here yet. People join when they first sign in with a verified address there.`),
+        dry.accounts.length ? dataTable(['Person', 'What happens'], dry.accounts.map((a) => el('tr', {},
+          el('td', {}, a.name ?? a.email, el('div', { class: 'muted' }, a.email)),
+          el('td', {}, a.joins ? 'Joins' : 'Does not join', a.reason ? el('div', { class: 'muted' }, a.reason) : null)))) : null,
+        el('p', { class: 'sub flush' }, 'Proved by DNS: you get a TXT record to publish, and the domain becomes active once Lolly Work finds it. On your say-so: active now, and your name, the time and the reason go in Audit.'),
+        field('Reason, if you add it on your say-so', domainReason),
+        el('p', { class: 'programme-actions' }, viaDns, viaAdmin));
+    } catch (ex) { domainErr.textContent = ex.message; }
+  };
+  const domainsCard = el('div', { class: 'card stack' },
+    el('h2', {}, 'Domains'),
+    el('p', { class: 'sub flush' }, 'Anyone who signs in with a verified address at one of these domains joins this programme, and the company you choose. Public mail domains and your own domains cannot be added.'),
+    domains.length ? el('div', { class: 'stack domain-list' }, ...domains.map(domainRow)) : el('p', { class: 'muted' }, 'No domains yet.'),
+    el('h3', {}, 'Add a domain'),
+    el('div', { class: 'grant-fields' }, field('Domain', domainInput), field('Company', domainCompany), field('End date (optional)', domainEnds)),
+    el('p', {}, el('button', { onclick: domainPreview }, 'Preview')), domainErr, domainOut);
+
   // People, and adding many at once.
   const rows = [
     ...data.people.map((m) => el('tr', {}, el('td', {}, m.name), el('td', {}, m.email), el('td', {}, m.company?.name ?? '—'),
-      el('td', {}, m.disabled ? el('span', { class: 'status revoked' }, 'Disabled') : 'Signs in'),
+      el('td', {}, m.disabled ? el('span', { class: 'status revoked' }, 'Disabled') : 'Signs in',
+        m.joinedThrough ? el('div', { class: 'muted' }, `Joined through ${m.joinedThrough}`) : null),
       el('td', {}, m.endsAt ? `Ends ${day(m.endsAt)}` : 'No end date'))),
     ...data.invited.map((m) => el('tr', {}, el('td', { class: 'muted' }, '—'), el('td', {}, m.email), el('td', {}, m.company?.name ?? '—'),
       el('td', {}, 'Invited, not signed in yet'),
@@ -5691,17 +5800,25 @@ async function programmePeople(p, host, lastResult = null) {
     el('option', { value: 'me' }, 'Move their projects to me, editable'),
     el('option', { value: 'keep' }, 'Leave their projects where they are'));
   const noTeam = p.team ? null : el('p', { class: 'sub flush' }, 'This programme has no owning team, so their projects move to you. Set an owning team above to send them to that team instead.');
+  const whoSel = el('select', { 'aria-label': 'Whose access ends' },
+    el('option', { value: '' }, `Everyone in ${p.name}`),
+    ...data.companies.map((c) => el('option', { value: `company:${c.id}` }, `Everyone at ${c.name}`)),
+    ...domains.map((d) => el('option', { value: `domain:${d.domain}` }, `Everyone with an address at ${d.domain}`)));
+  const who = () => {
+    const [kind, id] = whoSel.value.split(/:(.*)/);
+    return kind === 'company' ? { company: id } : kind === 'domain' ? { domain: id } : { programme: p.id };
+  };
   const endOut = el('div', { class: 'stack' });
   const endErr = errSpan();
   const exitPreview = async () => {
     endErr.textContent = ''; endOut.replaceChildren();
     try {
-      const dry = await api('/api/v1/programmes/exit', { method: 'POST', body: { programme: p.id, projects: projectsSel.value } });
+      const dry = await api('/api/v1/programmes/exit', { method: 'POST', body: { ...who(), projects: projectsSel.value } });
       const projectCount = dry.accounts.reduce((n, a) => n + a.projects.length, 0);
       const links = dry.accounts.reduce((n, a) => n + a.links, 0);
       const go = armConfirmButton({ class: 'danger' }, `End access for ${dry.accounts.length} ${dry.accounts.length === 1 ? 'person' : 'people'}`, 'Really end it?', async (disarm) => {
         try {
-          const done = await api('/api/v1/programmes/exit', { method: 'POST', body: { programme: p.id, projects: projectsSel.value, apply: true } });
+          const done = await api('/api/v1/programmes/exit', { method: 'POST', body: { ...who(), projects: projectsSel.value, apply: true } });
           toast(`Ended access for ${done.accounts.length}`); reload();
         } catch (ex) { endErr.textContent = ex.message; disarm(); }
       });
@@ -5710,17 +5827,19 @@ async function programmePeople(p, host, lastResult = null) {
         dry.accounts.length ? dataTable(['Person', 'Projects', 'Links'], dry.accounts.map((a) => el('tr', {}, el('td', {}, a.name, el('div', { class: 'muted' }, a.email)),
           el('td', {}, a.projects.map((x) => x.name).join(', ') || '—'), el('td', {}, String(a.links))))) : null,
         dry.skipped.length ? el('p', { class: 'muted' }, `Left alone: ${dry.skipped.map((s) => `${s.email} (${s.reason})`).join(', ')}.`) : null,
+        dry.domainRules?.length ? el('p', {}, 'First, nobody new joins through ',
+          dry.domainRules.map((r) => `${r.domain} (${r.programme.name}${r.company ? `, ${r.company.name}` : ''})`).join(', '), ' any more.') : null,
         el('p', { class: 'sub flush' }, 'Their accounts are disabled and signed out, and their links, agent tokens and open invitations stop working. Everything is recorded in Audit.'),
-        dry.accounts.length || dry.pendingInvitations.length ? el('p', {}, go) : null);
+        dry.accounts.length || dry.pendingInvitations.length || dry.domainRules?.length ? el('p', {}, go) : null);
     } catch (ex) { endErr.textContent = ex.message; }
   };
   const endCard = el('div', { class: 'card stack' },
     el('h2', {}, 'End this partnership'),
     el('p', { class: 'sub flush' }, 'See who has access and what they own, then end it in one step.'),
-    field('Their projects', projectsSel), noTeam,
+    field('Whose access ends', whoSel), field('Their projects', projectsSel), noTeam,
     el('p', {}, el('button', { onclick: exitPreview }, 'See what ending it does')), endErr, endOut);
 
-  host.replaceChildren(companiesCard, peopleCard, endCard);
+  host.replaceChildren(companiesCard, domainsCard, peopleCard, endCard);
 }
 
 

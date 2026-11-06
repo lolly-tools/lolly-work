@@ -21,6 +21,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import { isProgrammeScoped, programmeGroup, PARTNER_GROUP } from './types.ts';
+import { domainOfEmail, normaliseDomain, type TxtLookup } from './domains.ts';
+import { recheckDomains, sweepDomainRules, withdrawDomainRules } from './domain-routes.ts';
 import {
   COMPANY_ID, companyGroup, membershipEnded, parsePeopleList, planRows,
   type CompanyRecord, type MembershipRecord, type PersonRow, type RowPlan,
@@ -38,6 +40,8 @@ export interface PeopleRouteDeps {
   /** What one sign-in message for a whole list says: where to sign in, the
    *  sign-ins on offer and the instance's invite note. */
   signIn(): { workspace: string; url: string; providers: string[]; note: string | null };
+  /** DNS TXT lookups, for the sweep's daily look at partner domains. */
+  resolveTxt: TxtLookup;
 }
 
 /** One message an admin can send to everyone a list invited, instead of one
@@ -154,7 +158,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
       const company = companies.find((c) => u.groups.includes(companyGroup(c.id)));
       return { id: u.id, name: [u.firstname, u.lastname].filter(Boolean).join(' ') || u.email, email: u.email,
         ...(company ? { company: { id: company.id, name: company.name } } : {}), ...(m?.endsAt ? { endsAt: m.endsAt } : {}),
-        disabled: !!u.disabledAt };
+        ...(m?.via === 'domain' && m.domain ? { joinedThrough: m.domain } : {}), disabled: !!u.disabledAt };
     });
     const signedIn = new Set(people.map((p) => p.email.toLowerCase()));
     const invited = invitations.filter((i) => !i.acceptedAt && !i.revokedAt && i.groups.includes(group) && !signedIn.has(i.email)).map((i) => {
@@ -245,33 +249,51 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
    *  serverless deploy that crons this route with a service token instead. */
   router.add('POST', '/api/v1/programmes/sweep', async (req, res) => {
     const actor = await manager(req, res); if (!actor) return;
-    sendJson(res, 200, { ended: await sweepProgrammeEnds(store, deps.audit) });
+    const rulesEnded = await sweepDomainRules(store, deps.audit);
+    const ended = await sweepProgrammeEnds(store, deps.audit);
+    sendJson(res, 200, { ended, rulesEnded, domainsChecked: await recheckDomains(store, deps.audit, deps.resolveTxt) });
   });
 
   // ── ending a partnership ───────────────────────────────────────────────────
-  /** Preview by default; `apply: true` does it. Select by `programme`, `company`
-   *  or `emails`; `projects` is `transfer-readonly` (default), `transfer` or
-   *  `keep`, and `transferTo` names who receives them (default: whoever ends it). */
+  /** Preview by default; `apply: true` does it. Select by `programme`, `company`,
+   *  `domain` or `emails`; `projects` is `team-readonly` (the default when the
+   *  programme has an owning team), `me-readonly`, `me` or `keep`, and
+   *  `transferTo` names who receives them. The partner domains that would let
+   *  the same people back in are withdrawn first: the whole domain for a
+   *  domain, and the programme's or company's rules otherwise. */
   router.add('POST', '/api/v1/programmes/exit', async (req, res) => {
     const actor = await manager(req, res); if (!actor) return;
-    const body = (await readJson(req, 512 * 1024)) as { programme?: unknown; company?: unknown; emails?: unknown; projects?: unknown; transferTo?: unknown; apply?: unknown } | null;
-    const [users, invitations, projects, companies] = await Promise.all([store.listUsers(), store.listInvitations(), store.listProjects(), store.listCompanies()]);
+    const body = (await readJson(req, 512 * 1024)) as { programme?: unknown; company?: unknown; domain?: unknown; emails?: unknown; projects?: unknown; transferTo?: unknown; apply?: unknown } | null;
+    const [users, invitations, projects, companies, partnerDomains] = await Promise.all([
+      store.listUsers(), store.listInvitations(), store.listProjects(), store.listCompanies(), store.listPartnerDomains(),
+    ]);
     let selectGroup: string | undefined;
+    let selectDomain: string | undefined;
     let emails: Set<string> | undefined;
+    let withdraw: { domain?: string; programmeId?: string; companyId?: string } | undefined;
     let programme: Awaited<ReturnType<Store['getProgramme']>> = null;
     if (typeof body?.programme === 'string') {
       programme = await store.getProgramme(body.programme);
       if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
       selectGroup = programmeGroup(body.programme);
+      withdraw = { programmeId: programme.id };
     } else if (typeof body?.company === 'string') {
       const company = companies.find((c) => c.id === body.company);
       if (!company) return sendError(res, 404, 'NOT_FOUND', 'no such company');
       programme = await store.getProgramme(company.programmeId);
       selectGroup = companyGroup(body.company);
+      withdraw = { companyId: company.id };
+    } else if (typeof body?.domain === 'string') {
+      selectDomain = normaliseDomain(body.domain) ?? undefined;
+      if (!selectDomain) return sendError(res, 400, 'INVALID_DOMAIN', 'give a domain name, such as partner.example');
+      withdraw = { domain: selectDomain };
+      // A domain that feeds one programme ends with that programme's owning team.
+      const fed = [...new Set(partnerDomains.find((d) => d.domain === selectDomain)?.rules.map((r) => r.programmeId) ?? [])];
+      if (fed.length === 1) programme = await store.getProgramme(fed[0]!);
     } else if (Array.isArray(body?.emails) && body.emails.every((e) => typeof e === 'string')) {
       emails = new Set((body.emails as string[]).map((e) => e.trim().toLowerCase()).filter(Boolean));
       if (!emails.size || emails.size > 1000) return sendError(res, 400, 'INVALID_INPUT', 'name between 1 and 1000 addresses');
-    } else return sendError(res, 400, 'INVALID_INPUT', 'select by programme, company or emails');
+    } else return sendError(res, 400, 'INVALID_INPUT', 'select by programme, company, domain or emails');
     // Where their projects go (Andy, 2026-11-06): to the team that owns the
     // programme, read-only, by default. "team-readonly": owned by whoever made
     // the programme (or you, when that account cannot hold work), shared with
@@ -293,10 +315,19 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
       if (!target || target.disabledAt || isProgrammeScoped(target.groups, target.role)) return sendError(res, 400, 'INVALID_INPUT', 'transfer to an enabled internal account');
       transferTo = target;
     }
-    const selected = users.filter((u) => !u.id.startsWith('svc_') && (selectGroup ? u.groups.includes(selectGroup) : emails!.has(u.email.toLowerCase())));
+    const picks = (email: string, groups: readonly string[]) =>
+      selectGroup ? groups.includes(selectGroup) : selectDomain ? domainOfEmail(email) === selectDomain : emails!.has(email.toLowerCase());
+    const selected = users.filter((u) => !u.id.startsWith('svc_') && picks(u.email, u.groups));
     const partners = selected.filter((u) => isProgrammeScoped(u.groups, u.role) && u.id !== actor.id);
     const skipped = selected.filter((u) => !partners.includes(u)).map((u) => ({ id: u.id, email: u.email, reason: u.id === actor.id ? 'your own account' : 'not a partner account' }));
-    const pending = invitations.filter((i) => !i.acceptedAt && !i.revokedAt && (selectGroup ? i.groups.includes(selectGroup) : emails!.has(i.email)));
+    const pending = invitations.filter((i) => !i.acceptedAt && !i.revokedAt && picks(i.email, i.groups));
+    const programmeNames = new Map((await store.listProgrammes()).map((x) => [x.id, x.name]));
+    const rulesEnding = withdraw ? partnerDomains.flatMap((d) => d.rules
+      .filter((r) => d.domain === withdraw!.domain || r.programmeId === withdraw!.programmeId || (!!withdraw!.companyId && r.companyId === withdraw!.companyId))
+      .map((r) => ({
+        domain: d.domain, programme: { id: r.programmeId, name: programmeNames.get(r.programmeId) ?? r.programmeId },
+        ...(r.companyId ? { company: { id: r.companyId, name: companies.find((c) => c.id === r.companyId)?.name ?? r.companyId } } : {}),
+      }))) : [];
     // The same bounded read the single-account offboarding preview uses; past
     // 200 the count says "200 or more" rather than reading everything.
     const linksOf = async (userId: string) => Math.min(200, (await store.subjectRows(userId, 'links', '', 201)).length);
@@ -307,9 +338,11 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     })));
     if (body?.apply !== true) {
       return sendJson(res, 200, { dryRun: true, projects: projectsMode, transferTo: { id: transferTo.id, email: transferTo.email }, ...(team ? { team } : {}),
-        accounts, skipped, pendingInvitations: pending.map((i) => ({ id: i.id, email: i.email })) }, { 'cache-control': 'no-store' });
+        accounts, skipped, pendingInvitations: pending.map((i) => ({ id: i.id, email: i.email })), domainRules: rulesEnding }, { 'cache-control': 'no-store' });
     }
     const at = now();
+    // First, so nobody new joins through a domain while the rest runs.
+    const rulesWithdrawn = withdraw ? await withdrawDomainRules(store, deps.audit, `user:${actor.id}`, withdraw, at) : [];
     const done: Array<Record<string, unknown>> = [];
     for (const a of accounts) {
       for (const p of a.projects) {
@@ -337,9 +370,11 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
       await store.revokeInvitation(inv.id, at, { pendingOnly: true });
       await deps.audit(`user:${actor.id}`, 'invite.revoke', `invitation:${inv.id}`, { was: 'pending', via: 'programme-exit' });
     }
-    await deps.audit(`user:${actor.id}`, 'programme.exit', selectGroup ? `group:${selectGroup}` : 'programme:list', {
+    await deps.audit(`user:${actor.id}`, 'programme.exit', selectGroup ? `group:${selectGroup}` : selectDomain ? `domain:${selectDomain}` : 'programme:list', {
       accounts: done.length, invitationsRevoked: pending.length, skipped: skipped.length, projects: projectsMode, transferTo: transferTo.id, ...(team ? { team } : {}),
+      ...(rulesWithdrawn.length ? { domainRules: rulesWithdrawn.length } : {}),
     });
-    sendJson(res, 200, { dryRun: false, accounts: done, skipped, invitationsRevoked: pending.length }, { 'cache-control': 'no-store' });
+    // The same shape as the preview; the store calls returned what was removed.
+    sendJson(res, 200, { dryRun: false, accounts: done, skipped, invitationsRevoked: pending.length, domainRules: rulesWithdrawn.length ? rulesEnding : [] }, { 'cache-control': 'no-store' });
   });
 }
