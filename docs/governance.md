@@ -71,13 +71,6 @@ Guests are a special case: governing an input at all locks it for them
 A tool with a `visibility` block is **absent** from the catalog feed for anyone outside those
 groups: not greyed out, not hidden in the client. `*` means everyone.
 
-A `tool.use` grant changes the same list. A deny removes the tool for that group or person,
-whether or not the tool has an overlay, and an allow adds it for someone outside the
-`visibility` groups ([explicit allow and the role
-default](permissions.md#explicit-allow-and-the-role-default)). The catalog feed, the tool's
-files, org-config, Preview, server renders and the organisation MCP all apply the same rule,
-and Preview lists every tool a set of groups would not see.
-
 ### The enforce block
 
 | Key | Values | Status today |
