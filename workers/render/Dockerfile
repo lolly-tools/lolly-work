@@ -9,7 +9,7 @@
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
 # /workers/render) keeps the base pin moving. The worker lock pins the browser
 # revision; exercise real render/raster requests when either dependency changes.
-FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9
 WORKDIR /app
 
 ENV NODE_ENV=production
