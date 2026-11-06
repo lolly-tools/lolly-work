@@ -1,11 +1,11 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "9b59406111fb6d238c6a7493fc17ef30e151dcaf",
+  "commit": "d461ac6d53f0b3a908a8754e68ee78d5920b6308",
   "manifestSha256": "3c95c273678674c1c94f6afe97307aa8f032c28fc48ec638400ad99423fef2f3",
   "files": {
     "account-lifecycle.md": {
-      "sha256": "4820de057e3ff8e6681826cab52a19ebbc0cdd5fcd7bc72e917ad63276948cee",
+      "sha256": "7a685c7c0079b2c6a1f8c22620d3dd006e66591b2f7df039d0ccacfcf196f5af",
       "source": "docs/work/account-lifecycle.md"
     },
     "admission-policy.md": {
@@ -17,7 +17,7 @@
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
-      "sha256": "ac529e4674f3ad96b9540654766003fe2b6012a74db523f4cd6335c2a2118436",
+      "sha256": "13acc81670b2f82a80df68b255f91acaefe89e90c34f0cfd86686ecdefb99bed",
       "source": "docs/work/api.md"
     },
     "approvals.md": {
@@ -61,7 +61,7 @@
       "source": "docs/work/customer-setup.md"
     },
     "data-lifecycle.md": {
-      "sha256": "cf35d3ab52f6bcd889412f1b31072b7174f747b565d8670635668aeae5df054f",
+      "sha256": "97943a6f19d818ca95c0a9f0ea3cddfb5bbb938126a4998c69f03925cb7304e4",
       "source": "docs/work/data-lifecycle.md"
     },
     "delivery.md": {
@@ -73,7 +73,7 @@
       "source": "docs/work/deployment.md"
     },
     "design-system-administration.md": {
-      "sha256": "67e6df831f2b2172018ad9c7f3ab666d82d85144639b117c34cd86dce6c8ab6d",
+      "sha256": "ed591f98400a892decc429effedb4bdf72c2b71c04669b3a0122d1f8a2c4fe6d",
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
@@ -125,11 +125,11 @@
       "source": "docs/work/img/README.md"
     },
     "install.md": {
-      "sha256": "cf1bdb4e0b508868420cf8770037aa0866580ce4422093697d6f18915591ba99",
+      "sha256": "e89d932b660ad75f7c2a3166b1116b3236a9bdf24b588ff427aceab06d234970",
       "source": "docs/work/install.md"
     },
     "instance-pack-production.md": {
-      "sha256": "b6e94b65d168366cc504bd8bef37da37a73ce91a4083f412a577b1e7e42db80d",
+      "sha256": "fe2108dacfebd23c1c84bbf69cd60810bfbb37e5a1f174efd1a0e813133fa152",
       "source": "docs/work/instance-pack-production.md"
     },
     "invitations.md": {
@@ -157,7 +157,7 @@
       "source": "docs/work/official-installations.md"
     },
     "operations.md": {
-      "sha256": "fadd7cd8fede2d3dc75047ac7568ae4b32bf64ca40649f9654db0a5121ef9fe9",
+      "sha256": "ceafff20c2dd479b37759ea4212cc75c7849c1d8d5d53861ed4c7ccf8729e21d",
       "source": "docs/work/operations.md"
     },
     "overview.md": {
@@ -169,7 +169,7 @@
       "source": "docs/work/past-releases.md"
     },
     "permissions.md": {
-      "sha256": "15ec36213560a1ee7505ec6a40144cdbb6a28f141695dbac4f90277a3bf98b36",
+      "sha256": "205bdf790939877ed07cae1a81ef5025357d3a14aebcaf7958ac5367cba64b62",
       "source": "docs/work/permissions.md"
     },
     "platform-deployment.md": {
