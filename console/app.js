@@ -5598,7 +5598,9 @@ async function programmePeople(p, host) {
   try { data = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`); }
   catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
   const reload = () => programmePeople(p, host);
-  const day = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+  // An end date in a list is a whole day in UTC (it ends at 23:59:59 UTC), so
+  // it reads back as that same day wherever the admin is.
+  const day = (iso) => iso ? `${new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })} UTC` : '';
 
   // Companies.
   const companyName = el('input', { placeholder: 'Acme Distribution', 'aria-label': 'Company name' });
