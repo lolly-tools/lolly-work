@@ -44,7 +44,7 @@ export function createBrandRuleService(brand: BrandService, store: Store, develo
       }
     }
     const coverage = mappings.map(m => ({ toolId: m.toolId, outputs: ['png', 'svg', 'jpg', 'pdf'].map(format => ({ format, rules: ruleApi.resolveBrandPolicy(system, doc, m.toolId, format, m) })) }));
-    const result = { mappings, manifests, coverage, sourceId: snap.source.id, sourceRevision: snap.source.revision,
+    const result = { mappings, manifests, coverage, sourceId: snap.source.id, sourceRevision: snap.source.baseRevision,
       revision: snap.state.revision, policyDigest: hash([...await store.listOverlays()]), reviewedBy: actor.id };
     return { ...result, reviewToken: hash(result) };
   };

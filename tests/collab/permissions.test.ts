@@ -56,7 +56,7 @@ const canOf = (role: Role, grants: Grant[] = []) =>
 
 test('collab.join: every role that can read a session gets it, guest does not', () => {
   const expected: Record<Role, boolean> = {
-    viewer: true, member: true, author: true, approver: true, admin: true, owner: true, guest: false, automation: false,
+    viewer: true, member: true, author: true, approver: true, 'brand-manager': true, admin: true, owner: true, guest: false, automation: false,
   };
   for (const role of ROLES) {
     assert.equal(canOf(role)['collab.join'], expected[role], `collab.join for ${role}`);
@@ -65,7 +65,7 @@ test('collab.join: every role that can read a session gets it, guest does not', 
 
 test('collab.edit: exactly the roles that hold session.edit by default', () => {
   const expected: Record<Role, boolean> = {
-    viewer: false, member: true, author: true, approver: true, admin: true, owner: true, guest: false, automation: false,
+    viewer: false, member: true, author: true, approver: true, 'brand-manager': true, admin: true, owner: true, guest: false, automation: false,
   };
   for (const role of ROLES) {
     assert.equal(canOf(role)['collab.edit'], expected[role], `collab.edit for ${role}`);

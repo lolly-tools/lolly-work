@@ -90,7 +90,7 @@ import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
-import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
@@ -107,6 +107,7 @@ import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader }
 import { projectSubmissionInput, ProjectSubmissionError } from '../catalog/project-source.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { createBrandPages } from '../brand-pages/routes.ts';
+import { createBrandEdits, brandEditsCapability } from '../brand/edit-routes.ts';
 import { brandPagesConfig } from '../brand-pages/types.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
 import {
@@ -399,8 +400,16 @@ export function buildApp(deps: AppDeps): App {
   const otel = deps.otel ?? NOOP_OTEL;
   // Assigned once the edge outbox exists, further down.
   let onBrandCommitted: (prior: BrandSnapshot) => void = () => {};
+  // Assigned once the routes that say so exist, further down.
+  let onBrandEditState: (snap: BrandSnapshot) => void = () => {};
   const brand = createBrandService(deploymentConfig, store, blobs, {
     onCommitted: (prior) => onBrandCommitted(prior),
+    onEditState: (snap) => onBrandEditState(snap),
+    packSigner: async () => {
+      if (!catalogSigning) return null;
+      const { keyId } = await catalogSigning.ready;
+      return { keyId, alg: 'ECDSA-P256-SHA256', signBytes: catalogSigning.signBytes, verifyBytes: catalogSigning.verifyBytes };
+    },
     ...(productionMode(deploymentConfig) ? { inspectSource: async (source: string) => {
       const report = await inspectPack(deploymentConfig.instance.pack, { source,
         workerConfigured: !!deploymentConfig.render.worker.url && !!secrets.renderWorker,
@@ -831,9 +840,10 @@ export function buildApp(deps: AppDeps): App {
       const tags: Array<['b' | 'h', string]> = [];
       // Revision-addressed brand files of the old revision, and the hashed pack it offered.
       if (after.revision !== prior.revision) tags.push(['b', sha256Hex(prior.revision).slice(0, 16)]);
-      const before = /^brand-download\/([0-9a-f]{64})\.lolly$/.exec(prior.state.download.blobId ?? '')?.[1];
-      const now = /^brand-download\/([0-9a-f]{64})\.lolly$/.exec(after.state.download.blobId ?? '')?.[1];
-      if (before && (before !== now || (!prior.state.download.suppressed && after.state.download.suppressed))) tags.push(['h', before.slice(0, 16)]);
+      // The pack offered before and after: a live edit can swap it for one with the edit in it.
+      const packHash = (snap: BrandSnapshot) => /^brand-download\/([0-9a-f]{64})\.lolly$/.exec(brand.offeredDownload(snap)?.blobId ?? '')?.[1];
+      const before = packHash(prior), now = packHash(after);
+      if (before && before !== now) tags.push(['h', before.slice(0, 16)]);
       if (tags.length) queueEdgePurge({ tags: safeTags(tags), reason: 'brand.change' });
     })().catch((error: Error) => log('warn', 'edge purge after a brand change could not be queued', { error: error.message }));
   };
@@ -2622,7 +2632,8 @@ export function buildApp(deps: AppDeps): App {
     // Asked first so the flag service's round trip overlaps the store reads.
     // It never rejects: a failure leaves each flag on Work's governed value.
     const flagServiceAnswers = flagService?.evaluate({ groups: subject.groups, role: subject.role });
-    const overlays = await brandRules.project(brand.current() ?? await brand.snapshot(), subject.groups);
+    const brandSnapshot = brand.current() ?? await brand.snapshot();
+    const overlays = await brandRules.project(brandSnapshot, subject.groups);
     const grants = await store.listGrants();
     // The inbox's own count for the same client (its shell and engine
     // selectors): the messages it shows and the comment notices that pass
@@ -2635,7 +2646,7 @@ export function buildApp(deps: AppDeps): App {
       toolInputs.set(toolId, await readToolInputs(config.instance.pack, toolId));
     }
     const flagServiceMap = flagServiceAnswers ? await flagServiceAnswers : undefined;
-    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, approvalRecording: approvalArtifactPolicy(config).recordInCredentials && !await approvalRecorder.unavailable(), ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
+    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, brandEdits: brandEditsCapability(brandSnapshot, brand.mutable), approvalRecording: approvalArtifactPolicy(config).recordInCredentials && !await approvalRecorder.unavailable(), ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
   };
 
   // A small, uncached lease renewal. Resolve membership on every request so a
@@ -3487,6 +3498,8 @@ export function buildApp(deps: AppDeps): App {
   };
 
   const brandPages = createBrandPages({ config, store, blobs, notifier, audit, memberOf, serviceAccountOf, requireAction });
+  const brandEdits = createBrandEdits({ config, store, blobs, brand, notifier, audit, memberOf, serviceAccountOf, requireAction });
+  onBrandEditState = brandEdits.noteState;
 
   /** Settle the one delivery an approval names. The immutable record is the
    *  approval subject, so the decision cannot be replayed over different bytes
@@ -4101,7 +4114,7 @@ export function buildApp(deps: AppDeps): App {
     const snap = await brand.snapshot();
     const request = brand.current();
     return (!request || request.source.id === snap.source.id && request.source.revision === snap.source.revision)
-      && brand.downloadVisible(snap) ? snap.state.download : null;
+      ? brand.offeredDownload(snap) : null;
   };
   const readPackMeta = async (): Promise<InstancePackMeta | null> => (await offeredPack())?.meta ?? null;
 
@@ -4776,7 +4789,7 @@ export function buildApp(deps: AppDeps): App {
   const INVITE_LINKS_PER_DAY = 10;
   const inviteLinkQuota = createWindowQuota(INVITE_LINKS_PER_DAY, 86_400_000);
   /** Lowest to highest, for "does this group's role outrank the inviter". */
-  const ROLE_RANK: readonly Role[] = ['guest', 'viewer', 'member', 'author', 'approver', 'admin', 'owner'];
+  const ROLE_RANK: readonly Role[] = ['guest', 'viewer', 'member', 'author', 'approver', 'brand-manager', 'admin', 'owner'];
   const invitationStatus = (r: InvitationRecord, now = Date.now()): 'pending' | 'accepted' | 'revoked' | 'expired' =>
     r.revokedAt ? 'revoked'
       : r.acceptedAt ? 'accepted'
@@ -4959,8 +4972,8 @@ export function buildApp(deps: AppDeps): App {
     const ownerNamable = new Set<string>();
     if (isOwner) {
       for (const u of await store.listUsers()) for (const g of u.idpGroups) ownerNamable.add(g);
-      for (const role of ['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const) {
-        const names = config.idp.roleGroups[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []);
+      for (const role of PERSON_ROLES) {
+        const names = config.idp.roleGroups[role] ?? (GROUP_NAMED_ROLES.includes(role) ? [role] : []);
         for (const n of names) ownerNamable.add(n);
       }
     }
@@ -5662,8 +5675,9 @@ export function buildApp(deps: AppDeps): App {
     if (approval.sourceReview && !await sourceReviewAvailable(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no available source subject');
     if (approval.createdBy === user.id) return sendError(res, 403, 'SEPARATION_OF_DUTIES', 'A requester cannot act on their own approval.');
     if (!(await requireAction(req, res, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*']))) return;
-    const body = (await readJson(req)) as { action?: string; comment?: string; sourceFingerprint?: string; artifactFingerprint?: string; reviewToken?: string; brandPageDigest?: string } | null;
+    const body = (await readJson(req)) as { action?: string; comment?: string; sourceFingerprint?: string; artifactFingerprint?: string; reviewToken?: string; brandPageDigest?: string; brandEditDigest?: string } | null;
     if (approval.brandPage && body?.brandPageDigest !== approval.brandPage.digest) return sendError(res, 409, 'BRAND_PAGE_SUBJECT_CHANGED', 'Reopen this request before you decide.');
+    if (approval.brandEdit && body?.brandEditDigest !== approval.brandEdit.digest) return sendError(res, 409, 'BRAND_EDIT_SUBJECT_CHANGED', 'Reopen this request before you decide.');
     if (approval.exportReview) {
       if (body?.artifactFingerprint !== approval.exportReview.fingerprint) return sendError(res, 409, 'ARTIFACT_SUBJECT_CHANGED', 'Reopen this request before you decide.');
       if (body?.action === 'approve') {
@@ -5698,7 +5712,7 @@ export function buildApp(deps: AppDeps): App {
     // the submitter its own, more specific message, so the generic one below is
     // skipped rather than doubled up.
     const wasDomainSubject = isTerminal(next.state)
-      ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id) || await brandPages.settleApproval(next, user.id))
+      ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id) || await brandPages.settleApproval(next, user.id) || await brandEdits.settleApproval(next, user.id))
       : false;
     if (isTerminal(next.state) && !wasDomainSubject) {
       await store.putMessage({
@@ -5744,6 +5758,7 @@ export function buildApp(deps: AppDeps): App {
     await settleAssetSubmission(next, user.id);
     await settleDeliveryApproval(next, user.id);
     await brandPages.settleApproval(next, user.id);
+    await brandEdits.settleApproval(next, user.id);
     sendJson(res, 200, serializeApproval(next, user.id, undefined, await actorsMap()));
   });
 
@@ -10757,6 +10772,7 @@ export function buildApp(deps: AppDeps): App {
   registerDiscoveryRoutes(router, discoveryDeps);
   registerIntentRoutes(router, discoveryDeps);
   brandPages.register(router, { shell: serveShell });
+  brandEdits.register(router);
   registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit });
 
   for (const verb of ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize'] as const) {
@@ -11841,6 +11857,7 @@ function serializeApproval(
     ...(a.sourceReview ? { sourceReview: a.sourceReview } : {}),
     ...(a.exportReview ? { exportReview: exportReviewWire(a) } : {}),
     ...(a.brandPage ? { brandPage: { ...a.brandPage, preview: `/api/v1/brand-pages/${a.brandPage.slug}/revisions/${a.brandPage.revision}/preview/` } } : {}),
+    ...(a.brandEdit ? { brandEdit: { ...a.brandEdit, detail: `/api/v1/brand/edits/revisions/${a.brandEdit.revision}?source=${encodeURIComponent(a.brandEdit.sourceId)}` } } : {}),
     subjectRef: a.subjectRef,
     title: a.title,
     chainId: a.chainId,

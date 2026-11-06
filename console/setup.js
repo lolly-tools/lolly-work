@@ -27,7 +27,7 @@ export async function tokensView(main, { el, field, api, can, refresh }) {
     const { tokens, scopeVocabulary } = await api(path);
     const label = el('input', { required: '', maxlength: 80 });
     const scopeChoices = kind === 'service' ? scopeVocabulary?.scopes ?? [] : [];
-    const roleNames = [...(scopeChoices.length ? ['automation'] : []), 'viewer', 'member', 'author', 'approver', 'admin', 'owner'];
+    const roleNames = [...(scopeChoices.length ? ['automation'] : []), 'viewer', 'member', 'author', 'approver', 'brand-manager', 'admin', 'owner'];
     const preferred = scopeChoices.length ? 'automation' : 'member';
     const role = el('select', {}, ...roleNames.map(role => el('option', { value: role, selected: role === preferred ? '' : null }, role)));
     const scopeBoxes = scopeChoices.map(scope => {

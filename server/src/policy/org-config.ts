@@ -13,6 +13,7 @@ import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type
 import { evaluate, grantDecision, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { brandPagesConfig } from '../brand-pages/types.ts';
+import { BRAND_EDIT_MAX_BYTES } from '../brand/edit-document.ts';
 import { projectInjectables, flagInjectableGovernance, injectablesForVersion } from '../injectables/registry.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
 import { passwordIdpOf, type InstanceConfig } from '../config/instance.ts';
@@ -44,6 +45,8 @@ const CLIENT_ACTIONS = [
   'project.create',
   // "Publish to this instance" for a brand page; POST /api/v1/brand-pages stays the boundary.
   'brand.page.publish',
+  // "Edit for this instance" on a managed design system; the /api/v1/brand/edits routes stay the boundary.
+  'brand.edit',
   // "New group" in the share dialog (lolly plan 299); off when the instance
   // turns user-made groups off. POST /api/v1/share-groups stays the boundary.
   'group.create',
@@ -115,6 +118,8 @@ export interface OrgConfigPayload {
   /** Present when this instance serves brand pages and this caller may publish one.
    *  `approval` says a chain must approve each revision before it goes live. */
   brandPages?: { maxBundleBytes: number; maxFileBytes: number; partBytes: number; approval: boolean };
+  /** Present only for someone who may send an edit here. */
+  brandEdits?: { maxDocumentBytes: number; approval: boolean };
   /** The invite limits (plans/74 `policy.invites`), so the shell offers only
    *  the roles and domains the server accepts and a truthful expiry. Whether
    *  this caller may invite new people at all is `can['user.invite']`.
@@ -214,6 +219,7 @@ export function policyVersionOf(
   deployment?: {
     invites: unknown; guestLinks: boolean; sharing?: unknown; liveCollab?: false; projectFiles?: true; home?: 'tools' | 'projects'; homeUrl?: string;
     passwordSignIn?: true; projectRequests?: false; brandPages?: { maxBundleBytes: number; maxFileBytes: number; approval: boolean };
+    brandEdits?: { approval: boolean };
   },
 ): string {
   const doc = {
@@ -326,6 +332,8 @@ export function assembleOrgConfig(opts: {
   projectFiles?: boolean;
   /** This server can write an approval into an approved file's Content Credentials. */
   approvalRecording?: boolean;
+  /** This deployment can keep a manager's edit. Absent means it cannot. */
+  brandEdits?: { approval: boolean } | null;
   inboxUnread: number;
 }): OrgConfigPayload {
   const { config, user, overlays, inboxUnread } = opts;
@@ -425,6 +433,7 @@ export function assembleOrgConfig(opts: {
   const brandPages = brandPagesConfig(config);
   // Bit and block read the same way: a shell offers publishing only when both hold.
   can['brand.page.publish'] = brandPages.enabled && !!can['brand.page.publish'];
+  can['brand.edit'] = !!opts.brandEdits && !!can['brand.edit'];
   return {
     ai: resolveAiPolicy(config.policy.ai, flagGovernance),
     instance: { name: config.instance.name },
@@ -442,6 +451,7 @@ export function assembleOrgConfig(opts: {
     can,
     ...(approvalArtifacts.enabled && (can['export.request'] || mayActOnSomeApproval(principal, grants)) ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, match: true, ...(opts.approvalRecording ? { recordInCredentials: true } : {}) } } } : {}),
     ...(can['brand.page.publish'] ? { brandPages: { maxBundleBytes: brandPages.maxBundleBytes, maxFileBytes: brandPages.maxFileBytes, partBytes: TRANSFER_PART_BYTES, approval: !!brandPages.approvalChain } } : {}),
+    ...(can['brand.edit'] ? { brandEdits: { maxDocumentBytes: BRAND_EDIT_MAX_BYTES, approval: !!opts.brandEdits?.approval } } : {}),
     sharing: {
       groups: sharingGroups, projectFiles: opts.projectFiles === true,
       instance: { enabled: sharingPolicy.instanceAudience, maxRole: sharingPolicy.instanceMaxRole },
@@ -494,6 +504,8 @@ export function assembleOrgConfig(opts: {
         ...(config.instance.homeUrl ? { homeUrl: config.instance.homeUrl } : {}),
         // Only present when on, so deployments without brand pages keep theirs.
         ...(brandPages.enabled ? { brandPages: { maxBundleBytes: brandPages.maxBundleBytes, maxFileBytes: brandPages.maxFileBytes, approval: !!brandPages.approvalChain } } : {}),
+        // Only present when it can be used, so deployments that cannot keep an edit keep theirs.
+        ...(opts.brandEdits ? { brandEdits: { approval: opts.brandEdits.approval } } : {}),
         // `invites.passwordSetup` follows whether password sign-in is on (the
         // caller's role and grants are hashed above), and `requests.project`
         // follows `policy.requests.project`. Each is present only when it

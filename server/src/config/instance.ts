@@ -35,7 +35,7 @@ import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type Provider
 import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../delivery/types.ts';
 import { AUTH_PARAM_ALLOWLIST, oidcUrl, type OidcPolicy, type ClaimMap } from '../iam/oidc.ts';
 import type { AdmissionPolicy, EmailVerification } from '../iam/admission.ts';
-import type { RoleGroups } from '../rbac/evaluate.ts';
+import { GROUP_NAMED_ROLES, PERSON_ROLES, type RoleGroups } from '../rbac/evaluate.ts';
 import { validateSharingPolicy } from '../policy/sharing.ts';
 import { EDGE_DEFAULTS, hostOf, validateEdgeConfig, type EdgeConfig } from '../edge/config.ts';
 
@@ -927,7 +927,7 @@ export function parseConfig(json: string): InstanceConfig {
   if (raw.idp && Object.hasOwn(raw.idp, 'roleGroups')) {
     const input = raw.idp.roleGroups;
     if (!input || typeof input !== 'object' || Array.isArray(input)
-      || Object.keys(input).some(role => !['owner', 'admin', 'approver', 'author', 'member', 'viewer'].includes(role))) {
+      || Object.keys(input).some(role => !(PERSON_ROLES as readonly string[]).includes(role))) {
       throw new Error('idp.roleGroups must map supported roles to group arrays');
     }
   }
@@ -1002,15 +1002,15 @@ export function parseConfig(json: string): InstanceConfig {
     else delete cfg.instance.inviteNote;
   }
   const mode = cfg.policy.defaultAccessMode;
-  const roles = ['owner', 'admin', 'approver', 'author', 'member', 'viewer'];
+  const roles: readonly string[] = PERSON_ROLES;
   const mapping = cfg.idp.roleGroups;
   if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)
     || Object.entries(mapping).some(([role, groups]) => !roles.includes(role) || !Array.isArray(groups) || groups.length > 100
       || groups.some(group => typeof group !== 'string' || !group.trim() || group !== group.trim() || group.length > 300 || group === '*' || /[\u0000-\u001f]/.test(group)))) {
     throw new Error('idp.roleGroups must map supported roles to arrays of exact non-empty group names');
   }
-  const assignedGroups = (['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const)
-    .flatMap(role => mapping[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []));
+  const assignedGroups = PERSON_ROLES
+    .flatMap(role => mapping[role] ?? (GROUP_NAMED_ROLES.includes(role) ? [role] : []));
   if (new Set(assignedGroups).size !== assignedGroups.length) throw new Error('idp.roleGroups cannot assign a group more than once');
   validateAiConfig(cfg.policy.ai);
   validateInvitePolicy(cfg.policy.invites);

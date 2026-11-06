@@ -21,10 +21,17 @@
  * reserved `lolly.foundation` / `lolly.ui` namespaces travel inside an instance
  * pack exactly as signed: this service must never flatten, filter, rename or
  * independently interpret application-token references while hosting it.
+ *
+ * One narrow exception to "never builds one". While a manager's edit is live, the
+ * kept pack holds old colours, and offering it would put them back on every device
+ * that imports it. `deriveInstancePack` swaps the token document only, and only in
+ * a pack this instance's own key already signed, so it cannot turn a pack an app
+ * would refuse into one it accepts. Every other part keeps its stored bytes, and
+ * the kept pack stays as it was for a rollback.
  */
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../lib/crypto.ts';
-import { inflateRawSync } from 'node:zlib';
+import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib';
 
 export const PACK_BLOB_ID = 'instance-pack.lolly';
 export const PACK_META_BLOB_ID = 'instance-pack.meta';
@@ -51,7 +58,7 @@ const EOCD_SIG = 0x06054b50;
 const CENTRAL_SIG = 0x02014b50;
 const LOCAL_SIG = 0x04034b50;
 
-interface Entry { name: string; method: number; compressedSize: number; localOffset: number }
+interface Entry { name: string; method: number; compressedSize: number; localOffset: number; flags: number; crc: number; size: number }
 
 function centralEntries(bytes: Buffer): Entry[] {
   // EOCD sits in the last 22..(22+65535) bytes; scan backward for its signature.
@@ -68,8 +75,11 @@ function centralEntries(bytes: Buffer): Entry[] {
   const seen = new Set<string>();
   for (let i = 0; i < count; i++) {
     if (at + 46 > bytes.length || bytes.readUInt32LE(at) !== CENTRAL_SIG) throw new Error('malformed zip central directory');
+    const flags = bytes.readUInt16LE(at + 8);
     const method = bytes.readUInt16LE(at + 10);
+    const crc = bytes.readUInt32LE(at + 16);
     const compressedSize = bytes.readUInt32LE(at + 20);
+    const size = bytes.readUInt32LE(at + 24);
     const nameLen = bytes.readUInt16LE(at + 28);
     const extraLen = bytes.readUInt16LE(at + 30);
     const commentLen = bytes.readUInt16LE(at + 32);
@@ -78,7 +88,7 @@ function centralEntries(bytes: Buffer): Entry[] {
     const name = bytes.subarray(at + 46, at + 46 + nameLen).toString('utf8');
     if (seen.has(name)) throw new Error('duplicate zip entry');
     seen.add(name);
-    out.push({ name, method, compressedSize, localOffset });
+    out.push({ name, method, compressedSize, localOffset, flags, crc, size });
     at += 46 + nameLen + extraLen + commentLen;
   }
   return out;
@@ -144,4 +154,129 @@ export function instancePackTokensChecksum(bytes: Buffer): string | null {
   const entry = centralEntries(bytes).find(e => e.name === 'tokens.json');
   if (!entry) return null;
   return createHash('sha256').update(canonicalJson(JSON.parse(entryBytes(bytes, entry).toString('utf8')))).digest('hex');
+}
+
+// ── A pack with a manager's edit in it ───────────────────────────────────────
+
+const sri = (bytes: Uint8Array): string => `sha256-${createHash('sha256').update(bytes).digest('base64')}`;
+
+/** The stored form of one entry, copied byte for byte: its local header and its data. */
+function rawEntry(bytes: Buffer, e: Entry): Buffer {
+  // A data descriptor would follow the data, and nothing here records its length.
+  if (e.flags & 0x8) throw new Error('pack entry uses a data descriptor');
+  const nameLen = bytes.readUInt16LE(e.localOffset + 26);
+  const extraLen = bytes.readUInt16LE(e.localOffset + 28);
+  return bytes.subarray(e.localOffset, e.localOffset + 30 + nameLen + extraLen + e.compressedSize);
+}
+
+/** A new deflated entry, with its local header. */
+function newEntry(name: string, data: Buffer): { local: Buffer; entry: Entry } {
+  const deflated = deflateRawSync(data), method = deflated.length < data.length ? 8 : 0, payload = method === 8 ? deflated : data;
+  const nameBytes = Buffer.from(name, 'utf8'), crc = crc32(data) >>> 0;
+  const header = Buffer.alloc(30);
+  header.writeUInt32LE(LOCAL_SIG, 0);
+  header.writeUInt16LE(20, 4);
+  header.writeUInt16LE(0x0800, 6);
+  header.writeUInt16LE(method, 8);
+  header.writeUInt32LE(crc, 14);
+  header.writeUInt32LE(payload.length, 18);
+  header.writeUInt32LE(data.length, 22);
+  header.writeUInt16LE(nameBytes.length, 26);
+  return { local: Buffer.concat([header, nameBytes, payload]), entry: { name, method, compressedSize: payload.length, localOffset: 0, flags: 0x0800, crc, size: data.length } };
+}
+
+function zipOf(parts: Array<{ local: Buffer; entry: Entry }>): Buffer {
+  const out: Buffer[] = [], central: Buffer[] = [];
+  let offset = 0;
+  for (const { local, entry } of parts) {
+    out.push(local);
+    const name = Buffer.from(entry.name, 'utf8'), row = Buffer.alloc(46);
+    row.writeUInt32LE(CENTRAL_SIG, 0);
+    row.writeUInt16LE(20, 4);
+    row.writeUInt16LE(20, 6);
+    row.writeUInt16LE(entry.flags, 8);
+    row.writeUInt16LE(entry.method, 10);
+    row.writeUInt32LE(entry.crc, 16);
+    row.writeUInt32LE(entry.compressedSize, 20);
+    row.writeUInt32LE(entry.size, 24);
+    row.writeUInt16LE(name.length, 28);
+    row.writeUInt32LE(offset, 42);
+    central.push(row, name);
+    offset += local.length;
+  }
+  const directory = Buffer.concat(central), end = Buffer.alloc(22);
+  end.writeUInt32LE(EOCD_SIG, 0);
+  end.writeUInt16LE(parts.length, 8);
+  end.writeUInt16LE(parts.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...out, directory, end]);
+}
+
+export interface PackSigner {
+  keyId: string;
+  alg: string;
+  signBytes(bytes: Uint8Array): Promise<Buffer>;
+  verifyBytes(bytes: Uint8Array, signature: Uint8Array): Promise<boolean>;
+}
+
+/**
+ * The kept pack with `tokens` in place of its token document, signed by this instance.
+ * Null, and never a partial result, unless this instance's key signed the kept pack
+ * and every part matches the manifest it signed: re-signing anything else would make
+ * an app accept what it refuses today. The caller then withdraws the download.
+ */
+export async function deriveInstancePack(kept: Buffer, tokens: Buffer, signer: PackSigner): Promise<Buffer | null> {
+  try {
+    const entries = centralEntries(kept);
+    const named = new Map(entries.map(entry => [entry.name, entry]));
+    const manifestEntry = named.get('manifest.json'), signatureEntry = named.get('pack.sig'), tokensEntry = named.get('tokens.json');
+    if (!manifestEntry || !signatureEntry || !tokensEntry) return null;
+    const manifestBytes = entryBytes(kept, manifestEntry);
+    const sig = JSON.parse(entryBytes(kept, signatureEntry).toString('utf8')) as { signature?: unknown };
+    if (typeof sig.signature !== 'string' || !await signer.verifyBytes(manifestBytes, Buffer.from(sig.signature, 'base64'))) return null;
+    const manifest = JSON.parse(manifestBytes.toString('utf8')) as { integrity?: Record<string, string> };
+    const integrity = manifest.integrity;
+    if (!integrity || typeof integrity !== 'object' || !integrity['tokens.json']) return null;
+    // A signed manifest says nothing about a part that does not match it.
+    const read = new Map<string, Buffer>();
+    for (const [path, expected] of Object.entries(integrity)) {
+      const entry = named.get(path);
+      if (!entry) return null;
+      const bytes = entryBytes(kept, entry);
+      if (sri(bytes) !== expected) return null;
+      read.set(path, bytes);
+    }
+    const oldTokens = read.get('tokens.json')!;
+    const replaced = new Map<string, Buffer>([['tokens.json', tokens]]);
+    // The tokens family may also ride as a catalogue asset. It says the same document,
+    // and the pack's asset index wins on an app, so it changes with the rest.
+    const catalogBytes = read.get('catalog.json');
+    if (catalogBytes) {
+      const catalog = JSON.parse(catalogBytes.toString('utf8')) as { assets?: Array<{ type?: string; checksum?: string; formats?: Array<{ url?: string; checksum?: string; size?: number }> }> };
+      let changed = false;
+      for (const asset of catalog.assets ?? []) {
+        if (asset.type !== 'tokens') continue;
+        for (const format of asset.formats ?? []) {
+          const path = format.url?.startsWith('/catalog/') ? format.url.slice(1) : null;
+          if (!path || !read.get(path)?.equals(oldTokens)) continue;
+          replaced.set(path, tokens);
+          format.checksum = sri(tokens);
+          format.size = tokens.length;
+          if (asset.checksum !== undefined) asset.checksum = sri(tokens);
+          changed = true;
+        }
+      }
+      if (changed) replaced.set('catalog.json', Buffer.from(JSON.stringify(catalog, null, 2)));
+    }
+    for (const [path, bytes] of replaced) integrity[path] = sri(bytes);
+    const nextManifest = Buffer.from(JSON.stringify(manifest, null, 2));
+    replaced.set('manifest.json', nextManifest);
+    const signature = await signer.signBytes(nextManifest);
+    replaced.set('pack.sig', Buffer.from(JSON.stringify({ alg: signer.alg, signedAt: new Date().toISOString(), keyThumbprint: signer.keyId, signature: signature.toString('base64') }, null, 2)));
+    return zipOf(entries.map(entry => {
+      const bytes = replaced.get(entry.name);
+      return bytes ? newEntry(entry.name, bytes) : { local: rawEntry(kept, entry), entry };
+    }));
+  } catch { return null; }
 }

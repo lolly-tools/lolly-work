@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 import { createHash } from 'node:crypto';
 import { DOMAIN_NAME, parseConfig, type InstanceConfig } from '../config/instance.ts';
-import { roleFromGroups, type RoleGroups } from '../rbac/evaluate.ts';
+import { GROUP_NAMED_ROLES, PERSON_ROLES, roleFromGroups, type RoleGroups } from '../rbac/evaluate.ts';
 import { productionMode } from './checks.ts';
 import { serviceUrl } from '../lib/service-url.ts';
 
-export const SETUP_ROLES = ['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const;
+export const SETUP_ROLES = PERSON_ROLES;
 export class SetupInputError extends Error {
   readonly field: string;
   constructor(field: string, message: string) { super(message); this.field = field; }
@@ -44,7 +44,7 @@ export function setupDraft(config: InstanceConfig, groups: string[] = []): Setup
     authentication: config.idp.issuer ? 'oidc' : config.proxyAuth.enabled ? 'proxy' : 'development',
     issuer: endpoint(config.idp.issuer), clientId: config.idp.clientId, providerName: config.idp.displayName,
     groupsClaim: config.idp.groupsClaim,
-    roleGroups: Object.fromEntries(SETUP_ROLES.map(role => [role, config.idp.roleGroups[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : [])])),
+    roleGroups: Object.fromEntries(SETUP_ROLES.map(role => [role, config.idp.roleGroups[role] ?? (GROUP_NAMED_ROLES.includes(role) ? [role] : [])])),
     ownerTestGroups: groups, workerUrl: endpoint(config.render.worker.url), requireServerRendering: config.deployment.requireServerRendering,
     telemetry: config.policy.telemetry, guestLinks: config.policy.guestLinks.enabled, keepDevelopmentLogin: config.dev.enabled,
     admissionEmails: config.idp.admission?.emails ?? [], admissionDomains: config.idp.admission?.domains ?? [], bootstrapOwners: config.idp.bootstrapOwners ?? [] };
@@ -63,7 +63,11 @@ export function identitySettingsHash(config: InstanceConfig): string {
   const { admission, bootstrapOwners, hostedDomain, tenantId, emailVerification, scopes, authParams } = config.idp;
   const gate = Object.fromEntries(Object.entries({ admission, bootstrapOwners: bootstrapOwners?.length ? bootstrapOwners : undefined,
     hostedDomain, tenantId, emailVerification, scopes, authParams }).filter(([, v]) => v !== undefined));
-  return digest([config.instance.baseUrl, config.idp.issuer, config.idp.clientId, config.idp.groupsClaim, config.idp.claimMap, config.idp.roleGroups, config.idp.additional, config.proxyAuth,
+  // The brand manager role came later and has no default group, so an empty
+  // list means the same as no entry and must not move an existing fingerprint.
+  const { 'brand-manager': managers, ...mapped } = config.idp.roleGroups;
+  const roleGroups = managers?.length ? config.idp.roleGroups : mapped;
+  return digest([config.instance.baseUrl, config.idp.issuer, config.idp.clientId, config.idp.groupsClaim, config.idp.claimMap, roleGroups, config.idp.additional, config.proxyAuth,
     ...(Object.keys(gate).length ? [gate] : [])]);
 }
 export function generateSetup(value: unknown, current: InstanceConfig) {

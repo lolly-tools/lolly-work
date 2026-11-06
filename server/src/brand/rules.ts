@@ -44,7 +44,9 @@ export async function managedRuleContext(snap: BrandSnapshot, toolId: string, fo
   const { doc, system, present } = await sourceRules(snap);
   if (!present) return undefined;
   const policy = Object.hasOwn(snap.state.rulePolicies ?? {}, snap.source.id) ? snap.state.rulePolicies![snap.source.id] : undefined;
-  if (policy && policy.sourceRevision !== snap.source.revision) throw new BrandError('Review rule mappings for the current source revision.', 409, 'BRAND_REVISION_CHANGED');
+  // Mappings bind the mounted source. An edit cannot change the rules or the tools, only
+  // the colours they resolve against, so it needs no new review of the mappings.
+  if (policy && policy.sourceRevision !== snap.source.baseRevision) throw new BrandError('Review rule mappings for the current source revision.', 409, 'BRAND_REVISION_CHANGED');
   const mapping = policy?.mappings.find(m => m.toolId === toolId);
   if (mapping && hash(JSON.parse(await readFile(join(snap.source.root, 'tools', toolId, 'tool.json'), 'utf8'))) !== policy!.manifests[toolId]) throw new BrandError('The mapped tool changed. Review its inputs again.', 409, 'BRAND_REVISION_CHANGED');
   return { revision: snap.revision, sourceId: snap.source.id, systemId: system?.id ?? null, rulesDigest: hash(doc), ...(mapping ? { mapping } : {}),

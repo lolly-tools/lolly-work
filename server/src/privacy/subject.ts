@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { b64u, b64uDecode, deriveKey, hmac, macEquals } from '../lib/crypto.ts';
 
-export const SUBJECT_CATEGORIES = ['identities', 'projects', 'credentials', 'links', 'approvals', 'brandPages', 'telemetry', 'fleet', 'audit'] as const;
+export const SUBJECT_CATEGORIES = ['identities', 'projects', 'credentials', 'links', 'approvals', 'brandPages', 'brandEdits', 'telemetry', 'fleet', 'audit'] as const;
 export type SubjectCategory = typeof SUBJECT_CATEGORIES[number];
 export interface SubjectRow { key: string; value: Record<string, unknown> }
 export type OffboardResult =
@@ -57,6 +57,10 @@ export function approvalSubjectRow(approval: import('../approvals/engine.ts').Ap
  *  content and stays until someone unpublishes it. */
 export function brandPageSubjectRow(row: { id: string; slug: string; n: number; name: string; digest: string; state: string; createdAt: string; liveAt: string | null }): SubjectRow {
   return subjectRow(row.id, { slug: row.slug, revision: row.n, name: row.name, digest: row.digest, state: row.state, createdAt: row.createdAt, liveAt: row.liveAt });
+}
+
+export function brandEditSubjectRow(row: { id: string; sourceId: string; n: number; digest: string; state: string; createdAt: string; liveAt: string | null }): SubjectRow {
+  return subjectRow(row.id, { source: row.sourceId, revision: row.n, digest: row.digest, state: row.state, createdAt: row.createdAt, liveAt: row.liveAt });
 }
 
 export function subjectRow(key: string, value: Record<string, unknown>): SubjectRow {

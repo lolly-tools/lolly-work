@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { roleFromGroups, type RoleGroups } from '../rbac/evaluate.ts';
 import type { Approval } from '../approvals/engine.ts';
-import { approvalSubjectRow, brandPageSubjectRow, LastOwnerError, subjectRow, type SubjectCategory, type SubjectStore } from './subject.ts';
+import { approvalSubjectRow, brandEditSubjectRow, brandPageSubjectRow, LastOwnerError, subjectRow, type SubjectCategory, type SubjectStore } from './subject.ts';
 
 interface QueryResult { rows: Record<string, unknown>[]; rowCount: number | null }
 interface Client { query(sql: string, values?: unknown[]): Promise<QueryResult>; release(): void }
@@ -31,6 +31,7 @@ export function createPostgresSubjects(pool: Pool, roles: () => RoleGroups): Sub
         : category === 'links' ? query('select id, kind, exp, created_at, revoked_at from links where created_by = $1 and id > $2 collate "C" order by id collate "C" limit $3')
         : category === 'approvals' ? query('select doc from approvals where created_by = $1 and id > $2 collate "C" order by id collate "C" limit $3')
         : category === 'brandPages' ? query('select id, slug, n, name, digest, state, created_at, live_at from brand_page_revisions where published_by = $1 and id > $2 collate "C" order by id collate "C" limit $3')
+        : category === 'brandEdits' ? query('select id, source_id, n, digest, state, created_at, live_at from brand_edit_revisions where sent_by = $1 and id > $2 collate "C" order by id collate "C" limit $3')
         : category === 'fleet' ? query('select install_id, first_seen_at, last_seen_at from fleet_installs where user_id_last_seen = $1 and install_id > $2 collate "C" order by install_id collate "C" limit $3')
         : category === 'telemetry' ? query('select id, at, event, attrs from telemetry_events where user_id = $1 and id > $2::bigint order by id limit $3', afterNumber(after))
         : query('select seq, at, action, prev_hash, hash from audit_log where (actor = $1 or subject = $1) and seq > $2::bigint order by seq limit $3', afterNumber(after)))).rows;
@@ -41,6 +42,7 @@ export function createPostgresSubjects(pool: Pool, roles: () => RoleGroups): Sub
         if (category === 'links') return subjectRow(String(r.id), { id: r.id, kind: r.kind, expiresAt: new Date(Number(r.exp) * 1000).toISOString(), createdAt: iso(r.created_at), revokedAt: iso(r.revoked_at) });
         if (category === 'approvals') return approvalSubjectRow(r.doc as Approval);
         if (category === 'brandPages') return brandPageSubjectRow({ id: r.id as string, slug: r.slug as string, n: Number(r.n), name: r.name as string, digest: r.digest as string, state: r.state as string, createdAt: iso(r.created_at)!, liveAt: iso(r.live_at) });
+        if (category === 'brandEdits') return brandEditSubjectRow({ id: r.id as string, sourceId: r.source_id as string, n: Number(r.n), digest: r.digest as string, state: r.state as string, createdAt: iso(r.created_at)!, liveAt: iso(r.live_at) });
         if (category === 'fleet') return subjectRow(String(r.install_id), { installId: r.install_id, firstSeenAt: iso(r.first_seen_at), lastSeenAt: iso(r.last_seen_at) });
         if (category === 'telemetry') return subjectRow(String(r.id), { at: iso(r.at), event: r.event, attrs: r.attrs });
         return subjectRow(String(r.seq), { sourceSeq: Number(r.seq), at: iso(r.at), action: r.action, sourceHash: r.hash, sourcePrevHash: r.prev_hash });

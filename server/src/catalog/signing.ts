@@ -232,7 +232,9 @@ export async function completeToolFileDigests(packDir: string): Promise<Record<s
 export function createToolDigestCache(maxRoots = 32): (pack: string) => Promise<Record<string, string>> {
   const memo = new Map<string, { promise: Promise<Record<string, string>>; settled: boolean }>();
   return async pack => {
-    const key = await realpath(pack).catch((error: NodeJS.ErrnoException) => {
+    // Keyed by the tools tree: a view of edited tokens links back to the mounted tools,
+    // so a colour edit never hashes every tool file again.
+    const key = await realpath(join(pack, 'tools')).catch(() => realpath(pack)).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error;
       // An absent evaluation pack preserves its existing empty-catalog behavior.
       return resolve(pack);
@@ -349,6 +351,10 @@ export interface CatalogSigning {
   fileDigests(packDir: string): Promise<Record<string, string>>;
   /** The serialised envelope binding exactly `served.bytes` for this caller. */
   envelopeFor(packDir: string, served: ServedToolIndex, binding?: CatalogBinding): Promise<Buffer>;
+  /** ECDSA P-256/SHA-256 over exact bytes, as an instance pack's `pack.sig` carries it. */
+  signBytes(bytes: Uint8Array): Promise<Buffer>;
+  /** Whether this instance's key made `signature` over `bytes`. */
+  verifyBytes(bytes: Uint8Array, signature: Uint8Array): Promise<boolean>;
 }
 
 const ENVELOPE_CACHE_MAX = 64;
@@ -373,6 +379,15 @@ export function createCatalogSigning(material: string, now: () => Date = () => n
     async publicKey() { return { ...(await keyed).publicJwk }; },
     publicKeyDocument: () => document,
     fileDigests,
+    async signBytes(bytes) {
+      const { privateKey } = await keyed;
+      return Buffer.from(await webcrypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, Uint8Array.from(bytes)));
+    },
+    async verifyBytes(bytes, signature) {
+      const { publicJwk } = await keyed;
+      const key = await webcrypto.subtle.importKey('jwk', publicJwk, EC_P256, false, ['verify']);
+      return webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Uint8Array.from(signature), Uint8Array.from(bytes));
+    },
     async envelopeFor(packDir, served, binding) {
       const { e, privateKey, keyId } = await keyed;
       const all = await fileDigests(packDir);

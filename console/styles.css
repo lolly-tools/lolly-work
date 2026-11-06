@@ -1491,3 +1491,21 @@ html.account-inspector-open { overflow: hidden; }
   .bp-art { height: 96px; }
   .bp-art img { max-height: 68px; }
 }
+
+/* Edits on this instance: state first, then the two switches, then the history. */
+.bedit-digest { overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
+.bedit-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.bedit-ask { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; padding: 12px 14px; border: 1px solid var(--accent); border-radius: var(--radius); }
+.bedit-ask p { flex: 1 1 18rem; }
+.bedit-switches { display: grid; gap: 12px; border-top: 1px solid var(--grid); padding-top: 14px; }
+.bedit-switch { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; }
+.bedit-switch > input { margin-top: 3px; }
+.bedit-switch label { margin: 0; font-weight: 500; font-size: inherit; letter-spacing: normal; text-transform: none; color: inherit; }
+.bedit-chain { margin-top: 8px; max-width: 24rem; }
+.bedit-revision { display: grid; gap: 2px; padding-top: 10px; border-top: 1px solid var(--grid); }
+.bedit-lines { display: grid; gap: 6px; margin-top: 6px; }
+.bedit-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; }
+.bedit-line .mono { overflow-wrap: anywhere; }
+.bedit-value { display: inline-flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.bedit-swatch { flex: none; width: 14px; height: 14px; border: 1px solid var(--hairline); border-radius: 3px; }
+@media (forced-colors: active) { .bedit-swatch { forced-color-adjust: none; } }
