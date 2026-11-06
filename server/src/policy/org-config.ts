@@ -10,7 +10,7 @@ import { renderCapabilities, type RenderCapabilities } from '../render/capabilit
 import { approvalArtifactPolicy } from '../approvals/export-review.ts';
 import { TRANSFER_PART_BYTES } from '../uploads/parts.ts';
 import { filterInputs, resolveInputAccess, toolVisibleWithGrants, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
-import { evaluate, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { brandPagesConfig } from '../brand-pages/types.ts';
 import { BRAND_EDIT_MAX_BYTES } from '../brand/edit-document.ts';
@@ -421,8 +421,7 @@ export function assembleOrgConfig(opts: {
     if (grantDecision(principal, g.action, [g.resource], [g]) !== 'none') scopedTools.add(g.resource.slice('tool:'.length));
   }
   for (const toolId of scopedTools) {
-    const use = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
-    if (use === 'deny' || !(toolVisibleTo(overlays.get(toolId), user.groups) || use === 'allow')) continue;
+    if (!toolVisibleWithGrants(overlays.get(toolId), toolId, principal, grants)) continue;
     const toolCan: Partial<Record<(typeof TOOL_SCOPED_ACTIONS)[number], boolean>> = {};
     for (const action of TOOL_SCOPED_ACTIONS) {
       const answer = evaluate(principal, action, [`tool:${toolId}`, '*'], grants);
