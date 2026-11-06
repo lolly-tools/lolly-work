@@ -1,11 +1,11 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "73ff626808064436c56a871109e7bc2513f220e2",
-  "manifestSha256": "63c39d5e4dfdd94c1a5c26b8fbb74a60dd3a30e984970334a1e8e43f405cf058",
+  "commit": "9b59406111fb6d238c6a7493fc17ef30e151dcaf",
+  "manifestSha256": "3c95c273678674c1c94f6afe97307aa8f032c28fc48ec638400ad99423fef2f3",
   "files": {
     "account-lifecycle.md": {
-      "sha256": "2ff2bcc9be2a29124a68d10753457dd2e9cde3997d7beeed56330aa6cb912e72",
+      "sha256": "4820de057e3ff8e6681826cab52a19ebbc0cdd5fcd7bc72e917ad63276948cee",
       "source": "docs/work/account-lifecycle.md"
     },
     "admission-policy.md": {
@@ -17,11 +17,11 @@
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
-      "sha256": "ea2436b094e4cd2d97898da0745f337d7896c7744ec8ac3b52706844de817e92",
+      "sha256": "ac529e4674f3ad96b9540654766003fe2b6012a74db523f4cd6335c2a2118436",
       "source": "docs/work/api.md"
     },
     "approvals.md": {
-      "sha256": "01b6c0186a9e174a49cfcefb8092cf5f0c6635ca2c04b0f2665da7a6820cd270",
+      "sha256": "b6028a4f2756bd51a8ee373acf67694fd8198d120b2ad748804ad6c44ea42ece",
       "source": "docs/work/approvals.md"
     },
     "audit.md": {
@@ -29,7 +29,7 @@
       "source": "docs/work/audit.md"
     },
     "automation-api.md": {
-      "sha256": "39ab20bcf038fd7dbb39eaf316556a7d9f665ec22fe5b422c5a76f5ebea2e97f",
+      "sha256": "710198839392f408825c17019f7ec7ce3999e93f0c63d1bba5e366a3dd175d76",
       "source": "docs/work/automation-api.md"
     },
     "aws-compatible.md": {
@@ -45,7 +45,7 @@
       "source": "docs/work/catalog.md"
     },
     "cli.md": {
-      "sha256": "947c73cc6e342bb61e17a30175a8dc8aef8ef14c81176947374eac8ca1a51ced",
+      "sha256": "5b452f8689c62f1ecbcd17087a8d99f3974b9cc689b92f0bf4ad7d9ffc352ab1",
       "source": "docs/work/cli.md"
     },
     "cloud-deployment.md": {
@@ -53,7 +53,7 @@
       "source": "docs/work/cloud-deployment.md"
     },
     "configuration.md": {
-      "sha256": "21c291d3d67e3ccd0c5d918d17d9fc5ccf32dd53b484886d9aa1995236f6674d",
+      "sha256": "40938f30ddd9a09912b8aa30618ffb1c74a0f255c413e45f579dfaabb88836fe",
       "source": "docs/work/configuration.md"
     },
     "customer-setup.md": {
@@ -61,7 +61,7 @@
       "source": "docs/work/customer-setup.md"
     },
     "data-lifecycle.md": {
-      "sha256": "c849f26f0b3415963b80591dd0c2148642469543d030dd0fc4489082d28bc108",
+      "sha256": "cf35d3ab52f6bcd889412f1b31072b7174f747b565d8670635668aeae5df054f",
       "source": "docs/work/data-lifecycle.md"
     },
     "delivery.md": {
@@ -69,11 +69,11 @@
       "source": "docs/work/delivery.md"
     },
     "deployment.md": {
-      "sha256": "eb6a42258049f5c0a95427877770d376be0583ced6783165d045d898adc37dfd",
+      "sha256": "26fc128a172e7c6d8f5f32e0e126e73b308cdebd3b89db373c161e8e08aeb45f",
       "source": "docs/work/deployment.md"
     },
     "design-system-administration.md": {
-      "sha256": "38fb585907eda06d51f7351533b6715b879491118b87957372800c0aafcbf1d4",
+      "sha256": "67e6df831f2b2172018ad9c7f3ab666d82d85144639b117c34cd86dce6c8ab6d",
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
@@ -97,7 +97,7 @@
       "source": "docs/work/file-preview.md"
     },
     "governance.md": {
-      "sha256": "4007cdfc3d7607ef6e1c036974f7f1c3a2cec352ce0b49a988582b8118e6f338",
+      "sha256": "3374beeb15eff51eb49234c2d6b57e1525f83c378cee7b344cb9dfe201b7d11a",
       "source": "docs/work/governance.md"
     },
     "identity-providers.md": {
@@ -169,7 +169,7 @@
       "source": "docs/work/past-releases.md"
     },
     "permissions.md": {
-      "sha256": "28bc83be85b11860dd62954b003cc63b651499fd42177f450bb44e5deb682ffc",
+      "sha256": "15ec36213560a1ee7505ec6a40144cdbb6a28f141695dbac4f90277a3bf98b36",
       "source": "docs/work/permissions.md"
     },
     "platform-deployment.md": {
@@ -273,7 +273,7 @@
       "source": "docs/work/renders.md"
     },
     "resumable-uploads.md": {
-      "sha256": "d42d1fee1ded343bebe8acd6d57adc1d04dac7277b5bdd67a2e90752efbf90c3",
+      "sha256": "49fee152ed0e4be97c6c113e73250ab499a29f9ad3aebed7d68a367eaf737629",
       "source": "docs/work/resumable-uploads.md"
     },
     "security-platform.md": {
@@ -489,7 +489,7 @@
       "source": "docs/shots/work/tool-policy.svg"
     },
     "status.md": {
-      "sha256": "aa7aa204e04c2b93780d02bb8c3f31b3419b326872c388340ebc3182de81604d",
+      "sha256": "85b8d649d9a486d3daaf86cbdcfe4e24d18b9cd52414b4a9db875d835e7db9fc",
       "source": "docs/work/status.md"
     },
     "team-projects.md": {
