@@ -47,15 +47,18 @@ const iso = (t = Date.now()): string => new Date(t).toISOString();
 const nameOf = (u: UserRecord | null | undefined): string | undefined =>
   u ? [u.firstname, u.lastname].filter(Boolean).join(' ') || u.email : undefined;
 
-/** Why an account cannot join through a domain, or null when it can. */
+/** The reason an account joins later rather than now. */
+const UNVERIFIED = 'Address not verified yet. Joins at their next sign-in with a provider that verifies their address.';
+
+/** Why an account cannot join through a domain now, or null when it can. */
 async function cannotJoin(store: Store, u: UserRecord, programmeId: string, memberships: MembershipRecord[], needVerified: boolean): Promise<string | null> {
-  if (u.disabledAt) return 'disabled';
-  if (u.role === 'admin' || u.role === 'owner') return 'an admin or owner';
-  if (u.scimIdp) return 'managed by your SCIM connector';
-  if (memberships.some((m) => m.programmeId === programmeId && m.email === u.email.toLowerCase())) return 'already in this programme, or was before';
+  if (u.disabledAt) return 'Disabled';
+  if (u.role === 'admin' || u.role === 'owner') return 'An admin or owner';
+  if (u.scimIdp) return 'Managed by your SCIM connector';
+  if (memberships.some((m) => m.programmeId === programmeId && m.email === u.email.toLowerCase())) return 'Already in this programme, or was before';
   if (needVerified) {
     const rows = await store.listIdentities(u.id);
-    if (!rows.some((r) => r.emailVerified && r.email?.toLowerCase() === u.email.toLowerCase())) return 'address not verified yet; joins at the next sign-in with a provider that verifies it';
+    if (!rows.some((r) => r.emailVerified && r.email?.toLowerCase() === u.email.toLowerCase())) return UNVERIFIED;
   }
   return null;
 }
@@ -127,7 +130,7 @@ export async function joinExistingAccounts(
     for (const listed of accounts) {
       const u = (await store.getUser(listed.id)) ?? listed;
       const why = await cannotJoin(store, u, rule.programmeId, memberships, true);
-      if (why?.startsWith('address not verified')) waiting++;
+      if (why === UNVERIFIED) waiting++;
       if (why) continue;
       await join(store, audit, u, rec, rule, actor, iso(now));
       joined.push({ id: u.id, email: u.email, programme: rule.programmeId });
@@ -307,7 +310,7 @@ export function registerDomainRoutes(router: Router, deps: DomainRouteDeps): voi
         ...(prior ? { txt: { name: txtName(domain), value: txtValue(prior.token) } } : {}),
         accounts: await Promise.all(accounts.map(async (u) => {
           const why = programmeId ? await cannotJoin(store, u, programmeId, memberships, true) : null;
-          return { id: u.id, email: u.email, name: nameOf(u), joins: !why, ...(why ? { reason: why } : {}) };
+          return { id: u.id, email: u.email, name: nameOf(u), joins: !why, ...(why === UNVERIFIED ? { later: true } : {}), ...(why ? { reason: why } : {}) };
         })),
       }, { 'cache-control': 'no-store' });
     }

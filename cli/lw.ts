@@ -722,12 +722,12 @@ switch (cmd) {
         programme: values.programme, ...(values.company ? { company: values.company } : {}), ...(values.ends ? { endsAt: values.ends } : {}),
         ...(values.assert ? { proof: 'admin', ...(values.reason ? { reason: values.reason } : {}) } : {}), ...(values['dry-run'] ? { dryRun: true } : {}),
       };
-      const r = await call(`/api/v1/partner-domains/${encodeURIComponent(name)}`, { method: 'PUT', body }) as Domain & { dryRun?: boolean; accounts?: Array<{ email: string; joins: boolean; reason?: string }> };
+      const r = await call(`/api/v1/partner-domains/${encodeURIComponent(name)}`, { method: 'PUT', body }) as Domain & { dryRun?: boolean; accounts?: Array<{ email: string; joins: boolean; later?: boolean; reason?: string }> };
       out(r);
       if (!values.json) {
         if (r.dryRun) {
           console.log(`${r.domain}: ${r.accounts?.length ?? 0} account(s) here already`);
-          for (const a of r.accounts ?? []) console.log(`  ${a.joins ? 'joins   ' : 'does not'}  ${a.email}${a.reason ? `  ${a.reason}` : ''}`);
+          for (const a of r.accounts ?? []) console.log(`  ${a.joins ? 'joins now ' : a.later ? 'joins later' : 'does not  '}  ${a.email}${a.reason ? `  ${a.reason}` : ''}`);
         } else {
           show(r);
           if (r.joined?.length) console.log(`joined now: ${r.joined.map((j) => j.email).join(', ')}`);

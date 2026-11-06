@@ -223,9 +223,11 @@ test('accounts already here join when the domain is proved; disabled, SCIM and u
   assert.equal(dry.body.txt, undefined, 'a new domain has no record yet');
   const byEmail = Object.fromEntries(dry.body.accounts.map((a: any) => [a.email, a]));
   assert.equal(byEmail['ana@acme.example'].joins, true);
-  assert.equal(byEmail['cy@acme.example'].reason, 'disabled');
-  assert.equal(byEmail['di@acme.example'].reason, 'managed by your SCIM connector');
-  assert.match(byEmail['eve@acme.example'].reason, /^address not verified/);
+  assert.equal(byEmail['cy@acme.example'].reason, 'Disabled');
+  assert.equal(byEmail['di@acme.example'].reason, 'Managed by your SCIM connector');
+  assert.match(byEmail['eve@acme.example'].reason, /^Address not verified/);
+  assert.equal(byEmail['eve@acme.example'].later, true, 'Eve joins later, not never');
+  assert.equal(byEmail['cy@acme.example'].later, undefined);
   assert.equal((await env.store.listPartnerDomains()).length, 0, 'a dry run writes nothing');
 
   const done = await env.call('PUT', '/api/v1/partner-domains/acme.example', { programme: 'resellers', proof: 'admin' });
