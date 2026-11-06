@@ -24,7 +24,7 @@
  */
 import { createServer } from 'node:http';
 import {
-  existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync,
+  copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 
@@ -80,8 +80,10 @@ export const SHELL_DIR = join(OSS_DIR, 'shells', 'web', 'dist');
 // checkout root reads as an EMPTY pack: every manifest read misses, the policy
 // code takes a miss as "not in this instance's pack", and the governed shell
 // shows a locked input as editable. The demo therefore rebuilds that view under
-// packs/oss-view (gitignored) from the resolver on every boot, one link per
-// tool, so it is never stale and never a copy.
+// packs/oss-view (gitignored) from the resolver on every boot, as real
+// directories of hard-linked files, so it is never stale and costs no disk.
+// Symlinks out of the pack root would fail the server's publication check and
+// leave the tool feed empty.
 
 /** Where the view is written. Under packs/ because packs are data, never
  *  committed (.gitignore keeps only packs/demo). */
@@ -116,9 +118,10 @@ export interface PackVerdict {
   note?: string;
 }
 
-/** Remove a tree WITHOUT following links. The view is links into the OSS
- *  checkout (a private submodule among them); a remover that followed one
- *  would delete the checkout's own files. */
+/** Remove a tree WITHOUT following links. Unlinking a hard-linked file
+ *  leaves the checkout's own copy, and a symlink left by an older view is
+ *  removed as a link, never followed into the checkout (a private submodule
+ *  among them). */
 function removeView(p: string): void {
   let st: ReturnType<typeof lstatSync>;
   try {
@@ -134,11 +137,39 @@ function removeView(p: string): void {
   rmdirSync(p);
 }
 
-/** Write the view into `dest`: `tools/<id>` links to each tool's directory (a
- *  brand overlay of a community tool gets a real directory with its merged
- *  manifest written and every other file linked), and `catalog` links to the
- *  profile's catalog. A source stamp beside them says what was mounted.
- *  Returns the tool count. */
+/** Hard-link one file into the view, copying when the two paths are on
+ *  different volumes (or the filesystem refuses hard links). */
+function linkFile(from: string, to: string): void {
+  try {
+    linkSync(from, to);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EXDEV' && code !== 'EPERM' && code !== 'ENOTSUP') throw err;
+    copyFileSync(from, to);
+  }
+}
+
+/** Mirror a directory as real directories and hard-linked files. The server's
+ *  publication check refuses a pack whose catalog or tools are symlinks out of
+ *  the pack root (catalog/publication.ts), so the view holds no symlinks. A
+ *  hard link costs no disk, and removing the view never touches the checkout. */
+function mirrorDir(from: string, to: string): void {
+  mkdirSync(to, { recursive: true });
+  for (const name of readdirSync(from)) {
+    const src = join(from, name);
+    let st: ReturnType<typeof statSync>;
+    try { st = statSync(src); } catch { continue; } // a dangling link in the checkout
+    if (st.isDirectory()) mirrorDir(src, join(to, name));
+    else if (st.isFile()) linkFile(src, join(to, name));
+  }
+}
+
+/** Write the view into `dest`: `tools/<id>` mirrors each tool's directory (a
+ *  brand overlay of a community tool gets its merged manifest written and every
+ *  other file linked from whichever side carries it), and `catalog` mirrors the
+ *  profile's catalog. Directories are real and files are hard links, never
+ *  symlinks. A source stamp beside them says what was mounted. Returns the
+ *  tool count. */
 export function buildPackView(dest: string, mod: ContentRootsModule, roots: ContentRootsLike): number {
   const toolsOut = join(dest, 'tools');
   removeView(toolsOut);
@@ -148,7 +179,7 @@ export function buildPackView(dest: string, mod: ContentRootsModule, roots: Cont
   for (const [id, { dir, base }] of plan) {
     const out = join(toolsOut, id);
     if (!base) {
-      symlinkSync(dir, out, 'dir');
+      mirrorDir(dir, out);
       continue;
     }
     mkdirSync(out, { recursive: true });
@@ -159,10 +190,10 @@ export function buildPackView(dest: string, mod: ContentRootsModule, roots: Cont
       if (!from) continue;
       const to = join(out, ...rel.split('/'));
       mkdirSync(dirname(to), { recursive: true });
-      symlinkSync(from, to, 'file');
+      linkFile(from, to);
     }
   }
-  symlinkSync(roots.catalogRoot, join(dest, 'catalog'), 'dir');
+  mirrorDir(roots.catalogRoot, join(dest, 'catalog'));
   const stamp = { profile: roots.profile, catalog: roots.catalogRoot, tools: plan.size, generatedAt: new Date().toISOString() };
   writeFileSync(join(dest, '.lolly-pack-source.json'), `${JSON.stringify(stamp, null, 2)}\n`);
   return plan.size;

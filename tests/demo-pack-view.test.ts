@@ -2,13 +2,15 @@
  * The demo's pack view (scripts/demo.ts: resolvePack, buildPackView). The
  * server reads a pack as `<pack>/tools/<id>/` + `<pack>/catalog/`; since the
  * Lolly repo's 2026-09-11 fold a checkout carries neither, so the demo rebuilds
- * that view under packs/oss-view from the OSS resolver, as links. These tests
+ * that view under packs/oss-view from the OSS resolver, as real directories of
+ * hard-linked files, never symlinks (the server's publication check refuses a
+ * pack that links out of its root). These tests
  * drive buildPackView with a stub resolver over a temp tree, so they need no
  * sibling checkout; the live boot covers the real module.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -57,26 +59,30 @@ function fakeCheckout(): { root: string; mod: ContentRootsModule; roots: Content
 }
 
 const isLink = (p: string): boolean => lstatSync(p).isSymbolicLink();
+/** The same file on disk: a hard link shares the inode. */
+const sameFile = (a: string, b: string): boolean => statSync(a).ino === statSync(b).ino && statSync(a).dev === statSync(b).dev;
 
-test('buildPackView links plain tools, merges an overlay tool, links the catalog, and stamps its source', () => {
+test('buildPackView mirrors plain tools, merges an overlay tool, mirrors the catalog, and stamps its source', () => {
   const { mod, roots, plan } = fakeCheckout();
   const dest = mkdtempSync(join(tmpdir(), 'lw-view-'));
   assert.equal(buildPackView(dest, mod, roots), 2);
 
-  // A plain tool is one link to its directory; the server reads through it.
-  assert.ok(isLink(join(dest, 'tools', 'qr-code')));
-  assert.equal(readlinkSync(join(dest, 'tools', 'qr-code')), plan.get('qr-code')!.dir);
+  // A plain tool is a real directory of hard links to its files.
+  assert.ok(!isLink(join(dest, 'tools', 'qr-code')));
+  assert.ok(sameFile(join(dest, 'tools', 'qr-code', 'tool.json'), join(plan.get('qr-code')!.dir, 'tool.json')));
   assert.match(readFileSync(join(dest, 'tools', 'qr-code', 'tool.json'), 'utf8'), /"url"/);
 
-  // An overlay tool is a real directory: the merged manifest written, every
-  // other file a link to whichever side carries it.
+  // An overlay tool: the merged manifest written, every other file linked from
+  // whichever side carries it.
   assert.ok(!isLink(join(dest, 'tools', 'poster')));
   assert.equal(readFileSync(join(dest, 'tools', 'poster', 'tool.json'), 'utf8'), '{"id":"poster","name":"Acme poster"}');
-  assert.equal(readlinkSync(join(dest, 'tools', 'poster', 'styles.css')), join(plan.get('poster')!.dir, 'styles.css'));
-  assert.equal(readlinkSync(join(dest, 'tools', 'poster', 'template.html')), join(plan.get('poster')!.base!, 'template.html'));
+  assert.ok(sameFile(join(dest, 'tools', 'poster', 'styles.css'), join(plan.get('poster')!.dir, 'styles.css')));
+  assert.ok(sameFile(join(dest, 'tools', 'poster', 'template.html'), join(plan.get('poster')!.base!, 'template.html')));
   assert.equal(readFileSync(join(dest, 'tools', 'poster', 'assets', 'bg.png'), 'utf8'), 'png');
 
-  assert.ok(isLink(join(dest, 'catalog')));
+  // The catalog is mirrored, not linked: a symlink out of the pack root fails
+  // the server's publication check and empties the tool feed.
+  assert.ok(!isLink(join(dest, 'catalog')));
   assert.equal(readFileSync(join(dest, 'catalog', 'tools', 'index.json'), 'utf8'), '{"tools":[]}');
 
   const stamp = JSON.parse(readFileSync(join(dest, '.lolly-pack-source.json'), 'utf8')) as { profile: string; tools: number; catalog: string };
