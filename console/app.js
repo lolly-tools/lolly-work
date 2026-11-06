@@ -76,7 +76,27 @@ async function api(path, opts = {}) {
   // `body` keeps the whole answer: a 409 can carry the current state (a
   // request someone else answered, the live invitation for an address).
   if (!res.ok) throw Object.assign(new Error(data?.error?.message ?? res.statusText), { status: res.status, code: data?.error?.code, field: data?.error?.field, body: data });
+  if (path === '/api/v1/groups' && Array.isArray(data?.groups)) noteGroups(data.groups);
+  if (path === '/api/v1/programmes' && Array.isArray(data?.programmes)) for (const p of data.programmes) programmeGroupNames.set(p.group, p.name);
   return data;
+}
+
+// Partner programme groups read as the programme's name wherever an admin
+// reads or picks a group (plans/82 M1), never as the internal group id. The
+// names come from the programmes list, or from the groups list, whose
+// programme groups carry "Partner programme: <name>" as their description.
+const programmeGroupNames = new Map();
+const PROGRAMME_GROUP_NOTE = 'Partner programme: ';
+function noteGroups(list) {
+  for (const g of list) {
+    if (typeof g?.name === 'string' && g.name.startsWith('programme-') && typeof g.description === 'string' && g.description.startsWith(PROGRAMME_GROUP_NOTE)) {
+      programmeGroupNames.set(g.name, g.description.slice(PROGRAMME_GROUP_NOTE.length));
+    }
+  }
+}
+function groupLabel(name) {
+  const programme = programmeGroupNames.get(name);
+  return programme ? `${programme} (partner programme)` : name;
 }
 
 // ── tiny dom helpers ────────────────────────────────────────────────────────
@@ -4364,7 +4384,7 @@ async function invitationsSection(groupOptions) {
     const name = typeof g === 'string' ? g : g.name;
     const fromIdp = typeof g === 'object' && g.source === 'idp';
     const cb = el('input', { type: 'checkbox', value: name });
-    return { name, cb, node: el('label', { class: 'chk' }, cb, el('span', {}, name),
+    return { name, cb, node: el('label', { class: 'chk' }, cb, el('span', { title: name }, groupLabel(name)),
       ...(fromIdp ? [' ', el('span', { class: 'muted' }, '· from sign-in provider')] : [])) };
   });
   const expirySel = el('select', {}, ...INVITE_EXPIRY_CHOICES.map((c) => el('option', { value: c.value, ...(c.value === '30' ? { selected: 'selected' } : {}) }, c.label)));
@@ -4604,7 +4624,7 @@ async function invitationsSection(groupOptions) {
       el('td', {}, check),
       el('td', { title: inv.email }, el('div', { class: 'invite-account' }, avatar, el('span', {}, inv.email)),
         el('div', { class: 'invite-provenance muted' }, `Invited by ${inv.inviter?.name ?? '—'} · ${madeFrom(inv)}`),
-        inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.join(', ')}`)] : null),
+        inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.map(groupLabel).join(', ')}`)] : null),
       el('td', {}, projects.length
         ? projects.map((p) => `${p.name || 'A removed project'} (${projectRoleLabel(p.role)})`).join(', ')
         : el('span', { class: 'muted' }, 'none')),
@@ -4967,7 +4987,7 @@ async function viewUsers(main, params) {
       el('td', { title: u.email }, u.email),
       el('td', {}, u.title ?? '—'),
       el('td', {}, el('span', { class: 'chip' }, u.role)),
-      el('td', { title: u.groups.join(', ') }, u.groups.length ? u.groups.join(', ') : '—'),
+      el('td', { title: u.groups.join(', ') }, u.groups.length ? u.groups.map(groupLabel).join(', ') : '—'),
       el('td', {}, when(u.lastSeenAt)));
   }
 
@@ -5225,7 +5245,7 @@ async function viewUsers(main, params) {
       const entries = localGroups().map((g) => {
         const cb = el('input', { type: 'checkbox', ...(checkedSet.has(g.name) ? { checked: 'checked' } : {}) });
         cb.addEventListener('change', () => { if (cb.checked) groupDraft.add(g.name); else groupDraft.delete(g.name); saveBtn.disabled = !groupsDirty(); updateDraftNotice(); });
-        return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', {}, g.name), g.description ? el('span', { class: 'muted' }, ` — ${g.description}`) : null) };
+        return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', { title: g.name }, groupLabel(g.name)), g.description && !programmeGroupNames.has(g.name) ? el('span', { class: 'muted' }, ` — ${g.description}`) : null) };
       });
 
       const saveBtn = el('button', { class: 'primary', onclick: async () => {
@@ -5569,7 +5589,7 @@ function programmeEditor(p, tools, collections) {
       p.members.length
         ? dataTable(['Name', 'Email'], p.members.map((m) => el('tr', {}, el('td', {}, m.name), el('td', {}, m.email))))
         : el('p', { class: 'muted' }, 'Nobody yet.'),
-      el('p', { class: 'sub flush' }, 'Add people from ', el('a', { href: '#/users' }, 'People'), `: invite them with the ${p.group} group ticked, or tick it on someone who already signs in.`)),
+      el('p', { class: 'sub flush' }, 'Add people from ', el('a', { href: '#/users' }, 'People'), `: invite them and tick “${p.name} (partner programme)”, or tick it on someone who already signs in.`)),
     el('p', {}, save, ' ', el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(p.group)}` }, 'See what they get'), ' ', el('a', { class: 'btn', href: '#/programmes' }, 'Back')),
     err);
   return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form);
@@ -5961,7 +5981,8 @@ function grantRow(g) {
     } catch (e) { err.textContent = e.message; delBtn.disabled = false; disarm(); }
   });
   return el('tr', {},
-    el('td', { class: 'mono' }, g.principal),
+    el('td', {}, el('span', { class: 'mono' }, g.principal),
+      programmeGroupNames.has(g.principal.replace(/^group:/, '')) ? el('div', { class: 'muted' }, groupLabel(g.principal.replace(/^group:/, ''))) : null),
     el('td', { class: 'mono' }, g.action),
     el('td', {}, el('span', { class: 'mono' }, g.resource),
       g.neverMatches ? el('p', { class: 'form-err flush' }, `Never matches. ${g.neverMatches} Delete it and add a rule that can apply.`) : null),
@@ -5971,6 +5992,7 @@ function grantRow(g) {
 
 async function viewGrants(main) {
   const { grants } = await api('/api/v1/grants');
+  await api('/api/v1/programmes').catch(() => null); // names for programme groups, best-effort
   const sorted = [...grants].sort((a, b) =>
     a.principal.localeCompare(b.principal) || a.action.localeCompare(b.action));
 
@@ -6093,7 +6115,7 @@ function accessDetail(access) {
 
 function renderPreview(data) {
   const { preview, orgConfig } = data;
-  const heading = preview.groups.length ? preview.groups.join(', ') : 'a member with no groups';
+  const heading = preview.groups.length ? preview.groups.map(groupLabel).join(', ') : 'a member with no groups';
 
   const canRows = Object.entries(orgConfig.can).map(([action, ok]) => el('tr', {},
     el('td', { class: 'mono' }, action),
@@ -6184,6 +6206,9 @@ async function viewPreview(main, params) {
   // Suggestion chips: the role-escalating groups always, plus any group named
   // in a tool overlay (same policy.edit gate as this view, so always available).
   let suggestions = ['owner', 'admin', 'approver', 'author'];
+  // Programme names for the chips and the heading; a programme with no rules
+  // yet is offered too, so an admin can preview it before writing any.
+  const programmes = await api('/api/v1/programmes').then((r) => r.programmes ?? []).catch(() => []);
   try {
     const { tools } = await api('/api/v1/policy/tools');
     const seen = new Set();
@@ -6193,7 +6218,7 @@ async function viewPreview(main, params) {
         for (const r of rules) for (const g of r.groups) if (g !== '*') seen.add(g);
       }
     }
-    suggestions = [...new Set([...suggestions, ...[...seen].sort()])];
+    suggestions = [...new Set([...suggestions, ...[...seen].filter((g) => !g.startsWith('programme-')).sort(), ...programmes.map((p) => p.group)])];
   } catch (e) {
     // A member who lands on this admin-only view degrades the way every other
     // view does: let the 403 reach the router, which renders the role message.
@@ -6209,7 +6234,7 @@ async function viewPreview(main, params) {
       el('p', {}, previewBtn),
       suggestions.length
         ? el('p', { class: 'chips' }, el('span', { class: 'muted' }, 'Quick pick: '),
-            ...suggestions.map((g) => el('button', { class: 'chip', onclick: () => run(g) }, g)))
+            ...suggestions.map((g) => el('button', { class: 'chip', title: g, onclick: () => run(g) }, groupLabel(g))))
         : null,
       err),
     resultHost,

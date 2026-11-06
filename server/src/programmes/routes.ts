@@ -108,8 +108,14 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
       createdBy: prior?.createdBy ?? actor.id, createdAt: prior?.createdAt ?? now, updatedAt: now, version: (prior?.version ?? 0) + 1,
     };
     const group = programmeGroup(id);
-    const registry = new Set((await store.listLocalGroups()).map((g) => g.name));
-    if (!registry.has(group)) await store.putLocalGroup({ name: group, description: `Partner programme: ${rec.name}`, createdAt: now });
+    const localGroups = await store.listLocalGroups();
+    const registry = new Set(localGroups.map((g) => g.name));
+    // The group's description carries the programme's name, so People, Grants
+    // and Preview can show the name rather than the group id; a rename follows.
+    const existingGroup = localGroups.find((g) => g.name === group);
+    if (!existingGroup || existingGroup.description !== `Partner programme: ${rec.name}`) {
+      await store.putLocalGroup({ name: group, description: `Partner programme: ${rec.name}`, createdAt: existingGroup?.createdAt ?? now });
+    }
     if (!registry.has(PARTNER_GROUP)) await store.putLocalGroup({ name: PARTNER_GROUP, description: 'Has been in a partner programme', createdAt: now });
     await store.putProgramme(rec);
 
