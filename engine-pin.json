@@ -1,23 +1,23 @@
 {
-  "generatedFrom": "73ff626808064436c56a871109e7bc2513f220e2",
+  "generatedFrom": "9b59406111fb6d238c6a7493fc17ef30e151dcaf",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.5.0",
     "tarball": "lolly-tools-core-1.5.0.tgz",
-    "tarballSha256": "afa93ac35cce42405efab0a8ff6236cf16d97b833ce21767dec852c278f754d0",
-    "contentHash": "1322c1ece600812cef47e2e4aecb6f8f38f522e36b2d40c58f3e7ee0190b35cc"
+    "tarballSha256": "b9c72a052aee3dd9704579d91176498754e8fe8faf4b539f61da7abc2a48735c",
+    "contentHash": "53bc70af3afc180c24736aa498bf97fcffe1ebc4015a938392088fcd18926477"
   },
   "engine": {
-    "version": "1.308.0",
-    "tarball": "lolly-engine-1.308.0.tgz",
-    "tarballSha256": "23d51999ebbc7870cc2cae0b424bc3060cd1f25317b9c4e84eaca91efa40479c",
-    "contentHash": "5d7318320efc30a772f33ff07c16dfae5487083f1d5c767e8e5b437e361373d3"
+    "version": "1.311.0",
+    "tarball": "lolly-engine-1.311.0.tgz",
+    "tarballSha256": "9b72ce1aa7893cb739d83d356df1ace24e0bcbf935b6248bb518b66ead541aba",
+    "contentHash": "36efc022a5956089a4c13f45d8e63481c11b94a8bacfeef5ae1e316c9963a441"
   },
   "schemas": {
     "asset-ref.schema.json": "1e610bd8369b1f4756306709af95bb009aa39981a9776343f92f1c00c51bc3cd",
     "asset.schema.json": "d1a83aa58837bb37149612bf74b3405d9af96374d3bab39a52666c9895f1d38e",
     "blocks-wire-order.json": "f31d8d7789985f7431cacac493bd0428e2e9bce16f8d6f4da4514ae7c4445a10",
-    "brand-page-v1.schema.json": "aed7d2e069589cdb68f8fcc63d5a7e351f4bf0fd1df7f954fd9ed5d9cd684f42",
+    "brand-page-v1.schema.json": "c9956c92c13ade48faae08b827124a3a1e3187a609a6a1c8f8ad1d3a1de975ff",
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "d7b609ef17a29ceb622d9c7954a8b4258aa1849149866ef87fcbcaa4ca9b2a10",
@@ -50,7 +50,7 @@
     "text-measure-v1.schema.json": "6a3b17fdc8d7d8769d723724b73dabd3d5d74c77df577480a9c42cfcb0a0e976",
     "tokens.schema.json": "012f3050656230bb609eb841c6a7e42a3cfa4088c7c3b938a561a81d3fa13dcc",
     "tool-intents-v1.schema.json": "73cd58f270cfbf1d4377b18510ed6a300ec31ed5f5f39f244078b54b786f77f0",
-    "tool.schema.json": "54f4a59647b902ab5213841a61fc611c7ca1c903ec2873d5ba9af1c8a7c29844",
+    "tool.schema.json": "06b871de399446e106d6d817ed7b998268507e065203ca750d61f94145317f4b",
     "visual-intent-v1.schema.json": "bd5e9a0737721e4b397f2eae51c549229594811a6713c7f43d78c5f12f5e9c17"
   }
 }
