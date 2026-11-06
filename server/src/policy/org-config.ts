@@ -23,6 +23,7 @@ import type { ConfigDeliveryDestination, DeliveryDestinationDescriptor } from '.
 import { invitePolicyForClient, mayInviteNewPeople, resolveInvitePolicy } from './invites.ts';
 import type { ProjectMemberRole } from '../store/types.ts';
 import { resolveSharingPolicy, type InstanceShareRole } from './sharing.ts';
+import { isProgrammeScoped } from '../programmes/types.ts';
 
 /** Actions whose yes/no the shell needs to render honest controls (e.g. the
  *  export button becoming "Save / Request approval"). Evaluated server-side;
@@ -513,7 +514,7 @@ export function assembleOrgConfig(opts: {
       }
       return base;
     })(),
-    injectables: projectInjectables(injectables.values(), user.groups),
+    injectables: projectInjectables(injectables.values(), user.groups, isProgrammeScoped(user.groups, user.role)),
     destinations,
     telemetry: {
       level: config.policy.telemetry,

@@ -1,3 +1,4 @@
+import type { ProgrammeRecord } from '../programmes/types.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
 import type { SubjectStore } from '../privacy/subject.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
@@ -1777,6 +1778,14 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
    *  it was a list of names, and the assets it named are ordinary catalog
    *  assets that were never owned by it. */
   deleteCollection(id: string): Promise<void>;
+
+  // partner programmes (plans/82 M1, migrations/0085). One jsonb record per
+  // programme; membership is the programme's local group, never a row here.
+  listProgrammes(): Promise<ProgrammeRecord[]>;
+  getProgramme(id: string): Promise<ProgrammeRecord | null>;
+  putProgramme(rec: ProgrammeRecord): Promise<void>;
+  /** Unknown id is a no-op. Never touches the wrapped group or its members. */
+  deleteProgramme(id: string): Promise<void>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
   // cumulative for everything that was KEPT - a returned submission still spent

@@ -8,6 +8,7 @@
  */
 
 import { grantDecision, type Grant } from '../rbac/evaluate.ts';
+import { isProgrammeGroup, isProgrammeScoped } from '../programmes/types.ts';
 
 export type AccessLevel = 'editable' | 'choice' | 'locked' | 'hidden';
 
@@ -84,20 +85,38 @@ export function resolveInputAccess(
   if (!overlay?.inputAccess) return EDITABLE;
   const rules = rulesFor(overlay.inputAccess, inputId) ?? rulesFor(overlay.inputAccess, '*');
   if (!rules) return EDITABLE;
-  for (const rule of rules) {
-    if (!ruleMatches(rule, groups)) continue;
-    const out: ResolvedAccess = { level: rule.level };
-    if ('value' in rule) out.value = rule.value;
-    if (rule.allow) out.allow = rule.allow;
-    // Attribution rides every MATCHED rule, so "why is this locked?" is
-    // answered by the same resolution that locked it and the two can never
-    // disagree. Both stay absent when the overlay is unnamed / the rule
-    // carries no reason.
-    if (overlay.name) out.by = overlay.name;
-    if (rule.reason) out.reason = rule.reason;
-    return out;
-  }
-  return EDITABLE;
+  const first = rules.find((rule) => ruleMatches(rule, groups));
+  if (!first) return EDITABLE;
+  // A person in two partner programmes gets the stricter rule, the way a deny
+  // beats an allow among grants (Andy, plans/82 decision 11). This applies only
+  // when the first matching rule names one of their programme groups; every
+  // other case keeps the first-match order the overlay was written in.
+  const viaProgramme = (rule: InputRule): boolean => rule.groups.some((g) => isProgrammeGroup(g) && groups.includes(g));
+  const rule = viaProgramme(first) ? strictest(rules.filter(viaProgramme)) : first;
+  const out: ResolvedAccess = { level: rule.level };
+  if ('value' in rule) out.value = rule.value;
+  if (rule.allow) out.allow = rule.allow;
+  // Attribution rides every MATCHED rule, so "why is this locked?" is
+  // answered by the same resolution that locked it and the two can never
+  // disagree. Both stay absent when the overlay is unnamed / the rule
+  // carries no reason.
+  if (overlay.name) out.by = overlay.name;
+  if (rule.reason) out.reason = rule.reason;
+  return out;
+}
+
+const STRICTNESS: Record<AccessLevel, number> = { editable: 0, choice: 1, locked: 2, hidden: 3 };
+
+/** The most restrictive of several matching rules: hidden, then locked, then a
+ *  choice (two choices keep only the values both allow, or the first rule's
+ *  list when they share none), then editable. Ties keep the overlay's order. */
+function strictest(matched: InputRule[]): InputRule {
+  const level = matched.reduce((top, r) => (STRICTNESS[r.level] > STRICTNESS[top] ? r.level : top), 'editable' as AccessLevel);
+  const atLevel = matched.filter((r) => r.level === level);
+  const chosen = atLevel[0]!;
+  if (level !== 'choice' || atLevel.length < 2) return chosen;
+  const shared = (chosen.allow ?? []).filter((v) => atLevel.every((r) => (r.allow ?? []).some((a) => JSON.stringify(a) === JSON.stringify(v))));
+  return shared.length ? { ...chosen, allow: shared } : chosen;
 }
 
 /**
@@ -141,11 +160,15 @@ export function toolVisibleTo(overlay: ToolOverlay | undefined, groups: string[]
 export function toolVisibleWithGrants(
   overlay: ToolOverlay | undefined,
   toolId: string,
-  principal: { userId?: string; groups: string[] },
+  principal: { userId?: string; groups: string[]; role?: string },
   grants: readonly Grant[],
 ): boolean {
   const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants as Grant[]);
   if (decision === 'deny') return false;
+  // A partner programme member sees only the tools an allow grant includes for
+  // them: the overlay's visibility, `*` included, never adds a tool for them
+  // (plans/82 M1, programmes/types.ts).
+  if (isProgrammeScoped(principal.groups, principal.role)) return decision === 'allow';
   return toolVisibleTo(overlay, principal.groups) || decision === 'allow';
 }
 

@@ -31,6 +31,7 @@
  * global RBAC actions (`session.create`, `session.edit`, ...) still apply on
  * top, so a viewer-role account in an editor group still cannot write.
  */
+import { isProgrammeScoped } from '../programmes/types.ts';
 import type { ProjectMemberRecord, ProjectMemberRole, ProjectRecord, UserRecord } from '../store/types.ts';
 import { evaluate, type Grant, type Role } from './evaluate.ts';
 
@@ -123,6 +124,9 @@ export function isInstanceMember(user: UserRecord): boolean {
 function audienceRole(user: UserRecord, project: ProjectRecord): ProjectAccess {
   const general = project.sharing?.general;
   if (!general || general.audience !== 'instance' || !limits.instanceAudience || !isInstanceMember(user)) return 'none';
+  // A project shared with everyone does not reach a partner programme member
+  // (plans/82 M1, decision 10); share it with them by name or by group.
+  if (isProgrammeScoped(user.groups, user.role)) return 'none';
   return lower(lower(general.role, limits.instanceMaxRole), 'editor');
 }
 

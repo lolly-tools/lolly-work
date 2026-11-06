@@ -91,6 +91,8 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
+import { isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, programmeGroupsOf, reservedGroupName } from '../programmes/types.ts';
+import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
@@ -689,7 +691,22 @@ export function buildApp(deps: AppDeps): App {
   // and the bounded cache of federated bytes (catalog/ext-cache.ts).
   const servedIndex = createServedIndex({
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
+    roleOf: (groups) => roleFromGroups(groups, config.idp.roleGroups),
   });
+  /** Whether a person may see a collection: its groups admit them, except that
+   *  a partner programme member sees only a collection that names one of
+   *  their programme groups, never one shared with everyone (plans/82 M1). */
+  const callerSeesCollection = (user: { groups: string[]; role?: string }, collection: CollectionRecord): boolean =>
+    isProgrammeScoped(user.groups, user.role)
+      ? namesProgrammeGroup(collection.groups, new Set(programmeGroupsOf(user.groups)))
+      : collectionVisible(collection, user.groups);
+  /** Whether a group set sees a provider at all: its exposure groups admit
+   *  them, except that a partner programme member sees only a provider whose
+   *  groups name one of their programme groups (plans/82 M1). */
+  const providerVisibleTo = (rec: ProviderRecord, groups: string[]): boolean =>
+    isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups))
+      ? namesProgrammeGroup(rec.exposure.groups, new Set(programmeGroupsOf(groups)))
+      : callerSeesProvider(rec, groups);
   const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning, requireGeneration: productionMode(config),
     shellDirectories: () => shellDirectories(config.instance),
     activePack: async () => (await brand.snapshot()).source.root,
@@ -750,7 +767,7 @@ export function buildApp(deps: AppDeps): App {
   const cmsBytes = (groups: string[]) => async (ref: HostedProviderRef): Promise<{ bytes: Uint8Array; mime: string; id?: string } | null> => {
     await providersReady;
     const rec = await store.getProvider(ref.scope, { includeFragment: false });
-    if (!rec || !rec.enabled || !callerSeesProvider(rec, groups)) return null;
+    if (!rec || !rec.enabled || !providerVisibleTo(rec, groups)) return null;
     if (!ref.path) throw new Error('cms provider refs require a remote asset id');
     const provider = federation.instantiate(rec);
     const asset = await findProviderAsset(provider, ref.path);
@@ -2720,8 +2737,21 @@ export function buildApp(deps: AppDeps): App {
       const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
       for (const tool of index.tools ?? []) if (typeof tool?.id === 'string') toolIds.add(tool.id.toLowerCase());
     } catch { /* no readable index: the governed tools still answer */ }
-    const hiddenTools = [...toolIds].filter((id) => !toolVisibleWithGrants(overlays.get(id), id, { userId: subject.id, groups }, grants)).sort();
-    sendJson(res, 200, { preview: { groups, role: subject.role, hiddenTools }, orgConfig }, { 'cache-control': 'no-store' });
+    const hiddenTools = [...toolIds].filter((id) => !toolVisibleWithGrants(overlays.get(id), id, { userId: subject.id, groups, role: subject.role }, grants)).sort();
+    const visibleTools = [...toolIds].filter((id) => !hiddenTools.includes(id)).sort();
+    // What the group set would be served from the catalog: the same composed
+    // feed a member reads, so a partner programme's preview shows exactly the
+    // assets and collections its people get (plans/82 M1).
+    await providersReady;
+    const feed = (await servedIndex.forCaller({ groups })).index;
+    const feedAssets = feed.assets ?? [];
+    const assets = {
+      count: feedAssets.length,
+      byType: Object.fromEntries([...feedAssets.reduce((m, a) => m.set(String(a.type ?? 'other'), (m.get(String(a.type ?? 'other')) ?? 0) + 1), new Map<string, number>())].sort()),
+      sample: feedAssets.slice(0, 24).map((a) => ({ id: a.id, name: typeof a.name === 'string' ? a.name : a.id, type: a.type ?? null })),
+      collections: ((feed.collections ?? []) as Array<{ id: string; name: string; members: string[] }>).map((c) => ({ id: c.id, name: c.name, members: c.members.length })),
+    };
+    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets }, orgConfig }, { 'cache-control': 'no-store' });
   });
 
   // ── telemetry ─────────────────────────────────────────────────────────────
@@ -2765,6 +2795,7 @@ export function buildApp(deps: AppDeps): App {
     const targeted = targetedMessages(await store.listMessages(), {
       groups: user.groups,
       userId: user.id,
+      ...(isProgrammeScoped(user.groups, user.role) ? { programmeScoped: true } : {}),
       ...(client.shell ? { shell: client.shell } : {}),
       ...(client.engine ? { engineVersion: client.engine } : {}),
     }, acked);
@@ -2951,7 +2982,7 @@ export function buildApp(deps: AppDeps): App {
     // name them, because there the person supplied the ids.
     if (body.target.collectionId) {
       const collection = await store.getCollection(String(body.target.collectionId).trim());
-      if (!collection || !collectionVisible(collection, user.groups)) {
+      if (!collection || !callerSeesCollection(user, collection)) {
         return sendError(res, 403, 'FORBIDDEN', 'you cannot see this collection');
       }
       let unseen = 0;
@@ -3292,6 +3323,10 @@ export function buildApp(deps: AppDeps): App {
     // above). Each request still rechecks the live link before private caching.
     const toolId = link.target.toolId;
     if (!toolId) return sendError(res, 400, 'UNRENDERABLE_TARGET', 'this link has no tool to render');
+    if (!await programmeMakerStillSees(link, async (maker) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId,
+      { userId: maker.id, groups: maker.groups, role: maker.role }, await store.listGrants()))) {
+      return sendError(res, 410, 'LINK_MAKER_NO_ACCESS', 'the person who made this link no longer has this tool');
+    }
     let fmt = (link.target.format || 'svg').toLowerCase();
     let q = new URLSearchParams();
     for (const [k, v] of Object.entries(link.target.params ?? {})) {
@@ -4505,6 +4540,9 @@ export function buildApp(deps: AppDeps): App {
     const body = (await readJson(req)) as { name?: string; description?: string } | null;
     const name = typeof body?.name === 'string' ? body.name.trim() : '';
     if (!LOCAL_GROUP_NAME.test(name)) return sendError(res, 400, 'INVALID_INPUT', 'name must be a slug (letters, digits, . _ -), ≤64 chars');
+    // Partner programme groups and the partner marker are made by the programme
+    // routes only, so no other group can be mistaken for one (plans/82 M1).
+    if (reservedGroupName(name)) return sendError(res, 400, 'RESERVED_GROUP', 'programme groups and the partner group are made in Partner programmes');
     if ((await store.listLocalGroups()).some((g) => g.name === name)) {
       return sendError(res, 409, 'CONFLICT', 'a local group with this name already exists');
     }
@@ -4531,6 +4569,9 @@ export function buildApp(deps: AppDeps): App {
     if (!(await store.listLocalGroups()).some((g) => g.name === name)) {
       return sendError(res, 404, 'NOT_FOUND', 'no such local group');
     }
+    // A programme group goes with its programme; removing the partner group
+    // here would make every former partner an internal account at once.
+    if (reservedGroupName(name)) return sendError(res, 400, 'RESERVED_GROUP', 'delete the programme in Partner programmes, or remove the partner group from one person in People');
     const refusal = await inviteGroupsRefusal(user, [name]);
     if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message);
     await store.deleteLocalGroup(name); // also strips it from every user's localGroups
@@ -5519,6 +5560,16 @@ export function buildApp(deps: AppDeps): App {
 
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
+  registerProgrammeRoutes(router, {
+    store, requireAction, audit,
+    toolIds: async () => {
+      try {
+        const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
+        return (index.tools ?? []).flatMap((t) => typeof t?.id === 'string' ? [t.id] : []);
+      } catch { return []; }
+    },
+  });
+
   registerExportReviewMatch(router, {
     store, memberOf, enabled: () => approvalArtifactPolicy(config).enabled,
     mayUse: async (user, toolId) => mayUseTool(user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode),
@@ -6059,11 +6110,11 @@ export function buildApp(deps: AppDeps): App {
    *  overlays and the `tool.use` grants together, so these surfaces hide and
    *  show exactly the tools org-config and Preview do. */
   const catalogCallerOf = async (
-    user: { id?: string; groups: string[] } | null | undefined,
+    user: { id?: string; groups: string[]; role?: string } | null | undefined,
     guestToolId?: string,
   ): Promise<CatalogCaller> => ({
     overlays: await store.listOverlays(), groups: user?.groups ?? [], grants: await store.listGrants(),
-    ...(user?.id ? { userId: user.id } : {}), ...(guestToolId ? { guestToolId } : {}),
+    ...(user?.id ? { userId: user.id } : {}), ...(user?.role ? { role: user.role } : {}), ...(guestToolId ? { guestToolId } : {}),
   });
   const serveTool: Handler = async (req, res, ctx) => {
     // The bare `/tools` is the app's gallery route, not a tool file.
@@ -6257,8 +6308,14 @@ export function buildApp(deps: AppDeps): App {
       const rec = await store.getProvider(providerId, { includeFragment: false });
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
       if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
-      if (!callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const assetId = extAssetId(providerId, remoteId);
+      // A partner programme member reads only the federated assets their feed
+      // holds: a granted collection can name one asset of a provider they do
+      // not otherwise see (plans/82 M1).
+      const scopedReader = !!user && isProgrammeScoped(user.groups, user.role);
+      if (scopedReader
+        ? !(await servedIndex.forCaller({ groups: user!.groups })).index.assets?.some((entry) => entry.id === assetId)
+        : !callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const filePreview = ctx.url.searchParams.get('preview') === '1';
       const convertedPreview = ctx.url.searchParams.get('view') === '1';
       if (convertedPreview && filePreview) return sendError(res, 400, 'INVALID_INPUT', 'choose one preview representation');
@@ -6371,7 +6428,9 @@ export function buildApp(deps: AppDeps): App {
             const output = await createFilePreview(renderWorker!, bytes, signal);
             const currentUser = await requireAction(req, res, 'catalog.read'); if (!currentUser) return;
             const currentProvider = await store.getProvider(providerId, { includeFragment: false });
-            if (!currentProvider?.enabled || !callerSeesProvider(currentProvider, currentUser.groups) || (await catalogBytesGate(assetId, true)).blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'This asset is no longer available.');
+            if (!currentProvider?.enabled || (isProgrammeScoped(currentUser.groups, currentUser.role)
+              ? !(await servedIndex.forCaller({ groups: currentUser.groups })).index.assets?.some((entry) => entry.id === assetId)
+              : !callerSeesProvider(currentProvider, currentUser.groups)) || (await catalogBytesGate(assetId, true)).blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'This asset is no longer available.');
             res.writeHead(200, { 'content-type': 'application/pdf', ...INERT_BYTES, 'cache-control': 'private, no-store', 'content-length': String(output.length) }); res.end(output); return;
           } finally { res.removeListener('close', disconnected); }
         }
@@ -6535,6 +6594,13 @@ export function buildApp(deps: AppDeps): App {
    */
   const callerSeesAsset = async (user: UserRecord, rawId: string): Promise<boolean> => {
     const assetId = await resolveAssetAlias(rawId);
+    // A partner programme member sees exactly what their feed holds (plans/82
+    // M1): essentials and what their programmes include, never the rest of the
+    // pack. Their feed is lifecycle-gated, so they cannot link a scheduled asset.
+    if (isProgrammeScoped(user.groups, user.role)) {
+      await providersReady;
+      return !!(await servedIndex.forCaller({ groups: user.groups })).index.assets?.some((entry) => entry.id === assetId);
+    }
     if (assetId.startsWith(INST_PREFIX)) {
       const rec = await store.getInstanceAsset(assetId);
       // A submission that is not live yet is not linkable: it is not in the
@@ -6751,7 +6817,19 @@ export function buildApp(deps: AppDeps): App {
     }
   };
 
+  /** Whether the person who made a link may still hand on its target. A link's
+   *  exposure is settled when it is made, with one exception: a link a partner
+   *  programme member made follows what their programmes include now, so
+   *  leaving a programme stops its links (plans/82, Andy decision 8). */
+  const programmeMakerStillSees = async (link: LinkRecord, check: (maker: UserRecord) => Promise<boolean>): Promise<boolean> => {
+    const maker = await store.getUser(link.createdBy);
+    if (!maker || !isProgrammeScoped(maker.groups, maker.role)) return true;
+    return check(maker);
+  };
   const serveLinkedAsset = async (req: IncomingMessage, res: ServerResponse, link: LinkRecord): Promise<void> => {
+    if (!await programmeMakerStillSees(link, (maker) => callerSeesAsset(maker, link.target.assetId ?? ''))) {
+      return sendError(res, 410, 'LINK_MAKER_NO_ACCESS', 'the person who made this link no longer has this asset');
+    }
     const source = await resolveLinkedSource(link.target.assetId ?? '', link.target.format);
     await streamLinkedSource(req, res, source, link.kind === 'download');
   };
@@ -6833,6 +6911,9 @@ export function buildApp(deps: AppDeps): App {
   ): Promise<void> => {
     const rec = await store.getCollection(link.target.collectionId ?? '');
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+    if (!await programmeMakerStillSees(link, async (maker) => callerSeesCollection(maker, rec))) {
+      return sendError(res, 410, 'LINK_MAKER_NO_ACCESS', 'the person who made this link no longer has this collection');
+    }
 
     // One member's bytes, addressed from the page. The membership check is the
     // boundary: an id the collection does not name is a 404 here even though
@@ -6951,7 +7032,7 @@ export function buildApp(deps: AppDeps): App {
     await providersReady;
     const served = await servedIndex.forCaller({ groups: user?.groups ?? [], background: true });
     const represented = new Set(served.providers.map(provider => provider.id));
-    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)))
+    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)), providerVisibleTo)
       .map(source => !represented.has(source.id) && source.status === 'current' ? { ...source, status: 'pending', count: undefined } : source);
     const sources = query.source ? sourceStatuses.filter(source => source.id === query.source) : sourceStatuses;
     const complete = sources.every(source => source.status === 'current' && !source.truncated && !source.incomplete);
@@ -8035,9 +8116,13 @@ export function buildApp(deps: AppDeps): App {
     const list = (key: string): string[] =>
       (ctx.url.searchParams.get(key) ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     // Exposure can only ever be narrowed to groups the submitter is in: nobody
-    // publishes into a group they are not a member of.
+    // publishes into a group they are not a member of. One exception: someone
+    // who manages partner programmes publishes into a programme's group without
+    // joining it (plans/82 M1, Andy decision 3), because joining would narrow
+    // their own view to that programme.
     const declaredGroups = list('groups');
-    const outsider = declaredGroups.filter((g) => !user.groups.includes(g));
+    const managesProgrammes = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', ['*'], await store.listGrants());
+    const outsider = declaredGroups.filter((g) => !user.groups.includes(g) && !(managesProgrammes && isProgrammeGroup(g)));
     if (outsider.length) return sendError(res, 403, 'FORBIDDEN', `you are not in ${outsider.join(', ')}, so you cannot submit into it`);
     const type = declaredType;
     if (type && !/^[a-z0-9-]{1,32}$/i.test(type)) return sendError(res, 400, 'INVALID_INPUT', 'type must be a short slug');
@@ -8269,7 +8354,7 @@ export function buildApp(deps: AppDeps): App {
       else {
         const wanted = typeof body.collectionId === 'string' ? body.collectionId.trim() : '';
         const collection = wanted ? await store.getCollection(wanted) : null;
-        if (!collection || !collectionVisible(collection, user.groups)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+        if (!collection || !callerSeesCollection(user, collection)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
         collectionId = collection.id;
       }
       before.collectionId = rec.submission.collectionId ?? null;
@@ -9185,7 +9270,7 @@ export function buildApp(deps: AppDeps): App {
     // The memoised feed already holds what this caller is served, lifecycle
     // applied; the provider rows are read without their large fragments.
     const visible = (await servedIndex.forCaller({ groups: user.groups, background: true })).index;
-    const sources = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
+    const sources = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)), providerVisibleTo);
     const canManage = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.provider.manage', ['*'], await store.listGrants());
     sendJson(res, 200, { sources, canManage, scope: user.id }, { 'cache-control': 'private, no-store' });
   });
@@ -9249,7 +9334,7 @@ export function buildApp(deps: AppDeps): App {
     // never fatal.
     const missed: string[] = [];
     const live = (await store.listProviders({ includeFragment: false })).filter((rec) =>
-      rec.enabled && (!source || rec.id === source) && callerSeesProvider(rec, user.groups));
+      rec.enabled && (!source || rec.id === source) && providerVisibleTo(rec, user.groups));
     // Live results lose hidden tags the same way the feed's entries do.
     const tagRules = await loadTagRules(store);
     await Promise.all(live.map(async (rec) => {
@@ -10799,7 +10884,7 @@ export function buildApp(deps: AppDeps): App {
     liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, brandPages: brandPagesConfig(config).enabled, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
     providerRefs: async (groups) => {
       await providersReady;
-      return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
+      return { cms: (await store.listProviders()).some(provider => provider.enabled && providerVisibleTo(provider, groups)), net: configuredAssetOrigins.length > 0 };
     },
   };
   registerDiscoveryRoutes(router, discoveryDeps);

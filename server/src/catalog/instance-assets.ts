@@ -137,7 +137,7 @@ export function submissionServable(rec: InstanceAssetRecord): boolean {
  *  visibility so an exited asset keeps the exposure the DAM slice had). */
 export function instanceAssetVisible(rec: InstanceAssetRecord, callerGroups: string[]): boolean {
   const g = rec.groups;
-  if (!g || g === '*') return true;
+  if (!g || g === '*' || g.includes('*')) return true;
   return g.some((x) => callerGroups.includes(x));
 }
 

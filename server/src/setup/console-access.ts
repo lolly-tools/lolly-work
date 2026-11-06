@@ -9,7 +9,7 @@ export function consoleAccess(principal: PrincipalCtx, grants: Grant[], activity
     links: ['link.revoke'], tools: ['policy.edit'], catalog: ['catalog.expire'], providers: ['catalog.provider.read'],
     injectables: ['catalog.injectable.manage'], flags: ['policy.edit'], design: ['catalog.read'], 'brand-pages': ['brand.page.publish'],
     contractors: ['link.create-guest'], grants: ['grant.edit'], preview: ['policy.edit'], audit: ['audit.export'],
-    setup: ['instance.config'], tokens: ['token.manage', 'scim.manage'], chains: ['policy.edit'],
+    setup: ['instance.config'], tokens: ['token.manage', 'scim.manage'], chains: ['policy.edit'], programmes: ['programme.manage'],
   };
   const actions = [...new Set(Object.values(requirements).flat().concat([
     'brand.switch', 'brand.edit', 'catalog.provider.credential', 'catalog.provider.manage', 'catalog.edit',

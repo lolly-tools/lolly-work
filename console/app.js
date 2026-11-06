@@ -76,7 +76,27 @@ async function api(path, opts = {}) {
   // `body` keeps the whole answer: a 409 can carry the current state (a
   // request someone else answered, the live invitation for an address).
   if (!res.ok) throw Object.assign(new Error(data?.error?.message ?? res.statusText), { status: res.status, code: data?.error?.code, field: data?.error?.field, body: data });
+  if (path === '/api/v1/groups' && Array.isArray(data?.groups)) noteGroups(data.groups);
+  if (path === '/api/v1/programmes' && Array.isArray(data?.programmes)) for (const p of data.programmes) programmeGroupNames.set(p.group, p.name);
   return data;
+}
+
+// Partner programme groups read as the programme's name wherever an admin
+// reads or picks a group (plans/82 M1), never as the internal group id. The
+// names come from the programmes list, or from the groups list, whose
+// programme groups carry "Partner programme: <name>" as their description.
+const programmeGroupNames = new Map();
+const PROGRAMME_GROUP_NOTE = 'Partner programme: ';
+function noteGroups(list) {
+  for (const g of list) {
+    if (typeof g?.name === 'string' && g.name.startsWith('programme-') && typeof g.description === 'string' && g.description.startsWith(PROGRAMME_GROUP_NOTE)) {
+      programmeGroupNames.set(g.name, g.description.slice(PROGRAMME_GROUP_NOTE.length));
+    }
+  }
+}
+function groupLabel(name) {
+  const programme = programmeGroupNames.get(name);
+  return programme ? `${programme} (partner programme)` : name;
 }
 
 // ── tiny dom helpers ────────────────────────────────────────────────────────
@@ -4364,7 +4384,7 @@ async function invitationsSection(groupOptions) {
     const name = typeof g === 'string' ? g : g.name;
     const fromIdp = typeof g === 'object' && g.source === 'idp';
     const cb = el('input', { type: 'checkbox', value: name });
-    return { name, cb, node: el('label', { class: 'chk' }, cb, el('span', {}, name),
+    return { name, cb, node: el('label', { class: 'chk' }, cb, el('span', { title: name }, groupLabel(name)),
       ...(fromIdp ? [' ', el('span', { class: 'muted' }, '· from sign-in provider')] : [])) };
   });
   const expirySel = el('select', {}, ...INVITE_EXPIRY_CHOICES.map((c) => el('option', { value: c.value, ...(c.value === '30' ? { selected: 'selected' } : {}) }, c.label)));
@@ -4604,7 +4624,7 @@ async function invitationsSection(groupOptions) {
       el('td', {}, check),
       el('td', { title: inv.email }, el('div', { class: 'invite-account' }, avatar, el('span', {}, inv.email)),
         el('div', { class: 'invite-provenance muted' }, `Invited by ${inv.inviter?.name ?? '—'} · ${madeFrom(inv)}`),
-        inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.join(', ')}`)] : null),
+        inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.map(groupLabel).join(', ')}`)] : null),
       el('td', {}, projects.length
         ? projects.map((p) => `${p.name || 'A removed project'} (${projectRoleLabel(p.role)})`).join(', ')
         : el('span', { class: 'muted' }, 'none')),
@@ -4967,7 +4987,7 @@ async function viewUsers(main, params) {
       el('td', { title: u.email }, u.email),
       el('td', {}, u.title ?? '—'),
       el('td', {}, el('span', { class: 'chip' }, u.role)),
-      el('td', { title: u.groups.join(', ') }, u.groups.length ? u.groups.join(', ') : '—'),
+      el('td', { title: u.groups.join(', ') }, u.groups.length ? u.groups.map(groupLabel).join(', ') : '—'),
       el('td', {}, when(u.lastSeenAt)));
   }
 
@@ -5225,7 +5245,7 @@ async function viewUsers(main, params) {
       const entries = localGroups().map((g) => {
         const cb = el('input', { type: 'checkbox', ...(checkedSet.has(g.name) ? { checked: 'checked' } : {}) });
         cb.addEventListener('change', () => { if (cb.checked) groupDraft.add(g.name); else groupDraft.delete(g.name); saveBtn.disabled = !groupsDirty(); updateDraftNotice(); });
-        return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', {}, g.name), g.description ? el('span', { class: 'muted' }, ` — ${g.description}`) : null) };
+        return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', { title: g.name }, groupLabel(g.name)), g.description && !programmeGroupNames.has(g.name) ? el('span', { class: 'muted' }, ` — ${g.description}`) : null) };
       });
 
       const saveBtn = el('button', { class: 'primary', onclick: async () => {
@@ -5432,6 +5452,147 @@ function copyButton(getText, label = 'Copy link') {
     setTimeout(() => { btn.textContent = label; }, 1600);
   } }, label);
   return btn;
+}
+
+// ── partner programmes (plans/82 M1) ───────────────────────────────────────
+// Each programme is the admin's own name for a kind of partner. Its people see
+// only what it includes: the tools ticked here (tool.use grants for its group),
+// the collections ticked here (its group in each collection's groups), and the
+// design system's tokens, fonts and palettes. Nothing shared with everyone
+// reaches them. People join through the programme's group, in People or with
+// an invitation.
+const slugOf = (name) => name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+
+async function viewProgrammes(main, params) {
+  const [{ programmes }, toolsResp, collectionsResp] = await Promise.all([
+    api('/api/v1/programmes'),
+    api('/api/v1/policy/tools').catch(() => ({ tools: [] })),
+    api('/api/v1/catalog/collections').catch(() => ({ collections: [] })),
+  ]);
+  const tools = (toolsResp.tools ?? []).map((t) => ({ id: t.id, name: t.name || t.id }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const collections = collectionsResp.collections ?? [];
+  const editing = params?.get?.('id');
+
+  const card = (p) => {
+    const err = errSpan();
+    const del = armConfirmButton({ class: 'danger' }, 'Delete', 'Really delete?', async (disarm) => {
+      err.textContent = '';
+      del.disabled = true;
+      try { await api(`/api/v1/programmes/${encodeURIComponent(p.id)}`, { method: 'DELETE' }); toast(`Deleted ${p.name}`); route(); }
+      catch (e) { err.textContent = e.message; del.disabled = false; disarm(); }
+    });
+    return el('div', { class: 'card stack programme-card' },
+      el('div', { class: 'programme-head' },
+        el('h2', { class: 'flush' }, p.name),
+        el('span', { class: 'muted mono' }, p.group)),
+      p.description ? el('p', { class: 'sub flush' }, p.description) : null,
+      el('p', { class: 'flush' },
+        `${p.members.length} ${p.members.length === 1 ? 'person' : 'people'} · ${p.tools.length} tool${p.tools.length === 1 ? '' : 's'} · ${p.collections.length} collection${p.collections.length === 1 ? '' : 's'}`),
+      el('p', { class: 'flush programme-actions' },
+        el('a', { class: 'btn primary', href: `#/programmes?id=${encodeURIComponent(p.id)}` }, 'Choose what they get'),
+        ' ',
+        el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(p.group)}` }, 'See what they get'),
+        ' ', del),
+      err);
+  };
+
+  if (editing) {
+    const p = programmes.find((x) => x.id === editing);
+    if (!p) { main.append(el('h1', {}, 'Partner programmes'), el('p', {}, 'No such programme. ', el('a', { href: '#/programmes' }, 'Back to programmes'))); return; }
+    main.append(programmeEditor(p, tools, collections));
+    return;
+  }
+
+  // New programme: a name, with the id taken from it.
+  const nameInput = el('input', { placeholder: 'Resellers, EMEA', 'aria-label': 'Programme name' });
+  const descInput = el('input', { placeholder: 'Optional: who this programme is for', 'aria-label': 'Description' });
+  const createErr = errSpan();
+  const createForm = el('form', { class: 'card stack', onsubmit: async (e) => {
+    e.preventDefault();
+    createErr.textContent = '';
+    const name = nameInput.value.trim();
+    const id = slugOf(name);
+    if (!id) { createErr.textContent = 'Name the programme.'; nameInput.focus(); return; }
+    if (programmes.some((x) => x.id === id)) { createErr.textContent = `A programme called ${name} already exists.`; return; }
+    try {
+      await api(`/api/v1/programmes/${id}`, { method: 'PUT', body: { name, ...(descInput.value.trim() ? { description: descInput.value.trim() } : {}) } });
+      toast(`Created ${name}`);
+      location.hash = `#/programmes?id=${encodeURIComponent(id)}`;
+    } catch (err) { createErr.textContent = err.message; }
+  } },
+    el('h2', {}, 'New programme'),
+    el('div', { class: 'grant-fields' }, field('Name', nameInput), field('Description', descInput)),
+    el('p', {}, el('button', { class: 'primary' }, 'Create programme')),
+    createErr);
+
+  main.append(
+    el('h1', {}, 'Partner programmes'),
+    el('p', { class: 'sub' }, 'Name each kind of partner you work with and choose what its people get. Someone in a programme sees only the tools and collections their programmes include, plus your design system’s tokens, fonts and palettes. Nothing shared with everyone reaches them.'),
+    programmes.length ? el('div', { class: 'stack' }, ...programmes.map(card)) : el('p', { class: 'empty' }, 'No programmes yet.'),
+    createForm,
+  );
+}
+
+function programmeEditor(p, tools, collections) {
+  const nameInput = el('input', { value: p.name, 'aria-label': 'Programme name' });
+  const descInput = el('input', { value: p.description ?? '', 'aria-label': 'Description' });
+  const chosenTools = new Set(p.tools);
+  const chosenCollections = new Set(p.collections.map((c) => c.id));
+  const toolFilter = el('input', { type: 'search', placeholder: 'Find a tool', 'aria-label': 'Find a tool' });
+  const toolList = el('div', { class: 'chk-list programme-tools' });
+  const toolCount = el('span', { class: 'muted' });
+  const renderTools = () => {
+    const q = toolFilter.value.trim().toLowerCase();
+    toolCount.textContent = `${chosenTools.size} chosen`;
+    toolList.replaceChildren(...tools.filter((t) => !q || t.name.toLowerCase().includes(q) || t.id.includes(q)).map((t) => {
+      const cb = el('input', { type: 'checkbox', ...(chosenTools.has(t.id) ? { checked: 'checked' } : {}) });
+      cb.addEventListener('change', () => { if (cb.checked) chosenTools.add(t.id); else chosenTools.delete(t.id); toolCount.textContent = `${chosenTools.size} chosen`; });
+      return el('label', { class: 'chk' }, cb, el('span', {}, t.name), el('span', { class: 'muted mono' }, ` ${t.id}`));
+    }));
+  };
+  toolFilter.addEventListener('input', renderTools);
+  renderTools();
+  const collectionList = collections.length
+    ? el('div', { class: 'chk-list' }, ...collections.map((c) => {
+        const cb = el('input', { type: 'checkbox', ...(chosenCollections.has(c.id) ? { checked: 'checked' } : {}) });
+        cb.addEventListener('change', () => { if (cb.checked) chosenCollections.add(c.id); else chosenCollections.delete(c.id); });
+        return el('label', { class: 'chk' }, cb, el('span', {}, c.name), el('span', { class: 'muted' }, ` ${c.members.length} asset${c.members.length === 1 ? '' : 's'}`));
+      }))
+    : el('p', { class: 'muted' }, 'No collections yet. Make one in Catalog, then come back to include it.');
+  const err = errSpan();
+  const save = el('button', { class: 'primary' }, 'Save');
+  const form = el('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    save.disabled = true;
+    try {
+      await api(`/api/v1/programmes/${encodeURIComponent(p.id)}`, { method: 'PUT', body: {
+        name: nameInput.value.trim(), ...(descInput.value.trim() ? { description: descInput.value.trim() } : {}),
+        tools: [...chosenTools], collections: [...chosenCollections],
+      } });
+      toast(`Saved ${nameInput.value.trim()}`);
+      location.hash = '#/programmes';
+    } catch (ex) { err.textContent = ex.message; save.disabled = false; }
+  } },
+    el('div', { class: 'card stack' }, el('div', { class: 'grant-fields' }, field('Name', nameInput), field('Description', descInput))),
+    el('div', { class: 'card stack' },
+      el('h2', {}, 'Tools ', toolCount),
+      el('p', { class: 'sub flush' }, 'The tools this programme’s people can open. Every other tool is absent for them.'),
+      toolFilter, toolList),
+    el('div', { class: 'card stack' },
+      el('h2', {}, 'Collections'),
+      el('p', { class: 'sub flush' }, 'The assets in a ticked collection reach this programme, even ones your own people need a group to see.'),
+      collectionList),
+    el('div', { class: 'card stack' },
+      el('h2', {}, `People (${p.members.length})`),
+      p.members.length
+        ? dataTable(['Name', 'Email'], p.members.map((m) => el('tr', {}, el('td', {}, m.name), el('td', {}, m.email))))
+        : el('p', { class: 'muted' }, 'Nobody yet.'),
+      el('p', { class: 'sub flush' }, 'Add people from ', el('a', { href: '#/users' }, 'People'), `: invite them and tick “${p.name} (partner programme)”, or tick it on someone who already signs in.`)),
+    el('p', {}, save, ' ', el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(p.group)}` }, 'See what they get'), ' ', el('a', { class: 'btn', href: '#/programmes' }, 'Back')),
+    err);
+  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form);
 }
 
 // ── contractors (plans/02) ───────────────────────────────────────────────────
@@ -5820,7 +5981,8 @@ function grantRow(g) {
     } catch (e) { err.textContent = e.message; delBtn.disabled = false; disarm(); }
   });
   return el('tr', {},
-    el('td', { class: 'mono' }, g.principal),
+    el('td', {}, el('span', { class: 'mono' }, g.principal),
+      programmeGroupNames.has(g.principal.replace(/^group:/, '')) ? el('div', { class: 'muted' }, groupLabel(g.principal.replace(/^group:/, ''))) : null),
     el('td', { class: 'mono' }, g.action),
     el('td', {}, el('span', { class: 'mono' }, g.resource),
       g.neverMatches ? el('p', { class: 'form-err flush' }, `Never matches. ${g.neverMatches} Delete it and add a rule that can apply.`) : null),
@@ -5830,6 +5992,7 @@ function grantRow(g) {
 
 async function viewGrants(main) {
   const { grants } = await api('/api/v1/grants');
+  await api('/api/v1/programmes').catch(() => null); // names for programme groups, best-effort
   const sorted = [...grants].sort((a, b) =>
     a.principal.localeCompare(b.principal) || a.action.localeCompare(b.action));
 
@@ -5952,7 +6115,7 @@ function accessDetail(access) {
 
 function renderPreview(data) {
   const { preview, orgConfig } = data;
-  const heading = preview.groups.length ? preview.groups.join(', ') : 'a member with no groups';
+  const heading = preview.groups.length ? preview.groups.map(groupLabel).join(', ') : 'a member with no groups';
 
   const canRows = Object.entries(orgConfig.can).map(([action, ok]) => el('tr', {},
     el('td', { class: 'mono' }, action),
@@ -5984,12 +6147,32 @@ function renderPreview(data) {
     el('td', {}, p.mode),
     el('td', { class: 'mono' }, p.value === undefined ? '—' : showValue(p.value))));
 
+  // What the catalog would serve these groups: for a partner programme, the
+  // tools and assets its people get and nothing else.
+  const assets = preview.assets;
+  const assetCard = assets ? el('div', { class: 'card stack' },
+    el('h2', {}, 'Assets'),
+    el('p', { class: 'sub' }, preview.scoped
+      ? 'A partner programme sees the design system’s tokens, fonts and palettes, and the collections, assets and providers that list its group. Nothing shared with everyone reaches the programme.'
+      : 'Everything the catalog serves these groups.'),
+    el('p', {}, `${assets.count} asset${assets.count === 1 ? '' : 's'}`,
+      Object.keys(assets.byType ?? {}).length ? el('span', { class: 'muted' }, ` · ${Object.entries(assets.byType).map(([type, n]) => `${n} ${type}`).join(', ')}`) : null),
+    assets.collections?.length
+      ? dataTable(['Collection', 'Assets'], assets.collections.map((c) => el('tr', {}, el('td', {}, c.name), el('td', {}, String(c.members)))))
+      : el('p', { class: 'muted' }, 'No collections.'),
+    assets.sample?.length
+      ? el('p', { class: 'chips' }, ...assets.sample.map((a) => el('span', { class: 'chip', title: a.id }, a.name)))
+      : null) : null;
   return el('div', {},
     el('div', { class: 'card stack' },
       el('h2', {}, `As ${heading}`),
       el('p', {}, 'Effective role: ', el('span', { class: 'status review' }, orgConfig.session.role),
         preview.role !== 'member' ? el('span', { class: 'muted' }, `  (these groups escalate role via sign-in)`) : null),
+      preview.scoped ? el('p', {}, el('span', { class: 'status live' }, 'Partner programme'), ' ',
+        `uses ${preview.visibleTools?.length ?? 0} tool${preview.visibleTools?.length === 1 ? '' : 's'}: `,
+        el('span', { class: 'mono' }, (preview.visibleTools ?? []).join(', ') || 'none yet')) : null,
       el('p', { class: 'sub' }, `${orgConfig.inboxUnread} unread inbox message${orgConfig.inboxUnread === 1 ? '' : 's'} would target this group.`)),
+    assetCard,
     el('div', { class: 'card stack' }, el('h2', {}, 'Permissions'), dataTable(['Action', 'Effective'], canRows)),
     el('div', { class: 'card stack' },
       el('h2', {}, 'Tools'),
@@ -6004,7 +6187,7 @@ function renderPreview(data) {
   );
 }
 
-async function viewPreview(main) {
+async function viewPreview(main, params) {
   const groupsInput = el('input', { placeholder: 'marketing, brand-team' });
   const resultHost = el('div', {});
   const err = errSpan();
@@ -6023,6 +6206,9 @@ async function viewPreview(main) {
   // Suggestion chips: the role-escalating groups always, plus any group named
   // in a tool overlay (same policy.edit gate as this view, so always available).
   let suggestions = ['owner', 'admin', 'approver', 'author'];
+  // Programme names for the chips and the heading; a programme with no rules
+  // yet is offered too, so an admin can preview it before writing any.
+  const programmes = await api('/api/v1/programmes').then((r) => r.programmes ?? []).catch(() => []);
   try {
     const { tools } = await api('/api/v1/policy/tools');
     const seen = new Set();
@@ -6032,7 +6218,7 @@ async function viewPreview(main) {
         for (const r of rules) for (const g of r.groups) if (g !== '*') seen.add(g);
       }
     }
-    suggestions = [...new Set([...suggestions, ...[...seen].sort()])];
+    suggestions = [...new Set([...suggestions, ...[...seen].filter((g) => !g.startsWith('programme-')).sort(), ...programmes.map((p) => p.group)])];
   } catch (e) {
     // A member who lands on this admin-only view degrades the way every other
     // view does: let the 403 reach the router, which renders the role message.
@@ -6048,11 +6234,14 @@ async function viewPreview(main) {
       el('p', {}, previewBtn),
       suggestions.length
         ? el('p', { class: 'chips' }, el('span', { class: 'muted' }, 'Quick pick: '),
-            ...suggestions.map((g) => el('button', { class: 'chip', onclick: () => run(g) }, g)))
+            ...suggestions.map((g) => el('button', { class: 'chip', title: g, onclick: () => run(g) }, groupLabel(g))))
         : null,
       err),
     resultHost,
   );
+  // #/preview?groups=programme-resellers, the link each partner programme offers.
+  const wanted = params?.get?.('groups');
+  if (wanted) await run(wanted);
 }
 
 // ── docs ────────────────────────────────────────────────────────────────────
@@ -6445,6 +6634,7 @@ const NAV_ICONS = {
   audit: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   contractors: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/>',
+  programmes: '<path d="M11 17l-1.5 1.5a2.12 2.12 0 0 1-3-3L12 10"/><path d="M13 7l1.5-1.5a2.12 2.12 0 0 1 3 3L12 14"/><path d="M8 12l4 4"/><path d="M3 21l3-3"/><path d="M21 3l-3 3"/>',
   grants: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
   preview: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   flags: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
@@ -6611,6 +6801,7 @@ const VIEWS = {
   projects: { title: 'Projects', render: viewProjects },
   users: { title: 'People', render: viewUsers },
   contractors: { title: 'Contractors', render: viewContractors },
+  programmes: { title: 'Partner programmes', render: viewProgrammes },
   grants: { title: 'Grants', render: viewGrants },
   preview: { title: 'Preview', render: viewPreview },
   docs: { title: 'Docs', render: viewDocs },
@@ -6657,7 +6848,7 @@ function brandLogoEl(cls) {
 }
 
 const NAV_GROUPS = [
-  { title: 'Workspace', ids: ['overview', 'projects', 'users', 'contractors'] },
+  { title: 'Workspace', ids: ['overview', 'projects', 'users', 'programmes', 'contractors'] },
   { title: 'Assets & tools', ids: ['catalog', 'providers', 'tools', 'injectables'] },
   { title: 'Governance', ids: ['approvals', 'chains', 'grants', 'tokens'] },
   { title: 'Operations', ids: ['agents', 'activity', 'rooms', 'links', 'messages', 'audit', 'fleet'] },

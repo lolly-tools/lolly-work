@@ -1366,6 +1366,28 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteCollection('launch');
   assert.deepEqual(await store.listCollections(), []);
 
+  // Partner programmes (plans/82 M1, migrations/0085): one record per
+  // programme, name-ordered, upserted whole; membership is never stored here.
+  assert.deepEqual(await store.listProgrammes(), []);
+  const resellers = { id: 'resellers', name: 'Resellers', description: 'EMEA resellers', createdBy: 'usr_1',
+    createdAt: '2026-11-06T00:00:00.000Z', updatedAt: '2026-11-06T00:00:00.000Z', version: 1 };
+  await store.putProgramme(resellers);
+  await store.putProgramme({ ...resellers, id: 'distributors', name: 'Distributors', description: undefined as unknown as string });
+  assert.deepEqual((await store.listProgrammes()).map((p) => p.id), ['distributors', 'resellers'], 'listing is name-ordered');
+  await store.putProgramme({ ...resellers, name: 'Resellers, EMEA', version: 2 });
+  assert.equal((await store.getProgramme('resellers'))?.name, 'Resellers, EMEA', 'put is an upsert');
+  assert.equal((await store.getProgramme('resellers'))?.version, 2);
+  await store.deleteProgramme('nope');
+  await store.deleteProgramme('distributors');
+  await store.deleteProgramme('resellers');
+  assert.deepEqual(await store.listProgrammes(), []);
+
+  // Joining a programme group adds the partner marker, and leaving it keeps it.
+  const partnerUser = await store.upsertUserBySub({ sub: 'conf:partner', email: 'partner@conf.test', groups: [], role: 'member' });
+  assert.deepEqual((await store.setLocalGroups(partnerUser.id, ['programme-resellers']))?.localGroups, ['programme-resellers', 'partner']);
+  assert.deepEqual((await store.setLocalGroups(partnerUser.id, ['partner']))?.localGroups, ['partner']);
+  assert.deepEqual((await store.setLocalGroups(partnerUser.id, []))?.localGroups, [], 'an admin removing the marker on purpose makes the account internal');
+
   // Asset versions (plans/31 section 6, migrations/0020). Keyed (assetId,
   // version), listed oldest-first, and an upsert replaces the snapshot whole -
   // the format SET is what a head move and a rollback swap, so a driver that

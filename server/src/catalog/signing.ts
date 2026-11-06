@@ -58,6 +58,8 @@ export interface CatalogCaller {
   pagedAssets?: boolean;
   /** The member asking, for `user:` grants. Absent for an anonymous caller. */
   userId?: string;
+  /** The caller's role: an admin or owner is never scoped to a partner programme. */
+  role?: string;
   /** The grant table. Its `tool.use` rows hide or show tools exactly as they do
    *  in org-config and Preview (`toolVisibleWithGrants`). */
   grants?: readonly Grant[];
@@ -68,7 +70,7 @@ export interface CatalogCaller {
 export function callerCanSeeTool(caller: CatalogCaller, toolId: string): boolean {
   const id = toolId.toLowerCase();
   if (caller.guestToolId) return id === caller.guestToolId.toLowerCase();
-  return toolVisibleWithGrants(caller.overlays.get(id), id, { userId: caller.userId, groups: caller.groups }, caller.grants ?? []);
+  return toolVisibleWithGrants(caller.overlays.get(id), id, { userId: caller.userId, groups: caller.groups, role: caller.role }, caller.grants ?? []);
 }
 
 export interface ServedToolIndex {

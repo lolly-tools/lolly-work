@@ -37,6 +37,7 @@ import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import { sortFields, type AssetMetaRecord, type CatalogFieldDef } from '../catalog/asset-meta.ts';
 import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
+import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../programmes/types.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -59,7 +60,7 @@ import {
 const sameGrant = (a: Grant, b: Grant): boolean =>
   a.principal === b.principal && a.action === b.action && a.resource === b.resource && a.effect === b.effect;
 
-export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOverlay[]; messages?: Message[]; flagGovernance?: FlagGovernance[]; injectables?: InjectableRecord[] }): Store {
+export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOverlay[]; messages?: Message[]; flagGovernance?: FlagGovernance[]; injectables?: InjectableRecord[]; programmes?: ProgrammeRecord[] }): Store {
   let catalogDelivery = { fingerprint: '', seq: 0, publicationGeneration: -1, publicationDigest: '' };
   const catalogSnapshots = new Map<string, import('./types.ts').CatalogDeliverySnapshot>();
   let roleGroups: RoleGroups = {};
@@ -185,6 +186,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const tagRules = new Map<string, CatalogTagRule>();
   const assetMeta = new Map<string, AssetMetaRecord>();
   const collections = new Map<string, CollectionRecord>();
+  const programmes = new Map<string, ProgrammeRecord>((seed?.programmes ?? []).map((p) => [p.id, p]));
   /** `${assetId} ${version}` (space-joined) - the composite key migration 0020 makes a
    *  primary key. One flat map keeps the memory driver's shape as close to the
    *  SQL one as a Map allows. */
@@ -378,7 +380,9 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async setLocalGroups(userId, local) {
       for (const u of users.values()) {
         if (u.id !== userId) continue;
-        const localGroupsNext = [...new Set(local.filter(Boolean))];
+        // Joining a partner programme also adds the partner marker, which
+        // leaving it never removes (programmes/types.ts withPartnerMarker).
+        const localGroupsNext = withPartnerMarker([...new Set(local.filter(Boolean))]);
         const groups = effectiveGroups(u.idpGroups, localGroupsNext);
         const next: UserRecord = { ...u, localGroups: localGroupsNext, groups, role: roleFromGroups(groups, roleGroups) };
         users.set(u.sub, next);
@@ -1389,6 +1393,19 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deleteCollection(id) {
       collections.delete(id);
+    },
+
+    async listProgrammes() {
+      return sortProgrammes([...programmes.values()]);
+    },
+    async getProgramme(id) {
+      return programmes.get(id) ?? null;
+    },
+    async putProgramme(rec) {
+      programmes.set(rec.id, rec);
+    },
+    async deleteProgramme(id) {
+      programmes.delete(id);
     },
 
     async listAssetVersions(assetId) {
