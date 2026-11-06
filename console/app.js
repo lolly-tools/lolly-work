@@ -5967,9 +5967,14 @@ function renderPreview(data) {
           ...(t.hidden ?? []).filter((h) => !(t.inputs ?? []).some((i) => i.id === h))
             .map((h) => el('tr', {}, el('td', { class: 'mono' }, h), el('td', {}, el('span', { class: 'status revoked' }, 'hidden')))),
         ];
+        // A tool's own export answer, where a grant naming the tool differs from
+        // the Permissions table above.
+        const exportNotes = Object.entries(t.can ?? {}).map(([action, allowed]) =>
+          `${action} ${allowed ? 'allowed' : 'denied'} for this tool`);
         return el('div', { style: 'margin-top:10px' },
           el('div', {}, el('span', { class: 'mono' }, id),
-            t.approvalChain ? el('span', { class: 'muted' }, ` · approval: ${t.approvalChain}`) : null),
+            t.approvalChain ? el('span', { class: 'muted' }, ` · approval: ${t.approvalChain}`) : null,
+            exportNotes.length ? el('span', { class: 'muted' }, ` · ${exportNotes.join(', ')}`) : null),
           inputRows.length ? dataTable(['Input', 'Access'], inputRows) : el('p', { class: 'muted' }, 'Visible. No per-input rules resolved for this tool.'));
       })
     : [el('p', { class: 'empty' }, 'No governed tools are visible to this group (ungoverned tools are always visible and fully editable).')];

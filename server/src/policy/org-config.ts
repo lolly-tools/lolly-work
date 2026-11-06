@@ -10,7 +10,7 @@ import { renderCapabilities, type RenderCapabilities } from '../render/capabilit
 import { approvalArtifactPolicy } from '../approvals/export-review.ts';
 import { TRANSFER_PART_BYTES } from '../uploads/parts.ts';
 import { filterInputs, resolveInputAccess, toolVisibleWithGrants, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
-import { evaluate, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { brandPagesConfig } from '../brand-pages/types.ts';
 import { BRAND_EDIT_MAX_BYTES } from '../brand/edit-document.ts';
@@ -36,6 +36,10 @@ import { resolveSharingPolicy, type InstanceShareRole } from './sharing.ts';
  *  every other entry here uses - it is `session.edit` itself, by construction,
  *  so it can never disagree with the gateway's writer decision (see
  *  `mayEditCollab`'s own doc comment and `server/src/collab/gateway.ts`). */
+/** Client actions a grant may scope to one tool (`tool:<id>`), so org-config
+ *  answers them per tool as well as for the whole deployment. */
+const TOOL_SCOPED_ACTIONS = ['export.download', 'export.request'] as const;
+
 const CLIENT_ACTIONS = [
   'export.download', 'export.request', 'export.server',
   'link.create', 'link.create-guest',
@@ -101,6 +105,10 @@ export interface OrgConfigPayload {
      *  ∩ what the deployment can produce - plans/23 §3.A). Absent ⇒ no per-tool
      *  restriction; everything in `render.formats` is offered. */
     formats?: string[];
+    /** This tool's own answer for an export action, present only where it differs
+     *  from the deployment-wide `can` bit: a grant naming `tool:<id>` decides it
+     *  (plans/82 fault C). The app reads this before the global bit. */
+    can?: Partial<Record<(typeof TOOL_SCOPED_ACTIONS)[number], boolean>>;
   }>;
   /** Permission bits for this caller (CLIENT_ACTIONS), for honest UI. */
   can: Record<string, boolean>;
@@ -401,6 +409,25 @@ export function assembleOrgConfig(opts: {
     // action string) is what keeps this bit and the gateway's writer
     // decision structurally unable to drift apart.
     can[action] = action === 'collab.edit' ? mayEditCollab(principal, grants) : evaluate(principal, action, ['*'], grants);
+  }
+  // Per-tool export answers (plans/82 fault C). The deployment-wide bit above is
+  // evaluated against '*' only, so a grant naming one tool, the documented "edit
+  // but not export" recipe, decided nothing in the app. Each tool a matching
+  // grant names gets its own answer when it differs, and only while the tool is
+  // visible to this caller, so a hidden tool's id never reaches them.
+  const scopedTools = new Set<string>();
+  for (const g of grants) {
+    if (!(TOOL_SCOPED_ACTIONS as readonly string[]).includes(g.action) || !g.resource.startsWith('tool:')) continue;
+    if (grantDecision(principal, g.action, [g.resource], [g]) !== 'none') scopedTools.add(g.resource.slice('tool:'.length));
+  }
+  for (const toolId of scopedTools) {
+    if (!toolVisibleWithGrants(overlays.get(toolId), toolId, principal, grants)) continue;
+    const toolCan: Partial<Record<(typeof TOOL_SCOPED_ACTIONS)[number], boolean>> = {};
+    for (const action of TOOL_SCOPED_ACTIONS) {
+      const answer = evaluate(principal, action, [`tool:${toolId}`, '*'], grants);
+      if (answer !== can[action]) toolCan[action] = answer;
+    }
+    if (Object.keys(toolCan).length) tools[toolId] = { ...tools[toolId], can: toolCan };
   }
   // collab.nearby is a DERIVED bit, not an RBAC action: the instance offers the
   // "likely nearby" grouping (plans/26 §8) only when policy enables it AND the
