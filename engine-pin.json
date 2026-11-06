@@ -1,23 +1,23 @@
 {
-  "generatedFrom": "d461ac6d53f0b3a908a8754e68ee78d5920b6308",
+  "generatedFrom": "b6442727fc0040407edee6ebe52f7dd902d52039",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.5.0",
     "tarball": "lolly-tools-core-1.5.0.tgz",
-    "tarballSha256": "02d3768d0136bbf40c3366833e712bdbd9a1b70ffe4bd30e1a6fbc43ac3c0d7d",
-    "contentHash": "b290b853798903d5b5eced730960f312a626d42e1c050c0376da7541e546ea08"
+    "tarballSha256": "19d815da621ef681bd244204ad3fb063b5982322095994baf49235bd877b1cf7",
+    "contentHash": "0e660b26889f975854045efc3eddd9b4e53a1a02f31e9cd5932c2b735dd0c8ef"
   },
   "engine": {
-    "version": "1.313.0",
-    "tarball": "lolly-engine-1.313.0.tgz",
-    "tarballSha256": "525da88d5d0901254b70458ce49aeabf62bb16e079ecdb7d601b685510a6ac1b",
-    "contentHash": "e7bd59fcb325422e40e88b8cb3872760f5b7bd71f6e07070e806096504f239a9"
+    "version": "1.318.0",
+    "tarball": "lolly-engine-1.318.0.tgz",
+    "tarballSha256": "bdd4377925bef7606189dfc917cf1a85efeba4def75e93363851f963b378f976",
+    "contentHash": "f608dc54186d4b3ceeb8fe8b5afab60a8df5d4828c59a205684459e39d173049"
   },
   "schemas": {
     "asset-ref.schema.json": "1e610bd8369b1f4756306709af95bb009aa39981a9776343f92f1c00c51bc3cd",
     "asset.schema.json": "d1a83aa58837bb37149612bf74b3405d9af96374d3bab39a52666c9895f1d38e",
     "blocks-wire-order.json": "f31d8d7789985f7431cacac493bd0428e2e9bce16f8d6f4da4514ae7c4445a10",
-    "brand-page-v1.schema.json": "c9956c92c13ade48faae08b827124a3a1e3187a609a6a1c8f8ad1d3a1de975ff",
+    "brand-page-v1.schema.json": "7247afb3c92b529d69755718a44c55d961502ec941371bbc3e42d64f525164ef",
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "d7b609ef17a29ceb622d9c7954a8b4258aa1849149866ef87fcbcaa4ca9b2a10",

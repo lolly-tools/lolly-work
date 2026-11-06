@@ -1,10 +1,10 @@
 {
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "d461ac6d53f0b3a908a8754e68ee78d5920b6308",
+  "commit": "b6442727fc0040407edee6ebe52f7dd902d52039",
   "files": {
     "content-roots.ts": {
       "source": "packages/node-shell/src/content-roots.ts",
-      "checksum": "2cdbf936ea3bb45545bb62b9019bfe4c38e1a420026ca3f39f2448eb7994b878"
+      "checksum": "e64a332b71cc2c9a08979b30aea2363f61863c3e794595646828a6d680383164"
     },
     "repo-root.ts": {
       "source": "packages/node-shell/src/repo-root.ts",

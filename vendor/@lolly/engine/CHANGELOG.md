@@ -6,6 +6,37 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.318.0
+
+- Colour roles through other formats and back (new module `colour-role-portable.ts`, plan 352). `adoptColourRoles` brings a file's colours in as roles, in words someone confirmed, through the same edits the studio uses. `withColourwayKindRestored` gives a group called `colourway` its kind back after a format that dropped the kind.
+- `writeDesignMd`, for a system that declares roles, gives each role a bullet in the Colors section and adds a **Colour roles** subsection with a table of both looks and a fenced `json` block. `parseDesignMd` reads the block back into roles, bindings, both looks and which on-colours Lolly worked out, field by field. A block that fails costs the roles and nothing else, and a finding says so. The YAML tokens gain nothing, so a reader that does not know the block is unaffected.
+- `penpotTokensJson` writes a declared role's name, description and place in the brand's order into the description of its `color.semantic.<id>` token, keeping any description the token already had. `coerceTokensDoc`, `assembleTokenSetFiles` and `extractPenpotProject` take those words back out through `restoreColourRoleWords`, restore the record, and leave each token with what it said for itself. A file with none of those words comes back as the same object.
+- `themeSlotTokensFor` and `colourRoleThemeAccents`: a PowerPoint theme's accents follow the brand's order when roles are declared. `themeSlotsFromColors` takes the order as an optional second argument, `RebrandDesignSystemInputV1.themeAccents` carries the order, and `THEME_SLOT_TOKENS` itself is unchanged. The order is not part of the token hash.
+- `buildBrandPage`: `brand.json` gains an optional `colourRoles` list (id, label, description, token, fills). The page, its Markdown twin and `AGENTS.md` show the brand's words per colourway and mode, and `checks.json` measures a pair per role in place of the fixed lead and partner pairs. A page with no roles writes every file as before: `brand.json` changes only in the engine version it names and the digest over that.
+- A document with no declared roles keeps its bytes on every one of these routes. Exported files record nothing new about roles beyond the tokens a `.penpot` archive already carries. The export record stays design system, version and theme choice.
+
+## 1.317.0
+
+- `designDrawFindings` reports `text-direction` for any row holding right-to-left letters, as it did for a row marked right to left. The canvas orders those letters by bidi from its own direction and the measure does not, so the page goes to the walker, which reads the browser, or on the CLI to the browser tier. A row with no right-to-left letters is unaffected.
+
+## 1.316.0
+
+- `host.text.toPath` gains an optional `direction` (`ltr` or `rtl`), the direction of the paragraph a run sits in. A run that holds right-to-left characters, or a complex script beside another script, now goes through the Unicode bidi analysis and is shaped one direction and script at a time, in visual order. Latin inside Arabic used to come out reversed, digits too, and Arabic after a Latin word lost its joining. With no `direction`, such a run reads from its first strong character.
+- A run with neither shapes as it always did and keeps its bytes, which is every purely left-to-right Latin, Greek, Cyrillic or CJK run.
+- A tool that outlines right-to-left text itself reads `advanceWidth` to anchor the right edge: the path still reads left to right from x=0.
+
+## 1.315.0
+
+- `runEmojiPass` finds out whether a tree would draw anything before it loads a style's packs. The older test matched every character from U+00A9 up, so a curly quote, an accented letter or any text in most scripts loaded a whole set and the pinned tables. It now asks `emojiTextTrigger` (new leaf module `emoji-trigger.ts`), which needs no tables, and then `textHoldsEmoji` (`emoji-segment.ts`), the pass's own test, so a bare warning sign or copyright sign in a template loads no set either. Every entry and qualification alias in the pinned table still answers yes to the trigger, which `tests/emoji-dom.test.ts` checks.
+- No change to the contract: `host.emoji.dependencies` may now return `source: 'library'` refs, which the contract's `AssetRef[]` already allowed. The web host does so for a pack its catalog serves, so opening a tool no longer stores a copy of the pack as a user asset.
+
+## 1.314.0
+
+- A brand page's `AGENTS.md` gains a **Colour roles** section when a design system declares some (plan 352 R3): each word in brand order, its token, its colour in the canonical colourway and what Lolly reads it as, under a line saying the words are data. A system with none writes the file it always wrote. `brand.json` does not change shape.
+- `baselineBrandSkill` lists the same words from the brief, so the generated skill and the design context agree.
+- IDML and dotLottie export read `var(--brand-<id>, fallback)` for any role id, not only the seven slots, with the same lowercase-and-hyphen shape the role rules allow. A value that failed the old pattern used to stop the export.
+- `host.tokens.family()` and `colourwayFamily` do not change: one colour per colourway, in the design system's order. Exported files record nothing new about roles.
+
 ## 1.313.0
 
 - Colour roles (new module `colour-roles.ts`, plan 352): a design system's colours in its own words, as `brandSystem.roles[]` with `group: "colourway"` and `bindings[]` with `consumer.slot`. `readColourRoles` says what a document holds, and reports a hand-written file with custom tokens and no record as `undeclared`. `colourRoleTable` gives the studio each role's colour, on-colour and contrast per colourway and look. `addColourRole`, `renameColourRole`, `describeColourRole`, `reorderColourRoles`, `removeColourRole`, `setColourRoles`, `setRoleValue`, `setRoleSameAsLight`, `bindRole` and `unbindRole` edit them, and each returns a refusal with a stable code rather than leaving an alias that points at nothing. A binding is written as an alias inside each colourway set, so every reader of a slot keeps working.
