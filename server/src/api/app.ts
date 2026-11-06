@@ -3045,6 +3045,15 @@ export function buildApp(deps: AppDeps): App {
     const maker = await store.getUser(link.createdBy);
     return maker && !maker.disabledAt ? nameWithoutEmail(maker) : null;
   };
+  /** Whether the account that made a link is still enabled. A link made by a
+   *  disabled account stops serving (plans/82 fault D): disabling a person ends
+   *  their sessions, and a bearer link they made must not keep handing out what
+   *  they could see. Re-enabling them restores it. A link made by a service
+   *  token has no account row and is not affected. */
+  const linkMakerEnabled = async (link: LinkRecord): Promise<boolean> => {
+    const maker = await store.getUser(link.createdBy);
+    return !maker?.disabledAt;
+  };
   /** A link that cannot open: a page for a browser, the usual JSON otherwise. */
   const sendLinkEnd = async (req: IncomingMessage, res: ServerResponse, status: number, code: string, message: string, end: LinkEnd, link?: LinkRecord): Promise<void> => {
     if (!wantsHtml(req)) return sendError(res, status, code, message);
@@ -3149,6 +3158,7 @@ export function buildApp(deps: AppDeps): App {
     if (status === 'bad-signature') return sendLinkEnd(req, res, 403, 'BAD_SIGNATURE', 'link signature invalid', 'not-found');
     if (status === 'expired') return sendLinkEnd(req, res, 410, 'LINK_EXPIRED', 'this link has expired', 'ended', link);
     if (status === 'revoked') return sendLinkEnd(req, res, 410, 'LINK_REVOKED', 'this link was revoked', 'turned-off', link);
+    if (link.kind !== 'guest-edit' && !await linkMakerEnabled(link)) return sendLinkEnd(req, res, 410, 'LINK_MAKER_DISABLED', 'the person who made this link no longer has access', 'maker');
     let body: Awaited<ReturnType<typeof readSignInBody>>;
     try { body = await readSignInBody(req); }
     catch (e) {
@@ -3243,6 +3253,7 @@ export function buildApp(deps: AppDeps): App {
     if (status === 'bad-signature') return sendLinkEnd(req, res, 403, 'BAD_SIGNATURE', 'link signature invalid', 'not-found');
     if (status === 'expired') return sendLinkEnd(req, res, 410, 'LINK_EXPIRED', 'this link has expired', 'ended', link);
     if (status === 'revoked') return sendLinkEnd(req, res, 410, 'LINK_REVOKED', 'this link was revoked', 'turned-off', link);
+    if (link.kind !== 'guest-edit' && !await linkMakerEnabled(link)) return sendLinkEnd(req, res, 410, 'LINK_MAKER_DISABLED', 'the person who made this link no longer has access', 'maker');
     if (status === 'password-required') {
       if (/\btext\/html\b/.test(String(req.headers.accept ?? ''))) {
         return sendLinkPasswordPage(res, 401, link, ctx.url, pw === null ? undefined : 'That password does not open this link.');
