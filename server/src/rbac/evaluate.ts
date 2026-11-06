@@ -24,7 +24,7 @@ export interface PrincipalCtx {
   role: Role;
 }
 
-export const ROLES = ['viewer', 'member', 'author', 'approver', 'admin', 'owner', 'guest'] as const;
+export const ROLES = ['viewer', 'member', 'author', 'approver', 'brand-manager', 'admin', 'owner', 'guest'] as const;
 /** A role only a service token can hold, never a person, and only with scopes
  *  (iam/token-scopes.ts). It carries what the automation scopes need, without the
  *  admin role's wider authority; the scopes then decide which part of it is reachable. */
@@ -59,6 +59,11 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   ];
   const author = [...member, 'catalog.submit'];
   const approver = [...member, 'approval.act'];
+  // The design system's day-to-day keeper: a member who can also change this
+  // instance's colours, publish its brand page and pick its active source, and
+  // nothing more. Reached only through an explicit `idp.roleGroups` mapping, so a
+  // group that merely happens to be called `brand-manager` gains nothing.
+  const brandManager = [...member, 'brand.edit', 'brand.page.publish', 'brand.switch'];
   const admin = [
     ...new Set([...author, ...approver]),
     // `catalog.edit` is org-defined metadata and an instance asset's own
@@ -81,6 +86,9 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
     // `brand.page.publish` puts files at a public address, even on a gated
     // instance, so it is a curation right and grant-narrowable like the rest.
     'brand.page.publish',
+    // `brand.edit` changes the colours every member's work is drawn in, with no
+    // redeploy, so it is a curation right and grant-narrowable like the rest.
+    'brand.edit',
     'policy.edit', 'grant.edit', 'link.revoke', 'link.create-guest',
     // `fleet.manage` is rename/forget on install registry rows (plans/34 wave
     // 3) - bookkeeping under the enrollment covenant, never a remote action,
@@ -107,7 +115,7 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   const owner = [...admin, 'instance.config', 'catalog.provider.credential', 'catalog.provider.publish', 'scim.manage', 'token.manage'];
   // Guests get NOTHING by default - their access is entirely link-scoped grants.
   const automation = ['catalog.read', 'tool.use', 'export.server', 'delivery.create', 'audit.export'];
-  return { viewer, member, author, approver, admin, owner, guest: [], automation };
+  return { viewer, member, author, approver, 'brand-manager': brandManager, admin, owner, guest: [], automation };
 })();
 
 export function roleAllows(role: Role, action: string): boolean {
@@ -119,9 +127,15 @@ export function roleAllows(role: Role, action: string): boolean {
  *  a role escalates exactly like an IdP one. Lives here so the store can derive
  *  role on upsert without importing the HTTP app. */
 export type RoleGroups = Partial<Record<Exclude<Role, 'guest' | typeof AUTOMATION_ROLE>, string[]>>;
+/** The roles a person's groups can give them, highest first: the one order that
+ *  decides a person's role, in the store's SQL as much as here. */
+export const PERSON_ROLES = ['owner', 'admin', 'brand-manager', 'approver', 'author', 'member', 'viewer'] as const;
+/** Roles a group of the same name gives when the role has no mapping. Later roles
+ *  need a mapping, so a new role never promotes a group that already exists. */
+export const GROUP_NAMED_ROLES: readonly string[] = ['owner', 'admin', 'approver', 'author'];
 export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role {
-  for (const role of ['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const) {
-    const names = mapping[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []);
+  for (const role of PERSON_ROLES) {
+    const names = mapping[role] ?? (GROUP_NAMED_ROLES.includes(role) ? [role] : []);
     if (names.some(name => groups.includes(name))) return role;
   }
   return 'member';

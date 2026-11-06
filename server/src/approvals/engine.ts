@@ -23,7 +23,7 @@
  *    no resume in v1.
  */
 
-export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review' | 'export-review' | 'brand-page';
+export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review' | 'export-review' | 'brand-page' | 'brand-edit';
 
 export type ApprovalState = 'submitted' | 'in_review' | 'approved' | 'rejected' | 'withdrawn';
 
@@ -61,6 +61,8 @@ export interface Approval {
   exportReview?: import('./export-review.ts').ExportReviewSubject;
   /** One immutable brand page revision (brand-pages/routes.ts). The digest covers every file. */
   brandPage?: { slug: string; revision: number; digest: string; name: string; files: number; size: number; held: number };
+  /** One immutable edit of a design system's tokens (brand/edit-routes.ts). The digest covers the whole document. */
+  brandEdit?: { sourceId: string; revision: number; digest: string; changes: number };
   id: string;
   subjectType: SubjectType;
   subjectRef: string;

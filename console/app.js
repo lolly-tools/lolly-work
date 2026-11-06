@@ -11,6 +11,7 @@
 
 import { brandSourcesCard, catalogTokensAsset } from './brand-admin.js';
 import { brandRulesCard } from './brand-rules.js';
+import { brandEditsCard } from './brand-edits.js';
 import { projectTransferCard } from './project-transfer.js';
 import { createToolPolicyEditor } from './tool-policy-editor.js';
 import { setupView, tokensView } from './setup.js';
@@ -1542,6 +1543,9 @@ async function viewDesignSystem(main) {
   const sources = await loadSourceTokenSets().catch(() => []);
   const profileCard = brandSourcesCard(profiles, { el, api, toast, changed: async () => { await applyPackTheme(); route(); } });
   const managedRulesCard = brandRulesCard(await api('/api/v1/brand/rules').catch(() => null), { el, api, toast, changed: route });
+  const editsCard = canAction('brand.edit')
+    ? brandEditsCard(await api('/api/v1/brand/edits').catch(() => null), { el, api, toast, changed: async () => { await applyPackTheme(); route(); }, relTime, armConfirmButton, lollyHref, chainsHref: '#/chains', fleetHref: '#/fleet', approvalsHref: '#/approvals' })
+    : null;
   const sourceCard = sources.length ? el('div', { class: 'card stack' },
     el('h2', { class: 'flush' }, 'Design tokens from connected sources'),
     el('p', { class: 'sub' }, 'Token sets federated live from your connected design sources (e.g. Penpot). They inherit into this design system read-only — the active brand still comes from the mounted pack. To pin a set as an instance-owned snapshot, use Search & import on the Sources tab.'),
@@ -1573,7 +1577,9 @@ async function viewDesignSystem(main) {
         el('div', { class: 'list-bar' },
           el('h2', { class: 'flush' }, 'Brand editor'),
           el('a', { class: 'btn', href: lollyHref('/#/start'), target: '_blank', rel: 'noopener' }, 'Open in Lolly ↗')),
-        el('p', { class: 'sub flush' }, 'Open the design system editor in Lolly to change palette, type and tokens. Edits stay in your local Lolly copy. To publish them here, an operator must update the mounted source, validate it and redeploy. Hosting a connect pack changes the download only.'))
+        el('p', { class: 'sub flush' }, canAction('brand.edit')
+          ? 'Open the design system in Lolly and choose Edit for this instance to send colours, colour roles and the brand page address here. Anything else, such as type or logos, stays in your local Lolly copy until an operator updates the mounted source, validates it and redeploys.'
+          : 'Open the design system editor in Lolly to change palette, type and tokens. Edits stay in your local Lolly copy. Sending colours here needs the right to edit this instance.'))
     : el('div', { class: 'card' },
         el('h2', {}, 'Brand editor'),
         el('p', { class: 'sub flush' }, 'Editing is disabled for this managed brand. An owner can change the deployment brand.'));
@@ -1590,6 +1596,7 @@ async function viewDesignSystem(main) {
     main.replaceChildren(
       el('h1', {}, 'Design system'),
       el('p', { class: 'sub' }, 'No design tokens are readable here, so what follows is the console’s own colour and type rather than the deployment design system. A pack that carries a tokens file fills this in.'),
+      ...(editsCard ? [editsCard] : []),
       ...(profileCard ? [profileCard] : []),
       ...(managedRulesCard ? [managedRulesCard] : []),
       el('div', { class: 'card' }, el('h2', {}, 'Chrome palette'),
@@ -1636,8 +1643,9 @@ async function viewDesignSystem(main) {
   main.replaceChildren(
     el('h1', {}, 'Design system'),
     el('p', { class: 'sub' }, unlocked
-      ? 'The active brand’s design tokens, read from the mounted pack — the same tokens the tools consume. Edit them in the Lolly brand editor below.'
-      : 'The active brand’s design tokens, read from the mounted pack — the same tokens the tools consume. This deployment’s brand is centrally managed.'),
+      ? 'The active brand’s design tokens, the same tokens the tools consume. Edit them in the Lolly brand editor below.'
+      : 'The active brand’s design tokens, the same tokens the tools consume. This deployment’s brand is centrally managed.'),
+    ...(editsCard ? [editsCard] : []),
     ...(profileCard ? [profileCard] : []),
     ...(managedRulesCard ? [managedRulesCard] : []),
     ...cards,
@@ -3740,7 +3748,7 @@ function approvalFooter(a, review) {
     clearNeed();
     err.textContent = '';
     try {
-      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}), ...(a.brandPage ? { brandPageDigest: a.brandPage.digest } : {}), ...(a.exportReview ? { artifactFingerprint: a.exportReview.fingerprint, ...(review?.token ? { reviewToken: review.token } : {}) } : {}) } });
+      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}), ...(a.brandPage ? { brandPageDigest: a.brandPage.digest } : {}), ...(a.brandEdit ? { brandEditDigest: a.brandEdit.digest } : {}), ...(a.exportReview ? { artifactFingerprint: a.exportReview.fingerprint, ...(review?.token ? { reviewToken: review.token } : {}) } : {}) } });
       toast(action === 'approve' ? `Approved “${a.title}”` : `Rejected “${a.title}”`);
       route();
     } catch (e) { err.textContent = e.message; }
@@ -3871,15 +3879,29 @@ function brandPageReviewPanel(a, { actionable }) {
   return { element, state };
 }
 
+function brandEditReviewPanel(a, { actionable }) {
+  const state = { token: true, onReady: null };
+  const edit = a.brandEdit;
+  const lines = el('div', { class: 'bedit-lines' }, el('p', { class: 'muted' }, 'Loading what changed…'));
+  void api(edit.detail).then(detail => lines.replaceChildren(...detail.lines.map(line => el('div', { class: 'bedit-line' },
+    el('span', { class: 'muted' }, line.action), el('span', { class: 'mono' }, line.name),
+    line.before ? el('span', { class: 'bedit-value' }, line.before) : null, line.before && line.after ? el('span', { class: 'muted' }, '→') : null, line.after ? el('span', { class: 'bedit-value' }, line.after) : null)))).catch(error => lines.replaceChildren(el('p', { class: 'form-err', role: 'status' }, error.message)));
+  const element = el('div', { class: 'appr-brand-page' },
+    el('p', {}, `Revision ${edit.revision}: ${edit.changes} ${edit.changes === 1 ? 'change' : 'changes'}.`), lines,
+    el('p', { class: 'mono bp-digest' }, `SHA-256 ${edit.digest}`),
+    actionable ? el('p', { class: 'muted' }, 'Approving changes the colours everyone on this instance draws with, with no redeploy.') : null);
+  return { element, state };
+}
+
 function renderApprovalCard(a, { actionable }) {
-  const review = a.exportReview ? exportReviewPanel(a, { actionable }) : a.brandPage ? brandPageReviewPanel(a, { actionable }) : null;
+  const review = a.exportReview ? exportReviewPanel(a, { actionable }) : a.brandPage ? brandPageReviewPanel(a, { actionable }) : a.brandEdit ? brandEditReviewPanel(a, { actionable }) : null;
   return el('div', { class: 'appr-card' },
     el('div', { class: 'appr-head' },
       el('div', { class: 'appr-headmain' },
         el('div', { class: 'appr-title' }, a.title),
         el('div', { class: 'appr-meta' },
-          el('span', { class: 'chip' }, a.exportReview ? 'Exported file' : a.brandPage ? 'Brand page' : a.subjectType),
-          a.subjectRef && !a.exportReview && !a.brandPage ? el('span', { class: 'mono' }, a.subjectRef) : null,
+          el('span', { class: 'chip' }, a.exportReview ? 'Exported file' : a.brandPage ? 'Brand page' : a.brandEdit ? 'Design system edit' : a.subjectType),
+          a.subjectRef && !a.exportReview && !a.brandPage && !a.brandEdit ? el('span', { class: 'mono' }, a.subjectRef) : null,
           el('span', { class: 'muted' }, a.chainName),
           el('span', { class: 'muted' }, a.mine ? 'raised by you' : ['raised by ', a.createdByName ?? a.createdBy], ' · ', relTime(a.createdAt)))),
       stateChip(a.state)),
@@ -4108,7 +4130,7 @@ async function viewAudit(main, params) {
 // filter controls (which live outside it) keep focus across fetches. A row
 // opens an inline detail panel: identity, group membership, per-user tool
 // grants, and instant lockout.
-const ROLE_CHOICES = ['owner', 'admin', 'approver', 'author', 'member', 'viewer'];
+const ROLE_CHOICES = ['owner', 'admin', 'brand-manager', 'approver', 'author', 'member', 'viewer'];
 
 // A search box over a fixed option set (native <datalist> — air-gapped, no
 // library). options: [{ value, label }]. Calls onchange(value) with the resolved

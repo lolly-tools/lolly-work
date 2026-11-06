@@ -89,7 +89,7 @@ const ANSWERED_DAYS = 7;
 const KINDS_ANSWERED_HERE = ['project', 'join', 'switch'] as const;
 /** Lowest to highest, for "does this group's role outrank the approver's"
  *  (the console invitation guard's order). */
-const ROLE_RANK: readonly Role[] = ['guest', 'viewer', 'member', 'author', 'approver', 'admin', 'owner'];
+const ROLE_RANK: readonly Role[] = ['guest', 'viewer', 'member', 'author', 'approver', 'brand-manager', 'admin', 'owner'];
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 const isMemberRole = (v: unknown): v is ProjectMemberRole =>

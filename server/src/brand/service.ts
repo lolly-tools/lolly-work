@@ -8,9 +8,10 @@ import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { evaluate, type Role } from '../rbac/evaluate.ts';
 import { canonicalJson } from '../lib/crypto.ts';
-import { inspectInstancePack, instancePackTokensChecksum, PACK_BLOB_ID, PACK_META_BLOB_ID, type InstancePackMeta } from '../catalog/instance-pack.ts';
-import { createBrandSources, describeSource, type BrandSource } from './sources.ts';
-import type { BrandState } from './state.ts';
+import { deriveInstancePack, inspectInstancePack, instancePackTokensChecksum, PACK_BLOB_ID, PACK_META_BLOB_ID, type InstancePackMeta, type PackSigner } from '../catalog/instance-pack.ts';
+import { createBrandSources, describeSource, type BrandEditView, type BrandSource } from './sources.ts';
+import type { BrandEditPointer, BrandState } from './state.ts';
+import { applyBrandChanges, TOKEN_EXT, type BrandEditChange } from './edit-document.ts';
 
 export type BrandAction = 'select' | 'retire' | 'restore' | 'stop-download' | 'enable-download';
 export interface BrandChange { action: BrandAction; sourceId: string; replacementId?: string }
@@ -37,15 +38,81 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     inspectSource?: (sourceId: string) => Promise<string[]>;
     /** After a committed change, with the snapshot from before it (edge purges of the old revision). */
     onCommitted?: (prior: BrandSnapshot) => void;
+    /** Whenever a snapshot finds an edit that is no longer on its own base. */
+    onEditState?: (snap: BrandSnapshot) => void;
+    /** This instance's catalogue key, for a connect pack derived from one it signed. */
+    packSigner?: () => Promise<PackSigner | null>;
   } = {}) {
   const adapter = createBrandSources(config.instance.pack, config.instance.brandTokens);
   const context = new AsyncLocalStorage<BrandSnapshot>();
   const mutable = store.brandPersistence === 'durable' || config.dev.enabled;
+
+  // ── A manager's edit on a source ─────────────────────────────────────────────
+  const tokenFile = (source: BrandSource): string | null => {
+    const head = source.assets.find(asset => asset.id === source.tokensHead);
+    const url = (head?.formats?.find(format => format.format === 'json') ?? head?.formats?.[0])?.url;
+    if (!url || !url.startsWith('/catalog/') || url.split(/[\\/]/).includes('..')) return null;
+    return join(source.root, url.slice(1));
+  };
+  /** The exact bytes a source's tokens are served from. */
+  const tokenBytes = async (source: BrandSource): Promise<Buffer> => {
+    const file = tokenFile(source);
+    if (!file) throw new BrandError('The tokens asset has no local file.', 409, 'BRAND_EDIT_NO_TOKENS');
+    return readFile(file);
+  };
+  const mountedOf = async (id: string): Promise<BrandSource | null> => (await adapter.inventory()).sources.find(s => s.id === id) ?? null;
+  const pointerOf = (state: BrandState, id: string): BrandEditPointer | undefined => Object.hasOwn(state.edits ?? {}, id) ? state.edits![id] : undefined;
+  interface EditPlan { bytes: Buffer | null; view: BrandEditView }
+  const plans = new Map<string, Promise<EditPlan>>();
+  const engineSystemOf = async (doc: unknown): Promise<unknown> => {
+    const specifier: string = '@lolly/engine/brand-policy';
+    return (await import(specifier) as { brandSystemOf(doc: unknown): unknown }).brandSystemOf(doc);
+  };
+  const computePlan = async (base: BrandSource, pointer: BrandEditPointer): Promise<EditPlan> => {
+    const view = (state: BrandEditView['state'], lists: { overlaps?: string[]; gone?: string[] } = {}): BrandEditView =>
+      ({ state, revision: pointer.revision, digest: pointer.digest, overlaps: lists.overlaps ?? [], gone: lists.gone ?? [] });
+    let stored: Awaited<ReturnType<BlobStore['get']>>;
+    try { stored = await blobs.get(pointer.blobId); }
+    catch { return { bytes: null, view: view('unavailable') }; }
+    const bytes = stored ? await readBlobBody(stored.body) : null;
+    if (!bytes || createHash('sha256').update(bytes).digest('hex') !== pointer.digest) return { bytes: null, view: view('unavailable') };
+    if (pointer.baseChecksum === base.baseTokensChecksum) return { bytes, view: view('current') };
+    const row = await store.getBrandEditRevision(base.id, pointer.revision);
+    if (!row) return { bytes: null, view: view('unavailable') };
+    const baseDoc = JSON.parse((await tokenBytes(base)).toString('utf8')) as Record<string, unknown>;
+    const landed = applyBrandChanges(baseDoc, row.changes as BrandEditChange[]);
+    const raw = ((landed.doc.$extensions as Record<string, unknown> | undefined)?.[TOKEN_EXT] as Record<string, unknown> | undefined)?.brandSystem;
+    if (raw !== undefined && !await engineSystemOf(landed.doc)) landed.gone.push('a readable list of roles, so the rules would stop applying');
+    if (landed.gone.length) return { bytes: null, view: view('cannot-apply', { gone: landed.gone, overlaps: landed.overlaps }) };
+    return { bytes: Buffer.from(JSON.stringify(landed.doc)), view: view('on-new-image', { overlaps: landed.overlaps }) };
+  };
+  const planFor = (base: BrandSource, pointer: BrandEditPointer): Promise<EditPlan> => {
+    const key = `${base.id}\u0000${base.revision}\u0000${pointer.digest}\u0000${pointer.revision}`;
+    const hit = plans.get(key);
+    if (hit) return hit;
+    const plan = computePlan(base, pointer).catch((): EditPlan => ({ bytes: null, view: { state: 'unavailable', revision: pointer.revision, digest: pointer.digest, overlaps: [], gone: [] } }));
+    plans.set(key, plan);
+    // A store that was down may be back, so a miss is not remembered for long.
+    void plan.then(({ view }) => { if (view.state === 'unavailable') setTimeout(() => { if (plans.get(key) === plan) plans.delete(key); }, 30_000).unref(); });
+    if (plans.size > 16) plans.delete(plans.keys().next().value as string);
+    return plan;
+  };
+  /** The source as served: the edit on top when it applies, the mounted tokens with a stated reason when it does not. */
+  const withEdit = async (base: BrandSource, state: BrandState): Promise<BrandSource> => {
+    const pointer = pointerOf(state, base.id);
+    if (!pointer || !base.tokensHead || base.diagnostics.length) return base;
+    const plan = await planFor(base, pointer);
+    return plan.bytes ? adapter.editView(base, plan.bytes, plan.view) : { ...base, edit: plan.view };
+  };
+
   const snapshot = async (): Promise<BrandSnapshot> => {
     const [state, inventory] = await Promise.all([store.getBrandState(), adapter.inventory()]);
     const id = state.activeSource ?? inventory.defaultId;
-    const source = (!state.retired.includes(id) && inventory.sources.find(s => s.id === id)) || await adapter.unavailable(id);
-    return { state, source, revision: `${state.revision}:${source.revision}` };
+    const mounted = (!state.retired.includes(id) && inventory.sources.find(s => s.id === id)) || await adapter.unavailable(id);
+    const source = await withEdit(mounted, state);
+    const snap = { state, source, revision: `${state.revision}:${source.revision}` };
+    if (source.edit && source.edit.state !== 'current') options.onEditState?.(snap);
+    return snap;
   };
   const current = () => context.getStore();
   const allowed = async (actor: UserRecord, action: string): Promise<boolean> => evaluate(
@@ -57,15 +124,33 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     for (const action of required) if (!await allowed(actor, action)) throw new BrandError(`${action} required`, 403, 'FORBIDDEN');
     return required;
   };
-  const downloadVisible = (snap: BrandSnapshot) => {
-    const d = snap.state.download;
-    return !d.suppressed && !!d.blobId && d.sourceId === snap.source.id && d.sourceRevision === snap.source.revision;
+  /** The pack this source can offer: one derived for a live edit, else the kept one, while it matches what is served. */
+  const availableDownload = (snap: BrandSnapshot): { blobId: string; meta: InstancePackMeta | null; derived: boolean } | null => {
+    const d = snap.state.download, derived = pointerOf(snap.state, snap.source.id)?.pack;
+    if (derived && derived.sourceRevision === snap.source.revision) return { blobId: derived.blobId, meta: derived.meta, derived: true };
+    return d.blobId && d.sourceId === snap.source.id && d.sourceRevision === snap.source.revision ? { blobId: d.blobId, meta: d.meta, derived: false } : null;
+  };
+  const offeredDownload = (snap: BrandSnapshot) => snap.state.download.suppressed ? null : availableDownload(snap);
+  const downloadVisible = (snap: BrandSnapshot) => !!offeredDownload(snap);
+  /** A pack with the edit in it, signed by this instance, or null. See deriveInstancePack for when. */
+  const derivePack = async (source: BrandSource, state: BrandState, actor: string): Promise<BrandEditPointer['pack'] | undefined> => {
+    const d = state.download;
+    if (!source.edit || (source.edit.state !== 'current' && source.edit.state !== 'on-new-image')) return undefined;
+    if (!d.blobId || d.sourceId !== source.id || d.sourceRevision !== source.baseRevision) return undefined;
+    const signer = await options.packSigner?.().catch(() => null);
+    const stored = signer ? await blobs.get(d.blobId) : null;
+    if (!signer || !stored) return undefined;
+    const bytes = await deriveInstancePack(await readBlobBody(stored.body), await tokenBytes(source), signer);
+    if (!bytes) return undefined;
+    const checksum = createHash('sha256').update(bytes).digest('hex'), blobId = `brand-download/${checksum}.lolly`;
+    const stat = await blobs.put(blobId, bytes, 'application/octet-stream');
+    return { blobId, sourceRevision: source.revision, meta: { ...inspectInstancePack(bytes, config.instance.baseUrl), size: stat.size, checksum, uploadedAt: new Date().toISOString(), uploadedBy: actor } };
   };
   const inventory = async (actor: UserRecord) => {
     const snap = await snapshot(), found = await adapter.inventory();
     const canSwitch = mutable && await allowed(actor, 'brand.switch');
     const canManage = mutable && await allowed(actor, 'instance.config');
-    const installed = found.sources.some(s => s.id === snap.source.id) ? found.sources : [...found.sources, snap.source];
+    const installed = found.sources.some(s => s.id === snap.source.id) ? found.sources.map(s => s.id === snap.source.id ? snap.source : s) : [...found.sources, snap.source];
     const sources: Array<Record<string, unknown>> = installed.map(source => ({ ...describeSource(source),
       active: source.id === snap.source.id, retired: snap.state.retired.includes(source.id),
       operations: { select: canSwitch && source.id !== snap.source.id && !snap.state.retired.includes(source.id) && !source.diagnostics.length,
@@ -73,10 +158,9 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     }));
     sources.push({ id: 'download', kind: 'download', label: 'Connect download', active: downloadVisible(snap),
       suppressed: snap.state.download.suppressed, sourceId: snap.state.download.sourceId,
-      version: snap.state.download.meta?.version ?? null, revision: snap.state.download.meta?.checksum ?? null,
+      version: availableDownload(snap)?.meta?.version ?? snap.state.download.meta?.version ?? null, revision: availableDownload(snap)?.meta?.checksum ?? snap.state.download.meta?.checksum ?? null,
       operations: { 'stop-download': canManage && !snap.state.download.suppressed,
-        'enable-download': canManage && snap.state.download.suppressed && !!snap.state.download.blobId
-          && snap.state.download.sourceId === snap.source.id && snap.state.download.sourceRevision === snap.source.revision },
+        'enable-download': canManage && snap.state.download.suppressed && !!availableDownload(snap) },
     });
     for (const provider of await store.listProviders()) {
       if (Array.isArray(provider.exposure.groups) && provider.exposure.groups.length && !provider.exposure.groups.some(g => actor.groups.includes(g)) && !await allowed(actor, 'instance.config')) continue;
@@ -96,12 +180,15 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     const requiredPermissions = await requirePermissions(actor, change, snap);
     const blockers: string[] = [];
     if (!mutable) blockers.push('Durable storage is required outside development mode. Update the deployment source and redeploy.');
-    const source = found.sources.find(s => s.id === change.sourceId) ?? (snap.source.id === change.sourceId ? snap.source : undefined);
+    const listed = found.sources.find(s => s.id === change.sourceId);
+    // The active source as it is served, and any other as it would be: its own edit comes back with it.
+    const source = snap.source.id === change.sourceId ? snap.source : listed && await withEdit(listed, snap.state);
     const downloadAction = change.action === 'stop-download' || change.action === 'enable-download';
     if (downloadAction ? change.sourceId !== 'download' : !source) throw new BrandError('Unknown source', 404, 'NOT_FOUND');
     let replacement = change.action === 'select' ? source : snap.source;
     if (change.action === 'retire' && source?.id === snap.source.id) {
-      replacement = found.sources.find(s => s.id === change.replacementId);
+      const named = found.sources.find(s => s.id === change.replacementId);
+      replacement = named && await withEdit(named, snap.state);
       if (!replacement || replacement.id === source.id) blockers.push('Select a different installed design system before retiring the active source.');
     }
     if (replacement && replacement.id !== snap.source.id) {
@@ -110,10 +197,7 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
       if (options.inspectSource) blockers.push(...await options.inspectSource(replacement.id));
     }
     if (change.action === 'select' && source && snap.state.retired.includes(source.id)) blockers.push('Restore this source before selecting it.');
-    if (change.action === 'enable-download') {
-      const d = snap.state.download;
-      if (!d.blobId || d.sourceId !== snap.source.id || d.sourceRevision !== snap.source.revision) blockers.push('Upload a pack for the active source before enabling the download.');
-    }
+    if (change.action === 'enable-download' && !availableDownload(snap)) blockers.push('Upload a pack for the active source before enabling the download.');
     const incoming = replacement ?? snap.source;
     const removedAssets = snap.source.assets.filter(a => !incoming.assets.some(b => b.id === a.id)).map(a => a.id);
     const removedTools = snap.source.toolIds.filter(id => !incoming.toolIds.includes(id));
@@ -166,15 +250,25 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
   const publishDownload = async (bytes: Buffer, actor: string, expected: BrandSnapshot, seed = false) => {
     const inspected = inspectInstancePack(bytes, config.instance.baseUrl);
     if (!inspected.signed && !config.dev.enabled) throw new BrandError('Unsigned packs are accepted only in development mode', 400, 'UNSIGNED_PACK');
-    if (expected.source.diagnostics.length || instancePackTokensChecksum(bytes) !== expected.source.tokensChecksum) {
+    const tokens = instancePackTokensChecksum(bytes);
+    // A pack may hold what is served, or, under a live edit, the mounted tokens: a
+    // pack this instance signed can then carry the edit, and it comes back on a rollback.
+    const fitsServed = tokens === expected.source.tokensChecksum, fitsMounted = tokens === expected.source.baseTokensChecksum;
+    if (expected.source.diagnostics.length || (!fitsServed && !fitsMounted)) {
       throw new BrandError('The pack tokens do not match the active source. Build a pack from the selected catalogue before uploading.', 400, 'PACK_SOURCE_MISMATCH');
     }
     const checksum = createHash('sha256').update(bytes).digest('hex');
     const blobId = `brand-download/${checksum}.lolly`;
     const stat = await blobs.put(blobId, bytes, 'application/octet-stream');
     const meta: InstancePackMeta = { ...inspected, size: stat.size, checksum, uploadedAt: new Date().toISOString(), uploadedBy: actor };
-    const next = { ...expected.state, download: { suppressed: false, sourceId: expected.source.id,
-      sourceRevision: expected.source.revision, blobId, meta } };
+    const next: BrandState = { ...expected.state, download: { suppressed: false, sourceId: expected.source.id,
+      sourceRevision: fitsServed ? expected.source.revision : expected.source.baseRevision, blobId, meta } };
+    const pointer = pointerOf(next, expected.source.id);
+    if (pointer) {
+      const { pack: _previous, ...rest } = pointer;
+      const pack = fitsServed ? undefined : await derivePack(expected.source, next, actor);
+      next.edits = { ...next.edits, [expected.source.id]: { ...rest, ...(pack ? { pack } : {}) } };
+    }
     const result = await store.casBrandState(expected.state.revision, next, { at: meta.uploadedAt, actor,
       action: seed ? 'instance.pack.seed' : 'instance.pack.update', subject: 'instance', payload: { sourceId: expected.source.id, checksum: meta.checksum } });
     if (!result && !seed) throw new BrandError('The design system changed during upload. Review the active source and upload again.', 409, 'STALE_PREVIEW');
@@ -199,7 +293,8 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     })().catch(error => { seeding = undefined; throw error; });
     await seeding;
   };
-  return { snapshot, current, inventory, preview, apply, allowed, requirePermissions, ensureDownload, publishDownload, downloadVisible,
+  return { snapshot, current, inventory, preview, apply, allowed, requirePermissions, ensureDownload, publishDownload, downloadVisible, offeredDownload, availableDownload,
+    mutable, mountedOf, tokenBytes, withEdit, pointerOf, derivePack, packSigner: async () => (await options.packSigner?.().catch(() => null)) ?? null, committed: (prior: BrandSnapshot) => options.onCommitted?.(prior),
     root: () => current()?.source.root ?? config.instance.pack,
     run: async <T>(fn: () => Promise<T>) => context.run(await snapshot(), fn),
     runSnapshot: <T>(snap: BrandSnapshot, fn: () => Promise<T>) => context.run(snap, fn),

@@ -34,6 +34,7 @@ import type { PasskeyStore } from '../iam/passkeys/types.ts';
 import type { RenderStore } from '../renders/types.ts';
 import type { RenderApiStore } from '../render-api/types.ts';
 import type { BrandPageStore } from '../brand-pages/types.ts';
+import type { BrandEditStore } from '../brand/edit-store.ts';
 import type { UploadStore } from '../uploads/scoped.ts';
 import type { ProjectFileLimits, ProjectFileRecord, ProjectFileReservation } from '../projects/files.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
@@ -1255,7 +1256,7 @@ export interface CatalogDeliverySnapshot {
   bytes: Buffer; until: number; toolIds: string[]; assetIds: string[];
 }
 
-export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, BrandPageStore, PasskeyStore, SubjectStore, UploadStore {
+export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, BrandPageStore, BrandEditStore, PasskeyStore, SubjectStore, UploadStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
   createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;

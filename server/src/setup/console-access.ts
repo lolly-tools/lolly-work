@@ -12,7 +12,7 @@ export function consoleAccess(principal: PrincipalCtx, grants: Grant[], activity
     setup: ['instance.config'], tokens: ['token.manage', 'scim.manage'], chains: ['policy.edit'],
   };
   const actions = [...new Set(Object.values(requirements).flat().concat([
-    'brand.switch', 'catalog.provider.credential', 'catalog.provider.manage', 'catalog.edit',
+    'brand.switch', 'brand.edit', 'catalog.provider.credential', 'catalog.provider.manage', 'catalog.edit',
     'project.create', 'project.manage', 'session.create', 'approval.act', 'catalog.submit', 'user.invite',
     // The review panel offers a collection to join on approval (plan 299).
     'catalog.collection.manage',

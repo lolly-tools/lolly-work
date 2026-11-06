@@ -6,7 +6,7 @@ export async function createSetupWizard({ el, field, api }) {
   let report = initialReport, configuration = initialConfiguration;
   const document = el('div').ownerDocument;
   const window = document.defaultView;
-  const roles = ['owner', 'admin', 'approver', 'author', 'member', 'viewer'];
+  const roles = ['owner', 'admin', 'brand-manager', 'approver', 'author', 'member', 'viewer'];
   const titles = ['Deployment', 'Identity and owner', 'Provisioning', 'Brand and assets', 'Sample output', 'Finish setup'];
   const context = `${configuration.currentSettingsHash}:${configuration.sampleAccountHash}:${report.pack.revision}:${org.policyVersion}:${org.branding?.revision}`;
   const storageKey = 'lw.setup.progress.v1';

@@ -72,5 +72,6 @@
   "0080_approval_artifact_uploads.sql": "maintenance",
   "0081_render_api_records.sql": "additive",
   "0082_approval_export_review_inputs.sql": "maintenance",
-  "0083_brand_pages.sql": "maintenance"
+  "0083_brand_pages.sql": "maintenance",
+  "0084_brand_edits.sql": "additive"
 }

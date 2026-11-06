@@ -16,7 +16,7 @@ import { randomId } from '../lib/crypto.ts';
 import { nextEvent, type AuditAnchor, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
 import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
-import { roleFromGroups, type Grant, type RoleGroups } from '../rbac/evaluate.ts';
+import { GROUP_NAMED_ROLES, PERSON_ROLES, roleFromGroups, type Grant, type RoleGroups } from '../rbac/evaluate.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
 import { hasFlagOpinion, type FlagGovernance } from '../policy/feature-flags.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
@@ -46,6 +46,7 @@ import {
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import { createPostgresBrandPageStore } from '../brand-pages/store.ts';
+import { createPostgresBrandEditStore } from '../brand/edit-store.ts';
 import { createPostgresRenderApiStore } from '../render-api/store.ts';
 import { createPostgresUploadStore } from '../uploads/postgres.ts';
 import {
@@ -677,6 +678,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...createPostgresRenderStore(pool),
     ...createPostgresRenderApiStore(pool),
     ...createPostgresBrandPageStore(pool),
+    ...createPostgresBrandEditStore(pool),
     ...createPostgresUploadStore(pool),
     ...createPostgresOidcLogout(pool),
     ...createPostgresPasskeys(pool),
@@ -749,8 +751,8 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const clauses: string[] = [];
       const values: unknown[] = [];
       const bind = (v: unknown): string => { values.push(v); return `$${values.length}`; };
-      const roleExpr = 'case ' + (['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const).map(role => {
-        const names = roleGroups[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []);
+      const roleExpr = 'case ' + PERSON_ROLES.map(role => {
+        const names = roleGroups[role] ?? (GROUP_NAMED_ROLES.includes(role) ? [role] : []);
         return `when jsonb_exists_any(groups, ${bind(names)}::text[]) then '${role}'`;
       }).join(' ') + " else 'member' end";
       const source = `(select *, ${roleExpr} as effective_role from users) mapped_users`;

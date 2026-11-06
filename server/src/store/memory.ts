@@ -43,6 +43,7 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryPasskeys } from '../iam/passkeys/memory.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import { createMemoryBrandPageStore } from '../brand-pages/store.ts';
+import { createMemoryBrandEditStore } from '../brand/edit-store.ts';
 import { createMemoryRenderApiStore } from '../render-api/store.ts';
 import { createMemoryUploadStore } from '../uploads/memory.ts';
 import {
@@ -173,6 +174,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const chains = new Map<string, Chain>();
   const approvals = new Map<string, Approval>();
   const brandPages = createMemoryBrandPageStore();
+  const brandEdits = createMemoryBrandEditStore();
   const lifecycle = new Map<string, LifecycleRow>();
   const credentials = new Map<string, CredentialRow>();
   const instanceAssets = new Map<string, InstanceAssetRecord>();
@@ -236,7 +238,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const liveProjectFiles = (now = Date.now()) => [...projectFiles.values()].filter((f) => activeProjectFile(f, now));
 
   return {
-    ...createMemorySubjects({ users, identities, projectMembers, apiTokens, links, passwordLinks, events, installs, audit, roles: () => roleGroups, approvals, brandPageRevisionsBy: brandPages.brandPageRevisionsBy }),
+    ...createMemorySubjects({ users, identities, projectMembers, apiTokens, links, passwordLinks, events, installs, audit, roles: () => roleGroups, approvals, brandPageRevisionsBy: brandPages.brandPageRevisionsBy, brandEditRevisionsBy: brandEdits.brandEditRevisionsBy }),
     async catalogDeliverySequence(fingerprint, publication) {
       if (!/^[0-9a-f]{64}$/.test(fingerprint) || !/^[0-9a-f]{64}$/.test(publication.digest)
         || !Number.isSafeInteger(publication.generation) || publication.generation < 0) throw new Error('invalid catalog publication');
@@ -281,6 +283,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     }),
     ...createMemoryRenderApiStore(),
     ...brandPages,
+    ...brandEdits,
     ...createMemoryUploadStore(),
     ...createMemoryOidcLogout(),
     ...passkeys.store,
