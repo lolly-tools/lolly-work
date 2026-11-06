@@ -36,6 +36,7 @@ import { shellDirectory } from './lib/shell-release.ts';
 import { assessSetup } from './setup/checks.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { grantNeverMatches } from './rbac/grant-shape.ts';
 import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
 
 const config = loadConfig();
@@ -157,6 +158,13 @@ if (process.env.LW_SEED_CONFIG) {
   const configIds = new Set((await store.listProviders()).filter((p) => p.managedBy === 'config').map((p) => p.id));
   const diff = diffConfigDocument(current, parsed.doc, { prune: false }, configIds);
   if (diff.conflicts.length) throw new Error(`LW_SEED_CONFIG touches config-managed providers: ${diff.conflicts.join(', ')}`);
+  // A grant that can never match is skipped with a warning rather than stopping
+  // the boot: storing it would change nothing but the console table.
+  diff.grants.create = diff.grants.create.filter((g) => {
+    const why = grantNeverMatches(g);
+    if (why) console.warn(`LW_SEED_CONFIG: skipped ${g.principal} ${g.action} ${g.resource}: ${why}`);
+    return !why;
+  });
   await commitConfigApply(store, diff, 'system');
   await store.appendAudit({ at: new Date().toISOString(), actor: 'system', action: 'config.apply', subject: `config:${canonicalHash(parsed.doc).slice(0, 16)}`, payload: { seed: true, ...diffSummary(diff) } });
   console.log('[lolly-work] applied LW_SEED_CONFIG');

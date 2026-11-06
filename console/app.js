@@ -5822,7 +5822,8 @@ function grantRow(g) {
   return el('tr', {},
     el('td', { class: 'mono' }, g.principal),
     el('td', { class: 'mono' }, g.action),
-    el('td', { class: 'mono' }, g.resource),
+    el('td', {}, el('span', { class: 'mono' }, g.resource),
+      g.neverMatches ? el('p', { class: 'form-err flush' }, `Never matches. ${g.neverMatches} Delete it and add a rule that can apply.`) : null),
     el('td', {}, el('span', { class: `status ${g.effect === 'allow' ? 'live' : 'revoked'}` }, g.effect)),
     el('td', {}, delBtn, err));
 }
@@ -5839,7 +5840,7 @@ async function viewGrants(main) {
   const nameInput = el('input', { placeholder: 'marketing' });
   const actionInput = el('input', { list: 'grant-actions', placeholder: 'export.download' });
   const datalist = el('datalist', { id: 'grant-actions' }, ...KNOWN_ACTIONS.map((a) => el('option', { value: a })));
-  const resourceInput = el('input', { value: '*', placeholder: "* or tool:<id> or catalog:tag/<t>" });
+  const resourceInput = el('input', { value: '*', placeholder: '* or tool:<id>' });
   const effectSel = el('select', {}, el('option', { value: 'deny' }, 'Deny permission'), el('option', { value: 'allow' }, 'Allow permission'));
   const err = errSpan();
   err.id = `grant-error-${++_fieldSeq}`;
@@ -5877,15 +5878,10 @@ async function viewGrants(main) {
     if (principal.endsWith(':')) { invalid(nameInput, kindSel.value === 'user' ? 'Enter the account ID.' : 'Enter the group name.'); return; }
     const action = actionInput.value.trim();
     if (!action) { invalid(actionInput, 'Choose a permission or enter a custom one.'); return; }
-    // An unknown permission is not refused: the server takes any action string
-    // and its vocabulary is wider than KNOWN_ACTIONS (brand.switch,
-    // token.manage, collab.join and more are enforced but unlisted). A typo
-    // would still read as governance in the table, so ask once before storing.
-    if (!KNOWN_ACTIONS.includes(action) && actionInput.dataset.confirmed !== action) {
-      actionInput.dataset.confirmed = action;
-      err.textContent = `${action} is not in the console list. If that is deliberate, press Add grant again to store it.`;
-      return;
-    }
+    // The server refuses a permission it never checks, and a resource that
+    // permission is never checked against, and says why (GRANT_NEVER_MATCHES).
+    // KNOWN_ACTIONS only feeds the suggestions; brand.switch, token.manage,
+    // collab.join and more are enforced but unlisted.
     addBtn.disabled = true;
     try {
       await api('/api/v1/grants', { method: 'POST', body: {
@@ -5902,7 +5898,7 @@ async function viewGrants(main) {
       field('Applies to', kindSel), nameField,
       field('Permission', actionInput), field('Effect', effectSel),
       el('div', { class: 'grant-scope' }, field('Resource scope', resourceInput),
-        el('p', { class: 'sub flush' }, '* matches all resources. Examples: tool:<id>, catalog:tag/<tag>.'))),
+        el('p', { class: 'sub flush' }, '* matches everything. Some permissions narrow further: tool:<id> for using a tool, exporting from it and linking to it, destination:<id> for delivery, project:<id> or session:<id> for sessions and comments, chain:<id> for approvals.'))),
     preview,
     el('p', {}, addBtn),
     err);

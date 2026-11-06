@@ -3,7 +3,7 @@
  *
  * Evaluation is a pure function: deny wins → allow wins → role default.
  * Resources are passed as the set of selector strings the resource satisfies
- * (e.g. ['tool:event-badge', 'tool:tag/external-facing', '*']) so the
+ * (e.g. ['tool:event-badge', '*']) so the
  * evaluator never needs to look anything up.
  */
 
@@ -13,7 +13,7 @@ export interface Grant {
   /** 'group:<name>' | 'user:<id>' | '*' */
   principal: string;
   action: string;
-  /** A resource selector, e.g. 'tool:event-badge', 'catalog:tag/x', '*' */
+  /** A resource selector, e.g. 'tool:event-badge', 'destination:archive', '*' (rbac/grant-shape.ts lists which forms each action is checked against). */
   resource: string;
   effect: Effect;
 }
@@ -121,6 +121,13 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
 export function roleAllows(role: Role, action: string): boolean {
   return (ROLE_ACTIONS[role] ?? []).includes(action);
 }
+
+/** Every action some role carries: the vocabulary the routes check. A grant for
+ *  any other action string would never be asked about. */
+export function knownActions(): ReadonlySet<string> {
+  return KNOWN_ACTIONS;
+}
+const KNOWN_ACTIONS: ReadonlySet<string> = new Set(Object.values(ROLE_ACTIONS).flat());
 
 /** Map an effective group set to the highest role any group carries (plans/02
  *  §4). Runs on the effective union (idp ∪ local), so a local group named after

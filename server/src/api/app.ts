@@ -90,6 +90,7 @@ import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
+import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
 import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
@@ -8340,6 +8341,10 @@ export function buildApp(deps: AppDeps): App {
     if (!user) return;
     const grant = readGrantBody(await readJson(req));
     if ('error' in grant) return sendError(res, 400, 'INVALID_INPUT', grant.error);
+    // A rule that can never match is refused rather than stored: it would read
+    // as governance in the table and decide nothing. Removing one stays allowed.
+    const never = op === 'create' ? grantNeverMatches(grant) : null;
+    if (never) return sendError(res, 400, 'GRANT_NEVER_MATCHES', never, { accepted: acceptedResources(grant.action) });
     if (ownerOnlyAction(grant.action) && user.role !== 'owner') {
       return sendError(res, 403, 'OWNER_ONLY_ACTION',
         `grants for "${grant.action}" can only be edited by an owner`);
@@ -8352,7 +8357,11 @@ export function buildApp(deps: AppDeps): App {
 
   router.add('GET', '/api/v1/grants', async (req, res) => {
     if (!(await requireAction(req, res, 'grant.edit'))) return;
-    sendJson(res, 200, { grants: await store.listGrants() });
+    // A stored rule that can never match says why, so the console can mark it.
+    sendJson(res, 200, { grants: (await store.listGrants()).map((g) => {
+      const never = grantNeverMatches(g);
+      return never ? { ...g, neverMatches: never } : g;
+    }) });
   });
   router.add('POST', '/api/v1/grants', (req, res) => grantMutation(req, res, 'create'));
   router.add('DELETE', '/api/v1/grants', (req, res) => grantMutation(req, res, 'delete'));
@@ -8574,6 +8583,10 @@ export function buildApp(deps: AppDeps): App {
     const configIds = new Set((await store.listProviders()).filter((p) => p.managedBy === 'config').map((p) => p.id));
     const diff = diffConfigDocument(current, parsed.doc, { prune }, configIds);
     if (diff.conflicts.length) return sendError(res, 409, 'CONFIG_MANAGED', `config-managed, edit instance.json: ${diff.conflicts.join(', ')}`);
+    // A NEW grant that can never match is refused, as on POST /api/v1/grants. One
+    // already stored re-applies unchanged, so an exported document still applies.
+    const inert = diff.grants.create.flatMap((g) => { const why = grantNeverMatches(g); return why ? [`${g.principal} ${g.action} ${g.resource}: ${why}`] : []; });
+    if (inert.length) return sendError(res, 400, 'GRANT_NEVER_MATCHES', inert.join('; '));
     const need = requiredActions(diff);
     const grants = await store.listGrants();
     const pctx = { userId: user.id, groups: user.groups, role: user.role as Role };

@@ -60,6 +60,13 @@ const CLIENT_ACTIONS = [
   'delivery.create',
 ] as const;
 
+/** A resolved access as the app receives it: what the input does, never who
+ *  decided it or why. */
+function withoutAttribution(access: ResolvedAccess): ResolvedAccess {
+  const { by: _by, reason: _reason, ...rest } = access;
+  return rest;
+}
+
 export interface ProfileFieldPolicy {
   mode: 'editable' | 'locked' | 'hidden';
   source?: 'idp';
@@ -361,8 +368,12 @@ export function assembleOrgConfig(opts: {
     const entry: OrgConfigPayload['tools'][string] = {};
     if (declared) {
       const filtered = filterInputs(declared, overlay, user.groups);
-      // Only ship annotations - plain editable inputs need no policy row.
-      const annotated = filtered.filter((i) => i.access);
+      // Only ship annotations - plain editable inputs need no policy row. The
+      // overlay's name and the rule's reason stay off this wire: the app shows a
+      // locked input with no line naming the rule (plans/82, Andy's standing rule
+      // that locks stay invisible to the person making the asset). The console
+      // and an agent's 422 INPUT_LOCKED still carry them.
+      const annotated = filtered.flatMap((i) => i.access ? [{ ...i, access: withoutAttribution(i.access) }] : []);
       if (annotated.length) entry.inputs = annotated;
       const hidden = declared
         .filter((i) => resolveInputAccess(overlay, i.id, user.groups).level === 'hidden')
