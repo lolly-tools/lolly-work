@@ -100,6 +100,11 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
     // an invitation into a group that maps to the owner role stays owner-only
     // at the route.
     'user.invite',
+    // `programme.manage` (plans/82 M1) names partner programmes and sets what
+    // each includes: the tool.use grants and collection groups for its group.
+    // Admin tier like grant editing, which it amounts to; grantable to a
+    // partner or brand team.
+    'programme.manage',
   ];
   // Credentials + the enable/disable kill switch stay owner-only: an admin can
   // shape a provider, but only an owner puts a key in or turns it on (plans/17 §6).

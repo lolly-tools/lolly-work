@@ -32,6 +32,7 @@ import { applyTagRules, compileTagRules } from './tag-rules.ts';
 import { composeAssetMeta } from './asset-meta.ts';
 import { applyCredentialsToIndex } from './credentials.ts';
 import { composeCollections } from './collections.ts';
+import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, programmeGroupsOf } from '../programmes/types.ts';
 
 export interface ServedProvider {
   id: string;
@@ -80,6 +81,9 @@ export interface ServedIndexDeps {
    *  also holds is a few times this size, so a DAM-sized feed with many
    *  distinct group sets is bounded by memory, not only by key count. */
   maxBytes?: number;
+  /** The role a group set carries (rbac roleFromGroups with the deployment's
+   *  mapping). An admin or owner in a partner programme is never scoped to it. */
+  roleOf?: (groups: string[]) => string;
 }
 
 export interface ServedIndexer {
@@ -103,6 +107,61 @@ export function compareKeys(a: [string, string], b: [string, string]): number {
 }
 
 const quoted = (version: string): string => `"${version}"`;
+
+type ProviderRecordLike = { exposure: { groups?: string[] | '*' } };
+
+/** Every group any asset source names, plus the caller's own: composing with
+ *  this set sees every asset, so a programme scope can then keep exactly what
+ *  it includes. */
+function everyGroup(
+  groups: string[], providers: Array<{ exposure: { groups?: string[] | '*' } }>,
+  instAssets: Array<{ groups?: string[] | '*' }>, collections: Array<{ groups?: string[] | '*' }>,
+): string[] {
+  const all = new Set(groups);
+  for (const list of [...providers.map((p) => p.exposure.groups), ...instAssets.map((a) => a.groups), ...collections.map((c) => c.groups)]) {
+    if (Array.isArray(list)) for (const g of list) all.add(g);
+  }
+  return [...all].sort();
+}
+
+/**
+ * Narrow a fully composed feed to what a partner programme member's programmes
+ * include (plans/82 M1): design-system essentials, the members of collections
+ * whose groups name one of their programme groups, and instance assets or
+ * provider assets whose groups name one. Collections leave the feed unless
+ * they name a programme group, and keep only the members that remain.
+ */
+export function applyProgrammeScope(
+  index: AssetIndex,
+  programmeGroups: ReadonlySet<string>,
+  sources: {
+    instAssets: Array<{ id: string; groups?: string[] | '*' }>;
+    providerRecs: Array<{ id: string; exposure: { groups?: string[] | '*' } }>;
+    collections: Array<{ id: string; members: string[]; groups?: string[] | '*' }>;
+  },
+): AssetIndex {
+  const granted = sources.collections.filter((c) => namesProgrammeGroup(c.groups, programmeGroups));
+  const grantedIds = new Set(granted.map((c) => c.id));
+  const members = new Set(granted.flatMap((c) => c.members));
+  const inst = new Set(sources.instAssets.filter((a) => namesProgrammeGroup(a.groups, programmeGroups)).map((a) => a.id));
+  const providers = new Set(sources.providerRecs.filter((p) => namesProgrammeGroup(p.exposure.groups, programmeGroups)).map((p) => p.id));
+  const keep = (entry: AssetIndexEntry): boolean => {
+    if (typeof entry.type === 'string' && ESSENTIAL_ASSET_TYPES.has(entry.type)) return true;
+    if (members.has(entry.id) || inst.has(entry.id)) return true;
+    const ext = /^ext\/([^/]+)\//.exec(entry.id);
+    return !!ext && providers.has(ext[1]!);
+  };
+  const assets = (index.assets ?? []).filter(keep);
+  const served = new Set(assets.map((a) => a.id));
+  const out: AssetIndex = { ...index, assets };
+  if (Array.isArray(index.collections)) {
+    out.collections = (index.collections as Array<{ id: string; members: string[] }>)
+      .filter((c) => grantedIds.has(c.id))
+      .map((c) => ({ ...c, members: c.members.filter((m) => served.has(m)) }));
+    if (!(out.collections as unknown[]).length) delete out.collections;
+  }
+  return out;
+}
 
 /** The earliest instant after `now` at which any lifecycle row or availability
  *  window flips an entry's state, or Infinity when none will. */
@@ -218,18 +277,25 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     if (running) return running;
     const work = (async (): Promise<ServedIndex> => {
       compositions += 1;
+      // A partner programme member (plans/82 M1) is composed as if they could
+      // see every group's assets, then narrowed to what their programmes
+      // include: essentials, granted collections' members, and instance assets
+      // or providers whose groups name a programme group. `*` never counts.
+      const scoped = isProgrammeScoped(groups, deps.roleOf?.(groups));
+      const programmeGroups = new Set(programmeGroupsOf(groups));
+      const composeGroups = scoped ? everyGroup(groups, providerRecs, instAssets, collections) : groups;
       const providers: ServedProvider[] = frags
-        .filter(({ rec }) => callerSeesProvider(rec, groups))
+        .filter(({ rec }) => scoped ? namesProgrammeGroup(rec.exposure.groups, programmeGroups) : callerSeesProvider(rec, groups))
         .map(({ rec, fragment }) => ({ id: rec.id, label: rec.label, size: fragment.assets.length }));
       const composeOver = (index: AssetIndex): { composed: AssetIndex; staleAt: number } => {
         // Federate before lifecycle so expire/revoke rows on ext/* ids gate
         // federated entries exactly like pack entries.
-        const federated = composeFederated(index, frags, groups);
+        const federated = composeFederated(index, frags, composeGroups);
         // Org-defined values ride the feed as an additive `fields` bag on the
         // entries that carry any (plans/31 section 4). It folds over pack,
         // federated and instance entries alike, because the overlay is keyed by
         // catalog id rather than by which of the three produced the entry.
-        const withInstance = composeAssetMeta(composeInstanceAssets(federated, instAssets, groups), metas, fieldDefs);
+        const withInstance = composeAssetMeta(composeInstanceAssets(federated, instAssets, composeGroups), metas, fieldDefs);
         const staleAt = nextLifecycleFlip(withInstance.assets ?? [], rows, t);
         const gated = applyLifecycleToIndex(withInstance, rows, t);
         // Collections ride the SAME feed as an additive `collections` key
@@ -238,7 +304,8 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
         // deployment with no collections serves a byte-identical index.
         // Hidden tags come off last, so a label an admin hid is neither shown nor
         // matched by search or the paged browse, which all read this feed.
-        return { composed: applyTagRules(composeCollections(applyCredentialsToIndex(gated, creds), collections, groups), tagRules), staleAt };
+        const composed = applyTagRules(composeCollections(applyCredentialsToIndex(gated, creds), collections, composeGroups), tagRules);
+        return { composed: scoped ? applyProgrammeScope(composed, programmeGroups, { instAssets, providerRecs, collections }) : composed, staleAt };
       };
       let raw: Buffer | null = null;
       try {
@@ -319,8 +386,13 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       const base = await full(key, background);
       if (!wantPaged) return base;
       const represented = new Set(base.providers.map(provider => provider.id));
+      // The same provider rule the feed applies: a partner programme member
+      // waits only on providers whose groups name one of their programmes.
+      const scoped = isProgrammeScoped(key, deps.roleOf?.(key));
+      const programmeGroups = new Set(programmeGroupsOf(key));
+      const sees = (provider: ProviderRecordLike): boolean => scoped ? namesProgrammeGroup(provider.exposure.groups, programmeGroups) : callerSeesProvider(provider as never, key);
       const pending = background ? (await deps.store.listProviders({ includeFragment: false }))
-        .filter(provider => provider.enabled && callerSeesProvider(provider, key) && !represented.has(provider.id))
+        .filter(provider => provider.enabled && sees(provider) && !represented.has(provider.id))
         .map(provider => provider.id).sort() : [];
       return pagedFrom(base, key.join('\n'), pending);
     },

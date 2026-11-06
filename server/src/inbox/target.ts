@@ -42,6 +42,10 @@ export interface Message {
 
 export interface ClientCtx {
   groups: string[];
+  /** A partner programme member (plans/82 M1): an audience of everyone (`*`)
+   *  does not reach them; a message reaches them when its groups name one of
+   *  theirs or it is addressed to them by id. */
+  programmeScoped?: boolean;
   shell?: string;
   engineVersion?: string;
   userId?: string;
@@ -60,7 +64,10 @@ export function compareVersions(a: string, b: string): number {
 
 export function audienceMatches(audience: Audience, client: ClientCtx): boolean {
   const groups = audience.groups ?? ['*'];
-  if (!groups.includes('*') && !groups.some((g) => client.groups.includes(g))) return false;
+  const named = groups.some((g) => client.groups.includes(g));
+  if (client.programmeScoped) {
+    if (!named && !(client.userId && audience.users?.includes(client.userId))) return false;
+  } else if (!groups.includes('*') && !named) return false;
   // Per-user targeting (e.g. an approval routed to its nominees): narrows further.
   if (audience.users?.length && (!client.userId || !audience.users.includes(client.userId))) return false;
   if (audience.shells?.length && (!client.shell || !audience.shells.includes(client.shell))) return false;

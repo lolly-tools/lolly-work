@@ -31,6 +31,7 @@ import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts';
 import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
+import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../programmes/types.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -791,7 +792,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const { rows: existing } = await pool.query('select idp_groups from users where id = $1', [userId]);
       if (!existing[0]) return null;
       const idpGroups = (existing[0].idp_groups as string[]) ?? [];
-      const local = [...new Set(localGroups.filter(Boolean))];
+      // Joining a partner programme also adds the partner marker, which
+      // leaving it never removes (programmes/types.ts withPartnerMarker).
+      const local = withPartnerMarker([...new Set(localGroups.filter(Boolean))]);
       const groups = effectiveGroups(idpGroups, local);
       const { rows } = await pool.query(
         'update users set local_groups = $2::jsonb, groups = $3::jsonb, role = $4 where id = $1 returning *',
@@ -2247,6 +2250,26 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async deleteCollection(id) {
       await pool.query('delete from catalog_collections where id = $1', [id]);
+    },
+
+    // Partner programmes (migrations/0085): one jsonb record per programme.
+    async listProgrammes() {
+      const { rows } = await pool.query('select record from partner_programmes');
+      return sortProgrammes(rows.map((r) => r.record as ProgrammeRecord));
+    },
+    async getProgramme(id) {
+      const { rows } = await pool.query('select record from partner_programmes where id = $1', [id]);
+      return rows[0] ? (rows[0].record as ProgrammeRecord) : null;
+    },
+    async putProgramme(rec) {
+      await pool.query(
+        `insert into partner_programmes (id, record, updated_at) values ($1, $2::jsonb, now())
+         on conflict (id) do update set record = excluded.record, updated_at = now()`,
+        [rec.id, JSON.stringify(rec)],
+      );
+    },
+    async deleteProgramme(id) {
+      await pool.query('delete from partner_programmes where id = $1', [id]);
     },
 
     // Instance asset versions (migrations/0020). Immutable snapshots keyed

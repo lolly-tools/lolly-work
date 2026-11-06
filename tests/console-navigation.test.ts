@@ -31,7 +31,7 @@ function page() {
 test('task navigation and its mobile picker expose only permitted sections; search finds direct provider access', async () => {
   const p = page();
   try {
-    const views = Object.fromEntries(['overview', 'projects', 'users', 'contractors', 'catalog', 'providers', 'tools', 'injectables', 'approvals', 'chains', 'grants', 'tokens', 'activity', 'rooms', 'links', 'messages', 'audit', 'fleet', 'instance', 'setup', 'preview', 'docs'].map(id => [id, ['users', 'providers'].includes(id)]));
+    const views = Object.fromEntries(['overview', 'projects', 'users', 'programmes', 'contractors', 'catalog', 'providers', 'tools', 'injectables', 'approvals', 'chains', 'grants', 'tokens', 'activity', 'rooms', 'links', 'messages', 'audit', 'fleet', 'instance', 'setup', 'preview', 'docs'].map(id => [id, ['users', 'providers'].includes(id)]));
     p.helpers.setSession({ console: { views, actions: [] } });
     const nav = p.helpers.consoleNavigation('users'); p.w.document.body.append(nav);
     assert.deepEqual([...nav.querySelectorAll('a')].map((a: any) => a.textContent), ['People', 'Providers']);

@@ -1509,3 +1509,10 @@ html.account-inspector-open { overflow: hidden; }
 .bedit-value { display: inline-flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
 .bedit-swatch { flex: none; width: 14px; height: 14px; border: 1px solid var(--hairline); border-radius: 3px; }
 @media (forced-colors: active) { .bedit-swatch { forced-color-adjust: none; } }
+
+/* Partner programmes (plans/82 M1): one card per programme, and an editor whose
+   tool list stays a scannable column rather than a page-long run. */
+.programme-head { display: flex; align-items: baseline; gap: var(--sp-6); flex-wrap: wrap; }
+.programme-actions { display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: center; }
+.programme-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); max-height: 26rem; overflow: auto; }
+@media (max-width: 640px) { .programme-tools { grid-template-columns: 1fr; max-height: none; } }

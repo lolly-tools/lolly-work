@@ -118,7 +118,9 @@ export function normalizeCollection(
  *  `instanceAssetVisible` on purpose: one visibility shape across the catalog. */
 export function collectionVisible(rec: CollectionRecord, callerGroups: string[]): boolean {
   const g = rec.groups;
-  if (!g || g === '*') return true;
+  // `*` in a list keeps everyone: a partner programme added to a collection
+  // shared with everyone (`['*', 'programme-x']`) must not take it from them.
+  if (!g || g === '*' || g.includes('*')) return true;
   return g.some((x) => callerGroups.includes(x));
 }
 
