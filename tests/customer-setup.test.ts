@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parseConfig, loadSecrets } from '../server/src/config/instance.ts';
 import { inspectPack } from '../server/src/setup/pack.ts';
@@ -72,6 +73,129 @@ test('an HTML-only template is advertised as server renderable only when a worke
     assert.equal((await inspectPack(root, { requireServerRendering: true })).compatible, false);
     const workered = await inspectPack(root, { workerConfigured: true, requireServerRendering: true });
     assert.equal(workered.compatible, true); assert.deepEqual(workered.tools[0]?.serverFormats, ['svg', 'png', 'pdf']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+/** Write catalog files, keyed by their path under catalog/, plus an asset index over them. */
+async function catalogWith(root: string, files: Record<string, string>, assets: unknown[]): Promise<void> {
+  for (const [rel, bytes] of Object.entries(files)) {
+    await mkdir(dirname(join(root, 'catalog', rel)), { recursive: true });
+    await writeFile(join(root, 'catalog', rel), bytes);
+  }
+  await mkdir(join(root, 'catalog', 'assets'), { recursive: true });
+  await writeFile(join(root, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: '1', assets }));
+}
+const shaHex = (bytes: string) => createHash('sha256').update(bytes).digest('hex');
+const sri = (bytes: string) => `sha256-${createHash('sha256').update(bytes).digest('base64')}`;
+const SHORT = shaHex('<svg/>').slice(0, 16);
+
+test('a catalog path with two owners makes a pack incompatible and the report names the file and both ids', async () => {
+  const cases: Array<{ name: string; files: Record<string, string>; assets: unknown[]; names: string[] }> = [
+    { name: 'one file under two ids', names: ['assets/shared.jpg', 'lolly/demo/lorikeet', 'lolly/demo/sample-photo'],
+      files: { 'assets/shared.jpg': 'jpg' }, assets: [
+        { id: 'lolly/demo/lorikeet', formats: [{ format: 'jpg', url: '/catalog/assets/shared.jpg' }] },
+        { id: 'lolly/demo/sample-photo', formats: [{ format: 'jpg', url: '/catalog/assets/shared.jpg' }] },
+      ] },
+    { name: 'a locale format', names: ['assets/shared.jpg', 'plain', 'localized'],
+      files: { 'assets/shared.jpg': 'jpg' }, assets: [
+        { id: 'plain', formats: [{ format: 'jpg', url: '/catalog/assets/shared.jpg' }] },
+        { id: 'localized', formats: [], locales: { de: [{ format: 'jpg', url: '/catalog/assets/shared.jpg' }] } },
+      ] },
+    // Signed renditions in one folder: each address also claims renditions/out.webp.
+    { name: 'addressed names that share a legacy name', names: ['renditions/out.webp', `renditions/out.${shaHex('two').slice(0, 16)}.webp`, 'first', 'second'],
+      files: { [`renditions/out.${shaHex('one').slice(0, 16)}.webp`]: 'one', [`renditions/out.${shaHex('two').slice(0, 16)}.webp`]: 'two' }, assets: [
+        { id: 'first', formats: [{ format: 'webp', url: `/catalog/renditions/out.${shaHex('one').slice(0, 16)}.webp`, checksum: sri('one') }] },
+        { id: 'second', formats: [{ format: 'webp', url: `/catalog/renditions/out.${shaHex('two').slice(0, 16)}.webp`, checksum: sri('two') }] },
+      ] },
+    { name: 'an address claiming another asset\'s file', names: ['assets/a.svg', 'owner', 'other'],
+      files: { 'assets/a.svg': '<svg/>', [`assets/a.${SHORT}.svg`]: '<svg/>' }, assets: [
+        { id: 'owner', formats: [{ format: 'svg', url: '/catalog/assets/a.svg' }] },
+        { id: 'other', formats: [{ format: 'svg', url: `/catalog/assets/a.${SHORT}.svg`, checksum: sri('<svg/>') }] },
+      ] },
+  ];
+  for (const { name, files, assets, names } of cases) {
+    const root = await fixture();
+    try {
+      await catalogWith(root, files, assets);
+      const report = await inspectPack(root);
+      assert.equal(report.compatible, false, name);
+      assert.equal(report.tools[0]?.valid, true, `${name}: the tools still load`);
+      const reason = report.diagnostics.join(' ');
+      for (const expected of names) assert.ok(reason.includes(`"${expected}"`), `${name}: ${expected} in ${reason}`);
+      assert.match(reason, /validate:catalog/, 'the reason says how to fix the pack');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('the other refusals the blob route makes are reported the same way', async () => {
+  const wrong = '0123456789abcdef';
+  const cases: Array<{ files: Record<string, string>; assets: unknown[]; reason: RegExp }> = [
+    { files: { [`assets/a.${wrong}.svg`]: '<svg/>' }, reason: new RegExp(`"assets/a\\.${wrong}\\.svg" on asset "a" does not match its checksum`),
+      assets: [{ id: 'a', formats: [{ format: 'svg', url: `/catalog/assets/a.${wrong}.svg` }] }] },
+    { files: { [`assets/a b.${SHORT}.svg`]: '<svg/>' }, reason: /unsafe catalog asset address "assets\/a b\.[0-9a-f]{16}\.svg" on asset "a"/,
+      assets: [{ id: 'a', formats: [{ format: 'svg', url: `/catalog/assets/a b.${SHORT}.svg`, checksum: sri('<svg/>') }] }] },
+  ];
+  for (const { files, assets, reason } of cases) {
+    const root = await fixture();
+    try {
+      await catalogWith(root, files, assets);
+      const report = await inspectPack(root);
+      assert.equal(report.compatible, false);
+      assert.match(report.diagnostics.join(' '), reason);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('one owner per path stays compatible, including addressed renditions under renditions/<id>/', async () => {
+  const root = await fixture();
+  try {
+    // Identical bytes and identical file names, kept apart by the id in the folder.
+    const rendition = (id: string) => ({ format: 'webp', url: `/catalog/renditions/${id}/out.${SHORT}.webp`, checksum: sri('<svg/>') });
+    await catalogWith(root, {
+      'renditions/lolly/demo/lorikeet/out.webp': '<svg/>', [`renditions/lolly/demo/lorikeet/out.${SHORT}.webp`]: '<svg/>',
+      [`renditions/lolly/demo/sample-photo/out.${SHORT}.webp`]: '<svg/>',
+      'assets/lorikeet.jpg': 'jpg', 'assets/sample-photo.jpg': 'jpg',
+      'assets/logo.svg': '<svg/>', [`assets/logo.${SHORT}.svg`]: '<svg/>', [`assets/mark.${SHORT}.svg`]: '<svg/>',
+    }, [
+      { id: 'lolly/demo/lorikeet', formats: [{ format: 'jpg', url: '/catalog/assets/lorikeet.jpg' }, rendition('lolly/demo/lorikeet'),
+        // One id may hold an addressed name and the plain name it also claims.
+        { format: 'webp', url: '/catalog/renditions/lolly/demo/lorikeet/out.webp' }] },
+      { id: 'lolly/demo/sample-photo', formats: [{ format: 'jpg', url: '/catalog/assets/sample-photo.jpg' }, rendition('lolly/demo/sample-photo')] },
+      { id: 'lolly/logo', formats: [{ format: 'svg', url: `/catalog/assets/logo.${SHORT}.svg`, checksum: sri('<svg/>') }, { format: 'svg', url: '/catalog/assets/logo.svg' }],
+        locales: { de: [{ format: 'svg', url: '/catalog/assets/logo.svg' }] } },
+      // A format with no checksum gets one from its bytes, as the served index does.
+      { id: 'lolly/mark', formats: [{ format: 'svg', url: `/catalog/assets/mark.${SHORT}.svg` }] },
+    ]);
+    const report = await inspectPack(root);
+    assert.deepEqual(report.diagnostics, []);
+    assert.equal(report.compatible, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a mounted pack with two owners for one path refuses a production boot, naming them, and only warns in evaluation', async () => {
+  const root = await fixture();
+  try {
+    await catalogWith(root, { 'assets/shared.jpg': 'jpg' }, [
+      { id: 'first', formats: [{ format: 'jpg', url: '/catalog/assets/shared.jpg' }] },
+      { id: 'second', formats: [{ format: 'jpg', url: '/catalog/assets/shared.jpg' }] },
+    ]);
+    const secrets = { session: 'a'.repeat(32), link: 'b'.repeat(32) };
+    const evaluation = await assessSetup(parseConfig(JSON.stringify({ deployment: { mode: 'evaluation' }, instance: { pack: root }, dev: { enabled: true } })), secrets, false);
+    assert.equal(evaluation.checks.find(check => check.id === 'pack')?.status, 'warning');
+    assert.equal(evaluation.ready, true);
+
+    const config = parseConfig(JSON.stringify({ deployment: { mode: 'production', application: 'api' }, instance: { pack: root, baseUrl: 'https://work.test' }, idp: { issuer: 'https://idp.test', clientId: 'test' } }));
+    const production = await assessSetup(config, secrets, true);
+    assert.deepEqual(production.checks.filter(check => check.status === 'fail').map(check => check.id), ['pack']);
+    assert.equal(production.ready, false);
+
+    const path = join(root, 'instance.json'); await writeFile(path, JSON.stringify(config));
+    const child = spawnSync(process.execPath, ['server/src/main.ts'], { encoding: 'utf8',
+      env: { ...process.env, DATABASE_URL: 'postgres://setup-check.invalid/none', LW_CONFIG: path, LW_SESSION_SECRET: secrets.session, LW_LINK_SECRET: secrets.link }, timeout: 60000 });
+    assert.equal(child.status, 1);
+    assert.match(child.stderr, /pack: .*"assets\/shared\.jpg" is claimed by assets "first" and "second"/);
+    assert.match(child.stderr, /Production setup validation failed/);
+    assert.doesNotMatch(child.stdout, /migrations applied/, 'the refusal comes before the database');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -169,11 +169,20 @@ export function applyLifecycleToIndex(index: AssetIndex, rows: LifecycleRow[], n
  * /catalog/* route already computes from the request URL. Tolerant of a
  * leading '/' and/or 'catalog/' prefix on the stored url (both forms appear
  * across packs); a format entry with no url is skipped.
+ *
+ * Each refusal names the file and asset ids for whoever built the pack, because
+ * setup/pack.ts reports it as written. The blob route replaces it with a fixed
+ * 503, so callers never see it. Names are JSON-quoted: an index can hold anything.
  */
 export function buildPathMap(index: AssetIndex): Map<string, string> {
   const map = new Map<string, string>();
-  const claim = (path: string, id: string): void => {
-    if (map.has(path) && map.get(path) !== id) throw new Error('ambiguous catalog asset path');
+  const quote = (name: string): string => JSON.stringify(name);
+  const claim = (path: string, id: string, legacyNameOf?: string): void => {
+    const owner = map.get(path);
+    if (owner !== undefined && owner !== id) {
+      const origin = legacyNameOf ? ` (the legacy name of ${quote(legacyNameOf)})` : '';
+      throw new Error(`ambiguous catalog asset path ${quote(path)}${origin} is claimed by assets ${quote(owner)} and ${quote(id)}`);
+    }
     map.set(path, id);
   };
   if (!Array.isArray(index.assets)) return map;
@@ -190,14 +199,14 @@ export function buildPathMap(index: AssetIndex): Map<string, string> {
       const addressed = /^(.*)\.([0-9a-f]{16})(\.[a-z0-9]{1,16})$/.exec(rel);
       if (!addressed) continue;
       if (/[\\%?#\p{White_Space}\p{Cc}]/u.test(rel) || rel.split('/').some(part => !part || part === '.' || part === '..') || rel.includes('://')) {
-        throw new Error('unsafe catalog asset address');
+        throw new Error(`unsafe catalog asset address ${quote(rel)} on asset ${quote(asset.id)}`);
       }
       // The current full SRI must agree before a legacy alias gains this owner.
       const digest = assetFormatSha256(fmt);
       if (!digest || digest.slice(0, 16) !== addressed[2]) {
-        throw new Error('catalog asset address does not match its checksum');
+        throw new Error(`catalog asset address ${quote(rel)} on asset ${quote(asset.id)} does not match its checksum`);
       }
-      claim(`${addressed[1]}${addressed[3]}`, asset.id);
+      claim(`${addressed[1]}${addressed[3]}`, asset.id, rel);
     }
   }
   return map;

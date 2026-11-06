@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
  * scripts/build-instance-pack.ts against a throwaway Lolly checkout whose
- * resolver writes a small pack. Pins three things a deploy depends on: an
+ * resolver writes a small pack. Pins four things a deploy depends on: an
  * excluded path takes its asset index entries with it (the boot check stats
  * every /catalog/ format URL, so a dangling one refuses the pack in production),
- * the pack's build-time catalog signature is not carried, and a rebuild that
- * fails never leaves the previous build's provenance describing new bytes.
+ * the pack's build-time catalog signature is not carried, a rebuild that fails
+ * never leaves the previous build's provenance describing new bytes, and a pack
+ * the server could not serve (two owners for one catalog path) is refused here.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -160,6 +161,51 @@ test('a pack whose build did not finish is named as such for the function build'
   await build(out);
   assert.equal(incompletePackReason(out), null);
   assert.equal(incompletePackReason(join(ROOT, 'no-such-pack')), null);
+});
+
+test('a pack with two owners for one catalog path is refused, naming them; the same pack with one owner each passes', async () => {
+  const tool = JSON.stringify({ id: 't1', name: 'Test', version: '1.0.0', engineVersion: '^1.0.0', status: 'official',
+    render: { width: 100, height: 100, formats: ['svg'] }, inputs: [{ id: 'title', type: 'text', label: 'Title', default: 'Welcome' }] });
+  const runBuild = async (name: string, urls: Record<string, string>): Promise<{ status: number; errors: string }> => {
+    const checkout = join(ROOT, `paths-${name}`), out = join(ROOT, `paths-${name}-pack`);
+    const files = {
+      'tools/t1/tool.json': tool,
+      'tools/t1/template.html': '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><text>{{title}}</text></svg>',
+      'catalog/tools/index.json': JSON.stringify({ version: '1', tools: [{ id: 't1', name: 'Test' }] }),
+      'catalog/assets/index.json': JSON.stringify({ version: '1', assets: Object.entries(urls).map(([id, url]) => ({ id, formats: [{ format: 'jpg', url }] })) }),
+      'catalog/assets/a.jpg': 'jpg', 'catalog/assets/b.jpg': 'jpg',
+    };
+    mkdirSync(join(checkout, 'packages', 'node-shell', 'src'), { recursive: true });
+    writeFileSync(join(checkout, 'package.json'), '{"type":"module"}');
+    writeFileSync(join(checkout, 'packages', 'node-shell', 'src', 'content-roots.ts'), `
+      import { mkdirSync, writeFileSync } from 'node:fs';
+      import { dirname, join } from 'node:path';
+      export function contentRoots({ profile }) { return { profile }; }
+      export function materializeInto(out) {
+        for (const [rel, text] of Object.entries(${JSON.stringify(files)})) {
+          mkdirSync(dirname(join(out, rel)), { recursive: true });
+          writeFileSync(join(out, rel), text);
+        }
+      }`);
+    spawnSync('git', ['init', '-q', checkout]);
+    for (const args of [['add', '.'], ['commit', '-q', '-m', 'fixture']]) {
+      assert.equal(spawnSync('git', ['-C', checkout, '-c', 'user.name=fixture', '-c', 'user.email=fixture@test', ...args]).status, 0);
+    }
+    const original = { log: console.log, error: console.error, warn: console.warn };
+    const errors: string[] = [];
+    console.log = console.warn = () => {};
+    console.error = (line: string) => { errors.push(line); };
+    try {
+      return { status: await main(['--lolly', checkout, '--profile', 'p', '--out', out]), errors: errors.join('\n') };
+    } finally {
+      Object.assign(console, original);
+    }
+  };
+  const separate = await runBuild('separate', { first: '/catalog/assets/a.jpg', second: '/catalog/assets/b.jpg' });
+  assert.equal(separate.status, 0, separate.errors);
+  const shared = await runBuild('shared', { first: '/catalog/assets/a.jpg', second: '/catalog/assets/a.jpg' });
+  assert.equal(shared.status, 1);
+  assert.match(shared.errors, /\[build-instance-pack\] .*"assets\/a\.jpg" is claimed by assets "first" and "second"/);
 });
 
 const hash = (bytes: Uint8Array | string): string => createHash('sha256').update(bytes).digest('hex');
