@@ -93,6 +93,7 @@ import {
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
 import { isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, programmeGroupsOf, reservedGroupName } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
+import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
@@ -5567,6 +5568,20 @@ export function buildApp(deps: AppDeps): App {
         const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
         return (index.tools ?? []).flatMap((t) => typeof t?.id === 'string' ? [t.id] : []);
       } catch { return []; }
+    },
+  });
+
+  registerProgrammePeopleRoutes(router, {
+    store, requireAction, audit,
+    invite: async (actor, email, groups, endsAt) => {
+      // The invitation can be accepted until the membership ends, and never for
+      // more than the 366 days any invitation may stay open.
+      const cap = Date.now() + 366 * 24 * 3600 * 1000;
+      const expiresAt = endsAt ? new Date(Math.min(Date.parse(endsAt), cap)).toISOString() : undefined;
+      const issued = await issueInvitation(actor, { email, groups, projects: [], ...(expiresAt ? { expiresAt } : {}), createdVia: 'console' });
+      if (issued.status === 'refused') return { status: 'refused', reason: issued.reason };
+      if (issued.status === 'already-member') return { status: 'already-member' };
+      return { status: issued.status === 'created' ? 'created' : 'existing', invitationId: issued.invitation.id, groups: issued.invitation.groups };
     },
   });
 

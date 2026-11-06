@@ -37,6 +37,7 @@ import { assessSetup } from './setup/checks.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { grantNeverMatches } from './rbac/grant-shape.ts';
+import { sweepProgrammeEnds } from './programmes/people-routes.ts';
 import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
 
 const config = loadConfig();
@@ -258,6 +259,15 @@ if (config.audit.headLog.onBoot) await logAuditHead();
 if (config.audit.headLog.intervalMinutes > 0) {
   setInterval(() => void logAuditHead(), config.audit.headLog.intervalMinutes * 60_000).unref();
 }
+
+// Partner programme end dates (plans/82 M1 part 2): a membership whose end
+// date has passed loses its programme and company groups. Every minute, so
+// access ends on time without anyone remembering to do it. A serverless
+// deploy crons POST /api/v1/programmes/sweep instead.
+const sweepEnds = (): Promise<number> => sweepProgrammeEnds(store, (actor, action, subject, payload) =>
+  store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) }));
+await sweepEnds().catch((e: Error) => console.error(`[lolly-work] programme end sweep failed: ${e.message}`));
+setInterval(() => void sweepEnds().catch((e: Error) => console.error(`[lolly-work] programme end sweep failed: ${e.message}`)), 60_000).unref();
 
 // Retention (plans/35 wave 3): boot + daily, only when a policy is stated.
 // The same runRetention the POST /api/v1/retention/run route calls, so a

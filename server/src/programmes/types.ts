@@ -76,9 +76,10 @@ export function withPartnerMarker(localGroups: string[]): string[] {
   return localGroups.some(isProgrammeGroup) && !localGroups.includes(PARTNER_GROUP) ? [...localGroups, PARTNER_GROUP] : localGroups;
 }
 
-/** Group names only the programme routes may create. */
+/** Group names only the programme routes may create: programme groups, company
+ *  groups (`company-<id>`, plans/82 M1 part 2) and the partner marker. */
 export function reservedGroupName(name: string): boolean {
-  return name === PARTNER_GROUP || name.startsWith(PROGRAMME_GROUP_PREFIX);
+  return name === PARTNER_GROUP || name.startsWith(PROGRAMME_GROUP_PREFIX) || name.startsWith('company-');
 }
 
 /**

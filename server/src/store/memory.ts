@@ -38,6 +38,7 @@ import { sortFields, type AssetMetaRecord, type CatalogFieldDef } from '../catal
 import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
 import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../programmes/types.ts';
+import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -187,6 +188,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const assetMeta = new Map<string, AssetMetaRecord>();
   const collections = new Map<string, CollectionRecord>();
   const programmes = new Map<string, ProgrammeRecord>((seed?.programmes ?? []).map((p) => [p.id, p]));
+  const companies = new Map<string, CompanyRecord>();
+  const memberships = new Map<string, MembershipRecord>();
   /** `${assetId} ${version}` (space-joined) - the composite key migration 0020 makes a
    *  primary key. One flat map keeps the memory driver's shape as close to the
    *  SQL one as a Map allows. */
@@ -1406,6 +1409,21 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deleteProgramme(id) {
       programmes.delete(id);
+    },
+    async listCompanies() {
+      return [...companies.values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    },
+    async putCompany(rec) {
+      companies.set(rec.id, rec);
+    },
+    async deleteCompany(id) {
+      companies.delete(id);
+    },
+    async listMemberships() {
+      return [...memberships.values()].sort((a, b) => a.programmeId.localeCompare(b.programmeId) || a.email.localeCompare(b.email));
+    },
+    async putMembership(rec) {
+      memberships.set(`${rec.programmeId}\n${rec.email}`, rec);
     },
 
     async listAssetVersions(assetId) {
