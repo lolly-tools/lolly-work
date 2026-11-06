@@ -36,18 +36,18 @@ function render(state: Record<string, unknown>) {
 
 test('with no edit it says what is served and where to edit', () => {
   const { text, button } = render({});
-  assert.match(text, /serves the tokens from its mounted pack/);
+  assert.match(text, /serves its image's own colours, with no edit on top/);
   assert.match(text, /Edit for this instance/);
-  assert.equal(button('Roll back to the mounted tokens'), undefined);
+  assert.equal(button('Roll back this edit'), undefined);
 });
 
 test('a live edit shows who and when, the digest, the previews line and a rollback', async () => {
   const { text, button, calls } = render({ edit: live });
-  assert.match(text, /Runs edited tokens/);
+  assert.match(text, /Serving this edit/);
   assert.match(text, /Revision 2, sent by Manager, just now/);
   assert.match(text, /SHA-256 b{64}/);
   assert.match(text, /Previews and social cards keep their old colours until the next image\./);
-  button('Roll back to the mounted tokens').click();
+  button('Roll back this edit').click();
   await new Promise(resolve => setTimeout(resolve));
   assert.equal(calls[0]!.path, '/api/v1/brand/edits/rollback');
 });
@@ -72,12 +72,13 @@ test('after a new image it is a quiet note, unless someone asked to be asked', a
 });
 
 test('an edit that cannot apply, or cannot be read, says plainly what is served instead', () => {
-  const cannot = render({ edit: { ...live, state: 'cannot-apply', gone: ['base: color.brand.indigo'] } }).text;
-  assert.match(cannot, /no longer applies, because this image has no base: color\.brand\.indigo/);
+  const cannot = render({ edit: { ...live, state: 'cannot-apply', gone: ['color.brand.indigo'], goneMessage: 'This edit changes color.brand.indigo, which the new image no longer has.' } }).text;
+  assert.match(cannot, /This edit changes color\.brand\.indigo, which the new image no longer has\./);
   assert.match(cannot, /serving the image's own colours/);
-  assert.match(cannot, /Serving the mounted tokens/);
+  assert.match(cannot, /Serving the image's own colours/);
+  assert.equal(/mounted/i.test(cannot), false);
   assert.equal(/Previews and social cards/.test(cannot), false);
-  assert.match(render({ edit: { ...live, state: 'unavailable' } }).text, /could not be read, so this instance is serving the mounted tokens/);
+  assert.match(render({ edit: { ...live, state: 'unavailable' } }).text, /could not be read, so this instance is serving the image's own colours/);
 });
 
 test('each switch says what it does and sends one decision', async () => {

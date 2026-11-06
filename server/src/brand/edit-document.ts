@@ -246,7 +246,8 @@ function aliasesIn(value: unknown, out: Set<string>, depth = 0): void {
   else if (isRec(value)) for (const item of Object.values(value)) aliasesIn(item, out, depth + 1);
 }
 
-const leafName = (set: string | null, path: readonly string[]): string => `${set ? `${set}: ` : ''}${path.join('.')}`;
+/** A token as a person reads it: its path, with the set only when it is not the base one. */
+const leafName = (set: string | null, path: readonly string[]): string => `${path.join('.')}${set && set !== 'base' ? ` in ${set}` : ''}`;
 
 // ── Roles, the brand's own words ──────────────────────────────────────────────
 
@@ -685,7 +686,7 @@ export function applyBrandChanges(base: Rec, changes: readonly BrandEditChange[]
       const field = change.kind === 'role' ? 'roles' : 'bindings';
       const list = record && Array.isArray(record[field]) ? record[field] as unknown[] : null;
       const noun = change.kind === 'role' ? 'colour role' : 'binding';
-      if (!list) { if (change.after !== null) gone.push(`the ${noun} ${change.id}, because this design system has no list of roles`); continue; }
+      if (!list) { if (change.after !== null) gone.push(`The ${noun} ${change.id} cannot apply, because the new image has no list of roles.`); continue; }
       const at = list.findIndex(item => isRec(item) && item.id === change.id);
       if (change.before !== null && at < 0) { if (change.after !== null) gone.push(`the ${noun} ${change.id}`); continue; }
       if (at >= 0 && !same(list[at], change.before) && !same(list[at], change.after)) overlaps.push(`the ${noun} ${change.id}`);
@@ -765,6 +766,18 @@ export function describeBrandChanges(changes: readonly BrandEditChange[]): Brand
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * What an edit changes that the new image no longer has, in plain words. An entry
+ * ending in a full stop is already a sentence; any other entry is the name of a thing.
+ */
+export function goneMessage(gone: readonly string[], subject = 'This edit'): string {
+  const things = gone.filter(entry => !entry.endsWith('.'));
+  const shown = things.slice(0, 8);
+  const rest = things.length - shown.length;
+  const named = rest ? `${shown.join(', ')} and ${rest} more` : shown.length > 1 ? `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}` : shown[0];
+  return [named ? `${subject} changes ${named}, which the new image no longer has.` : '', ...gone.filter(entry => entry.endsWith('.'))].filter(Boolean).join(' ');
 }
 
 /** One sentence for a refusal: what changed, and what this instance takes. */

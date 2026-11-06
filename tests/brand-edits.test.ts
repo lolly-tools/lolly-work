@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { buildApp } from '../server/src/api/app.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import type { BlobStore } from '../server/src/blobs/types.ts';
-import { applyBrandChanges, brandPageAddress, BrandEditRefusal, checkDocumentShape, compareBrandDocument, describeBrandChanges, outOfScopeMessage } from '../server/src/brand/edit-document.ts';
+import { applyBrandChanges, brandPageAddress, BrandEditRefusal, checkDocumentShape, compareBrandDocument, describeBrandChanges, goneMessage, outOfScopeMessage } from '../server/src/brand/edit-document.ts';
 import { deriveInstancePack, inspectInstancePack, instancePackTokensChecksum } from '../server/src/catalog/instance-pack.ts';
 import { createCatalogSigning } from '../server/src/catalog/signing.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
@@ -75,7 +75,7 @@ test('changing a colour is in scope, and the change is named', () => {
   assert.deepEqual(out.outOfScope, []);
   assert.deepEqual(out.invalid, []);
   assert.equal(out.changes.length, 1);
-  assert.deepEqual(describeBrandChanges(out.changes), [{ kind: 'colour', name: 'base: color.brand.indigo', action: 'changed', before: '#1b2a6b', after: '#223377' }]);
+  assert.deepEqual(describeBrandChanges(out.changes), [{ kind: 'colour', name: 'color.brand.indigo', action: 'changed', before: '#1b2a6b', after: '#223377' }]);
 });
 
 test('an unchanged document changes nothing', () => {
@@ -254,6 +254,16 @@ test('a colourway can be added or removed, with its theme and its place in the o
   assert.deepEqual(canonicalJson(applyBrandChanges(doc, removed.changes).doc), canonicalJson(tokens()));
 });
 
+test('what an edit has lost reads as a sentence, whatever the list holds', () => {
+  assert.equal(goneMessage(['color.ramp.neutral.1']), 'This edit changes color.ramp.neutral.1, which the new image no longer has.');
+  assert.equal(goneMessage(['color.a', 'the colour role b']), 'This edit changes color.a and the colour role b, which the new image no longer has.');
+  assert.equal(goneMessage(['color.a'], 'That revision'), 'That revision changes color.a, which the new image no longer has.');
+  const sentence = 'A colour still points at color.a, which this edit removes.';
+  assert.equal(goneMessage([sentence]), sentence);
+  assert.equal(goneMessage(['color.a', sentence]), `This edit changes color.a, which the new image no longer has. ${sentence}`);
+  assert.match(goneMessage(Array.from({ length: 12 }, (_, n) => `color.a${n}`)), /color\.a7 and 4 more, which the new image/);
+});
+
 test('a change line carries the name a person gave the colour, as bounded plain text', () => {
   const base = tokens();
   const named = structuredClone(base) as any;
@@ -262,7 +272,7 @@ test('a change line carries the name a person gave the colour, as bounded plain 
   edited.base.color.brand.indigo.$value = '#7a2cc8';
   const [line] = describeBrandChanges(compareBrandDocument(named, edited).changes);
   assert.equal(line!.label, 'Ink');
-  assert.equal(line!.name, 'base: color.brand.indigo');
+  assert.equal(line!.name, 'color.brand.indigo');
   edited.base.color.brand.indigo.$description = 'x'.repeat(400);
   assert.equal(describeBrandChanges(compareBrandDocument(named, edited).changes)[0]!.label!.length, 80);
 });
@@ -331,7 +341,7 @@ test('on a new image an edit lands on what changed elsewhere, and says where bot
   const both = tokens();
   both.base.color.brand.indigo.$value = '#000000';
   const overlap = applyBrandChanges(both, changes);
-  assert.deepEqual(overlap.overlaps, ['base: color.brand.indigo']);
+  assert.deepEqual(overlap.overlaps, ['color.brand.indigo']);
   assert.equal((overlap.doc.base as any).color.brand.indigo.$value, '#223377');
 });
 
@@ -340,7 +350,7 @@ test('an edit that names something the image dropped does not land, and says wha
   const image = tokens();
   delete image.base.color.brand.indigo;
   image['colourway/indigo'].color.colourway.light.primary.$value = '#000000';
-  assert.deepEqual(applyBrandChanges(image, changes).gone, ['base: color.brand.indigo']);
+  assert.deepEqual(applyBrandChanges(image, changes).gone, ['color.brand.indigo']);
 
   const roles = compareBrandDocument(tokens(), withRoles());
   const noSystem = tokens();
@@ -532,7 +542,7 @@ test('with no chain an edit goes live on send, and reaches a member, a render an
 
   const doc = colourChange(tokens());
   const reviewed = await t.previewDoc(doc);
-  assert.deepEqual(reviewed.body.lines, [{ kind: 'colour', name: 'base: color.brand.indigo', action: 'changed', before: '#1b2a6b', after: '#223377' }]);
+  assert.deepEqual(reviewed.body.lines, [{ kind: 'colour', name: 'color.brand.indigo', action: 'changed', before: '#1b2a6b', after: '#223377' }]);
   assert.equal(reviewed.body.approval, false);
   assert.equal((await t.render()).text.includes('#223377'), false, 'a preview changes nothing');
   const sent = await t.send(doc);
@@ -867,7 +877,7 @@ test('the note names where the image and the edit changed the same thing, and th
   const image = tokens(); image.base.color.brand.indigo.$value = '#000000';
   const next = await nextImage(t, image);
   const state = await next.state();
-  assert.deepEqual(state.edit.overlaps, ['base: color.brand.indigo']);
+  assert.deepEqual(state.edit.overlaps, ['color.brand.indigo']);
   assert.match((await next.render()).text, /#223377/);
 });
 
@@ -918,7 +928,7 @@ test('an edit that can no longer apply is not half applied: the image is served 
   const next = await nextImage(t, image);
   const state = await next.state();
   assert.equal(state.edit.state, 'cannot-apply');
-  assert.deepEqual(state.edit.gone, ['base: color.brand.indigo']);
+  assert.deepEqual(state.edit.gone, ['color.brand.indigo']);
   const served = await next.servedDoc();
   assert.equal(served.status, 200);
   assert.equal(served.bytes.toString(), JSON.stringify(image), 'the image\'s own document, whole');

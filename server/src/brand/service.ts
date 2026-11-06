@@ -82,7 +82,7 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     const baseDoc = JSON.parse((await tokenBytes(base)).toString('utf8')) as Record<string, unknown>;
     const landed = applyBrandChanges(baseDoc, row.changes as BrandEditChange[]);
     const raw = ((landed.doc.$extensions as Record<string, unknown> | undefined)?.[TOKEN_EXT] as Record<string, unknown> | undefined)?.brandSystem;
-    if (raw !== undefined && !await engineSystemOf(landed.doc)) landed.gone.push('a readable list of roles, so the rules would stop applying');
+    if (raw !== undefined && !await engineSystemOf(landed.doc)) landed.gone.push('The result would have no readable list of roles, so the rules would stop applying.');
     if (landed.gone.length) return { bytes: null, view: view('cannot-apply', { gone: landed.gone, overlaps: landed.overlaps }) };
     return { bytes: Buffer.from(JSON.stringify(landed.doc)), view: view('on-new-image', { overlaps: landed.overlaps }) };
   };

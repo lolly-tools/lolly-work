@@ -42,26 +42,26 @@ export function brandEditsCard(state, { el, api, toast, changed, relTime, armCon
   const serving = edit && (edit.state === 'current' || edit.state === 'on-new-image');
   card.append(el('div', { class: 'list-bar' },
     el('h2', { class: 'flush' }, 'Edits on this instance'),
-    serving ? el('span', { class: 'status live' }, 'Runs edited tokens') : edit ? el('span', { class: 'status revoked' }, 'Serving the mounted tokens') : el('span', { class: 'status' }, 'Mounted tokens')));
+    serving ? el('span', { class: 'status live' }, 'Serving this edit') : edit ? el('span', { class: 'status revoked' }, "Serving the image's own colours") : el('span', { class: 'status' }, "The image's own colours")));
 
   if (!state.available) {
     card.append(el('p', {}, state.limitation ?? 'This source has no tokens file to edit.'));
     return card;
   }
   if (!edit) {
-    card.append(el('p', {}, 'This instance serves the tokens from its mounted pack.'),
+    card.append(el('p', {}, "This instance serves its image's own colours, with no edit on top."),
       el('p', { class: 'sub' }, 'To change colours, colour roles or the brand page address, open the design system in Lolly and choose Edit for this instance.'),
       lollyHref ? el('p', {}, el('a', { class: 'btn', href: lollyHref('/#/start'), target: '_blank', rel: 'noopener' }, 'Open in Lolly')) : null);
   } else {
     const sent = edit.sentByName ?? edit.sentBy;
     card.append(el('p', {}, serving
-      ? `Revision ${edit.revision}, sent by ${sent ?? 'someone'}${edit.liveAt ? `, ${relTime(edit.liveAt)}` : ''}. The mounted pack stays as it was.`
+      ? `Revision ${edit.revision}, sent by ${sent ?? 'someone'}${edit.liveAt ? `, ${relTime(edit.liveAt)}` : ''}. The image's own colours are unchanged.`
       : `Revision ${edit.revision} is not in force.`),
     el('p', { class: 'mono bedit-digest' }, `SHA-256 ${edit.digest}`));
     if (edit.state === 'cannot-apply') {
-      card.append(el('p', { role: 'status' }, `This edit no longer applies, because this image has no ${edit.gone.join(', ')}. This instance is serving the image's own colours. The revision stays in the history, and a new edit can replace it.`));
+      card.append(el('p', { role: 'status' }, `${edit.goneMessage} This instance is serving the image's own colours. The revision stays in the history, and a new edit can replace it.`));
     } else if (edit.state === 'unavailable') {
-      card.append(el('p', { role: 'status' }, 'The stored edit could not be read, so this instance is serving the mounted tokens. It comes back once storage can be read.'));
+      card.append(el('p', { role: 'status' }, "The stored edit could not be read, so this instance is serving the image's own colours. The edit comes back once storage can be read."));
     } else if (edit.ask) {
       card.append(el('div', { class: 'bedit-ask', role: 'status' },
         el('p', { class: 'flush' }, 'A new image arrived. This edit stays live. Look at it, then keep it or roll it back.'),
@@ -79,7 +79,7 @@ export function brandEditsCard(state, { el, api, toast, changed, relTime, armCon
       }
     }
     card.append(el('div', { class: 'bedit-actions' },
-      armConfirmButton({}, edit?.state === 'cannot-apply' ? 'Clear this edit' : 'Roll back to the mounted tokens', edit?.state === 'cannot-apply' ? 'Really clear it?' : 'Really roll back?', async (disarm) => {
+      armConfirmButton({}, edit?.state === 'cannot-apply' ? 'Clear this edit' : 'Roll back this edit', edit?.state === 'cannot-apply' ? 'Really clear it?' : 'Really roll back?', async (disarm) => {
         errors.textContent = '';
         try { await api('/api/v1/brand/edits/rollback', { method: 'POST', body: {} }); toast('Rolled back'); await changed(); }
         catch (error) { errors.textContent = error.message; disarm(); }

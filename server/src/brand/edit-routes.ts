@@ -25,7 +25,7 @@ import { canonicalJson, randomId, sha256Hex } from '../lib/crypto.ts';
 import type { Notifier } from '../notify/notify.ts';
 import { evaluate, type Role } from '../rbac/evaluate.ts';
 import type { Store, UserRecord } from '../store/types.ts';
-import { applyBrandChanges, BRAND_EDIT_MAX_BYTES, BrandEditRefusal, checkDocumentShape, compareBrandDocument, describeBrandChanges, outOfScopeMessage, TOKEN_EXT, type BrandEditChange } from './edit-document.ts';
+import { applyBrandChanges, BRAND_EDIT_MAX_BYTES, BrandEditRefusal, checkDocumentShape, compareBrandDocument, describeBrandChanges, outOfScopeMessage, TOKEN_EXT, goneMessage, type BrandEditChange } from './edit-document.ts';
 import type { BrandEditRevisionSummary } from './edit-store.ts';
 import { BrandError, type BrandService, type BrandSnapshot } from './service.ts';
 import type { BrandSource } from './sources.ts';
@@ -145,7 +145,7 @@ export function createBrandEdits(d: BrandEditsDeps) {
       sourceId: snap.source.id, sourceLabel: snap.source.label, revision: snap.state.revision, baseChecksum: snap.source.baseTokensChecksum, maxDocumentBytes: BRAND_EDIT_MAX_BYTES,
       edit: pointer && view ? {
         ...(live ? await revisionWire(live, names) : {}),
-        state: view.state, overlaps: view.overlaps, gone: view.gone, revision: pointer.revision, digest: pointer.digest, baseChecksum: pointer.baseChecksum,
+        state: view.state, overlaps: view.overlaps, gone: view.gone, goneMessage: goneMessage(view.gone), revision: pointer.revision, digest: pointer.digest, baseChecksum: pointer.baseChecksum,
         // Only with the switch on is a person asked to do anything.
         ask: view.state === 'on-new-image' && policy.lookAfterImage && pointer.lookedAtBase !== snap.source.baseTokensChecksum,
       } : null,
@@ -288,7 +288,7 @@ export function createBrandEdits(d: BrandEditsDeps) {
         title: asked ? 'A new image arrived: look at this instance\'s edit' : 'An edit no longer applies',
         body: asked
           ? 'The edit stays live. Keep it, or roll it back.'
-          : `This instance is serving the new image's own colours, because the edit names ${view.gone.join(', ')}. The revision stays in the history.`,
+          : `${goneMessage(view.gone)} This instance is serving the image's own colours. The revision stays in the history.`,
         cta: { label: 'View', url: '/admin#/instance?tab=design' }, data: { kind: 'brand-edit', revision: String(view.revision) }, dismissible: true,
       });
     })().catch(error => { noted.delete(key); console.error(`[brand-edits] could not send a note: ${(error as Error).message}`); });
@@ -397,7 +397,7 @@ export function createBrandEdits(d: BrandEditsDeps) {
           if (!row || !row.liveAt) throw new BrandError('That revision never went live.', 404, 'NOT_FOUND');
           const mounted = await mountedDocument(snap.source);
           const landed = row.baseChecksum === snap.source.baseTokensChecksum ? null : applyBrandChanges(mounted.doc, row.changes);
-          if (landed?.gone.length) throw new BrandError(`That revision can no longer apply: this image has no ${landed.gone.join(', ')}.`, 409, 'BRAND_EDIT_CANNOT_APPLY');
+          if (landed?.gone.length) throw new BrandError(goneMessage(landed.gone, 'That revision'), 409, 'BRAND_EDIT_CANNOT_APPLY');
           let bytes: Buffer;
           if (landed) bytes = Buffer.from(JSON.stringify(landed.doc));
           else {
