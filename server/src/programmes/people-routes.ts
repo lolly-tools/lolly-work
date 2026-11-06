@@ -42,10 +42,13 @@ export interface PeopleRouteDeps {
 
 /** One message an admin can send to everyone a list invited, instead of one
  *  message per person: Work sends no email (docs/work/invitations.md). */
-export function batchSignInMessage(info: ReturnType<PeopleRouteDeps['signIn']>, programme: string, endsAt: string[]): string {
+export function batchSignInMessage(info: ReturnType<PeopleRouteDeps['signIn']>, programme: string, endsAt: Array<string | undefined>): string {
   const ways = info.providers.length ? ` with ${info.providers.join(' or ')}` : '';
-  const ends = [...new Set(endsAt)].sort();
-  const end = ends.length === 1 ? `Your access runs until ${new Date(ends[0]!).toISOString().slice(0, 10)} (UTC).` : ends.length ? 'Your access has an end date, shown when you sign in.' : '';
+  // One date only when every person invited shares it; otherwise the message
+  // states no date that would be wrong for some of them.
+  const ends = [...new Set(endsAt)];
+  const end = ends.length === 1 && ends[0] ? `Your access runs until ${new Date(ends[0]).toISOString().slice(0, 10)} (UTC).`
+    : ends.some(Boolean) ? 'If your access has an end date, you will see it when you sign in.' : '';
   return [
     `You are invited to ${info.workspace} as part of ${programme}.`,
     `Open ${info.url} and sign in${ways}, using the email address this message was sent to.`,
@@ -234,7 +237,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     }
     const invitedRows = results.filter((r) => r.result === 'invited');
     sendJson(res, 200, { dryRun: false, programme: programme.id, summary: summary(plan), rows: results,
-      ...(invitedRows.length ? { message: batchSignInMessage(deps.signIn(), programme.name, invitedRows.flatMap((r) => r.endsAtIso ? [r.endsAtIso] : [])) } : {}),
+      ...(invitedRows.length ? { message: batchSignInMessage(deps.signIn(), programme.name, invitedRows.map((r) => r.endsAtIso)) } : {}),
     }, { 'cache-control': 'no-store' });
   });
 

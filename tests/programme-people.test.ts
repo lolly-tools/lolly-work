@@ -183,3 +183,14 @@ test('ending a partnership moves projects to the team that owns the programme, r
   assert.deepEqual(project.sharing?.groups, [{ kind: 'directory', name: 'marketing', role: 'viewer' }]);
   assert.equal(project.ownerId, (await store.getUserBySub('dev:admin@test'))!.id, 'owned by whoever made the programme');
 });
+
+test('the one sign-in message states an end date only when everyone invited shares it', async () => {
+  const { batchSignInMessage } = await import('../server/src/programmes/people-routes.ts');
+  const info = { workspace: 'Hub', url: 'https://work.example', providers: ['Google'], note: null };
+  assert.match(batchSignInMessage(info, 'Resellers', ['2030-01-31T23:59:59.999Z', '2030-01-31T23:59:59.999Z']), /until 2030-01-31 \(UTC\)/);
+  const mixed = batchSignInMessage(info, 'Resellers', ['2030-01-31T23:59:59.999Z', undefined]);
+  assert.doesNotMatch(mixed, /until/);
+  assert.match(mixed, /If your access has an end date/);
+  assert.doesNotMatch(batchSignInMessage(info, 'Resellers', [undefined]), /end date|until/);
+  assert.match(batchSignInMessage(info, 'Resellers', [undefined]), /sign in with Google/);
+});
