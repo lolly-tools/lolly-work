@@ -151,3 +151,35 @@ test('ending a partnership previews who and what, leaves internal accounts alone
   assert.ok((await store.listInvitations()).find((i) => i.email === 'late@reseller.test')!.revokedAt);
   assert.ok((await store.listAudit()).some((a) => a.action === 'programme.exit'));
 });
+
+test('someone already in the programme gets the company a list gives them, and the result carries one sign-in message', async () => {
+  const admin = await login('admin@test');
+  await store.upsertUserBySub({ sub: 'dev:pat@reseller.test', email: 'pat@reseller.test', groups: [], role: 'member' });
+  const pat = (await store.getUserBySub('dev:pat@reseller.test'))!;
+  await store.setLocalGroups(pat.id, ['programme-resellers']);
+  const applied = await json(admin, 'POST', '/api/v1/programmes/resellers/people', {
+    text: 'pat@reseller.test,Pat,Acme Reseller\nfresh@reseller.test,,,2032-03-01', apply: true });
+  assert.deepEqual(applied.body.rows.map((r: { result: string }) => r.result), ['added', 'invited']);
+  assert.ok((await store.getUser(pat.id))!.localGroups.includes('company-acme-reseller'), 'the company is set for someone already in');
+  assert.match(applied.body.message, /You are invited to People Hub as part of Resellers\./);
+  assert.match(applied.body.message, /Open http:\/\/localhost and sign in/);
+  assert.match(applied.body.message, /until 2032-03-01 \(UTC\)/);
+});
+
+test('ending a partnership moves projects to the team that owns the programme, read-only, by default', async () => {
+  const admin = await login('admin@test');
+  assert.equal((await json(admin, 'PUT', '/api/v1/programmes/resellers', { name: 'Resellers', team: 'marketing' })).status, 200);
+  assert.equal((await json(admin, 'PUT', '/api/v1/programmes/resellers', { name: 'Resellers', team: 'programme-resellers' })).status, 400, 'the owning team is an internal group');
+  const pat = (await store.getUserBySub('dev:pat@reseller.test'))!;
+  await store.putProject({ id: 'p-pat', name: 'Pat data sheets', ownerId: pat.id, visibility: 'private', createdAt: 'x', updatedAt: 'x' } as never);
+  const dry = await json(admin, 'POST', '/api/v1/programmes/exit', { programme: 'resellers' });
+  assert.equal(dry.body.projects, 'team-readonly');
+  assert.equal(dry.body.team, 'marketing');
+  const done = await json(admin, 'POST', '/api/v1/programmes/exit', { programme: 'resellers', apply: true });
+  assert.equal(done.status, 200);
+  const project = (await store.getProject('p-pat'))!;
+  assert.ok(project.archivedAt);
+  assert.deepEqual(project.visibility, { groups: ['marketing'] });
+  assert.deepEqual(project.sharing?.groups, [{ kind: 'directory', name: 'marketing', role: 'viewer' }]);
+  assert.equal(project.ownerId, (await store.getUserBySub('dev:admin@test'))!.id, 'owned by whoever made the programme');
+});

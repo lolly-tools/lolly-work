@@ -5500,7 +5500,8 @@ async function viewProgrammes(main, params) {
   if (editing) {
     const p = programmes.find((x) => x.id === editing);
     if (!p) { main.append(el('h1', {}, 'Partner programmes'), el('p', {}, 'No such programme. ', el('a', { href: '#/programmes' }, 'Back to programmes'))); return; }
-    main.append(programmeEditor(p, tools, collections));
+    const groupsResp = await api('/api/v1/groups').catch(() => ({ groups: [] }));
+    main.append(programmeEditor(p, tools, collections, groupsResp.groups ?? []));
     return;
   }
 
@@ -5534,9 +5535,15 @@ async function viewProgrammes(main, params) {
   );
 }
 
-function programmeEditor(p, tools, collections) {
+function programmeEditor(p, tools, collections, groups = []) {
   const nameInput = el('input', { value: p.name, 'aria-label': 'Programme name' });
   const descInput = el('input', { value: p.description ?? '', 'aria-label': 'Description' });
+  // The internal team that owns the programme: when a partnership ends, its
+  // people's projects move here, read-only, by default.
+  const internal = groups.map((g) => g.name).filter((g) => !g.startsWith('programme-') && !g.startsWith('company-') && g !== 'partner');
+  const teamSel = el('select', { 'aria-label': 'Owning team' },
+    el('option', { value: '' }, 'No owning team yet'),
+    ...[...new Set([...internal, ...(p.team ? [p.team] : [])])].sort().map((g) => el('option', { value: g, ...(g === p.team ? { selected: 'selected' } : {}) }, g)));
   const chosenTools = new Set(p.tools);
   const chosenCollections = new Set(p.collections.map((c) => c.id));
   const toolFilter = el('input', { type: 'search', placeholder: 'Find a tool', 'aria-label': 'Find a tool' });
@@ -5569,13 +5576,15 @@ function programmeEditor(p, tools, collections) {
     try {
       await api(`/api/v1/programmes/${encodeURIComponent(p.id)}`, { method: 'PUT', body: {
         name: nameInput.value.trim(), ...(descInput.value.trim() ? { description: descInput.value.trim() } : {}),
-        tools: [...chosenTools], collections: [...chosenCollections],
+        team: teamSel.value || null, tools: [...chosenTools], collections: [...chosenCollections],
       } });
       toast(`Saved ${nameInput.value.trim()}`);
       location.hash = '#/programmes';
     } catch (ex) { err.textContent = ex.message; save.disabled = false; }
   } },
-    el('div', { class: 'card stack' }, el('div', { class: 'grant-fields' }, field('Name', nameInput), field('Description', descInput))),
+    el('div', { class: 'card stack' }, el('div', { class: 'grant-fields' }, field('Name', nameInput), field('Description', descInput)),
+      field('Owning team', teamSel),
+      el('p', { class: 'sub flush' }, 'The team inside your organisation that runs this programme. When a partnership ends, its people’s projects move to this team, read-only.')),
     el('div', { class: 'card stack' },
       el('h2', {}, 'Tools ', toolCount),
       el('p', { class: 'sub flush' }, 'The tools this programme’s people can open. Every other tool is absent for them.'),
@@ -5593,14 +5602,14 @@ function programmeEditor(p, tools, collections) {
 
 // People, companies and ending a partnership (plans/82 M1 part 2). Every step
 // that changes something shows what it will do first and asks once.
-async function programmePeople(p, host) {
+async function programmePeople(p, host, lastResult = null) {
   let data;
   try { data = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`); }
   catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
   const reload = () => programmePeople(p, host);
   // An end date in a list is a whole day in UTC (it ends at 23:59:59 UTC), so
   // it reads back as that same day wherever the admin is.
-  const day = (iso) => iso ? `${new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })} UTC` : '';
+  const day = (iso) => iso ? `${new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })} (UTC)` : '';
 
   // Companies.
   const companyName = el('input', { placeholder: 'Acme Distribution', 'aria-label': 'Company name' });
@@ -5623,10 +5632,13 @@ async function programmePeople(p, host) {
   // People, and adding many at once.
   const rows = [
     ...data.people.map((m) => el('tr', {}, el('td', {}, m.name), el('td', {}, m.email), el('td', {}, m.company?.name ?? '—'),
-      el('td', {}, m.disabled ? el('span', { class: 'status revoked' }, 'disabled') : m.endsAt ? `Until ${day(m.endsAt)}` : 'No end date'))),
-    ...data.invited.map((m) => el('tr', {}, el('td', { class: 'muted' }, 'Invited'), el('td', {}, m.email), el('td', {}, m.company?.name ?? '—'),
-      el('td', {}, m.endsAt ? `Until ${day(m.endsAt)}` : 'No end date'))),
+      el('td', {}, m.disabled ? el('span', { class: 'status revoked' }, 'Disabled') : 'Signs in'),
+      el('td', {}, m.endsAt ? `Ends ${day(m.endsAt)}` : 'No end date'))),
+    ...data.invited.map((m) => el('tr', {}, el('td', { class: 'muted' }, '—'), el('td', {}, m.email), el('td', {}, m.company?.name ?? '—'),
+      el('td', {}, 'Invited, not signed in yet'),
+      el('td', {}, m.endsAt ? `Ends ${day(m.endsAt)}` : 'No end date'))),
   ];
+  const countLine = `${data.people.length} signed in, ${data.invited.length} invited`;
   const list = el('textarea', { rows: '5', spellcheck: 'false', 'aria-label': 'People to add',
     placeholder: 'ana@partner.example, Ana Silva, Acme Distribution, 2027-06-30\nbo@partner.example' });
   const out = el('div', { class: 'stack' });
@@ -5645,28 +5657,40 @@ async function programmePeople(p, host) {
         confirm.disabled = true;
         try {
           const done = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`, { method: 'POST', body: { text: list.value, apply: true } });
-          out.replaceChildren(el('p', {}, el('strong', {}, 'Done.'), ' Copy each invite message from People → Invitations, or send everyone one message telling them to sign in.'),
-            rowTable(done.rows, (r) => resultLabel[r.result] ?? r.result));
-          list.value = '';
-          void programmePeopleRefreshCounts(p, host, out);
+          await programmePeople(p, host, done);
         } catch (ex) { addErr.textContent = ex.message; confirm.disabled = false; }
       } }, doable ? `Add ${doable} ${doable === 1 ? 'person' : 'people'}` : 'Nothing to add');
       out.replaceChildren(el('p', {}, `${plan.summary.new} new, ${plan.summary.existing} already signing in, ${plan.summary.already} already in, ${plan.summary.invalid + plan.summary.duplicate} cannot be added.`),
         rowTable(plan.rows, (r) => statusLabel[r.status] ?? r.status), el('p', {}, confirm));
     } catch (ex) { addErr.textContent = ex.message; }
   };
+  // The result of the list just added, kept across the reload: one sign-in
+  // message for everyone it invited (Work sends no email), then each row.
+  if (lastResult) {
+    const message = el('textarea', { rows: '4', readonly: 'readonly', 'aria-label': 'Sign-in message for everyone invited' });
+    message.value = lastResult.message ?? '';
+    out.replaceChildren(
+      el('p', {}, el('strong', {}, 'Done.'), ` ${lastResult.rows.filter((r) => r.result === 'invited').length} invited, ${lastResult.rows.filter((r) => r.result === 'added').length} added.`),
+      lastResult.message ? el('div', { class: 'stack' },
+        el('p', { class: 'flush' }, 'Send everyone you invited this one message, by email or chat:'),
+        message, el('p', {}, copyButton(() => message.value, 'Copy message')),
+        el('p', { class: 'sub flush' }, 'Each person’s own invite link is in ', el('a', { href: '#/users' }, 'People'), ' → Invitations, if you would rather send them one by one.')) : null,
+      rowTable(lastResult.rows, (r) => resultLabel[r.result] ?? r.result));
+  }
   const peopleCard = el('div', { class: 'card stack' },
-    el('h2', {}, `People (${data.people.length + data.invited.length})`),
-    rows.length ? dataTable(['Name', 'Email', 'Company', 'Access'], rows) : el('p', { class: 'muted' }, 'Nobody yet.'),
+    el('h2', {}, 'People ', el('span', { class: 'muted' }, countLine)),
+    rows.length ? dataTable(['Name', 'Email', 'Company', 'Status', 'Access'], rows) : el('p', { class: 'muted' }, 'Nobody yet.'),
     el('h3', {}, 'Add people'),
     el('p', { class: 'sub flush' }, 'Paste a list or a CSV: one address per line, optionally followed by a name, a company and an end date (YYYY-MM-DD), separated by commas. You see what will happen before anything does, and adding the same list again changes nothing.'),
     list, el('p', {}, el('button', { onclick: preview }, 'Preview')), addErr, out);
 
   // Ending the partnership.
   const projectsSel = el('select', { 'aria-label': 'Their projects' },
-    el('option', { value: 'transfer-readonly' }, 'Move their projects to me, read-only'),
-    el('option', { value: 'transfer' }, 'Move their projects to me, editable'),
+    ...(p.team ? [el('option', { value: 'team-readonly' }, `Move their projects to ${p.team}, read-only (the team that owns this programme)`)] : []),
+    el('option', { value: 'me-readonly' }, 'Move their projects to me, read-only'),
+    el('option', { value: 'me' }, 'Move their projects to me, editable'),
     el('option', { value: 'keep' }, 'Leave their projects where they are'));
+  const noTeam = p.team ? null : el('p', { class: 'sub flush' }, 'This programme has no owning team, so their projects move to you. Set an owning team above to send them to that team instead.');
   const endOut = el('div', { class: 'stack' });
   const endErr = errSpan();
   const exitPreview = async () => {
@@ -5693,20 +5717,12 @@ async function programmePeople(p, host) {
   const endCard = el('div', { class: 'card stack' },
     el('h2', {}, 'End this partnership'),
     el('p', { class: 'sub flush' }, 'See who has access and what they own, then end it in one step.'),
-    field('Their projects', projectsSel),
+    field('Their projects', projectsSel), noTeam,
     el('p', {}, el('button', { onclick: exitPreview }, 'See what ending it does')), endErr, endOut);
 
   host.replaceChildren(companiesCard, peopleCard, endCard);
 }
 
-async function programmePeopleRefreshCounts(p, host, keep) {
-  // Keep the results visible while the list above refreshes.
-  const data = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`).catch(() => null);
-  if (!data) return;
-  const heading = host.querySelector('.card:nth-child(2) h2');
-  if (heading) heading.textContent = `People (${data.people.length + data.invited.length})`;
-  void keep;
-}
 
 // ── contractors (plans/02) ───────────────────────────────────────────────────
 // Contractors are NOT accounts — they are expiring, single-tool guest-edit

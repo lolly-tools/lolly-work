@@ -35,6 +35,22 @@ export interface PeopleRouteDeps {
   /** Invite an address with groups, through the invitation rules every other
    *  route follows (policy.invites, admission). */
   invite(actor: UserRecord, email: string, groups: string[], expiresAt?: string): Promise<{ status: 'created' | 'existing' | 'already-member' | 'refused'; invitationId?: string; reason?: string; groups?: string[] }>;
+  /** What one sign-in message for a whole list says: where to sign in, the
+   *  sign-ins on offer and the instance's invite note. */
+  signIn(): { workspace: string; url: string; providers: string[]; note: string | null };
+}
+
+/** One message an admin can send to everyone a list invited, instead of one
+ *  message per person: Work sends no email (docs/work/invitations.md). */
+export function batchSignInMessage(info: ReturnType<PeopleRouteDeps['signIn']>, programme: string, endsAt: string[]): string {
+  const ways = info.providers.length ? ` with ${info.providers.join(' or ')}` : '';
+  const ends = [...new Set(endsAt)].sort();
+  const end = ends.length === 1 ? `Your access runs until ${new Date(ends[0]!).toISOString().slice(0, 10)} (UTC).` : ends.length ? 'Your access has an end date, shown when you sign in.' : '';
+  return [
+    `You are invited to ${info.workspace} as part of ${programme}.`,
+    `Open ${info.url} and sign in${ways}, using the email address this message was sent to.`,
+    end, info.note ?? '',
+  ].filter(Boolean).join('\n');
 }
 
 const now = (): string => new Date().toISOString();
@@ -216,7 +232,10 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
       });
       results.push({ ...row, result: row.status === 'existing' ? 'added' : 'invited', ...(userId ? { userId } : {}), ...(invitationId ? { invitationId } : {}) });
     }
-    sendJson(res, 200, { dryRun: false, programme: programme.id, summary: summary(plan), rows: results }, { 'cache-control': 'no-store' });
+    const invitedRows = results.filter((r) => r.result === 'invited');
+    sendJson(res, 200, { dryRun: false, programme: programme.id, summary: summary(plan), rows: results,
+      ...(invitedRows.length ? { message: batchSignInMessage(deps.signIn(), programme.name, invitedRows.flatMap((r) => r.endsAtIso ? [r.endsAtIso] : [])) } : {}),
+    }, { 'cache-control': 'no-store' });
   });
 
   /** Run the end-date sweep now: what the server's minute timer does, for a
@@ -233,21 +252,39 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
   router.add('POST', '/api/v1/programmes/exit', async (req, res) => {
     const actor = await manager(req, res); if (!actor) return;
     const body = (await readJson(req, 512 * 1024)) as { programme?: unknown; company?: unknown; emails?: unknown; projects?: unknown; transferTo?: unknown; apply?: unknown } | null;
-    const projectsMode = body?.projects === 'transfer' || body?.projects === 'keep' ? body.projects : 'transfer-readonly';
     const [users, invitations, projects, companies] = await Promise.all([store.listUsers(), store.listInvitations(), store.listProjects(), store.listCompanies()]);
     let selectGroup: string | undefined;
     let emails: Set<string> | undefined;
+    let programme: Awaited<ReturnType<Store['getProgramme']>> = null;
     if (typeof body?.programme === 'string') {
-      if (!(await store.getProgramme(body.programme))) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
+      programme = await store.getProgramme(body.programme);
+      if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
       selectGroup = programmeGroup(body.programme);
     } else if (typeof body?.company === 'string') {
-      if (!companies.some((c) => c.id === body.company)) return sendError(res, 404, 'NOT_FOUND', 'no such company');
+      const company = companies.find((c) => c.id === body.company);
+      if (!company) return sendError(res, 404, 'NOT_FOUND', 'no such company');
+      programme = await store.getProgramme(company.programmeId);
       selectGroup = companyGroup(body.company);
     } else if (Array.isArray(body?.emails) && body.emails.every((e) => typeof e === 'string')) {
       emails = new Set((body.emails as string[]).map((e) => e.trim().toLowerCase()).filter(Boolean));
       if (!emails.size || emails.size > 1000) return sendError(res, 400, 'INVALID_INPUT', 'name between 1 and 1000 addresses');
     } else return sendError(res, 400, 'INVALID_INPUT', 'select by programme, company or emails');
+    // Where their projects go (Andy, 2026-11-06): to the team that owns the
+    // programme, read-only, by default. "team-readonly": owned by whoever made
+    // the programme (or you, when that account cannot hold work), shared with
+    // the owning team as viewers, and archived. "me-readonly" and "me" move them
+    // to you; "keep" leaves them.
+    const modes = ['team-readonly', 'me-readonly', 'me', 'keep'] as const;
+    type Mode = (typeof modes)[number];
+    const team = programme?.team;
+    const asked = (modes as readonly string[]).includes(String(body?.projects)) ? body!.projects as Mode : undefined;
+    if (asked === 'team-readonly' && !team) return sendError(res, 400, 'NO_OWNING_TEAM', 'this programme has no owning team: set one on its page, or move the projects to yourself');
+    const projectsMode: Mode = asked ?? (team ? 'team-readonly' : 'me-readonly');
     let transferTo = actor;
+    if (projectsMode === 'team-readonly' && programme) {
+      const maker = await store.getUser(programme.createdBy);
+      if (maker && !maker.disabledAt && !isProgrammeScoped(maker.groups, maker.role)) transferTo = maker;
+    }
     if (typeof body?.transferTo === 'string') {
       const target = await store.getUser(body.transferTo);
       if (!target || target.disabledAt || isProgrammeScoped(target.groups, target.role)) return sendError(res, 400, 'INVALID_INPUT', 'transfer to an enabled internal account');
@@ -266,7 +303,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
       links: await linksOf(u.id),
     })));
     if (body?.apply !== true) {
-      return sendJson(res, 200, { dryRun: true, projects: projectsMode, transferTo: { id: transferTo.id, email: transferTo.email },
+      return sendJson(res, 200, { dryRun: true, projects: projectsMode, transferTo: { id: transferTo.id, email: transferTo.email }, ...(team ? { team } : {}),
         accounts, skipped, pendingInvitations: pending.map((i) => ({ id: i.id, email: i.email })) }, { 'cache-control': 'no-store' });
     }
     const at = now();
@@ -276,8 +313,17 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
         if (projectsMode === 'keep') continue;
         const project = await store.getProject(p.id);
         if (!project) continue;
-        await store.putProject({ ...project, ownerId: transferTo.id, ...(projectsMode === 'transfer-readonly' ? { archivedAt: at } : {}) });
-        await deps.audit(`user:${actor.id}`, 'project.transfer', `project:${p.id}`, { from: a.id, to: transferTo.id, via: 'programme-exit', ...(projectsMode === 'transfer-readonly' ? { archived: true } : {}) });
+        const readOnly = projectsMode !== 'me';
+        const next = { ...project, ownerId: transferTo.id, ...(readOnly ? { archivedAt: at } : {}) };
+        if (projectsMode === 'team-readonly' && team) {
+          const visible = project.visibility === 'private' ? [] : project.visibility.groups;
+          next.visibility = { groups: [...new Set([...visible, team])] };
+          const grants = (project.sharing?.groups ?? []).filter((g) => !(g.kind === 'directory' && g.name === team));
+          next.sharing = { ...project.sharing, groups: [...grants, { kind: 'directory', name: team, role: 'viewer' }] };
+        }
+        await store.putProject(next);
+        await deps.audit(`user:${actor.id}`, 'project.transfer', `project:${p.id}`, { from: a.id, to: transferTo.id, via: 'programme-exit',
+          ...(readOnly ? { archived: true } : {}), ...(projectsMode === 'team-readonly' ? { team } : {}) });
       }
       const result = await store.offboardUser(a.id, actor.id, at, 1000);
       await deps.audit(`user:${actor.id}`, 'user.offboard', `user:${a.id}`, { ...result, via: 'programme-exit' });
@@ -289,7 +335,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
       await deps.audit(`user:${actor.id}`, 'invite.revoke', `invitation:${inv.id}`, { was: 'pending', via: 'programme-exit' });
     }
     await deps.audit(`user:${actor.id}`, 'programme.exit', selectGroup ? `group:${selectGroup}` : 'programme:list', {
-      accounts: done.length, invitationsRevoked: pending.length, skipped: skipped.length, projects: projectsMode, transferTo: transferTo.id,
+      accounts: done.length, invitationsRevoked: pending.length, skipped: skipped.length, projects: projectsMode, transferTo: transferTo.id, ...(team ? { team } : {}),
     });
     sendJson(res, 200, { dryRun: false, accounts: done, skipped, invitationsRevoked: pending.length }, { 'cache-control': 'no-store' });
   });

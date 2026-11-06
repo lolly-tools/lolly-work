@@ -5583,6 +5583,7 @@ export function buildApp(deps: AppDeps): App {
       if (issued.status === 'already-member') return { status: 'already-member' };
       return { status: issued.status === 'created' ? 'created' : 'existing', invitationId: issued.invitation.id, groups: issued.invitation.groups };
     },
+    signIn: () => ({ workspace: config.instance.name, url: config.instance.baseUrl, providers: inviteProviders(), note: config.instance.inviteNote ?? null }),
   });
 
   registerExportReviewMatch(router, {

@@ -35,6 +35,10 @@ export interface ProgrammeRecord {
   /** The admin's own name for this partner type ("Distributors", "VARs"). */
   name: string;
   description?: string;
+  /** The internal group that owns the programme: when a partnership ends, its
+   *  people's projects move to this team, read-only, by default (Andy,
+   *  2026-11-06). */
+  team?: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -109,11 +113,18 @@ export function sortProgrammes(list: ProgrammeRecord[]): ProgrammeRecord[] {
 }
 
 /** Validate an admin's programme body. */
-export function readProgrammeBody(raw: unknown): { name: string; description?: string } | { error: string } {
+export function readProgrammeBody(raw: unknown): { name: string; description?: string; team?: string | null } | { error: string } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'body must be a JSON object' };
   const b = raw as Record<string, unknown>;
   const name = typeof b.name === 'string' ? b.name.trim() : '';
   if (!name || name.length > 80) return { error: 'name is required, at most 80 characters' };
   const description = typeof b.description === 'string' && b.description.trim() ? b.description.trim().slice(0, 500) : undefined;
-  return { name, ...(description ? { description } : {}) };
+  // `team` absent keeps the stored team, null or "" clears it.
+  let team: string | null | undefined;
+  if (b.team === null || b.team === '') team = null;
+  else if (typeof b.team === 'string') {
+    if (reservedGroupName(b.team.trim())) return { error: 'the owning team is one of your own groups, not a programme or company group' };
+    team = b.team.trim();
+  } else if (b.team !== undefined) return { error: 'team must be a group name' };
+  return { name, ...(description ? { description } : {}), ...(team !== undefined ? { team } : {}) };
 }
