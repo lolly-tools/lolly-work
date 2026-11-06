@@ -17,6 +17,16 @@
  * accounts and accounts a SCIM connector manages are never joined: SCIM is
  * the authority for the people it manages.
  *
+ * Staff are never moved without a choice (the coordinator, 2026-11-06): an
+ * account that already signs in here and is not partner-marked keeps its
+ * internal access when a domain rule matches it, because joining a programme
+ * would narrow it to that programme. A domain that also carries staff (a
+ * secondary corporate domain, a subsidiary, an `idp.admission.domains` entry)
+ * would otherwise take their access away silently. The preview lists those
+ * accounts apart, and the admin may move named ones on purpose (`moveStaff`),
+ * audited as `programme.domain.move-staff`. New accounts and accounts that are
+ * partners already join as before.
+ *
  * Removing a domain stops new people joining through it. People who already
  * joined stay until their access is ended or their end date passes.
  */
@@ -24,7 +34,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
-import { programmeGroup } from './types.ts';
+import { isProgrammeScoped, programmeGroup } from './types.ts';
 import { companyGroup, type MembershipRecord } from './people.ts';
 import {
   afterLookup, domainActive, domainOfEmail, domainStatus, dueForLookup, liveRules, lookupTxt, normaliseDomain, refuseDomain,
@@ -50,13 +60,20 @@ const nameOf = (u: UserRecord | null | undefined): string | undefined =>
 /** The reason an account joins later rather than now. */
 const UNVERIFIED = 'Address not verified yet. Joins at their next sign-in with a provider that verifies their address.';
 
-/** Why an account cannot join through a domain now, or null when it can. */
-async function cannotJoin(store: Store, u: UserRecord, programmeId: string, memberships: MembershipRecord[], needVerified: boolean): Promise<string | null> {
+/** The reason a staff account is left alone. */
+export const STAFF = 'Already in this workspace as staff: will not join.';
+
+/** Why an account cannot join through a domain now, or null when it can.
+ *  `allowStaff` is for a new account, and for an admin's explicit move. */
+async function cannotJoin(
+  store: Store, u: UserRecord, programmeId: string, memberships: MembershipRecord[], o: { needVerified: boolean; allowStaff: boolean },
+): Promise<string | null> {
   if (u.disabledAt) return 'Disabled';
   if (u.role === 'admin' || u.role === 'owner') return 'An admin or owner';
   if (u.scimIdp) return 'Managed by your SCIM connector';
+  if (!o.allowStaff && !isProgrammeScoped(u.groups, u.role)) return STAFF;
   if (memberships.some((m) => m.programmeId === programmeId && m.email === u.email.toLowerCase())) return 'Already in this programme, or was before';
-  if (needVerified) {
+  if (o.needVerified) {
     const rows = await store.listIdentities(u.id);
     if (!rows.some((r) => r.emailVerified && r.email?.toLowerCase() === u.email.toLowerCase())) return UNVERIFIED;
   }
@@ -64,7 +81,7 @@ async function cannotJoin(store: Store, u: UserRecord, programmeId: string, memb
 }
 
 /** Add one account to one rule's programme and company, and record how. */
-async function join(store: Store, audit: Audit, u: UserRecord, rec: PartnerDomainRecord, rule: DomainRule, actor: string, at: string): Promise<UserRecord> {
+async function join(store: Store, audit: Audit, u: UserRecord, rec: PartnerDomainRecord, rule: DomainRule, actor: string, at: string, moved = false): Promise<UserRecord> {
   const groups = [programmeGroup(rule.programmeId), ...(rule.companyId ? [companyGroup(rule.companyId)] : [])];
   const next = (await store.setLocalGroups(u.id, [...new Set([...u.localGroups, ...groups])])) ?? u;
   const record: MembershipRecord = {
@@ -75,7 +92,7 @@ async function join(store: Store, audit: Audit, u: UserRecord, rec: PartnerDomai
   await store.putMembership(record);
   await audit(actor, 'programme.member.add', `programme:${rule.programmeId}`, {
     user: u.id, ...(rule.companyId ? { company: rule.companyId } : {}), ...(rule.endsAt ? { endsAt: rule.endsAt } : {}),
-    via: 'domain', domain: rec.domain, proof: rec.proof,
+    via: 'domain', domain: rec.domain, proof: rec.proof, ...(moved ? { moved: true } : {}),
   });
   return next;
 }
@@ -84,21 +101,25 @@ async function join(store: Store, audit: Audit, u: UserRecord, rec: PartnerDomai
  * At sign-in, after the account row exists: join every live rule of the
  * sign-in's domain the account is not in yet. `email` is the sign-in's own
  * address and `verified` whether the provider vouched for it; nothing
- * happens otherwise. An account admitted only through a partner domain or a
- * partner membership always carries the partner marker, so a second account
- * for the same address can never see what is internal.
+ * happens otherwise. `newAccount` says this sign-in created the account: only
+ * a new account or one already partner-marked joins; staff never do here.
+ * An account admitted only through a partner domain or a partner membership
+ * carries the partner marker, so a second account for the same address can
+ * never see what is internal (app.ts admits an existing staff account through
+ * those only when it would be admitted anyway, so this never narrows staff).
  */
 export async function joinThroughDomain(
-  store: Store, audit: Audit, user: UserRecord, signIn: { email: string; verified: boolean; via: string }, now = Date.now(),
+  store: Store, audit: Audit, user: UserRecord, signIn: { email: string; verified: boolean; via: string; newAccount: boolean }, now = Date.now(),
 ): Promise<UserRecord> {
   if (!signIn.verified) return user;
+  if (!signIn.newAccount && !isProgrammeScoped(user.groups, user.role)) return user;
   let current = user;
   const domain = domainOfEmail(signIn.email);
   const rec = domain ? (await store.listPartnerDomains()).find((d) => d.domain === domain) : undefined;
   if (rec && domainActive(rec) && signIn.email.trim().toLowerCase() === user.email.trim().toLowerCase()) {
     const memberships = await store.listMemberships();
     for (const rule of liveRules(rec, now)) {
-      if (await cannotJoin(store, current, rule.programmeId, memberships, false)) continue;
+      if (await cannotJoin(store, current, rule.programmeId, memberships, { needVerified: false, allowStaff: signIn.newAccount })) continue;
       if (!(await store.getProgramme(rule.programmeId))) continue;
       current = await join(store, audit, current, rec, rule, `user:${user.id}`, iso(now));
     }
@@ -111,10 +132,10 @@ export async function joinThroughDomain(
 }
 
 /**
- * Join the accounts at a proved domain that already sign in here, for the
- * live rules named (every live rule when `programmeIds` is absent). Only an
- * account whose address a provider verified joins now; the rest join at
- * their next such sign-in.
+ * Join the partner-marked accounts at a proved domain that already sign in
+ * here, for the live rules named (every live rule when `programmeIds` is
+ * absent). Only an account whose address a provider verified joins now; the
+ * rest join at their next such sign-in. Staff are left alone (`STAFF`).
  */
 export async function joinExistingAccounts(
   store: Store, audit: Audit, rec: PartnerDomainRecord, actor: string, now = Date.now(), programmeIds?: string[],
@@ -129,7 +150,7 @@ export async function joinExistingAccounts(
     const memberships = await store.listMemberships();
     for (const listed of accounts) {
       const u = (await store.getUser(listed.id)) ?? listed;
-      const why = await cannotJoin(store, u, rule.programmeId, memberships, true);
+      const why = await cannotJoin(store, u, rule.programmeId, memberships, { needVerified: true, allowStaff: false });
       if (why === UNVERIFIED) waiting++;
       if (why) continue;
       await join(store, audit, u, rec, rule, actor, iso(now));
@@ -137,6 +158,39 @@ export async function joinExistingAccounts(
     }
   }
   return { joined, waiting };
+}
+
+/**
+ * Move named staff accounts at a domain into one rule's programme, on an
+ * admin's explicit choice from the preview. Refuses the whole move when any
+ * id is not a staff account at this domain that could join, so a stale or
+ * hand-made list never moves the wrong person. Audited once with the list.
+ */
+async function staffToMove(store: Store, domain: string, programmeId: string, ids: string[]): Promise<UserRecord[] | { error: string }> {
+  const memberships = await store.listMemberships();
+  const accounts: UserRecord[] = [];
+  for (const id of [...new Set(ids)]) {
+    const u = await store.getUser(id);
+    if (!u || u.id.startsWith('svc_') || domainOfEmail(u.email) !== domain) return { error: `${id} is not an account at ${domain}` };
+    if (isProgrammeScoped(u.groups, u.role)) return { error: `${u.email} is a partner already and joins without being moved` };
+    const why = await cannotJoin(store, u, programmeId, memberships, { needVerified: false, allowStaff: true });
+    if (why) return { error: `${u.email} cannot be moved: ${why}` };
+    accounts.push(u);
+  }
+  return accounts;
+}
+
+async function moveStaffInto(
+  store: Store, audit: Audit, rec: PartnerDomainRecord, rule: DomainRule, accounts: UserRecord[], actor: string, now: number,
+): Promise<Array<{ id: string; email: string; programme: string }>> {
+  const at = iso(now);
+  for (const u of accounts) await join(store, audit, u, rec, rule, actor, at, true);
+  if (accounts.length) {
+    await audit(actor, 'programme.domain.move-staff', `domain:${rec.domain}`, {
+      domain: rec.domain, programme: rule.programmeId, ...(rule.companyId ? { company: rule.companyId } : {}), accounts: accounts.map((u) => u.id),
+    });
+  }
+  return accounts.map((u) => ({ id: u.id, email: u.email, programme: rule.programmeId }));
 }
 
 /**
@@ -274,7 +328,7 @@ export function registerDomainRoutes(router: Router, deps: DomainRouteDeps): voi
     if (!domain) return sendError(res, 400, 'INVALID_DOMAIN', 'give a domain name, such as partner.example');
     const refusal = refuseDomain(domain, await deps.ownDomains());
     if (refusal) return sendError(res, 400, refusal.code, refusal.message);
-    const body = ((await readJson(req)) ?? {}) as { programme?: unknown; company?: unknown; endsAt?: unknown; proof?: unknown; reason?: unknown; dryRun?: unknown };
+    const body = ((await readJson(req)) ?? {}) as { programme?: unknown; company?: unknown; endsAt?: unknown; proof?: unknown; reason?: unknown; dryRun?: unknown; moveStaff?: unknown };
     const now = Date.now();
     const prior = await find(domain);
     const proof = body.proof === undefined ? undefined : body.proof === 'txt' || body.proof === 'admin' ? body.proof : null;
@@ -297,6 +351,12 @@ export function registerDomainRoutes(router: Router, deps: DomainRouteDeps): voi
         addedBy: kept?.addedBy ?? actor.id, addedAt: kept?.addedAt ?? iso(now) };
     }
     if (!prior && !rule) return sendError(res, 400, 'INVALID_INPUT', 'a new domain needs a programme');
+    const moveStaff = body.moveStaff === undefined ? [] : Array.isArray(body.moveStaff) && body.moveStaff.every((x) => typeof x === 'string') ? body.moveStaff as string[] : null;
+    if (moveStaff === null) return sendError(res, 400, 'INVALID_INPUT', 'moveStaff is a list of account ids from the preview');
+    if (moveStaff.length && !rule) return sendError(res, 400, 'INVALID_INPUT', 'moving staff needs the programme they move into');
+    // Checked before anything is written, so a refused move changes nothing.
+    const staff = moveStaff.length && rule ? await staffToMove(store, domain, rule.programmeId, moveStaff) : [];
+    if ('error' in staff) return sendError(res, 400, 'CANNOT_MOVE', staff.error);
 
     if (body.dryRun === true) {
       const accounts = (await store.listUsers()).filter((u) => !u.id.startsWith('svc_') && domainOfEmail(u.email) === domain);
@@ -309,8 +369,8 @@ export function registerDomainRoutes(router: Router, deps: DomainRouteDeps): voi
         // record to show yet.
         ...(prior ? { txt: { name: txtName(domain), value: txtValue(prior.token) } } : {}),
         accounts: await Promise.all(accounts.map(async (u) => {
-          const why = programmeId ? await cannotJoin(store, u, programmeId, memberships, true) : null;
-          return { id: u.id, email: u.email, name: nameOf(u), joins: !why, ...(why === UNVERIFIED ? { later: true } : {}), ...(why ? { reason: why } : {}) };
+          const why = programmeId ? await cannotJoin(store, u, programmeId, memberships, { needVerified: true, allowStaff: false }) : null;
+          return { id: u.id, email: u.email, name: nameOf(u), joins: !why, ...(why === UNVERIFIED ? { later: true } : {}), ...(why === STAFF ? { staff: true } : {}), ...(why ? { reason: why } : {}) };
         })),
       }, { 'cache-control': 'no-store' });
     }
@@ -352,7 +412,10 @@ export function registerDomainRoutes(router: Router, deps: DomainRouteDeps): voi
       const r = await joinExistingAccounts(store, audit, rec, `user:${actor.id}`, now, rule && !proofChanged ? [rule.programmeId] : undefined);
       joined = r.joined; waiting = r.waiting;
     }
-    sendJson(res, prior ? 200 : 201, { ...(await domainView(store, rec)), joined, waiting }, { 'cache-control': 'no-store' });
+    // Staff the admin chose, by name, in the preview. Whatever the proof,
+    // because this is the admin's own decision about people already here.
+    const moved = staff.length && rule ? await moveStaffInto(store, audit, rec, rule, staff, `user:${actor.id}`, now) : [];
+    sendJson(res, prior ? 200 : 201, { ...(await domainView(store, rec)), joined, waiting, moved }, { 'cache-control': 'no-store' });
   });
 
   /** Look the TXT record up now. */

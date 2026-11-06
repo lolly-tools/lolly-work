@@ -204,17 +204,20 @@ test('an admin\'s say-so activates a domain at once, recorded in the audit with 
   assert.equal((await auditsOf(env, 'programme.domain.proof')).length, 1);
 });
 
-test('accounts already here join when the domain is proved; disabled, SCIM and unverified accounts do not', async () => {
+test('partner accounts already here join when the domain is proved; disabled, SCIM and unverified accounts do not', async () => {
   const env = await setup();
   for (const [id, email] of [['inv_ana', 'ana@acme.example'], ['inv_cy', 'cy@acme.example'], ['inv_di', 'di@acme.example']] as const) await invite(env, { id, email });
   const ana = (await googleSignIn(env, 'g-ana', 'ana@acme.example')).user!;
   const cy = (await googleSignIn(env, 'g-cy', 'cy@acme.example')).user!;
   const di = (await googleSignIn(env, 'g-di', 'di@acme.example')).user!;
   assert.ok(!ana.groups.includes('programme-resellers'));
+  // Partners already (they were in another programme once); staff are the next test.
+  for (const u of [ana, cy, di]) await env.store.setLocalGroups(u.id, ['partner']);
   await env.store.setUserDisabled(cy.id, new Date().toISOString());
   await env.store.setUserScimIdp(di.id, 'okta');
   // An account whose address no provider has verified (a password set from a link).
   const eve = await env.store.upsertUserBySub({ sub: 'password:eve', email: 'eve@acme.example', groups: [], role: 'member' });
+  await env.store.setLocalGroups(eve.id, ['partner']);
   await env.store.linkIdentity({ identitySub: eve.sub, userId: eve.id, idp: 'email', email: eve.email, emailVerified: false, linkedAt: new Date().toISOString() });
 
   const dry = await env.call('PUT', '/api/v1/partner-domains/acme.example', { programme: 'resellers', proof: 'admin', dryRun: true });
@@ -378,3 +381,49 @@ test('deleting a programme withdraws its domains, and deleting a company leaves 
   assert.equal((await auditsOf(env, 'programme.domain.remove')).at(-1)!.payload!.via, 'programme-delete');
   assert.equal((await googleSignIn(env, 'g-sol', 'sol@solo.example')).status, 403);
 });
+
+test('staff already in the workspace are never moved by a domain rule unless the admin chooses them by name', async () => {
+  const env = await setup();
+  // Sam signs in here as staff: invited with no programme, before the domain is a partner's.
+  await invite(env, { id: 'inv_sam', email: 'sam@acme.example' });
+  const sam = (await googleSignIn(env, 'g-sam', 'sam@acme.example')).user!;
+  const before = JSON.stringify(sam.groups);
+
+  const dry = await env.call('PUT', '/api/v1/partner-domains/acme.example', { programme: 'resellers', proof: 'admin', dryRun: true });
+  const listed = dry.body.accounts.find((a: any) => a.email === 'sam@acme.example');
+  assert.equal(listed.staff, true);
+  assert.equal(listed.joins, false);
+  assert.equal(listed.reason, 'Already in this workspace as staff: will not join.');
+
+  const added = await env.call('PUT', '/api/v1/partner-domains/acme.example', { programme: 'resellers', proof: 'admin' });
+  assert.deepEqual(added.body.joined, []);
+  assert.deepEqual(added.body.moved, []);
+  assert.equal(JSON.stringify((await env.store.getUser(sam.id))!.groups), before, 'untouched when the domain goes active');
+
+  const again = await googleSignIn(env, 'g-sam', 'sam@acme.example');
+  assert.equal(again.status, 302);
+  assert.equal(JSON.stringify(again.user!.groups), before, 'untouched at the next sign-in');
+  assert.ok(!(await env.store.listMemberships()).some((m) => m.email === 'sam@acme.example'));
+
+  // A revoked invitation stays revoked: the domain rule does not let staff back in.
+  await env.store.revokeInvitation('inv_sam', new Date().toISOString());
+  assert.equal((await googleSignIn(env, 'g-sam', 'sam@acme.example')).status, 403);
+
+  // A move that names the wrong person changes nothing.
+  const wrong = await env.call('PUT', '/api/v1/partner-domains/acme.example', { programme: 'resellers', moveStaff: [sam.id, env.admin.id] });
+  assert.equal(wrong.status, 400);
+  assert.equal(wrong.body.error?.code ?? wrong.body.code, 'CANNOT_MOVE');
+  assert.equal(JSON.stringify((await env.store.getUser(sam.id))!.groups), before);
+
+  // The explicit choice moves Sam, and the audit lists who was moved.
+  const moved = await env.call('PUT', '/api/v1/partner-domains/acme.example', { programme: 'resellers', moveStaff: [sam.id] });
+  assert.equal(moved.status, 200);
+  assert.deepEqual(moved.body.moved.map((m: any) => m.email), ['sam@acme.example']);
+  const after = (await env.store.getUser(sam.id))!;
+  assert.ok(after.groups.includes('programme-resellers') && after.groups.includes('partner'));
+  const event = (await auditsOf(env, 'programme.domain.move-staff'))[0]!;
+  assert.equal(event.actor, `user:${env.admin.id}`);
+  assert.deepEqual(event.payload, { domain: 'acme.example', programme: 'resellers', accounts: [sam.id] });
+  assert.equal((await googleSignIn(env, 'g-sam', 'sam@acme.example')).status, 302, 'now a partner, in through the domain');
+});
+

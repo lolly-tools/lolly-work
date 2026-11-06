@@ -5711,7 +5711,8 @@ async function programmePeople(p, host, lastResult = null) {
     try {
       const r = await api(`/api/v1/partner-domains/${encodeURIComponent(domain)}`, { method: 'PUT', body: domainBody(body) });
       const active = r.status === 'verified' || r.status === 'asserted';
-      toast(active ? `Added ${r.domain}${r.joined.length ? `: ${r.joined.length} joined now` : ''}` : `Added ${r.domain}. Publish its DNS record to activate it.`);
+      const movedNote = r.moved?.length ? ` ${r.moved.length} staff ${r.moved.length === 1 ? 'account' : 'accounts'} moved in as you chose.` : '';
+      toast((active ? `Added ${r.domain}${r.joined.length ? `: ${r.joined.length} joined now.` : '.'}` : `Added ${r.domain}. Publish its DNS record to activate the domain.`) + movedNote);
       reload();
     } catch (ex) { domainErr.textContent = ex.message; btn.disabled = false; }
   };
@@ -5721,19 +5722,33 @@ async function programmePeople(p, host, lastResult = null) {
     if (!domain) { domainErr.textContent = 'Type a domain.'; domainInput.focus(); return; }
     try {
       const dry = await api(`/api/v1/partner-domains/${encodeURIComponent(domain)}`, { method: 'PUT', body: domainBody({ dryRun: true }) });
-      const joins = dry.accounts.filter((a) => a.joins);
-      const viaDns = el('button', { class: 'primary', onclick: () => addDomain({}, viaDns) }, 'Add, proved by DNS');
-      const viaAdmin = armConfirmButton({}, 'Add on my say-so', 'Add without DNS?', (disarm) => addDomain({ proof: 'admin', ...(domainReason.value.trim() ? { reason: domainReason.value.trim() } : {}) }, viaAdmin).finally(disarm));
-      const already = dry.accounts.length === 1 ? `1 person at ${dry.domain} already signs in here.` : `${dry.accounts.length} people at ${dry.domain} already sign in here.`;
-      const straight = !joins.length ? 'None of them joins straight away. The table says why.'
-        : joins.length === dry.accounts.length ? 'Once the domain is active, they join straight away.'
-          : `Once the domain is active, ${joins.length} of them join straight away.`;
+      // Staff stay as they are unless the admin ticks the box below: joining a
+      // programme would narrow them to it (plans/82 M1 part 2b, review).
+      const staff = dry.accounts.filter((a) => a.staff);
+      const others = dry.accounts.filter((a) => !a.staff);
+      const joins = others.filter((a) => a.joins);
+      const moveBox = el('input', { type: 'checkbox' });
+      const moveIds = () => (moveBox.checked ? staff.map((a) => a.id) : []);
+      const withMoves = (extra) => ({ ...extra, ...(moveIds().length ? { moveStaff: moveIds() } : {}) });
+      const viaDns = el('button', { class: 'primary', onclick: () => addDomain(withMoves({}), viaDns) }, 'Add, proved by DNS');
+      const viaAdmin = armConfirmButton({}, 'Add on my say-so', 'Add without DNS?', (disarm) => addDomain(withMoves({ proof: 'admin', ...(domainReason.value.trim() ? { reason: domainReason.value.trim() } : {}) }), viaAdmin).finally(disarm));
+      const person = (a, what) => el('tr', {}, el('td', {}, a.name ?? a.email, el('div', { class: 'muted' }, a.email)), el('td', {}, ...what));
+      const partnerLine = !others.length ? null : others.length === 1
+        ? `1 partner account at ${dry.domain} already signs in here. ${joins.length ? 'Once the domain is active, this account joins straight away.' : 'This account does not join straight away. The table says why.'}`
+        : `${others.length} partner accounts at ${dry.domain} already sign in here. `
+          + (!joins.length ? 'None of them joins straight away. The table says why.'
+            : joins.length === others.length ? 'Once the domain is active, they join straight away.'
+              : `Once the domain is active, ${joins.length} of them join straight away.`);
       domainOut.replaceChildren(...[
-        el('p', { class: 'flush' }, dry.accounts.length ? `${already} ${straight}`
-          : `Nobody at ${dry.domain} signs in here yet. People join when they first sign in with a verified address there.`),
-        dry.accounts.length ? dataTable(['Person', 'What happens'], dry.accounts.map((a) => el('tr', {},
-          el('td', {}, a.name ?? a.email, el('div', { class: 'muted' }, a.email)),
-          el('td', {}, a.joins ? 'Joins now' : a.later ? 'Joins later' : 'Does not join', a.reason ? el('div', { class: 'muted' }, a.reason) : null)))) : null,
+        !dry.accounts.length ? el('p', { class: 'flush' }, `Nobody at ${dry.domain} signs in here yet. People join when they first sign in with a verified address there.`) : null,
+        partnerLine ? el('p', { class: 'flush' }, partnerLine) : null,
+        others.length ? dataTable(['Person', 'What happens'], others.map((a) => person(a, [
+          a.joins ? 'Joins now' : a.later ? 'Joins later' : 'Does not join', a.reason ? el('div', { class: 'muted' }, a.reason) : null]))) : null,
+        staff.length ? el('div', { class: 'stack domain-staff' },
+          el('h4', { class: 'flush' }, `Already in this workspace as staff: will not join (${staff.length})`),
+          el('p', { class: 'sub flush' }, 'They keep their access as it is. Joining a programme would limit them to its tools and assets, so they move only if you tick the box below.'),
+          dataTable(['Person', 'Today'], staff.map((a) => person(a, ['Staff']))),
+          el('label', { class: 'chk' }, moveBox, el('span', {}, `Also move ${staff.length === 1 ? 'this account' : `these ${staff.length} accounts`} into the programme as ${staff.length === 1 ? 'a partner' : 'partners'}`))) : null,
         el('p', { class: 'sub flush' }, 'Proved by DNS: you get a TXT record to publish, and the domain becomes active once Lolly Work finds the record. On your say-so: active now, and your name, the time and the reason go in Audit.'),
         field('Reason, if you add the domain on your say-so', domainReason),
         el('p', { class: 'programme-actions' }, viaDns, viaAdmin)].filter(Boolean));

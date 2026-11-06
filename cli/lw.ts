@@ -135,6 +135,7 @@ const OPTIONS = {
     assert: { type: 'boolean' },
     apply: { type: 'boolean' },
     projects: { type: 'string' },
+    'move-staff': { type: 'string' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -704,7 +705,7 @@ switch (cmd) {
       domain: string; status: string; proof: string; txt: { name: string; value: string }; members: number;
       verifiedAt?: string; missingSince?: string; asserted?: { by: { name: string }; at: string; reason?: string };
       rules: Array<{ programme: { id: string; name: string }; company?: { name: string }; endsAt?: string }>;
-      joined?: Array<{ email: string }>; waiting?: number;
+      joined?: Array<{ email: string }>; waiting?: number; moved?: Array<{ email: string }>;
     };
     const day = (iso?: string) => (iso ? iso.slice(0, 10) : '');
     const state = (d: Domain): string => d.status === 'asserted' ? `admin-asserted by ${d.asserted?.by.name ?? '?'} on ${day(d.asserted?.at)}`
@@ -721,17 +722,21 @@ switch (cmd) {
       const body = {
         programme: values.programme, ...(values.company ? { company: values.company } : {}), ...(values.ends ? { endsAt: values.ends } : {}),
         ...(values.assert ? { proof: 'admin', ...(values.reason ? { reason: values.reason } : {}) } : {}), ...(values['dry-run'] ? { dryRun: true } : {}),
+        // Staff are only moved by name, from the dry run's list.
+        ...(values['move-staff'] ? { moveStaff: values['move-staff'].split(',').map((x) => x.trim()).filter(Boolean) } : {}),
       };
-      const r = await call(`/api/v1/partner-domains/${encodeURIComponent(name)}`, { method: 'PUT', body }) as Domain & { dryRun?: boolean; accounts?: Array<{ email: string; joins: boolean; later?: boolean; reason?: string }> };
+      const r = await call(`/api/v1/partner-domains/${encodeURIComponent(name)}`, { method: 'PUT', body }) as Domain & { dryRun?: boolean; accounts?: Array<{ id: string; email: string; joins: boolean; later?: boolean; staff?: boolean; reason?: string }>; moved?: Array<{ email: string }> };
       out(r);
       if (!values.json) {
         if (r.dryRun) {
           console.log(`${r.domain}: ${r.accounts?.length ?? 0} account(s) here already`);
-          for (const a of r.accounts ?? []) console.log(`  ${a.joins ? 'joins now ' : a.later ? 'joins later' : 'does not  '}  ${a.email}${a.reason ? `  ${a.reason}` : ''}`);
+          for (const a of r.accounts ?? []) console.log(`  ${a.joins ? 'joins now  ' : a.later ? 'joins later' : a.staff ? 'staff stays' : 'does not   '}  ${a.email}${a.staff ? `  ${a.id}` : ''}${a.reason ? `  ${a.reason}` : ''}`);
+          if ((r.accounts ?? []).some((a) => a.staff)) console.log('staff keep their access; to move some into the programme, add --move-staff <id,id>');
         } else {
           show(r);
           if (r.joined?.length) console.log(`joined now: ${r.joined.map((j) => j.email).join(', ')}`);
           if (r.waiting) console.log(`${r.waiting} more join at their next sign-in with a verified address`);
+          if (r.moved?.length) console.log(`staff moved in as you chose: ${r.moved.map((m) => m.email).join(', ')}`);
         }
       }
       break;
@@ -1981,7 +1986,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   people import <programme> <file.csv|-> [--apply]   add a list to a partner programme: email, name, company, end date (preview unless --apply)
   people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]   end a partnership in one audited step
-  domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited)
+  domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--move-staff <id,...>] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited); staff move only by name
   domains check <domain> · domains rm <domain> [--programme <id>]   look the DNS record up now; stop new people joining through a domain
   retention run              apply the stated retention policy (including the deleted-document purge) and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)

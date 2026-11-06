@@ -1522,6 +1522,7 @@ html.account-inspector-open { overflow: hidden; }
 .domain-record-fields { display: grid; grid-template-columns: auto 1fr; gap: var(--sp-3) var(--sp-6); margin: 0; align-items: center; }
 .domain-record-fields dd { margin: 0; display: flex; gap: var(--sp-4); align-items: center; flex-wrap: wrap; min-width: 0; }
 .domain-record-fields code { word-break: break-all; }
+.domain-staff { padding: var(--sp-6); border: 1px solid var(--hairline); border-radius: var(--radius); }
 @media (max-width: 640px) {
   .domain-record-fields { grid-template-columns: 1fr; }
   .domain-record-fields dt { font-weight: 600; }

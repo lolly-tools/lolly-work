@@ -1173,7 +1173,14 @@ export function buildApp(deps: AppDeps): App {
   ): Promise<SignInAdmission> => {
     const linkedUser = resolution && resolution.via !== 'new' ? resolution.user : null;
     const { disabled, invitation, invitationView, partner } = await admissionInputs(identity.sub, identity.email, linkedUser, identity.invitationEmails);
-    const decision = decideAdmission({ ...identity, disabled }, idp, config.idp.admission, invitationView, Date.now(), partner);
+    // A partner domain or membership admits a new account or a partner, never
+    // an existing staff account on its own: that account is admitted as it
+    // was before (its own rules, or its linked standing below) or not at all,
+    // so a domain rule can neither narrow staff nor let in someone whose
+    // invitation was revoked.
+    const held = resolution && resolution.via !== 'new' ? resolution.user : await store.getUserBySub(identity.sub);
+    const partnerFor = held && !isProgrammeScoped(held.groups, held.role) ? undefined : partner;
+    const decision = decideAdmission({ ...identity, disabled }, idp, config.idp.admission, invitationView, Date.now(), partnerFor);
     // A sign-in already linked to a member (a link row, or a verified-email
     // match) is admitted on that member's standing when only the lists refuse
     // it: a personal GitHub address need not be listed for a person the
@@ -1204,8 +1211,9 @@ export function buildApp(deps: AppDeps): App {
   const stillAdmitted = async (user: UserRecord): Promise<boolean> => {
     if (user.sub.startsWith('dev:')) return !user.disabledAt;
     const { disabled, invitationView, partner } = await admissionInputs(user.sub, user.email);
+    // Partner admission counts for partners only, as at sign-in.
     if (decideAdmission({ email: user.email, emailVerified: true, disabled }, { emailVerification: 'trusted' },
-      config.idp.admission, invitationView, Date.now(), partner).ok) return true;
+      config.idp.admission, invitationView, Date.now(), isProgrammeScoped(user.groups, user.role) ? partner : undefined).ok) return true;
     if (disabled || !config.idp.admission || config.idp.admission.invitations === false) return false;
     return !!(await store.findInvitationAcceptedBy(user.id));
   };
@@ -1909,7 +1917,7 @@ export function buildApp(deps: AppDeps): App {
     // The row exists now, so an invitation's groups can be joined to it, and
     // a partner domain's programme (plans/82 M1 part 2b).
     const user = await joinThroughDomain(store, audit, await acceptInvitationAtSignIn(bootstrapped, admitted, { provider, idp: idp.id }),
-      { email: identity.email, verified: admitted.ok && admitted.emailVerified, via: admitted.ok ? admitted.via : '' });
+      { email: identity.email, verified: admitted.ok && admitted.emailVerified, via: admitted.ok ? admitted.via : '', newAccount: resolution.via === 'new' });
     // Whatever else made the account an owner meanwhile (an invitation's
     // groups) is caught here, before a session exists.
     if (opts.ownerAllowed === false && user.role === 'owner') return refuseOwnerSession();
@@ -2133,7 +2141,7 @@ export function buildApp(deps: AppDeps): App {
     if (ownerGroup && !(await store.listLocalGroups()).some(g => g.name === ownerGroup)) await store.putLocalGroup({ name: ownerGroup, createdAt: new Date().toISOString() });
     const bootstrapped = ownerGroup ? (await store.setLocalGroups(upserted.id, [...new Set([...upserted.localGroups, ownerGroup])]))! : upserted;
     const user = await joinThroughDomain(store, audit, await acceptInvitationAtSignIn(bootstrapped, admitted, { provider: 'proxy' }),
-      { email: id.email, verified: admitted.ok && admitted.emailVerified, via: admitted.ok ? admitted.via : '' });
+      { email: id.email, verified: admitted.ok && admitted.emailVerified, via: admitted.ok ? admitted.via : '', newAccount: resolution.via === 'new' });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
