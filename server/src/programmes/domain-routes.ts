@@ -182,9 +182,11 @@ export async function sweepDomainRules(store: Store, audit: Audit, now = Date.no
   return ended;
 }
 
-/** Remove the rules a partnership exit ends, and audit each. */
+/** Remove the rules a partnership exit or a deleted programme ends, and audit
+ *  each domain changed with `via` saying why. */
 export async function withdrawDomainRules(
   store: Store, audit: Audit, actor: string, pick: { domain?: string; programmeId?: string; companyId?: string }, at: string,
+  via: 'programme-exit' | 'programme-delete' = 'programme-exit',
 ): Promise<Array<{ domain: string; programme: string; company?: string }>> {
   const removed: Array<{ domain: string; programme: string; company?: string }> = [];
   for (const rec of await store.listPartnerDomains()) {
@@ -194,9 +196,18 @@ export async function withdrawDomainRules(
     const left = rec.rules.filter((r) => !gone.includes(r));
     if (left.length) await store.putPartnerDomain({ ...rec, rules: left, updatedAt: at });
     else await store.deletePartnerDomain(rec.domain);
-    await audit(actor, 'programme.domain.remove', `domain:${rec.domain}`, { domain: rec.domain, programmes: gone.map((r) => r.programmeId), via: 'programme-exit' });
+    await audit(actor, 'programme.domain.remove', `domain:${rec.domain}`, { domain: rec.domain, programmes: gone.map((r) => r.programmeId), via });
   }
   return removed;
+}
+
+/** A deleted company leaves its domains' rules feeding the programme alone. */
+export async function forgetDomainCompany(store: Store, companyId: string, at: string): Promise<void> {
+  for (const rec of await store.listPartnerDomains()) {
+    if (!rec.rules.some((r) => r.companyId === companyId)) continue;
+    const rules = rec.rules.map((r) => { if (r.companyId !== companyId) return r; const { companyId: _c, ...rest } = r; return rest; });
+    await store.putPartnerDomain({ ...rec, rules, updatedAt: at });
+  }
 }
 
 /** What the console and the CLI read for one domain. */

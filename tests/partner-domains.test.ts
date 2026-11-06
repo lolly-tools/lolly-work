@@ -360,3 +360,19 @@ test('the CLI does the same: lw domains add, ls and check, lw people import and 
   assert.deepEqual(exit.domainRules.map((r: any) => r.domain), ['acme.example']);
   assert.equal((await env.store.listPartnerDomains()).length, 1, 'previews change nothing');
 });
+
+test('deleting a programme withdraws its domains, and deleting a company leaves the domain feeding the programme', async () => {
+  const env = await setup();
+  assert.equal((await env.call('PUT', '/api/v1/programmes/isvs', { name: 'Software partners' })).status, 201);
+  await env.call('PUT', '/api/v1/partner-domains/acme.example', { programme: 'resellers', company: 'acme', proof: 'admin' });
+  await env.call('PUT', '/api/v1/partner-domains/solo.example', { programme: 'isvs', proof: 'admin' });
+
+  assert.equal((await env.call('DELETE', '/api/v1/programmes/resellers/companies/acme')).status, 200);
+  const acme = (await env.store.listPartnerDomains()).find((d) => d.domain === 'acme.example')!;
+  assert.deepEqual(acme.rules.map((r) => [r.programmeId, r.companyId]), [['resellers', undefined]]);
+
+  assert.equal((await env.call('DELETE', '/api/v1/programmes/isvs')).status, 200);
+  assert.deepEqual((await env.store.listPartnerDomains()).map((d) => d.domain), ['acme.example'], 'a deleted programme admits nobody through its domain');
+  assert.equal((await auditsOf(env, 'programme.domain.remove')).at(-1)!.payload!.via, 'programme-delete');
+  assert.equal((await googleSignIn(env, 'g-sol', 'sol@solo.example')).status, 403);
+});
