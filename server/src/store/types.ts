@@ -1,4 +1,5 @@
 import type { ProgrammeRecord } from '../programmes/types.ts';
+import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
 import type { SubjectStore } from '../privacy/subject.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
@@ -1786,6 +1787,14 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putProgramme(rec: ProgrammeRecord): Promise<void>;
   /** Unknown id is a no-op. Never touches the wrapped group or its members. */
   deleteProgramme(id: string): Promise<void>;
+  // Partner companies and programme memberships (plans/82 M1 part 2,
+  // migrations/0086). A membership holds only what a group cannot: the end
+  // date, the company and who added the person.
+  listCompanies(): Promise<CompanyRecord[]>;
+  putCompany(rec: CompanyRecord): Promise<void>;
+  deleteCompany(id: string): Promise<void>;
+  listMemberships(): Promise<MembershipRecord[]>;
+  putMembership(rec: MembershipRecord): Promise<void>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
   // cumulative for everything that was KEPT - a returned submission still spent

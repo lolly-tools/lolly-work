@@ -103,8 +103,12 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     const prior = await store.getProgramme(id);
     const before = prior ? await programmeView(store, prior) : null;
     const now = new Date().toISOString();
+    const team = body.team === undefined ? prior?.team : body.team ?? undefined;
+    if (team && !(await store.listLocalGroups()).some((g) => g.name === team) && !(await store.listUsers()).some((u) => u.idpGroups.includes(team))) {
+      return sendError(res, 400, 'UNKNOWN_GROUP', `no group called ${team}`);
+    }
     const rec: ProgrammeRecord = {
-      id, name: body.name, ...(body.description ? { description: body.description } : {}),
+      id, name: body.name, ...(body.description ? { description: body.description } : {}), ...(team ? { team } : {}),
       createdBy: prior?.createdBy ?? actor.id, createdAt: prior?.createdAt ?? now, updatedAt: now, version: (prior?.version ?? 0) + 1,
     };
     const group = programmeGroup(id);
@@ -186,5 +190,5 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
 
 /** The audit payload for a programme: what it includes, never who is in it. */
 function summary(v: ProgrammeView): Record<string, unknown> {
-  return { name: v.name, ...(v.description ? { description: v.description } : {}), tools: v.tools, collections: v.collections.map((c) => c.id), members: v.members.length };
+  return { name: v.name, ...(v.description ? { description: v.description } : {}), ...(v.team ? { team: v.team } : {}), tools: v.tools, collections: v.collections.map((c) => c.id), members: v.members.length };
 }

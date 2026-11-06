@@ -32,6 +32,7 @@ import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts'
 import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
 import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../programmes/types.ts';
+import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -2270,6 +2271,31 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async deleteProgramme(id) {
       await pool.query('delete from partner_programmes where id = $1', [id]);
+    },
+    async listCompanies() {
+      const { rows } = await pool.query('select record from partner_companies');
+      return rows.map((r) => r.record as CompanyRecord).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    },
+    async putCompany(rec) {
+      await pool.query(
+        `insert into partner_companies (id, programme_id, record, updated_at) values ($1, $2, $3::jsonb, now())
+         on conflict (id) do update set programme_id = excluded.programme_id, record = excluded.record, updated_at = now()`,
+        [rec.id, rec.programmeId, JSON.stringify(rec)],
+      );
+    },
+    async deleteCompany(id) {
+      await pool.query('delete from partner_companies where id = $1', [id]);
+    },
+    async listMemberships() {
+      const { rows } = await pool.query('select record from programme_memberships order by programme_id, email');
+      return rows.map((r) => r.record as MembershipRecord);
+    },
+    async putMembership(rec) {
+      await pool.query(
+        `insert into programme_memberships (programme_id, email, record, updated_at) values ($1, $2, $3::jsonb, now())
+         on conflict (programme_id, email) do update set record = excluded.record, updated_at = now()`,
+        [rec.programmeId, rec.email, JSON.stringify(rec)],
+      );
     },
 
     // Instance asset versions (migrations/0020). Immutable snapshots keyed
