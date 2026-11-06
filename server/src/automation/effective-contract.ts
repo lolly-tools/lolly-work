@@ -15,8 +15,8 @@
  * caller renders with, and attribution names the overlay and the rule's own
  * reason, never the groups a rule matched.
  */
-import { evaluate, grantDecision, type Grant, type Role } from '../rbac/evaluate.ts';
-import { checkParams, lockedValues, resolveInputAccess, toolVisibleTo, type ParamViolation, type ToolOverlay } from '../policy/overlay.ts';
+import { evaluate, type Grant, type Role } from '../rbac/evaluate.ts';
+import { checkParams, lockedValues, resolveInputAccess, toolVisibleWithGrants, type ParamViolation, type ToolOverlay } from '../policy/overlay.ts';
 import type { UnavailableFormat } from '../render/capabilities.ts';
 
 /** One change policy made to the raw contract, with who made it and why. */
@@ -41,14 +41,11 @@ type AccessMode = 'open' | 'gated' | 'per-tool';
  *  may use a tool only on an open deployment and only when no visibility rule
  *  hides it from everyone. */
 export function mayUseTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode): boolean {
-  if (!user) return mode === 'open' && toolVisibleTo(overlays.get(toolId), []);
+  if (!user) return mode === 'open' && toolVisibleWithGrants(overlays.get(toolId), toolId, { groups: [] }, grants);
   if (user.tokenTools && !user.tokenTools.includes(toolId)) return false;
   const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
-  const resources = [`tool:${toolId}`, '*'];
-  const decision = grantDecision(principal, 'tool.use', resources, grants);
-  if (decision === 'deny') return false;
-  if (!toolVisibleTo(overlays.get(toolId), user.groups) && decision !== 'allow') return false;
-  return evaluate(principal, 'tool.use', resources, grants);
+  if (!toolVisibleWithGrants(overlays.get(toolId), toolId, principal, grants)) return false;
+  return evaluate(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
 }
 
 /** Server rendering needs `tool.use` and `export.server`. */

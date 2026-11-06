@@ -80,7 +80,7 @@ ${v.signInHref ? `<p>Have an account on ${esc(v.workspace)}? <a href="${esc(v.si
 }
 
 /** Why a link cannot open, as a browser is told it. */
-export type LinkEnd = 'not-found' | 'ended' | 'turned-off' | 'locked' | 'guests-off' | 'inviter';
+export type LinkEnd = 'not-found' | 'ended' | 'turned-off' | 'locked' | 'guests-off' | 'inviter' | 'maker';
 
 const ENDS: Record<LinkEnd, { heading: string; body: (v: { workspace: string; inviter: string | null }) => string }> = {
   'not-found': {
@@ -106,6 +106,10 @@ const ENDS: Record<LinkEnd, { heading: string; body: (v: { workspace: string; in
   inviter: {
     heading: 'This guest link stopped working',
     body: () => 'The person who made it can no longer share it. Ask them, or someone else on the team, for a new one.',
+  },
+  maker: {
+    heading: 'This link stopped working',
+    body: () => 'The person who made it no longer has access. Ask someone else on the team for a new one.',
   },
 };
 
