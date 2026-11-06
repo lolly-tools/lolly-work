@@ -7,6 +7,8 @@
  * enforcement (422 INPUT_LOCKED), and catalog feed filtering.
  */
 
+import { grantDecision, type Grant } from '../rbac/evaluate.ts';
+
 export type AccessLevel = 'editable' | 'choice' | 'locked' | 'hidden';
 
 export interface InputRule {
@@ -122,6 +124,37 @@ export function inputIsGoverned(overlay: ToolOverlay | undefined, inputId: strin
 export function toolVisibleTo(overlay: ToolOverlay | undefined, groups: string[]): boolean {
   if (!overlay?.visibility) return true;
   return overlay.visibility.groups.includes('*') || overlay.visibility.groups.some((g) => groups.includes(g));
+}
+
+/**
+ * Whether a caller sees a tool at all, counting `tool.use` grants as well as the
+ * overlay's visibility clause: a matching deny hides the tool whatever the
+ * clause says, and an explicit allow shows it outside the clause. Role defaults
+ * play no part, because the member default of `tool.use` would otherwise show
+ * every governed tool.
+ *
+ * This is the one decision every surface that lists or serves a tool asks: the
+ * tool feed and its signature, the tool files, org-config, Preview and the
+ * automation contract. When they asked different questions, a deny shown as
+ * "hidden" in Preview still reached the app through the feed.
+ */
+export function toolVisibleWithGrants(
+  overlay: ToolOverlay | undefined,
+  toolId: string,
+  principal: { userId?: string; groups: string[] },
+  grants: readonly Grant[],
+): boolean {
+  const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants as Grant[]);
+  if (decision === 'deny') return false;
+  return toolVisibleTo(overlay, principal.groups) || decision === 'allow';
+}
+
+/** The `tool.use` grants that apply to this principal, as a stable list. Two
+ *  callers with the same groups and the same list see the same tools, so the
+ *  list is what a visibility scope needs beyond the groups. */
+export function toolUseGrantsFor(principal: { userId?: string; groups: string[] }, grants: readonly Grant[]): string[] {
+  const own = grants.filter(g => g.action === 'tool.use' && grantDecision(principal, 'tool.use', [g.resource], [g]) !== 'none');
+  return [...new Set(own.map(g => `${g.effect}:${g.resource}`))].sort();
 }
 
 /**

@@ -34,7 +34,8 @@ import { verifyToolCoding, type ToolIdentity } from './tool-codings.ts';
 import { join, resolve } from 'node:path';
 import { canonicalJson } from '../lib/crypto.ts';
 import { regularSourceFile, safeDirectory, safeFile } from '../api/file-delivery.ts';
-import { toolVisibleTo, type ToolOverlay } from '../policy/overlay.ts';
+import { toolVisibleWithGrants, type ToolOverlay } from '../policy/overlay.ts';
+import type { Grant } from '../rbac/evaluate.ts';
 
 /** Where the envelope is served, relative to the catalog root. */
 export const CATALOG_SIG_REL = 'tools/index.sig.json';
@@ -55,12 +56,19 @@ export interface CatalogCaller {
   guestToolId?: string;
   /** Opt-in bounded asset inventory; never an access grant. */
   pagedAssets?: boolean;
+  /** The member asking, for `user:` grants. Absent for an anonymous caller. */
+  userId?: string;
+  /** The grant table. Its `tool.use` rows hide or show tools exactly as they do
+   *  in org-config and Preview (`toolVisibleWithGrants`). */
+  grants?: readonly Grant[];
 }
 
-/** Group visibility for members and exact tool scope for guest links. */
+/** Visibility for members, counting `tool.use` grants, and exact tool scope for
+ *  guest links. */
 export function callerCanSeeTool(caller: CatalogCaller, toolId: string): boolean {
   const id = toolId.toLowerCase();
-  return caller.guestToolId ? id === caller.guestToolId.toLowerCase() : toolVisibleTo(caller.overlays.get(id), caller.groups);
+  if (caller.guestToolId) return id === caller.guestToolId.toLowerCase();
+  return toolVisibleWithGrants(caller.overlays.get(id), id, { userId: caller.userId, groups: caller.groups }, caller.grants ?? []);
 }
 
 export interface ServedToolIndex {

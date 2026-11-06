@@ -9,8 +9,8 @@ import { resolveAiPolicy, type AiPolicy } from './ai.ts';
 import { renderCapabilities, type RenderCapabilities } from '../render/capabilities.ts';
 import { approvalArtifactPolicy } from '../approvals/export-review.ts';
 import { TRANSFER_PART_BYTES } from '../uploads/parts.ts';
-import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
-import { evaluate, grantDecision, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
+import { filterInputs, resolveInputAccess, toolVisibleWithGrants, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
+import { evaluate, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { brandPagesConfig } from '../brand-pages/types.ts';
 import { BRAND_EDIT_MAX_BYTES } from '../brand/edit-document.ts';
@@ -356,11 +356,10 @@ export function assembleOrgConfig(opts: {
   for (const [toolId, overlay] of overlays) {
     // Visibility is overlay OR an explicit per-user/group tool.use ALLOW grant
     // (so a grant surfaces a tool outside the caller's groups); a matching DENY
-    // wins over both (and over the role default, hence grantDecision not
-    // evaluate). Genuinely-hidden tools stay ABSENT - the caller never learns.
-    const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
-    if (decision === 'deny') continue;
-    if (!(toolVisibleTo(overlay, user.groups) || decision === 'allow')) continue;
+    // wins over both, and over the role default. The tool feed and the tool
+    // files ask the same toolVisibleWithGrants, so a tool absent here is absent
+    // there too. Genuinely-hidden tools stay ABSENT - the caller never learns.
+    if (!toolVisibleWithGrants(overlay, toolId, principal, grants)) continue;
     // Without a readable manifest the overlay's own rule keys stand in for the
     // declared list: a lock or a hide the operator wrote by id still reaches
     // the shell. Only a '*' rule needs the manifest to expand, and that miss is

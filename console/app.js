@@ -5988,7 +5988,7 @@ function renderPreview(data) {
     el('div', { class: 'card stack' }, el('h2', {}, 'Permissions'), dataTable(['Action', 'Effective'], canRows)),
     el('div', { class: 'card stack' },
       el('h2', {}, 'Tools'),
-      el('p', { class: 'sub' }, 'Governed tools this group can see, with each input’s effective access. Ungoverned tools are omitted — they are always visible and editable.'),
+      el('p', { class: 'sub' }, 'Governed tools this group can see, with each input’s effective access. Other tools are visible and editable unless they are listed as hidden below.'),
       ...toolBlocks,
       preview.hiddenTools?.length
         ? el('p', { style: 'margin-top:12px' }, el('span', { class: 'status revoked' }, 'hidden from this group'), ' ',

@@ -91,7 +91,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
+import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
@@ -130,7 +130,7 @@ import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
 } from '../collab/invites.ts';
-import { normalizeOverlay, toolVisibleTo, resolveInputAccess } from '../policy/overlay.ts';
+import { normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess } from '../policy/overlay.ts';
 import {
   applyLifecycleToIndex, assetFormatSha256, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
@@ -230,7 +230,7 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
-import { CATALOG_INDEX_REL, CATALOG_PUBLIC_KEY_ROUTE, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning } from '../catalog/signing.ts';
+import { CATALOG_INDEX_REL, CATALOG_PUBLIC_KEY_ROUTE, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning, type CatalogCaller } from '../catalog/signing.ts';
 import { publicCard, shellStubFor } from '../shell/share-cards.ts';
 import { addressedToolArt, isToolKeyedCatalogPath, servedToolSidecar, toolArtAddress } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
@@ -2707,18 +2707,20 @@ export function buildApp(deps: AppDeps): App {
       lastSeenAt: now,
     };
     const orgConfig = await buildOrgConfigFor(subject);
-    // Governed tools this group would NOT see - omitted from the member
-    // projection (absent = hidden) but exactly what an admin needs to verify.
-    // Grant-aware, matching assembleOrgConfig: a group-level allow surfaces a
-    // tool outside the visibility clause; a matching deny hides it outright.
+    // Tools this group would NOT see - omitted from the member projection
+    // (absent = hidden) but exactly what an admin needs to verify. Every tool
+    // in the pack is asked, not only governed ones, because a tool.use deny
+    // hides a tool that has no overlay. The decision is the one the tool feed
+    // and the tool files ask (toolVisibleWithGrants), so this list is what the
+    // app leaves out.
     const overlays = await store.listOverlays();
     const grants = await store.listGrants();
-    const previewPrincipal = { userId: subject.id, groups, role: subject.role as Role };
-    const hiddenTools = [...overlays.keys()].filter((id) => {
-      const decision = grantDecision(previewPrincipal, 'tool.use', [`tool:${id}`, '*'], grants);
-      if (decision === 'deny') return true;
-      return !(toolVisibleTo(overlays.get(id), groups) || decision === 'allow');
-    }).sort();
+    const toolIds = new Set<string>(overlays.keys());
+    try {
+      const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
+      for (const tool of index.tools ?? []) if (typeof tool?.id === 'string') toolIds.add(tool.id.toLowerCase());
+    } catch { /* no readable index: the governed tools still answer */ }
+    const hiddenTools = [...toolIds].filter((id) => !toolVisibleWithGrants(overlays.get(id), id, { userId: subject.id, groups }, grants)).sort();
     sendJson(res, 200, { preview: { groups, role: subject.role, hiddenTools }, orgConfig }, { 'cache-control': 'no-store' });
   });
 
@@ -6042,6 +6044,16 @@ export function buildApp(deps: AppDeps): App {
   // the caller's groups cannot see is not fetchable by URL: it answers 404, the
   // same absence the index shows. A guest may fetch the tool its link opens.
   // `tools` is a reserved prefix below, so the dist's copy is never consulted.
+  /** The caller a tool feed, tool file or tool sidecar is filtered for: the
+   *  overlays and the `tool.use` grants together, so these surfaces hide and
+   *  show exactly the tools org-config and Preview do. */
+  const catalogCallerOf = async (
+    user: { id?: string; groups: string[] } | null | undefined,
+    guestToolId?: string,
+  ): Promise<CatalogCaller> => ({
+    overlays: await store.listOverlays(), groups: user?.groups ?? [], grants: await store.listGrants(),
+    ...(user?.id ? { userId: user.id } : {}), ...(guestToolId ? { guestToolId } : {}),
+  });
   const serveTool: Handler = async (req, res, ctx) => {
     // The bare `/tools` is the app's gallery route, not a tool file.
     if (!ctx.params['*'] && serveShell) return serveShell(req, res, 'tools');
@@ -6058,11 +6070,12 @@ export function buildApp(deps: AppDeps): App {
     if (!/^[a-z0-9-]+$/i.test(toolId)) return sendError(res, 400, 'INVALID_INPUT', 'bad tool id');
     if (!user && p?.kind === 'guest' && p.guest.toolId !== toolId) return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
     const guestTool = p?.kind === 'guest' && p.guest.toolId === toolId;
-    if (!guestTool && !toolVisibleTo((await store.listOverlays()).get(toolId), user?.groups ?? [])) {
+    const toolCaller = await catalogCallerOf(user, guestTool ? toolId : undefined);
+    if (!guestTool && !callerCanSeeTool(toolCaller, toolId)) {
       return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
     }
     if (addressed) {
-      const view = await catalogDelivery.current(config.instance.pack, { overlays: await store.listOverlays(), groups: user?.groups ?? [], ...(guestTool ? { guestToolId: toolId } : {}) });
+      const view = await catalogDelivery.current(config.instance.pack, toolCaller);
       if (!view || !JSON.parse(view.tools.bytes.toString()).tools?.some((tool: { id: string }) => tool.id === toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such tool release');
       const retained = await retainedToolBytes(config.instance.pack, rel);
       if (retained) { sendBytes(req, res, retained.bytes, { contentType: contentType(rel), modified: retained.modified, ranges: true, headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return; }
@@ -6100,11 +6113,12 @@ export function buildApp(deps: AppDeps): App {
     const card = publicCard(normalize(ctx.params['*'] ?? ''));
     if (card) {
       let everyone = true;
-      const overlays = await store.listOverlays();
-      const caller = { overlays, groups: user?.groups ?? [], ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) };
+      const caller = await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined);
       if (card.kind === 'tool') {
         if (!callerCanSeeTool(caller, card.toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
-        everyone = toolVisibleTo(overlays.get(card.toolId), []);
+        // A deny for anyone means not every caller may see this card.
+        everyone = toolVisibleTo(caller.overlays.get(card.toolId), [])
+          && !(caller.grants ?? []).some(g => g.action === 'tool.use' && g.effect === 'deny' && (g.resource === '*' || g.resource === `tool:${card.toolId}`));
       }
       const cardShells = shellDirectories(config.instance);
       for (const root of [config.instance.pack, ...(publicStaticDeliveryClass('/catalog/' + card.rel) === 'public-immutable' ? cardShells : cardShells.slice(0, 1))]) {
@@ -6142,8 +6156,8 @@ export function buildApp(deps: AppDeps): App {
     const addressedIndex = /^(tools\/index(?:\.slim)?|assets\/index)\.([0-9a-f]{16})\.json$/.exec(rel);
     if (addressedIndex) {
       const kind: CatalogSnapshotKind = addressedIndex[1] === 'assets/index' ? 'assets' : addressedIndex[1] === 'tools/index.slim' ? 'slim' : 'tools';
-      const bytes = await catalogDelivery.snapshot(config.instance.pack, { overlays: await store.listOverlays(), groups: user?.groups ?? [],
-        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}), pagedAssets: ctx.url.searchParams.get('paged') === '1' }, kind, addressedIndex[2]!);
+      const bytes = await catalogDelivery.snapshot(config.instance.pack, { ...await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined),
+        pagedAssets: ctx.url.searchParams.get('paged') === '1' }, kind, addressedIndex[2]!);
       if (!bytes) return sendError(res, 404, 'NOT_FOUND', 'no accessible catalog snapshot');
       sendBytes(req, res, bytes, { contentType: 'application/json; charset=utf-8', headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
     }
@@ -6388,9 +6402,8 @@ export function buildApp(deps: AppDeps): App {
     // Without a key the pack's build-time signature is never served (see below).
     if (rel === CATALOG_INDEX_REL || (catalogSigning && rel === CATALOG_SIG_REL)) {
       const view = await catalogDelivery.current(config.instance.pack, {
-        overlays: await store.listOverlays(), groups: user?.groups ?? [],
+        ...await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined),
         pagedAssets: ctx.url.searchParams.get('paged') === '1',
-        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}),
       });
       if (!view) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
       if (rel === CATALOG_SIG_REL && catalogSigning) {
@@ -6405,10 +6418,7 @@ export function buildApp(deps: AppDeps): App {
     // per-caller visibility, so a hidden tool's id never reaches a caller through
     // them either (catalog/tool-sidecars.ts).
     if (isToolKeyedCatalogPath(rel)) {
-      const decided = await servedToolSidecar(config.instance.pack, rel, {
-        overlays: await store.listOverlays(), groups: user?.groups ?? [],
-        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}),
-      });
+      const decided = await servedToolSidecar(config.instance.pack, rel, await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined));
       if (decided.kind === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
       if (decided.kind === 'json') {
         sendBytes(req, res, decided.bytes, { contentType: 'application/json; charset=utf-8', headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
@@ -6429,8 +6439,7 @@ export function buildApp(deps: AppDeps): App {
     const previewOwner = toolArtAddress(rel)?.kind === 'preview' ? await loadAssetPathMap(config.instance.pack) : null;
     // A preview explicitly owned by an asset keeps that asset's lifecycle gate.
     if (previewOwner && !previewOwner.has(rel) && !previewOwner.has(rel.replace(/\.[0-9a-f]{16}(\.[a-z0-9]{1,16})$/, '$1'))) {
-      const art = await addressedToolArt(config.instance.pack, rel, { overlays: await store.listOverlays(), groups: user?.groups ?? [],
-        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) });
+      const art = await addressedToolArt(config.instance.pack, rel, await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined));
       if (!art) return sendError(res, 404, 'NOT_FOUND', 'no such tool preview release');
       sendBytes(req, res, art.bytes, { contentType: contentType(rel), ranges: true, modified: art.modified,
         headers: { ...INERT_BYTES, 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
@@ -10996,7 +11005,7 @@ export function buildApp(deps: AppDeps): App {
     }
 
     const overlays = await store.listOverlays();
-    if (!user && !toolVisibleTo(overlays.get(toolId), [])) return sendError(res, 403, 'FORBIDDEN', 'this tool is not visible');
+    if (!user && !toolVisibleWithGrants(overlays.get(toolId), toolId, { groups: [] }, await store.listGrants())) return sendError(res, 403, 'FORBIDDEN', 'this tool is not visible');
     const query = ctx.url.search.replace(/^\?/, '');
     const canonical = canonicalRenderQuery(query);
     if (query !== canonical) { res.writeHead(308, { location: ctx.url.pathname + (canonical ? '?' + canonical : '') }); res.end(); return; }
