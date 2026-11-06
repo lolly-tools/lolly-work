@@ -170,6 +170,84 @@
       "edge": {
         "$type": "color",
         "$value": "oklch(32.92% 0.0152 164.85)"
+      },
+      "evergreen": {
+        "$type": "color",
+        "$value": "oklch(47.83% 0.0975 164.85)"
+      },
+      "on-evergreen": {
+        "$type": "color",
+        "$value": "oklch(100% 0 0)"
+      },
+      "signal": {
+        "$type": "color",
+        "$value": "#c9a227"
+      },
+      "on-signal": {
+        "$type": "color",
+        "$value": "oklch(0% 0 0)"
+      }
+    },
+    "colourway": {
+      "light": {
+        "primary": {
+          "$type": "color",
+          "$value": "oklch(47.83% 0.0975 164.85)"
+        },
+        "on-primary": {
+          "$type": "color",
+          "$value": "oklch(100% 0 0)"
+        },
+        "secondary": {
+          "$type": "color",
+          "$value": "oklch(47.83% 0.0341 164.85)"
+        },
+        "evergreen": {
+          "$type": "color",
+          "$value": "oklch(47.83% 0.0975 164.85)"
+        },
+        "on-evergreen": {
+          "$type": "color",
+          "$value": "oklch(100% 0 0)"
+        },
+        "signal": {
+          "$type": "color",
+          "$value": "#c9a227"
+        },
+        "on-signal": {
+          "$type": "color",
+          "$value": "oklch(0% 0 0)"
+        }
+      },
+      "dark": {
+        "primary": {
+          "$type": "color",
+          "$value": "oklch(47.83% 0.0975 164.85)"
+        },
+        "on-primary": {
+          "$type": "color",
+          "$value": "oklch(100% 0 0)"
+        },
+        "secondary": {
+          "$type": "color",
+          "$value": "oklch(47.83% 0.0341 164.85)"
+        },
+        "evergreen": {
+          "$type": "color",
+          "$value": "oklch(47.83% 0.0975 164.85)"
+        },
+        "on-evergreen": {
+          "$type": "color",
+          "$value": "oklch(100% 0 0)"
+        },
+        "signal": {
+          "$type": "color",
+          "$value": "#c9a227"
+        },
+        "on-signal": {
+          "$type": "color",
+          "$value": "oklch(0% 0 0)"
+        }
       }
     }
   }

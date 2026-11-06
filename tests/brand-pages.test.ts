@@ -749,6 +749,41 @@ test('a folder from the real generator is accepted, and matches its digests', ()
   assert.ok(parsed.files.some(file => file.role === 'font' && file.path === 'fonts/fixture-sans-licence.txt'), 'a font licence text');
   assert.ok(parsed.held.some(row => row.item === 'partner/logo/primary'), 'a logo held back');
   assert.equal(new Set(parsed.files.map(file => file.role)).size, 14, 'every file role');
+  assert.deepEqual(parsed.colourRoles, [
+    { id: 'evergreen', label: 'Evergreen', token: 'color.semantic.evergreen', fills: ['primary'] },
+    { id: 'signal', label: 'Signal', description: 'The small flag on a page.', token: 'color.semantic.signal', fills: [] },
+  ], 'colour roles, with and without a description, a slot and none');
+});
+
+test('a colour role is checked field by field, and a page without them still parses', () => {
+  const real = (): Record<string, unknown> & { colourRoles?: unknown } => JSON.parse(readFileSync(join(FIXTURE, 'brand.json'), 'utf8')) as Record<string, unknown>;
+  const none = real();
+  delete none.colourRoles;
+  assert.equal(parseBrandPageManifest(none).colourRoles, undefined);
+  const role = { id: 'main', label: 'Main', token: 'color.semantic.main', fills: ['primary'] };
+  const withRoles = (...roles: unknown[]): Record<string, unknown> => ({ ...real(), colourRoles: roles });
+  assert.deepEqual(parseBrandPageManifest(withRoles(role)).colourRoles, [role]);
+  // Words are data: markup in a label is the brand's text, and the page it came from already escaped it.
+  assert.equal(parseBrandPageManifest(withRoles({ ...role, label: '<b>Main</b>', description: 'يُغزل' })).colourRoles?.[0]?.label, '<b>Main</b>');
+  const refusals: Array<[string, unknown]> = [
+    ['an unknown key', { ...role, extra: 1 }],
+    ['a missing label', { id: 'main', token: role.token, fills: [] }],
+    ['an empty label', { ...role, label: '' }],
+    ['a long label', { ...role, label: 'x'.repeat(81) }],
+    ['a long description', { ...role, description: 'x'.repeat(601) }],
+    ['an id with a digit', { ...role, id: 'accent2' }],
+    ['an id with a capital', { ...role, id: 'Main' }],
+    ['a token elsewhere', { ...role, token: 'color.brand.main' }],
+    ['a token with a dot in its name', { ...role, token: 'color.semantic.a.b' }],
+    ['an unknown slot', { ...role, fills: ['on-primary'] }],
+    ['a slot twice', { ...role, fills: ['primary', 'primary'] }],
+    ['fills that are not a list', { ...role, fills: 'primary' }],
+    ['a row that is not an object', 'main'],
+  ];
+  for (const [what, row] of refusals) assert.throws(() => parseBrandPageManifest(withRoles(row)), BrandPageRefusal, what);
+  assert.throws(() => parseBrandPageManifest(withRoles(role, role)), BrandPageRefusal, 'the same role twice');
+  assert.throws(() => parseBrandPageManifest({ ...real(), colourRoles: 'main' }), BrandPageRefusal, 'not a list');
+  assert.throws(() => parseBrandPageManifest({ ...real(), colourRoles: Array.from({ length: 33 }, (_, i) => ({ ...role, id: `r${'a'.repeat(i)}` })) }), BrandPageRefusal, 'too many');
 });
 
 test('lw publishes a folder from the real generator, and the instance serves each file', async () => {
