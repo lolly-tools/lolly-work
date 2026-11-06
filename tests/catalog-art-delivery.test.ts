@@ -137,8 +137,15 @@ test('alias ownership rejects ambiguous paths and unsigned short hashes', () => 
   const format = { format: 'svg', url: `/catalog/assets/a.${digest.slice(0, 16)}.svg`, checksum };
   const map = buildPathMap({ assets: [{ id: 'a', formats: [format] }] });
   assert.equal(map.get('assets/a.svg'), 'a');
-  assert.throws(() => buildPathMap({ assets: [{ id: 'a', formats: [format] }, { id: 'b', formats: [{ format: 'svg', url: '/catalog/assets/a.svg' }] }] }), /ambiguous/);
-  assert.throws(() => buildPathMap({ assets: [{ id: 'a', formats: [{ ...format, checksum: 'sha256-invalid' }] }] }), /checksum/);
+  assert.throws(() => buildPathMap({ assets: [{ id: 'a', formats: [format] }, { id: 'b', formats: [{ format: 'svg', url: '/catalog/assets/a.svg' }] }] }), /ambiguous catalog asset path "assets\/a\.svg" is claimed by assets "a" and "b"/);
+  assert.throws(() => buildPathMap({ assets: [{ id: 'b', formats: [{ format: 'svg', url: '/catalog/assets/a.svg' }] }, { id: 'a', formats: [format] }] }),
+    new RegExp(`"assets/a\\.svg" \\(the legacy name of "assets/a\\.${digest.slice(0, 16)}\\.svg"\\) is claimed by assets "b" and "a"`));
+  assert.throws(() => buildPathMap({ assets: [{ id: 'a', formats: [{ ...format, checksum: 'sha256-invalid' }] }] }), /on asset "a" does not match its checksum/);
+  assert.throws(() => buildPathMap({ assets: [{ id: 'a', formats: [{ format: 'svg', url: `/catalog/a\u001b[0m.${digest.slice(0, 16)}.svg`, checksum }] }] }), (error: Error) => {
+    assert.match(error.message, /unsafe catalog asset address/);
+    assert.doesNotMatch(error.message, /\p{Cc}/u, 'a control character in the index stays out of the message');
+    return true;
+  });
 });
 
 test('malformed source ownership fails closed on retained aliases over HTTP', async () => {
@@ -146,7 +153,10 @@ test('malformed source ownership fails closed on retained aliases over HTTP', as
     const { base, paths, member } = await instance(options);
     const response = await fetch(base + paths.live, { headers: { cookie: member, 'if-none-match': '*' } });
     assert.equal(response.status, 503); assert.equal(response.headers.get('cdn-cache-control'), 'no-store');
-    assert.doesNotMatch(await response.text(), /<svg>/);
+    const body = await response.text();
+    assert.doesNotMatch(body, /<svg>/);
+    assert.match(body, /catalog asset ownership is unavailable/);
+    assert.doesNotMatch(body, /conflicting-owner|assets\//, 'the file and ids are for whoever built the pack');
   }
 });
 

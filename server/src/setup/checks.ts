@@ -77,6 +77,6 @@ export async function assessSetup(config: InstanceConfig, secrets: Secrets, dura
   });
   const mode = productionMode(config, options.env) ? 'production' : 'evaluation';
   checks.push({ id: 'pack', status: pack.compatible ? 'pass' : mode === 'production' ? 'fail' : 'warning',
-    message: pack.compatible ? 'The selected pack loads with the installed engine.' : 'The selected pack is missing or incompatible. Review the tool diagnostics before acceptance.' });
+    message: pack.compatible ? 'The selected pack loads with the installed engine.' : ['The selected pack is missing or incompatible.', ...pack.diagnostics, 'Review the diagnostics before acceptance.'].join(' ') });
   return { version: 1, checkedAt: new Date().toISOString(), mode, ready: !checks.some(check => check.status === 'fail'), checks, pack };
 }

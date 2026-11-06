@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { createBrandSources } from '../brand/sources.ts';
 import { loadEngine } from '../render/contract.ts';
 import { IN_PROCESS_HOST_APIS, isSvgTemplate, renderCapabilities, toolServerFormats } from '../render/capabilities.ts';
+import { buildPathMap, type AssetIndexEntry } from '../catalog/lifecycle.ts';
 
 export interface PackToolCheck {
   source: string; id: string; valid: boolean; requiredEngine?: string;
@@ -83,6 +84,12 @@ export async function inspectPack(pack: string, options: {
       if (!path.startsWith(resolve(source.root, 'catalog') + sep) || !(await stat(path).catch(() => null))?.isFile()) {
         report.diagnostics.push(`A local file is missing or invalid for asset ${asset.id}.`);
       }
+    }
+    // The blob route refuses a whole index on any of these, and only once someone
+    // asks for a file. Same function over the same entries, so this cannot disagree.
+    try { buildPathMap({ assets: source.assets as AssetIndexEntry[] }); }
+    catch (error) {
+      report.diagnostics.push(`This pack's catalog files cannot be served: ${(error as Error).message}. Lolly Work answers 503 for them until the pack is rebuilt from a Lolly commit whose validate:catalog passes.`);
     }
     report.compatible = report.diagnostics.length === 0 && report.tools.every(tool => tool.valid);
     report.revision = createHash('sha256').update(JSON.stringify([source.revision, report.tools.map(tool => [tool.id, tool.valid, tool.sourceHash])])).digest('hex');
