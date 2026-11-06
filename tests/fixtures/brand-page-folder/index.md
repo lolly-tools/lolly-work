@@ -12,29 +12,35 @@ Owner-published, not an open licence: Fixture mark, Fixture mark, reverse.
 
 ## Colours
 
-### Default, Light
+### House, Light
 
-| Slot | Value |
-| --- | --- |
-| primary | #0b6e4f |
-| on-primary | #ffffff |
-| secondary | #4b6358 |
-| surface | #f3f6f5 |
-| text | #0e1310 |
-| muted | #404c46 |
-| edge | #9fa9a4 |
+| Role | Value | What it is for | Lolly reads this as |
+| --- | --- | --- | --- |
+| Evergreen | #0b6e4f |  | Lead colour |
+| Signal | #c9a227 | The small flag on a page. | By name only |
 
-### Default, Dark
+| Colour | Value | Token |
+| --- | --- | --- |
+| Partner colour | #4b6358 | `color.semantic.secondary` |
+| Background | #f3f6f5 | `color.semantic.surface` |
+| Text | #0e1310 | `color.semantic.text` |
+| Quiet text | #404c46 | `color.semantic.muted` |
+| Hairlines | #9fa9a4 | `color.semantic.edge` |
 
-| Slot | Value |
-| --- | --- |
-| primary | #0b6e4f |
-| on-primary | #ffffff |
-| secondary | #4b6358 |
-| surface | #0e1310 |
-| text | #f3f6f5 |
-| muted | #78847e |
-| edge | #2e3833 |
+### House, Dark
+
+| Role | Value | What it is for | Lolly reads this as |
+| --- | --- | --- | --- |
+| Evergreen | #0b6e4f |  | Lead colour |
+| Signal | #c9a227 | The small flag on a page. | By name only |
+
+| Colour | Value | Token |
+| --- | --- | --- |
+| Partner colour | #4b6358 | `color.semantic.secondary` |
+| Background | #0e1310 | `color.semantic.surface` |
+| Text | #f3f6f5 | `color.semantic.text` |
+| Quiet text | #78847e | `color.semantic.muted` |
+| Hairlines | #2e3833 | `color.semantic.edge` |
 
 ### Named colours
 

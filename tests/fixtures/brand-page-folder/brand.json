@@ -2,12 +2,12 @@
   "version": 1,
   "id": "fixture",
   "name": "Fixture",
-  "revision": "sha256:af9ddc4f984f0f5a9f66a1235ad73d52cb01d3dad4953dc8c00c068edfd8a5f4",
+  "revision": "sha256:97d5a8542e8eddaf4af4d939423706e3d7d3c4060b19f31bf2bd6c2576cfeec6",
   "publishedVersion": "1.0.0",
   "origin": "https://example.test/brand/fixture",
   "generator": {
     "name": "lolly",
-    "engine": "1.309.0",
+    "engine": "1.313.0",
     "designMd": "alpha"
   },
   "usage": {
@@ -17,8 +17,8 @@
   },
   "colourways": [
     {
-      "id": "default",
-      "name": "Default",
+      "id": "house",
+      "name": "House",
       "modes": [
         "light",
         "dark"
@@ -30,43 +30,43 @@
       "path": "AGENTS.md",
       "role": "agents",
       "mediaType": "text/markdown; charset=utf-8",
-      "sha256": "2c65efad817325ec9f09e2cc0db6d14b43710d7300cce73b83b2d3481bd9d7d2",
-      "size": 2531
+      "sha256": "98c2b74e584530ca33ebf9562cd9fdee39e8f7f2bf43398fff1255d789a78846",
+      "size": 3205
     },
     {
       "path": "DESIGN.md",
       "role": "design-md",
       "mediaType": "text/markdown; charset=utf-8",
-      "sha256": "3f787ab8a582fa957a82ba8d23378eb5d01e6cffe7d98acde323c2b63defc898",
-      "size": 3153
+      "sha256": "81a81f3b353403c92f72610f04ecb5b2159c874afafd18b815e3ba8b0cf13a18",
+      "size": 5784
     },
     {
       "path": "assets/page.css",
       "role": "page-style",
       "mediaType": "application/octet-stream",
-      "sha256": "1c48071c6f227becbefcbbd88f99a5d679e636c3b93313d2debbfff551f075ef",
-      "size": 9258
+      "sha256": "6332a8f944a30f0300f0d46476ae50b9c1c28c9c28f146f6ca43cc4db81b1858",
+      "size": 9822
     },
     {
       "path": "checks.json",
       "role": "checks",
       "mediaType": "application/json",
-      "sha256": "fef86584afae7ccbb89b27f587d93dcb752c50585816bca5cecb8a1498a4be06",
-      "size": 4223
+      "sha256": "3c9bba81d7c9fffea0fbe91a60456798321088fcd9c5938ace3e7a7b32e02c52",
+      "size": 5796
     },
     {
-      "path": "design/default.dark.DESIGN.md",
+      "path": "design/house.dark.DESIGN.md",
       "role": "design-md-variant",
       "mediaType": "text/markdown; charset=utf-8",
-      "sha256": "6817e88a2edaa7fee7d88c6dfe04c2e52a691441d9d7181fe971d4ff1926a548",
-      "size": 3152
+      "sha256": "c31342806e19bf8ea8f426671c806cf21b2b670bef6683060af4ad1df8579cdb",
+      "size": 5781
     },
     {
-      "path": "design/default.light.DESIGN.md",
+      "path": "design/house.light.DESIGN.md",
       "role": "design-md-variant",
       "mediaType": "text/markdown; charset=utf-8",
-      "sha256": "3f787ab8a582fa957a82ba8d23378eb5d01e6cffe7d98acde323c2b63defc898",
-      "size": 3153
+      "sha256": "81a81f3b353403c92f72610f04ecb5b2159c874afafd18b815e3ba8b0cf13a18",
+      "size": 5784
     },
     {
       "path": "examples/poster.svg",
@@ -100,22 +100,22 @@
       "path": "index.html",
       "role": "page",
       "mediaType": "application/octet-stream",
-      "sha256": "6c280fbbdf040cef8ff983b2a6a1def4f076e6c6e2af83ab7626c5e60f86ea06",
-      "size": 11503
+      "sha256": "8adf3919c72b558029ae8152d3bb2250e0917bdf366f4c70bd78e94c805e1ac0",
+      "size": 12701
     },
     {
       "path": "index.md",
       "role": "page-markdown",
       "mediaType": "text/markdown; charset=utf-8",
-      "sha256": "8e3ab4fc3df90221ab1802250d5a8ded9f91ffaaf8081c50aed5035911ce9397",
-      "size": 3149
+      "sha256": "5660c7f00d991804dce9673dbca0308af98811c6bf7035c401eeb65a268f0728",
+      "size": 3753
     },
     {
       "path": "llms.txt",
       "role": "llms",
       "mediaType": "text/plain; charset=utf-8",
-      "sha256": "aecc4e60d4d62afbdc353a3c65b1365f23ed2cd7324a81a5b4054b20771a43a9",
-      "size": 1376
+      "sha256": "9f5ffc5503675fa8e9437597e05020f31bf389a7411143c231fab7ce14359b2b",
+      "size": 1364
     },
     {
       "path": "logos/fixture/logo/mono.svg",
@@ -153,25 +153,25 @@
       "size": 8
     },
     {
-      "path": "tokens/default.dark.tokens.json",
+      "path": "tokens/house.dark.tokens.json",
       "role": "tokens-resolved",
       "mediaType": "application/json",
-      "sha256": "a572d420ceec814d5baaf4d16cbc21811a21b6f2575debdf1012f31087b9b37c",
-      "size": 4197
+      "sha256": "925c48a70333a746b386af127324844fbba6b4e314b40a821e61639fa059da69",
+      "size": 6091
     },
     {
-      "path": "tokens/default.light.tokens.json",
+      "path": "tokens/house.light.tokens.json",
       "role": "tokens-resolved",
       "mediaType": "application/json",
-      "sha256": "e8c83b184158febd19ffd13d7bb8bde9da4e3dcdbc3c1bcf65b95ea6f3ceba6c",
-      "size": 4197
+      "sha256": "eba158cf76576a114611962f9118fcbb38c4d8a4a558093f251a00b11e969d49",
+      "size": 6091
     },
     {
       "path": "tokens/tokens.json",
       "role": "tokens",
       "mediaType": "application/json",
-      "sha256": "3660f1e5c7b6c92927a87d8ad70f411339577ad4006e4de247265d4955e10d95",
-      "size": 10463
+      "sha256": "c32625d9178fdf61687d7eed0e09ec54977764864006dec6adecc3b974bd83ae",
+      "size": 15149
     }
   ],
   "logos": [
@@ -202,6 +202,23 @@
       "primary": true
     }
   ],
+  "colourRoles": [
+    {
+      "id": "evergreen",
+      "label": "Evergreen",
+      "token": "color.semantic.evergreen",
+      "fills": [
+        "primary"
+      ]
+    },
+    {
+      "id": "signal",
+      "label": "Signal",
+      "description": "The small flag on a page.",
+      "token": "color.semantic.signal",
+      "fills": []
+    }
+  ],
   "held": [
     {
       "item": "partner/logo/primary",
@@ -212,10 +229,10 @@
   "checks": {
     "file": "checks.json",
     "variants": 2,
-    "pairs": 10,
-    "pairsBelow3": 1,
+    "pairs": 14,
+    "pairsBelow3": 2,
     "rules": 0,
     "rulesWithFindings": 0
   },
-  "digest": "1c73dcf01b10edcd83fc7df7933f723adf6162c7a8a1b2cc692477bd2005d168"
+  "digest": "f1903ab476909533f3909c5afdc38dac3cb893b5c004a07226ba387e9843e7a4"
 }

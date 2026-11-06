@@ -4,7 +4,7 @@
   "documents": [],
   "variants": [
     {
-      "colourway": "default",
+      "colourway": "house",
       "mode": "light",
       "pairs": [
         {
@@ -38,36 +38,6 @@
           "reads": "body-text"
         },
         {
-          "id": "on-primary",
-          "label": "Text on primary",
-          "foreground": {
-            "slot": "on-primary",
-            "value": "#ffffff"
-          },
-          "background": {
-            "slot": "primary",
-            "value": "#0b6e4f"
-          },
-          "contrast": 6.25,
-          "apca": -86,
-          "reads": "body-text"
-        },
-        {
-          "id": "primary-on-surface",
-          "label": "Primary on surface",
-          "foreground": {
-            "slot": "primary",
-            "value": "#0b6e4f"
-          },
-          "background": {
-            "slot": "surface",
-            "value": "#f3f6f5"
-          },
-          "contrast": 5.75,
-          "apca": 75,
-          "reads": "body-text"
-        },
-        {
           "id": "secondary-on-surface",
           "label": "Secondary on surface",
           "foreground": {
@@ -81,11 +51,71 @@
           "contrast": 5.99,
           "apca": 76,
           "reads": "body-text"
+        },
+        {
+          "id": "on-evergreen",
+          "label": "Text on Evergreen",
+          "foreground": {
+            "slot": "on-evergreen",
+            "value": "#ffffff"
+          },
+          "background": {
+            "slot": "evergreen",
+            "value": "#0b6e4f"
+          },
+          "contrast": 6.25,
+          "apca": -86,
+          "reads": "body-text"
+        },
+        {
+          "id": "role-evergreen-on-surface",
+          "label": "Evergreen on the background",
+          "foreground": {
+            "slot": "evergreen",
+            "value": "#0b6e4f"
+          },
+          "background": {
+            "slot": "surface",
+            "value": "#f3f6f5"
+          },
+          "contrast": 5.75,
+          "apca": 75,
+          "reads": "body-text"
+        },
+        {
+          "id": "on-signal",
+          "label": "Text on Signal",
+          "foreground": {
+            "slot": "on-signal",
+            "value": "#000000"
+          },
+          "background": {
+            "slot": "signal",
+            "value": "#c9a227"
+          },
+          "contrast": 8.68,
+          "apca": 57,
+          "reads": "body-text"
+        },
+        {
+          "id": "role-signal-on-surface",
+          "label": "Signal on the background",
+          "foreground": {
+            "slot": "signal",
+            "value": "#c9a227"
+          },
+          "background": {
+            "slot": "surface",
+            "value": "#f3f6f5"
+          },
+          "contrast": 2.22,
+          "apca": 42,
+          "reads": "below-3"
         }
       ]
     },
     {
-      "colourway": "default",
+      "colourway": "house",
       "mode": "dark",
       "pairs": [
         {
@@ -119,36 +149,6 @@
           "reads": "body-text"
         },
         {
-          "id": "on-primary",
-          "label": "Text on primary",
-          "foreground": {
-            "slot": "on-primary",
-            "value": "#ffffff"
-          },
-          "background": {
-            "slot": "primary",
-            "value": "#0b6e4f"
-          },
-          "contrast": 6.25,
-          "apca": -86,
-          "reads": "body-text"
-        },
-        {
-          "id": "primary-on-surface",
-          "label": "Primary on surface",
-          "foreground": {
-            "slot": "primary",
-            "value": "#0b6e4f"
-          },
-          "background": {
-            "slot": "surface",
-            "value": "#0e1310"
-          },
-          "contrast": 3,
-          "apca": -21,
-          "reads": "large-text"
-        },
-        {
           "id": "secondary-on-surface",
           "label": "Secondary on surface",
           "foreground": {
@@ -162,6 +162,66 @@
           "contrast": 2.88,
           "apca": -19,
           "reads": "below-3"
+        },
+        {
+          "id": "on-evergreen",
+          "label": "Text on Evergreen",
+          "foreground": {
+            "slot": "on-evergreen",
+            "value": "#ffffff"
+          },
+          "background": {
+            "slot": "evergreen",
+            "value": "#0b6e4f"
+          },
+          "contrast": 6.25,
+          "apca": -86,
+          "reads": "body-text"
+        },
+        {
+          "id": "role-evergreen-on-surface",
+          "label": "Evergreen on the background",
+          "foreground": {
+            "slot": "evergreen",
+            "value": "#0b6e4f"
+          },
+          "background": {
+            "slot": "surface",
+            "value": "#0e1310"
+          },
+          "contrast": 3,
+          "apca": -21,
+          "reads": "large-text"
+        },
+        {
+          "id": "on-signal",
+          "label": "Text on Signal",
+          "foreground": {
+            "slot": "on-signal",
+            "value": "#000000"
+          },
+          "background": {
+            "slot": "signal",
+            "value": "#c9a227"
+          },
+          "contrast": 8.68,
+          "apca": 57,
+          "reads": "body-text"
+        },
+        {
+          "id": "role-signal-on-surface",
+          "label": "Signal on the background",
+          "foreground": {
+            "slot": "signal",
+            "value": "#c9a227"
+          },
+          "background": {
+            "slot": "surface",
+            "value": "#0e1310"
+          },
+          "contrast": 7.76,
+          "apca": -54,
+          "reads": "body-text"
         }
       ]
     }

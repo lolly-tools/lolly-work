@@ -30,6 +30,15 @@ export interface BrandPageLogo {
   licence?: string;
 }
 
+/** A colour the brand names in its own words. Optional: a page with none, or from before this field, has none. */
+export interface BrandPageColourRole {
+  id: string;
+  label: string;
+  description?: string;
+  token: string;
+  fills: Array<'primary' | 'secondary' | 'surface' | 'text' | 'muted' | 'edge'>;
+}
+
 export interface BrandPageManifest {
   version: 1;
   id: string;
@@ -42,6 +51,7 @@ export interface BrandPageManifest {
   colourways: { id: string; name: string; modes: string[] }[];
   files: BrandPageFile[];
   logos?: BrandPageLogo[];
+  colourRoles?: BrandPageColourRole[];
   held: BrandPageHeld[];
   checks: { file: 'checks.json'; variants: number; pairs: number; pairsBelow3: number; rules: number; rulesWithFindings: number };
   publishedAt?: string;
@@ -90,7 +100,7 @@ function count(value: unknown, where: string): number {
  *  covers everything the manifest says. */
 export function parseBrandPageManifest(value: unknown): BrandPageManifest {
   if (!isObject(value)) return refuse('brand.json must be an object');
-  keys(value, 'brand.json', ['version', 'id', 'name', 'revision', 'publishedVersion', 'origin', 'generator', 'usage', 'colourways', 'files', 'logos', 'held', 'checks', 'publishedAt', 'digest'],
+  keys(value, 'brand.json', ['version', 'id', 'name', 'revision', 'publishedVersion', 'origin', 'generator', 'usage', 'colourways', 'files', 'logos', 'colourRoles', 'held', 'checks', 'publishedAt', 'digest'],
     ['version', 'id', 'name', 'revision', 'generator', 'colourways', 'files', 'held', 'checks', 'digest']);
   if (value.version !== 1) refuse('this server reads brand.json version 1');
   const generator = value.generator;
@@ -149,7 +159,32 @@ export function parseBrandPageManifest(value: unknown): BrandPageManifest {
   pattern(value.digest, 'digest', HEX, 64);
   checkFolder(files as BrandPageFile[]);
   checkLogos(value.logos, files as BrandPageFile[]);
+  checkColourRoles(value.colourRoles);
   return value as unknown as BrandPageManifest;
+}
+
+const COLOUR_ROLE_ID = /^[a-z][a-z-]{0,31}$/;
+const COLOUR_ROLE_TOKEN = /^color\.semantic\.[a-z][a-z-]{0,31}$/;
+const COLOUR_ROLE_SLOTS = ['primary', 'secondary', 'surface', 'text', 'muted', 'edge'];
+
+/** Each role follows the schema field by field. Its words are the brand's text, stored and served as data. */
+function checkColourRoles(roles: unknown): void {
+  if (roles === undefined) return;
+  if (!Array.isArray(roles) || roles.length > 32) refuse('colourRoles must list at most 32 entries');
+  const seen = new Set<string>();
+  for (const role of roles as unknown[]) {
+    if (!isObject(role)) return refuse('a colour role must be an object');
+    keys(role, 'a colour role', ['id', 'label', 'description', 'token', 'fills'], ['id', 'label', 'token', 'fills']);
+    pattern(role.id, 'a colour role id', COLOUR_ROLE_ID, 32);
+    if (seen.has(role.id as string)) refuse('a colour role is listed twice');
+    seen.add(role.id as string);
+    text(role.label, 'a colour role label', 80, 1);
+    if (role.description !== undefined) text(role.description, 'a colour role description', 600);
+    pattern(role.token, 'a colour role token', COLOUR_ROLE_TOKEN, 47);
+    const fills = role.fills;
+    if (!Array.isArray(fills) || fills.length > 6 || new Set(fills).size !== fills.length) return refuse('a colour role must list each slot it fills once');
+    for (const slot of fills) if (!COLOUR_ROLE_SLOTS.includes(slot as string)) refuse('a colour role fills a slot this server does not read');
+  }
 }
 
 /** Each logo row follows the schema and points at a logo the folder lists, so a reader can trust the path. */

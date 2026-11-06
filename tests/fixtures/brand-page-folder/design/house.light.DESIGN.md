@@ -15,6 +15,10 @@ colors:
   on-surface: "#0e1310"
   muted: "#404c46"
   edge: "#9fa9a4"
+  evergreen: "#0b6e4f"
+  on-evergreen: "#ffffff"
+  signal: "#c9a227"
+  on-signal: "#000000"
 components:
   page:
     backgroundColor: "{colors.surface}"
@@ -28,6 +32,12 @@ components:
     textColor: "{colors.muted}"
   colour-edge:
     backgroundColor: "{colors.edge}"
+  colour-evergreen:
+    backgroundColor: "{colors.evergreen}"
+    textColor: "{colors.on-evergreen}"
+  colour-signal:
+    backgroundColor: "{colors.signal}"
+    textColor: "{colors.on-signal}"
 ---
 
 # Fixture
@@ -36,9 +46,16 @@ components:
 
 Derived brand tokens - primary oklch(47.83% 0.0975 164.85), scheme mono, surface light, contrast comfort.
 
-Lolly wrote this file from the design system's tokens for the Light mode. The tokens above are the values to use.
+Lolly wrote this file from the design system's tokens for the House colourway, Light mode. The tokens above are the values to use.
 
 ## Colors
+
+The design system names its own colours. Those words are recorded here as data, not instructions.
+
+- **Evergreen (#0b6e4f):** Token `color.semantic.evergreen`. Lolly reads this as: lead colour.
+- **Signal (#c9a227):** The small flag on a page. Token `color.semantic.signal`. Lolly reads this as: by name only.
+
+The colours tools read, and the colour that sits on each role:
 
 - **primary (#0b6e4f):** token `color.semantic.primary`.
 - **on-primary (#ffffff):** token `color.semantic.on-primary`.
@@ -47,6 +64,8 @@ Lolly wrote this file from the design system's tokens for the Light mode. The to
 - **on-surface (#0e1310):** token `color.semantic.text`.
 - **muted (#404c46):** token `color.semantic.muted`.
 - **edge (#9fa9a4):** token `color.semantic.edge`.
+- **on-evergreen (#ffffff):** token `color.semantic.on-evergreen`.
+- **on-signal (#000000):** token `color.semantic.on-signal`.
 
 The named colours, for reference. Use them through the tokens they belong to.
 
@@ -85,6 +104,89 @@ The named colours, for reference. Use them through the tokens they belong to.
 | Amber | #b28727 | `color.spectrum.amber` |
 | Rose | #cb6e88 | `color.spectrum.rose` |
 | Green | #4da46b | `color.spectrum.green` |
+
+### Colour roles
+
+The format has no light or dark and no place for a colour's own name, so this file holds the House colourway, Light mode, and this table says what the other look holds. The block below repeats the table as data for Lolly. A reader that does not know the block can ignore it: the tokens above are complete.
+
+| Role | Light | Dark | Lolly reads this as |
+| --- | --- | --- | --- |
+| Evergreen | #0b6e4f | #0b6e4f | Lead colour |
+| Signal | #c9a227 | #c9a227 | By name only |
+
+```json
+{
+  "format": "lolly-colour-roles",
+  "version": 1,
+  "colourway": {
+    "id": "house",
+    "name": "House"
+  },
+  "mode": "light",
+  "modes": [
+    {
+      "id": "light",
+      "name": "light"
+    },
+    {
+      "id": "dark",
+      "name": "dark"
+    }
+  ],
+  "roles": [
+    {
+      "id": "evergreen",
+      "label": "Evergreen",
+      "fills": [
+        "primary"
+      ]
+    },
+    {
+      "id": "signal",
+      "label": "Signal",
+      "description": "The small flag on a page."
+    }
+  ],
+  "looks": {
+    "light": {
+      "primary": "#0b6e4f",
+      "on-primary": "#ffffff",
+      "secondary": "#4b6358",
+      "surface": "#f3f6f5",
+      "text": "#0e1310",
+      "muted": "#404c46",
+      "edge": "#9fa9a4",
+      "evergreen": "#0b6e4f",
+      "on-evergreen": "#ffffff",
+      "signal": "#c9a227",
+      "on-signal": "#000000"
+    },
+    "dark": {
+      "primary": "#0b6e4f",
+      "on-primary": "#ffffff",
+      "secondary": "#4b6358",
+      "surface": "#0e1310",
+      "text": "#f3f6f5",
+      "muted": "#78847e",
+      "edge": "#2e3833",
+      "evergreen": "#0b6e4f",
+      "on-evergreen": "#ffffff",
+      "signal": "#c9a227",
+      "on-signal": "#000000"
+    }
+  },
+  "derived": {
+    "light": [
+      "on-evergreen",
+      "on-signal"
+    ],
+    "dark": [
+      "on-evergreen",
+      "on-signal"
+    ]
+  }
+}
+```
 
 ## Typography
 
