@@ -35,17 +35,24 @@ test('grant authoring names accounts and groups clearly, previews the exact rule
   } finally { p.dom.window.close(); }
 });
 
-test('everyone hides the irrelevant target field; custom actions still require deliberate confirmation', async () => {
+test('everyone hides the irrelevant target field; an unlisted permission goes to the server, which judges it', async () => {
   const p = await fixture();
   try {
     p.kind.value = '*'; p.kind.dispatchEvent(new p.w.Event('change'));
     assert.equal(p.name.disabled, true); assert.equal(p.name.parentElement.hidden, true);
     p.action.value = 'brand.switch'; p.action.dispatchEvent(new p.w.Event('input'));
     p.form.dispatchEvent(new p.w.Event('submit', {cancelable: true})); await pause();
-    assert.equal(p.calls.filter(c => c.body).length, 0);
-    assert.ok(p.form.querySelector('.form-err').textContent.includes('press Add grant again'));
-    p.form.dispatchEvent(new p.w.Event('submit', {cancelable: true})); await pause();
     assert.deepEqual(p.calls.find(c => c.body)?.body, {principal: '*', action: 'brand.switch', resource: '*', effect: 'deny'});
+  } finally { p.dom.window.close(); }
+});
+
+test('a stored rule that can never match says so in its row', async () => {
+  const p = await fixture([{ principal: 'group:msp', action: 'catalog.read', resource: 'catalog:tag/logo', effect: 'deny',
+    neverMatches: '"catalog.read" is checked for the whole deployment, not per catalog, so its resource must be "*".' }]);
+  try {
+    const row = [...p.main.querySelectorAll('tr')].find(tr => tr.textContent.includes('catalog:tag/logo'));
+    assert.ok(row?.textContent.includes('Never matches.'), 'the row is marked');
+    assert.ok(!p.form.querySelector('input[placeholder*="catalog:tag"]'), 'the form no longer suggests tag selectors');
   } finally { p.dom.window.close(); }
 });
 
