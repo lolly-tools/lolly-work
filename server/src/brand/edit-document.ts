@@ -725,12 +725,18 @@ export function applyBrandChanges(base: Rec, changes: readonly BrandEditChange[]
 
 // ── Saying what changed ───────────────────────────────────────────────────────
 
-export interface BrandEditLine { kind: 'colour' | 'colourway' | 'role' | 'binding' | 'brand-page'; name: string; action: 'added' | 'changed' | 'removed'; before: string | null; after: string | null }
+export interface BrandEditLine { kind: 'colour' | 'colourway' | 'role' | 'binding' | 'brand-page'; name: string; label?: string; action: 'added' | 'changed' | 'removed'; before: string | null; after: string | null }
 
 const valueText = (leaf: unknown): string | null => {
   if (leaf === null || leaf === undefined) return null;
   const value = isRec(leaf) && '$value' in leaf ? leaf.$value : leaf;
   return typeof value === 'string' ? value : JSON.stringify(value).slice(0, 200);
+};
+/** The name a person gave this colour, when the document holds one. Plain text, bounded. */
+const labelOf = (before: unknown, after: unknown): { label: string } | Record<string, never> => {
+  const leaf = isRec(after) ? after : before;
+  const text = isRec(leaf) && typeof leaf.$description === 'string' ? leaf.$description.trim() : '';
+  return text ? { label: text.slice(0, 80) } : {};
 };
 const actionOf = (before: unknown, after: unknown): BrandEditLine['action'] => before === null ? 'added' : after === null ? 'removed' : 'changed';
 const roleWords = (role: unknown): string | null => isRec(role) && typeof role.label === 'string' ? role.label : null;
@@ -743,7 +749,7 @@ export function describeBrandChanges(changes: readonly BrandEditChange[]): Brand
     if (change.kind === 'token') {
       // A group's own metadata is not a colour anyone chose.
       if (change.path[change.path.length - 1]!.startsWith('$')) continue;
-      lines.push({ kind: 'colour', name: leafName(change.set, change.path), action: actionOf(change.before, change.after), before: valueText(change.before), after: valueText(change.after) });
+      lines.push({ kind: 'colour', name: leafName(change.set, change.path), ...labelOf(change.before, change.after), action: actionOf(change.before, change.after), before: valueText(change.before), after: valueText(change.after) });
     } else if (change.kind === 'set') lines.push({ kind: 'colourway', name: change.name.replace(/^colourway\//, ''), action: actionOf(change.before, change.after), before: null, after: null });
     else if (change.kind === 'theme') lines.push({ kind: 'colourway', name: isRec(change.after) && typeof change.after.name === 'string' ? change.after.name : isRec(change.before) && typeof change.before.name === 'string' ? change.before.name : change.id, action: actionOf(change.before, change.after), before: null, after: null });
     else if (change.kind === 'role') lines.push({ kind: 'role', name: change.id, action: actionOf(change.before, change.after), before: roleWords(change.before), after: roleWords(change.after) });

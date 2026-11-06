@@ -63,7 +63,11 @@ export function identitySettingsHash(config: InstanceConfig): string {
   const { admission, bootstrapOwners, hostedDomain, tenantId, emailVerification, scopes, authParams } = config.idp;
   const gate = Object.fromEntries(Object.entries({ admission, bootstrapOwners: bootstrapOwners?.length ? bootstrapOwners : undefined,
     hostedDomain, tenantId, emailVerification, scopes, authParams }).filter(([, v]) => v !== undefined));
-  return digest([config.instance.baseUrl, config.idp.issuer, config.idp.clientId, config.idp.groupsClaim, config.idp.claimMap, config.idp.roleGroups, config.idp.additional, config.proxyAuth,
+  // The brand manager role came later and has no default group, so an empty
+  // list means the same as no entry and must not move an existing fingerprint.
+  const { 'brand-manager': managers, ...mapped } = config.idp.roleGroups;
+  const roleGroups = managers?.length ? config.idp.roleGroups : mapped;
+  return digest([config.instance.baseUrl, config.idp.issuer, config.idp.clientId, config.idp.groupsClaim, config.idp.claimMap, roleGroups, config.idp.additional, config.proxyAuth,
     ...(Object.keys(gate).length ? [gate] : [])]);
 }
 export function generateSetup(value: unknown, current: InstanceConfig) {

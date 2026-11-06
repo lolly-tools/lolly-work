@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { parseConfig } from '../server/src/config/instance.ts';
-import { generateSetup, mergeSetupPatch, setupDraft, setupSettingsHash } from '../server/src/setup/configuration.ts';
+import { generateSetup, identitySettingsHash, mergeSetupPatch, setupDraft, setupSettingsHash } from '../server/src/setup/configuration.ts';
 import { testIdentityDiscovery } from '../server/src/setup/identity.ts';
 import { roleFromGroups } from '../server/src/rbac/evaluate.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
@@ -104,6 +104,17 @@ async function samplePack() {
   await writeFile(join(root, 'tools', 'card', 'template.html'), '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#fff"/><text x="5" y="50">{{title}}</text></svg>');
   return root;
 }
+
+test('a brand manager mapping moves the identity fingerprint only when it holds a group', () => {
+  const plain = configured();
+  const fingerprint = identitySettingsHash(plain);
+  const empty = configured();
+  empty.idp.roleGroups = { ...empty.idp.roleGroups, 'brand-manager': [] };
+  assert.equal(identitySettingsHash(empty), fingerprint, 'an empty list means the same as no entry');
+  const mapped = configured();
+  mapped.idp.roleGroups = { ...mapped.idp.roleGroups, 'brand-manager': ['Brand Team'] };
+  assert.notEqual(identitySettingsHash(mapped), fingerprint);
+});
 
 test('an administrator provisions one identity, signs in as mapped owner and produces a governed verified sample', async () => {
   const root = await samplePack(), store = createMemoryStore(); const config = configured(); config.instance.pack = root;

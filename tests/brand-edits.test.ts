@@ -254,6 +254,19 @@ test('a colourway can be added or removed, with its theme and its place in the o
   assert.deepEqual(canonicalJson(applyBrandChanges(doc, removed.changes).doc), canonicalJson(tokens()));
 });
 
+test('a change line carries the name a person gave the colour, as bounded plain text', () => {
+  const base = tokens();
+  const named = structuredClone(base) as any;
+  named.base.color.brand.indigo = { $type: 'color', $value: '#1b2a6b', $description: 'Ink' };
+  const edited = structuredClone(named) as any;
+  edited.base.color.brand.indigo.$value = '#7a2cc8';
+  const [line] = describeBrandChanges(compareBrandDocument(named, edited).changes);
+  assert.equal(line!.label, 'Ink');
+  assert.equal(line!.name, 'base: color.brand.indigo');
+  edited.base.color.brand.indigo.$description = 'x'.repeat(400);
+  assert.equal(describeBrandChanges(compareBrandDocument(named, edited).changes)[0]!.label!.length, 80);
+});
+
 test('a first colourway may note which themes are light and dark, and nothing else about them', () => {
   const plain = tokens();
   for (const theme of plain.$themes.slice(0, 2)) delete theme.$extensions;

@@ -10,7 +10,19 @@ const STATE_CHIP = {
   rejected: ['revoked', 'Rejected'], withdrawn: ['', 'Withdrawn'], failed: ['revoked', 'Did not finish'], staged: ['review', 'Storing'],
 };
 const ACTION_WORD = { added: 'Added', changed: 'Changed', removed: 'Removed' };
-const isColour = (value) => typeof value === 'string' && /^(?:#[0-9a-f]{3,8}|[a-z-]+\([^;{}<>]*\)|[a-z]{3,32})$/i.test(value);
+const isColour = (value) => typeof value === 'string' && /^(?:#[0-9a-f]{3,8}|[a-z-]+\([^;{}<>]*\)|[a-z]{3,32})$/i.test(value) && (globalThis.CSS?.supports?.('color', value) ?? true);
+
+/** One change, as the console shows it everywhere: what it is called, then before and after. */
+export function brandEditLine(el, line) {
+  const value = (text) => text ? el('span', { class: 'bedit-value' }, isColour(text) ? el('span', { class: 'bedit-swatch', style: `background:${text}` }) : null, text) : null;
+  return el('div', { class: 'bedit-line' },
+    el('span', { class: 'muted' }, ACTION_WORD[line.action] ?? line.action),
+    line.label ? el('span', {}, line.label) : null,
+    el('span', { class: 'mono' }, line.name),
+    value(line.before),
+    line.before && line.after ? el('span', { class: 'muted', 'aria-label': 'to' }, '→') : null,
+    value(line.after));
+}
 
 export function brandEditsCard(state, { el, api, toast, changed, relTime, armConfirmButton, lollyHref, chainsHref = '#/chains', fleetHref = '#/fleet', approvalsHref = '#/approvals' }) {
   if (!state) return null;
@@ -63,18 +75,18 @@ export function brandEditsCard(state, { el, api, toast, changed, relTime, armCon
       if (state.connect === 'derived') card.append(el('p', { class: 'sub' }, 'The connect download carries this edit, signed by this instance.'));
       if (state.connect === 'withdrawn') {
         card.append(el('p', { class: 'sub' }, 'New apps cannot download a connect pack until this edit is rolled back or a new pack is uploaded. Roll back here, or build a pack from the edited document and upload it under ',
-          el('a', { href: fleetHref }, 'Fleet'), '.'));
+          el('a', { class: 'link-btn', href: fleetHref }, 'Fleet'), '.'));
       }
     }
     card.append(el('div', { class: 'bedit-actions' },
-      armConfirmButton({}, 'Roll back to the mounted tokens', 'Really roll back?', async (disarm) => {
+      armConfirmButton({}, edit?.state === 'cannot-apply' ? 'Clear this edit' : 'Roll back to the mounted tokens', edit?.state === 'cannot-apply' ? 'Really clear it?' : 'Really roll back?', async (disarm) => {
         errors.textContent = '';
         try { await api('/api/v1/brand/edits/rollback', { method: 'POST', body: {} }); toast('Rolled back'); await changed(); }
         catch (error) { errors.textContent = error.message; disarm(); }
       })));
   }
   if (state.pending) {
-    card.append(el('p', {}, `Revision ${state.pending.n}, sent by ${state.pending.sentByName ?? state.pending.sentBy}, is waiting for approval. `, el('a', { href: approvalsHref }, 'See approvals')));
+    card.append(el('p', {}, `Revision ${state.pending.n}, sent by ${state.pending.sentByName ?? state.pending.sentBy}, is waiting for approval. `, el('a', { class: 'link-btn', href: approvalsHref }, 'See approvals')));
   }
 
   // One plain switch per decision. Both start off.
@@ -95,7 +107,7 @@ export function brandEditsCard(state, { el, api, toast, changed, relTime, armCon
         el('div', {},
           el('label', { for: 'bedit-approval' }, 'Edits need approval before they go live'),
           el('p', { class: 'sub flush' }, 'An edit waits for the chain you pick. With this off, an edit goes live when it is sent.'),
-          !chains.length && !settings.approvalChain ? el('p', { class: 'sub flush' }, el('a', { href: chainsHref }, 'Add an approval chain'), ' to turn this on.') : null,
+          !chains.length && !settings.approvalChain ? el('p', { class: 'sub flush' }, el('a', { class: 'link-btn', href: chainsHref }, 'Add an approval chain'), ' to turn this on.') : null,
           chainPicker)),
       el('div', { class: 'bedit-switch' },
         look,
@@ -115,12 +127,7 @@ export function brandEditsCard(state, { el, api, toast, changed, relTime, armCon
         loaded = true;
         try {
           const detail = await api(`/api/v1/brand/edits/revisions/${row.n}`);
-          lines.replaceChildren(...(detail.lines.length ? detail.lines.map(line => el('div', { class: 'bedit-line' },
-            el('span', { class: 'muted' }, ACTION_WORD[line.action] ?? line.action),
-            el('span', { class: 'mono' }, line.name),
-            line.before ? el('span', { class: 'bedit-value' }, isColour(line.before) ? el('span', { class: 'bedit-swatch', style: `background:${line.before}` }) : null, line.before) : null,
-            line.before && line.after ? el('span', { class: 'muted', 'aria-label': 'to' }, '→') : null,
-            line.after ? el('span', { class: 'bedit-value' }, isColour(line.after) ? el('span', { class: 'bedit-swatch', style: `background:${line.after}` }) : null, line.after) : null)) : [el('p', { class: 'muted' }, 'Nothing a person would see.')]));
+          lines.replaceChildren(...(detail.lines.length ? detail.lines.map(line => brandEditLine(el, line)) : [el('p', { class: 'muted' }, 'Nothing a person would see.')]));
         } catch (error) { lines.replaceChildren(el('p', { class: 'form-err', role: 'status' }, error.message)); loaded = false; }
       } }, el('summary', {}, 'What changed'), lines);
       const again = row.liveAt && edit?.revision !== row.n && ['superseded', 'rolled-back', 'live'].includes(row.state)

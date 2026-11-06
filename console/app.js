@@ -11,7 +11,7 @@
 
 import { brandSourcesCard, catalogTokensAsset } from './brand-admin.js';
 import { brandRulesCard } from './brand-rules.js';
-import { brandEditsCard } from './brand-edits.js';
+import { brandEditLine, brandEditsCard } from './brand-edits.js';
 import { projectTransferCard } from './project-transfer.js';
 import { createToolPolicyEditor } from './tool-policy-editor.js';
 import { setupView, tokensView } from './setup.js';
@@ -3883,9 +3883,7 @@ function brandEditReviewPanel(a, { actionable }) {
   const state = { token: true, onReady: null };
   const edit = a.brandEdit;
   const lines = el('div', { class: 'bedit-lines' }, el('p', { class: 'muted' }, 'Loading what changed…'));
-  void api(edit.detail).then(detail => lines.replaceChildren(...detail.lines.map(line => el('div', { class: 'bedit-line' },
-    el('span', { class: 'muted' }, line.action), el('span', { class: 'mono' }, line.name),
-    line.before ? el('span', { class: 'bedit-value' }, line.before) : null, line.before && line.after ? el('span', { class: 'muted' }, '→') : null, line.after ? el('span', { class: 'bedit-value' }, line.after) : null)))).catch(error => lines.replaceChildren(el('p', { class: 'form-err', role: 'status' }, error.message)));
+  void api(edit.detail).then(detail => lines.replaceChildren(...detail.lines.map(line => brandEditLine(el, line)))).catch(error => lines.replaceChildren(el('p', { class: 'form-err', role: 'status' }, error.message)));
   const element = el('div', { class: 'appr-brand-page' },
     el('p', {}, `Revision ${edit.revision}: ${edit.changes} ${edit.changes === 1 ? 'change' : 'changes'}.`), lines,
     el('p', { class: 'mono bp-digest' }, `SHA-256 ${edit.digest}`),
