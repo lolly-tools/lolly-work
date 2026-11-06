@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "73ff626808064436c56a871109e7bc2513f220e2",
+  "commit": "9b59406111fb6d238c6a7493fc17ef30e151dcaf",
   "files": {
     "content-roots.ts": {
       "source": "packages/node-shell/src/content-roots.ts",
