@@ -45,7 +45,8 @@ const entryFor = (toolInputs: Inputs, groups: string[]) =>
 
 test('a null manifest read still ships the lock and the hide the overlay names', () => {
   const entry = entryFor(new Map([['qr-code', null]]), ['marketing']);
-  assert.deepEqual(entry.inputs?.map((i) => [i.id, i.access?.level, i.access?.by]), [['color', 'locked', 'Brand guardrails']]);
+  assert.deepEqual(entry.inputs?.map((i) => [i.id, i.access?.level]), [['color', 'locked']]);
+  assert.equal(entry.inputs?.[0]?.access?.by, undefined, 'the overlay name stays off the app wire');
   assert.deepEqual(entry.hidden, ['background']);
 });
 
@@ -72,4 +73,14 @@ test('an inputless manifest ([]) is not a miss: nothing is annotated', () => {
   const entry = entryFor(new Map([['qr-code', []]]), ['marketing']);
   assert.equal(entry.inputs, undefined);
   assert.equal(entry.hidden, undefined);
+});
+
+test('the app wire never carries who decided a lock or why (plans/82)', () => {
+  const named: ToolOverlay = { ...OVERLAY, name: 'Partner price sheet',
+    inputAccess: { color: [{ groups: ['*'], level: 'locked', value: '#000000', reason: 'Lead brand colour' }] } };
+  const tools = assembleOrgConfig({ config: CONFIG, user: user(['resellers']), overlays: new Map([['qr-code', named]]),
+    toolInputs: new Map([['qr-code', [{ id: 'color' }]]]), inboxUnread: 0 }).tools;
+  const access = tools['qr-code']!.inputs?.[0]?.access;
+  assert.deepEqual(access, { level: 'locked', value: '#000000' });
+  assert.ok(!JSON.stringify(tools).includes('Partner price sheet') && !JSON.stringify(tools).includes('Lead brand colour'));
 });
