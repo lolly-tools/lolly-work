@@ -20,14 +20,14 @@
  * template to exactly the groups it names, and renders enforce its rules.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
+import { readJson, readRaw, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { INST_PREFIX, instanceAssetEntry, submissionServable, type InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import { normalizeEditable, templateRetired } from '../catalog/templates.ts';
 import { MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
-import { RULES_TOOL_TYPE } from '../catalog/rules-tools.ts';
+import { MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE } from '../catalog/rules-tools.ts';
 import { randomId } from '../lib/crypto.ts';
 import { COMPANY_GROUP_PREFIX, isPartnerGroup, programmeGroup, type ProgrammeRecord } from './types.ts';
 
@@ -49,6 +49,9 @@ export interface TemplateRouteDeps {
   /** New bytes for a published template, through the submit pipeline's
    *  version path, so the same checks run as for any version. */
   submitVersion(actor: UserRecord, target: InstanceAssetRecord, bytes: Buffer): Promise<{ ok: true; version?: number } | { ok: false; status: number; code: string; detail: string }>;
+  /** A Share with rules file, through the submit pipeline (catalog/rules-tools.ts),
+   *  published to these groups by someone who manages programmes. */
+  submitRulesFile(actor: UserRecord, bytes: Buffer, groups: string[]): Promise<{ ok: true; id: string; state: string } | { ok: false; status: number; code: string; detail: string }>;
   now?: () => Date;
 }
 
@@ -226,6 +229,25 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     sendJson(res, 201, { id, groups, editable: editable.editable ?? null });
   });
 
+  /** Publish a Share with rules file: the `.lolly` as the body, `?groups=` for who
+   *  gets it. Work keeps only its data and builds the tool itself. */
+  router.add('POST', '/api/v1/programmes/:id/templates/rules-file', async (req, res, ctx) => {
+    const actor = await manager(req, res); if (!actor) return;
+    const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
+    const groups = audienceOf((ctx.url.searchParams.get('groups') ?? programmeGroup(programme.id)).split(',').map((g) => g.trim()).filter(Boolean));
+    if (!Array.isArray(groups)) return sendError(res, 400, 'INVALID_INPUT', groups.error);
+    const reach = await programmeGroups(store, programme);
+    if (!groups.some((g) => reach.has(g))) return sendError(res, 400, 'INVALID_INPUT', `publish it to ${programme.name} or one of its companies from here`);
+    let bytes: Buffer;
+    try { bytes = await readRaw(req, MAX_RULES_FILE_BYTES); }
+    catch { return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `a Share with rules file is at most ${MAX_RULES_FILE_BYTES} bytes`); }
+    if (!bytes.length) return sendError(res, 400, 'INVALID_INPUT', 'send the .lolly file as the request body');
+    const out = await deps.submitRulesFile(actor, bytes, groups);
+    if (!out.ok) return sendError(res, out.status, out.code, out.detail);
+    await audit(`user:${actor.id}`, 'programme.template.publish', `programme:${programme.id}`, { template: out.id, kind: RULES_TOOL_TYPE, groups });
+    sendJson(res, 201, { id: out.id, state: out.state, groups });
+  });
+
   /** Change who gets it or what they may change: `{ groups?, editable? }`. */
   router.add('PUT', '/api/v1/programmes/:id/templates/:asset', async (req, res, ctx) => {
     const actor = await manager(req, res); if (!actor) return;
@@ -264,8 +286,18 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const actor = await manager(req, res); if (!actor) return;
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
     const rec = await publishedHere(res, programme, `${INST_PREFIX}${String(ctx.params.asset)}`); if (!rec) return;
-    if (rec.entry.type !== 'template') return sendError(res, 400, 'INVALID_INPUT', 'upload the new Share with rules file as this rules tool\'s new version');
     if (templateRetired(rec)) return sendError(res, 409, 'TEMPLATE_RETIRED', 'publish it again before adding a version');
+    // A rules tool's new version is its new Share with rules file, as the body.
+    if (rec.entry.type === RULES_TOOL_TYPE) {
+      let file: Buffer;
+      try { file = await readRaw(req, MAX_RULES_FILE_BYTES); }
+      catch { return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `a Share with rules file is at most ${MAX_RULES_FILE_BYTES} bytes`); }
+      if (!file.length) return sendError(res, 400, 'INVALID_INPUT', 'send the new .lolly file as the request body');
+      const out = await deps.submitVersion(actor, rec, file);
+      if (!out.ok) return sendError(res, out.status, out.code, out.detail);
+      await audit(`user:${actor.id}`, 'programme.template.version', `programme:${programme.id}`, { template: rec.id, version: out.version ?? null });
+      return sendJson(res, 201, { id: rec.id, version: out.version ?? rec.headVersion ?? 1 });
+    }
     const body = ((await readJson(req)) ?? {}) as { from?: unknown };
     const source = await catalogTemplate(body.from);
     if (!source) return sendError(res, 404, 'NOT_FOUND', 'no such template in the catalog');

@@ -137,6 +137,7 @@ before(async () => {
       { email: 'admin@test', groups: ['admin'] },
       { email: 'rita@acme.test', groups: [] },
       { email: 'mia@test', groups: ['marketing'] },
+      { email: 'pat@test', groups: ['partner-team'] },
     ] },
   }));
   store = createMemoryStore();
@@ -247,4 +248,23 @@ test('a retired rules tool leaves the gallery and still opens for a saved copy',
   const entry = (await call(rita, 'GET', '/catalog/tools/index.json')).body.tools.find((t: { id: string }) => t.id === 'partner-data-sheet');
   assert.equal(entry.listed, false);
   assert.equal((await call(rita, 'GET', '/tools/partner-data-sheet/tool.json')).status, 200);
+});
+
+test('someone who manages programmes publishes a rules file and its new version from the programme', async () => {
+  await store.putGrant({ principal: 'group:partner-team', action: 'programme.manage', resource: '*', effect: 'allow' });
+  const pat = await login('pat@test');
+  // No catalog.submit: publishing into a programme is the programme manager's right.
+  assert.equal((await publish(pat, lollyFile(definition({ id: 'reseller-card', name: 'Reseller card' })))).status, 403);
+  const path = '/api/v1/programmes/resellers/templates/rules-file?groups=programme-resellers';
+  const out = await call(pat, 'POST', path, undefined, lollyFile(definition({ id: 'reseller-card', name: 'Reseller card' })));
+  assert.equal(out.status, 201, out.text);
+  const bare = String(out.body.id).replace(/^inst\//, '');
+  const listed = (await call(pat, 'GET', '/api/v1/programmes/resellers/templates')).body.templates;
+  assert.ok(listed.some((t: { id: string; kind: string }) => t.id === out.body.id && t.kind === 'rules-tool'));
+  const stale = await call(pat, 'POST', `/api/v1/programmes/resellers/templates/${bare}/versions`, undefined, lollyFile(definition({ id: 'reseller-card', name: 'Reseller card' })));
+  assert.equal(stale.status, 422, 'the same version again');
+  const next = await call(pat, 'POST', `/api/v1/programmes/resellers/templates/${bare}/versions`, undefined, lollyFile(definition({ id: 'reseller-card', name: 'Reseller card', version: '1.1.0' })));
+  assert.equal(next.status, 201, next.text);
+  assert.equal(next.body.version, 2);
+  assert.equal((await call(pat, 'POST', '/api/v1/programmes/resellers/templates/rules-file?groups=marketing', undefined, lollyFile(definition({ id: 'other-card' })))).status, 400);
 });

@@ -5804,6 +5804,16 @@ export function buildApp(deps: AppDeps): App {
       await trimVersionHistory(outcome.record).catch(() => 0);
       return { ok: true, ...(outcome.version ? { version: outcome.version } : {}) };
     },
+    submitRulesFile: async (actor, bytes, groups) => {
+      const outcome = await submitAsset(submitDeps(), {
+        bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups },
+      });
+      if (!outcome.ok) {
+        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' || outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 422;
+        return { ok: false, status, code: outcome.code, detail: outcome.detail };
+      }
+      return { ok: true, id: outcome.record.id, state: outcome.record.submission?.state ?? 'live' };
+    },
   });
 
   registerFolderRoutes(router, {

@@ -5659,8 +5659,8 @@ async function programmeTemplates(p, host) {
   };
   const openNote = (toolName, programmesWithTool) => el('p', { class: 'policy-warning template-open-note' },
     `People in ${programmesWithTool.join(' and ')} can also open ${toolName} on its own, outside these rules. To keep them inside the rules, publish a Share with rules file instead.`);
-  const uploadRules = async (file, query) => {
-    const res = await fetch(`/api/v1/catalog/submit?${query}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
+  const uploadRules = async (file, path) => {
+    const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
     const out = await res.json().catch(() => null);
     if (!res.ok) throw new Error(out?.error?.message ?? res.statusText);
     return out;
@@ -5697,7 +5697,7 @@ async function programmeTemplates(p, host) {
       const f = fileInput.files?.[0];
       if (!f) return;
       err.textContent = '';
-      try { await uploadRules(f, new URLSearchParams({ assetId: t.id })); toast(`New version of ${t.name} published`); reload(); }
+      try { const out = await uploadRules(f, `${base}/${bare(t.id)}/versions`); toast(`Version ${out.version} of ${t.name} published`); reload(); }
       catch (ex) { err.textContent = ex.message; fileInput.value = ''; }
     });
     const newVersion = el('button', { onclick: () => {
@@ -5788,7 +5788,7 @@ async function programmeTemplates(p, host) {
       if (source.value === UPLOAD) {
         const f = file.files?.[0];
         if (!f) { pubErr.textContent = 'Choose the .lolly file Share with rules downloaded.'; publish.disabled = false; return; }
-        const out = await uploadRules(f, new URLSearchParams({ type: 'rules-tool', groups: groups.join(',') }));
+        const out = await uploadRules(f, `${base}/rules-file?${new URLSearchParams({ groups: groups.join(',') })}`);
         toast(out.state === 'submitted' ? 'Sent. It is waiting for review.' : 'Published');
       } else {
         await api(base, { method: 'POST', body: { from: source.value, groups, editable: rules?.value() ?? null } });
