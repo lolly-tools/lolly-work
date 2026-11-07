@@ -228,6 +228,7 @@ import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkK
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
+import type { RenderPartner } from '../render/record.ts';
 import { templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
@@ -456,7 +457,13 @@ export function buildApp(deps: AppDeps): App {
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
-        companyFor: companyForRender,
+        companyFor: companyForRender, partnerFor: partnerForRender,
+        // The design system that drew the render, named as the brand card names it.
+        designSystem: async () => {
+          const tokens = (await brandChrome.public().catch(() => null))?.tokens ?? null;
+          const card = await brandChrome.card(null, null).catch(() => null);
+          return { id: snap.source.name, label: card?.label || snap.source.label, tokens };
+        },
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
@@ -813,6 +820,24 @@ export function buildApp(deps: AppDeps): App {
       ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
     };
     return out.company || out.programme ? out : undefined;
+  };
+  /** The partner a render is for, as its credential records it (plans/82 M3,
+   *  section 6): the company among the caller's that the template reached, else
+   *  their only one, and the programme that published it, else their only one.
+   *  Never a list and never a guess; nothing for someone outside every programme. */
+  const partnerForRender = async (args: { toolId: string; template: RenderTemplate | null; groups: string[]; role?: string }): Promise<RenderPartner | null> => {
+    if (!isProgrammeScoped(args.groups, args.role)) return null;
+    const companies = await store.listCompanies();
+    const publishedTo = args.template?.groups ?? (await rulesToolBindingsFor(args.groups, args.toolId))?.groups;
+    const picked = pickCompany(args.groups, companies, publishedTo);
+    const programmeId = picked.company?.programmeId ?? pickProgramme(args.groups, companies, publishedTo);
+    const programme = programmeId ? await store.getProgramme(programmeId) : null;
+    const profile = picked.company ? await store.getCompanyProfile(picked.company.id) : null;
+    const out: RenderPartner = {
+      ...(picked.company ? { company: { id: picked.company.id, name: picked.company.name, revision: profile?.revision ?? 0 } } : {}),
+      ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
+    };
+    return out.company || out.programme ? out : null;
   };
   /** An overlay with the caller's company values bound, and the values a tool
    *  starts from: for org-config, Preview and the agents' schema, which have no

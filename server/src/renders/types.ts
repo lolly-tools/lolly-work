@@ -38,6 +38,9 @@ export interface RenderResult {
   expiredAt?: string;
   /** When output retention removed the bytes. */
   purgedAt?: string;
+  /** The partner the file was made for, as its credential records it (plans/82 M3):
+   *  ids for the per-company counts, and the line an agent reads back. */
+  partner?: { company?: string; programme?: string; line?: string };
 }
 
 export interface RenderFailure { code: string; message: string; inspection?: OutputInspection; production?: ProductionReport; productionAttempts?: ProductionReport[] }
