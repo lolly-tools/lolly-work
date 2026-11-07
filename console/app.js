@@ -5826,12 +5826,13 @@ async function programmeLicences(p, host) {
       ? dataTable(['Source', { label: 'Files', num: true }, 'Travel', 'Held back', { label: '', sort: false }], r.sources.map(sourceRow), { filter: false, paginate: false })
       : el('p', { class: 'muted' }, 'Nothing reaches this programme yet.'),
     // Held pack files by id prefix: a mark is offered only where it can act
-    // (files that record no licence); otherwise the row says what clears them.
+    // (files that record no licence). What clears the other files follows the
+    // lines that name them, ahead of the mark, so it is not read as part of it.
     r.prefixes?.length ? el('h3', {}, 'Pack files held back, by id prefix') : null,
     ...(r.prefixes ?? []).map((pr) => el('div', { class: 'stack' },
       ...pr.sentences.map((line) => el('p', { class: 'flush' }, line)),
-      pr.markScope && canMark ? markForm({ markScope: pr.markScope, label: pr.prefix }) : null,
-      pr.clearedBy ? el('p', { class: 'sub flush' }, pr.clearedBy) : null)),
+      pr.clearedBy ? el('p', { class: 'sub flush' }, pr.clearedBy) : null,
+      pr.markScope && canMark ? markForm({ markScope: pr.markScope, label: pr.prefix }) : null)),
     r.choices?.length ? el('h3', {}, `Shared anyway (${r.choices.length})`) : null,
     r.choices?.length ? dataTable(['File', 'Licence', 'For', 'Chosen by', 'Status', { label: '', sort: false }], r.choices.map(choiceRow), { filter: false, paginate: false }) : null,
     r.links.count ? el('h3', {}, `Links made by your people that would lose files (${r.links.count})`) : null,
