@@ -157,6 +157,14 @@ test('a company rule reaches that company only, and the admin sees folders and c
 test('refusals: a path that climbs out, an unknown provider, a company from another programme', async () => {
   const admin = await login('admin@test');
   assert.equal((await call(admin, 'PUT', '/api/v1/programmes/resellers/folders', { provider: 'dam', path: 'Partners/../Internal' })).status, 400);
+  // Nothing defaults to the whole source: a folder is required, and the whole
+  // source has to be asked for by name.
+  const missing = await call(admin, 'PUT', '/api/v1/programmes/resellers/folders', { provider: 'dam' });
+  assert.equal(missing.status, 400);
+  assert.equal(missing.body.error?.code ?? missing.body.code, 'CHOOSE_FOLDER');
+  assert.equal((await call(admin, 'PUT', '/api/v1/programmes/resellers/folders', { provider: 'dam', path: '' })).status, 400, 'an empty path alone is refused');
+  assert.equal((await call(admin, 'PUT', '/api/v1/programmes/resellers/folders', { provider: 'dam', path: '/' })).status, 400, 'so is a path that normalises to empty');
+  assert.ok(!(await store.listPartnerFolders()).some((r) => r.path === ''), 'nothing was written');
   assert.equal((await call(admin, 'PUT', '/api/v1/programmes/resellers/folders', { provider: 'nope', path: 'x' })).status, 404);
   assert.equal((await call(admin, 'PUT', '/api/v1/programmes/isvs', { name: 'ISVs' })).status, 201);
   assert.equal((await call(admin, 'PUT', '/api/v1/programmes/isvs/companies/initech', { name: 'Initech' })).status, 201);
@@ -198,4 +206,8 @@ test('the CLI gives, lists and removes a folder', async () => {
   assert.deepEqual(listed.folders.map((f: { path: string; assets: number }) => [f.path, f.assets]), [['Partners/US', 1]]);
   await run(['folders', 'rm', 'dam', 'Partners/US', '--programme', 'msps']);
   assert.deepEqual((await run(['folders', '--programme', 'msps'])).folders, []);
+  await assert.rejects(run(['folders', 'add', 'dam', '--programme', 'msps']), /needs a folder/, 'no folder is an error, not the whole source');
+  const whole = await run(['folders', 'add', 'dam', '--whole', '--programme', 'msps']);
+  assert.equal(whole.path, '', 'the whole source only when asked for with --whole');
+  assert.equal((await run(['folders', '--programme', 'msps'])).folders[0].assets, 4);
 });

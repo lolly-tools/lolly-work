@@ -5895,27 +5895,53 @@ async function programmePeople(p, host, lastResult = null) {
   const sources = folderData.providers ?? [];
   const sourceSel = el('select', { 'aria-label': 'Source' }, ...sources.map((s) => el('option', { value: s.id }, s.label)));
   const folderSel = el('select', { 'aria-label': 'Folder' });
+  // Nothing is chosen at first, and "All of it" comes last: pressing the
+  // button without looking must never give partners the whole source.
+  // Option values: '' is no choice, 'whole' the whole source, 'path:<p>' a folder.
+  const folderNote = el('p', { class: 'sub flush' });
+  const chosenPath = () => (folderSel.value === 'whole' ? '' : folderSel.value.startsWith('path:') ? folderSel.value.slice(5) : null);
+  const describeChoice = () => {
+    const source = sources.find((s) => s.id === sourceSel.value);
+    const path = chosenPath();
+    addFolder.disabled = path === null;
+    if (path === null || !source) { folderNote.textContent = ''; return; }
+    const inside = source.folders.filter((f) => f.path && f.path !== path && (path === '' || f.path.startsWith(`${path}/`)));
+    const names = inside.slice(0, 8).map((f) => `${f.path} (${f.assets})`);
+    const more = inside.length > 8 ? `, and ${inside.length - 8} more folders` : '';
+    folderNote.textContent = inside.length
+      ? `This includes ${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]}${more}.`
+      : '';
+  };
   const fillFolders = () => {
     const source = sources.find((s) => s.id === sourceSel.value);
+    const named = (source?.folders ?? []).filter((f) => f.path);
+    const whole = (source?.folders ?? []).find((f) => !f.path);
     folderSel.replaceChildren(...(source && !source.synced
-      ? [el('option', { value: '', disabled: 'disabled' }, 'Syncing: its folders appear when the first sync finishes')]
-      : (source?.folders ?? []).map((f) => el('option', { value: f.path }, `${folderName(f.path)} (${assetsText(f.assets)})`))));
+      ? [el('option', { value: '', disabled: 'disabled', selected: 'selected' }, 'Syncing: its folders appear when the first sync finishes')]
+      : [el('option', { value: '', selected: 'selected' }, 'Choose a folder'),
+        ...named.map((f) => el('option', { value: `path:${f.path}` }, `${f.path} (${assetsText(f.assets)})`)),
+        ...(whole ? [el('option', { value: 'whole' }, `All of it (${assetsText(whole.assets)})`)] : [])]));
+    describeChoice();
   };
   sourceSel.addEventListener('change', fillFolders);
-  fillFolders();
+  folderSel.addEventListener('change', describeChoice);
   const folderCompany = el('select', { 'aria-label': 'Who gets it' }, el('option', { value: '' }, `Everyone in ${p.name}`),
     ...data.companies.map((c) => el('option', { value: c.id }, c.name)));
   const folderEnds = el('input', { type: 'date', 'aria-label': 'End date' });
   const folderErr = errSpan();
-  const addFolder = el('button', { class: 'primary', disabled: sources.length ? null : 'disabled', onclick: async () => {
+  const addFolder = el('button', { class: 'primary', disabled: 'disabled', onclick: async () => {
+    const path = chosenPath();
+    if (path === null) return;
     folderErr.textContent = ''; addFolder.disabled = true;
     try {
       await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/folders`, { method: 'PUT', body: {
-        provider: sourceSel.value, path: folderSel.value, ...(folderCompany.value ? { company: folderCompany.value } : {}), ...(folderEnds.value ? { endsAt: folderEnds.value } : {}),
+        provider: sourceSel.value, path, ...(path === '' ? { whole: true } : {}),
+        ...(folderCompany.value ? { company: folderCompany.value } : {}), ...(folderEnds.value ? { endsAt: folderEnds.value } : {}),
       } });
-      toast(`Added ${folderName(folderSel.value)}`); reload();
+      toast(`Added ${folderName(path)}`); reload();
     } catch (ex) { folderErr.textContent = ex.message; addFolder.disabled = false; }
   } }, 'Give this folder');
+  fillFolders();
   const foldersCard = el('div', { class: 'card stack' },
     el('h2', {}, 'Provider folders'),
     el('p', { class: 'sub flush' }, `Give one folder of a connected source, and everything inside it, to ${p.name} or to one company in it. They get those files even when the source is otherwise for your own people, and nothing else from it.`),
@@ -5926,6 +5952,7 @@ async function programmePeople(p, host, lastResult = null) {
     sources.length
       ? el('div', { class: 'grant-fields' }, field('Source', sourceSel), field('Folder', folderSel), field('Who gets it', folderCompany), field('End date (optional)', folderEnds))
       : el('p', { class: 'muted' }, 'No connected sources yet. Connect one under Catalog, then come back to give a folder.'),
+    sources.length ? folderNote : null,
     sources.length ? el('p', {}, addFolder) : null,
     folderErr);
 

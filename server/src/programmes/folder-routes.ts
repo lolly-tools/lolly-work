@@ -109,16 +109,20 @@ export function registerFolderRoutes(router: Router, deps: FolderRouteDeps): voi
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 
-  /** Add or change one rule. Body: `{ provider, path, company?, endsAt? }`. */
+  /** Add or change one rule. Body: `{ provider, path, company?, endsAt? }`.
+   *  `path` is required: nothing defaults to the whole source. The whole
+   *  source is `path: ""` together with `whole: true`, said on purpose. */
   router.add('PUT', '/api/v1/programmes/:id/folders', async (req, res, ctx) => {
     const actor = await manager(req, res); if (!actor) return;
     const programme = await store.getProgramme(String(ctx.params.id));
     if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
-    const body = ((await readJson(req)) ?? {}) as { provider?: unknown; path?: unknown; company?: unknown; endsAt?: unknown };
+    const body = ((await readJson(req)) ?? {}) as { provider?: unknown; path?: unknown; whole?: unknown; company?: unknown; endsAt?: unknown };
     const provider = typeof body.provider === 'string' ? await store.getProvider(body.provider, { includeFragment: false }) : null;
     if (!provider) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
-    const path = normaliseFolderPath(body.path ?? '');
-    if (path === null) return sendError(res, 400, 'INVALID_INPUT', 'path is a folder below the provider root, such as Partners/EMEA, or empty for all of it');
+    if (body.path === undefined || body.path === null) return sendError(res, 400, 'CHOOSE_FOLDER', 'choose a folder, such as Partners/EMEA; to give the whole source, send path "" with whole: true');
+    const path = normaliseFolderPath(body.path);
+    if (path === null) return sendError(res, 400, 'INVALID_INPUT', 'path is a folder below the provider root, such as Partners/EMEA');
+    if (path === '' && body.whole !== true) return sendError(res, 400, 'CHOOSE_FOLDER', 'an empty path gives the whole source; send whole: true to mean that');
     let companyId: string | undefined;
     if (body.company !== undefined && body.company !== null && body.company !== '') {
       const company = (await store.listCompanies()).find((c) => c.id === body.company && c.programmeId === programme.id);
