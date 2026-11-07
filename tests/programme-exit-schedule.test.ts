@@ -95,7 +95,7 @@ test('the wording names only what Lolly Work does', () => {
   const ctx = noticeContext(config, Date.parse('2031-11-16T00:00:00Z'));
   const n = accessEndsNotice({ id: 'm', users: ['u'], programme: 'Resellers, EMEA', endsAt: '2031-11-30T23:59:59.999Z', accountEnds: true, projects: 'team-readonly' }, ctx);
   assert.equal(n.message.title, 'Your access through Resellers, EMEA ends on 30 November 2031');
-  assert.equal(n.message.body, 'Your access to SUSE Content Automation through Resellers, EMEA ends on 30 November 2031. Pieces you saved to team projects stay with SUSE Content Automation, read-only. Download anything you want to keep before then.');
+  assert.equal(n.message.body, 'Pieces you saved to team projects stay with SUSE Content Automation, read-only. Download anything you want to keep before then.');
   assert.equal(n.message.cta?.label, 'Open Projects');
   assert.match(n.message.cta!.url, /#\/projects$/);
   const stays = accessEndsNotice({ id: 'm', users: ['u'], programme: 'Resellers, EMEA', endsAt: '2031-11-30T23:59:59.999Z', accountEnds: false }, ctx);

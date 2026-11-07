@@ -96,8 +96,8 @@ export function accessEndsNotice(o: {
   const pieces = !o.accountEnds ? 'Your access through your other programmes stays as it is.'
     : o.projects === 'me' ? `Pieces you saved to team projects stay with ${ctx.workspace}.`
     : `Pieces you saved to team projects stay with ${ctx.workspace}, read-only.`;
-  const body = [`Your access to ${ctx.workspace} through ${o.programme} ends on ${day}.`, pieces,
-    o.accountEnds ? 'Download anything you want to keep before then.' : ''].filter(Boolean).join(' ');
+  // The title states the date; the body says what happens and what to do.
+  const body = [pieces, o.accountEnds ? 'Download anything you want to keep before then.' : ''].filter(Boolean).join(' ');
   const url = `${ctx.appBase}/#/projects`;
   return {
     message: {
