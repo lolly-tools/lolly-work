@@ -30,6 +30,7 @@ import { MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
 import { MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE } from '../catalog/rules-tools.ts';
 import { randomId } from '../lib/crypto.ts';
 import { COMPANY_GROUP_PREFIX, isPartnerGroup, programmeGroup, type ProgrammeRecord } from './types.ts';
+import { isTemplatesOnlyToolId, withTemplatesOnly } from './templates-only.ts';
 
 type Router = ReturnType<typeof createRouter>;
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
@@ -122,6 +123,7 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const reach = await programmeGroups(store, programme);
     const labels = await groupLabels(store);
     const companies = await store.listCompanies();
+    const programmesByGroup = new Map((await store.listProgrammes()).map((p) => [programmeGroup(p.id), p]));
     const all = await store.listInstanceAssets();
     const rows = [];
     for (const rec of all) {
@@ -139,6 +141,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
         const audienceProgrammes = new Set(groupsOf(rec).flatMap((g) => g.startsWith('programme-') ? [g]
           : g.startsWith(COMPANY_GROUP_PREFIX) ? companies.filter((c) => `${COMPANY_GROUP_PREFIX}${c.id}` === g).map((c) => programmeGroup(c.programmeId)) : []));
         for (const g of audienceProgrammes) {
+          // A programme set to templates only for this tool cannot open it on its own.
+          if (programmesByGroup.get(g)?.templatesOnly?.includes(toolId)) continue;
           if (await deps.toolOpenTo(g, toolId)) openTo.push(labels.get(g)?.replace(/^Everyone in /, '') ?? g);
         }
       }
@@ -180,9 +184,31 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     sendJson(res, 200, {
       programme: programme.id,
       reach: [...reach].map(([group, label]) => ({ group, label })),
+      templatesOnly: programme.templatesOnly ?? [],
+      // Their names, for a switch shown with no live template of the tool to name it.
+      templatesOnlyTools: await Promise.all((programme.templatesOnly ?? []).map(async (id) => ({ id, name: (await deps.toolFacts(id))?.name ?? id }))),
       templates: rows, candidates,
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
+
+  /** Templates only (programmes/templates-only.ts): `{ on }` for one tool. Off by
+   *  default; turning it on keeps this programme's people inside the templates
+   *  published to them, and copies they saved before keep opening. */
+  router.add('PUT', '/api/v1/programmes/:id/templates-only/:tool', async (req, res, ctx) => {
+    const actor = await manager(req, res); if (!actor) return;
+    const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
+    const toolId = String(ctx.params.tool);
+    const body = ((await readJson(req)) ?? {}) as { on?: unknown };
+    if (typeof body.on !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'on must be true or false');
+    if (!isTemplatesOnlyToolId(toolId) || !(await deps.toolFacts(toolId))) return sendError(res, 404, 'NOT_FOUND', 'no such tool');
+    const was = !!programme.templatesOnly?.includes(toolId);
+    if (was !== body.on) {
+      const next = withTemplatesOnly(programme, toolId, body.on);
+      await store.putProgramme({ ...next, updatedAt: now(), version: programme.version + 1 });
+      await audit(`user:${actor.id}`, 'programme.template.only', `programme:${programme.id}`, { toolId, on: body.on });
+    }
+    sendJson(res, 200, { programme: programme.id, toolId, on: body.on });
+  });
 
   /** Publish one of the catalog's templates: `{ from, groups, editable?, fixedTheme? }`. The
    *  programme gets its own copy, with its own versions, rules and retirement. */

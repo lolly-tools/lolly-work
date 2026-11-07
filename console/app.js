@@ -5674,8 +5674,50 @@ async function programmeTemplates(p, host) {
       fixedTheme: () => !theme.checked,
     };
   };
-  const openNote = (toolName, programmesWithTool) => el('p', { class: 'policy-warning template-open-note' },
-    `People in ${programmesWithTool.join(' and ')} can also open ${toolName} on its own, outside these rules. To keep them inside the rules, publish a Share with rules file instead.`);
+  // Templates only (plans/82 M2 W5): one switch per tool for this programme, off by
+  // default. The open-tool line above it points to it.
+  const onlyTools = new Set(data.templatesOnly ?? []);
+  // The open-tool line, for the other programmes a template reaches: this programme's
+  // own switch says the same for this programme, so the card says it once.
+  const openNote = (toolName, otherProgrammes) => el('p', { class: 'policy-warning template-open-note' },
+    `People in ${otherProgrammes.join(' and ')} can also open ${toolName} on its own, outside these rules. To keep them inside, turn on “Partners use ${toolName} only through its published templates” in ${otherProgrammes.length === 1 ? 'that programme' : 'those programmes'}.`);
+  // Who in this programme has a live template for a tool: everyone, some companies, or no one.
+  const companyLabels = new Map(data.reach.filter((r) => r.group.startsWith('company-')).map((r) => [r.group, r.label]));
+  const coverage = (toolId) => {
+    const live = data.templates.filter((t) => t.kind === 'template' && t.toolId === toolId && !t.retired && t.state !== 'submitted');
+    const groups = new Set(live.flatMap((t) => t.groups));
+    if (groups.has(`programme-${p.id}`)) return { everyone: true, companies: [] };
+    return { everyone: false, companies: [...companyLabels].filter(([g]) => groups.has(g)).map(([, label]) => label) };
+  };
+  const gapLine = (toolId, toolName) => {
+    const c = coverage(toolId);
+    if (c.everyone) return null;
+    const who = c.companies.join(' and ');
+    return el('p', { class: 'policy-warning template-gap' }, c.companies.length
+      ? `Only ${who} ${c.companies.length === 1 ? 'has' : 'have'} a ${toolName} template. Others in ${p.name} cannot use ${toolName}.`
+      : `No one in ${p.name} has a ${toolName} template, so no one there can use ${toolName}.`);
+  };
+  const onlySwitch = (toolId, toolName) => {
+    const on = onlyTools.has(toolId);
+    const cb = el('input', { type: 'checkbox', ...(on ? { checked: 'checked' } : {}) });
+    const swErr = errSpan();
+    cb.addEventListener('change', async () => {
+      swErr.textContent = '';
+      try {
+        await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/templates-only/${encodeURIComponent(toolId)}`, { method: 'PUT', body: { on: cb.checked } });
+        toast(cb.checked ? `People in ${p.name} now use ${toolName} only through its published templates` : `People in ${p.name} can open ${toolName} on its own again`);
+        reload();
+      } catch (ex) { cb.checked = !cb.checked; swErr.textContent = ex.message; }
+    });
+    return el('div', { class: 'stack template-only' },
+      el('label', { class: 'chk' }, cb, el('span', {}, `Partners use ${toolName} only through its published templates`)),
+      el('p', { class: 'sub flush' }, on
+        ? `${toolName} is not in their gallery or search. Its Start chooser offers only the templates published to them, and a server render must name one. Copies they saved before keep opening.`
+        : `Off: people in ${p.name} can also open ${toolName} on its own, outside these rules.`),
+      on ? gapLine(toolId, toolName) : null,
+      swErr);
+  };
+  const switchShown = new Set();
   const uploadRules = async (file, path) => {
     const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
     const out = await res.json().catch(() => null);
@@ -5769,7 +5811,10 @@ async function programmeTemplates(p, host) {
         el('div', {}, el('div', { class: 'template-label' }, 'Partners can change'), canChange),
         el('div', {}, el('div', { class: 'template-label' }, 'Version'), version, el('div', { class: 'muted' }, `Published ${day(t.publishedAt)}`)),
         el('div', { class: 'programme-actions template-actions' }, ...(t.retired ? [restore] : [change, newVersion, retire]), fileInput)),
-      t.toolOpenTo?.length && !t.retired ? openNote(t.toolName, t.toolOpenTo) : null,
+      t.toolOpenTo?.filter((n) => n !== p.name).length && !t.retired ? openNote(t.toolName, t.toolOpenTo.filter((n) => n !== p.name)) : null,
+      // The switch, once per tool, on the first live row that starts it.
+      t.kind === 'template' && !t.retired && (p.tools.includes(t.toolId) || onlyTools.has(t.toolId)) && !switchShown.has(t.toolId)
+        ? (switchShown.add(t.toolId), onlySwitch(t.toolId, t.toolName)) : null,
       panel, err);
   };
 
@@ -5790,7 +5835,9 @@ async function programmeTemplates(p, host) {
     const chosen = data.candidates.find((c) => c.id === source.value);
     fileField.hidden = source.value !== UPLOAD;
     rules = chosen ? rulesPicker(chosen.inputs, null) : null;
-    rulesHost.replaceChildren(...(rules ? [rules.el, ...(p.tools.includes(chosen.toolId) ? [openNote(chosen.toolName, [p.name])] : [])]
+    const publishNote = (toolName) => el('p', { class: 'policy-warning template-open-note' },
+      `People in ${p.name} can also open ${toolName} on its own, outside these rules. Once it is published, its row has a switch to keep them inside.`);
+    rulesHost.replaceChildren(...(rules ? [rules.el, ...(p.tools.includes(chosen.toolId) && !onlyTools.has(chosen.toolId) ? [publishNote(chosen.toolName)] : [])]
       : source.value === UPLOAD ? [el('p', { class: 'sub flush' }, 'A Share with rules file brings its own rules: partners change only what its designer chose.')] : []));
     publish.disabled = !source.value;
   };
@@ -5816,10 +5863,15 @@ async function programmeTemplates(p, host) {
   });
 
   const current = data.templates;
+  const rowEls = current.map(row);
+  // A switch left on for a tool with no live template here still shows, with its gap line.
+  const orphanSwitches = [...onlyTools].filter((toolId) => !switchShown.has(toolId))
+    .map((toolId) => onlySwitch(toolId, (data.templatesOnlyTools ?? []).find((x) => x.id === toolId)?.name ?? toolId));
   host.replaceChildren(el('div', { class: 'card stack' },
     el('h2', {}, 'Templates'),
     el('p', { class: 'sub flush' }, `Starting points people in ${p.name} see on their home and in each tool. They change only what the template allows.`),
-    current.length ? el('div', { class: 'template-list' }, ...current.map(row)) : el('p', { class: 'muted' }, 'No templates yet.'),
+    current.length ? el('div', { class: 'template-list' }, ...rowEls) : el('p', { class: 'muted' }, 'No templates yet.'),
+    ...orphanSwitches,
     el('h3', {}, 'Publish a template'),
     el('div', { class: 'grant-fields' }, field('Template', source), fileField),
     field('Who gets it', who.list),
@@ -6790,6 +6842,8 @@ function renderPreview(data) {
       preview.scoped ? el('p', {}, el('span', { class: 'status live' }, 'Partner programme'), ' ',
         `uses ${preview.visibleTools?.length ?? 0} tool${preview.visibleTools?.length === 1 ? '' : 's'}: `,
         el('span', { class: 'mono' }, (preview.visibleTools ?? []).join(', ') || 'none yet')) : null,
+      preview.templatesOnly?.length ? el('p', {}, el('span', { class: 'status review' }, 'Templates only'), ' ',
+        preview.templatesOnly.map((o) => `${o.toolName}, only through its published templates, set by ${o.setBy.join(' and ')}`).join('. ') + '.') : null,
       el('p', { class: 'sub' }, `${orgConfig.inboxUnread} unread inbox message${orgConfig.inboxUnread === 1 ? '' : 's'} would target this group.`)),
     templatesCard,
     assetCard,

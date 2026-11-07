@@ -98,6 +98,7 @@ import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-ro
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
+import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
 import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
@@ -450,6 +451,7 @@ export function buildApp(deps: AppDeps): App {
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
+        templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
         workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
@@ -733,6 +735,19 @@ export function buildApp(deps: AppDeps): App {
       ...(rec.publication?.fixedTheme ? { fixedTheme: true } : {}),
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
     };
+  };
+  // Templates only (plans/82 M2 W5): the tools someone uses only through the
+  // templates published to them, and for a render, the templates they may name.
+  // Who a render is for: groups, and the role, so an admin or owner is never scoped to a
+  // programme in a render either, as in the gallery and the served index.
+  const renderPrincipal = (user: { groups: string[]; role?: string } | null | undefined, groups?: string[]) =>
+    ({ groups: groups ?? user?.groups ?? [], ...(user?.role ? { role: user.role } : {}) });
+  const templatesOnlyOf = async (groups: string[], role?: string) => templatesOnlyFor(await store.listProgrammes(), await store.listCompanies(), groups, role);
+  const templatesRequiredFor = async (groups: string[], role: string | undefined, toolId: string): Promise<Array<{ id: string; name: string }> | null> => {
+    if (!(await templatesOnlyOf(groups, role)).has(toolId)) return null;
+    const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+    return feed.filter((a) => a.type === 'template' && (a.meta as { toolId?: unknown; retired?: unknown } | undefined)?.toolId === toolId && !(a.meta as { retired?: unknown }).retired)
+      .map((a) => ({ id: a.id, name: typeof a.name === 'string' ? a.name : a.id }));
   };
   // ── rules tools (plans/82 M2) ───────────────────────────────────────────
   // A published Share with rules file is stored as data and built here, with
@@ -2926,6 +2941,10 @@ export function buildApp(deps: AppDeps): App {
     // what it fixes, and for the admin reading this, why. The app is told only
     // which inputs it may offer.
     const templates: Array<Record<string, unknown>> = [];
+    // Tools these groups use only through templates, and which programme said so.
+    const onlyTemplates = await templatesOnlyOf(groups, subject.role);
+    const setByLine = (toolName: string, setBy: Array<{ name: string }>) =>
+      `These groups use ${toolName} only through its published templates, set by ${setBy.map((p) => p.name).join(' and ')}.`;
     for (const entry of feedAssets.filter((a) => a.type === 'template' || a.type === RULES_TOOL_TYPE)) {
       const meta = (entry.meta ?? {}) as { toolId?: string; version?: number; toolVersion?: string; editable?: string[]; fixedTheme?: boolean; inputs?: Array<{ id: string; label: string }>; rebuilt?: boolean; retired?: boolean; replacedBy?: string };
       const replacement = meta.replacedBy ? feedAssets.find((a) => a.id === meta.replacedBy) ?? await store.getInstanceAsset(meta.replacedBy).then((r) => r?.entry ?? null) : null;
@@ -2969,10 +2988,15 @@ export function buildApp(deps: AppDeps): App {
         canChange.push(COLOURWAY_ROW);
         whyLines.push(`${followers.join(', ')} ${followers.length === 1 ? 'follows' : 'follow'} the colourway and mode partners pick.`);
       }
-      if (visibleTools.includes(toolId)) whyLines.push(`These groups can also open ${toolName} on its own, outside these rules.`);
+      const setBy = onlyTemplates.get(toolId);
+      if (setBy) whyLines.push(setByLine(toolName, setBy));
+      else if (visibleTools.includes(toolId)) whyLines.push(`These groups can also open ${toolName} on its own, outside these rules.`);
       templates.push({ ...base, toolId, toolName, canChange, fixed, why: whyLines });
     }
-    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, templates, ...(Object.keys(why).length ? { why } : {}), ...(Object.keys(attribution).length ? { attribution } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
+    const templatesOnly = await Promise.all([...onlyTemplates].map(async ([toolId, setBy]) => ({ toolId,
+      toolName: await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8').then((t) => String((JSON.parse(t) as { name?: unknown }).name ?? toolId)).catch(() => toolId),
+      setBy: setBy.map((p) => p.name) })));
+    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, templates, templatesOnly, ...(Object.keys(why).length ? { why } : {}), ...(Object.keys(attribution).length ? { attribution } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
   });
 
   // ── telemetry ─────────────────────────────────────────────────────────────
@@ -6415,10 +6439,12 @@ export function buildApp(deps: AppDeps): App {
     guestToolId?: string,
   ): Promise<CatalogCaller> => {
     const instanceTools = guestToolId ? undefined : await instanceToolsFor(user?.groups ?? []);
+    const templatesOnly = guestToolId ? undefined : await templatesOnlyOf(user?.groups ?? [], user?.role);
     return {
       overlays: await store.listOverlays(), groups: user?.groups ?? [], grants: await store.listGrants(),
       ...(user?.id ? { userId: user.id } : {}), ...(user?.role ? { role: user.role } : {}), ...(guestToolId ? { guestToolId } : {}),
       ...(instanceTools?.size ? { instanceTools } : {}),
+      ...(templatesOnly?.size ? { templatesOnly: new Set(templatesOnly.keys()) } : {}),
     };
   };
   const serveTool: Handler = async (req, res, ctx) => {
@@ -11029,7 +11055,7 @@ export function buildApp(deps: AppDeps): App {
         signal, toolId: record.request.toolId, format: record.request.format, query: queryFromInputs(record.request.inputs),
         verification: record.request.verification,
         production: record.request.production,
-        principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
+        principal: renderPrincipal(caller.user, caller.groups), profile: caller.profile, overlays: await store.listOverlays(),
       }, caller.user);
       signal.throwIfAborted();
       await currentRenderCaller(record.principal, record.request);
@@ -11136,7 +11162,7 @@ export function buildApp(deps: AppDeps): App {
           if (index >= rows.length) return;
           let result: Awaited<ReturnType<typeof renderTool>> | null = null; let error: unknown;
           for (let attempt = 0; attempt <= retries && !result; attempt++) {
-            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }, caller.user); }
+            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: renderPrincipal(caller.user, caller.groups), profile: caller.profile, overlays }, caller.user); }
             catch (caught) { error = caught; }
           }
           if (result) { retainedBytes += result.bytes.byteLength; if (retainedBytes > 128 * 1024 * 1024) throw new Error('Batch output exceeds 128 MB. Split the batch.'); }
@@ -11166,7 +11192,7 @@ export function buildApp(deps: AppDeps): App {
     if (job.verb === 'render') {
       if (typeof body.toolId !== 'string' || typeof body.format !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const rendered = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: context.hostedResolver }, {
-        toolId: body.toolId, format: body.format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>), principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
+        toolId: body.toolId, format: body.format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>), principal: renderPrincipal(caller.user, caller.groups), profile: caller.profile, overlays: await store.listOverlays(),
       }, caller.user);
       signal.throwIfAborted(); return { mime: rendered.mime, bytes: rendered.bytes };
     }
@@ -11304,7 +11330,7 @@ export function buildApp(deps: AppDeps): App {
     const execute = async () => {
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, {
         toolId, format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>),
-        principal: caller.user ? { groups: caller.user.groups } : { groups: [] }, profile: caller.profile,
+        principal: renderPrincipal(caller.user), profile: caller.profile,
         overlays: await store.listOverlays(),
       }, caller.user);
       return result;
@@ -11446,7 +11472,7 @@ export function buildApp(deps: AppDeps): App {
       const signer = await getC2paSigner();
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer }, {
         toolId, format, query,
-        principal: user ? { groups: user.groups } : { groups: [] },
+        principal: renderPrincipal(user),
         profile: renderProfileOf(user),
         overlays,
       }, user);
