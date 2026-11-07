@@ -71,6 +71,7 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     role: r.role as string,
     ...(r.scopes ? { scopes: r.scopes as string[] } : {}),
     ...(r.tools ? { tools: r.tools as string[] } : {}),
+    ...(r.groups ? { groups: r.groups as string[] } : {}),
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
     createdAt: new Date(r.created_at as string).toISOString(),
@@ -899,10 +900,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // Service tokens (plans/35 wave 2) - the SCIM block's shapes, one row kind over.
     async putApiToken(rec) {
       await pool.query(
-        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
-        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null, rec.scopes ?? null, rec.tools ?? null],
+        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools, groups)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at, groups = excluded.groups`,
+        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null, rec.scopes ?? null, rec.tools ?? null, rec.groups ?? null],
       );
     },
     async listApiTokens() {
