@@ -11498,13 +11498,18 @@ export function buildApp(deps: AppDeps): App {
       return { id: snap.source.id, name: snap.source.label || snap.source.name, revision: snap.revision };
     },
     page: async () => {
+      // Only a page the public can read right now: its current, published revision,
+      // while brand pages are on. A staged revision, one awaiting approval, an
+      // unpublished page or a page on an instance with pages off never reaches a
+      // token, so nothing is published by this route that is not already public.
+      if (!brandPages.enabled()) return null;
       const snap = brand.current() ?? await brand.snapshot();
       // A page's id is its design system's name, the profile name a source carries.
       const live = await brandPages.live(snap.source.name);
-      if ('missing' in live) return null;
+      if ('missing' in live || live.revision.state !== 'live') return null;
       return {
         slug: live.revision.slug, revision: live.revision.n, manifest: live.revision.manifest,
-        url: brandPages.enabled() ? brandPages.pageUrl(live.revision.slug) : null,
+        url: brandPages.pageUrl(live.revision.slug),
         read: async (path) => {
           const file = live.files.get(path);
           const bytes = file ? await brandPages.readFile(live.revision, file) : null;
