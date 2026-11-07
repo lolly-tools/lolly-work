@@ -114,6 +114,22 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'GET /api/v1/mcp': ANY,
   'POST /api/v1/mcp': ANY,
 
+  // Brand context (plans/82 M7, automation/context-routes.ts): who the token is and
+  // which design system it draws with reach every token; the brand's files, its
+  // skills and the partner's own details are catalog reads.
+  'GET /api/v1/context': ANY,
+  'GET /api/v1/context/me': ANY,
+  'GET /api/v1/context/brand': ANY,
+  'GET /api/v1/context/brand/design-md': ['catalog.read'],
+  'GET /api/v1/context/brand/tokens': ['catalog.read'],
+  'GET /api/v1/context/brand/agents-md': ['catalog.read'],
+  'GET /api/v1/context/brand/checks': ['catalog.read'],
+  'GET /api/v1/context/brand/skills': ['catalog.read'],
+  'GET /api/v1/context/brand/skills/:slug/*': ['catalog.read'],
+  'GET /api/v1/context/partner/company': ['catalog.read'],
+  'GET /api/v1/context/partner/company/logo/:surface': ['catalog.read'],
+  'GET /api/v1/context/partner/templates': ['catalog.read'],
+
   'GET /api/v1/discovery/tools': WORK,
   'GET /api/v1/schema/:toolId': WORK,
   'POST /api/v1/validate': WORK,
