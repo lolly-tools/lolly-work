@@ -35,7 +35,8 @@ import { inspectOutput, outputVerificationProblems, OutputVerificationError, par
 import { applyPreviewWatermark, shouldWatermark, untilApprovedNote } from './watermark.ts';
 import { renderInputsDigest } from './inputs-digest.ts';
 import type { ExportReviewKey } from '../approvals/export-review-match.ts';
-import { withRenderHost } from './host.ts';
+import { AssetHeldError, withRenderHost, type RenderAssetGate } from './host.ts';
+import { referencedAssetIds } from '../catalog/rights.ts';
 import { createVmHookExecutor } from './vm-hooks.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import {
@@ -66,6 +67,13 @@ const MAX_SCALE = 1e9;
 const LEGACY_RESVG = process.env.LW_RENDER_LEGACY_RESVG === '1';
 
 /** A caller-facing render problem carrying an HTTP status + envelope code. */
+/** A render that would draw files the caller's licence gate holds back (plans/82 M4). */
+function assetHeld(ids: string[]): RenderError {
+  const list = [...new Set(ids)].sort();
+  return new RenderError('ASSET_HELD', 422,
+    `This render uses ${list.length === 1 ? 'a file that is' : 'files that are'} not available to you: ${list.join(', ')}.`, undefined, { assets: list });
+}
+
 export class RenderError extends Error {
   readonly code: string;
   readonly status: number;
@@ -151,6 +159,11 @@ export interface RenderDeps {
   partnerFor?: (args: { toolId: string; template: RenderTemplate | null; groups: string[]; role?: string }) => Promise<RenderPartner | null>;
   /** The design system that drew the render and its tokens, for the record. */
   designSystem?: () => Promise<{ id: string; label: string; tokens: unknown } | null>;
+  /** The licence gate on this render (plans/82 M4): for a programme-scoped
+   *  caller with the gate on, the catalog files their own gated feed holds,
+   *  and every catalog id, so a value is read as a file only when it names
+   *  one. Null when nothing is gated, which leaves the render as it was. */
+  assetGate?: (groups: string[], role?: string) => Promise<{ allows(id: string): boolean; catalogIds: ReadonlySet<string> } | null>;
 }
 
 /** What a render takes from the caller's partner company (plans/82 M3). */
@@ -447,6 +460,17 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const bakedValues = await resolveHostedValues(
     { ...seed, ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
   ) as Record<string, unknown>;
+  // The licence gate (plans/82 M4): a file the caller's own feed leaves out is
+  // never drawn. Every file the values or the tool's defaults name is checked
+  // here, before either render tier runs; the in-process host refuses any
+  // other read of one, and the worker reads the catalog as this caller.
+  const gate = await deps.assetGate?.(groups, req.principal?.role) ?? null;
+  const hostGate: RenderAssetGate | undefined = gate ? { allows: (id) => gate.allows(id), held: new Set() } : undefined;
+  if (gate) {
+    const defaults = Object.fromEntries((tool.manifest.inputs as Array<{ id: string; default?: unknown }>).map((i) => [i.id, i.default]));
+    const named = referencedAssetIds({ ...defaults, ...bakedValues }, gate.catalogIds).filter((id) => !gate.allows(id));
+    if (named.length) throw assetHeld(named);
+  }
   const initialValues = deps.managedRules ? Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues }).map(i => [i.id, i.value])) : {};
   requireRuleValues(deps.managedRules, { ...initialValues, ...bakedValues });
   const governed = deps.managedRules ? governedInputs(req.overlays.get(req.toolId), groups, Object.keys(initialValues)) : [];
@@ -552,65 +576,73 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       throw e;
     }
   } else {
-    svgStr = await withRenderHost({ pack, profile: req.profile, hostedResolver,
-      ...(observer ? { observeCatalogAsset: (asset, bytes) => observer.observe('catalog', asset, bytes) } : {}),
-    }, async (dom, host) => {
-      req.signal?.throwIfAborted();
-      // Manifest `requires` (engine 1.183): the optional host.* APIs the hooks
-      // call unguarded. The engine refuses the mount when one is absent; say so
-      // as a 501 with the API named, like the hooked-tool refusal, instead of a
-      // bare 500. The work host carries tokens (when the pack has them) and
-      // color; text, compose, audio and the device APIs live in the Chromium
-      // worker's shell, so the fix is the worker, not a config flag.
-      // (Mirrors core's `missingRequires`; the root `@lolly-tools/core` entry
-      // pulls DOM-typed modules this Node-only program cannot check, and the
-      // engine applies the real predicate at createRuntime regardless.)
-      const unmet = (tool.manifest.requires ?? []).filter((name) => (host as unknown as Record<string, unknown>)[name] == null);
-      if (unmet.length) {
-        throw new RenderError('TOOL_REQUIRES_UNMET', 501,
-          `Tool "${req.toolId}" requires host.${unmet.join(', host.')} and the in-process render host does not provide ` +
-          `${unmet.length === 1 ? 'it' : 'them'} (configure render.worker.url + LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
-      }
-      if (htmlLayout) {
-        throw new RenderError('SVG_TEMPLATE_REQUIRED', 501,
-          `Tool "${req.toolId}" lays out HTML; the in-process render path exports SVG templates only ` +
-          `(configure render.worker.url + LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
-      }
-      // A curated pack's hooks run in a node:vm context (vm-hooks.ts), not the
-      // server's realm - no process.env, no ambient fetch, no require.
-      const runtime = await engine.createRuntime(tool, host, bakedValues,
-        tool.hooksSource ? { hookExecutor: createVmHookExecutor(dom) } : undefined);
-      if (inputIds.length) {
-        const render = host.export.render.bind(host.export);
-        host.export.render = async (...args) => {
-          const inputs = productionApi.productionInputFacts(runtime.getModel(), { requirements: inputIds.map(id => ({ id, kind: 'input', location: id, expected: '' })) });
-          const result = await render(...args); productionInputs = await inputs; return result;
-        };
-      }
-      try {
-        const canvas = dom.window.document.getElementById('canvas');
-        if (!canvas) throw new RenderError('RENDER_FAILED', 500, 'render canvas missing');
-        canvas.innerHTML = runtime.getHydrated();
-        if (observer) runtimeEvidence = {
-          initialValuesHash: evidenceHash(Object.fromEntries(runtime.getModel().map((input) => [input.id, input.value]))),
-          hydratedHash: sha256Hex(runtime.getHydrated()), hookErrors: runtime.hookErrors.length, droppedAssets: runtime.droppedAssets.length,
-        };
-        const opts: Record<string, unknown> = { embedMeta: false, watermark };
-        if (pxW) opts.width = pxW;
-        if (pxH) opts.height = pxH;
-        const blob = await runtime.export(canvas, 'svg', opts);
-        const text = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
-        if (runtimeEvidence) { runtimeEvidence.hookErrors = runtime.hookErrors.length; runtimeEvidence.droppedAssets = runtime.droppedAssets.length; runtimeEvidence.hydratedHash = sha256Hex(runtime.getHydrated()); }
-        // Honest failure: a lifecycle hook threw AND the output is blank ⇒ the bytes
-        // aren't a real render. (A hookless tool has no hookErrors; a trivial {} hook
-        // doesn't error.)
-        if (runtime.hookErrors.length && (!text.trim() || !/<svg[\s>]/i.test(text))) {
-          const detail = runtime.hookErrors.map((h) => `${h.hook}: ${h.message}`).join('; ');
-          throw new RenderError('RENDER_FAILED', 400, `Render produced no output — ${detail}`);
+    try {
+      svgStr = await withRenderHost({ pack, profile: req.profile, hostedResolver,
+        ...(observer ? { observeCatalogAsset: (asset, bytes) => observer.observe('catalog', asset, bytes) } : {}),
+        ...(hostGate ? { assetGate: hostGate } : {}),
+      }, async (dom, host) => {
+        req.signal?.throwIfAborted();
+        // Manifest `requires` (engine 1.183): the optional host.* APIs the hooks
+        // call unguarded. The engine refuses the mount when one is absent; say so
+        // as a 501 with the API named, like the hooked-tool refusal, instead of a
+        // bare 500. The work host carries tokens (when the pack has them) and
+        // color; text, compose, audio and the device APIs live in the Chromium
+        // worker's shell, so the fix is the worker, not a config flag.
+        // (Mirrors core's `missingRequires`; the root `@lolly-tools/core` entry
+        // pulls DOM-typed modules this Node-only program cannot check, and the
+        // engine applies the real predicate at createRuntime regardless.)
+        const unmet = (tool.manifest.requires ?? []).filter((name) => (host as unknown as Record<string, unknown>)[name] == null);
+        if (unmet.length) {
+          throw new RenderError('TOOL_REQUIRES_UNMET', 501,
+            `Tool "${req.toolId}" requires host.${unmet.join(', host.')} and the in-process render host does not provide ` +
+            `${unmet.length === 1 ? 'it' : 'them'} (configure render.worker.url + LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
         }
-        return text;
-      } finally { runtime.destroy(); }
-    });
+        if (htmlLayout) {
+          throw new RenderError('SVG_TEMPLATE_REQUIRED', 501,
+            `Tool "${req.toolId}" lays out HTML; the in-process render path exports SVG templates only ` +
+            `(configure render.worker.url + LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
+        }
+        // A curated pack's hooks run in a node:vm context (vm-hooks.ts), not the
+        // server's realm - no process.env, no ambient fetch, no require.
+        const runtime = await engine.createRuntime(tool, host, bakedValues,
+          tool.hooksSource ? { hookExecutor: createVmHookExecutor(dom) } : undefined);
+        if (inputIds.length) {
+          const render = host.export.render.bind(host.export);
+          host.export.render = async (...args) => {
+            const inputs = productionApi.productionInputFacts(runtime.getModel(), { requirements: inputIds.map(id => ({ id, kind: 'input', location: id, expected: '' })) });
+            const result = await render(...args); productionInputs = await inputs; return result;
+          };
+        }
+        try {
+          const canvas = dom.window.document.getElementById('canvas');
+          if (!canvas) throw new RenderError('RENDER_FAILED', 500, 'render canvas missing');
+          canvas.innerHTML = runtime.getHydrated();
+          if (observer) runtimeEvidence = {
+            initialValuesHash: evidenceHash(Object.fromEntries(runtime.getModel().map((input) => [input.id, input.value]))),
+            hydratedHash: sha256Hex(runtime.getHydrated()), hookErrors: runtime.hookErrors.length, droppedAssets: runtime.droppedAssets.length,
+          };
+          const opts: Record<string, unknown> = { embedMeta: false, watermark };
+          if (pxW) opts.width = pxW;
+          if (pxH) opts.height = pxH;
+          const blob = await runtime.export(canvas, 'svg', opts);
+          const text = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
+          if (runtimeEvidence) { runtimeEvidence.hookErrors = runtime.hookErrors.length; runtimeEvidence.droppedAssets = runtime.droppedAssets.length; runtimeEvidence.hydratedHash = sha256Hex(runtime.getHydrated()); }
+          // Honest failure: a lifecycle hook threw AND the output is blank ⇒ the bytes
+          // aren't a real render. (A hookless tool has no hookErrors; a trivial {} hook
+          // doesn't error.)
+          if (runtime.hookErrors.length && (!text.trim() || !/<svg[\s>]/i.test(text))) {
+            const detail = runtime.hookErrors.map((h) => `${h.hook}: ${h.message}`).join('; ');
+            throw new RenderError('RENDER_FAILED', 400, `Render produced no output — ${detail}`);
+          }
+          return text;
+        } finally { runtime.destroy(); }
+      });
+    } catch (e) {
+      // A held file the engine reached for, past the check above (plans/82 M4).
+      if (e instanceof AssetHeldError) throw assetHeld([e.assetId, ...(hostGate?.held ?? [])]);
+      throw e;
+    }
+    if (hostGate?.held.size) throw assetHeld([...hostGate.held]);
   }
 
   const sourceObserved = !inWorker || files.every(file => workerEvidence?.resources.some(r => {

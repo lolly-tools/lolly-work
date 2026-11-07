@@ -374,3 +374,19 @@ export function rightsSourceOf(
   const mark = narrowestMark(entry, marks.flatMap((m) => { const scope = parseMarkScope(m.scope); return scope ? [{ scope, mark: m }] : []; }));
   return mark ? { source: 'mark', mark } : { source: 'none' };
 }
+
+/**
+ * Every catalog asset id some values name: a bare id string, or an asset
+ * reference's `id`, anywhere inside them. Only ids in `known` count, so free
+ * text that happens to contain a slash is never read as a file. Bounded.
+ */
+export function referencedAssetIds(values: unknown, known: ReadonlySet<string>, depth = 0): string[] {
+  if (depth > 8 || values === null || values === undefined) return [];
+  if (typeof values === 'string') return known.has(values) ? [values] : [];
+  if (Array.isArray(values)) return [...new Set(values.slice(0, 500).flatMap((v) => referencedAssetIds(v, known, depth + 1)))];
+  if (typeof values === 'object') {
+    return [...new Set(Object.values(values as Record<string, unknown>).slice(0, 500).flatMap((v) => referencedAssetIds(v, known, depth + 1)))];
+  }
+  return [];
+}
+

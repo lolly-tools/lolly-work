@@ -40,9 +40,11 @@ export interface RenderAssetGate {
 
 /** A catalog file the caller's licence gate holds back. */
 export class AssetHeldError extends Error {
-  constructor(readonly assetId: string) {
+  readonly assetId: string;
+  constructor(assetId: string) {
     super(`${assetId} is not available to this render`);
     this.name = 'AssetHeldError';
+    this.assetId = assetId;
   }
 }
 

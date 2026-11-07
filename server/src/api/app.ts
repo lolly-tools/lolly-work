@@ -466,6 +466,15 @@ export function buildApp(deps: AppDeps): App {
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
         companyFor: companyForRender, partnerFor: partnerForRender,
+        // The licence gate on server renders (plans/82 M4): with the gate on, a
+        // programme-scoped caller's render draws only files their own feed holds.
+        assetGate: async (groups, role) => {
+          if ((await partnerRightsReady).mode !== 'gate' || !isProgrammeScoped(groups, role)) return null;
+          await providersReady;
+          const allowed = new Set(((await servedIndex.forCaller({ groups })).index.assets ?? []).map((entry) => entry.id));
+          const catalogIds = new Set((await catalogEntriesForRights()).map((entry) => entry.id));
+          return { allows: (id) => allowed.has(id), catalogIds };
+        },
         // The design system that drew the render, named as the brand card names it.
         designSystem: async () => {
           const tokens = (await brandChrome.public().catch(() => null))?.tokens ?? null;

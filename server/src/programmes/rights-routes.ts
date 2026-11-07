@@ -16,7 +16,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import type { AssetIndex, AssetIndexEntry } from '../catalog/lifecycle.ts';
-import { entryCompany, HELD_LABEL, LICENCE_ATTRIBUTION_MAX, LICENCE_DECLARATION_MAX, loadRightsEngine, MARK_HOLDER_MAX, MARK_TERMS_MAX, parseMarkScope, RIGHTS_NOTE_MAX, rightsAnswer, type AssetRightsMarkRecord, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
+import { entryCompany, HELD_LABEL, referencedAssetIds, LICENCE_ATTRIBUTION_MAX, LICENCE_DECLARATION_MAX, loadRightsEngine, MARK_HOLDER_MAX, MARK_TERMS_MAX, parseMarkScope, RIGHTS_NOTE_MAX, rightsAnswer, type AssetRightsMarkRecord, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
 import { markCoverage, markStatement } from '../catalog/rights-routes.ts';
 import { entryInFolders, folderRuleGroup, liveFolderRules, type PartnerFolderRecord } from './folders.ts';
 import { companyGroup } from './people.ts';
@@ -326,16 +326,7 @@ export const RIGHTS_LIMITS = {
   licenceAttribution: LICENCE_ATTRIBUTION_MAX,
 } as const;
 
-/** Every catalog asset id a template's values name: a bare id, or an asset reference's `id`. */
-export function seededAssetIds(values: unknown, known: ReadonlySet<string>, depth = 0): string[] {
-  if (depth > 8 || values === null || values === undefined) return [];
-  if (typeof values === 'string') return known.has(values) ? [values] : [];
-  if (Array.isArray(values)) return [...new Set(values.slice(0, 500).flatMap((v) => seededAssetIds(v, known, depth + 1)))];
-  if (typeof values === 'object') {
-    return [...new Set(Object.values(values as Record<string, unknown>).slice(0, 500).flatMap((v) => seededAssetIds(v, known, depth + 1)))];
-  }
-  return [];
-}
+export { referencedAssetIds as seededAssetIds } from '../catalog/rights.ts';
 
 /** A template that starts partners from files one of the programme's audiences will not receive. */
 export interface TemplateSeedHold {
@@ -368,7 +359,7 @@ export async function templatesSeedingHeld(
   }));
   const out: TemplateSeedHold[] = [];
   for (const t of templates) {
-    const ids = seededAssetIds(await templateValues(t.id), catalogIds).filter((id) => id !== t.id);
+    const ids = referencedAssetIds(await templateValues(t.id), catalogIds).filter((id) => id !== t.id);
     if (!ids.length) continue;
     const held = seen.flatMap((a) => {
       if (!a.entries.has(t.id)) return [];
