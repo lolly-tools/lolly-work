@@ -1852,7 +1852,7 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putAssetLicence(rec: AssetLicenceRecord): Promise<void>;
   /** Unknown asset id is a no-op. */
   deleteAssetLicence(assetId: string): Promise<void>;
-  // Share anyway choices (plans/82 M4, migrations/0092): one per asset per
+  // Share anyway choices (plans/82 M4, migrations/0096): one per asset per
   // audience group, `programme-<id>` or `company-<id>`.
   listRightsChoices(): Promise<RightsChoiceRecord[]>;
   putRightsChoice(rec: RightsChoiceRecord): Promise<void>;

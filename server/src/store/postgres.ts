@@ -2376,7 +2376,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteAssetLicence(assetId) {
       await pool.query('delete from asset_licence_records where asset_id = $1', [assetId]);
     },
-    // Share anyway choices (migrations/0092).
+    // Share anyway choices (migrations/0096).
     async listRightsChoices() {
       const { rows } = await pool.query('select record from programme_rights_choices order by asset_id, audience_group');
       return rows.map((r) => r.record as RightsChoiceRecord);

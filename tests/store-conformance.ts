@@ -1453,7 +1453,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteAssetLicence('ext/dam/IMG_2231');
   assert.deepEqual(await store.listAssetLicences(), []);
 
-  // Share anyway choices (plans/82 M4, migrations/0092): one per asset per audience group.
+  // Share anyway choices (plans/82 M4, migrations/0096): one per asset per audience group.
   assert.deepEqual(await store.listRightsChoices(), []);
   const choice = {
     assetId: 'ext/dam/IMG_2231', group: 'company-northwind-it', programmeId: 'resellers-emea', companyId: 'northwind-it', declared: 'CC-BY-NC-4.0', licence: 'CC BY-NC 4.0',
