@@ -26,6 +26,11 @@ export interface RoutesDeps {
   resolveBinding?: (principal: string, request: RenderSpec, binding: RenderBatchBinding) => Promise<Record<string, unknown>[]>;
   /** The owner a callback's output token names for this subject, or null. */
   outputTokenPrincipal?: (req: IncomingMessage, id: string) => string | null;
+  /** Count accepted renders against a token's budget (plans/82 M7). Throws the
+   *  refusal when the budget has no room; `replay` answers true for a request an
+   *  idempotency key already names, which counts nothing. The function it returns
+   *  gives the renders back when the work turns out not to be accepted. */
+  chargeRenders?: (principal: string, n: number, replay?: () => Promise<boolean>) => Promise<(() => Promise<void>) | undefined>;
 }
 
 /** Authenticate a route, optionally accepting the output token a callback carried.
@@ -40,7 +45,9 @@ export function principalFor(deps: RoutesDeps) {
 
 /** What other server modules may do with the durable path once it is registered. */
 export interface DurableRenders {
-  submit(principal: string, request: RenderSpec, key?: string, retryOf?: string): Promise<{ record: RenderRecord; reused: boolean }>;
+  /** `prepaid` says the caller already counted this render against the budget,
+   *  for a request that submits several renders and counts them together. */
+  submit(principal: string, request: RenderSpec, key?: string, retryOf?: string, options?: { prepaid?: boolean }): Promise<{ record: RenderRecord; reused: boolean }>;
 }
 
 export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter>, 'add'>, deps: RoutesDeps): DurableRenders {
@@ -54,7 +61,10 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
         if (!principal) return sendError(res, 401, 'UNAUTHORIZED', 'an authenticated user or service token is required');
         await handler(principal, req, res, ctx);
       } catch (e) {
-        if (e instanceof RenderResourceError) return sendError(res, e.status, e.code, e.message);
+        if (e instanceof RenderResourceError) {
+          if (e.retryAfterSec !== undefined) res.setHeader('retry-after', String(e.retryAfterSec));
+          return sendError(res, e.status, e.code, e.message, e.detail);
+        }
         throw e;
       }
     });
@@ -64,13 +74,19 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     if (!r) throw new RenderResourceError('NOT_FOUND', 404, 'render not found');
     return r;
   };
-  const submit = async (principal: string, request: RenderSpec, key?: string, retryOf?: string) => {
+  const submit = async (principal: string, request: RenderSpec, key?: string, retryOf?: string, options: { prepaid?: boolean } = {}) => {
     if (!deps.kick) throw new RenderResourceError('RENDER_RUNNER_UNAVAILABLE', 503, 'durable renders require the long-lived server');
     const proposed = newRender(principal, request, key, retryOf);
     await deps.authorize(principal, request);
     assertCallbackAllowed(request, deps.callbackAllowed);
     await deps.validate(principal, request);
-    const saved = await store.insertRender(proposed);
+    // Counted when accepted, after every check that could refuse the request.
+    const giveBack = options.prepaid ? undefined
+      : await deps.chargeRenders?.(principal, 1, key === undefined ? undefined : async () => !!(await store.findRenderByKey(principal, key)));
+    let saved: { record: RenderRecord; reused: boolean };
+    try { saved = await store.insertRender(proposed); }
+    catch (error) { await giveBack?.(); throw error; }
+    if (saved.reused) await giveBack?.();
     if (saved.record.requestHash !== proposed.requestHash) throw new RenderResourceError('IDEMPOTENCY_KEY_REUSED', 409, 'Idempotency-Key already identifies a different render request');
     if (!saved.reused) await deps.audit(principal, retryOf ? 'render.retry' : 'render.create', saved.record.id,
       { toolId: request.toolId, format: request.format, ...(retryOf ? { retryOf } : {}) });

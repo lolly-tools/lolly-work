@@ -25,6 +25,7 @@ import { agentClientInfo } from '../agents/client-info.ts';
 import { ResponseCapture } from '../agents/project-requests.ts';
 import { mcpProtocolVersions } from '../agents/routes.ts';
 import { scopesAllowRoute } from '../iam/token-scopes.ts';
+import { markInnerDispatch, type TokenLimitRefusal } from '../iam/token-limits.ts';
 import { INTENTS_RESOLVE_PATH } from './intents.ts';
 import type { ApiTokenRecord } from '../store/types.ts';
 
@@ -240,6 +241,11 @@ export interface OrgMcpDeps {
   /** The service token a request presents: null for none, false for an unknown, revoked or expired one. */
   tokenOf(req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: { id: string } } | false | null>;
   audit(actor: string, action: string, subject: string, payload: Record<string, unknown>): Promise<unknown>;
+  /** Spend one of the token's calls for a message (plans/82 M7): a refusal when its
+   *  minute limit has none left. Every message with an id counts but a ping. */
+  spendCall?(record: ApiTokenRecord): Promise<TokenLimitRefusal | null>;
+  /** One sentence naming the token's limits, for initialize's instructions. */
+  limitsSentence?(record: ApiTokenRecord): Promise<string>;
 }
 
 export function registerOrgMcp(d: OrgMcpDeps): void {
@@ -248,6 +254,8 @@ export function registerOrgMcp(d: OrgMcpDeps): void {
   /** Run a route as this caller, through the guard and the handler's own checks. */
   const dispatcher = (authorization: string) => async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<Answer> => {
     const req = new IncomingMessage(new Socket());
+    // The message that asked for this already counted as the token's call.
+    markInnerDispatch(req);
     req.method = method;
     req.url = path;
     const bytes = Buffer.from(body === undefined ? '' : JSON.stringify(body));
@@ -320,11 +328,26 @@ export function registerOrgMcp(d: OrgMcpDeps): void {
     const facts = { tokenLabel: token.record.label, ...(client ? { client } : {}) };
     const call = dispatcher(String(req.headers.authorization));
 
+    // One call per message against the token's minute limit; the routes a tool
+    // call dispatches count nothing more.
+    const limited = msg.method === 'ping' ? null : await d.spendCall?.(token.record) ?? null;
+    if (limited) {
+      res.setHeader('retry-after', String(limited.retryAfterSec));
+      const stated = { code: limited.code, message: limited.message, status: limited.status, ...limited.detail };
+      if (msg.method === 'tools/call') {
+        const named = isObject(msg.params) ? ORG_TOOLS.find(candidate => candidate.name === (msg.params as Args).name)?.name : undefined;
+        await d.audit(actor, 'mcp.tool-call', subject, { ...facts, tool: named ?? 'unknown', outcome: 'rejected', code: limited.code });
+        return reply({ isError: true, content: [{ type: 'text', text: JSON.stringify(stated) }], structuredContent: stated });
+      }
+      return sendJson(res, 200, { jsonrpc: '2.0', id: messageId, error: { code: -32000, message: limited.message, data: stated } }, { 'cache-control': 'no-store' });
+    }
+
     if (msg.method === 'initialize') {
       await d.audit(actor, 'mcp.connect', subject, facts);
       const asked = isObject(msg.params) ? msg.params.protocolVersion : null;
+      const limits = d.limitsSentence ? ` ${await d.limitsSentence(token.record)}` : '';
       return reply({ protocolVersion: typeof asked === 'string' && mcpProtocolVersions.has(asked) ? asked : '2025-11-25', capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'Lolly Work', version: '1.1.0' }, instructions: INSTRUCTIONS });
+        serverInfo: { name: 'Lolly Work', version: '1.1.0' }, instructions: `${INSTRUCTIONS}${limits}` });
     }
     if (msg.method === 'ping') return reply({});
     if (msg.method === 'tools/list') {

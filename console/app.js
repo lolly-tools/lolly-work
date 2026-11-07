@@ -3153,7 +3153,8 @@ function toolPolicyRow(tool, expandHost) {
     el('td', {}, visibility),
     el('td', { class: 'num' }, governed ? String(governed) : '—'),
     el('td', {}, ov?.enforce?.watermark ?? el('span', { class: 'muted' }, 'no rule')),
-    el('td', { class: 'num' }, ov ? `v${ov.version}` : el('span', { class: 'muted' }, 'ungoverned')),
+    el('td', { class: 'num' }, ov ? `v${ov.version}` : el('span', { class: 'muted' }, 'ungoverned'),
+      ov?.defaults && !Array.isArray(ov.defaults) && Object.keys(ov.defaults).length ? el('div', { class: 'muted' }, 'Old defaults, not applied') : null),
     el('td', {}, el('button', { onclick: () => renderToolPolicyEditor(tool, expandHost) }, 'Edit')));
 }
 
@@ -5507,6 +5508,8 @@ async function viewProgrammes(main, params) {
   if (editing) {
     const p = programmes.find((x) => x.id === editing);
     if (!p) { main.append(el('h1', {}, 'Partner programmes'), el('p', {}, 'No such programme. ', el('a', { href: '#/programmes' }, 'Back to programmes'))); return; }
+    const companyId = params?.get?.('company');
+    if (companyId) { await companyPage(p, companyId, main); return; }
     const groupsResp = await api('/api/v1/groups').catch(() => ({ groups: [] }));
     main.append(programmeEditor(p, tools, collections, groupsResp.groups ?? []));
     return;
@@ -5607,6 +5610,202 @@ function programmeEditor(p, tools, collections, groups = []) {
   const peopleHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading people…'));
   void programmePeople(p, peopleHost);
   return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form, templatesHost, peopleHost);
+}
+
+// A partner company's page (plans/82 M3): its logos and details, set up once by
+// the brand team for every piece its people and agents make. Each save is a
+// revision; logos are checked as they are dropped, and both surface previews
+// are drawn whatever the checks say, because seeing the mark on the brand's
+// surfaces is the check a person actually makes.
+async function companyPage(p, companyId, main) {
+  const base = `/api/v1/programmes/${encodeURIComponent(p.id)}/companies/${encodeURIComponent(companyId)}/profile`;
+  let view, people, chains;
+  try {
+    [view, people, chains] = await Promise.all([
+      api(base),
+      api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`).catch(() => ({ people: [] })),
+      api('/api/v1/chains').then((r) => r.chains ?? []).catch(() => []),
+    ]);
+  } catch (e) { main.append(el('h1', {}, 'Company'), el('p', { class: 'form-err' }, e.message), el('p', {}, el('a', { href: `#/programmes?id=${encodeURIComponent(p.id)}` }, `Back to ${p.name}`))); return; }
+  const reload = () => { main.replaceChildren(); void companyPage(p, companyId, main); };
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  const company = view.company;
+  const prof = view.profile ?? {};
+  // The limits the server enforces, from its own constants (plans/82 M3).
+  const limits = view.limits;
+  const kb = (bytes) => bytes >= 1024 * 1024 ? `${Math.round(bytes / (1024 * 1024))} MB` : `${Math.round(bytes / 1024)} KB`;
+  const revisionLine = () => view.revision ? `Revision ${view.revision}${view.updatedAt ? `, saved ${day(view.updatedAt)}` : ''}` : 'Nothing saved yet';
+
+  // Details.
+  const input = (value, attrs = {}) => el('input', { value: value ?? '', ...attrs });
+  const max = (n) => (n ? { maxlength: String(n) } : {});
+  const nameIn = input(company.name, { 'aria-label': 'Company name', ...max(limits?.fields.name) });
+  const websiteIn = input(prof.website, { type: 'url', placeholder: 'https://northwind.example', 'aria-label': 'Website', ...max(limits?.fields.website) });
+  const contactNameIn = input(prof.contact?.name, { placeholder: 'Rita Ortiz', 'aria-label': 'Contact name', ...max(limits?.fields.contactName) });
+  const contactEmailIn = input(prof.contact?.email, { type: 'email', placeholder: 'rita@northwind.example', 'aria-label': 'Contact email', ...max(limits?.fields.email) });
+  const contactPhoneIn = input(prof.contact?.phone, { type: 'tel', placeholder: '+49 30 1234 567', 'aria-label': 'Contact phone', ...max(limits?.fields.phone) });
+  const addressIn = el('textarea', { rows: '4', 'aria-label': 'Address', placeholder: 'Unter den Linden 1\n10117 Berlin', ...max(limits?.fields.address) });
+  addressIn.value = prof.address ?? '';
+  const currencyIn = input(prof.currency, { maxlength: '3', placeholder: 'EUR', 'aria-label': 'Currency', class: 'company-currency' });
+  const taxIn = input(prof.taxNote, { placeholder: 'Prices exclude VAT', 'aria-label': 'Tax note', ...max(limits?.fields.taxNote) });
+  const detailsErr = errSpan();
+  const saveDetails = el('button', { class: 'primary' }, 'Save details');
+  // Every revision is kept: an exported file cites one, and it reads back here.
+  const historyHost = el('details', { class: 'company-history' },
+    el('summary', {}, limits?.history === 'all' ? 'Revision history: every revision is kept' : 'Revision history'));
+  historyHost.addEventListener('toggle', async () => {
+    if (!historyHost.open || historyHost.dataset.loaded) return;
+    historyHost.dataset.loaded = '1';
+    try {
+      const { revisions } = await api(`${base}/history`);
+      historyHost.append(revisions.length
+        ? dataTable(['Revision', 'Saved', 'What changed'], revisions.map((r) => el('tr', {},
+          el('td', { class: 'num' }, String(r.revision)), el('td', {}, day(r.updatedAt)), el('td', {}, r.fields.join(', ') || 'Nothing')), { sortable: false }))
+        : el('p', { class: 'muted' }, 'Nothing saved yet.'));
+    } catch (e) { historyHost.append(el('p', { class: 'form-err' }, e.message)); }
+  });
+  const detailsCard = el('form', { class: 'card stack company-details', onsubmit: async (e) => {
+    e.preventDefault(); detailsErr.textContent = ''; saveDetails.disabled = true;
+    try {
+      const out = await api(base, { method: 'PUT', body: {
+        revision: view.revision, name: nameIn.value.trim(), website: websiteIn.value.trim() || null,
+        contact: { name: contactNameIn.value.trim() || null, email: contactEmailIn.value.trim() || null, phone: contactPhoneIn.value.trim() || null },
+        address: addressIn.value.trim() || null, currency: currencyIn.value.trim().toUpperCase() || null, taxNote: taxIn.value.trim() || null,
+      } });
+      toast(out.revision === view.revision ? 'Nothing changed' : `Saved revision ${out.revision}`);
+      reload();
+    } catch (ex) { detailsErr.textContent = ex.message; saveDetails.disabled = false; }
+  } },
+    el('h2', {}, 'Details'),
+    el('p', { class: 'sub flush' }, 'What a piece can print for this company. A template takes only the details you bind to its inputs.'),
+    el('div', { class: 'grant-fields' }, field('Company name', nameIn), field('Website', websiteIn)),
+    el('div', { class: 'grant-fields' }, field('Contact name', contactNameIn), field('Contact email', contactEmailIn), field('Contact phone', contactPhoneIn)),
+    el('div', { class: 'grant-fields' }, field(limits ? `Address (up to ${limits.fields.addressLines} lines)` : 'Address', addressIn),
+      el('div', { class: 'stack' }, field('Currency (ISO code)', currencyIn), field(limits ? `Tax note (up to ${limits.fields.taxNote} characters)` : 'Tax note', taxIn))),
+    el('p', { class: 'programme-actions' }, saveDetails, el('span', { class: 'muted company-revision' }, revisionLine())),
+    historyHost,
+    detailsErr);
+
+  // Logos: one slot per surface, each previewed on both of the brand's surfaces.
+  const surfaces = view.surfaces ?? { light: '#ffffff', dark: '#000000', source: 'default' };
+  const swatch = (url, side) => el('figure', { class: 'company-swatch-figure' },
+    el('div', { class: `company-swatch is-${side}`, style: `background:${side === 'light' ? surfaces.light : surfaces.dark}` },
+      url ? el('img', { src: url, alt: `${company.name} logo on the ${side} surface` }) : el('span', { class: 'company-swatch-empty' }, 'No logo')),
+    el('figcaption', { class: 'company-swatch-label' }, side === 'light' ? 'Light surface' : 'Dark surface'));
+  const slot = (surface, title, help) => {
+    const stored = view.logos?.[surface];
+    const host = el('div', { class: 'stack company-logo-slot' });
+    const err = errSpan();
+    const accept = (limits?.logo.types ?? ['image/svg+xml', 'image/png']).flatMap((t) => [t, `.${t.split('/')[1].split('+')[0]}`]).join(',');
+    const fileIn = el('input', { type: 'file', accept, class: 'sr-only', 'aria-label': `Choose the ${title.toLowerCase()} file` });
+    const previews = el('div', { class: 'company-swatches' }, swatch(null, 'light'), swatch(null, 'dark'));
+    const findings = el('div', { class: 'stack company-findings' });
+    const actions = el('p', { class: 'programme-actions' });
+    const showStored = async () => {
+      findings.replaceChildren(); actions.replaceChildren();
+      if (!stored) { previews.replaceChildren(swatch(null, 'light'), swatch(null, 'dark')); return; }
+      try {
+        const res = await fetch(`${base}/logo?surface=${surface}`, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(res.statusText);
+        const url = URL.createObjectURL(await res.blob());
+        previews.replaceChildren(swatch(url, 'light'), swatch(url, 'dark'));
+      } catch { previews.replaceChildren(el('p', { class: 'muted' }, 'The stored logo could not be shown.')); }
+      const remove = armConfirmButton({ class: 'danger' }, 'Remove', 'Really remove?', async (disarm) => {
+        err.textContent = '';
+        try { await api(`${base}/logo?surface=${surface}`, { method: 'DELETE' }); toast(`Removed the ${title.toLowerCase()}`); reload(); }
+        catch (ex) { err.textContent = ex.message; disarm(); }
+      });
+      actions.replaceChildren(el('span', { class: 'muted' }, `${stored.format.toUpperCase()}${stored.width && stored.height ? `, ${stored.width} × ${stored.height}` : ''}, version ${stored.version}`), ' ', remove);
+    };
+    const check = async (file) => {
+      err.textContent = ''; findings.replaceChildren(); actions.replaceChildren();
+      const send = async (dry) => {
+        const res = await fetch(`${base}/logo?surface=${surface}${dry ? '&dryRun=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': file.type || 'application/octet-stream' }, body: file });
+        const out = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(out?.error?.message ?? res.statusText);
+        return out;
+      };
+      let out;
+      try { out = await send(true); } catch (ex) { err.textContent = ex.message; fileIn.value = ''; return; }
+      const url = URL.createObjectURL(file);
+      previews.replaceChildren(swatch(url, 'light'), swatch(url, 'dark'));
+      findings.replaceChildren(...(out.warnings.length
+        ? out.warnings.map((w) => el('p', { class: 'policy-warning' }, w.message))
+        : [el('p', { class: 'sub flush' }, 'No problems found. Check how it looks on both surfaces.')]));
+      const use = el('button', { class: 'primary', onclick: async () => {
+        use.disabled = true;
+        try { const done = await send(false); toast(`Saved the ${title.toLowerCase()}, revision ${done.profile.revision}`); reload(); }
+        catch (ex) { err.textContent = ex.message; use.disabled = false; }
+      } }, out.warnings.length ? 'Use this logo anyway' : 'Use this logo');
+      actions.replaceChildren(use, ' ', el('button', { onclick: () => { fileIn.value = ''; void showStored(); } }, 'Cancel'));
+    };
+    fileIn.addEventListener('change', () => { const f = fileIn.files?.[0]; if (f) void check(f); });
+    const drop = el('label', { class: 'verify-drop company-drop' }, fileIn,
+      el('span', {}, stored ? 'Drop a new SVG or PNG to replace it, or choose a file' : 'Drop an SVG or PNG here, or choose a file'));
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('is-drag'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('is-drag'));
+    drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('is-drag'); const f = e.dataTransfer?.files?.[0]; if (f) void check(f); });
+    host.append(el('h3', { class: 'flush' }, title), el('p', { class: 'sub flush' }, help), previews, findings, drop, actions, err);
+    void showStored();
+    return host;
+  };
+  const logosCard = el('div', { class: 'card stack' },
+    el('h2', {}, 'Logos'),
+    el('p', { class: 'sub flush' }, limits
+      ? `SVG up to ${kb(limits.logo.svgMaxBytes)}, or PNG up to ${kb(limits.logo.pngMaxBytes)} and at least ${limits.logo.pngMinLongSide} pixels on its long side. Ink below ${limits.logo.minContrast}:1 on the surface a logo is for is flagged, never refused.`
+      : 'SVG or PNG.'),
+    el('p', { class: 'sub flush' }, surfaces.source === 'default' ? 'Your design system names no surface colours, so the previews use white and black.' : 'The previews use your design system’s light and dark surfaces.'),
+    el('div', { class: 'company-logos' },
+      slot('light', 'Logo for light surfaces', 'Used on light backgrounds, and in light mode wherever a template takes the logo by mode.'),
+      slot('dark', 'Logo for dark surfaces', 'Used on dark backgrounds, and in dark mode.'),
+      slot('mark', 'Mark (optional)', 'A square mark for badges and small spaces.')));
+
+  // Who else may edit, and whether their changes wait. Both off by default.
+  const inCompany = (people.people ?? []).filter((x) => x.company?.id === companyId);
+  const editors = new Set((view.settings?.editors ?? []).map((x) => x.id));
+  const contactsOn = el('input', { type: 'checkbox', ...(editors.size ? { checked: 'checked' } : {}) });
+  const editorList = el('div', { class: 'chk-list' }, ...(inCompany.length ? inCompany.map((x) => {
+    const cb = el('input', { type: 'checkbox', ...(editors.has(x.id) ? { checked: 'checked' } : {}) });
+    cb.addEventListener('change', () => { if (cb.checked) editors.add(x.id); else editors.delete(x.id); });
+    return el('label', { class: 'chk' }, cb, el('span', {}, x.name), el('span', { class: 'muted' }, ` ${x.email}`));
+  }) : [el('p', { class: 'muted' }, `Nobody from ${company.name} has signed in yet.`)]));
+  const approvalOn = el('input', { type: 'checkbox', ...(view.settings?.approvalChain ? { checked: 'checked' } : {}) });
+  const chainSel = el('select', { 'aria-label': 'Approval chain' }, ...chains.map((c) => el('option', { value: c.id, ...(c.id === view.settings?.approvalChain ? { selected: 'selected' } : {}) }, c.name || c.id)));
+  const editorsHost = el('div', { class: 'stack' }, editorList);
+  const chainHost = el('div', {}, chains.length ? field('Approval chain', chainSel) : el('p', { class: 'muted' }, 'No approval chains yet. Make one in Approvals first.'));
+  const syncSwitches = () => { editorsHost.hidden = !contactsOn.checked; chainHost.hidden = !approvalOn.checked; };
+  contactsOn.addEventListener('change', syncSwitches); approvalOn.addEventListener('change', syncSwitches);
+  syncSwitches();
+  const settingsErr = errSpan();
+  const onOff = (on) => el('span', { class: `status ${on ? 'live' : 'expired'}` }, on ? 'On' : 'Off');
+  const savedContacts = (view.settings?.editors ?? []).length > 0;
+  const savedApproval = !!view.settings?.approvalChain;
+  const contactsCard = el('div', { class: 'card stack' },
+    el('h2', {}, 'Contacts who may edit'),
+    el('p', { class: 'sub flush' }, `Off by default: your team keeps ${company.name}’s details. A contact edits the same details from their home, with the same checks.`),
+    el('label', { class: 'chk' }, contactsOn, el('span', {}, `People at ${company.name} may edit these details`), ' ', onOff(savedContacts)),
+    editorsHost,
+    limits ? el('p', { class: 'sub flush' }, `Up to ${limits.editors} contacts.`) : null,
+    el('label', { class: 'chk' }, approvalOn, el('span', {}, 'Changes by contacts need approval'), ' ', onOff(savedApproval)),
+    chainHost,
+    view.pending ? el('p', { class: 'policy-warning' }, 'A contact’s change is waiting for approval. ', el('a', { href: '#/approvals' }, 'Open approvals')) : null,
+    el('p', {}, el('button', { onclick: async () => {
+      settingsErr.textContent = '';
+      try {
+        await api(`${base}/settings`, { method: 'PUT', body: { editors: contactsOn.checked ? [...editors] : [], approvalChain: approvalOn.checked && chainSel.value ? chainSel.value : null } });
+        toast('Saved who may edit'); reload();
+      } catch (ex) { settingsErr.textContent = ex.message; }
+    } }, 'Save')),
+    settingsErr);
+
+  main.append(
+    el('p', { class: 'muted flush' }, el('a', { href: `#/programmes?id=${encodeURIComponent(p.id)}` }, p.name), ' / Companies'),
+    el('h1', {}, company.name),
+    el('p', { class: 'sub' }, `Set up once: these logos and details are on every piece ${company.name}’s people and agents make from a template that takes them.`),
+    el('p', { class: 'programme-actions' },
+      el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(`programme-${p.id},company-${companyId}`)}` }, 'See what they get'),
+      el('a', { class: 'btn', href: `#/programmes?id=${encodeURIComponent(p.id)}` }, 'Back')),
+    detailsCard, logosCard, contactsCard);
 }
 
 // Templates published to a programme (plans/82 M2): a template of one of your
@@ -5717,6 +5916,31 @@ async function programmeTemplates(p, host) {
       on ? gapLine(toolId, toolName) : null,
       swErr);
   };
+  // "Takes from the company" (plans/82 M3): which inputs fill from each
+  // partner company's details. One select per input, nothing chosen by default.
+  const fields = data.companyFields ?? [];
+  const fieldLabel = (id) => fields.find((f) => f.id === id)?.label ?? id;
+  // A picture input takes a logo or the mark, a text input takes a detail; an
+  // input of unknown type is offered both. The current choice stays listed.
+  const fieldsFor = (input, bound) => fields.filter((f) => !input.type || !f.kind || f.id === bound
+    || (input.type === 'asset' ? f.kind === 'logo' : f.kind === 'text'));
+  const bindingsPicker = (inputs, bindings, kind) => {
+    const selects = new Map(inputs.map((i) => [i.id, el('select', { 'aria-label': `What ${i.label} takes from the company` },
+      el('option', { value: '' }, 'Not from the company'),
+      ...fieldsFor(i, bindings?.[i.id]).map((f) => el('option', { value: f.id, ...(bindings?.[i.id] === f.id ? { selected: 'selected' } : {}) }, f.label)))]));
+    return {
+      el: el('div', { class: 'stack template-bindings' },
+        el('strong', {}, 'Takes from the company'),
+        el('p', { class: 'sub flush' }, kind === 'rules-tool'
+          ? 'Each input you choose here is filled from the partner’s company details and fixed there.'
+          : 'Each input you choose here is filled from the partner’s company details. An input partners cannot change is fixed to their company’s value; one they can change starts from it.'),
+        el('div', { class: 'grant-fields' }, ...inputs.map((i) => field(i.label, selects.get(i.id))))),
+      value: () => {
+        const out = Object.fromEntries([...selects].filter(([, sel]) => sel.value).map(([id, sel]) => [id, sel.value]));
+        return Object.keys(out).length ? out : null;
+      },
+    };
+  };
   const switchShown = new Set();
   const uploadRules = async (file, path) => {
     const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
@@ -5730,21 +5954,24 @@ async function programmeTemplates(p, host) {
     const panel = el('div', { class: 'stack template-panel', hidden: 'hidden' });
     const showPanel = (...nodes) => { panel.replaceChildren(...nodes); panel.hidden = !nodes.length; };
     const kindLine = t.kind === 'rules-tool' ? 'Share with rules file, made in Design' : `${t.toolName} template`;
+    // A rules tool fixes each input it takes from the company.
     const canChange = t.kind === 'rules-tool' || t.editable
-      ? (t.inputs.filter((i) => (t.editable ?? []).includes(i.id)).map((i) => i.label).join(', ') || 'Nothing')
+      ? (t.inputs.filter((i) => (t.editable ?? []).includes(i.id) && !(t.kind === 'rules-tool' && t.bindings?.[i.id])).map((i) => i.label).join(', ') || 'Nothing')
       : `Everything (${t.inputs.length} input${t.inputs.length === 1 ? '' : 's'})`;
     const change = el('button', { onclick: () => {
       const who = audiencePicker(t.groups);
       const rules = t.kind === 'template' ? rulesPicker(t.inputs, t.editable, t.fixedTheme) : null;
+      const takes = t.inputs.length && fields.length ? bindingsPicker(t.inputs, t.bindings, t.kind) : null;
       const saveErr = errSpan();
       showPanel(
         field('Who gets it', who.list),
         rules ? rules.el : el('p', { class: 'sub flush' }, 'A Share with rules file brings its own rules. Change them in Lolly, then upload a new version.'),
+        takes ? takes.el : null,
         el('p', { class: 'programme-actions' },
           el('button', { class: 'primary', onclick: async () => {
             saveErr.textContent = '';
             try {
-              await api(`${base}/${bare(t.id)}`, { method: 'PUT', body: { groups: who.value(), ...(rules ? { editable: rules.value(), fixedTheme: rules.fixedTheme() } : {}) } });
+              await api(`${base}/${bare(t.id)}`, { method: 'PUT', body: { groups: who.value(), ...(rules ? { editable: rules.value(), fixedTheme: rules.fixedTheme() } : {}), ...(takes ? { bindings: takes.value() } : {}) } });
               toast(`Saved ${t.name}`); reload();
             } catch (ex) { saveErr.textContent = ex.message; }
           } }, 'Save'),
@@ -5808,7 +6035,8 @@ async function programmeTemplates(p, host) {
           t.state === 'submitted' ? el('span', { class: 'status review' }, 'Waiting for review') : null,
           t.retired ? el('span', { class: 'status revoked' }, `Retired ${day(t.retired.at)}${t.retired.replacedByName ? `, replaced by ${t.retired.replacedByName}` : ''}`) : null),
         el('div', {}, el('div', { class: 'template-label' }, 'Who gets it'), t.audience.map((a) => a.label).join(', ')),
-        el('div', {}, el('div', { class: 'template-label' }, 'Partners can change'), canChange),
+        el('div', {}, el('div', { class: 'template-label' }, 'Partners can change'), canChange,
+          t.bindings ? el('div', { class: 'muted template-takes' }, `From the company: ${Object.entries(t.bindings).map(([id, f]) => `${t.inputs.find((i) => i.id === id)?.label ?? id} (${fieldLabel(f)})`).join(', ')}`) : null),
         el('div', {}, el('div', { class: 'template-label' }, 'Version'), version, el('div', { class: 'muted' }, `Published ${day(t.publishedAt)}`)),
         el('div', { class: 'programme-actions template-actions' }, ...(t.retired ? [restore] : [change, newVersion, retire]), fileInput)),
       t.toolOpenTo?.filter((n) => n !== p.name).length && !t.retired ? openNote(t.toolName, t.toolOpenTo.filter((n) => n !== p.name)) : null,
@@ -5901,9 +6129,9 @@ async function programmePeople(p, host, lastResult = null) {
   const companyErr = errSpan();
   const companiesCard = el('div', { class: 'card stack' },
     el('h2', {}, 'Companies'),
-    el('p', { class: 'sub flush' }, 'The partner organisations in this programme. A company can have its own input rules and collections, and people can be added to it.'),
+    el('p', { class: 'sub flush' }, 'The partner organisations in this programme. A company can have its own input rules and collections, and people can be added to it. Open one to set up its logos and details, once, for every piece its people make.'),
     data.companies.length
-      ? el('p', { class: 'chips' }, ...data.companies.map((c) => el('span', { class: 'chip' }, c.name)))
+      ? el('p', { class: 'chips' }, ...data.companies.map((c) => el('a', { class: 'chip', href: `#/programmes?id=${encodeURIComponent(p.id)}&company=${encodeURIComponent(c.id)}` }, c.name)))
       : el('p', { class: 'muted' }, 'No companies yet.'),
     el('form', { class: 'formrow', onsubmit: async (e) => {
       e.preventDefault(); companyErr.textContent = '';
@@ -6826,14 +7054,43 @@ function renderPreview(data) {
   // The templates these groups get (plans/82 M2). The app is told only which
   // inputs it may offer; the lines under each template are for the admin.
   const templates = preview.templates ?? [];
+  // For a company's groups, each template is drawn as they get it (plans/82 M3),
+  // through the same render path and company resolver a partner's render takes.
+  const company = orgConfig.partner?.company;
+  const drawing = (t) => {
+    const host = el('div', { class: 'preview-drawing' }, el('span', { class: 'muted' }, 'Drawing…'));
+    void fetch('/api/v1/org-config/preview/render', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ groups: preview.groups, template: t.id }) })
+      .then(async (res) => {
+        if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message ?? res.statusText);
+        host.replaceChildren(el('img', { src: URL.createObjectURL(await res.blob()), alt: `${t.name} as ${heading} get it` }));
+      })
+      .catch((e) => host.replaceChildren(el('span', { class: 'muted' }, `Not drawn here: ${e.message}`)));
+    return host;
+  };
   const templatesCard = templates.length ? el('div', { class: 'card stack' },
     el('h2', {}, 'Templates'),
-    el('p', { class: 'sub' }, 'What each template lets these groups change. The notes under each are for you; the app is told only what it may offer.'),
+    el('p', { class: 'sub' }, company
+      ? `What each template lets these groups change, drawn as ${company.name} gets it. The notes under each are for you; the app is told only what it may offer.`
+      : 'What each template lets these groups change. The notes under each are for you; the app is told only what it may offer.'),
     dataTable(['Template', 'Can change', 'Fixed'], templates.map((t) => el('tr', {},
       el('td', {}, el('strong', {}, t.name), ' ', el('span', { class: 'muted' }, t.toolVersion ?? `version ${t.version}`),
-        t.retired ? el('div', { class: 'muted' }, `Retired${t.replacedBy ? `. Replaced by ${t.replacedBy.name}` : ''}.`) : null),
+        t.retired ? el('div', { class: 'muted' }, `Retired${t.replacedBy ? `. Replaced by ${t.replacedBy.name}` : ''}.`) : null,
+        company && !t.retired ? drawing(t) : null),
       el('td', {}, t.canChange.join(', ') || 'Nothing'),
       el('td', {}, t.fixed.join(', ') || 'Nothing', ...t.why.map((line) => el('div', { class: 'muted' }, line))))), { sortable: false })) : null;
+  // The company these groups speak for, with the details their pieces carry.
+  const partnerCard = orgConfig.partner ? el('div', { class: 'card stack' },
+    el('h2', {}, 'Partner company'),
+    company
+      ? el('p', {}, el('strong', {}, company.name), el('span', { class: 'muted' }, ` · details revision ${company.revision}${orgConfig.partner.programme ? ` · ${orgConfig.partner.programme.name}` : ''}`))
+      : el('p', { class: 'muted' }, 'These groups are in no single company, so no company details fill their templates.'),
+    company ? dataTable(['Detail', 'Value'], [
+      ['Logos', ['light', 'dark', 'mark'].filter((k) => company.logos?.[k]).map((k) => ({ light: 'light surfaces', dark: 'dark surfaces', mark: 'mark' }[k])).join(', ') || 'None yet'],
+      ['Website', company.website ?? '—'],
+      ['Contact', company.contact ? [company.contact.name, company.contact.email, company.contact.phone].filter(Boolean).join(', ') : '—'],
+      ['Address', company.address ? company.address.split('\n').join(', ') : '—'], ['Currency', company.currency ?? '—'], ['Tax note', company.taxNote ?? '—'],
+    ].map(([k, v]) => el('tr', {}, el('td', {}, k), el('td', {}, v))), { sortable: false }) : null) : null;
   return el('div', {},
     el('div', { class: 'card stack' },
       el('h2', {}, `As ${heading}`),
@@ -6845,6 +7102,7 @@ function renderPreview(data) {
       preview.templatesOnly?.length ? el('p', {}, el('span', { class: 'status review' }, 'Templates only'), ' ',
         preview.templatesOnly.map((o) => `${o.toolName}, only through its published templates, set by ${o.setBy.join(' and ')}`).join('. ') + '.') : null,
       el('p', { class: 'sub' }, `${orgConfig.inboxUnread} unread inbox message${orgConfig.inboxUnread === 1 ? '' : 's'} would target this group.`)),
+    partnerCard,
     templatesCard,
     assetCard,
     el('div', { class: 'card stack' }, el('h2', {}, 'Permissions'), dataTable(['Action', 'Effective'], canRows)),

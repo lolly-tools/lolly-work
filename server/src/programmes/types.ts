@@ -28,6 +28,7 @@
  * Admins and owners are never scoped, so adding one to a programme to try it
  * cannot lock them out of the deployment they run.
  */
+import type { TokenLimitOverrides } from '../iam/token-limits.ts';
 
 export interface ProgrammeRecord {
   /** A permanent slug, like a tool or asset id. */
@@ -55,6 +56,10 @@ export interface ProgrammeRecord {
   endedBy?: string;
   /** The exit receipt that ended it (programmes/exit.ts). */
   endedExit?: string;
+  /** The limits every token placed here takes unless it states its own
+   *  (plans/82 M7): a key left out takes the instance default, and null is no
+   *  cap. See iam/token-limits.ts. */
+  tokenLimits?: TokenLimitOverrides;
 }
 
 /** Whether a programme or company record is ended (plans/82 M5). */

@@ -408,6 +408,11 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     }
     const body = (await readJson(req)) as { programme?: unknown; company?: unknown } | null;
     const before = tokenPlacement(token);
+    // A token a manager minted for a programme never leaves it (plans/82 M7):
+    // it is revoked, not repurposed.
+    if (token.via === 'programme' && body?.programme !== before.programmeId) {
+      return sendError(res, 409, 'PROGRAMME_TOKEN', 'this token was minted for its programme and stays there; revoke it and mint a new one');
+    }
     let groups: string[] | undefined;
     let programmeId: string | undefined, companyId: string | undefined;
     if (body?.programme === null) {

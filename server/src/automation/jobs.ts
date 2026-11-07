@@ -165,7 +165,8 @@ export class AutomationQueue {
     await this.options.store?.putAutomationJob(job);
   }
 
-  private async findByKey(principal: string, key: string): Promise<AutomationJob | null> {
+  /** The job an idempotency key already names, so a replay is known before it is counted. */
+  async findByKey(principal: string, key: string): Promise<AutomationJob | null> {
     if (this.options.store) return this.options.store.findAutomationJobByIdempotency(principal, key);
     return [...this.jobs.values()].find((j) => j.principal === principal && j.idempotencyKey === key) ?? null;
   }
