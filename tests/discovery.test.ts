@@ -365,12 +365,14 @@ test('an open deployment answers anonymous callers as guests', async () => {
 });
 
 test('a configured worker widens discovery, and its live readiness reaches the caller view', async () => {
-  for (const [status, state] of [[200, 'ready'], [503, 'busy']] as const) {
+  // 200 below capacity; 200 with atCapacity for a full worker; 503 for an older
+  // worker that left readiness when full. The last two both read as busy.
+  for (const [status, atCapacity, state] of [[200, false, 'ready'], [200, true, 'busy'], [503, false, 'busy']] as const) {
     let probes = 0;
     const worker = createServer((req, res) => {
       if (req.url === '/readyz') probes++;
       res.writeHead(req.url === '/readyz' ? status : 404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: status === 200 }));
+      res.end(JSON.stringify({ ok: status === 200, active: atCapacity ? 1 : 0, capacity: 1, atCapacity }));
     });
     await new Promise<void>(resolve => worker.listen(0, '127.0.0.1', resolve));
     servers.push(worker);

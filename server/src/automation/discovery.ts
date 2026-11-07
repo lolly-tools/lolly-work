@@ -104,7 +104,9 @@ export interface DiscoveryDeps {
 }
 
 /** The worker's readiness, read from its unauthenticated `/readyz` and kept for
- *  `ttlMs`, so discovery never sends more than one probe per interval. */
+ *  `ttlMs`, so discovery never sends more than one probe per interval. A worker
+ *  reports a full set of slots as `atCapacity` on a 200; an older worker
+ *  answered 503 instead. Both read as busy. */
 export function createWorkerProbe(cfg: WorkerConfig, fetchImpl: typeof fetch, ttlMs = 15_000): () => Promise<WorkerState> {
   let last: { at: number; state: Promise<WorkerState> } | null = null;
   return () => {
@@ -112,8 +114,14 @@ export function createWorkerProbe(cfg: WorkerConfig, fetchImpl: typeof fetch, tt
     const state = (async (): Promise<WorkerState> => {
       try {
         const res = await fetchImpl(workerEndpoint(cfg, '/readyz'), { signal: AbortSignal.timeout(2_000) });
-        await res.body?.cancel().catch(() => {});
-        return res.status === 200 ? 'ready' : res.status === 503 ? 'busy' : 'unreachable';
+        if (res.status !== 200) {
+          await res.body?.cancel().catch(() => {});
+          return res.status === 503 ? 'busy' : 'unreachable';
+        }
+        const text = await res.text();
+        let full = false;
+        try { full = text.length <= 4096 && (JSON.parse(text) as { atCapacity?: unknown } | null)?.atCapacity === true; } catch { /* a bare 200 is ready */ }
+        return full ? 'busy' : 'ready';
       } catch { return 'unreachable'; }
     })();
     last = { at: Date.now(), state };
