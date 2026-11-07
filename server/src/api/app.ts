@@ -96,6 +96,7 @@ import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, 
 import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
+import { createViewAs, VIEW_AS_HEADER } from '../programmes/view-as.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { accessEndsFor } from '../programmes/exit-schedule.ts';
@@ -609,6 +610,8 @@ export function buildApp(deps: AppDeps): App {
   // authenticate an `upgrade` request with byte-identical semantics - including
   // the disabled-account and pre-epoch-token refusals.
   const memberOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
+    // A view-as read answers as the partner it names (programmes/view-as.ts).
+    const viewed = viewAs.member(req); if (viewed) return viewed;
     const delegated = agentRequests.principal(req);
     if (!delegated) return resolveMember(store, req.headers.cookie, sessionVerify);
     const user = await store.getUser(delegated.userId);
@@ -624,6 +627,16 @@ export function buildApp(deps: AppDeps): App {
   };
   const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
     store.appendAudit(auditBody(actor, action, subject, payload));
+  // View as a partner (plans/82 M6): read-only, one tab, the admin's session required.
+  const viewAs = createViewAs({
+    sessionMember: (req) => resolveMember(store, req.headers.cookie, sessionVerify),
+    delegated: (req) => !!agentRequests.principal(req),
+    mayManage: async (user, programmeId) => evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', [`programme:${programmeId}`, '*'], await store.listGrants()),
+    programme: (id) => store.getProgramme(id),
+    company: async (id) => (await store.listCompanies()).find((c) => c.id === id) ?? null,
+    roleOf: (groups) => roleFromGroups(groups, config.idp.roleGroups),
+    secret: secrets.session, verifySecrets: sessionVerify, audit,
+  });
 
   const revisionActor = (req: IncomingMessage, user: UserRecord): string => {
     const agent = agentRequests.principal(req)?.agent;
@@ -3003,8 +3016,8 @@ export function buildApp(deps: AppDeps): App {
     const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
     let payload;
     try {
-      payload = { ...await buildOrgConfigFor(user, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
-        branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
+      payload = viewAs.decorate(req, { ...await buildOrgConfigFor(user, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
+        branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } });
     } catch (err) {
       metrics.orgConfigError();
       throw err;
@@ -6257,6 +6270,7 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // Templates published to a programme (plans/82 M2).
+  viewAs.register(router);
   registerTemplateRoutes(router, {
     store, blobs, requireAction, audit,
     toolFacts: async (toolId) => {
@@ -12709,7 +12723,7 @@ export function buildApp(deps: AppDeps): App {
     res.setHeader('vary', 'Origin');
     if (req.method === 'OPTIONS') {
       res.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-      res.setHeader('access-control-allow-headers', 'content-type, x-lolly-client, if-none-match, idempotency-key');
+      res.setHeader('access-control-allow-headers', `content-type, x-lolly-client, if-none-match, idempotency-key, ${VIEW_AS_HEADER}`);
       res.setHeader('access-control-max-age', '600');
       res.writeHead(204);
       res.end();
@@ -12841,6 +12855,9 @@ export function buildApp(deps: AppDeps): App {
         return;
       }
     }
+    // View as a partner: refused here unless it is the admin's own session reading
+    // what a partner reads (programmes/view-as.ts).
+    if (await viewAs.gate(req, res, pathname)) { routeClass = 'view-as-refused'; return; }
     // A renewal that cannot be decided (the store is down) is skipped: the
     // session stays as it was and the next request asks again.
     const renewed = await renewedSessionCookie(req, pathname).catch(() => null);
