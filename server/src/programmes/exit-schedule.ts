@@ -153,7 +153,12 @@ async function schedulerOf(store: Store, rec: ProgrammeExitRecord): Promise<User
 }
 
 /** Run one scheduled exit now, with the choices it was scheduled with. */
-export async function runScheduledExit(d: ScheduleDeps, rec: ProgrammeExitRecord, actorRef = 'system', actorId?: string): Promise<ProgrammeExitRecord | null> {
+export async function runScheduledExit(d: ScheduleDeps, read: ProgrammeExitRecord, actorRef = 'system', actorId?: string, changes: Partial<ProgrammeExitRecord> = {}): Promise<ProgrammeExitRecord | null> {
+  // Claimed first, so two replicas sweeping in the same minute, or a sweep
+  // and an End now, never run one end twice.
+  const rec = { ...read, ...changes };
+  const running: ProgrammeExitRecord = { ...rec, state: 'running', changedAt: new Date().toISOString() };
+  if (!(await d.store.replaceProgrammeExit(running, read))) return null;
   const scheduler = await schedulerOf(d.store, rec);
   const actor = actorId ? (await d.store.getUser(actorId)) ?? scheduler : scheduler;
   const rights = d.rights ? { rights: d.rights } : {};
@@ -161,7 +166,12 @@ export async function runScheduledExit(d: ScheduleDeps, rec: ProgrammeExitRecord
   // The receiver or the owning team may have gone since: fall back to the
   // default for the programme as it is now, rather than not ending at all.
   if (!planned.ok && (planned.code === 'INVALID_INPUT' || planned.code === 'NO_OWNING_TEAM')) planned = await planExit(d.store, rec.selection, actor, rights);
-  if (!planned.ok) return null;
+  if (!planned.ok) {
+    // It cannot run as it stands (the receiver and the default both refused):
+    // back to waiting, where the programme page shows it to change or cancel.
+    await d.store.replaceProgrammeExit(rec, running);
+    return null;
+  }
   await retireExitNotices(d.store, rec.id);
   return applyExit(d.store, d.audit, planned.plan, {
     actorRef, actorId: actor.id, createdBy: rec.createdBy, createdAt: rec.createdAt, id: rec.id, prior: rec,
@@ -194,7 +204,7 @@ async function sendExitNotice(d: ScheduleDeps, rec: ProgrammeExitRecord, stage: 
   const at = new Date(now).toISOString();
   // Marked first, so a sweep on another replica never sends it twice.
   const notices: NoticesSent = { ...rec.notices, [stage]: at, ...(stage === 'd1' && !rec.notices?.d14 ? { d14: at } : {}) };
-  await d.store.putProgrammeExit({ ...rec, notices });
+  if (!(await d.store.replaceProgrammeExit({ ...rec, notices }, rec))) return;
   const ctx = d.context(now);
   const planned = await planExit(d.store, rec.selection, await schedulerOf(d.store, rec), { projects: rec.projects, transferTo: rec.transferTo });
   if (!planned.ok) return;
@@ -309,8 +319,8 @@ export function registerScheduleRoutes(router: Router, deps: ScheduleDeps & {
       return sendError(res, 400, 'INVALID_INPUT', `projects is one of ${PROJECT_MODES.join(', ')}`);
     }
     if (body.at === 'now') {
-      const done = await runScheduledExit(deps, { ...rec, ...(body.projects ? { projects: body.projects as ProjectsMode } : {}) }, `user:${actor.id}`, actor.id);
-      if (!done) return sendError(res, 409, 'CANNOT_END', 'this end can no longer run as scheduled; end it from the programme page');
+      const done = await runScheduledExit(deps, rec, `user:${actor.id}`, actor.id, body.projects ? { projects: body.projects as ProjectsMode } : {});
+      if (!done) return sendError(res, 409, 'CANNOT_END', 'this end is already running, or cannot run as scheduled; reload the programme page');
       return sendJson(res, 200, { exit: done.id, state: done.state, doneAt: done.doneAt }, { 'cache-control': 'no-store' });
     }
     const at = body.at === undefined ? rec.endsAt! : endOfDay(body.at);
@@ -321,11 +331,10 @@ export function registerScheduleRoutes(router: Router, deps: ScheduleDeps & {
       changedBy: actor.id, changedAt: now,
     };
     // A new date gets its own reminders, and the ones sent for the old date go.
-    if (at !== rec.endsAt || next.notice === false) {
-      delete next.notices;
-      await retireExitNotices(store, rec.id);
-    }
-    await store.putProgrammeExit(next);
+    const fresh = at !== rec.endsAt || next.notice === false;
+    if (fresh) delete next.notices;
+    if (!(await store.replaceProgrammeExit(next, rec))) return sendError(res, 409, 'EXIT_CHANGED', 'this end changed or started running meanwhile; reload and try again');
+    if (fresh) await retireExitNotices(store, rec.id);
     await deps.audit(`user:${actor.id}`, 'programme.exit.change', rec.programmeId ? `programme:${rec.programmeId}` : 'programme:list', {
       exit: rec.id, before: { endsAt: rec.endsAt, notice: rec.notice !== false, projects: rec.projects },
       after: { endsAt: next.endsAt, notice: next.notice !== false, projects: next.projects },
@@ -335,7 +344,9 @@ export function registerScheduleRoutes(router: Router, deps: ScheduleDeps & {
   router.add('DELETE', '/api/v1/programmes/exits/:exit', async (req, res, ctx) => {
     const actor = await deps.requireAction(req, res, 'programme.manage'); if (!actor) return;
     const rec = await waiting(res, String(ctx.params.exit)); if (!rec) return;
-    await store.putProgrammeExit({ ...rec, state: 'cancelled', changedBy: actor.id, changedAt: new Date().toISOString() });
+    if (!(await store.replaceProgrammeExit({ ...rec, state: 'cancelled', changedBy: actor.id, changedAt: new Date().toISOString() }, rec))) {
+      return sendError(res, 409, 'EXIT_CHANGED', 'this end changed or started running meanwhile; reload and try again');
+    }
     await retireExitNotices(store, rec.id);
     await deps.audit(`user:${actor.id}`, 'programme.exit.cancel', rec.programmeId ? `programme:${rec.programmeId}` : 'programme:list', { exit: rec.id, endsAt: rec.endsAt });
     sendJson(res, 200, { exit: rec.id, state: 'cancelled' }, { 'cache-control': 'no-store' });

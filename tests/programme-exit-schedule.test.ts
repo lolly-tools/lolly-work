@@ -234,3 +234,16 @@ test('end now runs a scheduled end at once with its choices', async () => {
   assert.equal((await store.getProgrammeExit(made.body.exit))!.state, 'done');
   assert.ok((await store.listCompanies()).find((c) => c.id === 'initech')!.endedAt);
 });
+
+test('two replicas sweeping in the same minute run one scheduled end once', async () => {
+  assert.equal((await json(bruno, 'PUT', '/api/v1/programmes/isv/companies/umbrella', { name: 'Umbrella' })).status, 201);
+  const made = await json(bruno, 'POST', '/api/v1/programmes/exit', { company: 'umbrella', at: day(2), apply: true });
+  const rec = (await store.getProgrammeExit(made.body.exit))!;
+  const at = Date.parse(rec.endsAt!) + 1000;
+  const [a, b] = await Promise.all([sweep(at), sweep(at)]);
+  assert.equal(a + b, 1, 'the claim lets one replica run the end');
+  const done = (await store.getProgrammeExit(made.body.exit))!;
+  assert.equal(done.state, 'done');
+  assert.deepEqual(done.result?.ended.companies, ['umbrella']);
+  assert.equal((await json(bruno, 'DELETE', `/api/v1/programmes/exits/${made.body.exit}`)).status, 409, 'a done end is not cancelled');
+});

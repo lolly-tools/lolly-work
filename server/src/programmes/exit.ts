@@ -123,12 +123,13 @@ export interface ExitResult {
 
 /**
  * One exit, from the dry run's choices to what it did (migrations/0093).
- * `scheduled` waits for its date, `done` ran, `cancelled` was called off
+ * `scheduled` waits for its date, `running` was claimed by the sweep or an
+ * End now and is being carried out, `done` ran, `cancelled` was called off
  * before its date and `reopened` was undone.
  */
 export interface ProgrammeExitRecord {
   id: string;
-  state: 'scheduled' | 'done' | 'cancelled' | 'reopened';
+  state: 'scheduled' | 'running' | 'done' | 'cancelled' | 'reopened';
   selection: ExitSelection;
   /** The programme it belongs to, when there is one. */
   programmeId?: string;

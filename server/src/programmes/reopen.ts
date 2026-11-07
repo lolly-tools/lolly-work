@@ -36,6 +36,11 @@ type Audit = (actor: string, action: string, subject: string, payload?: Record<s
 export const REOPEN_DAYS = 30;
 const DAY_MS = 86_400_000;
 
+/** A reopen that has put nothing back yet: the receipt holds it while one runs. */
+export function emptyReopen(): ReopenResult {
+  return { accounts: [], projects: [], templates: [], folders: [], domainRules: [], reopened: { companies: [] }, stayEnded: { tokens: 0, links: 0, rightsChoices: [] } };
+}
+
 /** When Reopen stops being offered for a receipt, or null when it never is. */
 export function reopenUntil(rec: Pick<ProgrammeExitRecord, 'state' | 'doneAt'>): string | null {
   if (rec.state !== 'done' || !rec.doneAt) return null;
