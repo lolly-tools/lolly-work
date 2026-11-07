@@ -108,7 +108,7 @@ import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
-import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
@@ -6100,6 +6100,11 @@ export function buildApp(deps: AppDeps): App {
     try { await currentRenderCaller(actor, render.request); }
     catch (error) { if (error instanceof RenderResourceError) return sendError(res, error.status, error.code, error.message); throw error; }
     const toolId = render.request.toolId, format = render.request.format;
+    // The approvals.request scope is what lets a token ask, so no allow grant is
+    // needed; an explicit export.request deny still refuses, as it refuses a person.
+    if (grantDecision({ userId: user.id, groups: user.groups }, 'export.request', [`tool:${toolId}`, '*'], await store.listGrants()) === 'deny') {
+      return sendError(res, 403, 'FORBIDDEN', 'export.request is denied for this tool');
+    }
     // The chain: bound to the tool, else one the programme lists.
     const placed = tokenPlacement(record);
     const bound = (await store.listOverlays()).get(toolId)?.enforce?.escalation;
@@ -6122,12 +6127,14 @@ export function buildApp(deps: AppDeps): App {
     if (!bytes || bytes.byteLength !== render.output.size || sha256Hex(bytes) !== render.output.sha256) return sendError(res, 409, 'OUTPUT_INTEGRITY', 'retained output no longer matches its receipt');
     if (bytes.byteLength > policy.maxFileBytes) return sendError(res, 413, 'UPLOAD_TOO_LARGE', `A request can carry at most ${policy.maxFileBytes} bytes.`);
     if (heldArtifactBytes(await store.listApprovals()) + bytes.byteLength > policy.instanceBudgetBytes) return sendError(res, 413, 'APPROVAL_ARTIFACT_BUDGET', 'This instance has no room for another request file.');
-    // The digest the render took under until-approved is exact; otherwise work it out
-    // as a request from the app would, from the render's own inputs.
-    const recorded = render.output.evidence?.untilApproved?.inputsDigest;
-    const facts = recorded ? { toolVersion: render.output.evidence?.tool?.version ?? null, inputsDigest: recorded }
-      : await exportReviewInputs(user, toolId, format, queryFromInputs(render.request.inputs));
-    const exportReview = describeRenderReview(bytes, { toolId, format, name: `${render.id}.${format}`, toolVersion: facts.toolVersion ?? null, inputsDigest: facts.inputsDigest ?? null }, new Date().toISOString());
+    // Only the render's own receipt says what these bytes were made from: the tool
+    // version that ran and, under until-approved, the digest the render took. The
+    // tool's current version and policy are never read here, so an approval of an
+    // older file cannot clear renders from a newer tool. A render made without
+    // until-approved has no digest, and its approval is of this file alone.
+    const evidence = render.output.evidence;
+    const exportReview = describeRenderReview(bytes, { toolId, format, name: `${render.id}.${format}`,
+      toolVersion: evidence?.tool?.version ?? null, inputsDigest: evidence?.untilApproved?.inputsDigest ?? null }, new Date().toISOString());
     if (!exportReview) return sendError(res, 422, 'ARTIFACT_FORMAT_MISMATCH', `That file is not a ${format} file.`);
     const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 200) : `${toolId} (${format})`;
     const approval = createApproval({ id: `apr_${randomId(8)}`, subjectType: 'export-review', subjectRef: `export-review:${exportReview.fingerprint}`, title, chain, nominees: [], createdBy: user.id, now: new Date().toISOString() });

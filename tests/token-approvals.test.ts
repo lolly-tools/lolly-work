@@ -7,7 +7,9 @@
  *    review of one of its own finished renders; deciding stays with people;
  *  - nobody is nominated, and the chain is the tool's own or one the programme
  *    lists, so a partner's agent never reaches an internal chain by name;
- *  - the reviewed file is the render's own output, with the digest the render took;
+ *  - the reviewed file is the render's own output, with the tool version and the
+ *    digest the render took, never the tool's current ones;
+ *  - an explicit export.request deny refuses a token as it refuses a person;
  *  - the approver reads who asked as the agent it is, never as a person;
  *  - under until-approved the next render after the decision is clean;
  *  - the token reads and withdraws its own requests, and nobody else's.
@@ -15,7 +17,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -195,6 +197,52 @@ test('what a token may not ask: another subject, nominees, or someone else\'s re
   assert.equal((await bearer('other', 'POST', '/api/v1/approvals', { subjectType: 'export-review', exportReview: { renderId: render.id } })).status, 404, 'another token\'s render is not there');
   assert.equal((await bearer('rita', 'POST', '/api/v1/approvals', { subjectType: 'export-review', exportReview: { renderId: 'rnd_missing' } })).status, 404);
   assert.equal((await bearer('rita', 'POST', '/api/v1/approvals/x/act', { action: 'approve' })).status, 403, 'deciding stays with people');
+});
+
+test('an explicit export.request deny refuses a token, as it refuses a person; no allow grant is needed', async () => {
+  const made = await as('owner', 'POST', '/api/v1/programmes/resellers/tokens', { label: 'Denied agent', company: 'northwind', scopes: ['render', 'catalog.read', 'approvals.request'] });
+  tokens.denied = { id: made.body.id, token: made.body.token };
+  const render = await rendered('denied', 'Denied piece');
+  await store.putGrant({ principal: `user:svc_${tokens.denied.id}`, action: 'export.request', resource: `tool:${TOOL}`, effect: 'deny' });
+  const before = (await store.listApprovals()).length;
+  const refused = await bearer('denied', 'POST', '/api/v1/approvals', { subjectType: 'export-review', exportReview: { renderId: render.id } });
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, 'FORBIDDEN');
+  const overMcp = await tool('denied', 'request_approval', { renderId: render.id });
+  assert.equal(overMcp.isError, true);
+  assert.equal((await store.listApprovals()).length, before, 'nothing was asked');
+  assert.ok(!(await store.listGrants()).some((g) => g.action === 'export.request' && g.effect === 'allow'), 'the tokens that ask hold no allow grant');
+});
+
+test('the reviewed file carries only its own render\'s facts: an approval of an older file never clears a newer tool\'s render', async () => {
+  const manifest = join(pack, 'tools', TOOL, 'tool.json');
+  const original = JSON.parse(await readFile(manifest, 'utf8')) as Record<string, unknown>;
+  try {
+    // A render made before until-approved was on has no digest of its own.
+    await store.putOverlay({ toolId: TOOL, version: 2, enforce: {} });
+    const early = await rendered('rita', 'Early piece');
+    assert.equal(early.marked, false);
+    await store.putOverlay({ toolId: TOOL, version: 3, enforce: { watermark: 'until-approved' } });
+    // A render made under until-approved by version 1.0.0 has one.
+    const v1 = await rendered('rita', 'Version one piece');
+    assert.equal(v1.marked, true);
+    await writeFile(manifest, JSON.stringify({ ...original, version: '1.1.0' }));
+    for (const [render, title] of [[early, 'Early piece'], [v1, 'Version one piece']] as const) {
+      const asked = await tool('rita', 'request_approval', { renderId: render.id });
+      assert.equal(asked.isError, undefined, JSON.stringify(asked.structuredContent));
+      const approval = (await store.getApproval(asked.structuredContent.id))!;
+      assert.equal(approval.exportReview?.toolVersion, '1.0.0', 'the version that made the file, not the one in the pack now');
+      if (render === early) assert.equal(approval.exportReview?.inputsDigest, null, 'no digest the render did not take');
+      else assert.match(String(approval.exportReview?.inputsDigest), /^[a-f0-9]{64}$/);
+      const reviewToken = (await fetch(`${base}/api/v1/approvals/${approval.id}/artifact`, { headers: { cookie: cookies.bruno! } })).headers.get('x-lolly-review-token');
+      const decided = await as('bruno', 'POST', `/api/v1/approvals/${approval.id}/act`, { action: 'approve', comment: 'Good', artifactFingerprint: approval.exportReview!.fingerprint, reviewToken });
+      assert.equal(decided.status, 200, JSON.stringify(decided.body));
+      assert.equal((await rendered('rita', title)).marked, true, `a 1.1.0 render of "${title}" still needs its own approval`);
+    }
+  } finally {
+    await writeFile(manifest, JSON.stringify(original));
+    await store.putOverlay({ toolId: TOOL, version: 4, enforce: { watermark: 'until-approved' } });
+  }
 });
 
 test('a token reads and withdraws its own requests, and nobody else\'s', async () => {
