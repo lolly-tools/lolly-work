@@ -35,6 +35,7 @@ import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../prog
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { CompanyProfile, CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -77,6 +78,18 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
   };
+}
+
+/** One partner_company_profiles row -> record (migrations/0089). */
+function companyProfileFromRow(r: Record<string, unknown>): CompanyProfileRecord {
+  const at = r.updated_at ? new Date(r.updated_at as string).toISOString() : '';
+  return { companyId: r.company_id as string, revision: Number(r.revision), profile: (r.profile ?? {}) as CompanyProfile,
+    settings: (r.settings ?? {}) as CompanyProfileSettings, updatedBy: r.updated_by as string, updatedAt: Number(r.revision) ? at : '' };
+}
+
+function companyProfileRevisionFromRow(r: Record<string, unknown>): CompanyProfileRevision {
+  return { companyId: r.company_id as string, revision: Number(r.revision), profile: (r.profile ?? {}) as CompanyProfile,
+    updatedBy: r.updated_by as string, updatedAt: new Date(r.updated_at as string).toISOString() };
 }
 
 /** One document-scoped agent credential, without its original bearer. */
@@ -2327,6 +2340,60 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deletePartnerFolder(key) {
       await pool.query('delete from partner_folders where provider = $1 and path = $2 and programme_id = $3 and company_id = $4',
         [key.provider, key.path, key.programmeId, key.companyId ?? '']);
+    },
+
+    // Partner company profiles (migrations/0089). The current row and one
+    // history row per revision, written together.
+    async getCompanyProfile(companyId) {
+      const { rows } = await pool.query('select * from partner_company_profiles where company_id = $1', [companyId]);
+      return rows[0] ? companyProfileFromRow(rows[0]) : null;
+    },
+    async listCompanyProfiles() {
+      const { rows } = await pool.query('select * from partner_company_profiles order by company_id');
+      return rows.map(companyProfileFromRow);
+    },
+    async saveCompanyProfile(rec, expectRevision) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query('select revision from partner_company_profiles where company_id = $1 for update', [rec.companyId]);
+        if (Number(rows[0]?.revision ?? 0) !== expectRevision) { await client.query('rollback'); return false; }
+        await client.query(
+          `insert into partner_company_profiles (company_id, revision, profile, updated_by, updated_at) values ($1, $2, $3::jsonb, $4, $5)
+           on conflict (company_id) do update set revision = excluded.revision, profile = excluded.profile, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+          [rec.companyId, rec.revision, JSON.stringify(rec.profile), rec.updatedBy, rec.updatedAt],
+        );
+        await client.query(
+          'insert into partner_company_profile_history (company_id, revision, profile, updated_by, updated_at) values ($1, $2, $3::jsonb, $4, $5)',
+          [rec.companyId, rec.revision, JSON.stringify(rec.profile), rec.updatedBy, rec.updatedAt],
+        );
+        await client.query('commit');
+        return true;
+      } catch (error) {
+        await client.query('rollback');
+        // Two first saves at once: the loser's history insert collides.
+        if ((error as { code?: string }).code === '23505') return false;
+        throw error;
+      } finally { client.release(); }
+    },
+    async putCompanyProfileSettings(companyId, settings) {
+      await pool.query(
+        `insert into partner_company_profiles (company_id, revision, profile, settings, updated_by) values ($1, 0, '{}'::jsonb, $2::jsonb, '')
+         on conflict (company_id) do update set settings = excluded.settings`,
+        [companyId, JSON.stringify(settings)],
+      );
+    },
+    async getCompanyProfileRevision(companyId, revision) {
+      const { rows } = await pool.query('select * from partner_company_profile_history where company_id = $1 and revision = $2', [companyId, revision]);
+      return rows[0] ? companyProfileRevisionFromRow(rows[0]) : null;
+    },
+    async listCompanyProfileHistory(companyId) {
+      const { rows } = await pool.query('select * from partner_company_profile_history where company_id = $1 order by revision', [companyId]);
+      return rows.map(companyProfileRevisionFromRow);
+    },
+    async deleteCompanyProfile(companyId) {
+      await pool.query('delete from partner_company_profile_history where company_id = $1', [companyId]);
+      await pool.query('delete from partner_company_profiles where company_id = $1', [companyId]);
     },
 
     // Instance asset versions (migrations/0020). Immutable snapshots keyed

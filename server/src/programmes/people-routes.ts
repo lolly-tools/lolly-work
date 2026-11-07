@@ -43,6 +43,8 @@ export interface PeopleRouteDeps {
   signIn(): { workspace: string; url: string; providers: string[]; note: string | null };
   /** DNS TXT lookups, for the sweep's daily look at partner domains. */
   resolveTxt: TxtLookup;
+  /** Drop a deleted company's profile, its history and its logos (plans/82 M3). */
+  forgetCompanyProfile?(companyId: string): Promise<void>;
 }
 
 /** One message an admin can send to everyone a list invited, instead of one
@@ -137,6 +139,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     await store.deleteLocalGroup(companyGroup(id));
     await store.deleteCompany(id);
     noteCompanyProgramme(id, null);
+    await deps.forgetCompanyProfile?.(id);
     await forgetDomainCompany(store, id, now());
     await withdrawFolderRules(store, deps.audit, `user:${actor.id}`, { companyId: id }, 'company-delete');
     for (const m of (await store.listMemberships()).filter((x) => x.companyId === id)) {

@@ -339,6 +339,27 @@ export interface SubmitInput {
   /** The submitting client's own name for what it sent ('template:<id>'),
    *  echoed back so it can show the state of its own submission. */
   clientRef?: string;
+  /**
+   * A partner company's logo (plans/82 M3). The bytes have passed the logo
+   * checks (programmes/logo-checks.ts) and arrive from the company profile
+   * routes, never from the generic submit route. They become an asset only
+   * that company's people and tokens see (`groups: ['company-<id>']`), tagged
+   * `logo`, `partner` and the surface, with `meta.company` and `meta.surface`.
+   * A brand team's own change never waits, so no submit chain applies, and the
+   * duplicate short-circuit is skipped: the same bytes held as another asset
+   * belong to someone else's audience, and the profile must point at its own.
+   */
+  companyLogo?: { companyId: string; surface: 'light' | 'dark' | 'mark' };
+}
+
+/** What a company logo's served entry carries (plans/82 M3). */
+export function companyLogoFields(logo: NonNullable<SubmitInput['companyLogo']>, format: string): { type: string; tags: string[]; groups: string[]; meta: Record<string, unknown> } {
+  return {
+    type: format === 'svg' ? 'vector' : 'raster',
+    tags: ['logo', 'partner', logo.surface === 'mark' ? 'mark' : `on-${logo.surface}`],
+    groups: [`company-${logo.companyId}`],
+    meta: { company: logo.companyId, surface: logo.surface },
+  };
 }
 
 export type SubmitRefusal =
@@ -453,8 +474,9 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   //     closed. Checked here, before anything is hashed or stored, so a refusal
   //     leaves no orphan bytes behind. The rest of the app refuses a missing
   //     chain the same way (api/app.ts, POST /api/v1/approvals).
-  const chain: Chain | null = policy.chain && !input.target ? await store.getChain(policy.chain) : null;
-  if (policy.chain && !input.target && !chain?.steps.length) {
+  const reviewed = !input.target && !input.companyLogo;
+  const chain: Chain | null = policy.chain && reviewed ? await store.getChain(policy.chain) : null;
+  if (policy.chain && reviewed && !chain?.steps.length) {
     return {
       ok: false, code: 'SUBMIT_CHAIN_MISSING',
       detail: `policy.submit.chain names ${policy.chain}, which this instance has no usable chain for`,
@@ -513,7 +535,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       };
     }
   }
-  const existing = input.target ? undefined : findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
+  const existing = input.target || input.companyLogo ? undefined : findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
   if (existing) {
     return {
       ok: true, duplicate: true, record: existing, checksum, scan: 'skipped',
@@ -612,6 +634,12 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     // it moves with the head (a rules tool's version and inputs, plans/82 M2).
     const moved = applyVersionToRecord(target, row);
     if (data?.ok) moved.entry = { ...moved.entry, meta: data.meta };
+    // A replaced logo may change from SVG to PNG; its entry says which it is now.
+    if (input.companyLogo) {
+      const logo = companyLogoFields(input.companyLogo, sniffed.format);
+      moved.entry = { ...moved.entry, type: logo.type, tags: logo.tags, meta: logo.meta };
+      moved.groups = logo.groups;
+    }
     try {
       await store.putAssetVersion(row);
       await store.putInstanceAsset(moved);
@@ -660,21 +688,23 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     // version it stays on the version row, as before.
     ...(input.note ? { note: input.note.slice(0, 500) } : {}),
   };
-  const tags = [...new Set((input.tags ?? []).map((t) => t.trim()).filter(Boolean))];
+  const logo = input.companyLogo ? companyLogoFields(input.companyLogo, sniffed.format) : undefined;
+  const tags = [...new Set([...(input.tags ?? []), ...(logo?.tags ?? [])].map((t) => t.trim()).filter(Boolean))];
+  const groups = logo?.groups ?? input.groups;
   let record: InstanceAssetRecord = {
     id,
     entry: instanceAssetEntry(id, {
       name: input.name,
       ...(data?.ok && data.description ? { description: data.description } : input.description ? { description: input.description } : {}),
-      type: dataKind ?? (input.type || (sniffed.format === 'svg' ? 'icon' : 'image')),
+      type: logo?.type ?? dataKind ?? (input.type || (sniffed.format === 'svg' ? 'icon' : 'image')),
       tags,
       ...(sniffed.width && sniffed.height ? { width: sniffed.width, height: sniffed.height } : {}),
       // What a shell needs to offer a template or user tool before fetching
       // its JSON: the tool it opens in, and how much it sets.
-      ...(data?.ok ? { meta: data.meta } : {}),
+      ...(data?.ok ? { meta: data.meta } : logo ? { meta: logo.meta } : {}),
     }, [{ format: sniffed.format, size: stat.size, checksum: stat.checksum }]),
     blobs: { [sniffed.format]: `${id}/${sniffed.format}` },
-    ...(input.groups?.length ? { groups: input.groups } : {}),
+    ...(groups?.length ? { groups } : {}),
     submission,
     createdAt: nowIso,
   };
