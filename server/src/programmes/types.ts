@@ -47,6 +47,19 @@ export interface ProgrammeRecord {
   /** Tools its people use only through the templates published to them
    *  (plans/82 M2 W5). Off unless listed; see programmes/templates-only.ts. */
   templatesOnly?: string[];
+  /** Set when the partnership ended (plans/82 M5): a state, not a deletion.
+   *  The record, its companies and their profiles stay for the history and
+   *  the files that name them; Delete is the separate step. */
+  endedAt?: string;
+  /** Who ended it, a user id. */
+  endedBy?: string;
+  /** The exit receipt that ended it (programmes/exit.ts). */
+  endedExit?: string;
+}
+
+/** Whether a programme or company record is ended (plans/82 M5). */
+export function isEnded(rec: { endedAt?: string } | null | undefined): boolean {
+  return !!rec?.endedAt;
 }
 
 /** Programme ids are slugs short enough that the group name fits the local-group rule. */

@@ -15,6 +15,7 @@ import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import type { AssetIndexEntry } from '../catalog/lifecycle.ts';
 import { rightsAnswer, type RightsEngine } from '../catalog/rights.ts';
 import type { Store } from '../store/types.ts';
+import type { ExitRightsChoice, ExitRightsChoices } from './exit.ts';
 
 export const CHOICE_NOTE_MAX = 500;
 /** Files one request may choose at once (several held files in one folder). */
@@ -119,3 +120,22 @@ export async function withdrawRightsChoices(store: Store, audit: Audit, actor: s
   }
   return gone;
 }
+
+/** A choice as an exit lists it: the file, the audience and the licence recorded. */
+const exitView = (c: RightsChoiceRecord): ExitRightsChoice => ({ assetId: c.assetId, group: c.group, ...(c.declared ? { licence: c.declared } : {}) });
+
+/**
+ * The share anyway store as ending a partnership needs it (plans/82 M5): the
+ * choices a programme or company holds, and their withdrawal, audited as
+ * `programme.rights.withdraw` with the exit's `via`. The exit route and the
+ * minute sweep for scheduled ends take the same object.
+ */
+export function exitRightsChoices(store: Store, audit: Audit): ExitRightsChoices {
+  return {
+    list: async (pick) => (await store.listRightsChoices())
+      .filter((c) => (pick.companyId ? c.companyId === pick.companyId : !!pick.programmeId && c.programmeId === pick.programmeId))
+      .map(exitView),
+    withdraw: async (actor, pick, via) => (await withdrawRightsChoices(store, audit, actor, pick, via)).map(exitView),
+  };
+}
+

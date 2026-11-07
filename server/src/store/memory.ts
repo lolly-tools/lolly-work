@@ -41,6 +41,7 @@ import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../prog
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
@@ -198,6 +199,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const memberships = new Map<string, MembershipRecord>();
   const partnerDomains = new Map<string, PartnerDomainRecord>();
   const partnerFolders = new Map<string, PartnerFolderRecord>();
+  const programmeExits = new Map<string, ProgrammeExitRecord>();
   const companyProfiles = new Map<string, CompanyProfileRecord>();
   const rightsMarks = new Map<string, AssetRightsMarkRecord>();
   const assetLicences = new Map<string, AssetLicenceRecord>();
@@ -1498,6 +1500,29 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async hasAccounts() {
       return users.size > 0;
+    },
+    async listProgrammeExits(filter) {
+      return [...programmeExits.values()]
+        .filter((r) => (!filter?.programmeId || r.programmeId === filter.programmeId) && (!filter?.companyId || r.companyId === filter.companyId)
+          && (!filter?.state || r.state === filter.state))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+        .map((r) => structuredClone(r));
+    },
+    async getProgrammeExit(id) {
+      const rec = programmeExits.get(id);
+      return rec ? structuredClone(rec) : null;
+    },
+    async putProgrammeExit(rec) {
+      programmeExits.set(rec.id, structuredClone(rec));
+    },
+    async deleteProgrammeExits(pick) {
+      let n = 0;
+      for (const r of [...programmeExits.values()]) {
+        if (pick.companyId ? r.companyId !== pick.companyId : !pick.programmeId || r.programmeId !== pick.programmeId) continue;
+        programmeExits.delete(r.id);
+        n++;
+      }
+      return n;
     },
     async getCompanyProfile(companyId) {
       const rec = companyProfiles.get(companyId);
