@@ -7704,9 +7704,10 @@ export function buildApp(deps: AppDeps): App {
           'this collection is too large to zip; download the assets individually');
       }
       const zip = new ZipBuilder();
-      // The two credits entries keep their names, so a file called CREDITS.txt
-      // is renamed rather than shadowed (plans/82 M4).
-      const used = new Set<string>(['CREDITS.txt', 'credits.json']);
+      // Members keep exactly the names they had before credits existed; the
+      // credits companion takes the next free name on a clash, such as
+      // "CREDITS (2).txt" (plans/82 M4, Andy 2026-11-07).
+      const used = new Set<string>();
       const named = members.map((member) => ({ member, path: safeEntryName(member.source.filename, used) }));
       const [engine, entries] = await Promise.all([loadRightsEngine(), linkMakerEntries(link)]);
       const credits = collectionCredits(engine, named.map(({ member, path }) => {
@@ -7719,8 +7720,9 @@ export function buildApp(deps: AppDeps): App {
         'cache-control': 'private, no-store',
         'x-content-type-options': 'nosniff',
       });
+      const companion = credits.files.map((file) => ({ ...file, name: safeEntryName(file.name, used) }));
       // Written first, so a download cut short still holds them.
-      for (const file of credits.files) res.write(zip.add(file.name, file.bytes));
+      for (const file of companion) res.write(zip.add(file.name, file.bytes));
       let written = 0;
       for (const { member, path } of named) {
         const bytes = await readLinkedSource(member.source);
@@ -7733,7 +7735,7 @@ export function buildApp(deps: AppDeps): App {
       // recorded as written, never as included.
       await audit(guestActor(link.id), 'catalog.collection.download', `collection:${rec.id}`, {
         linkId: link.id, entries: written, withheld,
-        ...(credits.files.length ? { credits: { state: 'written', files: Object.fromEntries(credits.files.map((f) => [f.name, f.sha256])) } } : {}),
+        ...(companion.length ? { credits: { state: 'written', files: Object.fromEntries(companion.map((f) => [f.name, f.sha256])) } } : {}),
       });
       return;
     }
