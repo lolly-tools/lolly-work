@@ -34,6 +34,7 @@ import { sortCollections, type CollectionRecord } from '../catalog/collections.t
 import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../programmes/types.ts';
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
+import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -2311,6 +2312,21 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async deletePartnerDomain(domain) {
       await pool.query('delete from partner_domains where domain = $1', [domain]);
+    },
+    async listPartnerFolders() {
+      const { rows } = await pool.query('select record from partner_folders order by provider, path, programme_id, company_id');
+      return rows.map((r) => r.record as PartnerFolderRecord);
+    },
+    async putPartnerFolder(rec) {
+      await pool.query(
+        `insert into partner_folders (provider, path, programme_id, company_id, record, updated_at) values ($1, $2, $3, $4, $5::jsonb, now())
+         on conflict (provider, path, programme_id, company_id) do update set record = excluded.record, updated_at = now()`,
+        [rec.provider, rec.path, rec.programmeId, rec.companyId ?? '', JSON.stringify(rec)],
+      );
+    },
+    async deletePartnerFolder(key) {
+      await pool.query('delete from partner_folders where provider = $1 and path = $2 and programme_id = $3 and company_id = $4',
+        [key.provider, key.path, key.programmeId, key.companyId ?? '']);
     },
 
     // Instance asset versions (migrations/0020). Immutable snapshots keyed

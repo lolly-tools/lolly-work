@@ -40,6 +40,7 @@ import { sortCollections, type CollectionRecord } from '../catalog/collections.t
 import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../programmes/types.ts';
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
+import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -192,6 +193,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const companies = new Map<string, CompanyRecord>();
   const memberships = new Map<string, MembershipRecord>();
   const partnerDomains = new Map<string, PartnerDomainRecord>();
+  const partnerFolders = new Map<string, PartnerFolderRecord>();
+  const folderKey = (k: { provider: string; path: string; programmeId: string; companyId?: string }) => [k.provider, k.path, k.programmeId, k.companyId ?? ''].join('\n');
   /** `${assetId} ${version}` (space-joined) - the composite key migration 0020 makes a
    *  primary key. One flat map keeps the memory driver's shape as close to the
    *  SQL one as a Map allows. */
@@ -1435,6 +1438,16 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deletePartnerDomain(domain) {
       partnerDomains.delete(domain);
+    },
+    async listPartnerFolders() {
+      return [...partnerFolders.values()].sort((a, b) => a.provider.localeCompare(b.provider) || a.path.localeCompare(b.path)
+        || a.programmeId.localeCompare(b.programmeId) || (a.companyId ?? '').localeCompare(b.companyId ?? ''));
+    },
+    async putPartnerFolder(rec) {
+      partnerFolders.set(folderKey(rec), rec);
+    },
+    async deletePartnerFolder(key) {
+      partnerFolders.delete(folderKey(key));
     },
 
     async listAssetVersions(assetId) {
