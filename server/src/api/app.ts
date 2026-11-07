@@ -105,7 +105,7 @@ import { registerFolderRoutes } from '../programmes/folder-routes.ts';
 import { registerRightsRoutes } from '../programmes/rights-routes.ts';
 import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
 import { loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
-import { CHOICE_NOTE_MAX, choiceFingerprint, factsOf } from '../programmes/rights.ts';
+import { CHOICE_NOTE_MAX, choiceFingerprint, exitRightsChoices, factsOf } from '../programmes/rights.ts';
 import { collectionCredits } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
@@ -6034,6 +6034,8 @@ export function buildApp(deps: AppDeps): App {
   companyProfiles.register(router);
   registerProgrammePeopleRoutes(router, {
     store, requireAction, audit,
+    // Ending a partnership withdraws its share anyway choices (plans/82 M4 and M5).
+    rightsChoices: exitRightsChoices(store, audit),
     forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
     invite: async (actor, email, groups, endsAt) => {
       // The invitation can be accepted until the membership ends, and never for
