@@ -133,7 +133,7 @@ import {
   freezeArtifactBytes, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
 } from '../approvals/export-review.ts';
 import { renderInputsDigest } from '../render/inputs-digest.ts';
-import { approvedExportReview, registerExportReviewMatch, templateVariantDigest } from '../approvals/export-review-match.ts';
+import { approvedExportReview, registerExportReviewMatch, templateFixedValues, templateOpenInputs, templateVariantDigest } from '../approvals/export-review-match.ts';
 import { registerFileRoutes } from '../uploads/file-routes.ts';
 import { createFileReference, creationRefusal, fileWire, FORMAT_TYPES, optimizeReport } from '../uploads/files.ts';
 import { liveUpload, readUploadReference, removeUpload, removeUploadsOwnedBy, uploadOwner, uploadPolicy, UploadReferenceError, type UploadRecord } from '../uploads/scoped.ts';
@@ -147,7 +147,7 @@ import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
 } from '../collab/invites.ts';
-import { explainInputAccess, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy, type ToolOverlay } from '../policy/overlay.ts';
+import { explainInputAccess, lockedValues, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy, type ToolOverlay } from '../policy/overlay.ts';
 import {
   applyLifecycleToIndex, assetFormatSha256, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
@@ -231,7 +231,7 @@ import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type Collect
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
 import type { RenderPartner } from '../render/record.ts';
-import { isPublishedTemplateRef, templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
+import { isPublishedTemplateRef, templateOverlay, templateRetired, templateSeed, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
@@ -6023,13 +6023,17 @@ export function buildApp(deps: AppDeps): App {
       // names a published template of this tool is keyed on the template's fixed inputs,
       // as the render will be.
       const templateRef = new URLSearchParams(expanded).get('template');
+      const overlay = rules ? projectRuleOverlay(original, rules, user.groups) : original;
       if (original?.enforce?.approvalCovers === 'template-variants' && isPublishedTemplateRef(templateRef)) {
         const template = await templateForReview(user, templateRef);
-        if (template && template.toolId === toolId) {
-          return { toolVersion, inputsDigest: templateVariantDigest(template), covers: 'template-variants' as const, templateRef: { id: template.id, version: template.version } };
+        const open = template && template.toolId === toolId ? templateOpenInputs(template, original.bindings) : null;
+        if (template && open) {
+          const ids = (tool.manifest.inputs as { id: string }[]).map((input) => input.id);
+          const start = { ...templateSeed(defaultsFor(original, user.groups), ids), ...templateSeed(template.values, ids) };
+          const fixed = templateFixedValues(ids, open, start, lockedValues(templateOverlay(overlay, template, user.groups, ids), user.groups));
+          return { toolVersion, inputsDigest: templateVariantDigest(template, open, fixed), covers: 'template-variants' as const, templateRef: { id: template.id, version: template.version, name: template.name } };
         }
       }
-      const overlay = rules ? projectRuleOverlay(original, rules, user.groups) : original;
       return { toolVersion, inputsDigest: renderInputsDigest(engine, tool.manifest, state.values as Record<string, unknown>, overlay, user.groups, renderProfileOf(user)) };
     } catch { return { toolVersion, inputsDigest: null, inputsGap: 'values-unreadable' as const }; }
   };

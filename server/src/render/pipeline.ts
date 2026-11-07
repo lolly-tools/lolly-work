@@ -34,7 +34,7 @@ import { createAssetObserver, effectivePolicySha256, evidenceHash, finishRenderE
 import { inspectOutput, outputVerificationProblems, OutputVerificationError, parseOutputVerification, verificationTarget, type OutputVerification } from './output-inspection.ts';
 import { applyPreviewWatermark, shouldWatermark, untilApprovedNote } from './watermark.ts';
 import { renderInputsDigest } from './inputs-digest.ts';
-import { templateVariantDigest, type ExportReviewKey } from '../approvals/export-review-match.ts';
+import { templateFixedValues, templateOpenInputs, templateVariantDigest, type ExportReviewKey } from '../approvals/export-review-match.ts';
 import { withRenderHost } from './host.ts';
 import { createVmHookExecutor } from './vm-hooks.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
@@ -466,10 +466,14 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // effect on the next one. A lookup that fails leaves the mark on.
   const watermarkRule = overlay?.enforce?.watermark;
   // One approval can cover a template's variants (plans/82 M7): then the key is the
-  // template's fixed inputs only, so a partner's price or logo changes nothing.
-  const coversVariants = overlay?.enforce?.approvalCovers === 'template-variants' && !!template;
+  // template's fixed inputs only, at the values this render fixes them to, so a
+  // partner's price or logo changes nothing. A template with no editable list
+  // fixes nothing, and each of its files needs its own approval.
+  const variantOpen = template && overlay?.enforce?.approvalCovers === 'template-variants'
+    ? templateOpenInputs(template, req.overlays.get(req.toolId)?.bindings) : null;
+  const coversVariants = !!variantOpen;
   const inputsDigest = watermarkRule !== 'until-approved' ? null
-    : coversVariants ? templateVariantDigest(template!)
+    : variantOpen ? templateVariantDigest(template!, variantOpen, templateFixedValues(declaredIds, variantOpen, { ...overlayDefaults, ...templateStart }, lockedValues(overlay, groups)))
     : renderInputsDigest(engine, tool.manifest, { ...seed, ...st.values } as Record<string, unknown>, overlay, groups, req.profile);
   const approval = inputsDigest
     ? await deps.approvedExportReview?.({ toolId: req.toolId, toolVersion: String(tool.manifest.version), format, inputsDigest }).catch(() => null) ?? null
