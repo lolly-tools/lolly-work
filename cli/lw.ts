@@ -864,12 +864,15 @@ switch (cmd) {
       const r = await call('/api/v1/programmes/exit', { method: 'POST', body: { ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
         dryRun: boolean; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
         pendingInvitations?: unknown[]; invitationsRevoked?: number; domainRules?: Array<{ domain: string; programme: { name: string } }>;
+        tokens?: Array<{ id: string; label: string }>; tokensRevoked?: number;
       };
       out(r);
       if (!values.json) {
         for (const a of r.accounts) console.log(`${r.dryRun ? 'ends    ' : 'ended   '}  ${a.email ?? a.id}`);
         for (const s2 of r.skipped) console.log(`left      ${s2.email}  ${s2.reason}`);
         for (const d of r.domainRules ?? []) console.log(`${r.dryRun ? 'withdraws' : 'withdrew '} ${d.domain} (${d.programme.name})`);
+        for (const t of r.tokens ?? []) console.log(`revokes   token ${t.id} (${t.label})`);
+        if (!r.dryRun && r.tokensRevoked) console.log(`${r.tokensRevoked} service token(s) revoked`);
         console.log(r.dryRun ? `${r.pendingInvitations?.length ?? 0} open invitation(s) would be revoked; run again with --apply to do it` : `${r.invitationsRevoked ?? 0} open invitation(s) revoked`);
       }
       break;
@@ -1047,12 +1050,26 @@ switch (cmd) {
       console.log(`revoked ${id}`);
       break;
     }
+    if (sub === 'programme') {
+      // Place a token in a partner programme and optionally one company in it
+      // (plans/82 M3), so a partner's agent is scoped like the people there.
+      const usage = 'usage: lw tokens programme <id> <programme> [--company <id>] | lw tokens programme <id> none';
+      const id = positionals[2] ?? fail(usage);
+      const programme = positionals[3] ?? fail(usage);
+      const r = await call(`/api/v1/tokens/${encodeURIComponent(id)}/programme`, { method: 'PUT',
+        body: programme === 'none' ? { programme: null } : { programme, ...(values.company ? { company: values.company } : {}) } }) as { id: string; programme?: string; company?: string };
+      out(r);
+      if (!values.json) console.log(r.programme ? `${r.id} is in ${r.programme}${r.company ? `, company ${r.company}` : ''}: it reaches what a person there reaches`
+        : `${r.id} is in no programme: it keeps only the essentials. Mint a new token for internal work`);
+      break;
+    }
     const { tokens } = await call('/api/v1/tokens') as {
-      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null }>;
+      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null; programme?: string | null; company?: string | null }>;
     };
     out(tokens);
     if (!values.json) for (const t of tokens) {
-      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
+      const placed = t.programme ? `programme ${t.programme}${t.company ? `/${t.company}` : ''}  ` : '';
+      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${placed}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
     }
     break;
   }
@@ -2198,6 +2215,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
   tokens [create --label <l> --scopes <s,...> [--tools <id,...>] [--role <r>] | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
+  tokens programme <id> <programme> [--company <id>] · tokens programme <id> none   place a token in a partner programme, so a partner's agent is scoped like its people
   companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
   companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint

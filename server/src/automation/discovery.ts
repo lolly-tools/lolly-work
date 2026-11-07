@@ -72,6 +72,10 @@ export interface DiscoveryDeps {
   /** The design-system rules for a format, or with none the rules every format
    *  shares (brand/rules.ts requestRuleContext), as compile and validate apply them. */
   managedRules(toolId: string, format?: string): Promise<ManagedRuleContext | undefined>;
+  /** The caller's partner company values for a tool (plans/82 M3): the overlay
+   *  with bound inputs locked to the company's value where its rule locks them,
+   *  and the values the tool starts from. Absent binds nothing. */
+  companyOverlay?(toolId: string, groups: string[], overlay: ToolOverlay | undefined): Promise<{ overlay: ToolOverlay | undefined; defaults: Record<string, unknown> }>;
   caps: RenderCapabilities;
   allowHooksInFastPath: boolean;
   /** A C2PA signer resolves, so server renders carry Content Credentials. */
@@ -138,8 +142,9 @@ async function contractFor(deps: DiscoveryDeps, described: ToolDescription, over
   const original = overlays.get(described.toolId);
   const allowed = policyFormats(described.server.formats, original);
   const rules = await deps.managedRules(described.toolId, format);
-  const overlay = rules ? projectRuleOverlay(original, rules, groups) : original;
-  const input = effectiveInputSchema(described.raw, overlay, groups);
+  const company = deps.companyOverlay ? await deps.companyOverlay(described.toolId, groups, original) : { overlay: original, defaults: {} };
+  const overlay = rules ? projectRuleOverlay(company.overlay, rules, groups) : company.overlay;
+  const input = effectiveInputSchema(described.raw, overlay, groups, company.defaults);
   const effects: PolicyEffect[] = [...input.effects, ...allowed.effects];
   return { schema: input.schema, effects, formats: allowed.formats, format, rules, overlay: original,
     unavailable: [...described.server.unavailable, ...allowed.unavailable] as Unavailable[] };
