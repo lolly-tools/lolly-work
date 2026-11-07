@@ -24,6 +24,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
+import { IDENTIFIER_CLEARED_BY, packPrefixRows } from '../server/src/programmes/rights-routes.ts';
 import {
   composeRightsRecords, loadRightsEngine, markCovers, markScopeKey, parseMarkScope, rightsAnswer, type AssetLicenceRecord, type AssetRightsMarkRecord,
 } from '../server/src/catalog/rights.ts';
@@ -247,3 +248,20 @@ test('withdrawing a mark returns its files to what they record themselves', asyn
   assert.equal((unmark.payload as { before: { holder: string } }).before.holder, 'SUSE Software Solutions');
   assert.deepEqual((await call(bruno, 'GET', '/api/v1/catalog/rights/marks')).body.marks, []);
 });
+
+test('held pack files group by id prefix, and a prefix a mark cannot reach says what would clear it instead', () => {
+  const suse = Array.from({ length: 210 }, (_, i) => ({ id: `suse/logo/${i}`, declared: 'LicenseRef-SUSE-Proprietary', category: 'identifier' as const }));
+  const acme = [{ id: 'acme/photo/a', declared: '', category: 'not-recorded' as const }, { id: 'acme/photo/b', declared: 'CC-BY-NC-4.0', category: 'not-interpreted' as const }];
+  const rows = packPrefixRows([...suse, ...acme, { id: 'ext/dam/x', declared: '', category: 'not-recorded' }]);
+  assert.deepEqual(rows.map((r) => r.prefix), ['suse/', 'acme/'], 'provider and instance files are not pack prefixes');
+  const [s0, a0] = rows;
+  assert.deepEqual(s0!.sentences, ['210 files under suse/ declare LicenseRef-SUSE-Proprietary, an identifier these rules do not carry.']);
+  assert.equal(s0!.markScope, undefined, 'a mark reaches only a blank declaration, so none is offered here');
+  assert.equal(s0!.clearedBy, IDENTIFIER_CLEARED_BY);
+  assert.equal(IDENTIFIER_CLEARED_BY, 'The owner can record these as owner-published in the pack, or the rules can be widened. Ask your Lolly administrator.');
+  assert.equal(a0!.markScope, 'prefix:acme/', 'a mark is offered where it can act: on the file with no licence');
+  assert.equal(a0!.unrecorded, 1);
+  assert.deepEqual(a0!.sentences.sort(), ['1 file under acme/ declares CC-BY-NC-4.0, conditions recorded and not interpreted.', '1 file under acme/ records no licence.']);
+  assert.equal(a0!.clearedBy, undefined);
+});
+
