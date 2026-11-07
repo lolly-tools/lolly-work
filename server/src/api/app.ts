@@ -91,7 +91,10 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { PARTNER_GROUP, isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
+import { PARTNER_GROUP, isCompanyGroup, isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
+import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
+import type { CompanyRecord } from '../programmes/people.ts';
+import type { ProgrammeRecord } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { createCompanyProfiles } from '../programmes/profile-routes.ts';
@@ -142,7 +145,7 @@ import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
 } from '../collab/invites.ts';
-import { explainInputAccess, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy } from '../policy/overlay.ts';
+import { explainInputAccess, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy, type ToolOverlay } from '../policy/overlay.ts';
 import {
   applyLifecycleToIndex, assetFormatSha256, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
@@ -204,7 +207,7 @@ import { previewGuidedProvider } from '../catalog/providers/setup-preview.ts';
 import { providerOAuthInfo, providerSetupRevision, registerProviderOAuth } from '../catalog/providers/setup-oauth.ts';
 import { noDetailShapeLine, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../catalog/providers/shape.ts';
 import { invalidateAccessTokens } from '../catalog/providers/oauth.ts';
-import { assembleOrgConfig, maySetPasswordFromLink } from '../policy/org-config.ts';
+import { assembleOrgConfig, maySetPasswordFromLink, type OrgConfigPartner } from '../policy/org-config.ts';
 import { resolveAiPolicy } from '../policy/ai.ts';
 import { renderCapabilities } from '../render/capabilities.ts';
 import { assessSetup, productionMode, type SetupReport } from '../setup/checks.ts';
@@ -224,7 +227,7 @@ import { readToolInputs } from '../policy/tool-inputs.ts';
 import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkKind, type LinkRecord } from '../links/sign.ts';
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
-import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
+import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
 import { templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
@@ -453,6 +456,7 @@ export function buildApp(deps: AppDeps): App {
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
+        companyFor: companyForRender,
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
@@ -736,7 +740,95 @@ export function buildApp(deps: AppDeps): App {
       ...(rec.publication?.editable ? { editable: rec.publication.editable } : {}),
       ...(rec.publication?.fixedTheme ? { fixedTheme: true } : {}),
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
+      ...(rec.publication?.bindings ? { bindings: rec.publication.bindings } : {}),
+      ...(Array.isArray(rec.groups) ? { groups: rec.groups } : {}),
     };
+  };
+  // ── company values (plans/82 M3, programmes/company-values.ts) ──────────
+  /** The company a caller speaks for, with its programme and current profile. */
+  const companyContextFor = async (groups: string[], publishedTo?: string[]): Promise<{ ctx: CompanyContext | null; ambiguous: boolean }> => {
+    if (!groups.some(isCompanyGroup)) return { ctx: null, ambiguous: false };
+    const companies = await store.listCompanies();
+    const picked = pickCompany(groups, companies, publishedTo);
+    if (!picked.company) return { ctx: null, ambiguous: picked.ambiguous };
+    const [profile, programme] = await Promise.all([store.getCompanyProfile(picked.company.id), store.getProgramme(picked.company.programmeId)]);
+    return { ctx: { company: picked.company, ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
+      revision: profile?.revision ?? 0, profile: profile?.profile ?? {} }, ambiguous: false };
+  };
+  /** A rules tool's bindings and audience, from the caller's own feed. */
+  const rulesToolBindingsFor = async (groups: string[], toolId: string): Promise<{ bindings?: Bindings; groups: string[] } | null> => {
+    const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((a) => a.type === RULES_TOOL_TYPE && (a.meta as { toolId?: unknown } | undefined)?.toolId === toolId);
+    if (!entry) return null;
+    const rec = await store.getInstanceAsset(entry.id);
+    return { ...(rec?.publication?.bindings ? { bindings: rec.publication.bindings } : {}), groups: Array.isArray(rec?.groups) ? rec.groups : [] };
+  };
+  /** A company logo as the render bakes it: its head bytes as a data URL, read
+   *  only while the caller may see the asset and it is live. Marked `baked`, so
+   *  the engine takes the bytes as they are and never asks the render host's
+   *  catalog, which holds only the pack's own assets. */
+  const companyLogoRef = async (groups: string[], id: string): Promise<unknown | null> => {
+    const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
+    if (!rec || !submissionServable(rec) || !instanceAssetVisible(rec, groups)) return null;
+    if ((await store.getLifecycle(id))?.revokedAt) return null;
+    const [format, blobId] = Object.entries(rec.blobs)[0] ?? [];
+    const blob = blobId ? await blobs.get(blobId) : null;
+    if (!format || !blob) return null;
+    const bytes = await readBlobBody(blob.body, 4 * 1024 * 1024);
+    const mime = format === 'svg' ? 'image/svg+xml' : 'image/png';
+    const head = rec.entry.formats?.[0] as { checksum?: string } | undefined;
+    return { source: 'library', id, type: rec.entry.type, format, url: `data:${mime};base64,${bytes.toString('base64')}`,
+      version: String(rec.headVersion ?? 1), ...(head?.checksum ? { checksum: head.checksum } : {}),
+      meta: { name: rec.entry.name, tags: rec.entry.tags, baked: true } };
+  };
+  /** The company values one caller's render of one tool takes. */
+  const companyForRender = async (args: { toolId: string; template: RenderTemplate | null; theme: Theme; toolOverlay: ToolOverlay | undefined; groups: string[] }): Promise<RenderCompany | null> => {
+    const rules = args.template ? null : await rulesToolBindingsFor(args.groups, args.toolId);
+    const templateBindings = args.template?.bindings ?? rules?.bindings;
+    const overlayBindings = (await store.listOverlays()).get(args.toolId)?.bindings;
+    if (!templateBindings && !overlayBindings) return null;
+    const publishedTo = args.template?.groups ?? rules?.groups;
+    const { ctx, ambiguous } = await companyContextFor(args.groups, publishedTo);
+    const plan = planBindings({
+      ...(overlayBindings ? { overlayBindings } : {}), ...(templateBindings ? { templateBindings } : {}),
+      ...(args.template?.editable ? { templateEditable: args.template.editable } : {}), rulesTool: !!rules,
+      overlayLocks: (id) => resolveInputAccess(args.toolOverlay, id, args.groups).level === 'locked',
+      ctx, ambiguous, theme: args.theme,
+    });
+    return { plan, ...(ctx ? { company: { id: ctx.company.id, name: ctx.company.name, revision: ctx.revision } } : {}),
+      ...(ctx?.programme ? { programme: ctx.programme } : {}), logo: (id) => companyLogoRef(args.groups, id) };
+  };
+  /** org-config's `partner` block: the caller's company, with the details its
+   *  pieces carry, and its programme (the company's own, else the caller's only one). */
+  const partnerBlock = (ctx: CompanyContext | null, groups: string[], companies: CompanyRecord[], programmes: ProgrammeRecord[]): OrgConfigPartner | undefined => {
+    const programmeId = ctx?.company.programmeId ?? pickProgramme(groups, companies);
+    const programme = programmes.find((p) => p.id === programmeId);
+    const p = ctx?.profile;
+    const out: OrgConfigPartner = {
+      ...(ctx ? { company: {
+        id: ctx.company.id, name: ctx.company.name, revision: ctx.revision,
+        logos: { ...(p?.logoLight ? { light: p.logoLight } : {}), ...(p?.logoDark ? { dark: p.logoDark } : {}), ...(p?.mark ? { mark: p.mark } : {}) },
+        ...(p?.website ? { website: p.website } : {}), ...(p?.contact ? { contact: { ...p.contact } } : {}),
+        ...(p?.address ? { address: p.address } : {}), ...(p?.currency ? { currency: p.currency } : {}), ...(p?.taxNote ? { taxNote: p.taxNote } : {}),
+      } } : {}),
+      ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
+    };
+    return out.company || out.programme ? out : undefined;
+  };
+  /** An overlay with the caller's company values bound, and the values a tool
+   *  starts from: for org-config, Preview and the agents' schema, which have no
+   *  template in hand. A `logo` binding takes the light-surface logo here; the
+   *  app switches it with the mode. */
+  const companyOverlayFor = async (overlay: ToolOverlay | undefined, toolId: string, groups: string[], company?: { ctx: CompanyContext | null; ambiguous: boolean }) => {
+    const defaults = defaultsFor(overlay, groups);
+    // A rules tool binds through its own publication, and locks what it binds.
+    const rules = groups.some(isCompanyGroup) ? await rulesToolBindingsFor(groups, toolId) : null;
+    if (!overlay?.bindings && !rules?.bindings) return { overlay, defaults };
+    const { ctx, ambiguous } = company ?? await companyContextFor(groups, rules?.groups);
+    const plan = planBindings({
+      ...(overlay?.bindings ? { overlayBindings: overlay.bindings } : {}), ...(rules?.bindings ? { templateBindings: rules.bindings, rulesTool: true } : {}),
+      overlayLocks: (id) => resolveInputAccess(overlay, id, groups).level === 'locked', ctx, ambiguous, theme: 'light',
+    });
+    return { overlay: bindOverlay(overlay, overlay, plan, groups, toolId, ctx?.company.name), defaults: { ...defaults, ...plan.values }, bindings: plan.bound as Record<string, string> };
   };
   // Templates only (plans/82 M2 W5): the tools someone uses only through the
   // templates published to them, and for a render, the templates they may name.
@@ -2811,7 +2903,20 @@ export function buildApp(deps: AppDeps): App {
     // overrides its own programme's here (policy/overlay.ts).
     if (subject.groups.some(isPartnerGroup)) setCompanyProgrammes(await store.listCompanies());
     const brandSnapshot = brand.current() ?? await brand.snapshot();
-    const overlays = await brandRules.project(brandSnapshot, subject.groups);
+    const projectedOverlays = await brandRules.project(brandSnapshot, subject.groups);
+    // A partner's company values (plans/82 M3): bound inputs the overlay locks
+    // are locked to the company's value, and each tool's starting values ride
+    // `tools[id].defaults`. Admins and owners are never a partner here.
+    const scoped = isProgrammeScoped(subject.groups, subject.role);
+    const company = scoped ? await companyContextFor(subject.groups) : { ctx: null, ambiguous: false };
+    const overlays = new Map(projectedOverlays);
+    const toolStarts = new Map<string, { defaults: Record<string, unknown>; bindings?: Record<string, string> }>();
+    for (const [toolId, overlay] of projectedOverlays) {
+      const bound = await companyOverlayFor(overlay, toolId, subject.groups, company);
+      if (bound.overlay) overlays.set(toolId, bound.overlay);
+      if (Object.keys(bound.defaults).length || bound.bindings) toolStarts.set(toolId, { defaults: bound.defaults, ...(bound.bindings ? { bindings: bound.bindings } : {}) });
+    }
+    const partner = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
     const grants = await store.listGrants();
     // The inbox's own count for the same client (its shell and engine
     // selectors): the messages it shows and the comment notices that pass
@@ -2824,7 +2929,7 @@ export function buildApp(deps: AppDeps): App {
       toolInputs.set(toolId, await readToolInputs(config.instance.pack, toolId));
     }
     const flagServiceMap = flagServiceAnswers ? await flagServiceAnswers : undefined;
-    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, brandEdits: brandEditsCapability(brandSnapshot, brand.mutable), approvalRecording: approvalArtifactPolicy(config).recordInCredentials && !await approvalRecorder.unavailable(), ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
+    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, ...(partner ? { partner } : {}), ...(toolStarts.size ? { toolStarts } : {}), brandEdits: brandEditsCapability(brandSnapshot, brand.mutable), approvalRecording: approvalArtifactPolicy(config).recordInCredentials && !await approvalRecorder.unavailable(), ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
   };
 
   // A small, uncached lease renewal. Resolve membership on every request so a
@@ -2955,12 +3060,35 @@ export function buildApp(deps: AppDeps): App {
         ...(meta.toolVersion ? { toolVersion: meta.toolVersion } : {}),
         ...(meta.retired ? { retired: true, ...(meta.replacedBy ? { replacedBy: { id: meta.replacedBy, name: String(replacement?.name ?? meta.replacedBy) } } : {}) } : {}),
       };
+      // Company values (plans/82 M3): which inputs take the company's details,
+      // and for a company's groups, what they hold. Admin-only, like every why line.
+      const bindings = (entry.meta as { bindings?: Bindings } | undefined)?.bindings;
+      const companyLines = async (labelOf: (id: string) => string, locks: (id: string) => boolean): Promise<{ lines: string[]; locked: Set<string> }> => {
+        const locked = new Set<string>();
+        if (!bindings || !Object.keys(bindings).length) return { lines: [], locked };
+        const audience = (await store.getInstanceAsset(entry.id))?.groups;
+        const { ctx, ambiguous } = await companyContextFor(groups, Array.isArray(audience) ? audience : undefined);
+        if (ambiguous) return { lines: ['These groups are in more than one company, so no company details are filled in and the inputs that take them stay open.'], locked };
+        const lines: string[] = [];
+        for (const [id, field] of Object.entries(bindings)) {
+          const label = labelOf(id);
+          if (!ctx) { lines.push(`${label} takes ${FIELD_LABELS[field].toLowerCase()} from each company\u2019s details.`); continue; }
+          const value = fieldValue(field, ctx, 'light');
+          if (value === undefined) { lines.push(`${label} takes ${FIELD_LABELS[field].toLowerCase()} from ${ctx.company.name}\u2019s details, which have none yet, so the template\u2019s value stays.`); continue; }
+          if (locks(id)) locked.add(id);
+          lines.push(`${label}: set from ${ctx.company.name}\u2019s details (${FIELD_LABELS[field].toLowerCase()})${locks(id) ? ', and fixed' : ', and they may change it'}.`);
+        }
+        return { lines, locked };
+      };
       if (entry.type === RULES_TOOL_TYPE) {
         // Design's rules say nothing about colourway and mode, so the app offers
         // them, and Preview says so (plans/82 M2 review).
-        templates.push({ ...base, canChange: [...(meta.inputs ?? []).map((i) => i.label), COLOURWAY_ROW], fixed: ['Everything else in the design'],
+        const ruleInputs = meta.inputs ?? [];
+        const fromCompany = await companyLines((id) => ruleInputs.find((i) => i.id === id)?.label ?? id, () => true);
+        templates.push({ ...base, canChange: [...ruleInputs.filter((i) => !fromCompany.locked.has(i.id)).map((i) => i.label), COLOURWAY_ROW],
+          fixed: [...ruleInputs.filter((i) => fromCompany.locked.has(i.id)).map((i) => i.label), 'Everything else in the design'],
           why: ['The Share with rules file\u2019s own rules.', 'Colourway and mode: Design\u2019s rules leave them open, so colours from the design system follow what partners pick.',
-            ...(meta.rebuilt ? ['Rebuilt with this workspace\u2019s Design.'] : [])] });
+            ...(meta.rebuilt ? ['Rebuilt with this workspace\u2019s Design.'] : []), ...fromCompany.lines] });
         continue;
       }
       const toolId = String(meta.toolId ?? '');
@@ -2969,8 +3097,9 @@ export function buildApp(deps: AppDeps): App {
       const toolName = await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8').then((t) => String((JSON.parse(t) as { name?: unknown }).name ?? toolId)).catch(() => toolId);
       const canChange: string[] = [], fixed: string[] = [], whyLines: string[] = [];
       whyLines.push(meta.editable ? 'Fixed by the template\u2019s rules.' : 'No rules: every input stays editable unless the tool\u2019s own rules say otherwise.');
+      const fromCompany = await companyLines((id) => inputs.find((i) => i.id === id)?.label ?? id, (id) => !!meta.editable && !meta.editable.includes(id));
       for (const input of inputs) {
-        const theirs = !meta.editable || meta.editable.includes(input.id);
+        const theirs = (!meta.editable || meta.editable.includes(input.id)) && !fromCompany.locked.has(input.id);
         const own = resolveInputAccess(projected.get(toolId), input.id, groups);
         if (theirs && (own.level === 'editable' || own.level === 'choice')) canChange.push(input.label);
         else fixed.push(input.label);
@@ -2990,6 +3119,7 @@ export function buildApp(deps: AppDeps): App {
         canChange.push(COLOURWAY_ROW);
         whyLines.push(`${followers.join(', ')} ${followers.length === 1 ? 'follows' : 'follow'} the colourway and mode partners pick.`);
       }
+      whyLines.push(...fromCompany.lines);
       const setBy = onlyTemplates.get(toolId);
       if (setBy) whyLines.push(setByLine(toolName, setBy));
       else if (visibleTools.includes(toolId)) whyLines.push(`These groups can also open ${toolName} on its own, outside these rules.`);
@@ -8909,7 +9039,13 @@ export function buildApp(deps: AppDeps): App {
     const overlay = normalizeOverlay(toolId, await readJson(req), existing?.version ?? 0);
     if (!overlay) {
       return sendError(res, 400, 'INVALID_INPUT',
-        'overlay must be {name?, inputAccess?: {input: [{groups[], level, value?, allow?, reason?}]}, visibility?: {groups[]}, enforce?, defaults?}');
+        'overlay must be {name?, inputAccess?: {input: [{groups[], level, value?, allow?, reason?}]}, visibility?: {groups[]}, enforce?, defaults?: {…} | [{groups[], values}], bindings?: {input: companyField}}');
+    }
+    // A binding names one of the tool's declared inputs (plans/82 M3).
+    if (overlay.bindings) {
+      const declared = (await readToolManifestInputs(toolId))?.map((i) => String(i.id));
+      const unknown = declared ? Object.keys(overlay.bindings).filter((id) => !declared.includes(id)) : [];
+      if (unknown.length) return sendError(res, 400, 'INVALID_INPUT', `the tool has no input "${unknown[0]}"`);
     }
     if (overlay.enforce?.escalation && !await store.getChain(overlay.enforce.escalation)) {
       return sendError(res, 400, 'CHAIN_NOT_FOUND', `No approval chain named ${overlay.enforce.escalation}.`);
@@ -11006,6 +11142,9 @@ export function buildApp(deps: AppDeps): App {
   const automationPolicy = async (caller: { groups: string[] }, toolId?: unknown, format?: unknown) => {
     const overlays = new Map(await store.listOverlays());
     if (typeof toolId === 'string') {
+      // A partner's company values lock what the overlay binds and locks (plans/82 M3).
+      const bound = (await companyOverlayFor(overlays.get(toolId), toolId, caller.groups)).overlay;
+      if (bound) overlays.set(toolId, bound);
       const rules = await requestRuleContext(brand.current() ?? await brand.snapshot(), toolId, typeof format === 'string' ? format.toLowerCase() : undefined);
       const projected = rules && projectRuleOverlay(overlays.get(toolId), rules, caller.groups);
       if (projected) overlays.set(toolId, projected);
@@ -11262,6 +11401,7 @@ export function buildApp(deps: AppDeps): App {
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
     designRevision: () => brand.current()!.revision, catalogVersion: instanceCatalogVersion,
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
+    companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),

@@ -84,7 +84,7 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
   const parseValue = (text) => { try { return JSON.parse(text.trim()); } catch { return text; } };
   const bodyOf = () => {
     const unknown = [
-      ...Object.keys(original).filter((key) => !['toolId', 'version', 'name', 'inputAccess', 'visibility', 'enforce', 'defaults'].includes(key)),
+      ...Object.keys(original).filter((key) => !['toolId', 'version', 'name', 'inputAccess', 'visibility', 'enforce', 'defaults', 'bindings'].includes(key)),
       ...Object.keys(original.enforce ?? {}).filter((key) => !['watermark', 'formats', 'escalation'].includes(key)).map((key) => `enforce.${key}`),
     ];
     if (unknown.length) invalid(`This policy contains settings the policy writer cannot save: ${unknown.join(', ')}. Saving is blocked to avoid removing them.`);

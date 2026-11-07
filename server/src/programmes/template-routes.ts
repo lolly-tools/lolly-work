@@ -31,6 +31,7 @@ import { MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE } from '../catalog/rules-tools.ts
 import { randomId } from '../lib/crypto.ts';
 import { COMPANY_GROUP_PREFIX, isPartnerGroup, programmeGroup, type ProgrammeRecord } from './types.ts';
 import { isTemplatesOnlyToolId, withTemplatesOnly } from './templates-only.ts';
+import { COMPANY_FIELDS, FIELD_LABELS, normalizeBindings } from './company-values.ts';
 
 type Router = ReturnType<typeof createRouter>;
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
@@ -157,6 +158,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
         // Colourway and mode: a tool template keeps them when its rules say so; a
         // Share with rules file leaves them open, as Design's own rules do.
         fixedTheme: type === 'template' && !!rec.publication?.fixedTheme,
+        // Inputs that take the partner company's values (plans/82 M3).
+        bindings: rec.publication?.bindings ?? null,
         version: rec.headVersion ?? 1,
         ...(meta.toolVersion ? { toolVersion: meta.toolVersion } : {}),
         ...(meta.rebuilt ? { rebuilt: true } : {}),
@@ -188,6 +191,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       // Their names, for a switch shown with no live template of the tool to name it.
       templatesOnlyTools: await Promise.all((programme.templatesOnly ?? []).map(async (id) => ({ id, name: (await deps.toolFacts(id))?.name ?? id }))),
       templates: rows, candidates,
+      // What a binding may name, for the "Takes from the company" picker.
+      companyFields: COMPANY_FIELDS.map((id) => ({ id, label: FIELD_LABELS[id] })),
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 
@@ -210,12 +215,12 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     sendJson(res, 200, { programme: programme.id, toolId, on: body.on });
   });
 
-  /** Publish one of the catalog's templates: `{ from, groups, editable?, fixedTheme? }`. The
+  /** Publish one of the catalog's templates: `{ from, groups, editable?, fixedTheme?, bindings? }`. The
    *  programme gets its own copy, with its own versions, rules and retirement. */
   router.add('POST', '/api/v1/programmes/:id/templates', async (req, res, ctx) => {
     const actor = await manager(req, res); if (!actor) return;
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
-    const body = ((await readJson(req)) ?? {}) as { from?: unknown; groups?: unknown; editable?: unknown; fixedTheme?: unknown };
+    const body = ((await readJson(req)) ?? {}) as { from?: unknown; groups?: unknown; editable?: unknown; fixedTheme?: unknown; bindings?: unknown };
     if (body.fixedTheme !== undefined && typeof body.fixedTheme !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'fixedTheme must be true or false');
     const source = await catalogTemplate(body.from);
     if (!source) return sendError(res, 404, 'NOT_FOUND', 'no such template in the catalog');
@@ -228,6 +233,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     if (!facts) return sendError(res, 409, 'TOOL_UNAVAILABLE', `this workspace no longer has the tool "${toolId}"`);
     const editable = normalizeEditable(body.editable, facts.inputs.map((i) => i.id));
     if ('error' in editable) return sendError(res, 400, 'INVALID_INPUT', editable.error);
+    const bindings = normalizeBindings(body.bindings, facts.inputs.map((i) => i.id));
+    if ('error' in bindings) return sendError(res, 400, 'INVALID_INPUT', bindings.error);
     const bytes = await readTemplate(source);
     if (!bytes) return sendError(res, 409, 'TEMPLATE_UNREADABLE', 'the template\'s bytes could not be read');
     const id = `${INST_PREFIX}${randomId(8)}`;
@@ -247,8 +254,9 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
         state: 'live', by: `user:${actor.id}`, at, checksum: stat.checksum, size: stat.size, contentType: 'application/json',
         ...(source.submission?.data ? { data: source.submission.data } : {}), note: `Published from ${source.id}`,
       },
-      ...(editable.editable || body.fixedTheme ? { publication: {
+      ...(editable.editable || body.fixedTheme || bindings.bindings ? { publication: {
         ...(editable.editable ? { editable: editable.editable } : {}), ...(body.fixedTheme ? { fixedTheme: true } : {}),
+        ...(bindings.bindings ? { bindings: bindings.bindings } : {}),
       } } : {}),
       createdAt: at,
     };
@@ -256,9 +264,9 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     await store.putLifecycle({ assetId: id, onExpiry: 'hide' });
     await store.putCredential({ assetId: id, status: 'none', sniffedAt: at });
     await audit(`user:${actor.id}`, 'programme.template.publish', `programme:${programme.id}`, {
-      template: id, from: source.id, toolId, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true,
+      template: id, from: source.id, toolId, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true, bindings: bindings.bindings ?? null,
     });
-    sendJson(res, 201, { id, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true });
+    sendJson(res, 201, { id, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true, bindings: bindings.bindings ?? null });
   });
 
   /** Publish a Share with rules file: the `.lolly` as the body, `?groups=` for who
@@ -280,12 +288,15 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     sendJson(res, 201, { id: out.id, state: out.state, groups });
   });
 
-  /** Change who gets it or what they may change: `{ groups?, editable?, fixedTheme? }`. */
+  /** Change who gets it or what they may change: `{ groups?, editable?, fixedTheme?, bindings? }`.
+   *  `bindings` (input id to company field, null to clear) works on a Share with
+   *  rules file too: there it names the file's own inputs, and each one it binds
+   *  is locked to the company's value. */
   router.add('PUT', '/api/v1/programmes/:id/templates/:asset', async (req, res, ctx) => {
     const actor = await manager(req, res); if (!actor) return;
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
     const rec = await publishedHere(res, programme, `${INST_PREFIX}${String(ctx.params.asset)}`); if (!rec) return;
-    const body = ((await readJson(req)) ?? {}) as { groups?: unknown; editable?: unknown; fixedTheme?: unknown };
+    const body = ((await readJson(req)) ?? {}) as { groups?: unknown; editable?: unknown; fixedTheme?: unknown; bindings?: unknown };
     if (body.fixedTheme !== undefined && typeof body.fixedTheme !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'fixedTheme must be true or false');
     if ((body.editable !== undefined || body.fixedTheme !== undefined) && rec.entry.type !== 'template') {
       return sendError(res, 400, 'INVALID_INPUT', 'a Share with rules file brings its own rules; change them in Lolly and publish a new version');
@@ -311,13 +322,24 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       const publication = { ...rest, ...(body.fixedTheme ? { fixedTheme: true } : {}) };
       next = { ...next, publication: Object.keys(publication).length ? publication : undefined };
     }
+    if (body.bindings !== undefined) {
+      const meta = (rec.entry.meta ?? {}) as { toolId?: unknown; inputs?: Array<{ id: string }> };
+      const inputIds = rec.entry.type === RULES_TOOL_TYPE ? (meta.inputs ?? []).map((i) => i.id)
+        : (await deps.toolFacts(String(meta.toolId ?? '')))?.inputs.map((i) => i.id) ?? [];
+      const bindings = normalizeBindings(body.bindings, inputIds);
+      if ('error' in bindings) return sendError(res, 400, 'INVALID_INPUT', bindings.error);
+      const { bindings: _old, ...rest } = next.publication ?? {};
+      void _old;
+      const publication = { ...rest, ...(bindings.bindings ? { bindings: bindings.bindings } : {}) };
+      next = { ...next, publication: Object.keys(publication).length ? publication : undefined };
+    }
     await store.putInstanceAsset(next);
     await audit(`user:${actor.id}`, 'programme.template.update', `programme:${programme.id}`, {
       template: rec.id,
-      before: { groups: groupsOf(rec), editable: rec.publication?.editable ?? null, fixedTheme: !!rec.publication?.fixedTheme },
-      after: { groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme },
+      before: { groups: groupsOf(rec), editable: rec.publication?.editable ?? null, fixedTheme: !!rec.publication?.fixedTheme, bindings: rec.publication?.bindings ?? null },
+      after: { groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme, bindings: next.publication?.bindings ?? null },
     });
-    sendJson(res, 200, { id: rec.id, groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme });
+    sendJson(res, 200, { id: rec.id, groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme, bindings: next.publication?.bindings ?? null });
   });
 
   /** A new version of a tool template from another catalog template of the
