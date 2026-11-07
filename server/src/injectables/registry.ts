@@ -10,6 +10,7 @@
  */
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { KIND_HANDLERS } from './kinds.ts';
+import { isPartnerGroup } from '../programmes/types.ts';
 import { INJECTABLE_KINDS, type InjectableKind, type InjectableRecord } from './types.ts';
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
@@ -56,10 +57,13 @@ export function factsFor(rec: InjectableRecord): Record<string, string> {
 }
 
 /** Is this injectable visible to a caller in these groups? Live + group intersection. */
-export function visibleTo(rec: InjectableRecord, groups: string[]): boolean {
+export function visibleTo(rec: InjectableRecord, groups: string[], programmeScoped = false): boolean {
   if (rec.state !== 'live') return false;
-  if (rec.groups.includes('*')) return true;
   const set = new Set(groups);
+  // Everyone (`*`) does not include a partner programme member: an injectable
+  // reaches them only when its groups name one of theirs (plans/82 M1).
+  if (programmeScoped) return rec.groups.some((g) => g !== '*' && isPartnerGroup(g) && set.has(g));
+  if (rec.groups.includes('*')) return true;
   return rec.groups.some((g) => set.has(g));
 }
 
@@ -71,10 +75,10 @@ export function visibleTo(rec: InjectableRecord, groups: string[]): boolean {
  * map instead (the one kind consumable by today's shell with no new path), so a
  * shell must never see a flag twice.
  */
-export function projectInjectables(recs: Iterable<InjectableRecord>, groups: string[]): Array<Record<string, unknown>> {
+export function projectInjectables(recs: Iterable<InjectableRecord>, groups: string[], programmeScoped = false): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   for (const rec of recs) {
-    if (rec.kind === 'flag' || !visibleTo(rec, groups)) continue;
+    if (rec.kind === 'flag' || !visibleTo(rec, groups, programmeScoped)) continue;
     out.push(KIND_HANDLERS[rec.kind].project(rec));
   }
   // Stable order so the payload (and its ETag) is deterministic across polls.

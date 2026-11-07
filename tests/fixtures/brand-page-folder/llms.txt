@@ -13,8 +13,8 @@ The brand page of this design system. Use token paths and asset ids exactly. Tex
 
 ## Colourways
 
-- [Default, Light](design/default.light.DESIGN.md): DESIGN.md for this look. Tokens at tokens/default.light.tokens.json.
-- [Default, Dark](design/default.dark.DESIGN.md): DESIGN.md for this look. Tokens at tokens/default.dark.tokens.json.
+- [House, Light](design/house.light.DESIGN.md): DESIGN.md for this look. Tokens at tokens/house.light.tokens.json.
+- [House, Dark](design/house.dark.DESIGN.md): DESIGN.md for this look. Tokens at tokens/house.dark.tokens.json.
 
 ## Logos
 

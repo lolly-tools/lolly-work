@@ -51,7 +51,7 @@ import {
 import {
   applyVersionToRecord, backfillVersionOne, nextVersionNumber, versionBlobKey, type AssetVersionRecord,
 } from './versions.ts';
-import { isDataSubmissionType, parseDataSubmission, type ToolLookup } from './submit-data.ts';
+import { isDataSubmissionType, parseDataSubmission, type DataSubmissionSummary, type ToolLookup } from './submit-data.ts';
 import { MAX_MEMBERS } from './collections.ts';
 import type { SubmitPolicy, SubmitScanHook } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
@@ -291,6 +291,20 @@ export interface SubmitDeps {
   /** The pack's tools, for a template or user-tool submission (submit-data.ts).
    *  Absent means this instance takes no data submissions. */
   toolLookup?: ToolLookup;
+  /** Reads, checks and rebuilds a Share with rules file (catalog/rules-tools.ts,
+   *  plans/82 M2). Absent means this instance takes no rules tools. */
+  rulesTools?: RulesToolSubmitter;
+}
+
+/** What a rules tool submission becomes before it is hashed or stored. */
+export type PreparedData =
+  | { ok: true; bytes: Buffer; name: string; description?: string; summary: DataSubmissionSummary; meta: Record<string, unknown> }
+  | { ok: false; detail: string };
+
+export interface RulesToolSubmitter {
+  /** A Share with rules file, as the data it is rebuilt from. `target` is the
+   *  published rules tool a new version is for. */
+  prepare(bytes: Buffer, target?: InstanceAssetRecord): Promise<PreparedData>;
 }
 
 export interface SubmitInput {
@@ -325,6 +339,27 @@ export interface SubmitInput {
   /** The submitting client's own name for what it sent ('template:<id>'),
    *  echoed back so it can show the state of its own submission. */
   clientRef?: string;
+  /**
+   * A partner company's logo (plans/82 M3). The bytes have passed the logo
+   * checks (programmes/logo-checks.ts) and arrive from the company profile
+   * routes, never from the generic submit route. They become an asset only
+   * that company's people and tokens see (`groups: ['company-<id>']`), tagged
+   * `logo`, `partner` and the surface, with `meta.company` and `meta.surface`.
+   * A brand team's own change never waits, so no submit chain applies, and the
+   * duplicate short-circuit is skipped: the same bytes held as another asset
+   * belong to someone else's audience, and the profile must point at its own.
+   */
+  companyLogo?: { companyId: string; surface: 'light' | 'dark' | 'mark' };
+}
+
+/** What a company logo's served entry carries (plans/82 M3). */
+export function companyLogoFields(logo: NonNullable<SubmitInput['companyLogo']>, format: string): { type: string; tags: string[]; groups: string[]; meta: Record<string, unknown> } {
+  return {
+    type: format === 'svg' ? 'vector' : 'raster',
+    tags: ['logo', 'partner', logo.surface === 'mark' ? 'mark' : `on-${logo.surface}`],
+    groups: [`company-${logo.companyId}`],
+    meta: { company: logo.companyId, surface: logo.surface },
+  };
 }
 
 export type SubmitRefusal =
@@ -439,8 +474,9 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   //     closed. Checked here, before anything is hashed or stored, so a refusal
   //     leaves no orphan bytes behind. The rest of the app refuses a missing
   //     chain the same way (api/app.ts, POST /api/v1/approvals).
-  const chain: Chain | null = policy.chain && !input.target ? await store.getChain(policy.chain) : null;
-  if (policy.chain && !input.target && !chain?.steps.length) {
+  const reviewed = !input.target && !input.companyLogo;
+  const chain: Chain | null = policy.chain && reviewed ? await store.getChain(policy.chain) : null;
+  if (policy.chain && reviewed && !chain?.steps.length) {
     return {
       ok: false, code: 'SUBMIT_CHAIN_MISSING',
       detail: `policy.submit.chain names ${policy.chain}, which this instance has no usable chain for`,
@@ -453,15 +489,24 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   //     feed will serve, and a reviewer approves exactly those. A version of
   //     an existing template answers the same check: it is the same kind of
   //     asset, whatever the caller declared.
-  const dataKind = [input.type, input.target?.entry.type].find(isDataSubmissionType);
-  let data: Awaited<ReturnType<typeof parseDataSubmission>> | undefined;
-  if (dataKind) {
+  // A version keeps the kind it was published as, whatever the caller declared.
+  const dataKind = input.target ? [input.target.entry.type].find(isDataSubmissionType) : [input.type].find(isDataSubmissionType);
+  let data: PreparedData | undefined;
+  if (dataKind === 'rules-tool') {
+    // A Share with rules file (plans/82 M2): only its data is kept, and the
+    // tool is rebuilt from it with this workspace's own compiler.
+    if (!deps.rulesTools) return { ok: false, code: 'INVALID_SUBMISSION', detail: 'this catalog takes no rules tools' };
+    data = await deps.rulesTools.prepare(input.bytes, input.target);
+  } else if (dataKind) {
     if (!deps.toolLookup) return { ok: false, code: 'INVALID_SUBMISSION', detail: 'this catalog takes no template submissions' };
-    data = await parseDataSubmission(dataKind, input.bytes, deps.toolLookup, {
+    const parsed = await parseDataSubmission(dataKind, input.bytes, deps.toolLookup, {
       ...(input.target ? {} : { name: input.name }),
       ...(input.description ? { description: input.description } : {}),
       ...(input.toolId ? { toolId: input.toolId } : {}),
     });
+    data = parsed.ok ? { ...parsed, meta: dataEntryMeta(parsed) } : parsed;
+  }
+  if (data) {
     if (!data.ok) return { ok: false, code: 'INVALID_SUBMISSION', detail: data.detail };
     input = { ...input, bytes: data.bytes, name: input.target ? input.name : data.name };
     size = input.bytes.length;
@@ -490,7 +535,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       };
     }
   }
-  const existing = input.target ? undefined : findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
+  const existing = input.target || input.companyLogo ? undefined : findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
   if (existing) {
     return {
       ok: true, duplicate: true, record: existing, checksum, scan: 'skipped',
@@ -585,9 +630,19 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     // The asset's own `submission` block is left exactly as it was - it records
     // how this asset ENTERED the catalog, and rewriting it with a later
     // upload's checksum would make the audit trail say the wrong thing.
+    // A template's or rules tool's served meta describes the bytes it serves, so
+    // it moves with the head (a rules tool's version and inputs, plans/82 M2).
+    const moved = applyVersionToRecord(target, row);
+    if (data?.ok) moved.entry = { ...moved.entry, meta: data.meta };
+    // A replaced logo may change from SVG to PNG; its entry says which it is now.
+    if (input.companyLogo) {
+      const logo = companyLogoFields(input.companyLogo, sniffed.format);
+      moved.entry = { ...moved.entry, type: logo.type, tags: logo.tags, meta: logo.meta };
+      moved.groups = logo.groups;
+    }
     try {
       await store.putAssetVersion(row);
-      await store.putInstanceAsset(applyVersionToRecord(target, row));
+      await store.putInstanceAsset(moved);
     } catch (err) {
       await release();
       throw err;
@@ -602,7 +657,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     });
     return {
       ok: true, duplicate: false,
-      record: (await store.getInstanceAsset(target.id)) ?? applyVersionToRecord(target, row),
+      record: (await store.getInstanceAsset(target.id)) ?? moved,
       checksum: vstat.checksum, scan, credential: detectedNew.status, version: next,
     };
   }
@@ -633,21 +688,23 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     // version it stays on the version row, as before.
     ...(input.note ? { note: input.note.slice(0, 500) } : {}),
   };
-  const tags = [...new Set((input.tags ?? []).map((t) => t.trim()).filter(Boolean))];
+  const logo = input.companyLogo ? companyLogoFields(input.companyLogo, sniffed.format) : undefined;
+  const tags = [...new Set([...(input.tags ?? []), ...(logo?.tags ?? [])].map((t) => t.trim()).filter(Boolean))];
+  const groups = logo?.groups ?? input.groups;
   let record: InstanceAssetRecord = {
     id,
     entry: instanceAssetEntry(id, {
       name: input.name,
       ...(data?.ok && data.description ? { description: data.description } : input.description ? { description: input.description } : {}),
-      type: dataKind ?? (input.type || (sniffed.format === 'svg' ? 'icon' : 'image')),
+      type: logo?.type ?? dataKind ?? (input.type || (sniffed.format === 'svg' ? 'icon' : 'image')),
       tags,
       ...(sniffed.width && sniffed.height ? { width: sniffed.width, height: sniffed.height } : {}),
       // What a shell needs to offer a template or user tool before fetching
       // its JSON: the tool it opens in, and how much it sets.
-      ...(data?.ok ? { meta: dataEntryMeta(data) } : {}),
+      ...(data?.ok ? { meta: data.meta } : logo ? { meta: logo.meta } : {}),
     }, [{ format: sniffed.format, size: stat.size, checksum: stat.checksum }]),
     blobs: { [sniffed.format]: `${id}/${sniffed.format}` },
-    ...(input.groups?.length ? { groups: input.groups } : {}),
+    ...(groups?.length ? { groups } : {}),
     submission,
     createdAt: nowIso,
   };

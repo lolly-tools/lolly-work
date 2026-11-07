@@ -127,6 +127,19 @@ const OPTIONS = {
     url: { type: 'string', multiple: true },
     path: { type: 'string', multiple: true },
     origin: { type: 'string' },
+    // Partner programmes (plans/82 M1 part 2): lw domains, lw people.
+    programme: { type: 'string' },
+    company: { type: 'string' },
+    domain: { type: 'string' },
+    ends: { type: 'string' },
+    assert: { type: 'boolean' },
+    apply: { type: 'boolean' },
+    projects: { type: 'string' },
+    'move-staff': { type: 'string' },
+    whole: { type: 'boolean' },
+    // `lw companies profile settings`: contacts who may edit, and the chain they wait for.
+    editors: { type: 'string' },
+    chain: { type: 'string' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -688,6 +701,150 @@ switch (cmd) {
     break;
   }
 
+  case 'domains': {
+    // Partner domains (plans/82 M1 part 2b): anyone who signs in with a
+    // verified address at a domain joins a programme. Proof is a DNS TXT
+    // record unless --assert says otherwise, which goes in the audit.
+    type Domain = {
+      domain: string; status: string; proof: string; txt: { name: string; value: string }; members: number;
+      verifiedAt?: string; missingSince?: string; asserted?: { by: { name: string }; at: string; reason?: string };
+      rules: Array<{ programme: { id: string; name: string }; company?: { name: string }; endsAt?: string }>;
+      joined?: Array<{ email: string }>; waiting?: number; moved?: Array<{ email: string }>;
+    };
+    const day = (iso?: string) => (iso ? iso.slice(0, 10) : '');
+    const state = (d: Domain): string => d.status === 'asserted' ? `admin-asserted by ${d.asserted?.by.name ?? '?'} on ${day(d.asserted?.at)}`
+      : d.status === 'verified' ? `DNS verified ${day(d.verifiedAt)}`
+        : d.status === 'paused' ? `paused: record missing since ${day(d.missingSince)}` : 'waiting for the DNS record';
+    const show = (d: Domain): void => {
+      console.log(`${d.domain}  ${state(d)}  ${d.members} joined`);
+      for (const r of d.rules) console.log(`  -> ${r.programme.name}${r.company ? `, ${r.company.name}` : ''}${r.endsAt ? `  ends ${day(r.endsAt)}` : ''}`);
+      if (d.status === 'pending' || d.status === 'paused') console.log(`  publish: ${d.txt.name}  TXT  "${d.txt.value}"`);
+    };
+    const name = (positionals[2] ?? '').trim();
+    if (sub === 'add') {
+      if (!name || !values.programme) fail('usage: lw domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--dry-run]');
+      const body = {
+        programme: values.programme, ...(values.company ? { company: values.company } : {}), ...(values.ends ? { endsAt: values.ends } : {}),
+        ...(values.assert ? { proof: 'admin', ...(values.reason ? { reason: values.reason } : {}) } : {}), ...(values['dry-run'] ? { dryRun: true } : {}),
+        // Staff are only moved by name, from the dry run's list.
+        ...(values['move-staff'] ? { moveStaff: values['move-staff'].split(',').map((x) => x.trim()).filter(Boolean) } : {}),
+      };
+      const r = await call(`/api/v1/partner-domains/${encodeURIComponent(name)}`, { method: 'PUT', body }) as Domain & { dryRun?: boolean; accounts?: Array<{ id: string; email: string; joins: boolean; later?: boolean; staff?: boolean; reason?: string }>; moved?: Array<{ email: string }> };
+      out(r);
+      if (!values.json) {
+        if (r.dryRun) {
+          console.log(`${r.domain}: ${r.accounts?.length ?? 0} account(s) here already`);
+          for (const a of r.accounts ?? []) console.log(`  ${a.joins ? 'joins now  ' : a.later ? 'joins later' : a.staff ? 'staff stays' : 'does not   '}  ${a.email}${a.staff ? `  ${a.id}` : ''}${a.reason ? `  ${a.reason}` : ''}`);
+          if ((r.accounts ?? []).some((a) => a.staff)) console.log('staff keep their access; to move some into the programme, add --move-staff <id,id>');
+        } else {
+          show(r);
+          if (r.joined?.length) console.log(`joined now: ${r.joined.map((j) => j.email).join(', ')}`);
+          if (r.waiting) console.log(`${r.waiting} more join at their next sign-in with a verified address`);
+          if (r.moved?.length) console.log(`staff moved in as you chose: ${r.moved.map((m) => m.email).join(', ')}`);
+        }
+      }
+      break;
+    }
+    if (sub === 'check') {
+      if (!name) fail('usage: lw domains check <domain>');
+      const r = await call(`/api/v1/partner-domains/${encodeURIComponent(name)}/check`, { method: 'POST' }) as Domain;
+      out(r);
+      if (!values.json) show(r);
+      break;
+    }
+    if (sub === 'rm') {
+      if (!name) fail('usage: lw domains rm <domain> [--programme <id>]');
+      out(await call(`/api/v1/partner-domains/${encodeURIComponent(name)}${values.programme ? `?programme=${encodeURIComponent(values.programme)}` : ''}`, { method: 'DELETE' }));
+      if (!values.json) console.log(`removed ${name}${values.programme ? ` from ${values.programme}` : ''}; people who joined through it keep their access until it ends`);
+      break;
+    }
+    if (sub !== undefined && sub !== 'ls' && sub !== 'list') fail('usage: lw domains [ls] | add <domain> --programme <id> | check <domain> | rm <domain>');
+    const r = await call(`/api/v1/partner-domains${values.programme ? `?programme=${encodeURIComponent(values.programme)}` : ''}`) as { domains: Domain[] };
+    out(r);
+    if (!values.json) {
+      if (!r.domains.length) console.log('no partner domains');
+      for (const d of r.domains) show(d);
+    }
+    break;
+  }
+
+  case 'folders': {
+    // Provider folders per programme or company (plans/82 M1 part 2c).
+    type Rule = { provider: { id: string; label: string }; path: string; company?: { name: string }; endsAt?: string; assets: number };
+    const programme = values.programme ?? fail('usage: lw folders [ls] | add <provider> <path>|--whole | rm <provider> <path> --programme <id> [--company <id>] [--ends YYYY-MM-DD]');
+    const at = `/api/v1/programmes/${encodeURIComponent(programme)}/folders`;
+    if (sub === 'add') {
+      const provider = positionals[2] ?? fail('usage: lw folders add <provider> <path> --programme <id> [--company <id>] [--ends YYYY-MM-DD]');
+      // A folder is required: the whole source only with --whole, said on purpose.
+      const path = values.whole ? '' : positionals[3] ?? fail('lw folders add needs a folder, such as Partners/EMEA; to give the whole source, add --whole instead');
+      if (values.whole && positionals[3]) fail('give a folder or --whole, not both');
+      const r = await call(at, { method: 'PUT', body: { provider, path, ...(values.whole ? { whole: true } : {}), ...(values.company ? { company: values.company } : {}), ...(values.ends ? { endsAt: values.ends } : {}) } });
+      out(r);
+      if (!values.json) console.log(`gave ${provider}:${path || '(all of it)'} to ${values.company ?? programme}`);
+      break;
+    }
+    if (sub === 'rm') {
+      const provider = positionals[2] ?? fail('usage: lw folders rm <provider> <path> --programme <id> [--company <id>]');
+      const query = new URLSearchParams({ provider, path: positionals[3] ?? '', ...(values.company ? { company: values.company } : {}) });
+      out(await call(`${at}?${query}`, { method: 'DELETE' }));
+      if (!values.json) console.log(`removed ${provider}:${positionals[3] || '(all of it)'}`);
+      break;
+    }
+    if (sub !== undefined && sub !== 'ls' && sub !== 'list') fail('usage: lw folders [ls] | add <provider> <path> | rm <provider> <path> --programme <id>');
+    const r = await call(at) as { folders: Rule[]; providers: Array<{ id: string; label: string; folders: Array<{ path: string; assets: number }> }> };
+    out(r);
+    if (!values.json) {
+      if (!r.folders.length) console.log('no folders given to this programme');
+      for (const f of r.folders) console.log(`${f.provider.id}:${f.path || '(all of it)'}  ${f.company ? f.company.name : 'whole programme'}  ${f.assets} asset(s)${f.endsAt ? `  ends ${f.endsAt.slice(0, 10)}` : ''}`);
+    }
+    break;
+  }
+
+  case 'people': {
+    // Adding and ending partner programme people in bulk (plans/82 M1 part 2).
+    // Both preview unless --apply is given.
+    if (sub === 'import') {
+      const programme = positionals[2];
+      const file = positionals[3];
+      if (!programme || !file) fail('usage: lw people import <programme> <file.csv|-> [--apply]');
+      const text = readFileSync(file === '-' ? 0 : file, 'utf8');
+      const r = await call(`/api/v1/programmes/${encodeURIComponent(programme)}/people`, { method: 'POST', body: { text, ...(values.apply ? { apply: true } : {}) } }) as {
+        dryRun: boolean; summary: Record<string, number>; message?: string;
+        rows: Array<{ line: number; email: string; status: string; result?: string; reason?: string }>;
+      };
+      out(r);
+      if (!values.json) {
+        for (const row of r.rows) console.log(`${String(row.line).padStart(4)}  ${(row.result ?? row.status).padEnd(9)}  ${row.email}${row.reason ? `  ${row.reason}` : ''}`);
+        console.log(Object.entries(r.summary).map(([k, v]) => `${v} ${k}`).join(', '));
+        if (r.dryRun) console.log('preview only: run again with --apply to do it');
+        if (r.message) console.log(`\nsend everyone invited this message:\n${r.message}`);
+      }
+      break;
+    }
+    if (sub === 'exit') {
+      const list = positionals[2];
+      const pick = values.programme ? { programme: values.programme } : values.company ? { company: values.company } : values.domain ? { domain: values.domain }
+        : list ? { emails: readFileSync(list === '-' ? 0 : list, 'utf8').split(/[\s,;]+/).filter(Boolean) } : null;
+      if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]');
+      const r = await call('/api/v1/programmes/exit', { method: 'POST', body: { ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
+        dryRun: boolean; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
+        pendingInvitations?: unknown[]; invitationsRevoked?: number; domainRules?: Array<{ domain: string; programme: { name: string } }>;
+        tokens?: Array<{ id: string; label: string }>; tokensRevoked?: number;
+      };
+      out(r);
+      if (!values.json) {
+        for (const a of r.accounts) console.log(`${r.dryRun ? 'ends    ' : 'ended   '}  ${a.email ?? a.id}`);
+        for (const s2 of r.skipped) console.log(`left      ${s2.email}  ${s2.reason}`);
+        for (const d of r.domainRules ?? []) console.log(`${r.dryRun ? 'withdraws' : 'withdrew '} ${d.domain} (${d.programme.name})`);
+        for (const t of r.tokens ?? []) console.log(`revokes   token ${t.id} (${t.label})`);
+        if (!r.dryRun && r.tokensRevoked) console.log(`${r.tokensRevoked} service token(s) revoked`);
+        console.log(r.dryRun ? `${r.pendingInvitations?.length ?? 0} open invitation(s) would be revoked; run again with --apply to do it` : `${r.invitationsRevoked ?? 0} open invitation(s) revoked`);
+      }
+      break;
+    }
+    fail('usage: lw people import <programme> <file> [--apply] | exit --programme|--company|--domain … [--apply]');
+  }
+
   case 'brand-pages': {
     await runBrandPages(sub, positionals[2], {
       values: values as Record<string, unknown>, base, stateDir: join(CONFIG_DIR, 'uploads'),
@@ -737,6 +894,104 @@ switch (cmd) {
     break;
   }
 
+  case 'companies': {
+    // A partner company's profile (plans/82 M3): the logos and details every
+    // piece made for it carries, set up once by the brand team.
+    const usage = 'usage: lw companies profile show|history|set|logo|settings <programme> <company> …';
+    if (sub !== 'profile') fail(usage);
+    const verb = positionals[2];
+    const programme = positionals[3];
+    const company = positionals[4];
+    if (!verb || !programme || !company) fail(usage);
+    const at = `/api/v1/programmes/${encodeURIComponent(programme)}/companies/${encodeURIComponent(company)}/profile`;
+    type View = { company: { name: string }; programme: { name: string }; revision: number; profile: Record<string, unknown>;
+      logos: Record<string, { id: string; format: string; version: number }>; settings?: { editors: Array<{ email: string }>; approvalChain: string | null } };
+    const show = (v: View): void => {
+      if (values.json) return;
+      console.log(`${v.company.name} (${v.programme.name})  revision ${v.revision}`);
+      for (const s2 of ['light', 'dark', 'mark']) {
+        const l = v.logos[s2];
+        console.log(`  logo ${s2.padEnd(5)}  ${l ? `${l.id} v${l.version} ${l.format}` : '-'}`);
+      }
+      const p = v.profile as { website?: string; contact?: Record<string, string>; address?: string; currency?: string; taxNote?: string };
+      console.log(`  website     ${p.website ?? '-'}`);
+      console.log(`  contact     ${p.contact ? [p.contact.name, p.contact.email, p.contact.phone].filter(Boolean).join(', ') : '-'}`);
+      console.log(`  address     ${p.address ? p.address.replace(/\n/g, ' / ') : '-'}`);
+      console.log(`  currency    ${p.currency ?? '-'}`);
+      console.log(`  tax note    ${p.taxNote ?? '-'}`);
+      if (v.settings) console.log(`  contacts who may edit: ${v.settings.editors.map((e) => e.email).join(', ') || 'none'}; their changes ${v.settings.approvalChain ? `wait for ${v.settings.approvalChain}` : 'apply at once'}`);
+    };
+    if (verb === 'show') {
+      const v = await call(at) as View;
+      out(v); show(v);
+      break;
+    }
+    if (verb === 'history') {
+      const r = await call(`${at}/history`) as { revisions: Array<{ revision: number; updatedBy: string; updatedAt: string; fields: string[] }> };
+      out(r);
+      if (!values.json) for (const row of r.revisions) console.log(`${String(row.revision).padStart(4)}  ${row.updatedAt.slice(0, 19)}  ${row.updatedBy}  ${row.fields.join(', ')}`);
+      break;
+    }
+    if (verb === 'set') {
+      // --field website=… --field contact.email=… ; an empty value clears one.
+      const body: Record<string, unknown> = {};
+      const contact: Record<string, string | null> = {};
+      for (const pair of values.field ?? []) {
+        const eq = pair.indexOf('=');
+        if (eq < 1) fail(`--field takes key=value, got ${pair}`);
+        const key = pair.slice(0, eq).trim();
+        const value = pair.slice(eq + 1).replace(/\\n/g, '\n');
+        if (key.startsWith('contact.')) contact[key.slice('contact.'.length)] = value || null;
+        else if (['website', 'address', 'currency', 'taxNote'].includes(key)) body[key] = value || null;
+        else fail(`unknown field ${key}: website, contact.name, contact.email, contact.phone, address, currency, taxNote`);
+      }
+      if (Object.keys(contact).length) {
+        const current = ((await call(at)) as View).profile.contact as Record<string, string> | undefined;
+        body.contact = { ...current, ...contact };
+      }
+      if (values.name) body.name = values.name;
+      if (!Object.keys(body).length) fail('usage: lw companies profile set <programme> <company> --field website=https://… [--field contact.email=…] [--name "…"]');
+      const v = await call(at, { method: 'PUT', body }) as View;
+      out(v); show(v);
+      break;
+    }
+    if (verb === 'logo') {
+      const surface = positionals[5];
+      if (!surface || !['light', 'dark', 'mark'].includes(surface)) fail('usage: lw companies profile logo <programme> <company> <light|dark|mark> <file.svg|file.png> [--dry-run] | --rm');
+      if (values.rm) {
+        const v = await call(`${at}/logo?surface=${surface}`, { method: 'DELETE' }) as View;
+        out(v);
+        if (!values.json) console.log(`removed the ${surface} logo; revision ${v.revision}`);
+        break;
+      }
+      const file = positionals[6] ?? fail('name the logo file');
+      const bytes = readFileSync(file);
+      const sent = await fetch(`${base}${at}/logo?surface=${surface}${values['dry-run'] ? '&dryRun=1' : ''}`, {
+        method: 'POST', headers: { ...(values.token ?? process.env.LW_TOKEN ? { authorization: `Bearer ${values.token ?? process.env.LW_TOKEN}` } : savedCookie() ? { cookie: savedCookie()! } : {}),
+          'content-type': contentTypeOf(file), 'x-lolly-client': 'lw-cli engine/0' },
+        body: new Uint8Array(bytes),
+      });
+      const r = await sent.json() as { dryRun: boolean; warnings?: Array<{ message: string }>; asset?: { id: string; version: number }; profile?: { revision: number }; error?: { code: string; message: string } };
+      if (!sent.ok) fail(`${sent.status} ${r.error?.code ?? ''} ${r.error?.message ?? ''}`.trim());
+      out(r);
+      if (!values.json) {
+        for (const w of r.warnings ?? []) console.log(`warning: ${w.message}`);
+        console.log(r.dryRun ? `checked ${file}: it would be accepted${r.warnings?.length ? ' with the warnings above' : ''}` : `stored as ${r.asset!.id} v${r.asset!.version}; revision ${r.profile!.revision}`);
+      }
+      break;
+    }
+    if (verb === 'settings') {
+      const body: Record<string, unknown> = {};
+      if (values.editors !== undefined) body.editors = values.editors === 'none' ? [] : values.editors.split(',').map((e) => e.trim()).filter(Boolean);
+      if (values.chain !== undefined) body.approvalChain = values.chain === 'none' ? null : values.chain;
+      if (!Object.keys(body).length) fail('usage: lw companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <chain-id>|none]');
+      const v = await call(`${at}/settings`, { method: 'PUT', body }) as View;
+      out(v); show(v);
+      break;
+    }
+    fail(usage);
+  }
+
   case 'tokens': {
     // Service tokens (plans/35 wave 2): automation identity, owner-minted.
     if (sub === 'create') {
@@ -760,12 +1015,26 @@ switch (cmd) {
       console.log(`revoked ${id}`);
       break;
     }
+    if (sub === 'programme') {
+      // Place a token in a partner programme and optionally one company in it
+      // (plans/82 M3), so a partner's agent is scoped like the people there.
+      const usage = 'usage: lw tokens programme <id> <programme> [--company <id>] | lw tokens programme <id> none';
+      const id = positionals[2] ?? fail(usage);
+      const programme = positionals[3] ?? fail(usage);
+      const r = await call(`/api/v1/tokens/${encodeURIComponent(id)}/programme`, { method: 'PUT',
+        body: programme === 'none' ? { programme: null } : { programme, ...(values.company ? { company: values.company } : {}) } }) as { id: string; programme?: string; company?: string };
+      out(r);
+      if (!values.json) console.log(r.programme ? `${r.id} is in ${r.programme}${r.company ? `, company ${r.company}` : ''}: it reaches what a person there reaches`
+        : `${r.id} is in no programme: it keeps only the essentials. Mint a new token for internal work`);
+      break;
+    }
     const { tokens } = await call('/api/v1/tokens') as {
-      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null }>;
+      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null; programme?: string | null; company?: string | null }>;
     };
     out(tokens);
     if (!values.json) for (const t of tokens) {
-      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
+      const placed = t.programme ? `programme ${t.programme}${t.company ? `/${t.company}` : ''}  ` : '';
+      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${placed}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
     }
     break;
   }
@@ -1863,9 +2132,17 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
   tokens [create --label <l> --scopes <s,...> [--tools <id,...>] [--role <r>] | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
+  tokens programme <id> <programme> [--company <id>] · tokens programme <id> none   place a token in a partner programme, so a partner's agent is scoped like its people
+  companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
+  companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
+  people import <programme> <file.csv|-> [--apply]   add a list to a partner programme: email, name, company, end date (preview unless --apply)
+  people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]   end a partnership in one audited step
+  domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--move-staff <id,...>] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited); staff move only by name
+  domains check <domain> · domains rm <domain> [--programme <id>]   look the DNS record up now; stop new people joining through a domain
+  folders [ls] --programme <id> · folders add <provider> <path>|--whole · folders rm <provider> <path> --programme <id> [--company <id>] [--ends YYYY-MM-DD]   give one provider folder to a programme or company
   retention run              apply the stated retention policy (including the deleted-document purge) and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
   users subject-export <id>  bounded partial metadata page (owner; --category, --cursor, --limit)

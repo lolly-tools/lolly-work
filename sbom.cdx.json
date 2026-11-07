@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:31463405-f0a1-430b-8d23-96b64e7e0cf2",
+  "serialNumber": "urn:uuid:c9c1235e-0c80-4770-8e22-a24fd02a726f",
   "version": 1,
   "metadata": {
     "tools": [
@@ -1638,6 +1638,27 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/%40types/trusted-types@2.0.7",
+      "name": "@types/trusted-types",
+      "version": "2.0.7",
+      "purl": "pkg:npm/%40types/trusted-types@2.0.7",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "49c68f767d5d41cce06e5d101537933a65471542eddfde17260390368c95859eabdaf2e730b25f04f779dd2079d93ff71b7e95235fe0d8c65a5f47300ee5ec7f"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/acorn@8.18.0",
       "name": "acorn",
       "version": "8.18.0",
@@ -1906,6 +1927,25 @@
         {
           "alg": "SHA-512",
           "content": "73af0ba4b6cefbb90ffdbd47af5aacf3f049d3d1799216464f1ab166e873c699b024a3a04451c95886fdfca9aa9ea1e12dd3b9e5a3b1147fc4181bd441b2ff45"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/dompurify@3.4.17",
+      "name": "dompurify",
+      "version": "3.4.17",
+      "purl": "pkg:npm/dompurify@3.4.17",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "(MPL-2.0 OR Apache-2.0)"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "07fa52958547439f24a88483ff20e3b89d727f3237e26d60178940a1dd9bc1246188de0ae429771fc01fee1a81d8f9932fdd75b5d12e7679d79f9167851a33d3"
         }
       ]
     },

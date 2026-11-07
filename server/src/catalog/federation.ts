@@ -78,6 +78,7 @@ export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): 
     meta: {
       providerLabel: rec.label,
       providerSections: asset.sections,
+      ...(typeof asset.folder === 'string' ? { providerFolder: asset.folder } : {}),
       providerCollections: asset.collections ?? [],
       ...(asset.taxonomy ? { providerTaxonomy: asset.taxonomy } : {}),
       providerTags: asset.tags,
@@ -120,7 +121,7 @@ export function passesExposure(rec: ProviderRecord, asset: ProviderAssetRef): bo
 /** Group visibility - whether this caller sees the provider's assets at all. */
 export function callerSeesProvider(rec: ProviderRecord, callerGroups: string[]): boolean {
   const groups = rec.exposure.groups;
-  if (!groups || groups === '*') return true;
+  if (!groups || groups === '*' || groups.includes('*')) return true;
   return groups.some((g) => callerGroups.includes(g));
 }
 

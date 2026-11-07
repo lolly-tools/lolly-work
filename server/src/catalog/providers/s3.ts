@@ -151,6 +151,7 @@ export function createS3Provider(
       name: stripExt(filename),
       nativeType: ext,
       sections: parts.length > 1 ? [parts[0] as string] : [],
+      folder: parts.slice(0, -1).join('/'),
       tags: [],
       ...(obj.modified ? { updatedAt: obj.modified } : {}),
       formats: [{ format: ext, remoteRef: 'orig', filename, ...(obj.size !== undefined ? { size: obj.size } : {}) }],

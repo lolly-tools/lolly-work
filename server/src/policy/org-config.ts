@@ -9,7 +9,7 @@ import { resolveAiPolicy, type AiPolicy } from './ai.ts';
 import { renderCapabilities, type RenderCapabilities } from '../render/capabilities.ts';
 import { approvalArtifactPolicy } from '../approvals/export-review.ts';
 import { TRANSFER_PART_BYTES } from '../uploads/parts.ts';
-import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
+import { filterInputs, resolveInputAccess, toolVisibleWithGrants, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
 import { evaluate, grantDecision, mayActOnSomeApproval, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, isGroupScopedFlag, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { brandPagesConfig } from '../brand-pages/types.ts';
@@ -23,6 +23,7 @@ import type { ConfigDeliveryDestination, DeliveryDestinationDescriptor } from '.
 import { invitePolicyForClient, mayInviteNewPeople, resolveInvitePolicy } from './invites.ts';
 import type { ProjectMemberRole } from '../store/types.ts';
 import { resolveSharingPolicy, type InstanceShareRole } from './sharing.ts';
+import { isProgrammeScoped } from '../programmes/types.ts';
 
 /** Actions whose yes/no the shell needs to render honest controls (e.g. the
  *  export button becoming "Save / Request approval"). Evaluated server-side;
@@ -36,6 +37,10 @@ import { resolveSharingPolicy, type InstanceShareRole } from './sharing.ts';
  *  every other entry here uses - it is `session.edit` itself, by construction,
  *  so it can never disagree with the gateway's writer decision (see
  *  `mayEditCollab`'s own doc comment and `server/src/collab/gateway.ts`). */
+/** Client actions a grant may scope to one tool (`tool:<id>`), so org-config
+ *  answers them per tool as well as for the whole deployment. */
+const TOOL_SCOPED_ACTIONS = ['export.download', 'export.request'] as const;
+
 const CLIENT_ACTIONS = [
   'export.download', 'export.request', 'export.server',
   'link.create', 'link.create-guest',
@@ -59,6 +64,13 @@ const CLIENT_ACTIONS = [
   // and never enter this permission or payload.
   'delivery.create',
 ] as const;
+
+/** A resolved access as the app receives it: what the input does, never who
+ *  decided it or why. */
+function withoutAttribution(access: ResolvedAccess): ResolvedAccess {
+  const { by: _by, reason: _reason, ...rest } = access;
+  return rest;
+}
 
 export interface ProfileFieldPolicy {
   mode: 'editable' | 'locked' | 'hidden';
@@ -94,7 +106,21 @@ export interface OrgConfigPayload {
      *  ∩ what the deployment can produce - plans/23 §3.A). Absent ⇒ no per-tool
      *  restriction; everything in `render.formats` is offered. */
     formats?: string[];
+    /** This tool's own answer for an export action, present only where it differs
+     *  from the deployment-wide `can` bit: a grant naming `tool:<id>` decides it
+     *  (plans/82 fault C). The app reads this before the global bit. */
+    can?: Partial<Record<(typeof TOOL_SCOPED_ACTIONS)[number], boolean>>;
+    /** Values the tool starts from for this caller (plans/82 M3): the overlay's
+     *  group defaults, then the company values its bindings name. Below a
+     *  template's own values and the person's own. */
+    defaults?: Record<string, unknown>;
+    /** Inputs that take the caller's company values, by company field, so the
+     *  app can switch a `logo` binding with the mode. */
+    bindings?: Record<string, string>;
   }>;
+  /** The caller's partner company and programme (plans/82 M3), for programme
+   *  members only. The logo ids are catalog assets the caller already receives. */
+  partner?: OrgConfigPartner;
   /** Permission bits for this caller (CLIENT_ACTIONS), for honest UI. */
   can: Record<string, boolean>;
   /** What the shell may offer when this caller creates a team project:
@@ -159,6 +185,16 @@ export interface OrgConfigPayload {
   policyVersion: string;
 }
 
+export interface OrgConfigPartner {
+  company?: {
+    id: string; name: string; revision: number;
+    logos: { light?: string; dark?: string; mark?: string };
+    website?: string; contact?: { name?: string; email?: string; phone?: string };
+    address?: string; currency?: string; taxNote?: string;
+  };
+  programme?: { id: string; name: string };
+}
+
 /** SUSE-decided default profile policy: identity fields lock to the IdP (plans/04 §2). */
 export function defaultProfilePolicy(user: UserRecord): Record<string, ProfileFieldPolicy> {
   const lock = (value: unknown): ProfileFieldPolicy => ({ mode: 'locked', source: 'idp', value });
@@ -211,7 +247,7 @@ export function policyVersionOf(
   deliveryDestinations: ConfigDeliveryDestination[] = [],
   grants: Grant[] = [],
   ai: AiPolicy = resolveAiPolicy(undefined, new Map()),
-  member?: { groups: readonly string[]; role: string; sharingGroups: readonly string[]; flagService?: ReadonlyMap<string, boolean> },
+  member?: { groups: readonly string[]; role: string; sharingGroups: readonly string[]; flagService?: ReadonlyMap<string, boolean>; partner?: OrgConfigPartner; toolStarts?: unknown },
   /** Deployment settings that move `can` bits or payload blocks for every
    *  caller: the invite policy, whether guest links are on and the home view
    *  (`instance.homeView`). Absent for
@@ -237,6 +273,11 @@ export function policyVersionOf(
         // must move the hash too. Present only when a service is configured,
         // so deployments without one keep their version.
         ...(member.flagService ? { flagService: [...member.flagService].sort(([a], [b]) => a.localeCompare(b)) } : {}),
+        // A partner's company details and the values its tools start from move
+        // with a profile save, not a policy edit (plans/82 M3). Present only
+        // when set, so other callers keep their version.
+        ...(member.partner ? { partner: member.partner } : {}),
+        ...(member.toolStarts ? { toolStarts: member.toolStarts } : {}),
       },
     } : {}),
     overlays: [...overlays.values()].sort((a, b) => a.toolId.localeCompare(b.toolId)),
@@ -334,6 +375,10 @@ export function assembleOrgConfig(opts: {
   approvalRecording?: boolean;
   /** This deployment can keep a manager's edit. Absent means it cannot. */
   brandEdits?: { approval: boolean } | null;
+  /** The caller's partner company and programme (plans/82 M3). */
+  partner?: OrgConfigPartner;
+  /** Per tool, the values it starts from and the inputs bound to company fields. */
+  toolStarts?: Map<string, { defaults: Record<string, unknown>; bindings?: Record<string, string> }>;
   inboxUnread: number;
 }): OrgConfigPayload {
   const { config, user, overlays, inboxUnread } = opts;
@@ -349,11 +394,10 @@ export function assembleOrgConfig(opts: {
   for (const [toolId, overlay] of overlays) {
     // Visibility is overlay OR an explicit per-user/group tool.use ALLOW grant
     // (so a grant surfaces a tool outside the caller's groups); a matching DENY
-    // wins over both (and over the role default, hence grantDecision not
-    // evaluate). Genuinely-hidden tools stay ABSENT - the caller never learns.
-    const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
-    if (decision === 'deny') continue;
-    if (!(toolVisibleTo(overlay, user.groups) || decision === 'allow')) continue;
+    // wins over both, and over the role default. The tool feed and the tool
+    // files ask the same toolVisibleWithGrants, so a tool absent here is absent
+    // there too. Genuinely-hidden tools stay ABSENT - the caller never learns.
+    if (!toolVisibleWithGrants(overlay, toolId, principal, grants)) continue;
     // Without a readable manifest the overlay's own rule keys stand in for the
     // declared list: a lock or a hide the operator wrote by id still reaches
     // the shell. Only a '*' rule needs the manifest to expand, and that miss is
@@ -362,8 +406,12 @@ export function assembleOrgConfig(opts: {
     const entry: OrgConfigPayload['tools'][string] = {};
     if (declared) {
       const filtered = filterInputs(declared, overlay, user.groups);
-      // Only ship annotations - plain editable inputs need no policy row.
-      const annotated = filtered.filter((i) => i.access);
+      // Only ship annotations - plain editable inputs need no policy row. The
+      // overlay's name and the rule's reason stay off this wire: the app shows a
+      // locked input with no line naming the rule (plans/82, Andy's standing rule
+      // that locks stay invisible to the person making the asset). The console
+      // and an agent's 422 INPUT_LOCKED still carry them.
+      const annotated = filtered.flatMap((i) => i.access ? [{ ...i, access: withoutAttribution(i.access) }] : []);
       if (annotated.length) entry.inputs = annotated;
       const hidden = declared
         .filter((i) => resolveInputAccess(overlay, i.id, user.groups).level === 'hidden')
@@ -381,6 +429,15 @@ export function assembleOrgConfig(opts: {
         .map((f) => (f === 'jpeg' ? 'jpg' : f))
         .filter((f) => render.formats.includes(f));
     }
+    // Values the tool starts from (plans/82 M3), for declared, unhidden inputs only.
+    const start = opts.toolStarts?.get(toolId);
+    if (start) {
+      const shown = (id: string) => (!declared || declared.some((i) => i.id === id)) && resolveInputAccess(overlay, id, user.groups).level !== 'hidden';
+      const defaults = Object.fromEntries(Object.entries(start.defaults).filter(([id]) => shown(id)));
+      const bindings = Object.fromEntries(Object.entries(start.bindings ?? {}).filter(([id]) => shown(id)));
+      if (Object.keys(defaults).length) entry.defaults = defaults;
+      if (Object.keys(bindings).length) entry.bindings = bindings;
+    }
     tools[toolId] = entry;
   }
   const can: Record<string, boolean> = {};
@@ -391,6 +448,25 @@ export function assembleOrgConfig(opts: {
     // action string) is what keeps this bit and the gateway's writer
     // decision structurally unable to drift apart.
     can[action] = action === 'collab.edit' ? mayEditCollab(principal, grants) : evaluate(principal, action, ['*'], grants);
+  }
+  // Per-tool export answers (plans/82 fault C). The deployment-wide bit above is
+  // evaluated against '*' only, so a grant naming one tool, the documented "edit
+  // but not export" recipe, decided nothing in the app. Each tool a matching
+  // grant names gets its own answer when it differs, and only while the tool is
+  // visible to this caller, so a hidden tool's id never reaches them.
+  const scopedTools = new Set<string>();
+  for (const g of grants) {
+    if (!(TOOL_SCOPED_ACTIONS as readonly string[]).includes(g.action) || !g.resource.startsWith('tool:')) continue;
+    if (grantDecision(principal, g.action, [g.resource], [g]) !== 'none') scopedTools.add(g.resource.slice('tool:'.length));
+  }
+  for (const toolId of scopedTools) {
+    if (!toolVisibleWithGrants(overlays.get(toolId), toolId, principal, grants)) continue;
+    const toolCan: Partial<Record<(typeof TOOL_SCOPED_ACTIONS)[number], boolean>> = {};
+    for (const action of TOOL_SCOPED_ACTIONS) {
+      const answer = evaluate(principal, action, [`tool:${toolId}`, '*'], grants);
+      if (answer !== can[action]) toolCan[action] = answer;
+    }
+    if (Object.keys(toolCan).length) tools[toolId] = { ...tools[toolId], can: toolCan };
   }
   // collab.nearby is a DERIVED bit, not an RBAC action: the instance offers the
   // "likely nearby" grouping (plans/26 §8) only when policy enables it AND the
@@ -448,6 +524,7 @@ export function assembleOrgConfig(opts: {
     },
     profilePolicy,
     tools,
+    ...(opts.partner ? { partner: opts.partner } : {}),
     can,
     ...(approvalArtifacts.enabled && (can['export.request'] || mayActOnSomeApproval(principal, grants)) ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, match: true, ...(opts.approvalRecording ? { recordInCredentials: true } : {}) } } } : {}),
     ...(can['brand.page.publish'] ? { brandPages: { maxBundleBytes: brandPages.maxBundleBytes, maxFileBytes: brandPages.maxFileBytes, partBytes: TRANSFER_PART_BYTES, approval: !!brandPages.approvalChain } } : {}),
@@ -476,7 +553,7 @@ export function assembleOrgConfig(opts: {
       }
       return base;
     })(),
-    injectables: projectInjectables(injectables.values(), user.groups),
+    injectables: projectInjectables(injectables.values(), user.groups, isProgrammeScoped(user.groups, user.role)),
     destinations,
     telemetry: {
       level: config.policy.telemetry,
@@ -488,7 +565,9 @@ export function assembleOrgConfig(opts: {
       overlays, profilePolicy, flagGovernance, injectables, render,
       config.policy.nearby?.enabled ?? true, config.delivery?.destinations ?? [], grants,
       resolveAiPolicy(config.policy.ai, flagGovernance),
-      { groups: user.groups, role: user.role, sharingGroups, ...(opts.flagService ? { flagService: opts.flagService } : {}) },
+      { groups: user.groups, role: user.role, sharingGroups, ...(opts.flagService ? { flagService: opts.flagService } : {}),
+        ...(opts.partner ? { partner: opts.partner } : {}),
+        ...(opts.toolStarts?.size ? { toolStarts: [...opts.toolStarts].sort(([a], [b]) => a.localeCompare(b)) } : {}) },
       {
         invites: invitePolicy, guestLinks: config.policy.guestLinks?.enabled !== false,
         // The sharing limits are part of the payload (lolly plan 299 M1).

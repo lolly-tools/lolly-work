@@ -1,0 +1,18 @@
+{
+  "source": "shells/web/src/bridge/svg-sanitize.ts",
+  "dompurify": "3.4.17",
+  "cases": {
+    "clean.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 240 80\" width=\"240\" height=\"80\">\n  <title>Northwind IT</title>\n  <style>.mark{fill:#0b3d91}@keyframes spin{to{transform:rotate(360deg)}}.dot{animation:spin 4s linear infinite;transform-box:fill-box}</style>\n  <defs><linearGradient id=\"g\" x1=\"0\" x2=\"1\"><stop offset=\"0\" stop-color=\"#0b3d91\"/><stop offset=\"1\" stop-color=\"#1e88e5\"/></linearGradient></defs>\n  <path class=\"mark\" d=\"M10 70 L40 10 L70 70 Z\"/>\n  <circle class=\"dot\" cx=\"40\" cy=\"50\" r=\"6\" fill=\"url(#g)\"/>\n  <text x=\"90\" y=\"52\" font-size=\"28\" fill=\"#1a1a1a\">Northwind IT</text>\n</svg>",
+    "editor-metadata.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 40\">\n  \n  <metadata/>\n  <g><path d=\"M0 0 H120 V40 H0 Z\" fill=\"#e3001b\"/></g>\n</svg>",
+    "external-image.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><rect width=\"100\" height=\"100\" fill=\"#123456\"/><image href=\"https://example.com/logo.png\" width=\"50\" height=\"50\"/></svg>",
+    "external-style.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><style>@import url(https://example.com/brand.css); rect{fill:#123456}</style><rect width=\"100\" height=\"100\"/></svg>",
+    "external-use.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 100 100\"/>",
+    "foreign-object.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><rect width=\"10\" height=\"10\" fill=\"#123456\"/></svg>",
+    "handler.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><rect width=\"100\" height=\"100\" fill=\"#123456\"/></svg>",
+    "internal-use.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 40\"><defs><path id=\"p\" d=\"M0 0 H20 V20 H0 Z\"/></defs><rect x=\"30\" width=\"60\" height=\"40\" fill=\"#0b3d91\"/></svg>",
+    "javascript-link.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 100 100\"><a><rect width=\"100\" height=\"100\" fill=\"#123456\"/></a></svg>",
+    "nbsp-animate.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 200 40\"><text x=\"0\" y=\"30\" fill=\"#222222\">North Wind</text></svg>",
+    "raster-wrap.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><title>logo</title><image width=\"10\" height=\"10\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"/></svg>",
+    "script.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><rect width=\"100\" height=\"100\" fill=\"#123456\"/></svg>"
+  }
+}

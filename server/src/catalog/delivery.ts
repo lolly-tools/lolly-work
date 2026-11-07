@@ -10,6 +10,7 @@ import { createToolDigestCache, servedToolIndexBytes, toolDirectoryDigests, type
 import { servedToolSidecar } from './tool-sidecars.ts';
 import type { ServedIndexer, ServedIndex } from './served-index.ts';
 import { publisherResourceDigests, scopedResourceDigests } from './resource-proofs.ts';
+import { toolUseGrantsFor } from '../policy/overlay.ts';
 
 export type CatalogSnapshotKind = 'tools' | 'assets' | 'slim';
 export interface CatalogDeliveryView {
@@ -25,9 +26,14 @@ export interface CatalogDeliveryView {
 const RETAIN_MS = 60 * 60 * 1000;
 const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 
-/** Scope comes exclusively from the server's current resolved grants. */
+/** Scope comes exclusively from the server's current resolved grants. The
+ *  `tool.use` grants that apply to this caller join the groups only when there
+ *  are some, so a deployment without them keeps the scope it had. */
 export function catalogVisibilityScope(caller: CatalogCaller): string {
-  return sha256Hex(canonicalJson({ groups: [...new Set(caller.groups)].sort(), guestTool: caller.guestToolId ?? null, ...(caller.pagedAssets ? { pagedAssets: true } : {}) }));
+  const toolGrants = caller.guestToolId ? [] : toolUseGrantsFor({ userId: caller.userId, groups: caller.groups }, caller.grants ?? []);
+  return sha256Hex(canonicalJson({ groups: [...new Set(caller.groups)].sort(), guestTool: caller.guestToolId ?? null,
+    ...(caller.pagedAssets ? { pagedAssets: true } : {}), ...(toolGrants.length ? { toolGrants } : {}),
+    ...(caller.templatesOnly?.size ? { templatesOnly: [...caller.templatesOnly].sort() } : {}) }));
 }
 
 function ids(bytes: Buffer, field: 'tools' | 'assets'): string[] {
@@ -78,12 +84,21 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     const resources = await scopedResourceDigests({ pack, shellDirectories, publisher, caller,
       visibleToolIds: new Set(visibleTools.map(tool => tool.id.toLowerCase())), visibleValues: [visibleTools, entries(slim), assets.index.assets ?? []] });
     const scope = catalogVisibilityScope(caller);
+    // Every tool.use grant moves the sequence, as an overlay edit does, because
+    // either can change which tools a caller is served.
+    const toolGrants = (caller.grants ?? []).filter(g => g.action === 'tool.use').map(g => `${g.principal} ${g.effect} ${g.resource}`).sort();
+    // Rules tools (plans/82 M2) are this caller's own build: their digests join
+    // the pack's, so the directory hashes, the sequence and the envelope agree.
+    const callerFiles = tools.instanceFiles ? { ...allFiles, ...tools.instanceFiles } : allFiles;
     const fingerprint = sha256Hex(canonicalJson({ assets: assets.sourceFingerprint,
-      tools: sha256Hex(rawTools), slim: sha256Hex(rawSlim), files: allFiles,
+      tools: sha256Hex(rawTools), slim: sha256Hex(rawSlim), files: callerFiles,
       overlays: [...caller.overlays].sort(([a], [b]) => a.localeCompare(b)),
+      ...(toolGrants.length ? { toolGrants } : {}),
+      // A templates-only switch changes this caller's index without a grant moving.
+      ...(caller.templatesOnly?.size ? { templatesOnly: [...caller.templatesOnly].sort() } : {}),
     }));
     const seq = await deps.store.catalogDeliverySequence(fingerprint, await sourcePublication());
-    const files = Object.fromEntries(Object.entries(allFiles).filter(([path]) => tools.visible(path.slice(0, path.indexOf('/')))));
+    const files = Object.fromEntries(Object.entries(callerFiles).filter(([path]) => tools.visible(path.slice(0, path.indexOf('/')))));
     const toolDirs = toolDirectoryDigests(files);
     await remember(scope, 'tools', tools.bytes);
     if (assets.status !== 'missing') await remember(scope, 'assets', assets.bytes);

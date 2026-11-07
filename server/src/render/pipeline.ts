@@ -48,6 +48,8 @@ import {
 export { RENDER_TIER, WORKER_RASTER_FORMATS, renderCapabilities, type RenderFormat, type RenderCapabilities } from './capabilities.ts';
 import { isSvgTemplate, renderCapabilities } from './capabilities.ts';
 import { loadToolOrRefuse, ToolLoadRefusal } from './tool-load.ts';
+import { isPublishedTemplateRef, templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
+import { bindOverlay, defaultsFor, LOGO_FIELDS, themeOf, type BindingPlan, type Theme } from '../programmes/company-values.ts';
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
  *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
@@ -70,12 +72,15 @@ export class RenderError extends Error {
   /** Seconds the caller should back off - set when a saturated worker answered
    *  503 RENDER_BUSY (plans/23 §3.C); app.ts surfaces it as `Retry-After`. */
   retryAfter?: number;
-  constructor(code: string, status: number, message: string, violations?: ParamViolation[]) {
+  /** Extra fields for the error body, such as a retired template's `replacedBy`. */
+  details?: Record<string, unknown>;
+  constructor(code: string, status: number, message: string, violations?: ParamViolation[], details?: Record<string, unknown>) {
     super(message);
     this.name = 'RenderError';
     this.code = code;
     this.status = status;
     if (violations) this.violations = violations;
+    if (details) this.details = details;
   }
 }
 
@@ -125,6 +130,30 @@ export interface RenderDeps {
    * cache key and before worker dispatch so both render tiers see identical,
    * content-addressed values. */
   hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>;
+  /** A published template the caller may use (plans/82 M2), looked up in the
+   *  caller's own served feed: null when they cannot see it. Absent means this
+   *  render path takes no published templates, and a render that names one is
+   *  refused rather than run without its rules. */
+  templateFor?: (id: string) => Promise<RenderTemplate | null>;
+  /** A rules tool's files (plans/82 M2): this workspace's own build of a
+   *  published Share with rules file, for this caller. Null for a pack tool. */
+  toolFiles?: (toolId: string) => Promise<ReadonlyMap<string, Buffer> | null>;
+  /** The templates this caller may start the tool from, when a programme they are in
+   *  set it to templates only (plans/82 M2 W5); null when the tool is open to them. */
+  templatesRequired?: (toolId: string) => Promise<Array<{ id: string; name: string }> | null>;
+  /** The partner company values this caller's render takes (plans/82 M3,
+   *  programmes/company-values.ts): null when nothing binds the tool or the
+   *  caller is in no company. Absent means this render path binds nothing. */
+  companyFor?: (args: { toolId: string; template: RenderTemplate | null; theme: Theme; toolOverlay: ToolOverlay | undefined; groups: string[] }) => Promise<RenderCompany | null>;
+}
+
+/** What a render takes from the caller's partner company (plans/82 M3). */
+export interface RenderCompany {
+  plan: BindingPlan;
+  company?: { id: string; name: string; revision: number };
+  programme?: { id: string; name: string };
+  /** The resolved asset a logo id renders as, or null when it cannot be read. */
+  logo(id: string): Promise<unknown | null>;
 }
 
 export interface RenderRequest {
@@ -136,7 +165,9 @@ export interface RenderRequest {
   /** URL-mode query string (no leading '?'), the shared param contract. */
   query: string;
   /** The caller's group set for policy resolution (never trusted for identity). */
-  principal: { groups: string[] } | null;
+  /** Who the render is for. `role` lets an admin or owner stay unscoped by a partner
+   *  programme here, as in the gallery (programmes/types.ts isProgrammeScoped). */
+  principal: { groups: string[]; role?: string } | null;
   /** Server-built profile for `bindToProfile` resolution - from the auth'd user, never params. */
   profile: Profile;
   /** All tool overlays (the policy version hashes the full set; the tool's own is derived). */
@@ -176,6 +207,65 @@ async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedR
     return Object.fromEntries(entries);
   }
   return value;
+}
+
+/**
+ * The published template a render names (`template=inst/<id>`, plans/82 M2),
+ * checked before anything is rendered: the caller must see it in their own
+ * feed, it must start this tool, and a retired one answers 410 with what
+ * replaced it. A bare `template=<id>` is a tool's own shipped template and is
+ * left as it always was.
+ */
+async function renderTemplateFor(deps: RenderDeps, query: string, toolId: string): Promise<RenderTemplate | null> {
+  const ref = new URLSearchParams(query).get('template');
+  if (!ref || !ref.startsWith('inst/')) return null;
+  if (!isPublishedTemplateRef(ref)) throw new RenderError('TEMPLATE_NOT_FOUND', 404, 'No such template.');
+  if (!deps.templateFor) throw new RenderError('TEMPLATE_UNAVAILABLE', 422, 'This render cannot start from a published template.');
+  const template = await deps.templateFor(ref);
+  if (!template) throw new RenderError('TEMPLATE_NOT_FOUND', 404, 'No such template.');
+  if (template.retired) {
+    throw new RenderError('TEMPLATE_RETIRED', 410, template.retired.replacedBy
+      ? `This template was retired. Use ${template.retired.replacedBy} instead.` : 'This template was retired.',
+    undefined, template.retired.replacedBy ? { replacedBy: template.retired.replacedBy } : undefined);
+  }
+  if (template.toolId !== toolId) throw new RenderError('TEMPLATE_TOOL_MISMATCH', 422, `This template starts ${template.toolId}, not ${toolId}.`);
+  // A template that keeps its colourway and mode refuses a request to change
+  // them, the same way it refuses a fixed input.
+  const params = new URLSearchParams(query);
+  const theme = template.fixedTheme ? ['ds', '_themes'].filter((key) => params.has(key)) : [];
+  if (theme.length) {
+    throw new RenderError('INPUT_LOCKED', 422, `The template fixes the colourway and mode: ${theme.join(', ')}`,
+      theme.map((param) => ({ param, code: 'INPUT_LOCKED' as const })));
+  }
+  return template;
+}
+
+/**
+ * A rules tool's own rules (plans/82 M2): a tool whose manifest carries a
+ * `designTool` policy was made with Share with rules, and the designer fixed
+ * everything it does not declare. A param that names anything else answers
+ * 422 INPUT_LOCKED instead of being dropped, so an agent knows it was refused;
+ * a value outside the designer's choices (an option, a range, an approved
+ * image) answers 422 INPUT_NOT_ALLOWED; and only the designer's formats render.
+ */
+function requireDesignRules(engine: EngineApi, manifest: LoadedTool['manifest'], query: string, values: Record<string, unknown>, declared: string[], format: string): void {
+  const policy = (manifest as { designTool?: { formats?: string[] } }).designTool;
+  if (!policy) return;
+  const known = new Set(declared);
+  const fixed = [...new Set([...new URLSearchParams(query).keys()])].filter((key) => !engine.RESERVED.has(key) && !known.has(key));
+  if (fixed.length) {
+    throw new RenderError('INPUT_LOCKED', 422, `The designer fixed these: ${fixed.join(', ')}`,
+      fixed.map((param) => ({ param, code: 'INPUT_LOCKED' as const })));
+  }
+  if (Array.isArray(policy.formats) && !policy.formats.includes(format)) {
+    throw new RenderError('FORMAT_NOT_ALLOWED', 403, `The designer allows only ${policy.formats.join(', ')} for this tool`);
+  }
+  try { engine.assertDesignValues(policy, values); }
+  catch (error) {
+    const message = String((error as Error).message ?? error);
+    const param = declared.find((id) => Object.hasOwn(values, id) && message.includes(id)) ?? declared.find((id) => Object.hasOwn(values, id)) ?? '';
+    throw new RenderError('INPUT_NOT_ALLOWED', 422, message, param ? [{ param, code: 'INPUT_NOT_ALLOWED' }] : undefined);
+  }
 }
 
 /** A failed tool load, as the render error the routes already answer. */
@@ -261,8 +351,11 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // Load the tool through the real engine (validates the manifest + enforces its
   // engineVersion range). fetchFile resolves against <pack>/tools/.
   const files: RenderEvidence['tool']['files'] = [];
+  const built = await deps.toolFiles?.(req.toolId) ?? null;
   const fetchFile = async (p: string): Promise<string> => {
-    const text = await readFile(join(pack, 'tools', p), 'utf8');
+    const own = built?.get(p.slice(p.indexOf('/') + 1));
+    if (built && !own) throw Object.assign(new Error(`no such file: ${p}`), { code: 'ENOENT' });
+    const text = own ? own.toString('utf8') : await readFile(join(pack, 'tools', p), 'utf8');
     files.push({ path: p, sha256: sha256Hex(text), size: Buffer.byteLength(text) });
     return text;
   };
@@ -283,12 +376,49 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // Parse the shared URL-mode query (unpacking a packed z= first).
   const expanded = await engine.expandQuery(req.query);
   const st = engine.parseUrlState(expanded, tool.manifest);
+  const template = await renderTemplateFor(deps, expanded, req.toolId);
+  // Templates only (programmes/templates-only.ts): the render must start from one of
+  // the caller's published templates, and the refusal lists them.
+  const required = template ? null : await deps.templatesRequired?.(req.toolId) ?? null;
+  if (required) {
+    throw new RenderError('TEMPLATE_REQUIRED', 422,
+      `${req.toolId} is used here only through its published templates. Name one with template=inst/<id>.`,
+      undefined, { templates: required });
+  }
+  const declaredIds = (tool.manifest.inputs as { id: string }[]).map((input) => input.id);
+  requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, declaredIds, format);
 
   // Policy BEFORE render. A caller that supplies a locked/hidden/not-allowed
   // param is refused (422); then the overlay's locked values are baked over the
   // caller's - so a locked input renders its policy value regardless of input.
   const groups = req.principal?.groups ?? [];
-  const overlay = deps.managedRules ? projectRuleOverlay(req.overlays.get(req.toolId), deps.managedRules, groups) : req.overlays.get(req.toolId);
+  const toolOverlay = deps.managedRules ? projectRuleOverlay(req.overlays.get(req.toolId), deps.managedRules, groups) : req.overlays.get(req.toolId);
+  // The partner company's values (plans/82 M3, programmes/company-values.ts).
+  // A logo field renders as the company's own asset, read here so both render
+  // tiers see the same bytes; a logo that cannot be read is left unbound.
+  const company = await deps.companyFor?.({ toolId: req.toolId, template, theme: themeOf(st.tokenSelection), toolOverlay, groups }) ?? null;
+  const inputTypes = new Map((tool.manifest.inputs as Array<{ id: string; type?: string }>).map((i) => [i.id, i.type]));
+  const companyValues: Record<string, unknown> = {};
+  for (const [id, raw] of Object.entries(company?.plan.values ?? {})) {
+    if (!declaredIds.includes(id)) continue;
+    if (LOGO_FIELDS.has(company!.plan.bound[id]!) && inputTypes.get(id) === 'asset') {
+      const ref = await company!.logo(raw);
+      if (ref) companyValues[id] = ref;
+    } else companyValues[id] = raw;
+  }
+  const plan = company ? { ...company.plan, locked: company.plan.locked.filter((id) => Object.hasOwn(companyValues, id)) } : null;
+  // A template's rules join the tool's own, stricter wins (catalog/templates.ts),
+  // and a bound input they fix is fixed to the company's value.
+  const templated = template ? templateOverlay(toolOverlay, template, groups, declaredIds) : toolOverlay;
+  const overlay = plan ? bindOverlay(templated, toolOverlay, plan, groups, req.toolId, company!.company?.name, (id) => companyValues[id]) : templated;
+  // Where the render starts, least specific first: the overlay's defaults for
+  // these groups, the template's values, then the company's. The caller's own
+  // values land on top, and the fixed ones are baked over everything below.
+  // Someone in two companies gets the tool's own default for a bound input.
+  const templateStart = template ? templateSeed(template.values, declaredIds) : {};
+  if (plan?.ambiguous) for (const id of Object.keys(plan.bound)) delete templateStart[id];
+  const overlayDefaults = templateSeed(defaultsFor(req.overlays.get(req.toolId), groups), declaredIds);
+  const seed = { ...overlayDefaults, ...templateStart, ...companyValues };
   // Per-tool format policy (overlay enforce.formats - plans/23 §3.A): a format
   // the deployment CAN produce may still be disallowed for this tool. A policy
   // 403, deliberately distinct from the capability 400 at the top: absent (400)
@@ -305,7 +435,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       `Policy forbids these params for your access: ${params}`, violations);
   }
   const bakedValues = await resolveHostedValues(
-    { ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
+    { ...seed, ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
   ) as Record<string, unknown>;
   const initialValues = deps.managedRules ? Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues }).map(i => [i.id, i.value])) : {};
   requireRuleValues(deps.managedRules, { ...initialValues, ...bakedValues });
@@ -326,7 +456,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // effect on the next one. A lookup that fails leaves the mark on.
   const watermarkRule = overlay?.enforce?.watermark;
   const inputsDigest = watermarkRule === 'until-approved'
-    ? renderInputsDigest(engine, tool.manifest, st.values as Record<string, unknown>, overlay, groups, req.profile) : null;
+    ? renderInputsDigest(engine, tool.manifest, { ...seed, ...st.values } as Record<string, unknown>, overlay, groups, req.profile) : null;
   const approval = inputsDigest
     ? await deps.approvedExportReview?.({ toolId: req.toolId, toolVersion: String(tool.manifest.version), format, inputsDigest }).catch(() => null) ?? null
     : null;
@@ -352,7 +482,8 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     policyVersion,
     format,
     params: bakedValues,
-    context: { ...context, sourceHash, ...(untilApproved ? { untilApproved: untilApproved.approvalId } : {}), brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
+    context: { ...context, sourceHash, ...(untilApproved ? { untilApproved: untilApproved.approvalId } : {}),
+      ...(template ? { template: { id: template.id, version: template.version, editable: template.editable ?? null } } : {}), brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
       worker: deps.worker ? evidenceHash(deps.worker.url) : null,
       signer: deps.signer ? evidenceHash({ chain: deps.signer.chain.map((cert) => sha256Hex(cert)), claimGenerator: deps.signer.claimGenerator }) : null },
   });

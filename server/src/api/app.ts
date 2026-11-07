@@ -62,7 +62,7 @@ import {
   passwordRuleMessage, passwordSetUrl, verifyPassword as verifySignInPassword,
 } from '../iam/password.ts';
 import { buildGitHubAuthorizeUrl, exchangeGitHubCode, fetchGitHubIdentity, GitHubSignInError } from '../iam/github.ts';
-import { bootstrapOwnerGroup, decideAdmission, emailIsVerified, type AdmissionDecision, type AdmissionIdentity, type AdmissionIdp } from '../iam/admission.ts';
+import { bootstrapOwnerGroup, decideAdmission, emailIsVerified, type AdmissionDecision, type AdmissionIdentity, type AdmissionIdp, type AdmissionPartner } from '../iam/admission.ts';
 import {
   accountSignInSeen, identityWire, idpPin, isAccountSignIn, LINKED_STANDING_DAYS, resolveSignIn, signInUpsert, standingGroups,
   subjectHash, unlinkBlock, type SignInResolution,
@@ -82,7 +82,7 @@ import { DECLINE_SHOWN_DAYS, closeRequestsForEmail, requestStateFor } from '../a
 import { acceptedNotice, noticeContext, skippedNotice, welcomeNotice } from '../access/messages.ts';
 import { maskEmail, maskEmailSpoken } from '../access/mask.ts';
 import { registerAccessRoutes } from '../access/routes.ts';
-import { SERVICE_TOKEN_PREFIX, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
+import { SERVICE_TOKEN_PREFIX, hashServiceSecret, mintServiceSecret, serviceAccountFor, tokenPlacement } from '../iam/service-tokens.ts';
 import { parseTokenAuthority, tokenScopeGuard, tokenScopeVocabulary } from '../iam/token-scopes.ts';
 import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
@@ -90,7 +90,23 @@ import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
-import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
+import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
+import { PARTNER_GROUP, isCompanyGroup, isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
+import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
+import type { CompanyRecord } from '../programmes/people.ts';
+import type { ProgrammeRecord } from '../programmes/types.ts';
+import { registerProgrammeRoutes } from '../programmes/routes.ts';
+import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
+import { createCompanyProfiles } from '../programmes/profile-routes.ts';
+import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../programmes/logo-checks.ts';
+import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
+import { entryInFolders, foldersFor } from '../programmes/folders.ts';
+import { registerFolderRoutes } from '../programmes/folder-routes.ts';
+import { registerTemplateRoutes } from '../programmes/template-routes.ts';
+import { templatesOnlyFor } from '../programmes/templates-only.ts';
+import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
+import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
+import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
@@ -129,7 +145,7 @@ import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
 } from '../collab/invites.ts';
-import { normalizeOverlay, toolVisibleTo, resolveInputAccess } from '../policy/overlay.ts';
+import { explainInputAccess, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy, type ToolOverlay } from '../policy/overlay.ts';
 import {
   applyLifecycleToIndex, assetFormatSha256, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
@@ -152,7 +168,7 @@ import {
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
 import { listSubmissions, settleSubmission, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
-import { isDataSubmissionType } from '../catalog/submit-data.ts';
+import { isDataSubmissionType, MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
   fieldHaystack, MAX_EXTRACTED_TEXT, normalizeCatalogField, normalizeExtractedText, parseDescriptivePatch, servedFields,
@@ -191,7 +207,7 @@ import { previewGuidedProvider } from '../catalog/providers/setup-preview.ts';
 import { providerOAuthInfo, providerSetupRevision, registerProviderOAuth } from '../catalog/providers/setup-oauth.ts';
 import { noDetailShapeLine, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../catalog/providers/shape.ts';
 import { invalidateAccessTokens } from '../catalog/providers/oauth.ts';
-import { assembleOrgConfig, maySetPasswordFromLink } from '../policy/org-config.ts';
+import { assembleOrgConfig, maySetPasswordFromLink, type OrgConfigPartner } from '../policy/org-config.ts';
 import { resolveAiPolicy } from '../policy/ai.ts';
 import { renderCapabilities } from '../render/capabilities.ts';
 import { assessSetup, productionMode, type SetupReport } from '../setup/checks.ts';
@@ -211,7 +227,9 @@ import { readToolInputs } from '../policy/tool-inputs.ts';
 import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkKind, type LinkRecord } from '../links/sign.ts';
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
-import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
+import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
+import { templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
+import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
@@ -229,7 +247,7 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
-import { CATALOG_INDEX_REL, CATALOG_PUBLIC_KEY_ROUTE, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning } from '../catalog/signing.ts';
+import { CATALOG_INDEX_REL, CATALOG_PUBLIC_KEY_ROUTE, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning, toolDirectoryDigests, type CatalogCaller, type InstanceTool } from '../catalog/signing.ts';
 import { publicCard, shellStubFor } from '../shell/share-cards.ts';
 import { addressedToolArt, isToolKeyedCatalogPath, servedToolSidecar, toolArtAddress } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
@@ -321,6 +339,8 @@ export interface AppDeps {
   store: Store;
   secrets: Secrets;
   fetchImpl?: typeof fetch;
+  /** DNS TXT lookups for partner domain proof (tests pass a stub). */
+  resolveTxt?: TxtLookup;
   providerResolver?: ProviderResolver;
   /** Injectable metrics registry (tests pass a fresh one to assert counter deltas). */
   metrics?: Metrics;
@@ -392,8 +412,14 @@ export function appRouteDescriptions(app: App): ReturnType<DescribeRoutes> {
   return describe();
 }
 
+/** The Preview row for a template's colourway and mode (plans/82 M2). */
+const COLOURWAY_ROW = 'Colourway and mode';
+/** A value taken from the design system: a token reference such as `{color.semantic.primary}`. */
+const isTokenRef = (value: unknown): boolean => typeof value === 'string' && /^\{[^{}]+\}$/.test(value);
+
 export function buildApp(deps: AppDeps): App {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
+  const resolveTxt: TxtLookup = deps.resolveTxt ?? dnsResolveTxt;
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
   configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
   const blobs = deps.blobs ?? createMemoryBlobStore();
@@ -429,7 +455,11 @@ export function buildApp(deps: AppDeps): App {
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
-      const out = await renderToolUnscoped({ ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
+      const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
+        companyFor: companyForRender,
+        templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
+        toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
+        ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
         workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
@@ -688,7 +718,217 @@ export function buildApp(deps: AppDeps): App {
   // and the bounded cache of federated bytes (catalog/ext-cache.ts).
   const servedIndex = createServedIndex({
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
+    roleOf: (groups) => roleFromGroups(groups, config.idp.roleGroups),
   });
+  /**
+   * A published template as this group set's own feed serves it (plans/82 M2),
+   * for a render that names one: null when the feed does not carry it, which is
+   * also what a revoked, expired or not-yet-live template gets. A retired one is
+   * still in the feed, so the render can say what replaced it.
+   */
+  const publishedTemplateFor = async (groups: string[], id: string): Promise<RenderTemplate | null> => {
+    const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((asset) => asset.id === id && asset.type === 'template');
+    const rec = entry ? await store.getInstanceAsset(id) : null;
+    const blobId = rec?.blobs.json;
+    const blob = blobId ? await blobs.get(blobId) : null;
+    if (!rec || !blob) return null;
+    const values = templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES));
+    const toolId = (entry!.meta as { toolId?: unknown } | undefined)?.toolId;
+    if (!values || typeof toolId !== 'string') return null;
+    return {
+      id, toolId, values, name: typeof entry!.name === 'string' ? entry!.name : id, version: rec.headVersion ?? 1,
+      ...(rec.publication?.editable ? { editable: rec.publication.editable } : {}),
+      ...(rec.publication?.fixedTheme ? { fixedTheme: true } : {}),
+      ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
+      ...(rec.publication?.bindings ? { bindings: rec.publication.bindings } : {}),
+      ...(Array.isArray(rec.groups) ? { groups: rec.groups } : {}),
+    };
+  };
+  // ── company values (plans/82 M3, programmes/company-values.ts) ──────────
+  /** The company a caller speaks for, with its programme and current profile. */
+  const companyContextFor = async (groups: string[], publishedTo?: string[]): Promise<{ ctx: CompanyContext | null; ambiguous: boolean }> => {
+    if (!groups.some(isCompanyGroup)) return { ctx: null, ambiguous: false };
+    const companies = await store.listCompanies();
+    const picked = pickCompany(groups, companies, publishedTo);
+    if (!picked.company) return { ctx: null, ambiguous: picked.ambiguous };
+    const [profile, programme] = await Promise.all([store.getCompanyProfile(picked.company.id), store.getProgramme(picked.company.programmeId)]);
+    return { ctx: { company: picked.company, ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
+      revision: profile?.revision ?? 0, profile: profile?.profile ?? {} }, ambiguous: false };
+  };
+  /** A rules tool's bindings and audience, from the caller's own feed. */
+  const rulesToolBindingsFor = async (groups: string[], toolId: string): Promise<{ bindings?: Bindings; groups: string[] } | null> => {
+    const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((a) => a.type === RULES_TOOL_TYPE && (a.meta as { toolId?: unknown } | undefined)?.toolId === toolId);
+    if (!entry) return null;
+    const rec = await store.getInstanceAsset(entry.id);
+    return { ...(rec?.publication?.bindings ? { bindings: rec.publication.bindings } : {}), groups: Array.isArray(rec?.groups) ? rec.groups : [] };
+  };
+  /** A company logo as the render bakes it: its head bytes as a data URL, read
+   *  only while the caller may see the asset and it is live. Marked `baked`, so
+   *  the engine takes the bytes as they are and never asks the render host's
+   *  catalog, which holds only the pack's own assets. */
+  const companyLogoRef = async (groups: string[], id: string): Promise<unknown | null> => {
+    const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
+    if (!rec || !submissionServable(rec) || !instanceAssetVisible(rec, groups)) return null;
+    if ((await store.getLifecycle(id))?.revokedAt) return null;
+    const [format, blobId] = Object.entries(rec.blobs)[0] ?? [];
+    const blob = blobId ? await blobs.get(blobId) : null;
+    if (!format || !blob) return null;
+    const bytes = await readBlobBody(blob.body, 4 * 1024 * 1024);
+    const mime = format === 'svg' ? 'image/svg+xml' : 'image/png';
+    const head = rec.entry.formats?.[0] as { checksum?: string } | undefined;
+    return { source: 'library', id, type: rec.entry.type, format, url: `data:${mime};base64,${bytes.toString('base64')}`,
+      version: String(rec.headVersion ?? 1), ...(head?.checksum ? { checksum: head.checksum } : {}),
+      meta: { name: rec.entry.name, tags: rec.entry.tags, baked: true } };
+  };
+  /** The company values one caller's render of one tool takes. */
+  const companyForRender = async (args: { toolId: string; template: RenderTemplate | null; theme: Theme; toolOverlay: ToolOverlay | undefined; groups: string[] }): Promise<RenderCompany | null> => {
+    const rules = args.template ? null : await rulesToolBindingsFor(args.groups, args.toolId);
+    const templateBindings = args.template?.bindings ?? rules?.bindings;
+    const overlayBindings = (await store.listOverlays()).get(args.toolId)?.bindings;
+    if (!templateBindings && !overlayBindings) return null;
+    const publishedTo = args.template?.groups ?? rules?.groups;
+    const { ctx, ambiguous } = await companyContextFor(args.groups, publishedTo);
+    const plan = planBindings({
+      ...(overlayBindings ? { overlayBindings } : {}), ...(templateBindings ? { templateBindings } : {}),
+      ...(args.template?.editable ? { templateEditable: args.template.editable } : {}), rulesTool: !!rules,
+      overlayLocks: (id) => resolveInputAccess(args.toolOverlay, id, args.groups).level === 'locked',
+      ctx, ambiguous, theme: args.theme,
+    });
+    return { plan, ...(ctx ? { company: { id: ctx.company.id, name: ctx.company.name, revision: ctx.revision } } : {}),
+      ...(ctx?.programme ? { programme: ctx.programme } : {}), logo: (id) => companyLogoRef(args.groups, id) };
+  };
+  /** org-config's `partner` block: the caller's company, with the details its
+   *  pieces carry, and its programme (the company's own, else the caller's only one). */
+  const partnerBlock = (ctx: CompanyContext | null, groups: string[], companies: CompanyRecord[], programmes: ProgrammeRecord[]): OrgConfigPartner | undefined => {
+    const programmeId = ctx?.company.programmeId ?? pickProgramme(groups, companies);
+    const programme = programmes.find((p) => p.id === programmeId);
+    const p = ctx?.profile;
+    const out: OrgConfigPartner = {
+      ...(ctx ? { company: {
+        id: ctx.company.id, name: ctx.company.name, revision: ctx.revision,
+        logos: { ...(p?.logoLight ? { light: p.logoLight } : {}), ...(p?.logoDark ? { dark: p.logoDark } : {}), ...(p?.mark ? { mark: p.mark } : {}) },
+        ...(p?.website ? { website: p.website } : {}), ...(p?.contact ? { contact: { ...p.contact } } : {}),
+        ...(p?.address ? { address: p.address } : {}), ...(p?.currency ? { currency: p.currency } : {}), ...(p?.taxNote ? { taxNote: p.taxNote } : {}),
+      } } : {}),
+      ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
+    };
+    return out.company || out.programme ? out : undefined;
+  };
+  /** An overlay with the caller's company values bound, and the values a tool
+   *  starts from: for org-config, Preview and the agents' schema, which have no
+   *  template in hand. A `logo` binding takes the light-surface logo here; the
+   *  app switches it with the mode. */
+  const companyOverlayFor = async (overlay: ToolOverlay | undefined, toolId: string, groups: string[], company?: { ctx: CompanyContext | null; ambiguous: boolean }) => {
+    const defaults = defaultsFor(overlay, groups);
+    // A rules tool binds through its own publication, and locks what it binds.
+    const rules = groups.some(isCompanyGroup) ? await rulesToolBindingsFor(groups, toolId) : null;
+    if (!overlay?.bindings && !rules?.bindings) return { overlay, defaults };
+    const { ctx, ambiguous } = company ?? await companyContextFor(groups, rules?.groups);
+    const plan = planBindings({
+      ...(overlay?.bindings ? { overlayBindings: overlay.bindings } : {}), ...(rules?.bindings ? { templateBindings: rules.bindings, rulesTool: true } : {}),
+      overlayLocks: (id) => resolveInputAccess(overlay, id, groups).level === 'locked', ctx, ambiguous, theme: 'light',
+    });
+    return { overlay: bindOverlay(overlay, overlay, plan, groups, toolId, ctx?.company.name), defaults: { ...defaults, ...plan.values }, bindings: plan.bound as Record<string, string> };
+  };
+  // Templates only (plans/82 M2 W5): the tools someone uses only through the
+  // templates published to them, and for a render, the templates they may name.
+  // Who a render is for: groups, and the role, so an admin or owner is never scoped to a
+  // programme in a render either, as in the gallery and the served index.
+  const renderPrincipal = (user: { groups: string[]; role?: string } | null | undefined, groups?: string[]) =>
+    ({ groups: groups ?? user?.groups ?? [], ...(user?.role ? { role: user.role } : {}) });
+  const templatesOnlyOf = async (groups: string[], role?: string) => templatesOnlyFor(await store.listProgrammes(), await store.listCompanies(), groups, role);
+  const templatesRequiredFor = async (groups: string[], role: string | undefined, toolId: string): Promise<Array<{ id: string; name: string }> | null> => {
+    if (!(await templatesOnlyOf(groups, role)).has(toolId)) return null;
+    const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+    return feed.filter((a) => a.type === 'template' && (a.meta as { toolId?: unknown; retired?: unknown } | undefined)?.toolId === toolId && !(a.meta as { retired?: unknown }).retired)
+      .map((a) => ({ id: a.id, name: typeof a.name === 'string' ? a.name : a.id }));
+  };
+  // ── rules tools (plans/82 M2) ───────────────────────────────────────────
+  // A published Share with rules file is stored as data and built here, with
+  // this workspace's own engine compiler and pack Design renderer, for the
+  // people whose feed carries it. Builds are memoised per data and renderer;
+  // the set per group key is memoised per served feed version.
+  const rulesToolBuild = createRulesToolBuilder();
+  const rendererMemo = new Map<string, Promise<DesignRenderer | null>>();
+  const designRenderer = (pack: string): Promise<DesignRenderer | null> => {
+    let hit = rendererMemo.get(pack);
+    if (!hit) { hit = loadDesignRenderer(pack); rendererMemo.set(pack, hit); if (rendererMemo.size > 8) rendererMemo.delete(rendererMemo.keys().next().value as string); }
+    return hit;
+  };
+  const instanceToolMemo = new Map<string, { version: string; tools: Map<string, InstanceTool> }>();
+  const EMPTY_TOOLS: Map<string, InstanceTool> = new Map();
+  const instanceToolsFor = async (groups: string[]): Promise<Map<string, InstanceTool>> => {
+    const key = [...new Set(groups)].sort().join('\u0000');
+    const served = await servedIndex.forCaller({ groups });
+    const pack = config.instance.pack;
+    const entries = (served.index.assets ?? []).filter((asset) => asset.type === RULES_TOOL_TYPE);
+    if (!entries.length) return EMPTY_TOOLS;
+    const renderer = await designRenderer(pack);
+    if (!renderer) return EMPTY_TOOLS;
+    const version = `${served.version}\n${pack}\n${renderer.digest}`;
+    const hit = instanceToolMemo.get(key);
+    if (hit?.version === version) return hit.tools;
+    const tools = new Map<string, InstanceTool>();
+    for (const entry of entries) {
+      const rec = await store.getInstanceAsset(entry.id);
+      const blob = rec?.blobs.json ? await blobs.get(rec.blobs.json) : null;
+      if (!rec || !blob) continue;
+      const bytes = await readBlobBody(blob.body, MAX_RULES_FILE_BYTES * 2);
+      const data = readRulesToolData(bytes);
+      if (!data) continue;
+      let built: BuiltRulesTool;
+      try { built = await rulesToolBuild(data, sha256Hex(bytes), renderer); }
+      catch (error) { log('warn', 'rules tool did not build', { assetId: rec.id, error: String((error as Error).message ?? error).slice(0, 200) }); continue; }
+      // A pack tool keeps its id: one added to the pack later wins over a rules tool.
+      if (existsSync(join(pack, 'tools', built.toolId, 'tool.json'))) continue;
+      const manifest = built.manifest as { name?: unknown; description?: unknown; version?: unknown; render?: { width?: number; height?: number; formats?: string[] } };
+      const meta = (entry.meta ?? {}) as { retired?: unknown };
+      const digests: Record<string, string> = {};
+      for (const [path, file] of built.files) digests[`${built.toolId}/${path}`] = sha256Hex(file);
+      tools.set(built.toolId, {
+        id: built.toolId, assetId: rec.id, files: built.files, digests,
+        entry: {
+          id: built.toolId, name: manifest.name ?? entry.name, ...(manifest.description ? { description: manifest.description } : {}),
+          // Published by this workspace, so it reads as the workspace's own, not as a community tool.
+          version: manifest.version, status: 'official', category: 'designer', tags: ['template'],
+          formats: manifest.render?.formats ?? [], width: manifest.render?.width, height: manifest.render?.height,
+          exportable: true, templateId: rec.id,
+          // A retired rules tool still opens for a saved copy, but leaves the gallery.
+          ...(meta.retired ? { listed: false, retired: true } : {}),
+        },
+      });
+    }
+    instanceToolMemo.set(key, { version, tools });
+    if (instanceToolMemo.size > 64) instanceToolMemo.delete(instanceToolMemo.keys().next().value as string);
+    return tools;
+  };
+  /** Whether a person may see a collection: its groups admit them, except that
+   *  a partner programme member sees only a collection that names one of
+   *  their programme groups, never one shared with everyone (plans/82 M1). */
+  const callerSeesCollection = (user: { groups: string[]; role?: string }, collection: CollectionRecord): boolean =>
+    isProgrammeScoped(user.groups, user.role)
+      ? namesProgrammeGroup(collection.groups, new Set(partnerGroupsOf(user.groups)))
+      : collectionVisible(collection, user.groups);
+  /** Whether a group set sees a provider at all: its exposure groups admit
+   *  them, except that a partner programme member sees only a provider whose
+   *  groups name one of their programme groups (plans/82 M1). */
+  const providerVisibleTo = (rec: ProviderRecord, groups: string[]): boolean =>
+    isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups))
+      ? namesProgrammeGroup(rec.exposure.groups, new Set(partnerGroupsOf(groups)))
+      : callerSeesProvider(rec, groups);
+  /** What of a provider a group set may reach: all of it, some folders (a
+   *  partner given provider folders, plans/82 M1 part 2c), or nothing. Paths
+   *  that fetch from a provider directly (live search, a tool's cms ref) ask
+   *  this; the feed and the file routes read the composed feed instead. */
+  type ProviderReach = 'all' | { folders: string[] } | null;
+  const providerReach = async (rec: ProviderRecord, groups: string[]): Promise<ProviderReach> => {
+    if (providerVisibleTo(rec, groups)) return 'all';
+    if (!isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups))) return null;
+    const paths = foldersFor(await store.listPartnerFolders(), new Set(partnerGroupsOf(groups)), Date.now()).get(rec.id);
+    return paths?.length ? { folders: paths } : null;
+  };
+  const reachesAsset = (reach: ProviderReach, asset: { folder?: string }): boolean =>
+    reach === 'all' || (!!reach && entryInFolders(asset.folder, reach.folders));
   const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning, requireGeneration: productionMode(config),
     shellDirectories: () => shellDirectories(config.instance),
     activePack: async () => (await brand.snapshot()).source.root,
@@ -749,11 +989,12 @@ export function buildApp(deps: AppDeps): App {
   const cmsBytes = (groups: string[]) => async (ref: HostedProviderRef): Promise<{ bytes: Uint8Array; mime: string; id?: string } | null> => {
     await providersReady;
     const rec = await store.getProvider(ref.scope, { includeFragment: false });
-    if (!rec || !rec.enabled || !callerSeesProvider(rec, groups)) return null;
+    const reach = rec?.enabled ? await providerReach(rec, groups) : null;
+    if (!rec || !reach) return null;
     if (!ref.path) throw new Error('cms provider refs require a remote asset id');
     const provider = federation.instantiate(rec);
     const asset = await findProviderAsset(provider, ref.path);
-    if (!asset || !passesExposure(rec, asset)) return null;
+    if (!asset || !passesExposure(rec, asset) || !reachesAsset(reach, asset)) return null;
     const local = await store.getLifecycle(extAssetId(rec.id, asset.remoteId));
     const { state, upstreamExpired } = combinedState(local ?? undefined, entryWindow(mapProviderAsset(rec, asset)), Date.now());
     if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || local?.onExpiry !== 'warn'))) {
@@ -1109,6 +1350,21 @@ export function buildApp(deps: AppDeps): App {
     }
     return null;
   };
+  /**
+   * What partner programmes add to admission (plans/82 M1 part 2b): the
+   * domains people can join through now, and whether this address holds a
+   * live membership made through one. A membership added from a list is not
+   * counted: that person's invitation decides, so revoking it still works.
+   */
+  const partnerAdmission = async (email: string): Promise<AdmissionPartner> => {
+    const now = Date.now();
+    const address = email.trim().toLowerCase();
+    const [domains, memberships] = await Promise.all([store.listPartnerDomains(), address ? store.listMemberships() : Promise.resolve([])]);
+    return {
+      domains: admittingDomains(domains, now),
+      member: memberships.some((m) => m.via === 'domain' && m.email === address && !m.endedAt && !(m.endsAt && Date.parse(m.endsAt) <= now)),
+    };
+  };
   const admissionInputs = async (sub: string, email: string, linkedUser?: UserRecord | null, invitationEmails: readonly string[] = []) => {
     const existing = await store.getUserBySub(sub);
     const sameEmail = email.trim() ? await store.findUsersByEmail(email) : [];
@@ -1126,14 +1382,21 @@ export function buildApp(deps: AppDeps): App {
     const invitationView = invitation
       ? { email: invitation.email, expiresAt: invitation.acceptedAt ? null : invitation.expiresAt ?? null, revokedAt: invitation.revokedAt ?? null }
       : null;
-    return { disabled, invitation, invitationView };
+    return { disabled, invitation, invitationView, partner: await partnerAdmission(email) };
   };
   const admitSignIn = async (
     identity: AdmissionIdentity & { sub: string }, idp: AdmissionIdp, resolution?: SignInResolution,
   ): Promise<SignInAdmission> => {
     const linkedUser = resolution && resolution.via !== 'new' ? resolution.user : null;
-    const { disabled, invitation, invitationView } = await admissionInputs(identity.sub, identity.email, linkedUser, identity.invitationEmails);
-    const decision = decideAdmission({ ...identity, disabled }, idp, config.idp.admission, invitationView);
+    const { disabled, invitation, invitationView, partner } = await admissionInputs(identity.sub, identity.email, linkedUser, identity.invitationEmails);
+    // A partner domain or membership admits a new account or a partner, never
+    // an existing staff account on its own: that account is admitted as it
+    // was before (its own rules, or its linked standing below) or not at all,
+    // so a domain rule can neither narrow staff nor let in someone whose
+    // invitation was revoked.
+    const held = resolution && resolution.via !== 'new' ? resolution.user : await store.getUserBySub(identity.sub);
+    const partnerFor = held && !isProgrammeScoped(held.groups, held.role) ? undefined : partner;
+    const decision = decideAdmission({ ...identity, disabled }, idp, config.idp.admission, invitationView, Date.now(), partnerFor);
     // A sign-in already linked to a member (a link row, or a verified-email
     // match) is admitted on that member's standing when only the lists refuse
     // it: a personal GitHub address need not be listed for a person the
@@ -1163,9 +1426,10 @@ export function buildApp(deps: AppDeps): App {
    */
   const stillAdmitted = async (user: UserRecord): Promise<boolean> => {
     if (user.sub.startsWith('dev:')) return !user.disabledAt;
-    const { disabled, invitationView } = await admissionInputs(user.sub, user.email);
+    const { disabled, invitationView, partner } = await admissionInputs(user.sub, user.email);
+    // Partner admission counts for partners only, as at sign-in.
     if (decideAdmission({ email: user.email, emailVerified: true, disabled }, { emailVerification: 'trusted' },
-      config.idp.admission, invitationView).ok) return true;
+      config.idp.admission, invitationView, Date.now(), isProgrammeScoped(user.groups, user.role) ? partner : undefined).ok) return true;
     if (disabled || !config.idp.admission || config.idp.admission.invitations === false) return false;
     return !!(await store.findInvitationAcceptedBy(user.id));
   };
@@ -1866,8 +2130,10 @@ export function buildApp(deps: AppDeps): App {
     });
     if (ownerGroup && !(await store.listLocalGroups()).some(g => g.name === ownerGroup)) await store.putLocalGroup({ name: ownerGroup, createdAt: new Date().toISOString() });
     const bootstrapped = ownerGroup ? (await store.setLocalGroups(upserted.id, [...new Set([...upserted.localGroups, ownerGroup])]))! : upserted;
-    // The row exists now, so an invitation's groups can be joined to it.
-    const user = await acceptInvitationAtSignIn(bootstrapped, admitted, { provider, idp: idp.id });
+    // The row exists now, so an invitation's groups can be joined to it, and
+    // a partner domain's programme (plans/82 M1 part 2b).
+    const user = await joinThroughDomain(store, audit, await acceptInvitationAtSignIn(bootstrapped, admitted, { provider, idp: idp.id }),
+      { email: identity.email, verified: admitted.ok && admitted.emailVerified, via: admitted.ok ? admitted.via : '', newAccount: resolution.via === 'new' });
     // Whatever else made the account an owner meanwhile (an invitation's
     // groups) is caught here, before a session exists.
     if (opts.ownerAllowed === false && user.role === 'owner') return refuseOwnerSession();
@@ -2090,7 +2356,8 @@ export function buildApp(deps: AppDeps): App {
     });
     if (ownerGroup && !(await store.listLocalGroups()).some(g => g.name === ownerGroup)) await store.putLocalGroup({ name: ownerGroup, createdAt: new Date().toISOString() });
     const bootstrapped = ownerGroup ? (await store.setLocalGroups(upserted.id, [...new Set([...upserted.localGroups, ownerGroup])]))! : upserted;
-    const user = await acceptInvitationAtSignIn(bootstrapped, admitted, { provider: 'proxy' });
+    const user = await joinThroughDomain(store, audit, await acceptInvitationAtSignIn(bootstrapped, admitted, { provider: 'proxy' }),
+      { email: id.email, verified: admitted.ok && admitted.emailVerified, via: admitted.ok ? admitted.via : '', newAccount: resolution.via === 'new' });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
@@ -2275,8 +2542,8 @@ export function buildApp(deps: AppDeps): App {
         }
       }
     }
-    const { disabled, invitationView } = await admissionInputs('', email);
-    const decision = decideAdmission({ email, emailVerified: true, disabled }, { emailVerification: 'claim' }, config.idp.admission, invitationView);
+    const { disabled, invitationView, partner } = await admissionInputs('', email);
+    const decision = decideAdmission({ email, emailVerified: true, disabled }, { emailVerification: 'claim' }, config.idp.admission, invitationView, Date.now(), partner);
     if (!decision.ok) {
       return { status: 409, code: 'NOT_ADMITTED', message: 'this address may not sign in here: invite it first, or add it or its domain to the sign-in rule' };
     }
@@ -2632,8 +2899,24 @@ export function buildApp(deps: AppDeps): App {
     // Asked first so the flag service's round trip overlaps the store reads.
     // It never rejects: a failure leaves each flag on Work's governed value.
     const flagServiceAnswers = flagService?.evaluate({ groups: subject.groups, role: subject.role });
+    // Which programme each company is in, fresh, so a company's input rule
+    // overrides its own programme's here (policy/overlay.ts).
+    if (subject.groups.some(isPartnerGroup)) setCompanyProgrammes(await store.listCompanies());
     const brandSnapshot = brand.current() ?? await brand.snapshot();
-    const overlays = await brandRules.project(brandSnapshot, subject.groups);
+    const projectedOverlays = await brandRules.project(brandSnapshot, subject.groups);
+    // A partner's company values (plans/82 M3): bound inputs the overlay locks
+    // are locked to the company's value, and each tool's starting values ride
+    // `tools[id].defaults`. Admins and owners are never a partner here.
+    const scoped = isProgrammeScoped(subject.groups, subject.role);
+    const company = scoped ? await companyContextFor(subject.groups) : { ctx: null, ambiguous: false };
+    const overlays = new Map(projectedOverlays);
+    const toolStarts = new Map<string, { defaults: Record<string, unknown>; bindings?: Record<string, string> }>();
+    for (const [toolId, overlay] of projectedOverlays) {
+      const bound = await companyOverlayFor(overlay, toolId, subject.groups, company);
+      if (bound.overlay) overlays.set(toolId, bound.overlay);
+      if (Object.keys(bound.defaults).length || bound.bindings) toolStarts.set(toolId, { defaults: bound.defaults, ...(bound.bindings ? { bindings: bound.bindings } : {}) });
+    }
+    const partner = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
     const grants = await store.listGrants();
     // The inbox's own count for the same client (its shell and engine
     // selectors): the messages it shows and the comment notices that pass
@@ -2646,7 +2929,7 @@ export function buildApp(deps: AppDeps): App {
       toolInputs.set(toolId, await readToolInputs(config.instance.pack, toolId));
     }
     const flagServiceMap = flagServiceAnswers ? await flagServiceAnswers : undefined;
-    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, brandEdits: brandEditsCapability(brandSnapshot, brand.mutable), approvalRecording: approvalArtifactPolicy(config).recordInCredentials && !await approvalRecorder.unavailable(), ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
+    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, ...(partner ? { partner } : {}), ...(toolStarts.size ? { toolStarts } : {}), brandEdits: brandEditsCapability(brandSnapshot, brand.mutable), approvalRecording: approvalArtifactPolicy(config).recordInCredentials && !await approvalRecorder.unavailable(), ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
   };
 
   // A small, uncached lease renewal. Resolve membership on every request so a
@@ -2687,9 +2970,17 @@ export function buildApp(deps: AppDeps): App {
   // collide with a real user id, so only group:/`*` grants apply - never some
   // specific person's user: grants (correct for a group projection).
   router.add('GET', '/api/v1/org-config/preview', async (req, res, ctx) => {
-    if (!(await requireAction(req, res, 'policy.edit'))) return;
     const groups = (ctx.url.searchParams.get('groups') ?? '')
       .split(',').map((g) => g.trim()).filter(Boolean);
+    // Someone who manages partner programmes sees what a programme gets, without
+    // policy.edit (plans/82 M2): for a group set made only of programme and company
+    // groups and the partner marker. Anything else is the policy editor's Preview.
+    const partnerOnly = groups.length > 0 && groups.every((g) => isPartnerGroup(g) || g === PARTNER_GROUP);
+    const viewer = (await memberOf(req)) ?? (await serviceAccountOf(req));
+    const grantsNow = await store.listGrants();
+    const managesProgrammes = !!viewer && partnerOnly
+      && evaluate({ userId: viewer.id, groups: viewer.groups, role: viewer.role as Role }, 'programme.manage', ['*'], grantsNow);
+    if (!managesProgrammes && !(await requireAction(req, res, 'policy.edit'))) return;
     const now = new Date().toISOString();
     const subject: UserRecord = {
       id: '(preview)',
@@ -2706,19 +2997,138 @@ export function buildApp(deps: AppDeps): App {
       lastSeenAt: now,
     };
     const orgConfig = await buildOrgConfigFor(subject);
-    // Governed tools this group would NOT see - omitted from the member
-    // projection (absent = hidden) but exactly what an admin needs to verify.
-    // Grant-aware, matching assembleOrgConfig: a group-level allow surfaces a
-    // tool outside the visibility clause; a matching deny hides it outright.
+    // Tools this group would NOT see - omitted from the member projection
+    // (absent = hidden) but exactly what an admin needs to verify. Every tool
+    // in the pack is asked, not only governed ones, because a tool.use deny
+    // hides a tool that has no overlay. The decision is the one the tool feed
+    // and the tool files ask (toolVisibleWithGrants), so this list is what the
+    // app leaves out.
     const overlays = await store.listOverlays();
     const grants = await store.listGrants();
-    const previewPrincipal = { userId: subject.id, groups, role: subject.role as Role };
-    const hiddenTools = [...overlays.keys()].filter((id) => {
-      const decision = grantDecision(previewPrincipal, 'tool.use', [`tool:${id}`, '*'], grants);
-      if (decision === 'deny') return true;
-      return !(toolVisibleTo(overlays.get(id), groups) || decision === 'allow');
-    }).sort();
-    sendJson(res, 200, { preview: { groups, role: subject.role, hiddenTools }, orgConfig }, { 'cache-control': 'no-store' });
+    const toolIds = new Set<string>(overlays.keys());
+    try {
+      const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
+      for (const tool of index.tools ?? []) if (typeof tool?.id === 'string') toolIds.add(tool.id.toLowerCase());
+    } catch { /* no readable index: the governed tools still answer */ }
+    const hiddenTools = [...toolIds].filter((id) => !toolVisibleWithGrants(overlays.get(id), id, { userId: subject.id, groups, role: subject.role }, grants)).sort();
+    const visibleTools = [...toolIds].filter((id) => !hiddenTools.includes(id)).sort();
+    // What the group set would be served from the catalog: the same composed
+    // feed a member reads, so a partner programme's preview shows exactly the
+    // assets and collections its people get (plans/82 M1).
+    await providersReady;
+    const feed = (await servedIndex.forCaller({ groups })).index;
+    const feedAssets = feed.assets ?? [];
+    const assets = {
+      count: feedAssets.length,
+      byType: Object.fromEntries([...feedAssets.reduce((m, a) => m.set(String(a.type ?? 'other'), (m.get(String(a.type ?? 'other')) ?? 0) + 1), new Map<string, number>())].sort()),
+      sample: feedAssets.slice(0, 24).map((a) => ({ id: a.id, name: typeof a.name === 'string' ? a.name : a.id, type: a.type ?? null })),
+      collections: ((feed.collections ?? []) as Array<{ id: string; name: string; members: string[] }>).map((c) => ({ id: c.id, name: c.name, members: c.members.length })),
+    };
+    // Which partner rule decided each governed input, for the admin reading
+    // this (plans/82): a company's rule over its programme's, or the stricter
+    // of two programmes. It is never on org-config, so a partner never sees it.
+    const projected = await brandRules.project(brand.current() ?? await brand.snapshot(), groups);
+    const why: Record<string, Record<string, AccessWhy>> = {};
+    // The overlay's name and the rule's reason, which org-config leaves off so
+    // a person making an asset never reads policy notes (plans/82 M0). The
+    // admin reading Preview is who they are written for.
+    const attribution: Record<string, Record<string, { by?: string; reason?: string }>> = {};
+    for (const [toolId, entry] of Object.entries(orgConfig.tools as Record<string, { inputs?: Array<{ id: string }>; hidden?: string[] }>)) {
+      // Every input a rule names, editable ones included: an exception that
+      // leaves an input editable is exactly what the admin wants to see.
+      const named = Object.keys(projected.get(toolId)?.inputAccess ?? {}).filter((k) => k !== '*');
+      for (const inputId of new Set([...(entry.inputs ?? []).map((i) => i.id), ...(entry.hidden ?? []), ...named])) {
+        const explained = explainInputAccess(projected.get(toolId), inputId, groups);
+        if (explained) (why[toolId] ??= {})[inputId] = explained;
+        const { by, reason } = resolveInputAccess(projected.get(toolId), inputId, groups);
+        if (by || reason) (attribution[toolId] ??= {})[inputId] = { ...(by ? { by } : {}), ...(reason ? { reason } : {}) };
+      }
+    }
+    // The templates these groups get (plans/82 M2): what each lets them change,
+    // what it fixes, and for the admin reading this, why. The app is told only
+    // which inputs it may offer.
+    const templates: Array<Record<string, unknown>> = [];
+    // Tools these groups use only through templates, and which programme said so.
+    const onlyTemplates = await templatesOnlyOf(groups, subject.role);
+    const setByLine = (toolName: string, setBy: Array<{ name: string }>) =>
+      `These groups use ${toolName} only through its published templates, set by ${setBy.map((p) => p.name).join(' and ')}.`;
+    for (const entry of feedAssets.filter((a) => a.type === 'template' || a.type === RULES_TOOL_TYPE)) {
+      const meta = (entry.meta ?? {}) as { toolId?: string; version?: number; toolVersion?: string; editable?: string[]; fixedTheme?: boolean; inputs?: Array<{ id: string; label: string }>; rebuilt?: boolean; retired?: boolean; replacedBy?: string };
+      const replacement = meta.replacedBy ? feedAssets.find((a) => a.id === meta.replacedBy) ?? await store.getInstanceAsset(meta.replacedBy).then((r) => r?.entry ?? null) : null;
+      const base = {
+        id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, kind: entry.type, version: meta.version ?? 1,
+        ...(meta.toolVersion ? { toolVersion: meta.toolVersion } : {}),
+        ...(meta.retired ? { retired: true, ...(meta.replacedBy ? { replacedBy: { id: meta.replacedBy, name: String(replacement?.name ?? meta.replacedBy) } } : {}) } : {}),
+      };
+      // Company values (plans/82 M3): which inputs take the company's details,
+      // and for a company's groups, what they hold. Admin-only, like every why line.
+      const bindings = (entry.meta as { bindings?: Bindings } | undefined)?.bindings;
+      const companyLines = async (labelOf: (id: string) => string, locks: (id: string) => boolean): Promise<{ lines: string[]; locked: Set<string> }> => {
+        const locked = new Set<string>();
+        if (!bindings || !Object.keys(bindings).length) return { lines: [], locked };
+        const audience = (await store.getInstanceAsset(entry.id))?.groups;
+        const { ctx, ambiguous } = await companyContextFor(groups, Array.isArray(audience) ? audience : undefined);
+        if (ambiguous) return { lines: ['These groups are in more than one company, so no company details are filled in and the inputs that take them stay open.'], locked };
+        const lines: string[] = [];
+        for (const [id, field] of Object.entries(bindings)) {
+          const label = labelOf(id);
+          if (!ctx) { lines.push(`${label} takes ${FIELD_LABELS[field].toLowerCase()} from each company\u2019s details.`); continue; }
+          const value = fieldValue(field, ctx, 'light');
+          if (value === undefined) { lines.push(`${label} takes ${FIELD_LABELS[field].toLowerCase()} from ${ctx.company.name}\u2019s details, which have none yet, so the template\u2019s value stays.`); continue; }
+          if (locks(id)) locked.add(id);
+          lines.push(`${label}: set from ${ctx.company.name}\u2019s details (${FIELD_LABELS[field].toLowerCase()})${locks(id) ? ', and fixed' : ', and they may change it'}.`);
+        }
+        return { lines, locked };
+      };
+      if (entry.type === RULES_TOOL_TYPE) {
+        // Design's rules say nothing about colourway and mode, so the app offers
+        // them, and Preview says so (plans/82 M2 review).
+        const ruleInputs = meta.inputs ?? [];
+        const fromCompany = await companyLines((id) => ruleInputs.find((i) => i.id === id)?.label ?? id, () => true);
+        templates.push({ ...base, canChange: [...ruleInputs.filter((i) => !fromCompany.locked.has(i.id)).map((i) => i.label), COLOURWAY_ROW],
+          fixed: [...ruleInputs.filter((i) => fromCompany.locked.has(i.id)).map((i) => i.label), 'Everything else in the design'],
+          why: ['The Share with rules file\u2019s own rules.', 'Colourway and mode: Design\u2019s rules leave them open, so colours from the design system follow what partners pick.',
+            ...(meta.rebuilt ? ['Rebuilt with this workspace\u2019s Design.'] : []), ...fromCompany.lines] });
+        continue;
+      }
+      const toolId = String(meta.toolId ?? '');
+      const manifestInputs = await readToolManifestInputs(toolId) ?? [];
+      const inputs = manifestInputs.map((i) => ({ id: String(i.id), label: typeof i.label === 'string' && i.label ? i.label : String(i.id) }));
+      const toolName = await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8').then((t) => String((JSON.parse(t) as { name?: unknown }).name ?? toolId)).catch(() => toolId);
+      const canChange: string[] = [], fixed: string[] = [], whyLines: string[] = [];
+      whyLines.push(meta.editable ? 'Fixed by the template\u2019s rules.' : 'No rules: every input stays editable unless the tool\u2019s own rules say otherwise.');
+      const fromCompany = await companyLines((id) => inputs.find((i) => i.id === id)?.label ?? id, (id) => !!meta.editable && !meta.editable.includes(id));
+      for (const input of inputs) {
+        const theirs = (!meta.editable || meta.editable.includes(input.id)) && !fromCompany.locked.has(input.id);
+        const own = resolveInputAccess(projected.get(toolId), input.id, groups);
+        if (theirs && (own.level === 'editable' || own.level === 'choice')) canChange.push(input.label);
+        else fixed.push(input.label);
+        if (theirs && own.level !== 'editable') {
+          whyLines.push(`${input.label}: ${own.level === 'choice' ? 'a choice only' : own.level} for these groups by the ${toolName} rule${own.by ? ` \u201c${own.by}\u201d` : ''}, which is stricter.`);
+        }
+      }
+      // Colourway and mode, shown only when the template draws a colour from the
+      // design system: a token reference, in its own values or the tool's defaults.
+      const values = (await publishedTemplateFor(groups, entry.id))?.values ?? {};
+      const followers = manifestInputs.filter((i) => isTokenRef(Object.hasOwn(values, String(i.id)) ? values[String(i.id)] : i.default))
+        .map((i) => inputs.find((x) => x.id === String(i.id))?.label ?? String(i.id));
+      if (followers.length && meta.fixedTheme) {
+        fixed.push(COLOURWAY_ROW);
+        whyLines.push('Colourway and mode: fixed by the template\u2019s rules.');
+      } else if (followers.length) {
+        canChange.push(COLOURWAY_ROW);
+        whyLines.push(`${followers.join(', ')} ${followers.length === 1 ? 'follows' : 'follow'} the colourway and mode partners pick.`);
+      }
+      whyLines.push(...fromCompany.lines);
+      const setBy = onlyTemplates.get(toolId);
+      if (setBy) whyLines.push(setByLine(toolName, setBy));
+      else if (visibleTools.includes(toolId)) whyLines.push(`These groups can also open ${toolName} on its own, outside these rules.`);
+      templates.push({ ...base, toolId, toolName, canChange, fixed, why: whyLines });
+    }
+    const templatesOnly = await Promise.all([...onlyTemplates].map(async ([toolId, setBy]) => ({ toolId,
+      toolName: await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8').then((t) => String((JSON.parse(t) as { name?: unknown }).name ?? toolId)).catch(() => toolId),
+      setBy: setBy.map((p) => p.name) })));
+    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, templates, templatesOnly, ...(Object.keys(why).length ? { why } : {}), ...(Object.keys(attribution).length ? { attribution } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
   });
 
   // ── telemetry ─────────────────────────────────────────────────────────────
@@ -2762,6 +3172,7 @@ export function buildApp(deps: AppDeps): App {
     const targeted = targetedMessages(await store.listMessages(), {
       groups: user.groups,
       userId: user.id,
+      ...(isProgrammeScoped(user.groups, user.role) ? { programmeScoped: true } : {}),
       ...(client.shell ? { shell: client.shell } : {}),
       ...(client.engine ? { engineVersion: client.engine } : {}),
     }, acked);
@@ -2948,7 +3359,7 @@ export function buildApp(deps: AppDeps): App {
     // name them, because there the person supplied the ids.
     if (body.target.collectionId) {
       const collection = await store.getCollection(String(body.target.collectionId).trim());
-      if (!collection || !collectionVisible(collection, user.groups)) {
+      if (!collection || !callerSeesCollection(user, collection)) {
         return sendError(res, 403, 'FORBIDDEN', 'you cannot see this collection');
       }
       let unseen = 0;
@@ -3041,6 +3452,15 @@ export function buildApp(deps: AppDeps): App {
   const linkMakerName = async (link: LinkRecord): Promise<string | null> => {
     const maker = await store.getUser(link.createdBy);
     return maker && !maker.disabledAt ? nameWithoutEmail(maker) : null;
+  };
+  /** Whether the account that made a link is still enabled. A link made by a
+   *  disabled account stops serving (plans/82 fault D): disabling a person ends
+   *  their sessions, and a bearer link they made must not keep handing out what
+   *  they could see. Re-enabling them restores it. A link made by a service
+   *  token has no account row and is not affected. */
+  const linkMakerEnabled = async (link: LinkRecord): Promise<boolean> => {
+    const maker = await store.getUser(link.createdBy);
+    return !maker?.disabledAt;
   };
   /** A link that cannot open: a page for a browser, the usual JSON otherwise. */
   const sendLinkEnd = async (req: IncomingMessage, res: ServerResponse, status: number, code: string, message: string, end: LinkEnd, link?: LinkRecord): Promise<void> => {
@@ -3146,6 +3566,7 @@ export function buildApp(deps: AppDeps): App {
     if (status === 'bad-signature') return sendLinkEnd(req, res, 403, 'BAD_SIGNATURE', 'link signature invalid', 'not-found');
     if (status === 'expired') return sendLinkEnd(req, res, 410, 'LINK_EXPIRED', 'this link has expired', 'ended', link);
     if (status === 'revoked') return sendLinkEnd(req, res, 410, 'LINK_REVOKED', 'this link was revoked', 'turned-off', link);
+    if (link.kind !== 'guest-edit' && !await linkMakerEnabled(link)) return sendLinkEnd(req, res, 410, 'LINK_MAKER_DISABLED', 'the person who made this link no longer has access', 'maker');
     let body: Awaited<ReturnType<typeof readSignInBody>>;
     try { body = await readSignInBody(req); }
     catch (e) {
@@ -3240,6 +3661,7 @@ export function buildApp(deps: AppDeps): App {
     if (status === 'bad-signature') return sendLinkEnd(req, res, 403, 'BAD_SIGNATURE', 'link signature invalid', 'not-found');
     if (status === 'expired') return sendLinkEnd(req, res, 410, 'LINK_EXPIRED', 'this link has expired', 'ended', link);
     if (status === 'revoked') return sendLinkEnd(req, res, 410, 'LINK_REVOKED', 'this link was revoked', 'turned-off', link);
+    if (link.kind !== 'guest-edit' && !await linkMakerEnabled(link)) return sendLinkEnd(req, res, 410, 'LINK_MAKER_DISABLED', 'the person who made this link no longer has access', 'maker');
     if (status === 'password-required') {
       if (/\btext\/html\b/.test(String(req.headers.accept ?? ''))) {
         return sendLinkPasswordPage(res, 401, link, ctx.url, pw === null ? undefined : 'That password does not open this link.');
@@ -3278,6 +3700,10 @@ export function buildApp(deps: AppDeps): App {
     // above). Each request still rechecks the live link before private caching.
     const toolId = link.target.toolId;
     if (!toolId) return sendError(res, 400, 'UNRENDERABLE_TARGET', 'this link has no tool to render');
+    if (!await programmeMakerStillSees(link, async (maker) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId,
+      { userId: maker.id, groups: maker.groups, role: maker.role }, await store.listGrants()))) {
+      return sendError(res, 410, 'LINK_MAKER_NO_ACCESS', 'the person who made this link no longer has this tool');
+    }
     let fmt = (link.target.format || 'svg').toLowerCase();
     let q = new URLSearchParams();
     for (const [k, v] of Object.entries(link.target.params ?? {})) {
@@ -3319,7 +3745,7 @@ export function buildApp(deps: AppDeps): App {
     } catch (err) {
       if (err instanceof RenderError) {
         if (err.retryAfter !== undefined) res.setHeader('retry-after', String(err.retryAfter));
-        return sendError(res, err.status, err.code, err.message);
+        return sendError(res, err.status, err.code, err.message, err.details);
       }
       throw err;
     }
@@ -4001,9 +4427,13 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
-  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) =>
-    ({ id: t.id, label: t.label, role: t.role, scopes: t.scopes ?? null, tools: t.tools ?? null, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
-      legacyUnbounded: t.expiresAt === undefined, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null });
+  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; groups?: string[]; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) => {
+    const placed = tokenPlacement(t);
+    return { id: t.id, label: t.label, role: t.role, scopes: t.scopes ?? null, tools: t.tools ?? null, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
+      legacyUnbounded: t.expiresAt === undefined, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null,
+      // Where an owner placed it (plans/82 M3); null when it is not a partner token.
+      programme: placed.programmeId ?? null, company: placed.companyId ?? null, groups: t.groups ?? null };
+  };
 
   router.add('POST', '/api/v1/tokens', async (req, res) => {
     const actor = await requireAction(req, res, 'token.manage');
@@ -4491,6 +4921,9 @@ export function buildApp(deps: AppDeps): App {
     const body = (await readJson(req)) as { name?: string; description?: string } | null;
     const name = typeof body?.name === 'string' ? body.name.trim() : '';
     if (!LOCAL_GROUP_NAME.test(name)) return sendError(res, 400, 'INVALID_INPUT', 'name must be a slug (letters, digits, . _ -), ≤64 chars');
+    // Partner programme groups and the partner marker are made by the programme
+    // routes only, so no other group can be mistaken for one (plans/82 M1).
+    if (reservedGroupName(name)) return sendError(res, 400, 'RESERVED_GROUP', 'programme groups and the partner group are made in Partner programmes');
     if ((await store.listLocalGroups()).some((g) => g.name === name)) {
       return sendError(res, 409, 'CONFLICT', 'a local group with this name already exists');
     }
@@ -4517,6 +4950,9 @@ export function buildApp(deps: AppDeps): App {
     if (!(await store.listLocalGroups()).some((g) => g.name === name)) {
       return sendError(res, 404, 'NOT_FOUND', 'no such local group');
     }
+    // A programme group goes with its programme; removing the partner group
+    // here would make every former partner an internal account at once.
+    if (reservedGroupName(name)) return sendError(res, 400, 'RESERVED_GROUP', 'delete the programme in Partner programmes, or remove the partner group from one person in People');
     const refusal = await inviteGroupsRefusal(user, [name]);
     if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message);
     await store.deleteLocalGroup(name); // also strips it from every user's localGroups
@@ -5505,6 +5941,117 @@ export function buildApp(deps: AppDeps): App {
 
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
+  registerProgrammeRoutes(router, {
+    store, requireAction, audit,
+    toolIds: async () => {
+      try {
+        const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
+        return (index.tools ?? []).flatMap((t) => typeof t?.id === 'string' ? [t.id] : []);
+      } catch { return []; }
+    },
+  });
+
+  // The company-to-programme map input rules read (programmes/types.ts):
+  // loaded now, kept by the company routes, reloaded by the minute sweep.
+  void store.listCompanies().then(setCompanyProgrammes, () => undefined);
+  // Partner company profiles (plans/82 M3): the guest brand a partner's pieces
+  // carry. The contrast check reads the lead brand's surfaces from the active
+  // design system's tokens, once per tokens document.
+  const surfaceCache = new WeakMap<object, Promise<LogoSurfaces>>();
+  const companyProfiles = createCompanyProfiles({
+    store, blobs, notifier, baseUrl: config.instance.baseUrl, requireAction, memberOf, audit,
+    surfaces: async () => {
+      const tokens = (await brandChrome.public().catch(() => null))?.tokens;
+      if (!tokens || typeof tokens !== 'object') return DEFAULT_SURFACES;
+      let read = surfaceCache.get(tokens);
+      if (!read) { read = surfacesFromTokens(tokens).catch(() => DEFAULT_SURFACES); surfaceCache.set(tokens, read); }
+      return read;
+    },
+    submitLogo: async (submitter, input) => {
+      const outcome = await submitAsset(submitDeps(), { ...input, submitter });
+      if (outcome.ok) await trimVersionHistory(outcome.record).catch(() => 0);
+      return outcome;
+    },
+  });
+  companyProfiles.register(router);
+  registerProgrammePeopleRoutes(router, {
+    store, requireAction, audit,
+    forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
+    invite: async (actor, email, groups, endsAt) => {
+      // The invitation can be accepted until the membership ends, and never for
+      // more than the 366 days any invitation may stay open.
+      const cap = Date.now() + 366 * 24 * 3600 * 1000;
+      const expiresAt = endsAt ? new Date(Math.min(Date.parse(endsAt), cap)).toISOString() : undefined;
+      const issued = await issueInvitation(actor, { email, groups, projects: [], ...(expiresAt ? { expiresAt } : {}), createdVia: 'console' });
+      if (issued.status === 'refused') return { status: 'refused', reason: issued.reason };
+      if (issued.status === 'already-member') return { status: 'already-member' };
+      return { status: issued.status === 'created' ? 'created' : 'existing', invitationId: issued.invitation.id, groups: issued.invitation.groups };
+    },
+    signIn: () => ({ workspace: config.instance.name, url: config.instance.baseUrl, providers: inviteProviders(), note: config.instance.inviteNote ?? null }),
+    resolveTxt,
+  });
+
+  // Templates published to a programme (plans/82 M2).
+  registerTemplateRoutes(router, {
+    store, blobs, requireAction, audit,
+    toolFacts: async (toolId) => {
+      if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
+      try {
+        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown; inputs?: Array<{ id?: unknown; label?: unknown }> };
+        return {
+          name: typeof manifest.name === 'string' ? manifest.name : toolId,
+          inputs: (manifest.inputs ?? []).flatMap((i) => typeof i?.id === 'string' ? [{ id: i.id, label: typeof i.label === 'string' && i.label ? i.label : i.id }] : []),
+        };
+      } catch { return null; }
+    },
+    toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
+    submitVersion: async (actor, target, bytes) => {
+      const outcome = await submitAsset(submitDeps(), {
+        bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups },
+      });
+      if (!outcome.ok) {
+        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : 422;
+        return { ok: false, status, code: outcome.code, detail: outcome.detail };
+      }
+      await trimVersionHistory(outcome.record).catch(() => 0);
+      return { ok: true, ...(outcome.version ? { version: outcome.version } : {}) };
+    },
+    submitRulesFile: async (actor, bytes, groups) => {
+      const outcome = await submitAsset(submitDeps(), {
+        bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups },
+      });
+      if (!outcome.ok) {
+        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' || outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 422;
+        return { ok: false, status, code: outcome.code, detail: outcome.detail };
+      }
+      return { ok: true, id: outcome.record.id, state: outcome.record.submission?.state ?? 'live' };
+    },
+  });
+
+  registerFolderRoutes(router, {
+    store, requireAction, audit,
+    fragments: async () => { await providersReady; return federation.fragments({ background: true }); },
+  });
+
+  registerDomainRoutes(router, {
+    store, requireAction, audit, resolveTxt,
+    // The workspace's own domains, which never feed a programme: its own
+    // address, the domains a sign-in provider is limited to, and the domains
+    // of the owners' and admins' addresses.
+    ownDomains: async () => {
+      const own = new Map<string, string>();
+      for (const d of [...hostDomains(config.instance.baseUrl), ...hostDomains(config.instance.appUrl)]) own.set(d, "this workspace's address");
+      for (const c of [config.idp, ...config.idp.additional]) if (c.hostedDomain && !own.has(c.hostedDomain)) own.set(c.hostedDomain, 'a sign-in provider is limited to it');
+      for (const e of config.idp.bootstrapOwners ?? []) { const d = domainOfEmail(e); if (d && !own.has(d)) own.set(d, "an owner's address"); }
+      for (const u of await store.listUsers()) {
+        if (u.disabledAt || u.id.startsWith('svc_') || (u.role !== 'admin' && u.role !== 'owner')) continue;
+        const d = domainOfEmail(u.email);
+        if (d && !own.has(d)) own.set(d, "an admin's or owner's address");
+      }
+      return own;
+    },
+  });
+
   registerExportReviewMatch(router, {
     store, memberOf, enabled: () => approvalArtifactPolicy(config).enabled,
     mayUse: async (user, toolId) => mayUseTool(user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode),
@@ -5712,7 +6259,8 @@ export function buildApp(deps: AppDeps): App {
     // the submitter its own, more specific message, so the generic one below is
     // skipped rather than doubled up.
     const wasDomainSubject = isTerminal(next.state)
-      ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id) || await brandPages.settleApproval(next, user.id) || await brandEdits.settleApproval(next, user.id))
+      ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id) || await brandPages.settleApproval(next, user.id) || await brandEdits.settleApproval(next, user.id)
+        || await companyProfiles.settleApproval(next, user.id))
       : false;
     if (isTerminal(next.state) && !wasDomainSubject) {
       await store.putMessage({
@@ -5759,6 +6307,7 @@ export function buildApp(deps: AppDeps): App {
     await settleDeliveryApproval(next, user.id);
     await brandPages.settleApproval(next, user.id);
     await brandEdits.settleApproval(next, user.id);
+    await companyProfiles.settleApproval(next, user.id);
     sendJson(res, 200, serializeApproval(next, user.id, undefined, await actorsMap()));
   });
 
@@ -6041,6 +6590,22 @@ export function buildApp(deps: AppDeps): App {
   // the caller's groups cannot see is not fetchable by URL: it answers 404, the
   // same absence the index shows. A guest may fetch the tool its link opens.
   // `tools` is a reserved prefix below, so the dist's copy is never consulted.
+  /** The caller a tool feed, tool file or tool sidecar is filtered for: the
+   *  overlays and the `tool.use` grants together, so these surfaces hide and
+   *  show exactly the tools org-config and Preview do. */
+  const catalogCallerOf = async (
+    user: { id?: string; groups: string[]; role?: string } | null | undefined,
+    guestToolId?: string,
+  ): Promise<CatalogCaller> => {
+    const instanceTools = guestToolId ? undefined : await instanceToolsFor(user?.groups ?? []);
+    const templatesOnly = guestToolId ? undefined : await templatesOnlyOf(user?.groups ?? [], user?.role);
+    return {
+      overlays: await store.listOverlays(), groups: user?.groups ?? [], grants: await store.listGrants(),
+      ...(user?.id ? { userId: user.id } : {}), ...(user?.role ? { role: user.role } : {}), ...(guestToolId ? { guestToolId } : {}),
+      ...(instanceTools?.size ? { instanceTools } : {}),
+      ...(templatesOnly?.size ? { templatesOnly: new Set(templatesOnly.keys()) } : {}),
+    };
+  };
   const serveTool: Handler = async (req, res, ctx) => {
     // The bare `/tools` is the app's gallery route, not a tool file.
     if (!ctx.params['*'] && serveShell) return serveShell(req, res, 'tools');
@@ -6057,11 +6622,21 @@ export function buildApp(deps: AppDeps): App {
     if (!/^[a-z0-9-]+$/i.test(toolId)) return sendError(res, 400, 'INVALID_INPUT', 'bad tool id');
     if (!user && p?.kind === 'guest' && p.guest.toolId !== toolId) return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
     const guestTool = p?.kind === 'guest' && p.guest.toolId === toolId;
-    if (!guestTool && !toolVisibleTo((await store.listOverlays()).get(toolId), user?.groups ?? [])) {
+    const toolCaller = await catalogCallerOf(user, guestTool ? toolId : undefined);
+    if (!guestTool && !callerCanSeeTool(toolCaller, toolId)) {
       return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
     }
+    const instanceTool = guestTool ? undefined : toolCaller.instanceTools?.get(toolId);
+    if (instanceTool) {
+      // A rules tool's files are this workspace's own build, held in memory.
+      if (addressed && toolDirectoryDigests(instanceTool.digests)[toolId]?.slice(0, 16) !== addressed[2]!.toLowerCase()) return sendError(res, 404, 'NOT_FOUND', 'no such tool release');
+      const file = instanceTool.files.get(rel.slice(rawId.length + 1).replace(/\\/g, '/'));
+      if (!file) return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
+      sendBytes(req, res, file, { contentType: contentType(rel), ranges: true, headers: { 'cache-control': cachePolicy('instance-private').cacheControl } });
+      return;
+    }
     if (addressed) {
-      const view = await catalogDelivery.current(config.instance.pack, { overlays: await store.listOverlays(), groups: user?.groups ?? [], ...(guestTool ? { guestToolId: toolId } : {}) });
+      const view = await catalogDelivery.current(config.instance.pack, toolCaller);
       if (!view || !JSON.parse(view.tools.bytes.toString()).tools?.some((tool: { id: string }) => tool.id === toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such tool release');
       const retained = await retainedToolBytes(config.instance.pack, rel);
       if (retained) { sendBytes(req, res, retained.bytes, { contentType: contentType(rel), modified: retained.modified, ranges: true, headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return; }
@@ -6099,11 +6674,12 @@ export function buildApp(deps: AppDeps): App {
     const card = publicCard(normalize(ctx.params['*'] ?? ''));
     if (card) {
       let everyone = true;
-      const overlays = await store.listOverlays();
-      const caller = { overlays, groups: user?.groups ?? [], ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) };
+      const caller = await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined);
       if (card.kind === 'tool') {
         if (!callerCanSeeTool(caller, card.toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
-        everyone = toolVisibleTo(overlays.get(card.toolId), []);
+        // A deny for anyone means not every caller may see this card.
+        everyone = toolVisibleTo(caller.overlays.get(card.toolId), [])
+          && !(caller.grants ?? []).some(g => g.action === 'tool.use' && g.effect === 'deny' && (g.resource === '*' || g.resource === `tool:${card.toolId}`));
       }
       const cardShells = shellDirectories(config.instance);
       for (const root of [config.instance.pack, ...(publicStaticDeliveryClass('/catalog/' + card.rel) === 'public-immutable' ? cardShells : cardShells.slice(0, 1))]) {
@@ -6141,8 +6717,8 @@ export function buildApp(deps: AppDeps): App {
     const addressedIndex = /^(tools\/index(?:\.slim)?|assets\/index)\.([0-9a-f]{16})\.json$/.exec(rel);
     if (addressedIndex) {
       const kind: CatalogSnapshotKind = addressedIndex[1] === 'assets/index' ? 'assets' : addressedIndex[1] === 'tools/index.slim' ? 'slim' : 'tools';
-      const bytes = await catalogDelivery.snapshot(config.instance.pack, { overlays: await store.listOverlays(), groups: user?.groups ?? [],
-        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}), pagedAssets: ctx.url.searchParams.get('paged') === '1' }, kind, addressedIndex[2]!);
+      const bytes = await catalogDelivery.snapshot(config.instance.pack, { ...await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined),
+        pagedAssets: ctx.url.searchParams.get('paged') === '1' }, kind, addressedIndex[2]!);
       if (!bytes) return sendError(res, 404, 'NOT_FOUND', 'no accessible catalog snapshot');
       sendBytes(req, res, bytes, { contentType: 'application/json; charset=utf-8', headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
     }
@@ -6231,8 +6807,14 @@ export function buildApp(deps: AppDeps): App {
       const rec = await store.getProvider(providerId, { includeFragment: false });
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
       if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
-      if (!callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const assetId = extAssetId(providerId, remoteId);
+      // A partner programme member reads only the federated assets their feed
+      // holds: a granted collection can name one asset of a provider they do
+      // not otherwise see (plans/82 M1).
+      const scopedReader = !!user && isProgrammeScoped(user.groups, user.role);
+      if (scopedReader
+        ? !(await servedIndex.forCaller({ groups: user!.groups })).index.assets?.some((entry) => entry.id === assetId)
+        : !callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const filePreview = ctx.url.searchParams.get('preview') === '1';
       const convertedPreview = ctx.url.searchParams.get('view') === '1';
       if (convertedPreview && filePreview) return sendError(res, 400, 'INVALID_INPUT', 'choose one preview representation');
@@ -6345,7 +6927,9 @@ export function buildApp(deps: AppDeps): App {
             const output = await createFilePreview(renderWorker!, bytes, signal);
             const currentUser = await requireAction(req, res, 'catalog.read'); if (!currentUser) return;
             const currentProvider = await store.getProvider(providerId, { includeFragment: false });
-            if (!currentProvider?.enabled || !callerSeesProvider(currentProvider, currentUser.groups) || (await catalogBytesGate(assetId, true)).blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'This asset is no longer available.');
+            if (!currentProvider?.enabled || (isProgrammeScoped(currentUser.groups, currentUser.role)
+              ? !(await servedIndex.forCaller({ groups: currentUser.groups })).index.assets?.some((entry) => entry.id === assetId)
+              : !callerSeesProvider(currentProvider, currentUser.groups)) || (await catalogBytesGate(assetId, true)).blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'This asset is no longer available.');
             res.writeHead(200, { 'content-type': 'application/pdf', ...INERT_BYTES, 'cache-control': 'private, no-store', 'content-length': String(output.length) }); res.end(output); return;
           } finally { res.removeListener('close', disconnected); }
         }
@@ -6387,9 +6971,8 @@ export function buildApp(deps: AppDeps): App {
     // Without a key the pack's build-time signature is never served (see below).
     if (rel === CATALOG_INDEX_REL || (catalogSigning && rel === CATALOG_SIG_REL)) {
       const view = await catalogDelivery.current(config.instance.pack, {
-        overlays: await store.listOverlays(), groups: user?.groups ?? [],
+        ...await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined),
         pagedAssets: ctx.url.searchParams.get('paged') === '1',
-        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}),
       });
       if (!view) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
       if (rel === CATALOG_SIG_REL && catalogSigning) {
@@ -6404,10 +6987,7 @@ export function buildApp(deps: AppDeps): App {
     // per-caller visibility, so a hidden tool's id never reaches a caller through
     // them either (catalog/tool-sidecars.ts).
     if (isToolKeyedCatalogPath(rel)) {
-      const decided = await servedToolSidecar(config.instance.pack, rel, {
-        overlays: await store.listOverlays(), groups: user?.groups ?? [],
-        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}),
-      });
+      const decided = await servedToolSidecar(config.instance.pack, rel, await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined));
       if (decided.kind === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
       if (decided.kind === 'json') {
         sendBytes(req, res, decided.bytes, { contentType: 'application/json; charset=utf-8', headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
@@ -6428,8 +7008,7 @@ export function buildApp(deps: AppDeps): App {
     const previewOwner = toolArtAddress(rel)?.kind === 'preview' ? await loadAssetPathMap(config.instance.pack) : null;
     // A preview explicitly owned by an asset keeps that asset's lifecycle gate.
     if (previewOwner && !previewOwner.has(rel) && !previewOwner.has(rel.replace(/\.[0-9a-f]{16}(\.[a-z0-9]{1,16})$/, '$1'))) {
-      const art = await addressedToolArt(config.instance.pack, rel, { overlays: await store.listOverlays(), groups: user?.groups ?? [],
-        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) });
+      const art = await addressedToolArt(config.instance.pack, rel, await catalogCallerOf(user, p?.kind === 'guest' ? p.guest.toolId : undefined));
       if (!art) return sendError(res, 404, 'NOT_FOUND', 'no such tool preview release');
       sendBytes(req, res, art.bytes, { contentType: contentType(rel), ranges: true, modified: art.modified,
         headers: { ...INERT_BYTES, 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
@@ -6514,6 +7093,13 @@ export function buildApp(deps: AppDeps): App {
    */
   const callerSeesAsset = async (user: UserRecord, rawId: string): Promise<boolean> => {
     const assetId = await resolveAssetAlias(rawId);
+    // A partner programme member sees exactly what their feed holds (plans/82
+    // M1): essentials and what their programmes include, never the rest of the
+    // pack. Their feed is lifecycle-gated, so they cannot link a scheduled asset.
+    if (isProgrammeScoped(user.groups, user.role)) {
+      await providersReady;
+      return !!(await servedIndex.forCaller({ groups: user.groups })).index.assets?.some((entry) => entry.id === assetId);
+    }
     if (assetId.startsWith(INST_PREFIX)) {
       const rec = await store.getInstanceAsset(assetId);
       // A submission that is not live yet is not linkable: it is not in the
@@ -6730,7 +7316,19 @@ export function buildApp(deps: AppDeps): App {
     }
   };
 
+  /** Whether the person who made a link may still hand on its target. A link's
+   *  exposure is settled when it is made, with one exception: a link a partner
+   *  programme member made follows what their programmes include now, so
+   *  leaving a programme stops its links (plans/82, Andy decision 8). */
+  const programmeMakerStillSees = async (link: LinkRecord, check: (maker: UserRecord) => Promise<boolean>): Promise<boolean> => {
+    const maker = await store.getUser(link.createdBy);
+    if (!maker || !isProgrammeScoped(maker.groups, maker.role)) return true;
+    return check(maker);
+  };
   const serveLinkedAsset = async (req: IncomingMessage, res: ServerResponse, link: LinkRecord): Promise<void> => {
+    if (!await programmeMakerStillSees(link, (maker) => callerSeesAsset(maker, link.target.assetId ?? ''))) {
+      return sendError(res, 410, 'LINK_MAKER_NO_ACCESS', 'the person who made this link no longer has this asset');
+    }
     const source = await resolveLinkedSource(link.target.assetId ?? '', link.target.format);
     await streamLinkedSource(req, res, source, link.kind === 'download');
   };
@@ -6812,6 +7410,9 @@ export function buildApp(deps: AppDeps): App {
   ): Promise<void> => {
     const rec = await store.getCollection(link.target.collectionId ?? '');
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+    if (!await programmeMakerStillSees(link, async (maker) => callerSeesCollection(maker, rec))) {
+      return sendError(res, 410, 'LINK_MAKER_NO_ACCESS', 'the person who made this link no longer has this collection');
+    }
 
     // One member's bytes, addressed from the page. The membership check is the
     // boundary: an id the collection does not name is a 404 here even though
@@ -6930,7 +7531,7 @@ export function buildApp(deps: AppDeps): App {
     await providersReady;
     const served = await servedIndex.forCaller({ groups: user?.groups ?? [], background: true });
     const represented = new Set(served.providers.map(provider => provider.id));
-    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)))
+    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)), providerVisibleTo)
       .map(source => !represented.has(source.id) && source.status === 'current' ? { ...source, status: 'pending', count: undefined } : source);
     const sources = query.source ? sourceStatuses.filter(source => source.id === query.source) : sourceStatuses;
     const complete = sources.every(source => source.status === 'current' && !source.truncated && !source.incomplete);
@@ -7834,6 +8435,11 @@ export function buildApp(deps: AppDeps): App {
       } catch { /* the inputs read already proved the file is there */ }
       return { inputs: inputs.map((i) => String(i.id)), ...(name ? { name } : {}) };
     },
+    // A Share with rules file (plans/82 M2), rebuilt from its data here.
+    rulesTools: createRulesToolSubmitter({
+      store, pack: () => config.instance.pack,
+      toolExists: async (toolId: string) => existsSync(join(config.instance.pack, 'tools', toolId, 'tool.json')),
+    }),
   });
 
   /** The console/CLI view of one submission: the record's own descriptive entry
@@ -7953,7 +8559,12 @@ export function buildApp(deps: AppDeps): App {
         return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset takes new versions; a federated or pack asset is versioned where it lives');
       }
       target = await store.getInstanceAsset(targetId);
-      if (!target || !(await callerSeesAsset(user, targetId))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+      // Someone who manages partner programmes publishes into them without
+      // joining (plans/82 M1), so they version what they published there too
+      // (M2): an asset whose groups are all programme or company groups.
+      const managesTarget = !!target && Array.isArray(target.groups) && target.groups.length > 0 && target.groups.every(isPartnerGroup)
+        && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', ['*'], await store.listGrants());
+      if (!target || !(managesTarget || await callerSeesAsset(user, targetId))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       // A PIN is a local copy of a federated asset whose IDENTITY is still the
       // provider's (plans/27 §5): the feed serves the ext/* entry and the ext
       // blob route maps its formats through `refMap`. Versioning one would fork
@@ -8014,9 +8625,13 @@ export function buildApp(deps: AppDeps): App {
     const list = (key: string): string[] =>
       (ctx.url.searchParams.get(key) ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     // Exposure can only ever be narrowed to groups the submitter is in: nobody
-    // publishes into a group they are not a member of.
+    // publishes into a group they are not a member of. One exception: someone
+    // who manages partner programmes publishes into a programme's group without
+    // joining it (plans/82 M1, Andy decision 3), because joining would narrow
+    // their own view to that programme.
     const declaredGroups = list('groups');
-    const outsider = declaredGroups.filter((g) => !user.groups.includes(g));
+    const managesProgrammes = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', ['*'], await store.listGrants());
+    const outsider = declaredGroups.filter((g) => !user.groups.includes(g) && !(managesProgrammes && isPartnerGroup(g)));
     if (outsider.length) return sendError(res, 403, 'FORBIDDEN', `you are not in ${outsider.join(', ')}, so you cannot submit into it`);
     const type = declaredType;
     if (type && !/^[a-z0-9-]{1,32}$/i.test(type)) return sendError(res, 400, 'INVALID_INPUT', 'type must be a short slug');
@@ -8248,7 +8863,7 @@ export function buildApp(deps: AppDeps): App {
       else {
         const wanted = typeof body.collectionId === 'string' ? body.collectionId.trim() : '';
         const collection = wanted ? await store.getCollection(wanted) : null;
-        if (!collection || !collectionVisible(collection, user.groups)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+        if (!collection || !callerSeesCollection(user, collection)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
         collectionId = collection.id;
       }
       before.collectionId = rec.submission.collectionId ?? null;
@@ -8331,6 +8946,10 @@ export function buildApp(deps: AppDeps): App {
     if (!user) return;
     const grant = readGrantBody(await readJson(req));
     if ('error' in grant) return sendError(res, 400, 'INVALID_INPUT', grant.error);
+    // A rule that can never match is refused rather than stored: it would read
+    // as governance in the table and decide nothing. Removing one stays allowed.
+    const never = op === 'create' ? grantNeverMatches(grant) : null;
+    if (never) return sendError(res, 400, 'GRANT_NEVER_MATCHES', never, { accepted: acceptedResources(grant.action) });
     if (ownerOnlyAction(grant.action) && user.role !== 'owner') {
       return sendError(res, 403, 'OWNER_ONLY_ACTION',
         `grants for "${grant.action}" can only be edited by an owner`);
@@ -8343,7 +8962,11 @@ export function buildApp(deps: AppDeps): App {
 
   router.add('GET', '/api/v1/grants', async (req, res) => {
     if (!(await requireAction(req, res, 'grant.edit'))) return;
-    sendJson(res, 200, { grants: await store.listGrants() });
+    // A stored rule that can never match says why, so the console can mark it.
+    sendJson(res, 200, { grants: (await store.listGrants()).map((g) => {
+      const never = grantNeverMatches(g);
+      return never ? { ...g, neverMatches: never } : g;
+    }) });
   });
   router.add('POST', '/api/v1/grants', (req, res) => grantMutation(req, res, 'create'));
   router.add('DELETE', '/api/v1/grants', (req, res) => grantMutation(req, res, 'delete'));
@@ -8416,7 +9039,13 @@ export function buildApp(deps: AppDeps): App {
     const overlay = normalizeOverlay(toolId, await readJson(req), existing?.version ?? 0);
     if (!overlay) {
       return sendError(res, 400, 'INVALID_INPUT',
-        'overlay must be {name?, inputAccess?: {input: [{groups[], level, value?, allow?, reason?}]}, visibility?: {groups[]}, enforce?, defaults?}');
+        'overlay must be {name?, inputAccess?: {input: [{groups[], level, value?, allow?, reason?}]}, visibility?: {groups[]}, enforce?, defaults?: {…} | [{groups[], values}], bindings?: {input: companyField}}');
+    }
+    // A binding names one of the tool's declared inputs (plans/82 M3).
+    if (overlay.bindings) {
+      const declared = (await readToolManifestInputs(toolId))?.map((i) => String(i.id));
+      const unknown = declared ? Object.keys(overlay.bindings).filter((id) => !declared.includes(id)) : [];
+      if (unknown.length) return sendError(res, 400, 'INVALID_INPUT', `the tool has no input "${unknown[0]}"`);
     }
     if (overlay.enforce?.escalation && !await store.getChain(overlay.enforce.escalation)) {
       return sendError(res, 400, 'CHAIN_NOT_FOUND', `No approval chain named ${overlay.enforce.escalation}.`);
@@ -8565,6 +9194,10 @@ export function buildApp(deps: AppDeps): App {
     const configIds = new Set((await store.listProviders()).filter((p) => p.managedBy === 'config').map((p) => p.id));
     const diff = diffConfigDocument(current, parsed.doc, { prune }, configIds);
     if (diff.conflicts.length) return sendError(res, 409, 'CONFIG_MANAGED', `config-managed, edit instance.json: ${diff.conflicts.join(', ')}`);
+    // A NEW grant that can never match is refused, as on POST /api/v1/grants. One
+    // already stored re-applies unchanged, so an exported document still applies.
+    const inert = diff.grants.create.flatMap((g) => { const why = grantNeverMatches(g); return why ? [`${g.principal} ${g.action} ${g.resource}: ${why}`] : []; });
+    if (inert.length) return sendError(res, 400, 'GRANT_NEVER_MATCHES', inert.join('; '));
     const need = requiredActions(diff);
     const grants = await store.listGrants();
     const pctx = { userId: user.id, groups: user.groups, role: user.role as Role };
@@ -9152,7 +9785,7 @@ export function buildApp(deps: AppDeps): App {
     // The memoised feed already holds what this caller is served, lifecycle
     // applied; the provider rows are read without their large fragments.
     const visible = (await servedIndex.forCaller({ groups: user.groups, background: true })).index;
-    const sources = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
+    const sources = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)), providerVisibleTo);
     const canManage = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.provider.manage', ['*'], await store.listGrants());
     sendJson(res, 200, { sources, canManage, scope: user.id }, { 'cache-control': 'private, no-store' });
   });
@@ -9215,8 +9848,9 @@ export function buildApp(deps: AppDeps): App {
     // fragment hasn't picked up yet. Bounded per provider; failures reported,
     // never fatal.
     const missed: string[] = [];
-    const live = (await store.listProviders({ includeFragment: false })).filter((rec) =>
-      rec.enabled && (!source || rec.id === source) && callerSeesProvider(rec, user.groups));
+    const candidates = (await store.listProviders({ includeFragment: false })).filter((rec) => rec.enabled && (!source || rec.id === source));
+    const reaches = new Map(await Promise.all(candidates.map(async (rec) => [rec.id, await providerReach(rec, user.groups)] as const)));
+    const live = candidates.filter((rec) => reaches.get(rec.id));
     // Live results lose hidden tags the same way the feed's entries do.
     const tagRules = await loadTagRules(store);
     await Promise.all(live.map(async (rec) => {
@@ -9229,6 +9863,8 @@ export function buildApp(deps: AppDeps): App {
           // Live results pass the SAME gates as synced fragments: the admin's
           // exposure slice, then this instance's lifecycle overlays.
           if (!passesExposure(rec, a)) continue;
+          // A partner given only some folders of this provider gets results from those folders only.
+          if (!reachesAsset(reaches.get(rec.id) ?? null, a)) continue;
           const entry = hideEntryTags(mapProviderAsset(rec, a), tagRules);
           const row = lifecycleById.get(entry.id);
           const { state, upstreamExpired } = combinedState(row, entryWindow(entry), Date.now());
@@ -10494,9 +11130,11 @@ export function buildApp(deps: AppDeps): App {
   };
   // One rule for every automation route and for discovery (automation/effective-contract.ts).
   const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
-    mayRenderTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
+    mayRenderTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode,
+      !!caller.user && (await instanceToolsFor(caller.groups)).has(toolId));
   const automationMayUse = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
-    mayUseTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
+    mayUseTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode,
+      !!caller.user && (await instanceToolsFor(caller.groups)).has(toolId));
   // The caller's tool policy, which compile, validate and batch rows check inputs
   // against. For a named tool, design-system choice rules narrow its overlay as
   // the render pipeline does: the named format's rules, or with no format only
@@ -10504,6 +11142,9 @@ export function buildApp(deps: AppDeps): App {
   const automationPolicy = async (caller: { groups: string[] }, toolId?: unknown, format?: unknown) => {
     const overlays = new Map(await store.listOverlays());
     if (typeof toolId === 'string') {
+      // A partner's company values lock what the overlay binds and locks (plans/82 M3).
+      const bound = (await companyOverlayFor(overlays.get(toolId), toolId, caller.groups)).overlay;
+      if (bound) overlays.set(toolId, bound);
       const rules = await requestRuleContext(brand.current() ?? await brand.snapshot(), toolId, typeof format === 'string' ? format.toLowerCase() : undefined);
       const projected = rules && projectRuleOverlay(overlays.get(toolId), rules, caller.groups);
       if (projected) overlays.set(toolId, projected);
@@ -10582,7 +11223,7 @@ export function buildApp(deps: AppDeps): App {
         signal, toolId: record.request.toolId, format: record.request.format, query: queryFromInputs(record.request.inputs),
         verification: record.request.verification,
         production: record.request.production,
-        principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
+        principal: renderPrincipal(caller.user, caller.groups), profile: caller.profile, overlays: await store.listOverlays(),
       }, caller.user);
       signal.throwIfAborted();
       await currentRenderCaller(record.principal, record.request);
@@ -10689,7 +11330,7 @@ export function buildApp(deps: AppDeps): App {
           if (index >= rows.length) return;
           let result: Awaited<ReturnType<typeof renderTool>> | null = null; let error: unknown;
           for (let attempt = 0; attempt <= retries && !result; attempt++) {
-            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }, caller.user); }
+            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: renderPrincipal(caller.user, caller.groups), profile: caller.profile, overlays }, caller.user); }
             catch (caught) { error = caught; }
           }
           if (result) { retainedBytes += result.bytes.byteLength; if (retainedBytes > 128 * 1024 * 1024) throw new Error('Batch output exceeds 128 MB. Split the batch.'); }
@@ -10719,7 +11360,7 @@ export function buildApp(deps: AppDeps): App {
     if (job.verb === 'render') {
       if (typeof body.toolId !== 'string' || typeof body.format !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const rendered = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: context.hostedResolver }, {
-        toolId: body.toolId, format: body.format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>), principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
+        toolId: body.toolId, format: body.format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>), principal: renderPrincipal(caller.user, caller.groups), profile: caller.profile, overlays: await store.listOverlays(),
       }, caller.user);
       signal.throwIfAborted(); return { mime: rendered.mime, bytes: rendered.bytes };
     }
@@ -10760,13 +11401,15 @@ export function buildApp(deps: AppDeps): App {
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
     designRevision: () => brand.current()!.revision, catalogVersion: instanceCatalogVersion,
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
+    companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
     liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, brandPages: brandPagesConfig(config).enabled, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
     providerRefs: async (groups) => {
       await providersReady;
-      return { cms: (await store.listProviders()).some(provider => provider.enabled && callerSeesProvider(provider, groups)), net: configuredAssetOrigins.length > 0 };
+      const enabled = (await store.listProviders()).filter(provider => provider.enabled);
+      return { cms: (await Promise.all(enabled.map(provider => providerReach(provider, groups)))).some(Boolean), net: configuredAssetOrigins.length > 0 };
     },
   };
   registerDiscoveryRoutes(router, discoveryDeps);
@@ -10856,7 +11499,7 @@ export function buildApp(deps: AppDeps): App {
     const execute = async () => {
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, {
         toolId, format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>),
-        principal: caller.user ? { groups: caller.user.groups } : { groups: [] }, profile: caller.profile,
+        principal: renderPrincipal(caller.user), profile: caller.profile,
         overlays: await store.listOverlays(),
       }, caller.user);
       return result;
@@ -10876,7 +11519,14 @@ export function buildApp(deps: AppDeps): App {
       res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': result.mime, 'x-lolly-cache-key': result.cacheKey, 'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
         ...(result.watermarkNote ? { 'x-lolly-watermark': result.watermarkNote } : {}) });
       res.end(Buffer.from(result.bytes));
-    } catch (e) { if (e instanceof RenderError) return sendError(res, e.status, e.code, e.message); throw e; }
+    } catch (e) {
+      if (!(e instanceof RenderError)) throw e;
+      // Name the refused input, as the GET route does, so an agent knows which one.
+      const v = e.violations?.[0];
+      return sendError(res, e.status, e.code, e.message, v
+        ? { input: v.param, ...(v.by ? { by: v.by } : {}), ...(v.reason ? { reason: v.reason } : {}) }
+        : e.details);
+    }
   });
 
   router.add('POST', '/api/v1/batch', async (req, res) => {
@@ -10983,7 +11633,7 @@ export function buildApp(deps: AppDeps): App {
     }
 
     const overlays = await store.listOverlays();
-    if (!user && !toolVisibleTo(overlays.get(toolId), [])) return sendError(res, 403, 'FORBIDDEN', 'this tool is not visible');
+    if (!user && !toolVisibleWithGrants(overlays.get(toolId), toolId, { groups: [] }, await store.listGrants())) return sendError(res, 403, 'FORBIDDEN', 'this tool is not visible');
     const query = ctx.url.search.replace(/^\?/, '');
     const canonical = canonicalRenderQuery(query);
     if (query !== canonical) { res.writeHead(308, { location: ctx.url.pathname + (canonical ? '?' + canonical : '') }); res.end(); return; }
@@ -10991,7 +11641,7 @@ export function buildApp(deps: AppDeps): App {
       const signer = await getC2paSigner();
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer }, {
         toolId, format, query,
-        principal: user ? { groups: user.groups } : { groups: [] },
+        principal: renderPrincipal(user),
         profile: renderProfileOf(user),
         overlays,
       }, user);
@@ -11023,7 +11673,7 @@ export function buildApp(deps: AppDeps): App {
         const v = err.violations?.[0];
         return sendError(res, err.status, err.code, err.message, v
           ? { input: v.param, ...(v.by ? { by: v.by } : {}), ...(v.reason ? { reason: v.reason } : {}) }
-          : undefined);
+          : err.details);
       }
       throw err;
     }

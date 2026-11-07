@@ -1509,3 +1509,39 @@ html.account-inspector-open { overflow: hidden; }
 .bedit-value { display: inline-flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
 .bedit-swatch { flex: none; width: 14px; height: 14px; border: 1px solid var(--hairline); border-radius: 3px; }
 @media (forced-colors: active) { .bedit-swatch { forced-color-adjust: none; } }
+
+/* Partner programmes (plans/82 M1): one card per programme, and an editor whose
+   tool list stays a scannable column rather than a page-long run. */
+.programme-head { display: flex; align-items: baseline; gap: var(--sp-6); flex-wrap: wrap; }
+.programme-actions { display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: center; }
+.programme-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); max-height: 26rem; overflow: auto; }
+/* Partner domains (plans/82 M1 part 2b): one block per domain, its proof and the record to publish. */
+.domain-list { gap: var(--sp-7); }
+.domain-head { display: flex; gap: var(--sp-2) var(--sp-6); flex-wrap: wrap; align-items: baseline; }
+.domain-record { padding: var(--sp-6); border: 1px solid var(--hairline); border-radius: var(--radius); }
+.domain-record-fields { display: grid; grid-template-columns: auto 1fr; gap: var(--sp-3) var(--sp-6); margin: 0; align-items: center; }
+.domain-record-fields dd { margin: 0; display: flex; gap: var(--sp-4); align-items: center; flex-wrap: wrap; min-width: 0; }
+.domain-record-fields code { word-break: break-all; }
+.domain-staff { padding: var(--sp-6); border: 1px solid var(--hairline); border-radius: var(--radius); }
+@media (max-width: 640px) {
+  .domain-record-fields { grid-template-columns: 1fr; }
+  .domain-record-fields dt { font-weight: 600; }
+}
+@media (max-width: 640px) { .programme-tools { grid-template-columns: 1fr; max-height: none; } }
+
+/* Templates on a partner programme (plans/82 M2): one row per template, with
+   what it does opening in a panel underneath rather than in a dialog. */
+.template-list { display: flex; flex-direction: column; gap: var(--sp-6); margin-top: var(--sp-4); }
+.template-row { display: flex; flex-direction: column; gap: var(--sp-4); padding-bottom: var(--sp-6); border-bottom: 1px solid var(--grid); }
+.template-cells { display: grid; grid-template-columns: minmax(12rem, 1.4fr) 1fr 1fr minmax(7rem, .6fr) auto; gap: var(--sp-4) var(--sp-7); align-items: start; }
+.template-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ui-color-text-muted); margin-bottom: 2px; }
+.template-name { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.template-count { font-size: 14px; }
+.template-inputs, .template-audience { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
+.template-panel { padding: var(--sp-6); background: var(--plane); border-radius: var(--radius); }
+.template-panel[hidden], .template-file[hidden] { display: none; }
+@media (max-width: 760px) {
+  .template-cells { grid-template-columns: 1fr 1fr; }
+  .template-name, .template-actions { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) { .template-cells { grid-template-columns: 1fr; } }

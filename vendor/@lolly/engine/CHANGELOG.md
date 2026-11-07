@@ -6,6 +6,103 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.326.0
+
+- The vector IR gains a `stencil` prim (`VectorStencilPrim` in `emf.ts`): words as one bit per pixel, painted in one ink, so whatever lies under them shows through. `emitEps` paints it with `imagemask` in the ink (RGB or the CMYK mapping), and `emitWmf` with a pair of 1-bit `META_STRETCHDIB` blits, OR then AND, which leaves the page under the words as it was. `emitDxf` counts one as a dropped picture. `emitEmf` draws none.
+- No other module changes. The vector walk (`packages/node-shell/src/svg-ir.ts`) makes a stencil from a picture of a run no font can draw, for EPS and WMF, as a PDF draws such a run as a picture, and DXF stops with a message that names the run instead of outlining boxes. A file with no such run keeps its bytes.
+
+## 1.325.0
+
+- `placedPicturesOf(store)` (new, `c2pa-extract.ts`): the record of placed pictures in a Content Credential, read back for a shell that writes its own credential in place of that one. It gives each credentialed ingredient the active manifest names, with its title, format, relationship, AI source type and the manifests it brought, verbatim, plus the AI facts the steps state (the pieces declared AI-made, and the model that enlarged one). Source ingredients (emoji, songs) are not read: they have their own census.
+- `aiFactsFromSteps` (`c2pa.ts`) reads the two AI steps `exportActionSteps` writes, and counts a reading only when writing it again gives the same words. `exportActionSteps` writes those steps through the same two helpers, with the same text as before.
+- `pdfWithoutCredential(pdf)` (new, `c2pa-containers.ts`): the bytes before the credential update `embedC2paInPdf` appends, when that update is the last thing in the file. Null for anything else.
+- The MCP server uses all three for a lifetime (`c2pa: "7"` to `"365"`) and for an intent on the browser tier, and the CLI does the same for a signing identity (`--sign-key`) or an intent. The browser now stamps first on those routes, a PDF included, and the server reads the browser credential's record of the placed pictures, AI-made ones included, before its own credential takes that one's place. A PDF's browser update comes off first, so the file holds one credential. A TIFF keeps a replaced credential as a second one, so there the browser writes none, as it already did for an intent.
+- Nothing is added that the browser credential did not hold. A render with no `c2pa` and no intent is unchanged, and so is every browser-free render.
+
+## 1.324.0
+
+- Spots as process, an opt-in export choice for the CMYK formats. `ExportOpts.spotsAsProcess` (host-v1, optional) and `buildCmykPaletteMap(palette, separate, { spotsAsProcess })` (new `CmykPaletteOptions`) write every declared spot ink as its process alternate: the swatch's own CMYK lock, or the press conversion of its colour, which is the value the ink's /Separation already named as its alternate. A Print PDF then has the four process plates and nothing more. A declared finish (foil, emboss, deboss, spot varnish, soft touch, die cut, crease, perforation) is not an ink and keeps its own named plate, because converting it would print its black mask.
+- New reserved URL param `_spots`, read by `parseUrlState` into `spots` and written by `serializeUrlState` from `spots`; `parseSpots` is exported. Only `_spots=process` turns the choice on: absence and every other value keep the spot plates. Minted in the `_` namespace, so no tool input can collide with it.
+- Off by default. With the option absent, `buildCmykPaletteMap` returns the same map as before and every CMYK file keeps its bytes. The Print TIFF and EPS (CMYK) already write each ink as its process build, since they have no named plates, so the choice changes only the Print PDF today. Nothing is recorded about the choice: no metadata, no content credential entry and no export card line.
+
+## 1.323.0
+
+- `host.tokens.inspect()` answers with `colourRoles`, the document's colour roles as `readColourRoles` reads them: the declared roles in the design system's own order and words, then any undeclared ones, with the slots each fills. Every shell gets it, the isolated hook worker too, because they all inspect through `inspectTokenDocument`. A tool reads a role's colour with `resolve('{' + role.path + '}')`, so it follows the piece's colourway and look.
+- Additive and optional: a tool feature-detects the field, and an older host leaves it out. `diffTokenDocuments` compares values only and does not read the roles.
+- Lolly Chart's **Colour roles first** palette is the first reader. Nothing new goes into an exported file.
+
+## 1.322.0
+
+- `writeDocx` takes an optional `page` (width, height and margins in twips) and writes it as the section's `w:pgSz` and `w:pgMar`, marking a landscape page as such and holding every value to Word's range. New `snapDocxPage` turns a measured size into the standard paper size it stands for (A4 is 11906 x 16838 twips, US Letter 12240 x 15840), so a page laid out in whole pixels reads as A4, not a custom size. Picture widths and table columns follow the page's text width.
+- `writeDocx` takes optional `styles`: the body face and text colour go into the document defaults, the heading face and colour into Heading 1 to 6. A face is named in `ascii`, `hAnsi`, `eastAsia` and `cs`, and only a plain family name or a six-digit colour is written. Runs carry no font or colour of their own.
+- `DocxMedia.fallback`: for an SVG picture, PNG bytes of the same artwork. The picture is written the way Word writes one, the PNG as the blip and the SVG through the `asvg:svgBlip` extension, so a reader with no SVG support shows the PNG.
+- A document with no `page`, no `styles` and no `fallback` is byte-identical to before. New exports: `snapDocxPage`, and the types `DocxPage` and `DocxStyles`. The web shell's Word export (`shells/web/src/bridge/export-docx.ts`) fills all three from the rendered page. The PNG is drawn from the SVG's own bytes, so the file gains no new information, and a .docx still has no Content Credentials container.
+
+## 1.321.0
+
+- `buildPptxParts`: a run, a table cell or a layout placeholder style with a face now writes the face in all three of DrawingML's slots, `latin`, `ea` and `cs`, where it wrote `latin` and `cs`. The theme's font scheme already carries the face in all three, so PowerPoint resolves the same face it inherited before. LibreOffice does not follow the theme for a text box, so there a run now carries the face for East Asian text as well. A run with no face writes nothing, as before.
+- No API change. The Design deck model now gives every run a face (the brand, headings or mono face the canvas draws the slot in, resolved by the shell against the exported node), and the master-bound lowering in `packages/node-shell/src/design-pptx.ts` writes a circle or an ellipse as the ellipse preset and a pill as a full rounded rectangle, where it wrote a plain rectangle. Exported files gain no new data.
+
+## 1.320.0
+
+- An SVG's Content Credential goes in a `<metadata>` child of the root `<svg>`, the place the C2PA SVG binding defines and c2patool reads. When the page inlined artwork that carries its own manifest, such as a catalog logo, `embedC2pa` used to write the export's manifest over the logo's, inside the logo, and c2patool reported "No claim found" for the file. The logo now keeps its own manifest in its own markup, where the export's hard binding covers those bytes like any others, and the export's claim validates at the root.
+- New leaf module `c2pa-svg.ts`: `locateSvgCredential` finds the root `<svg>`, its first direct `<metadata>` and the manifest in a direct `<metadata>`, reading past comments, CDATA, quoted attribute values and nested artwork in one linear pass. The SVG placer and reader both use it.
+- The reader takes the root's credential first. A file with none there falls back to the first manifest anywhere, which is where exports written before this version put theirs, so a credential someone already holds reads as it did.
+- Default SVG exports that inline credentialed artwork change bytes: the file now holds the export's manifest at the root and the artwork's own in the artwork. Nothing else goes into the file. An SVG with no nested manifest is placed exactly as before. The MCP server no longer strips the inlined artwork's manifest before it stamps, so its files match the web shell's and the CLI's.
+
+## 1.319.0
+
+- `host.text.toPath`: a `fallbackFonts` entry may carry `fill: true`, a face that draws only what every face before it cannot, the way a browser falls back to a later family in a `font-family` list. With one in the chain, the run is split by grapheme cluster and each cluster goes to the first face that maps all of it, so an earlier face keeps every character it can draw; a space goes to the first face that maps it, as in Chrome. A chain with no `fill` face splits exactly as before, so every existing outline keeps its bytes.
+- No engine module changes. The web and Node shells use it for the on-demand fallback fonts in `community/fallback-fonts` (`docs/fallback-fonts.md`): a run the design system's fonts do not cover is outlined with the later families of its own stack, then an OFL Noto font for the missing script. A run the design system covers takes no fill face and keeps its chain.
+- Exported files gain nothing but the glyph outlines a fallback font drew: no font program, no credit line and no content credential entry.
+
+## 1.318.0
+
+- Colour roles through other formats and back (new module `colour-role-portable.ts`, plan 352). `adoptColourRoles` brings a file's colours in as roles, in words someone confirmed, through the same edits the studio uses. `withColourwayKindRestored` gives a group called `colourway` its kind back after a format that dropped the kind.
+- `writeDesignMd`, for a system that declares roles, gives each role a bullet in the Colors section and adds a **Colour roles** subsection with a table of both looks and a fenced `json` block. `parseDesignMd` reads the block back into roles, bindings, both looks and which on-colours Lolly worked out, field by field. A block that fails costs the roles and nothing else, and a finding says so. The YAML tokens gain nothing, so a reader that does not know the block is unaffected.
+- `penpotTokensJson` writes a declared role's name, description and place in the brand's order into the description of its `color.semantic.<id>` token, keeping any description the token already had. `coerceTokensDoc`, `assembleTokenSetFiles` and `extractPenpotProject` take those words back out through `restoreColourRoleWords`, restore the record, and leave each token with what it said for itself. A file with none of those words comes back as the same object.
+- `themeSlotTokensFor` and `colourRoleThemeAccents`: a PowerPoint theme's accents follow the brand's order when roles are declared. `themeSlotsFromColors` takes the order as an optional second argument, `RebrandDesignSystemInputV1.themeAccents` carries the order, and `THEME_SLOT_TOKENS` itself is unchanged. The order is not part of the token hash.
+- `buildBrandPage`: `brand.json` gains an optional `colourRoles` list (id, label, description, token, fills). The page, its Markdown twin and `AGENTS.md` show the brand's words per colourway and mode, and `checks.json` measures a pair per role in place of the fixed lead and partner pairs. A page with no roles writes every file as before: `brand.json` changes only in the engine version it names and the digest over that.
+- A document with no declared roles keeps its bytes on every one of these routes. Exported files record nothing new about roles beyond the tokens a `.penpot` archive already carries. The export record stays design system, version and theme choice.
+
+## 1.317.0
+
+- `designDrawFindings` reports `text-direction` for any row holding right-to-left letters, as it did for a row marked right to left. The canvas orders those letters by bidi from its own direction and the measure does not, so the page goes to the walker, which reads the browser, or on the CLI to the browser tier. A row with no right-to-left letters is unaffected.
+
+## 1.316.0
+
+- `host.text.toPath` gains an optional `direction` (`ltr` or `rtl`), the direction of the paragraph a run sits in. A run that holds right-to-left characters, or a complex script beside another script, now goes through the Unicode bidi analysis and is shaped one direction and script at a time, in visual order. Latin inside Arabic used to come out reversed, digits too, and Arabic after a Latin word lost its joining. With no `direction`, such a run reads from its first strong character.
+- A run with neither shapes as it always did and keeps its bytes, which is every purely left-to-right Latin, Greek, Cyrillic or CJK run.
+- A tool that outlines right-to-left text itself reads `advanceWidth` to anchor the right edge: the path still reads left to right from x=0.
+
+## 1.315.0
+
+- `runEmojiPass` finds out whether a tree would draw anything before it loads a style's packs. The older test matched every character from U+00A9 up, so a curly quote, an accented letter or any text in most scripts loaded a whole set and the pinned tables. It now asks `emojiTextTrigger` (new leaf module `emoji-trigger.ts`), which needs no tables, and then `textHoldsEmoji` (`emoji-segment.ts`), the pass's own test, so a bare warning sign or copyright sign in a template loads no set either. Every entry and qualification alias in the pinned table still answers yes to the trigger, which `tests/emoji-dom.test.ts` checks.
+- No change to the contract: `host.emoji.dependencies` may now return `source: 'library'` refs, which the contract's `AssetRef[]` already allowed. The web host does so for a pack its catalog serves, so opening a tool no longer stores a copy of the pack as a user asset.
+
+## 1.314.0
+
+- A brand page's `AGENTS.md` gains a **Colour roles** section when a design system declares some (plan 352 R3): each word in brand order, its token, its colour in the canonical colourway and what Lolly reads it as, under a line saying the words are data. A system with none writes the file it always wrote. `brand.json` does not change shape.
+- `baselineBrandSkill` lists the same words from the brief, so the generated skill and the design context agree.
+- IDML and dotLottie export read `var(--brand-<id>, fallback)` for any role id, not only the seven slots, with the same lowercase-and-hyphen shape the role rules allow. A value that failed the old pattern used to stop the export.
+- `host.tokens.family()` and `colourwayFamily` do not change: one colour per colourway, in the design system's order. Exported files record nothing new about roles.
+
+## 1.313.0
+
+- Colour roles (new module `colour-roles.ts`, plan 352): a design system's colours in its own words, as `brandSystem.roles[]` with `group: "colourway"` and `bindings[]` with `consumer.slot`. `readColourRoles` says what a document holds, and reports a hand-written file with custom tokens and no record as `undeclared`. `colourRoleTable` gives the studio each role's colour, on-colour and contrast per colourway and look. `addColourRole`, `renameColourRole`, `describeColourRole`, `reorderColourRoles`, `removeColourRole`, `setColourRoles`, `setRoleValue`, `setRoleSameAsLight`, `bindRole` and `unbindRole` edit them, and each returns a refusal with a stable code rather than leaving an alias that points at nothing. A binding is written as an alias inside each colourway set, so every reader of a slot keeps working.
+- A document with no colour roles comes through unchanged, and choosing the shipped words writes nothing. Exported files record nothing new.
+- `addColourway` keeps custom roles: a value it is given is kept, a role it is not given is copied from the canonical colourway and marked `colourRole.seeded`, a value given for a bound slot goes to the role the slot reads, and a name the system does not have is refused where it used to be dropped. `duplicateColourway` fills in a role its source lacks. `colourwayRolesOf` now lists every role written as a link and returns `string[]`.
+- `deriveOnColour` picks the colour that sits on a colour by the rule on-primary uses, and `isDerivedOnColourValue` tells a stored pick from a stated value. `colourPairContrast` is the measurement the studio's strip shows, moved here from the shell.
+- `designBrief` gains `colourRoles` when a system declares some: labels, descriptions and the slots each fills, quoted as the system's own words, and each colourway's `slots` lists those roles too. A document with none keeps its brief unchanged.
+- `carryColourRoles` brings colour roles through a rebuilt palette. The colourway editors refuse a theme or set whose name reaches the prototype chain, and no longer walk one.
+
+## 1.312.0
+
+- `leaveOutScopedTokenText` (`token-scope.ts`) takes out of a token document every description the scope hints flag, at any depth, along with a flagged name or label in the vendor extension. A rule, role or guide group keeps its id as its label, so it stays valid. The input is not changed, and an ordinary document comes back as the same object.
+- `coerceTokensDoc`, `assembleTokenSetFiles` and `extractPenpotProject` call it, so a file's flagged text stays out of the stored document on every import route, and `warnings` names where it sat.
+- `designBrief` calls it on what it reads, so a document already on disk behaves the same. Each brief with something left out gains `leftOut`, which lists the place and the hint and never the text. `writeDesignMd` and `buildBrandPage` read the same way, and a brand page lists what it held back.
+- Scope hints stay a line-by-line lint: a description worded another way still arrives, and so do token names and values. Studio edits do not pass through this code, so a person's words stay in their document.
+
 ## 1.311.0
 
 - A design system's publisher can opt in to recording its brand page's address on exports (plan 351 B5). `brand-page-address.ts` holds the rules: `brandPageAddress` accepts a plain `https` address on a named host and nothing else, and `readRecordedBrandPage` and `withRecordedBrandPage` read and write the setting in the tokens document, at `$extensions["com.suse.lolly"].exportRecord.brandPage`. Off means the key is gone.

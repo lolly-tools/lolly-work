@@ -31,6 +31,11 @@ import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts';
 import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
+import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../programmes/types.ts';
+import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
+import type { PartnerDomainRecord } from '../programmes/domains.ts';
+import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { CompanyProfile, CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -66,6 +71,7 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     role: r.role as string,
     ...(r.scopes ? { scopes: r.scopes as string[] } : {}),
     ...(r.tools ? { tools: r.tools as string[] } : {}),
+    ...(r.groups ? { groups: r.groups as string[] } : {}),
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
     createdAt: new Date(r.created_at as string).toISOString(),
@@ -73,6 +79,18 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
   };
+}
+
+/** One partner_company_profiles row -> record (migrations/0089). */
+function companyProfileFromRow(r: Record<string, unknown>): CompanyProfileRecord {
+  const at = r.updated_at ? new Date(r.updated_at as string).toISOString() : '';
+  return { companyId: r.company_id as string, revision: Number(r.revision), profile: (r.profile ?? {}) as CompanyProfile,
+    settings: (r.settings ?? {}) as CompanyProfileSettings, updatedBy: r.updated_by as string, updatedAt: Number(r.revision) ? at : '' };
+}
+
+function companyProfileRevisionFromRow(r: Record<string, unknown>): CompanyProfileRevision {
+  return { companyId: r.company_id as string, revision: Number(r.revision), profile: (r.profile ?? {}) as CompanyProfile,
+    updatedBy: r.updated_by as string, updatedAt: new Date(r.updated_at as string).toISOString() };
 }
 
 /** One document-scoped agent credential, without its original bearer. */
@@ -791,7 +809,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const { rows: existing } = await pool.query('select idp_groups from users where id = $1', [userId]);
       if (!existing[0]) return null;
       const idpGroups = (existing[0].idp_groups as string[]) ?? [];
-      const local = [...new Set(localGroups.filter(Boolean))];
+      // Joining a partner programme also adds the partner marker, which
+      // leaving it never removes (programmes/types.ts withPartnerMarker).
+      const local = withPartnerMarker([...new Set(localGroups.filter(Boolean))]);
       const groups = effectiveGroups(idpGroups, local);
       const { rows } = await pool.query(
         'update users set local_groups = $2::jsonb, groups = $3::jsonb, role = $4 where id = $1 returning *',
@@ -880,10 +900,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // Service tokens (plans/35 wave 2) - the SCIM block's shapes, one row kind over.
     async putApiToken(rec) {
       await pool.query(
-        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
-        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null, rec.scopes ?? null, rec.tools ?? null],
+        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools, groups)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at, groups = excluded.groups`,
+        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null, rec.scopes ?? null, rec.tools ?? null, rec.groups ?? null],
       );
     },
     async listApiTokens() {
@@ -2247,6 +2267,134 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async deleteCollection(id) {
       await pool.query('delete from catalog_collections where id = $1', [id]);
+    },
+
+    // Partner programmes (migrations/0085): one jsonb record per programme.
+    async listProgrammes() {
+      const { rows } = await pool.query('select record from partner_programmes');
+      return sortProgrammes(rows.map((r) => r.record as ProgrammeRecord));
+    },
+    async getProgramme(id) {
+      const { rows } = await pool.query('select record from partner_programmes where id = $1', [id]);
+      return rows[0] ? (rows[0].record as ProgrammeRecord) : null;
+    },
+    async putProgramme(rec) {
+      await pool.query(
+        `insert into partner_programmes (id, record, updated_at) values ($1, $2::jsonb, now())
+         on conflict (id) do update set record = excluded.record, updated_at = now()`,
+        [rec.id, JSON.stringify(rec)],
+      );
+    },
+    async deleteProgramme(id) {
+      await pool.query('delete from partner_programmes where id = $1', [id]);
+    },
+    async listCompanies() {
+      const { rows } = await pool.query('select record from partner_companies');
+      return rows.map((r) => r.record as CompanyRecord).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    },
+    async putCompany(rec) {
+      await pool.query(
+        `insert into partner_companies (id, programme_id, record, updated_at) values ($1, $2, $3::jsonb, now())
+         on conflict (id) do update set programme_id = excluded.programme_id, record = excluded.record, updated_at = now()`,
+        [rec.id, rec.programmeId, JSON.stringify(rec)],
+      );
+    },
+    async deleteCompany(id) {
+      await pool.query('delete from partner_companies where id = $1', [id]);
+    },
+    async listMemberships() {
+      const { rows } = await pool.query('select record from programme_memberships order by programme_id, email');
+      return rows.map((r) => r.record as MembershipRecord);
+    },
+    async putMembership(rec) {
+      await pool.query(
+        `insert into programme_memberships (programme_id, email, record, updated_at) values ($1, $2, $3::jsonb, now())
+         on conflict (programme_id, email) do update set record = excluded.record, updated_at = now()`,
+        [rec.programmeId, rec.email, JSON.stringify(rec)],
+      );
+    },
+    async listPartnerDomains() {
+      const { rows } = await pool.query('select record from partner_domains order by domain');
+      return rows.map((r) => r.record as PartnerDomainRecord);
+    },
+    async putPartnerDomain(rec) {
+      await pool.query(
+        `insert into partner_domains (domain, record, updated_at) values ($1, $2::jsonb, now())
+         on conflict (domain) do update set record = excluded.record, updated_at = now()`,
+        [rec.domain, JSON.stringify(rec)],
+      );
+    },
+    async deletePartnerDomain(domain) {
+      await pool.query('delete from partner_domains where domain = $1', [domain]);
+    },
+    async listPartnerFolders() {
+      const { rows } = await pool.query('select record from partner_folders order by provider, path, programme_id, company_id');
+      return rows.map((r) => r.record as PartnerFolderRecord);
+    },
+    async putPartnerFolder(rec) {
+      await pool.query(
+        `insert into partner_folders (provider, path, programme_id, company_id, record, updated_at) values ($1, $2, $3, $4, $5::jsonb, now())
+         on conflict (provider, path, programme_id, company_id) do update set record = excluded.record, updated_at = now()`,
+        [rec.provider, rec.path, rec.programmeId, rec.companyId ?? '', JSON.stringify(rec)],
+      );
+    },
+    async deletePartnerFolder(key) {
+      await pool.query('delete from partner_folders where provider = $1 and path = $2 and programme_id = $3 and company_id = $4',
+        [key.provider, key.path, key.programmeId, key.companyId ?? '']);
+    },
+
+    // Partner company profiles (migrations/0089). The current row and one
+    // history row per revision, written together.
+    async getCompanyProfile(companyId) {
+      const { rows } = await pool.query('select * from partner_company_profiles where company_id = $1', [companyId]);
+      return rows[0] ? companyProfileFromRow(rows[0]) : null;
+    },
+    async listCompanyProfiles() {
+      const { rows } = await pool.query('select * from partner_company_profiles order by company_id');
+      return rows.map(companyProfileFromRow);
+    },
+    async saveCompanyProfile(rec, expectRevision) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query('select revision from partner_company_profiles where company_id = $1 for update', [rec.companyId]);
+        if (Number(rows[0]?.revision ?? 0) !== expectRevision) { await client.query('rollback'); return false; }
+        await client.query(
+          `insert into partner_company_profiles (company_id, revision, profile, updated_by, updated_at) values ($1, $2, $3::jsonb, $4, $5)
+           on conflict (company_id) do update set revision = excluded.revision, profile = excluded.profile, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+          [rec.companyId, rec.revision, JSON.stringify(rec.profile), rec.updatedBy, rec.updatedAt],
+        );
+        await client.query(
+          'insert into partner_company_profile_history (company_id, revision, profile, updated_by, updated_at) values ($1, $2, $3::jsonb, $4, $5)',
+          [rec.companyId, rec.revision, JSON.stringify(rec.profile), rec.updatedBy, rec.updatedAt],
+        );
+        await client.query('commit');
+        return true;
+      } catch (error) {
+        await client.query('rollback');
+        // Two first saves at once: the loser's history insert collides.
+        if ((error as { code?: string }).code === '23505') return false;
+        throw error;
+      } finally { client.release(); }
+    },
+    async putCompanyProfileSettings(companyId, settings) {
+      await pool.query(
+        `insert into partner_company_profiles (company_id, revision, profile, settings, updated_by) values ($1, 0, '{}'::jsonb, $2::jsonb, '')
+         on conflict (company_id) do update set settings = excluded.settings`,
+        [companyId, JSON.stringify(settings)],
+      );
+    },
+    async getCompanyProfileRevision(companyId, revision) {
+      const { rows } = await pool.query('select * from partner_company_profile_history where company_id = $1 and revision = $2', [companyId, revision]);
+      return rows[0] ? companyProfileRevisionFromRow(rows[0]) : null;
+    },
+    async listCompanyProfileHistory(companyId) {
+      const { rows } = await pool.query('select * from partner_company_profile_history where company_id = $1 order by revision', [companyId]);
+      return rows.map(companyProfileRevisionFromRow);
+    },
+    async deleteCompanyProfile(companyId) {
+      await pool.query('delete from partner_company_profile_history where company_id = $1', [companyId]);
+      await pool.query('delete from partner_company_profiles where company_id = $1', [companyId]);
     },
 
     // Instance asset versions (migrations/0020). Immutable snapshots keyed

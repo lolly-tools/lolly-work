@@ -34,7 +34,8 @@ import { verifyToolCoding, type ToolIdentity } from './tool-codings.ts';
 import { join, resolve } from 'node:path';
 import { canonicalJson } from '../lib/crypto.ts';
 import { regularSourceFile, safeDirectory, safeFile } from '../api/file-delivery.ts';
-import { toolVisibleTo, type ToolOverlay } from '../policy/overlay.ts';
+import { toolVisibleWithGrants, type ToolOverlay } from '../policy/overlay.ts';
+import { grantDecision, type Grant } from '../rbac/evaluate.ts';
 
 /** Where the envelope is served, relative to the catalog root. */
 export const CATALOG_SIG_REL = 'tools/index.sig.json';
@@ -52,15 +53,49 @@ export const SIGNED_TEMPLATE_FILE = /^templates\/[A-Za-z0-9._-]+\.json$/;
 export interface CatalogCaller {
   overlays: Map<string, ToolOverlay>;
   groups: string[];
+  /** Tools this caller uses only through published templates (plans/82 M2 W5,
+   *  programmes/templates-only.ts): served, but unlisted and marked. */
+  templatesOnly?: ReadonlySet<string>;
   guestToolId?: string;
   /** Opt-in bounded asset inventory; never an access grant. */
   pagedAssets?: boolean;
+  /** The member asking, for `user:` grants. Absent for an anonymous caller. */
+  userId?: string;
+  /** The caller's role: an admin or owner is never scoped to a partner programme. */
+  role?: string;
+  /** The grant table. Its `tool.use` rows hide or show tools exactly as they do
+   *  in org-config and Preview (`toolVisibleWithGrants`). */
+  grants?: readonly Grant[];
+  /** Rules tools this caller's own asset feed carries (plans/82 M2), built by
+   *  this workspace from published Share with rules files. Served beside the
+   *  pack's tools, through the same index, signature and file routes. */
+  instanceTools?: ReadonlyMap<string, InstanceTool>;
 }
 
-/** Group visibility for members and exact tool scope for guest links. */
+/** A tool this workspace built from a published rules tool (catalog/rules-tools.ts). */
+export interface InstanceTool {
+  id: string;
+  /** The published asset it is built from. */
+  assetId: string;
+  /** Its tool index entry. */
+  entry: Record<string, unknown>;
+  /** Tool-relative path to bytes. */
+  files: ReadonlyMap<string, Buffer>;
+  /** `<id>/<path>` to sha256 hex, the same keys the pack's file digests use. */
+  digests: Readonly<Record<string, string>>;
+}
+
+/** Visibility for members, counting `tool.use` grants, and exact tool scope for
+ *  guest links. */
 export function callerCanSeeTool(caller: CatalogCaller, toolId: string): boolean {
   const id = toolId.toLowerCase();
-  return caller.guestToolId ? id === caller.guestToolId.toLowerCase() : toolVisibleTo(caller.overlays.get(id), caller.groups);
+  if (caller.guestToolId) return id === caller.guestToolId.toLowerCase();
+  // A rules tool is published to the people whose feed carries it, so that is
+  // its allow. A `tool.use` deny still hides it, as it hides any tool.
+  if (caller.instanceTools?.has(id)) {
+    return grantDecision({ userId: caller.userId, groups: caller.groups }, 'tool.use', [`tool:${id}`, '*'], [...(caller.grants ?? [])]) !== 'deny';
+  }
+  return toolVisibleWithGrants(caller.overlays.get(id), id, { userId: caller.userId, groups: caller.groups, role: caller.role }, caller.grants ?? []);
 }
 
 export interface ServedToolIndex {
@@ -70,6 +105,8 @@ export interface ServedToolIndex {
   json: boolean;
   /** The `/tools/*` visibility predicate for this caller. */
   visible: (toolId: string) => boolean;
+  /** File digests of the rules tools in this index, keyed like the pack's. */
+  instanceFiles?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -77,6 +114,15 @@ export interface ServedToolIndex {
  * bytes and the signature route hashes them, so the two always agree for the
  * same caller. Missing or malformed indexes cannot produce a scoped catalog.
  */
+/**
+ * A templates-only tool's index entry (plans/82 M2 W5): unlisted, so it leaves the
+ * gallery and search, and marked, so the app's Start chooser offers only the
+ * templates published to this caller. Any other entry is returned as it is.
+ */
+export function markTemplatesOnly<T extends { id: string }>(tool: T, caller: Pick<CatalogCaller, 'templatesOnly'>): T {
+  return caller.templatesOnly?.has(tool.id) ? { ...tool, listed: false, templatesOnly: true } : tool;
+}
+
 export async function servedToolIndexBytes(packDir: string, caller: CatalogCaller): Promise<ServedToolIndex | null> {
   let raw: Buffer;
   try {
@@ -88,8 +134,16 @@ export async function servedToolIndexBytes(packDir: string, caller: CatalogCalle
   try {
     const index = JSON.parse(raw.toString('utf8')) as { tools?: Array<{ id: string }> };
     if (!index || !Array.isArray(index.tools)) return null;
-    index.tools = index.tools.filter(tool => tool && typeof tool.id === 'string' && visible(tool.id));
-    return { bytes: Buffer.from(JSON.stringify(index), 'utf8'), json: true, visible };
+    index.tools = index.tools.filter(tool => tool && typeof tool.id === 'string' && visible(tool.id)).map(tool => markTemplatesOnly(tool, caller));
+    // Rules tools follow the pack's own, in id order; a pack tool keeps its id.
+    const packIds = new Set(index.tools.map(tool => tool.id));
+    const extra = [...(caller.instanceTools?.values() ?? [])].filter(tool => !packIds.has(tool.id) && visible(tool.id))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    if (!extra.length) return { bytes: Buffer.from(JSON.stringify(index), 'utf8'), json: true, visible };
+    (index.tools as unknown[]).push(...extra.map(tool => tool.entry));
+    const instanceFiles: Record<string, string> = {};
+    for (const tool of extra) Object.assign(instanceFiles, tool.digests);
+    return { bytes: Buffer.from(JSON.stringify(index), 'utf8'), json: true, visible, instanceFiles };
   } catch {
     return null;
   }
@@ -395,8 +449,10 @@ export function createCatalogSigning(material: string, now: () => Date = () => n
       for (const [path, digest] of Object.entries(all)) {
         if (served.visible(path.slice(0, path.indexOf('/')))) files[path] = digest;
       }
+      // Rules tools are built per caller, so their digests ride the served index.
+      Object.assign(files, served.instanceFiles ?? {});
       const indexHash = sha256(served.bytes);
-      const cacheKey = `${packDir}\u0000${indexHash}\u0000${canonicalJson(binding ?? {})}\u0000${Object.keys(files).join('\u0000')}`;
+      const cacheKey = `${packDir}\u0000${indexHash}\u0000${canonicalJson(binding ?? {})}\u0000${Object.keys(files).join('\u0000')}\u0000${sha256(Buffer.from(canonicalJson(served.instanceFiles ?? {})))}`;
       const hit = cache.get(cacheKey);
       if (hit) return hit;
       const envelope = await e.signCatalogEnvelope(

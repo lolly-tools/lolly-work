@@ -704,6 +704,7 @@ export function createWebdavProvider(
       // The parent directory path, one section per level, which is what
       // exposure.includeSections scopes on and what sectionTags stamps.
       sections: parts.slice(0, -1),
+      folder: parts.slice(0, -1).join('/'),
       tags,
       ...(updatedAt ? { updatedAt } : {}),
       ...readWindow(props),

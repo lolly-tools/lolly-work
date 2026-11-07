@@ -7,6 +7,10 @@
  * enforcement (422 INPUT_LOCKED), and catalog feed filtering.
  */
 
+import { grantDecision, type Grant } from '../rbac/evaluate.ts';
+import { isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, programmeOfCompany } from '../programmes/types.ts';
+import { normalizeBindings } from '../programmes/company-values.ts';
+
 export type AccessLevel = 'editable' | 'choice' | 'locked' | 'hidden';
 
 export interface InputRule {
@@ -21,6 +25,11 @@ export interface InputRule {
    *  org-config and into the 422 body, so the shell and an agent can both say
    *  WHY, not just that something is locked. */
   reason?: string;
+  /** Who decided this one rule, when it is not the overlay itself: a published
+   *  template's name on the overlay a template-scoped render builds
+   *  (catalog/templates.ts). Never read from an admin's edit: normalizeOverlay
+   *  copies fields by name and leaves this out. */
+  by?: string;
 }
 
 export interface ToolOverlay {
@@ -39,7 +48,14 @@ export interface ToolOverlay {
     watermark?: 'until-approved' | 'always' | 'never';
     escalation?: string;
   };
-  defaults?: Record<string, unknown>;
+  /** Values a tool starts from, per group (plans/82 M3): `[{ groups, values }]`,
+   *  most specific group winning (programmes/company-values.ts defaultsFor). The
+   *  older flat shape is kept as stored and applies to nothing until it is
+   *  saved again as group rules. */
+  defaults?: Record<string, unknown> | Array<{ groups: string[]; values: Record<string, unknown> }>;
+  /** Inputs that take a partner company's values (plans/82 M3): input id to a
+   *  company field, for tools partners open directly. */
+  bindings?: Record<string, import('../programmes/company-values.ts').CompanyField>;
 }
 
 export interface ResolvedAccess {
@@ -51,6 +67,22 @@ export interface ResolvedAccess {
   by?: string;
   /** The rule author's free-text reason, when one was written. */
   reason?: string;
+}
+
+/**
+ * For a partner, which rule decided and why: a company's rule (overriding its
+ * own programme's), or a programme's, and the other programmes it was compared
+ * with. Only `explainInputAccess` returns it, and only the console's Preview
+ * calls that, so no partner, app or agent ever reads it.
+ */
+export interface AccessWhy {
+  scope: 'company' | 'programme';
+  /** The company or programme group the deciding rule names. */
+  group: string;
+  /** For a company rule, its programme's group, when that programme had a rule too. */
+  over?: string;
+  /** The other programmes' results, each less strict than or as strict as this one. */
+  others?: Array<{ group: string; level: AccessLevel }>;
 }
 
 const EDITABLE: ResolvedAccess = { level: 'editable' };
@@ -73,7 +105,24 @@ function rulesFor(table: Record<string, InputRule[]>, key: string): InputRule[] 
   return Array.isArray(rules) ? rules : undefined;
 }
 
-/** First matching rule for the input (falling back to the '*' input default) wins. */
+/**
+ * The rule for one input, for a person in these groups (falling back to the
+ * '*' input default).
+ *
+ * Someone with no partner rule that names their groups gets the first matching
+ * rule, in the order the overlay was written. For a partner, the rules that
+ * name their own programme or company groups decide, whatever their order
+ * (plans/82, Andy's decisions 3 and 9, settled with the coordinator
+ * 2026-11-06):
+ *   - within one programme, a rule for the person's company overrides the
+ *     programme's rule: the company is the more specific scope;
+ *   - across programmes, the stricter result wins, the way a deny beats an
+ *     allow among grants;
+ *   - a partner-specific rule beats a generic one (`*`, a staff group).
+ * Several rules in one scope are compared stricter-wins too, so no outcome
+ * hangs on the order rules were added; only equally strict rules fall back to
+ * the overlay's order.
+ */
 export function resolveInputAccess(
   overlay: ToolOverlay | undefined,
   inputId: string,
@@ -82,20 +131,86 @@ export function resolveInputAccess(
   if (!overlay?.inputAccess) return EDITABLE;
   const rules = rulesFor(overlay.inputAccess, inputId) ?? rulesFor(overlay.inputAccess, '*');
   if (!rules) return EDITABLE;
-  for (const rule of rules) {
-    if (!ruleMatches(rule, groups)) continue;
-    const out: ResolvedAccess = { level: rule.level };
-    if ('value' in rule) out.value = rule.value;
-    if (rule.allow) out.allow = rule.allow;
-    // Attribution rides every MATCHED rule, so "why is this locked?" is
-    // answered by the same resolution that locked it and the two can never
-    // disagree. Both stay absent when the overlay is unnamed / the rule
-    // carries no reason.
-    if (overlay.name) out.by = overlay.name;
-    if (rule.reason) out.reason = rule.reason;
-    return out;
+  const first = rules.find((rule) => ruleMatches(rule, groups));
+  if (!first) return EDITABLE;
+  const rule = resolvePartnerRule(rules, groups)?.rule ?? first;
+  const out: ResolvedAccess = { level: rule.level };
+  if ('value' in rule) out.value = rule.value;
+  if (rule.allow) out.allow = rule.allow;
+  // Attribution rides every MATCHED rule, so "why is this locked?" is
+  // answered by the same resolution that locked it and the two can never
+  // disagree. Both stay absent when the overlay is unnamed / the rule
+  // carries no reason.
+  if (rule.by) out.by = rule.by;
+  else if (overlay.name) out.by = overlay.name;
+  if (rule.reason) out.reason = rule.reason;
+  return out;
+}
+
+/** Why `resolveInputAccess` gave a partner what it gave, for an admin's
+ *  Preview; null when no partner rule decided (the overlay's order did). */
+export function explainInputAccess(overlay: ToolOverlay | undefined, inputId: string, groups: string[]): AccessWhy | null {
+  if (!overlay?.inputAccess) return null;
+  const rules = rulesFor(overlay.inputAccess, inputId) ?? rulesFor(overlay.inputAccess, '*');
+  return rules ? resolvePartnerRule(rules, groups)?.why ?? null : null;
+}
+
+/** One scope's answer: a programme with its company rules first, or a company
+ *  whose programme is not known yet. */
+interface ScopePick { rule: InputRule; at: number; scope: 'company' | 'programme'; group: string; over?: string; key: string }
+
+function resolvePartnerRule(rules: InputRule[], groups: string[]): { rule: InputRule; why: AccessWhy } | null {
+  const mine = groups.filter(isPartnerGroup);
+  if (!mine.length) return null;
+  const naming = (g: string) => rules.filter((r) => r.groups.includes(g));
+  if (!mine.some((g) => naming(g).length)) return null;
+  const at = (r: InputRule) => rules.indexOf(r);
+  const programmes = mine.filter(isProgrammeGroup);
+  const companies = mine.filter(isCompanyGroup);
+  const picks: ScopePick[] = [];
+  const placed = new Set<string>();
+  for (const p of programmes) {
+    const inside = companies.filter((c) => programmeOfCompany(c) === p);
+    inside.forEach((c) => placed.add(c));
+    const companyRules = [...new Set(inside.flatMap(naming))];
+    const ownRules = naming(p);
+    if (companyRules.length) {
+      const rule = strictest(companyRules);
+      const group = inside.find((c) => rule.groups.includes(c)) ?? inside[0]!;
+      picks.push({ rule, at: Math.min(...companyRules.map(at)), scope: 'company', group, ...(ownRules.length ? { over: p } : {}), key: p });
+    } else if (ownRules.length) {
+      picks.push({ rule: strictest(ownRules), at: Math.min(...ownRules.map(at)), scope: 'programme', group: p, key: p });
+    }
   }
-  return EDITABLE;
+  // A company whose programme is unknown (or not one of theirs) stands as a
+  // scope of its own, compared stricter-wins: never more permissive.
+  for (const c of companies.filter((x) => !placed.has(x))) {
+    const own = naming(c);
+    if (own.length) picks.push({ rule: strictest(own), at: Math.min(...own.map(at)), scope: 'company', group: c, key: c });
+  }
+  if (!picks.length) return null;
+  picks.sort((a, b) => a.at - b.at);
+  const rule = strictest(picks.map((p) => p.rule));
+  const winner = picks.find((p) => p.rule === rule || (p.rule.level === rule.level && p.rule.groups === rule.groups)) ?? picks[0]!;
+  const others = picks.filter((p) => p !== winner).map((p) => ({ group: p.key, level: p.rule.level }));
+  return {
+    rule,
+    why: { scope: winner.scope, group: winner.group, ...(winner.over ? { over: winner.over } : {}), ...(others.length ? { others } : {}) },
+  };
+}
+
+const STRICTNESS: Record<AccessLevel, number> = { editable: 0, choice: 1, locked: 2, hidden: 3 };
+
+/** The most restrictive of several matching rules: hidden, then locked, then a
+ *  choice (two choices keep only the values both allow, or the first rule's
+ *  list when they share none), then editable. Ties keep the overlay's order. */
+function strictest(matched: InputRule[]): InputRule {
+  const level = matched.reduce((top, r) => (STRICTNESS[r.level] > STRICTNESS[top] ? r.level : top), 'editable' as AccessLevel);
+  const atLevel = matched.filter((r) => r.level === level);
+  const chosen = atLevel[0]!;
+  if (level !== 'choice' || atLevel.length < 2) return chosen;
+  const shared = (chosen.allow ?? []).filter((v) => atLevel.every((r) => (r.allow ?? []).some((a) => JSON.stringify(a) === JSON.stringify(v))));
+  return shared.length ? { ...chosen, allow: shared } : chosen;
 }
 
 /**
@@ -122,6 +237,41 @@ export function inputIsGoverned(overlay: ToolOverlay | undefined, inputId: strin
 export function toolVisibleTo(overlay: ToolOverlay | undefined, groups: string[]): boolean {
   if (!overlay?.visibility) return true;
   return overlay.visibility.groups.includes('*') || overlay.visibility.groups.some((g) => groups.includes(g));
+}
+
+/**
+ * Whether a caller sees a tool at all, counting `tool.use` grants as well as the
+ * overlay's visibility clause: a matching deny hides the tool whatever the
+ * clause says, and an explicit allow shows it outside the clause. Role defaults
+ * play no part, because the member default of `tool.use` would otherwise show
+ * every governed tool.
+ *
+ * This is the one decision every surface that lists or serves a tool asks: the
+ * tool feed and its signature, the tool files, org-config, Preview and the
+ * automation contract. When they asked different questions, a deny shown as
+ * "hidden" in Preview still reached the app through the feed.
+ */
+export function toolVisibleWithGrants(
+  overlay: ToolOverlay | undefined,
+  toolId: string,
+  principal: { userId?: string; groups: string[]; role?: string },
+  grants: readonly Grant[],
+): boolean {
+  const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants as Grant[]);
+  if (decision === 'deny') return false;
+  // A partner programme member sees only the tools an allow grant includes for
+  // them: the overlay's visibility, `*` included, never adds a tool for them
+  // (plans/82 M1, programmes/types.ts).
+  if (isProgrammeScoped(principal.groups, principal.role)) return decision === 'allow';
+  return toolVisibleTo(overlay, principal.groups) || decision === 'allow';
+}
+
+/** The `tool.use` grants that apply to this principal, as a stable list. Two
+ *  callers with the same groups and the same list see the same tools, so the
+ *  list is what a visibility scope needs beyond the groups. */
+export function toolUseGrantsFor(principal: { userId?: string; groups: string[] }, grants: readonly Grant[]): string[] {
+  const own = grants.filter(g => g.action === 'tool.use' && grantDecision(principal, 'tool.use', [g.resource], [g]) !== 'none');
+  return [...new Set(own.map(g => `${g.effect}:${g.resource}`))].sort();
 }
 
 /**
@@ -215,7 +365,7 @@ const REASON_MAX = 200;
 export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 0): ToolOverlay | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const body = raw as {
-    name?: unknown; inputAccess?: unknown; visibility?: unknown; enforce?: unknown; defaults?: unknown;
+    name?: unknown; inputAccess?: unknown; visibility?: unknown; enforce?: unknown; defaults?: unknown; bindings?: unknown;
   };
   const overlay: ToolOverlay = { toolId, version: currentVersion + 1 };
 
@@ -287,8 +437,24 @@ export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 
   }
 
   if (body.defaults !== undefined && body.defaults !== null) {
-    if (typeof body.defaults !== 'object' || Array.isArray(body.defaults)) return null;
-    if (Object.keys(body.defaults as object).length) overlay.defaults = body.defaults as Record<string, unknown>;
+    if (typeof body.defaults !== 'object') return null;
+    if (Array.isArray(body.defaults)) {
+      // Group rules (plans/82 M3): each names its groups and the values they start from.
+      const rules: Array<{ groups: string[]; values: Record<string, unknown> }> = [];
+      for (const r of body.defaults as unknown[]) {
+        const groups = cleanGroups((r as { groups?: unknown })?.groups);
+        const values = (r as { values?: unknown })?.values;
+        if (!groups || !values || typeof values !== 'object' || Array.isArray(values)) return null;
+        if (Object.keys(values).length) rules.push({ groups, values: values as Record<string, unknown> });
+      }
+      if (rules.length) overlay.defaults = rules;
+    } else if (Object.keys(body.defaults as object).length) overlay.defaults = body.defaults as Record<string, unknown>;
+  }
+
+  if (body.bindings !== undefined && body.bindings !== null) {
+    const bindings = normalizeBindings(body.bindings);
+    if ('error' in bindings) return null;
+    if (bindings.bindings) overlay.bindings = bindings.bindings;
   }
 
   return overlay;

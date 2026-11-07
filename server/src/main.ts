@@ -36,6 +36,12 @@ import { shellDirectory } from './lib/shell-release.ts';
 import { assessSetup } from './setup/checks.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { grantNeverMatches } from './rbac/grant-shape.ts';
+import { sweepProgrammeEnds } from './programmes/people-routes.ts';
+import { recheckDomains, sweepDomainRules } from './programmes/domain-routes.ts';
+import { sweepFolderRules } from './programmes/folder-routes.ts';
+import { setCompanyProgrammes } from './programmes/types.ts';
+import { resolveTxt } from 'node:dns/promises';
 import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
 
 const config = loadConfig();
@@ -157,6 +163,13 @@ if (process.env.LW_SEED_CONFIG) {
   const configIds = new Set((await store.listProviders()).filter((p) => p.managedBy === 'config').map((p) => p.id));
   const diff = diffConfigDocument(current, parsed.doc, { prune: false }, configIds);
   if (diff.conflicts.length) throw new Error(`LW_SEED_CONFIG touches config-managed providers: ${diff.conflicts.join(', ')}`);
+  // A grant that can never match is skipped with a warning rather than stopping
+  // the boot: storing it would change nothing but the console table.
+  diff.grants.create = diff.grants.create.filter((g) => {
+    const why = grantNeverMatches(g);
+    if (why) console.warn(`LW_SEED_CONFIG: skipped ${g.principal} ${g.action} ${g.resource}: ${why}`);
+    return !why;
+  });
   await commitConfigApply(store, diff, 'system');
   await store.appendAudit({ at: new Date().toISOString(), actor: 'system', action: 'config.apply', subject: `config:${canonicalHash(parsed.doc).slice(0, 16)}`, payload: { seed: true, ...diffSummary(diff) } });
   console.log('[lolly-work] applied LW_SEED_CONFIG');
@@ -250,6 +263,27 @@ if (config.audit.headLog.onBoot) await logAuditHead();
 if (config.audit.headLog.intervalMinutes > 0) {
   setInterval(() => void logAuditHead(), config.audit.headLog.intervalMinutes * 60_000).unref();
 }
+
+// Partner programme end dates (plans/82 M1 part 2): a membership whose end
+// date has passed loses its programme and company groups. Every minute, so
+// access ends on time without anyone remembering to do it. A serverless
+// deploy crons POST /api/v1/programmes/sweep instead.
+// The same pass ends partner domain rules past their end date and looks up
+// the DNS proof of each partner domain that is due (hourly while waiting for
+// the record, daily once found; plans/82 M1 part 2b).
+const sweepAudit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
+  store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
+const sweepEnds = async (): Promise<number> => {
+  // Each replica reloads which programme each company is in (input rules).
+  setCompanyProgrammes(await store.listCompanies());
+  await sweepDomainRules(store, sweepAudit);
+  await sweepFolderRules(store, sweepAudit);
+  const ended = await sweepProgrammeEnds(store, sweepAudit);
+  await recheckDomains(store, sweepAudit, resolveTxt);
+  return ended;
+};
+await sweepEnds().catch((e: Error) => console.error(`[lolly-work] programme end sweep failed: ${e.message}`));
+setInterval(() => void sweepEnds().catch((e: Error) => console.error(`[lolly-work] programme end sweep failed: ${e.message}`)), 60_000).unref();
 
 // Retention (plans/35 wave 3): boot + daily, only when a policy is stated.
 // The same runRetention the POST /api/v1/retention/run route calls, so a

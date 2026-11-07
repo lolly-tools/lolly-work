@@ -200,6 +200,11 @@ The checks run in this order, and the first one that applies decides:
    regard to case. The domain is the part after the last `@`, matched exactly, so
    `example.com` does not admit `sub.example.com`. An empty policy (`{}`) admits invitations
    only.
+6. **Partner programmes.** A partner domain that is proved and not paused admits a verified
+   address at that exact domain, and a person who joined a programme through a domain stays
+   admitted while that membership lasts. Both count for new accounts and partner accounts only.
+   An existing staff account is admitted by the steps above or not at all. Both are kept in the database, not in this
+   configuration ([Partner programmes](partner-programmes.md#add-people-by-domain)).
 
 With `hostedDomain` set, only accounts in that Google Workspace get past step 2, invited
 people included. To let in people from outside it, add a second Google registration without
@@ -486,9 +491,11 @@ POST /api/v1/users/:id/disabled     # { disabled: true }   (or SCIM active=false
 person's **session epoch**, a counter each session token carries from when it was minted. A
 token minted before the bump is refused from that moment, so every live session of the
 disabled person ends on its next request, with no window to ride out. SCIM `active=false`
-does exactly this. The bounded offboarding operation, which also revokes the person's links
-and tokens, is in [Account data controls](account-lifecycle.md). Both preserve another active
-owner.
+does exactly this. The share, embed, download and collection links the person made stop
+serving at the same moment (`410 LINK_MAKER_DISABLED`), and serve again if the account is
+re-enabled; their guest links already stop with the inviter. The bounded offboarding
+operation, which revokes the person's links and tokens for good, is in [Account data
+controls](account-lifecycle.md). Both preserve another active owner.
 
 Every way a session can end:
 

@@ -16,7 +16,7 @@
  * reason, never the groups a rule matched.
  */
 import { evaluate, grantDecision, type Grant, type Role } from '../rbac/evaluate.ts';
-import { checkParams, lockedValues, resolveInputAccess, toolVisibleTo, type ParamViolation, type ToolOverlay } from '../policy/overlay.ts';
+import { checkParams, lockedValues, resolveInputAccess, toolVisibleWithGrants, type ParamViolation, type ToolOverlay } from '../policy/overlay.ts';
 import type { UnavailableFormat } from '../render/capabilities.ts';
 
 /** One change policy made to the raw contract, with who made it and why. */
@@ -40,20 +40,20 @@ type AccessMode = 'open' | 'gated' | 'per-tool';
  *  explicit allow, and the role default decides the rest. An anonymous caller
  *  may use a tool only on an open deployment and only when no visibility rule
  *  hides it from everyone. */
-export function mayUseTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode): boolean {
-  if (!user) return mode === 'open' && toolVisibleTo(overlays.get(toolId), []);
+export function mayUseTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode, published = false): boolean {
+  if (!user) return mode === 'open' && !published && toolVisibleWithGrants(overlays.get(toolId), toolId, { groups: [] }, grants);
   if (user.tokenTools && !user.tokenTools.includes(toolId)) return false;
   const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
-  const resources = [`tool:${toolId}`, '*'];
-  const decision = grantDecision(principal, 'tool.use', resources, grants);
-  if (decision === 'deny') return false;
-  if (!toolVisibleTo(overlays.get(toolId), user.groups) && decision !== 'allow') return false;
-  return evaluate(principal, 'tool.use', resources, grants);
+  // `published`: a rules tool this caller's own feed carries (plans/82 M2). Its
+  // publication is its allow, so only a deny hides it.
+  if (published ? grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants) === 'deny'
+    : !toolVisibleWithGrants(overlays.get(toolId), toolId, principal, grants)) return false;
+  return evaluate(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
 }
 
 /** Server rendering needs `tool.use` and `export.server`. */
-export function mayRenderTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode): boolean {
-  if (!mayUseTool(user, toolId, overlays, grants, mode)) return false;
+export function mayRenderTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode, published = false): boolean {
+  if (!mayUseTool(user, toolId, overlays, grants, mode, published)) return false;
   if (!user) return mode === 'open';
   if (user.tokenScopes && !user.tokenScopes.includes('render')) return false;
   return evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'export.server', [`tool:${toolId}`, '*'], grants);
@@ -68,9 +68,11 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
  * becomes `readOnly` with its locked value as `const` and `default`: the server
  * applies it, and a request that sends it is refused with INPUT_LOCKED. A choice
  * input gains an `enum` of the allowed values, intersected with any enum the
- * tool declares. Every locked or choice input gets one attribution entry.
+ * tool declares. Every locked or choice input gets one attribution entry. An
+ * editable input this caller starts from a value for (an overlay default or a
+ * partner company value, plans/82 M3) carries it as `default`.
  */
-export function effectiveInputSchema(raw: Record<string, unknown>, overlay: ToolOverlay | undefined, groups: string[]): { schema: Record<string, unknown>; effects: PolicyEffect[] } {
+export function effectiveInputSchema(raw: Record<string, unknown>, overlay: ToolOverlay | undefined, groups: string[], defaults: Record<string, unknown> = {}): { schema: Record<string, unknown>; effects: PolicyEffect[] } {
   const rawProperties = (raw.properties && typeof raw.properties === 'object' ? raw.properties : {}) as Record<string, Record<string, unknown>>;
   const rawRequired = Array.isArray(raw.required) ? raw.required as string[] : [];
   const properties: Record<string, unknown> = {};
@@ -94,7 +96,7 @@ export function effectiveInputSchema(raw: Record<string, unknown>, overlay: Tool
       const allowed = declared ? access.allow.filter(value => declared.some(option => same(option, value))) : access.allow;
       properties[id] = { ...property, enum: allowed };
       effects.push({ effect: 'choice', input: id, ...attribution(access) });
-    } else properties[id] = property;
+    } else properties[id] = Object.hasOwn(defaults, id) ? { ...property, default: defaults[id] } : property;
     if (rawRequired.includes(id)) required.push(id);
   }
   const { required: _required, properties: _properties, ...rest } = raw;

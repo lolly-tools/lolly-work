@@ -198,6 +198,10 @@ export interface EngineApi {
   createTokenSet(doc: unknown, opts?: { theme?: string }): TokenSetLike;
   makeColorApi(): Record<string, unknown>;
   ENGINE_VERSION: string;
+  /** URL-mode params that are never tool inputs. */
+  RESERVED: ReadonlySet<string>;
+  /** Throws when values break a rules tool's own policy (manifest `designTool`). */
+  assertDesignValues(policy: unknown, values: Record<string, unknown>, required?: boolean): void;
   parseVisualIntent(value: unknown): { ok: true } | { ok: false; errors: readonly IntentErrorV1[] };
   resolveIntent(request: unknown, tools: readonly IntentToolFactsV1[]): Promise<IntentResolutionV1>;
   parseToolIntents(text: string): { ok: true; intents: ToolIntentV1[] } | { ok: false; errors: readonly { path: string; message: string }[] };

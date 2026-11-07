@@ -73,6 +73,7 @@ test('dropbox: list_folder maps files (id remoteId, sections from path), continu
   const a = page.assets[0];
   assert.equal(a?.remoteId, 'id:AAA111', 'Dropbox file id — rename-stable, slash-free');
   assert.deepEqual(a?.sections, ['Logos']);
+  assert.equal(a?.folder, 'Logos', 'the folder below the federated path');
   assert.deepEqual(a?.formats, [{ format: 'svg', remoteRef: 'file', filename: 'summit.svg', size: 900 }]);
   const page2 = await dbx.listAssets('cur1');
   assert.equal(page2.next, undefined);
@@ -110,6 +111,48 @@ test('gdrive: folder-scoped query, native Google Docs filtered, id guard on down
   await assert.rejects(() => gd.resolveBlob('../../etc', 'media'), /bad drive file id/);
 });
 
+test('gdrive recursive: walks subfolders breadth first, each file carries its folder path, caps hold', async () => {
+  const tree: Record<string, Array<Record<string, string>>> = {
+    ROOT: [
+      { id: 'F1', name: 'top.png', mimeType: 'image/png', fileExtension: 'png' },
+      { id: 'EMEA', name: 'EMEA', mimeType: 'application/vnd.google-apps.folder' },
+      { id: 'US', name: 'US', mimeType: 'application/vnd.google-apps.folder' },
+    ],
+    EMEA: [
+      { id: 'F2', name: 'price.pdf', mimeType: 'application/pdf', fileExtension: 'pdf' },
+      { id: 'ACME', name: 'Acme', mimeType: 'application/vnd.google-apps.folder' },
+    ],
+    US: [{ id: 'F3', name: 'us.png', mimeType: 'image/png', fileExtension: 'png' }],
+    ACME: [{ id: 'F4', name: 'acme.png', mimeType: 'image/png', fileExtension: 'png' }],
+  };
+  const impl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (String(init?.body ?? '').includes('grant_type=refresh_token')) return new Response(JSON.stringify({ access_token: 'at', expires_in: 3600 }));
+    const q = new URL(url).searchParams.get('q') ?? '';
+    const folder = /^'([^']+)' in parents/.exec(q)?.[1] ?? '';
+    return new Response(JSON.stringify({ files: tree[folder] ?? [] }), { headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  const walk = async (opts: Record<string, unknown>) => {
+    const gd = createGdriveProvider('gdr', { folderId: 'ROOT', ...opts }, CRED, impl);
+    const out: Array<[string, string | undefined]> = [];
+    let cursor: string | undefined;
+    for (let i = 0; i < 20; i++) {
+      const page = await gd.listAssets(cursor);
+      for (const a of page.assets) out.push([a.name, a.folder]);
+      cursor = page.next;
+      if (!cursor) break;
+    }
+    return out;
+  };
+  assert.deepEqual(await walk({ recursive: true }), [['top', ''], ['price', 'EMEA'], ['us', 'US'], ['acme', 'EMEA/Acme']]);
+  assert.deepEqual(await walk({ recursive: true, maxDepth: 1 }), [['top', ''], ['price', 'EMEA'], ['us', 'US']], 'one level down only');
+  assert.deepEqual(await walk({ recursive: true, maxFolders: 2 }), [['top', ''], ['price', 'EMEA']], 'two folders: the root and the first');
+  assert.deepEqual(await walk({}), [['top', '']], 'without recursive: the one folder, as before');
+  await assert.rejects(() => createGdriveProvider('gdr', { folderId: 'ROOT', recursive: true }, CRED, impl)
+    .listAssets(`walk:${Buffer.from(JSON.stringify({ q: [{ id: "x' or 1=1 or '", path: '', depth: 0 }], seen: 1 })).toString('base64url')}`), /bad drive folder id/,
+  'a forged cursor cannot inject a query');
+});
+
 test('o365: children mapping with parent-path sections, nextLink cursor host-pinned', async () => {
   const value = [
     {
@@ -125,6 +168,7 @@ test('o365: children mapping with parent-path sections, nextLink cursor host-pin
   const page = await gr.listAssets();
   assert.equal(page.assets.length, 1);
   assert.deepEqual(page.assets[0]?.sections, ['Approved']);
+  assert.equal(page.assets[0]?.folder, 'Brand/Approved', 'the whole path below the drive root');
   assert.equal(page.assets[0]?.remoteId, 'ITEM1!abc');
   assert.ok(page.next?.includes('graph.microsoft.com'));
 

@@ -744,6 +744,14 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(scoped?.scopes, ['render', 'files']);
   assert.deepEqual(scoped?.tools, ['card']);
   assert.deepEqual((await store.getApiToken('tok_scoped'))?.scopes, ['render', 'files']);
+  // Partner groups (plans/82 M3, migrations/0090): absent reads back absent, and
+  // a put replaces them, which is how an owner places or moves a token.
+  assert.equal((await store.getApiToken('tok_scoped'))?.groups, undefined);
+  const scopedToken = (await store.getApiToken('tok_scoped'))!;
+  await store.putApiToken({ ...scopedToken, groups: ['programme-resellers', 'company-northwind', 'partner'] });
+  assert.deepEqual((await store.findApiTokenByHash('hash-scoped'))?.groups, ['programme-resellers', 'company-northwind', 'partner']);
+  await store.putApiToken({ ...scopedToken, groups: ['partner'] });
+  assert.deepEqual((await store.getApiToken('tok_scoped'))?.groups, ['partner']);
   await store.touchApiToken('tok_1', '2026-08-24T12:00:00.000Z');
   assert.equal((await store.listApiTokens()).find((t) => t.id === 'tok_1')?.lastUsedAt, '2026-08-24T12:00:00.000Z');
   assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), true);
@@ -1365,6 +1373,95 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteCollection('nope'); // unknown id is a no-op
   await store.deleteCollection('launch');
   assert.deepEqual(await store.listCollections(), []);
+
+  // Partner programmes (plans/82 M1, migrations/0085): one record per
+  // programme, name-ordered, upserted whole; membership is never stored here.
+  assert.deepEqual(await store.listProgrammes(), []);
+  const resellers = { id: 'resellers', name: 'Resellers', description: 'EMEA resellers', createdBy: 'usr_1',
+    createdAt: '2026-11-06T00:00:00.000Z', updatedAt: '2026-11-06T00:00:00.000Z', version: 1 };
+  await store.putProgramme(resellers);
+  await store.putProgramme({ ...resellers, id: 'distributors', name: 'Distributors', description: undefined as unknown as string });
+  assert.deepEqual((await store.listProgrammes()).map((p) => p.id), ['distributors', 'resellers'], 'listing is name-ordered');
+  await store.putProgramme({ ...resellers, name: 'Resellers, EMEA', version: 2 });
+  assert.equal((await store.getProgramme('resellers'))?.name, 'Resellers, EMEA', 'put is an upsert');
+  assert.equal((await store.getProgramme('resellers'))?.version, 2);
+  await store.deleteProgramme('nope');
+  await store.deleteProgramme('distributors');
+  await store.deleteProgramme('resellers');
+  assert.deepEqual(await store.listProgrammes(), []);
+
+  // Joining a programme group adds the partner marker, and leaving it keeps it.
+  const partnerUser = await store.upsertUserBySub({ sub: 'conf:partner', email: 'partner@conf.test', groups: [], role: 'member' });
+  assert.deepEqual((await store.setLocalGroups(partnerUser.id, ['programme-resellers']))?.localGroups, ['programme-resellers', 'partner']);
+  assert.deepEqual((await store.setLocalGroups(partnerUser.id, ['partner']))?.localGroups, ['partner']);
+  assert.deepEqual((await store.setLocalGroups(partnerUser.id, []))?.localGroups, [], 'an admin removing the marker on purpose makes the account internal');
+
+  // Partner domains (plans/82 M1 part 2b, migrations/0087): one record per
+  // domain, listed by domain, upserted whole (the rule list is replaced).
+  assert.deepEqual(await store.listPartnerDomains(), []);
+  const acmeDomain = { domain: 'acme.example', proof: 'txt' as const, token: 'tok', createdBy: 'usr_1', createdAt: '2026-11-06T00:00:00.000Z', updatedAt: '2026-11-06T00:00:00.000Z',
+    rules: [{ programmeId: 'resellers', companyId: 'acme', endsAt: '2027-06-30T23:59:59.999Z', addedBy: 'usr_1', addedAt: '2026-11-06T00:00:00.000Z' }] };
+  await store.putPartnerDomain(acmeDomain);
+  await store.putPartnerDomain({ ...acmeDomain, domain: 'about.example', rules: [] });
+  assert.deepEqual((await store.listPartnerDomains()).map((d) => d.domain), ['about.example', 'acme.example'], 'listed by domain');
+  await store.putPartnerDomain({ ...acmeDomain, proof: 'admin', assertedBy: 'usr_1', rules: [acmeDomain.rules[0]!, { programmeId: 'isvs', addedBy: 'usr_1', addedAt: 'x' }] });
+  const acmeBack = (await store.listPartnerDomains()).find((d) => d.domain === 'acme.example')!;
+  assert.equal(acmeBack.proof, 'admin', 'put is an upsert');
+  assert.deepEqual(acmeBack.rules.map((r) => r.programmeId), ['resellers', 'isvs']);
+  assert.equal(acmeBack.rules[0]!.endsAt, '2027-06-30T23:59:59.999Z');
+  await store.deletePartnerDomain('nope');
+  await store.deletePartnerDomain('about.example');
+  await store.deletePartnerDomain('acme.example');
+  assert.deepEqual(await store.listPartnerDomains(), []);
+
+  // Provider folders per programme or company (plans/82 M1 part 2c,
+  // migrations/0088): keyed by provider, path, programme and company.
+  assert.deepEqual(await store.listPartnerFolders(), []);
+  const emea = { provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers', addedBy: 'usr_1', addedAt: '2026-11-07T00:00:00.000Z' };
+  await store.putPartnerFolder(emea);
+  await store.putPartnerFolder({ ...emea, companyId: 'acme', endsAt: '2027-06-30T23:59:59.999Z' });
+  await store.putPartnerFolder({ ...emea, path: '' });
+  assert.deepEqual((await store.listPartnerFolders()).map((r) => [r.path, r.companyId ?? '']), [['', ''], ['Partners/EMEA', ''], ['Partners/EMEA', 'acme']]);
+  await store.putPartnerFolder({ ...emea, endsAt: '2027-01-01T00:00:00.000Z' });
+  assert.equal((await store.listPartnerFolders()).find((r) => r.path === 'Partners/EMEA' && !r.companyId)?.endsAt, '2027-01-01T00:00:00.000Z', 'put is an upsert');
+  await store.deletePartnerFolder({ provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers', companyId: 'acme' });
+  await store.deletePartnerFolder({ provider: 'nope', path: '', programmeId: 'x' });
+  assert.deepEqual((await store.listPartnerFolders()).map((r) => [r.path, r.companyId ?? '']), [['', ''], ['Partners/EMEA', '']]);
+  await store.deletePartnerFolder({ provider: 'dam', path: '', programmeId: 'resellers' });
+  await store.deletePartnerFolder({ provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers' });
+  assert.deepEqual(await store.listPartnerFolders(), []);
+
+  // Partner company profiles (plans/82 M3, migrations/0089): a save writes the
+  // row and its history copy together and refuses a stale revision; settings
+  // are never a revision; delete takes the history too.
+  assert.equal(await store.getCompanyProfile('northwind'), null);
+  const profile1 = { companyId: 'northwind', revision: 1, profile: { name: 'Northwind IT', currency: 'EUR', contact: { name: 'Rita', email: 'rita@n.test' } }, updatedBy: 'user:usr_1', updatedAt: '2026-11-07T00:00:00.000Z' };
+  assert.equal(await store.saveCompanyProfile(profile1, 1), false, 'a save against a revision that is not stored writes nothing');
+  assert.equal(await store.getCompanyProfile('northwind'), null);
+  assert.equal(await store.saveCompanyProfile(profile1, 0), true);
+  await store.putCompanyProfileSettings('northwind', { editors: ['usr_2'], approvalChain: 'partner-details' });
+  assert.equal(await store.saveCompanyProfile({ ...profile1, revision: 2, profile: { ...profile1.profile, currency: 'GBP' }, updatedAt: '2026-11-07T01:00:00.000Z' }, 0), false, 'a stale revision is refused');
+  assert.equal(await store.saveCompanyProfile({ ...profile1, revision: 2, profile: { ...profile1.profile, currency: 'GBP' }, updatedAt: '2026-11-07T01:00:00.000Z' }, 1), true);
+  const current = await store.getCompanyProfile('northwind');
+  assert.equal(current?.revision, 2);
+  assert.equal(current?.profile.currency, 'GBP');
+  assert.deepEqual(current?.settings, { editors: ['usr_2'], approvalChain: 'partner-details' }, 'a save keeps the settings');
+  assert.equal(current?.updatedAt, '2026-11-07T01:00:00.000Z');
+  assert.deepEqual((await store.listCompanyProfileHistory('northwind')).map((r) => [r.revision, r.profile.currency]), [[1, 'EUR'], [2, 'GBP']]);
+  assert.deepEqual((await store.getCompanyProfileRevision('northwind', 1))?.profile, profile1.profile);
+  assert.equal(await store.getCompanyProfileRevision('northwind', 3), null);
+  await store.putCompanyProfileSettings('globex', { editors: ['usr_3'] });
+  const settingsOnly = await store.getCompanyProfile('globex');
+  assert.equal(settingsOnly?.revision, 0, 'settings alone make no revision');
+  assert.deepEqual(settingsOnly?.profile, {});
+  assert.deepEqual(await store.listCompanyProfileHistory('globex'), []);
+  assert.deepEqual((await store.listCompanyProfiles()).map((r) => r.companyId), ['globex', 'northwind']);
+  await store.deleteCompanyProfile('northwind');
+  await store.deleteCompanyProfile('globex');
+  await store.deleteCompanyProfile('nope');
+  assert.equal(await store.getCompanyProfile('northwind'), null);
+  assert.deepEqual(await store.listCompanyProfileHistory('northwind'), []);
+  assert.deepEqual(await store.listCompanyProfiles(), []);
 
   // Asset versions (plans/31 section 6, migrations/0020). Keyed (assetId,
   // version), listed oldest-first, and an upsert replaces the snapshot whole -

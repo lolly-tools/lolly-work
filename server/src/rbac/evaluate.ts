@@ -3,7 +3,7 @@
  *
  * Evaluation is a pure function: deny wins → allow wins → role default.
  * Resources are passed as the set of selector strings the resource satisfies
- * (e.g. ['tool:event-badge', 'tool:tag/external-facing', '*']) so the
+ * (e.g. ['tool:event-badge', '*']) so the
  * evaluator never needs to look anything up.
  */
 
@@ -13,7 +13,7 @@ export interface Grant {
   /** 'group:<name>' | 'user:<id>' | '*' */
   principal: string;
   action: string;
-  /** A resource selector, e.g. 'tool:event-badge', 'catalog:tag/x', '*' */
+  /** A resource selector, e.g. 'tool:event-badge', 'destination:archive', '*' (rbac/grant-shape.ts lists which forms each action is checked against). */
   resource: string;
   effect: Effect;
 }
@@ -100,6 +100,11 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
     // an invitation into a group that maps to the owner role stays owner-only
     // at the route.
     'user.invite',
+    // `programme.manage` (plans/82 M1) names partner programmes and sets what
+    // each includes: the tool.use grants and collection groups for its group.
+    // Admin tier like grant editing, which it amounts to; grantable to a
+    // partner or brand team.
+    'programme.manage',
   ];
   // Credentials + the enable/disable kill switch stay owner-only: an admin can
   // shape a provider, but only an owner puts a key in or turns it on (plans/17 §6).
@@ -122,6 +127,13 @@ export function roleAllows(role: Role, action: string): boolean {
   return (ROLE_ACTIONS[role] ?? []).includes(action);
 }
 
+/** Every action some role carries: the vocabulary the routes check. A grant for
+ *  any other action string would never be asked about. */
+export function knownActions(): ReadonlySet<string> {
+  return KNOWN_ACTIONS;
+}
+const KNOWN_ACTIONS: ReadonlySet<string> = new Set(Object.values(ROLE_ACTIONS).flat());
+
 /** Map an effective group set to the highest role any group carries (plans/02
  *  §4). Runs on the effective union (idp ∪ local), so a local group named after
  *  a role escalates exactly like an IdP one. Lives here so the store can derive
@@ -141,7 +153,7 @@ export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role
   return 'member';
 }
 
-function principalMatches(selector: string, ctx: PrincipalCtx): boolean {
+function principalMatches(selector: string, ctx: Pick<PrincipalCtx, 'userId' | 'groups'>): boolean {
   if (selector === '*') return true;
   if (selector.startsWith('group:')) return ctx.groups.includes(selector.slice(6));
   if (selector.startsWith('user:')) return ctx.userId === selector.slice(5);
@@ -157,7 +169,7 @@ function principalMatches(selector: string, ctx: PrincipalCtx): boolean {
  * instead of evaluate().
  */
 export function grantDecision(
-  ctx: PrincipalCtx,
+  ctx: Pick<PrincipalCtx, 'userId' | 'groups'>,
   action: string,
   resourceSelectors: string[],
   grants: Grant[],

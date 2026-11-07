@@ -1,3 +1,8 @@
+import type { ProgrammeRecord } from '../programmes/types.ts';
+import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
+import type { PartnerDomainRecord } from '../programmes/domains.ts';
+import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
 import type { SubjectStore } from '../privacy/subject.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
@@ -319,8 +324,9 @@ export interface ScimTokenRecord {
 
 /** A service token (plans/35 wave 2) - automation identity, the SCIM-token
  *  pattern generalized. Presenting the secret resolves to a synthetic
- *  principal carrying `role` (no groups), so CI drives the action-gated API
- *  without a person's session cookie in a secret store. */
+ *  principal carrying `role` (and `groups` when an owner placed it in a partner
+ *  programme), so CI drives the action-gated API without a person's session
+ *  cookie in a secret store. */
 export interface ApiTokenRecord {
   id: string;
   /** Operator label ("ci", "governance-sync") - names the automation, never a person. */
@@ -331,6 +337,11 @@ export interface ApiTokenRecord {
   scopes?: string[];
   /** The only tools it may name. Absent means any tool its role and grants allow. */
   tools?: string[];
+  /** The partner groups it carries (plans/82 M3, migrations/0090): a programme's
+   *  group, optionally one company's group in it, and the partner marker. The
+   *  principal it resolves to holds these, so the token is scoped exactly like a
+   *  person in that programme. Absent means no groups, as before. */
+  groups?: string[];
   /** sha256 hex of the opaque secret - never the secret itself. */
   tokenHash: string;
   /** 'user:<id>' who minted it. */
@@ -1777,6 +1788,49 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
    *  it was a list of names, and the assets it named are ordinary catalog
    *  assets that were never owned by it. */
   deleteCollection(id: string): Promise<void>;
+
+  // partner programmes (plans/82 M1, migrations/0085). One jsonb record per
+  // programme; membership is the programme's local group, never a row here.
+  listProgrammes(): Promise<ProgrammeRecord[]>;
+  getProgramme(id: string): Promise<ProgrammeRecord | null>;
+  putProgramme(rec: ProgrammeRecord): Promise<void>;
+  /** Unknown id is a no-op. Never touches the wrapped group or its members. */
+  deleteProgramme(id: string): Promise<void>;
+  // Partner companies and programme memberships (plans/82 M1 part 2,
+  // migrations/0086). A membership holds only what a group cannot: the end
+  // date, the company and who added the person.
+  listCompanies(): Promise<CompanyRecord[]>;
+  putCompany(rec: CompanyRecord): Promise<void>;
+  deleteCompany(id: string): Promise<void>;
+  listMemberships(): Promise<MembershipRecord[]>;
+  putMembership(rec: MembershipRecord): Promise<void>;
+  // Partner domains (plans/82 M1 part 2b, migrations/0087): one record per
+  // domain, holding its proof and the programmes it feeds; upserted whole.
+  listPartnerDomains(): Promise<PartnerDomainRecord[]>;
+  putPartnerDomain(rec: PartnerDomainRecord): Promise<void>;
+  /** Unknown domain is a no-op. Never touches an account or a membership. */
+  deletePartnerDomain(domain: string): Promise<void>;
+  // Provider folders per programme or company (plans/82 M1 part 2c,
+  // migrations/0088). Keyed by provider, path, programme and company.
+  listPartnerFolders(): Promise<PartnerFolderRecord[]>;
+  putPartnerFolder(rec: PartnerFolderRecord): Promise<void>;
+  /** Unknown key is a no-op. */
+  deletePartnerFolder(key: { provider: string; path: string; programmeId: string; companyId?: string }): Promise<void>;
+  // Partner company profiles (plans/82 M3, migrations/0089). One current row
+  // per company plus a history row per revision.
+  getCompanyProfile(companyId: string): Promise<CompanyProfileRecord | null>;
+  listCompanyProfiles(): Promise<CompanyProfileRecord[]>;
+  /** Save a new revision, the row and its history copy together, keeping the
+   *  settings. Writes nothing and answers false when the stored revision is no
+   *  longer `expectRevision` (0 for a company with no profile yet). */
+  saveCompanyProfile(rec: Omit<CompanyProfileRecord, 'settings'>, expectRevision: number): Promise<boolean>;
+  /** Who else may edit, and whether their changes wait. Never a revision. */
+  putCompanyProfileSettings(companyId: string, settings: CompanyProfileSettings): Promise<void>;
+  getCompanyProfileRevision(companyId: string, revision: number): Promise<CompanyProfileRevision | null>;
+  /** Oldest first. */
+  listCompanyProfileHistory(companyId: string): Promise<CompanyProfileRevision[]>;
+  /** The profile and its whole history. Unknown id is a no-op. */
+  deleteCompanyProfile(companyId: string): Promise<void>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
   // cumulative for everything that was KEPT - a returned submission still spent

@@ -83,6 +83,12 @@
           "summary": "Invite people to the workspace or a project, send invite links, set passwords from a link, and answer requests to join and for access."
         },
         {
+          "slug": "partner-programmes",
+          "path": "partner-programmes.md",
+          "title": "Partner programmes",
+          "summary": "Name each kind of partner and choose the tools and assets its people get, with nothing internal shared by default."
+        },
+        {
           "slug": "design-system-administration",
           "path": "design-system-administration.md",
           "title": "Design-system administration",
@@ -116,7 +122,7 @@
           "slug": "offboarding",
           "path": "offboarding.md",
           "title": "Leave a DAM",
-          "summary": "Choose a DAM offboarding path: self-host Lolly Work, Nextcloud or Git, or export to a hosted drive. Lolly Compare transfer steps, originals, links and recovery."
+          "summary": "Choose a DAM offboarding path: self-host Lolly Work, Nextcloud or Git, or export to a hosted drive. Compare transfer steps, originals, links and recovery."
         },
         {
           "slug": "approvals",

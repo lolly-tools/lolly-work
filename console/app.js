@@ -76,7 +76,34 @@ async function api(path, opts = {}) {
   // `body` keeps the whole answer: a 409 can carry the current state (a
   // request someone else answered, the live invitation for an address).
   if (!res.ok) throw Object.assign(new Error(data?.error?.message ?? res.statusText), { status: res.status, code: data?.error?.code, field: data?.error?.field, body: data });
+  if (path === '/api/v1/groups' && Array.isArray(data?.groups)) noteGroups(data.groups);
+  if (path === '/api/v1/programmes' && Array.isArray(data?.programmes)) for (const p of data.programmes) programmeGroupNames.set(p.group, p.name);
   return data;
+}
+
+// Partner programme groups read as the programme's name wherever an admin
+// reads or picks a group (plans/82 M1), never as the internal group id. The
+// names come from the programmes list, or from the groups list, whose
+// programme groups carry "Partner programme: <name>" as their description.
+const programmeGroupNames = new Map();
+const PROGRAMME_GROUP_NOTE = 'Partner programme: ';
+function noteGroups(list) {
+  for (const g of list) {
+    if (typeof g?.name === 'string' && g.name.startsWith('programme-') && typeof g.description === 'string' && g.description.startsWith(PROGRAMME_GROUP_NOTE)) {
+      programmeGroupNames.set(g.name, g.description.slice(PROGRAMME_GROUP_NOTE.length));
+    }
+    // A company's group carries "Partner company: <name> (<programme>)".
+    const company = typeof g?.name === 'string' && g.name.startsWith('company-') && typeof g.description === 'string'
+      ? /^Partner company: (.+) \((.+)\)$/.exec(g.description) : null;
+    if (company) companyGroupNames.set(g.name, { name: company[1], programme: company[2] });
+  }
+}
+const companyGroupNames = new Map();
+function groupLabel(name) {
+  const programme = programmeGroupNames.get(name);
+  if (programme) return `${programme} (partner programme)`;
+  const company = companyGroupNames.get(name);
+  return company ? `${company.name} (company in ${company.programme})` : name;
 }
 
 // ── tiny dom helpers ────────────────────────────────────────────────────────
@@ -4364,7 +4391,7 @@ async function invitationsSection(groupOptions) {
     const name = typeof g === 'string' ? g : g.name;
     const fromIdp = typeof g === 'object' && g.source === 'idp';
     const cb = el('input', { type: 'checkbox', value: name });
-    return { name, cb, node: el('label', { class: 'chk' }, cb, el('span', {}, name),
+    return { name, cb, node: el('label', { class: 'chk' }, cb, el('span', { title: name }, groupLabel(name)),
       ...(fromIdp ? [' ', el('span', { class: 'muted' }, '· from sign-in provider')] : [])) };
   });
   const expirySel = el('select', {}, ...INVITE_EXPIRY_CHOICES.map((c) => el('option', { value: c.value, ...(c.value === '30' ? { selected: 'selected' } : {}) }, c.label)));
@@ -4604,7 +4631,7 @@ async function invitationsSection(groupOptions) {
       el('td', {}, check),
       el('td', { title: inv.email }, el('div', { class: 'invite-account' }, avatar, el('span', {}, inv.email)),
         el('div', { class: 'invite-provenance muted' }, `Invited by ${inv.inviter?.name ?? '—'} · ${madeFrom(inv)}`),
-        inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.join(', ')}`)] : null),
+        inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.map(groupLabel).join(', ')}`)] : null),
       el('td', {}, projects.length
         ? projects.map((p) => `${p.name || 'A removed project'} (${projectRoleLabel(p.role)})`).join(', ')
         : el('span', { class: 'muted' }, 'none')),
@@ -4967,7 +4994,7 @@ async function viewUsers(main, params) {
       el('td', { title: u.email }, u.email),
       el('td', {}, u.title ?? '—'),
       el('td', {}, el('span', { class: 'chip' }, u.role)),
-      el('td', { title: u.groups.join(', ') }, u.groups.length ? u.groups.join(', ') : '—'),
+      el('td', { title: u.groups.join(', ') }, u.groups.length ? u.groups.map(groupLabel).join(', ') : '—'),
       el('td', {}, when(u.lastSeenAt)));
   }
 
@@ -5225,7 +5252,7 @@ async function viewUsers(main, params) {
       const entries = localGroups().map((g) => {
         const cb = el('input', { type: 'checkbox', ...(checkedSet.has(g.name) ? { checked: 'checked' } : {}) });
         cb.addEventListener('change', () => { if (cb.checked) groupDraft.add(g.name); else groupDraft.delete(g.name); saveBtn.disabled = !groupsDirty(); updateDraftNotice(); });
-        return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', {}, g.name), g.description ? el('span', { class: 'muted' }, ` — ${g.description}`) : null) };
+        return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', { title: g.name }, groupLabel(g.name)), g.description && !programmeGroupNames.has(g.name) ? el('span', { class: 'muted' }, ` — ${g.description}`) : null) };
       });
 
       const saveBtn = el('button', { class: 'primary', onclick: async () => {
@@ -5433,6 +5460,778 @@ function copyButton(getText, label = 'Copy link') {
   } }, label);
   return btn;
 }
+
+// ── partner programmes (plans/82 M1) ───────────────────────────────────────
+// Each programme is the admin's own name for a kind of partner. Its people see
+// only what it includes: the tools ticked here (tool.use grants for its group),
+// the collections ticked here (its group in each collection's groups), and the
+// design system's tokens, fonts and palettes. Nothing shared with everyone
+// reaches them. People join through the programme's group, in People or with
+// an invitation.
+const slugOf = (name) => name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+
+async function viewProgrammes(main, params) {
+  const [{ programmes }, toolsResp, collectionsResp] = await Promise.all([
+    api('/api/v1/programmes'),
+    api('/api/v1/policy/tools').catch(() => ({ tools: [] })),
+    api('/api/v1/catalog/collections').catch(() => ({ collections: [] })),
+  ]);
+  const tools = (toolsResp.tools ?? []).map((t) => ({ id: t.id, name: t.name || t.id }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const collections = collectionsResp.collections ?? [];
+  const editing = params?.get?.('id');
+
+  const card = (p) => {
+    const err = errSpan();
+    const del = armConfirmButton({ class: 'danger' }, 'Delete', 'Really delete?', async (disarm) => {
+      err.textContent = '';
+      del.disabled = true;
+      try { await api(`/api/v1/programmes/${encodeURIComponent(p.id)}`, { method: 'DELETE' }); toast(`Deleted ${p.name}`); route(); }
+      catch (e) { err.textContent = e.message; del.disabled = false; disarm(); }
+    });
+    return el('div', { class: 'card stack programme-card' },
+      el('div', { class: 'programme-head' },
+        el('h2', { class: 'flush' }, p.name),
+        el('span', { class: 'muted mono' }, p.group)),
+      p.description ? el('p', { class: 'sub flush' }, p.description) : null,
+      el('p', { class: 'flush' },
+        `${p.members.length} ${p.members.length === 1 ? 'person' : 'people'} · ${p.tools.length} tool${p.tools.length === 1 ? '' : 's'} · ${p.collections.length} collection${p.collections.length === 1 ? '' : 's'}`),
+      el('p', { class: 'flush programme-actions' },
+        el('a', { class: 'btn primary', href: `#/programmes?id=${encodeURIComponent(p.id)}` }, 'Choose what they get'),
+        ' ',
+        el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(p.group)}` }, 'See what they get'),
+        ' ', del),
+      err);
+  };
+
+  if (editing) {
+    const p = programmes.find((x) => x.id === editing);
+    if (!p) { main.append(el('h1', {}, 'Partner programmes'), el('p', {}, 'No such programme. ', el('a', { href: '#/programmes' }, 'Back to programmes'))); return; }
+    const groupsResp = await api('/api/v1/groups').catch(() => ({ groups: [] }));
+    main.append(programmeEditor(p, tools, collections, groupsResp.groups ?? []));
+    return;
+  }
+
+  // New programme: a name, with the id taken from it.
+  const nameInput = el('input', { placeholder: 'Resellers, EMEA', 'aria-label': 'Programme name' });
+  const descInput = el('input', { placeholder: 'Optional: who this programme is for', 'aria-label': 'Description' });
+  const createErr = errSpan();
+  const createForm = el('form', { class: 'card stack', onsubmit: async (e) => {
+    e.preventDefault();
+    createErr.textContent = '';
+    const name = nameInput.value.trim();
+    const id = slugOf(name);
+    if (!id) { createErr.textContent = 'Name the programme.'; nameInput.focus(); return; }
+    if (programmes.some((x) => x.id === id)) { createErr.textContent = `A programme called ${name} already exists.`; return; }
+    try {
+      await api(`/api/v1/programmes/${id}`, { method: 'PUT', body: { name, ...(descInput.value.trim() ? { description: descInput.value.trim() } : {}) } });
+      toast(`Created ${name}`);
+      location.hash = `#/programmes?id=${encodeURIComponent(id)}`;
+    } catch (err) { createErr.textContent = err.message; }
+  } },
+    el('h2', {}, 'New programme'),
+    el('div', { class: 'grant-fields' }, field('Name', nameInput), field('Description', descInput)),
+    el('p', {}, el('button', { class: 'primary' }, 'Create programme')),
+    createErr);
+
+  main.append(
+    el('h1', {}, 'Partner programmes'),
+    el('p', { class: 'sub' }, 'Name each kind of partner you work with and choose what its people get. Someone in a programme sees only the tools and collections their programmes include, plus your design system’s tokens, fonts and palettes. Nothing shared with everyone reaches them.'),
+    programmes.length ? el('div', { class: 'stack' }, ...programmes.map(card)) : el('p', { class: 'empty' }, 'No programmes yet.'),
+    createForm,
+  );
+}
+
+function programmeEditor(p, tools, collections, groups = []) {
+  const nameInput = el('input', { value: p.name, 'aria-label': 'Programme name' });
+  const descInput = el('input', { value: p.description ?? '', 'aria-label': 'Description' });
+  // The internal team that owns the programme: when a partnership ends, its
+  // people's projects move here, read-only, by default.
+  const internal = groups.map((g) => g.name).filter((g) => !g.startsWith('programme-') && !g.startsWith('company-') && g !== 'partner');
+  const teamSel = el('select', { 'aria-label': 'Owning team' },
+    el('option', { value: '' }, 'No owning team yet'),
+    ...[...new Set([...internal, ...(p.team ? [p.team] : [])])].sort().map((g) => el('option', { value: g, ...(g === p.team ? { selected: 'selected' } : {}) }, g)));
+  const chosenTools = new Set(p.tools);
+  const chosenCollections = new Set(p.collections.map((c) => c.id));
+  const toolFilter = el('input', { type: 'search', placeholder: 'Find a tool', 'aria-label': 'Find a tool' });
+  const toolList = el('div', { class: 'chk-list programme-tools' });
+  const toolCount = el('span', { class: 'muted' });
+  const renderTools = () => {
+    const q = toolFilter.value.trim().toLowerCase();
+    toolCount.textContent = `${chosenTools.size} chosen`;
+    toolList.replaceChildren(...tools.filter((t) => !q || t.name.toLowerCase().includes(q) || t.id.includes(q)).map((t) => {
+      const cb = el('input', { type: 'checkbox', ...(chosenTools.has(t.id) ? { checked: 'checked' } : {}) });
+      cb.addEventListener('change', () => { if (cb.checked) chosenTools.add(t.id); else chosenTools.delete(t.id); toolCount.textContent = `${chosenTools.size} chosen`; });
+      return el('label', { class: 'chk' }, cb, el('span', {}, t.name), el('span', { class: 'muted mono' }, ` ${t.id}`));
+    }));
+  };
+  toolFilter.addEventListener('input', renderTools);
+  renderTools();
+  const collectionList = collections.length
+    ? el('div', { class: 'chk-list' }, ...collections.map((c) => {
+        const cb = el('input', { type: 'checkbox', ...(chosenCollections.has(c.id) ? { checked: 'checked' } : {}) });
+        cb.addEventListener('change', () => { if (cb.checked) chosenCollections.add(c.id); else chosenCollections.delete(c.id); });
+        return el('label', { class: 'chk' }, cb, el('span', {}, c.name), el('span', { class: 'muted' }, ` ${c.members.length} asset${c.members.length === 1 ? '' : 's'}`));
+      }))
+    : el('p', { class: 'muted' }, 'No collections yet. Make one in Catalog, then come back to include it.');
+  const err = errSpan();
+  const save = el('button', { class: 'primary' }, 'Save');
+  const form = el('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    save.disabled = true;
+    try {
+      await api(`/api/v1/programmes/${encodeURIComponent(p.id)}`, { method: 'PUT', body: {
+        name: nameInput.value.trim(), ...(descInput.value.trim() ? { description: descInput.value.trim() } : {}),
+        team: teamSel.value || null, tools: [...chosenTools], collections: [...chosenCollections],
+      } });
+      toast(`Saved ${nameInput.value.trim()}`);
+      location.hash = '#/programmes';
+    } catch (ex) { err.textContent = ex.message; save.disabled = false; }
+  } },
+    el('div', { class: 'card stack' }, el('div', { class: 'grant-fields' }, field('Name', nameInput), field('Description', descInput)),
+      field('Owning team', teamSel),
+      el('p', { class: 'sub flush' }, 'The team inside your organisation that runs this programme. When a partnership ends, its people’s projects move to this team, read-only.')),
+    el('div', { class: 'card stack' },
+      el('h2', {}, 'Tools ', toolCount),
+      el('p', { class: 'sub flush' }, 'The tools this programme’s people can open. Every other tool is absent for them.'),
+      toolFilter, toolList),
+    el('div', { class: 'card stack' },
+      el('h2', {}, 'Collections'),
+      el('p', { class: 'sub flush' }, 'The assets in a ticked collection reach this programme, even ones your own people need a group to see.'),
+      collectionList),
+    el('p', {}, save, ' ', el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(p.group)}` }, 'See what they get'), ' ', el('a', { class: 'btn', href: '#/programmes' }, 'Back')),
+    err);
+  const templatesHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading templates…'));
+  void programmeTemplates(p, templatesHost);
+  const peopleHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading people…'));
+  void programmePeople(p, peopleHost);
+  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form, templatesHost, peopleHost);
+}
+
+// Templates published to a programme (plans/82 M2): a template of one of your
+// tools with the inputs partners may change, or a Share with rules file, which
+// brings its own rules. Partners find them on their home and in each tool.
+async function programmeTemplates(p, host) {
+  let data, programmes;
+  try {
+    [data, programmes] = await Promise.all([
+      api(`/api/v1/programmes/${encodeURIComponent(p.id)}/templates`),
+      api('/api/v1/programmes').then((r) => r.programmes ?? []).catch(() => []),
+    ]);
+  } catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
+  const reload = () => programmeTemplates(p, host);
+  const base = `/api/v1/programmes/${encodeURIComponent(p.id)}/templates`;
+  const bare = (id) => encodeURIComponent(id.replace(/^inst\//, ''));
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  // Who can get a template from here: this programme and its companies, then
+  // the other programmes, so one template can reach several.
+  const audienceChoices = [
+    ...data.reach,
+    ...programmes.filter((o) => o.id !== p.id).map((o) => ({ group: o.group, label: `Everyone in ${o.name}` })),
+  ];
+  // A ticked company says which programme it is in, so a company ticked on its
+  // own reads plainly as "only them", and ticked with its programme as no change.
+  const audiencePicker = (chosen) => {
+    const picked = new Set(chosen);
+    const note = el('p', { class: 'sub flush template-audience-note' });
+    const sync = () => {
+      const companies = audienceChoices.filter((a) => a.group.startsWith('company-') && picked.has(a.group)).map((a) => a.label);
+      const whole = picked.has(`programme-${p.id}`);
+      note.textContent = !companies.length ? ''
+        : `${companies.join(' and ')} ${companies.length === 1 ? 'is' : 'are'} in ${p.name}. ${whole ? `Everyone in ${p.name} gets it.` : `Only ${companies.length === 1 ? companies[0] : 'they'} ${companies.length === 1 ? 'gets' : 'get'} it, not everyone in ${p.name}.`}`;
+      note.hidden = !companies.length;
+    };
+    const list = el('div', { class: 'chk-list template-audience' }, ...audienceChoices.map((a) => {
+      const cb = el('input', { type: 'checkbox', ...(picked.has(a.group) ? { checked: 'checked' } : {}) });
+      cb.addEventListener('change', () => { if (cb.checked) picked.add(a.group); else picked.delete(a.group); sync(); });
+      return el('label', { class: 'chk' }, cb, el('span', {}, a.label));
+    }));
+    sync();
+    return { list: el('div', { class: 'stack' }, list, note), value: () => audienceChoices.map((a) => a.group).filter((g) => picked.has(g)) };
+  };
+  // Which inputs partners may change, with the count always in view, so a
+  // template is never published with everything open by accident.
+  // Colourway and mode sit below the inputs, ticked unless the template keeps
+  // its own: they are the brand's approved choices, and they move every colour
+  // the tool takes from the design system.
+  const rulesPicker = (inputs, editable, fixedTheme = false) => {
+    const open = new Set(editable ?? inputs.map((i) => i.id));
+    const theme = el('input', { type: 'checkbox', ...(fixedTheme ? {} : { checked: 'checked' }) });
+    const count = el('strong', { class: 'template-count' });
+    const sync = () => { count.textContent = `Partners can change ${open.size} of ${inputs.length} input${inputs.length === 1 ? '' : 's'}`; };
+    const list = el('div', { class: 'chk-list template-inputs' }, ...inputs.map((i) => {
+      const cb = el('input', { type: 'checkbox', ...(open.has(i.id) ? { checked: 'checked' } : {}) });
+      cb.addEventListener('change', () => { if (cb.checked) open.add(i.id); else open.delete(i.id); sync(); });
+      return el('label', { class: 'chk' }, cb, el('span', {}, i.label));
+    }));
+    sync();
+    return {
+      el: el('div', { class: 'stack template-rules' }, count, el('p', { class: 'sub flush' }, 'Untick what stays as the template has it.'), list,
+        el('div', { class: 'chk-list template-theme' }, el('label', { class: 'chk' }, theme, el('span', {}, 'Colourway and mode')))),
+      // Every input open is the same as no rules at all.
+      value: () => (open.size === inputs.length ? null : inputs.map((i) => i.id).filter((id) => open.has(id))),
+      fixedTheme: () => !theme.checked,
+    };
+  };
+  // Templates only (plans/82 M2 W5): one switch per tool for this programme, off by
+  // default. The open-tool line above it points to it.
+  const onlyTools = new Set(data.templatesOnly ?? []);
+  // The open-tool line, for the other programmes a template reaches: this programme's
+  // own switch says the same for this programme, so the card says it once.
+  const openNote = (toolName, otherProgrammes) => el('p', { class: 'policy-warning template-open-note' },
+    `People in ${otherProgrammes.join(' and ')} can also open ${toolName} on its own, outside these rules. To keep them inside, turn on “Partners use ${toolName} only through its published templates” in ${otherProgrammes.length === 1 ? 'that programme' : 'those programmes'}.`);
+  // Who in this programme has a live template for a tool: everyone, some companies, or no one.
+  const companyLabels = new Map(data.reach.filter((r) => r.group.startsWith('company-')).map((r) => [r.group, r.label]));
+  const coverage = (toolId) => {
+    const live = data.templates.filter((t) => t.kind === 'template' && t.toolId === toolId && !t.retired && t.state !== 'submitted');
+    const groups = new Set(live.flatMap((t) => t.groups));
+    if (groups.has(`programme-${p.id}`)) return { everyone: true, companies: [] };
+    return { everyone: false, companies: [...companyLabels].filter(([g]) => groups.has(g)).map(([, label]) => label) };
+  };
+  const gapLine = (toolId, toolName) => {
+    const c = coverage(toolId);
+    if (c.everyone) return null;
+    const who = c.companies.join(' and ');
+    return el('p', { class: 'policy-warning template-gap' }, c.companies.length
+      ? `Only ${who} ${c.companies.length === 1 ? 'has' : 'have'} a ${toolName} template. Others in ${p.name} cannot use ${toolName}.`
+      : `No one in ${p.name} has a ${toolName} template, so no one there can use ${toolName}.`);
+  };
+  const onlySwitch = (toolId, toolName) => {
+    const on = onlyTools.has(toolId);
+    const cb = el('input', { type: 'checkbox', ...(on ? { checked: 'checked' } : {}) });
+    const swErr = errSpan();
+    cb.addEventListener('change', async () => {
+      swErr.textContent = '';
+      try {
+        await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/templates-only/${encodeURIComponent(toolId)}`, { method: 'PUT', body: { on: cb.checked } });
+        toast(cb.checked ? `People in ${p.name} now use ${toolName} only through its published templates` : `People in ${p.name} can open ${toolName} on its own again`);
+        reload();
+      } catch (ex) { cb.checked = !cb.checked; swErr.textContent = ex.message; }
+    });
+    return el('div', { class: 'stack template-only' },
+      el('label', { class: 'chk' }, cb, el('span', {}, `Partners use ${toolName} only through its published templates`)),
+      el('p', { class: 'sub flush' }, on
+        ? `${toolName} is not in their gallery or search. Its Start chooser offers only the templates published to them, and a server render must name one. Copies they saved before keep opening.`
+        : `Off: people in ${p.name} can also open ${toolName} on its own, outside these rules.`),
+      on ? gapLine(toolId, toolName) : null,
+      swErr);
+  };
+  const switchShown = new Set();
+  const uploadRules = async (file, path) => {
+    const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
+    const out = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(out?.error?.message ?? res.statusText);
+    return out;
+  };
+
+  const row = (t) => {
+    const err = errSpan();
+    const panel = el('div', { class: 'stack template-panel', hidden: 'hidden' });
+    const showPanel = (...nodes) => { panel.replaceChildren(...nodes); panel.hidden = !nodes.length; };
+    const kindLine = t.kind === 'rules-tool' ? 'Share with rules file, made in Design' : `${t.toolName} template`;
+    const canChange = t.kind === 'rules-tool' || t.editable
+      ? (t.inputs.filter((i) => (t.editable ?? []).includes(i.id)).map((i) => i.label).join(', ') || 'Nothing')
+      : `Everything (${t.inputs.length} input${t.inputs.length === 1 ? '' : 's'})`;
+    const change = el('button', { onclick: () => {
+      const who = audiencePicker(t.groups);
+      const rules = t.kind === 'template' ? rulesPicker(t.inputs, t.editable, t.fixedTheme) : null;
+      const saveErr = errSpan();
+      showPanel(
+        field('Who gets it', who.list),
+        rules ? rules.el : el('p', { class: 'sub flush' }, 'A Share with rules file brings its own rules. Change them in Lolly, then upload a new version.'),
+        el('p', { class: 'programme-actions' },
+          el('button', { class: 'primary', onclick: async () => {
+            saveErr.textContent = '';
+            try {
+              await api(`${base}/${bare(t.id)}`, { method: 'PUT', body: { groups: who.value(), ...(rules ? { editable: rules.value(), fixedTheme: rules.fixedTheme() } : {}) } });
+              toast(`Saved ${t.name}`); reload();
+            } catch (ex) { saveErr.textContent = ex.message; }
+          } }, 'Save'),
+          el('button', { onclick: () => showPanel() }, 'Cancel')),
+        saveErr);
+    } }, 'Change');
+    const fileInput = el('input', { type: 'file', accept: '.lolly', hidden: 'hidden' });
+    fileInput.addEventListener('change', async () => {
+      const f = fileInput.files?.[0];
+      if (!f) return;
+      err.textContent = '';
+      try { const out = await uploadRules(f, `${base}/${bare(t.id)}/versions`); toast(`Version ${out.version} of ${t.name} published`); reload(); }
+      catch (ex) { err.textContent = ex.message; fileInput.value = ''; }
+    });
+    const newVersion = el('button', { onclick: () => {
+      if (t.kind === 'rules-tool') { fileInput.click(); return; }
+      const same = data.candidates.filter((c) => c.toolId === t.toolId);
+      if (!same.length) { showPanel(el('p', { class: 'muted' }, `Save the changed ${t.toolName} template in Lolly and submit it to the catalog, then come back here.`)); return; }
+      const pick = el('select', { 'aria-label': 'New version from' }, ...same.map((c) => el('option', { value: c.id }, c.name)));
+      const vErr = errSpan();
+      showPanel(field('New version from', pick),
+        el('p', { class: 'sub flush' }, 'Partners keep what they changed in their saved copies and are told a new version is ready.'),
+        el('p', { class: 'programme-actions' },
+          el('button', { class: 'primary', onclick: async () => {
+            vErr.textContent = '';
+            try { const out = await api(`${base}/${bare(t.id)}/versions`, { method: 'POST', body: { from: pick.value } }); toast(`Version ${out.version} of ${t.name} published`); reload(); }
+            catch (ex) { vErr.textContent = ex.message; }
+          } }, 'Publish this version'),
+          el('button', { onclick: () => showPanel() }, 'Cancel')),
+        vErr);
+    } }, 'New version');
+    const retire = el('button', { class: 'danger', onclick: () => {
+      const others = data.templates.filter((o) => o.id !== t.id && !o.retired);
+      const pick = el('select', { 'aria-label': 'Replaced by' }, el('option', { value: '' }, 'Nothing'), ...others.map((o) => el('option', { value: o.id }, o.name)));
+      const rErr = errSpan();
+      showPanel(
+        el('p', { class: 'flush' }, el('strong', {}, `Retire ${t.name}?`)),
+        el('p', { class: 'sub flush' }, 'It leaves partners’ homes and tool choosers now. Saved copies keep working and say it was retired.'),
+        others.length ? field('Replaced by (optional)', pick) : null,
+        el('p', { class: 'programme-actions' },
+          el('button', { class: 'danger', onclick: async () => {
+            rErr.textContent = '';
+            try { await api(`${base}/${bare(t.id)}/retire`, { method: 'POST', body: { ...(pick.value ? { replacedBy: pick.value } : {}) } }); toast(`Retired ${t.name}`); reload(); }
+            catch (ex) { rErr.textContent = ex.message; }
+          } }, 'Retire'),
+          el('button', { onclick: () => showPanel() }, 'Cancel')),
+        rErr);
+    } }, 'Retire');
+    const restore = el('button', { onclick: async () => {
+      err.textContent = '';
+      try { await api(`${base}/${bare(t.id)}/restore`, { method: 'POST' }); toast(`Published ${t.name} again`); reload(); }
+      catch (ex) { err.textContent = ex.message; }
+    } }, 'Publish again');
+    const version = t.kind === 'rules-tool' ? (t.toolVersion ?? String(t.version)) : String(t.version);
+    return el('div', { class: 'template-row' },
+      el('div', { class: 'template-cells' },
+        el('div', { class: 'template-name' },
+          el('strong', {}, t.name),
+          el('div', { class: 'muted' }, kindLine),
+          t.rebuilt ? el('div', { class: 'muted' }, 'Rebuilt with this workspace’s Design') : null,
+          t.state === 'submitted' ? el('span', { class: 'status review' }, 'Waiting for review') : null,
+          t.retired ? el('span', { class: 'status revoked' }, `Retired ${day(t.retired.at)}${t.retired.replacedByName ? `, replaced by ${t.retired.replacedByName}` : ''}`) : null),
+        el('div', {}, el('div', { class: 'template-label' }, 'Who gets it'), t.audience.map((a) => a.label).join(', ')),
+        el('div', {}, el('div', { class: 'template-label' }, 'Partners can change'), canChange),
+        el('div', {}, el('div', { class: 'template-label' }, 'Version'), version, el('div', { class: 'muted' }, `Published ${day(t.publishedAt)}`)),
+        el('div', { class: 'programme-actions template-actions' }, ...(t.retired ? [restore] : [change, newVersion, retire]), fileInput)),
+      t.toolOpenTo?.filter((n) => n !== p.name).length && !t.retired ? openNote(t.toolName, t.toolOpenTo.filter((n) => n !== p.name)) : null,
+      // The switch, once per tool, on the first live row that starts it.
+      t.kind === 'template' && !t.retired && (p.tools.includes(t.toolId) || onlyTools.has(t.toolId)) && !switchShown.has(t.toolId)
+        ? (switchShown.add(t.toolId), onlySwitch(t.toolId, t.toolName)) : null,
+      panel, err);
+  };
+
+  // Publishing: a catalog template, or a Share with rules file.
+  const UPLOAD = 'upload';
+  const source = el('select', { 'aria-label': 'Template' },
+    el('option', { value: '', selected: 'selected' }, 'Choose a template'),
+    ...data.candidates.map((c) => el('option', { value: c.id }, `${c.name} (${c.toolName})`)),
+    el('option', { value: UPLOAD }, 'Upload a Share with rules file (.lolly)'));
+  const file = el('input', { type: 'file', accept: '.lolly', 'aria-label': 'Share with rules file' });
+  const fileField = field('Share with rules file', file, { class: 'template-file' });
+  const who = audiencePicker([`programme-${p.id}`]);
+  const rulesHost = el('div', { class: 'stack' });
+  const pubErr = errSpan();
+  const publish = el('button', { class: 'primary', disabled: 'disabled' }, 'Publish');
+  let rules = null;
+  const sync = () => {
+    const chosen = data.candidates.find((c) => c.id === source.value);
+    fileField.hidden = source.value !== UPLOAD;
+    rules = chosen ? rulesPicker(chosen.inputs, null) : null;
+    const publishNote = (toolName) => el('p', { class: 'policy-warning template-open-note' },
+      `People in ${p.name} can also open ${toolName} on its own, outside these rules. Once it is published, its row has a switch to keep them inside.`);
+    rulesHost.replaceChildren(...(rules ? [rules.el, ...(p.tools.includes(chosen.toolId) && !onlyTools.has(chosen.toolId) ? [publishNote(chosen.toolName)] : [])]
+      : source.value === UPLOAD ? [el('p', { class: 'sub flush' }, 'A Share with rules file brings its own rules: partners change only what its designer chose.')] : []));
+    publish.disabled = !source.value;
+  };
+  source.addEventListener('change', sync);
+  sync();
+  publish.addEventListener('click', async () => {
+    pubErr.textContent = '';
+    const groups = who.value();
+    if (!groups.length) { pubErr.textContent = 'Choose who gets it.'; return; }
+    publish.disabled = true;
+    try {
+      if (source.value === UPLOAD) {
+        const f = file.files?.[0];
+        if (!f) { pubErr.textContent = 'Choose the .lolly file Share with rules downloaded.'; publish.disabled = false; return; }
+        const out = await uploadRules(f, `${base}/rules-file?${new URLSearchParams({ groups: groups.join(',') })}`);
+        toast(out.state === 'submitted' ? 'Sent. It is waiting for review.' : 'Published');
+      } else {
+        await api(base, { method: 'POST', body: { from: source.value, groups, editable: rules?.value() ?? null, fixedTheme: rules?.fixedTheme() ?? false } });
+        toast('Published');
+      }
+      reload();
+    } catch (ex) { pubErr.textContent = ex.message; publish.disabled = false; }
+  });
+
+  const current = data.templates;
+  const rowEls = current.map(row);
+  // A switch left on for a tool with no live template here still shows, with its gap line.
+  const orphanSwitches = [...onlyTools].filter((toolId) => !switchShown.has(toolId))
+    .map((toolId) => onlySwitch(toolId, (data.templatesOnlyTools ?? []).find((x) => x.id === toolId)?.name ?? toolId));
+  host.replaceChildren(el('div', { class: 'card stack' },
+    el('h2', {}, 'Templates'),
+    el('p', { class: 'sub flush' }, `Starting points people in ${p.name} see on their home and in each tool. They change only what the template allows.`),
+    current.length ? el('div', { class: 'template-list' }, ...rowEls) : el('p', { class: 'muted' }, 'No templates yet.'),
+    ...orphanSwitches,
+    el('h3', {}, 'Publish a template'),
+    el('div', { class: 'grant-fields' }, field('Template', source), fileField),
+    field('Who gets it', who.list),
+    rulesHost,
+    el('p', {}, publish),
+    pubErr));
+}
+
+// People, companies and ending a partnership (plans/82 M1 part 2). Every step
+// that changes something shows what it will do first and asks once.
+async function programmePeople(p, host, lastResult = null) {
+  let data, domains, folderData;
+  try {
+    [data, { domains }, folderData] = await Promise.all([
+      api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`),
+      api(`/api/v1/partner-domains?programme=${encodeURIComponent(p.id)}`),
+      api(`/api/v1/programmes/${encodeURIComponent(p.id)}/folders`),
+    ]);
+  } catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
+  const reload = () => programmePeople(p, host);
+  // An end date in a list is a whole day in UTC (it ends at 23:59:59 UTC), so
+  // it reads back as that same day wherever the admin is.
+  const day = (iso) => iso ? `${new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })} (UTC)` : '';
+
+  // Companies.
+  const companyName = el('input', { placeholder: 'Acme Distribution', 'aria-label': 'Company name' });
+  const companyErr = errSpan();
+  const companiesCard = el('div', { class: 'card stack' },
+    el('h2', {}, 'Companies'),
+    el('p', { class: 'sub flush' }, 'The partner organisations in this programme. A company can have its own input rules and collections, and people can be added to it.'),
+    data.companies.length
+      ? el('p', { class: 'chips' }, ...data.companies.map((c) => el('span', { class: 'chip' }, c.name)))
+      : el('p', { class: 'muted' }, 'No companies yet.'),
+    el('form', { class: 'formrow', onsubmit: async (e) => {
+      e.preventDefault(); companyErr.textContent = '';
+      const name = companyName.value.trim(); const id = slugOf(name);
+      if (!id) { companyErr.textContent = 'Name the company.'; return; }
+      try { await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/companies/${id}`, { method: 'PUT', body: { name } }); toast(`Added ${name}`); reload(); }
+      catch (ex) { companyErr.textContent = ex.message; }
+    } }, field('New company', companyName), el('div', {}, el('button', {}, 'Add company'))),
+    companyErr);
+
+  // Domains (plans/82 M1 part 2b): anyone who signs in with a verified address
+  // at one of these joins. Each says plainly how it was proved.
+  const domainState = (d) => {
+    if (d.status === 'asserted') {
+      return [el('span', { class: 'status review' }, 'Admin-asserted'),
+        el('div', { class: 'muted' }, `By ${d.asserted.by.name}, ${day(d.asserted.at)}${d.asserted.reason ? `. Reason: ${d.asserted.reason}` : ''}`)];
+    }
+    if (d.status === 'verified') {
+      return [el('span', { class: 'status live' }, 'DNS verified'), el('div', { class: 'muted' }, `Record found ${day(d.verifiedAt)}, looked up again every day`)];
+    }
+    if (d.status === 'paused') {
+      return [el('span', { class: 'status revoked' }, 'Paused'),
+        el('div', { class: 'muted' }, `The DNS record was not found on ${day(d.missingSince)}. Nobody new joins until it is back; people already in keep their access.`)];
+    }
+    return [el('span', { class: 'status expired' }, 'Waiting for the DNS record'),
+      el('div', { class: 'muted' }, d.lastError ? `The last lookup failed (${d.lastError}). Lolly Work tries again every hour.` : 'Lolly Work looks for it every hour.')];
+  };
+  const domainRow = (d) => {
+    const rule = d.rules.find((r) => r.programme.id === p.id) ?? {};
+    const rowErr = errSpan();
+    const check = d.proof === 'txt' ? el('button', { onclick: async () => {
+      rowErr.textContent = ''; check.disabled = true;
+      try {
+        const r = await api(`/api/v1/partner-domains/${encodeURIComponent(d.domain)}/check`, { method: 'POST' });
+        toast(r.status === 'verified' ? `${d.domain}: record found${r.joined.length ? `, ${r.joined.length} joined` : ''}` : `${d.domain}: record not found yet`);
+        reload();
+      } catch (ex) { rowErr.textContent = ex.message; check.disabled = false; }
+    } }, 'Check now') : null;
+    const assertBtn = d.proof === 'txt' ? armConfirmButton({}, 'Activate without DNS', 'Activate on your say-so?', async (disarm) => {
+      rowErr.textContent = '';
+      try {
+        const r = await api(`/api/v1/partner-domains/${encodeURIComponent(d.domain)}`, { method: 'PUT', body: { proof: 'admin' } });
+        toast(`${d.domain} is active${r.joined.length ? `: ${r.joined.length} joined` : ''}`); reload();
+      } catch (ex) { rowErr.textContent = ex.message; disarm(); }
+    }) : null;
+    const toDns = d.proof === 'admin' ? el('button', { onclick: async () => {
+      rowErr.textContent = ''; toDns.disabled = true;
+      try {
+        const r = await api(`/api/v1/partner-domains/${encodeURIComponent(d.domain)}`, { method: 'PUT', body: { proof: 'txt' } });
+        toast(r.status === 'verified' ? `${d.domain}: DNS record found` : `${d.domain} now waits for its DNS record`); reload();
+      } catch (ex) { rowErr.textContent = ex.message; toDns.disabled = false; }
+    } }, 'Prove by DNS instead') : null;
+    const remove = armConfirmButton({ class: 'danger' }, 'Remove', 'Really remove?', async (disarm) => {
+      rowErr.textContent = '';
+      try { await api(`/api/v1/partner-domains/${encodeURIComponent(d.domain)}?programme=${encodeURIComponent(p.id)}`, { method: 'DELETE' }); toast(`Removed ${d.domain}`); reload(); }
+      catch (ex) { rowErr.textContent = ex.message; disarm(); }
+    });
+    const record = d.status === 'pending' || d.status === 'paused' ? el('div', { class: 'domain-record stack' },
+      el('p', { class: 'flush' }, `Ask whoever runs ${d.domain} to publish this TXT record:`),
+      el('dl', { class: 'domain-record-fields' },
+        el('dt', {}, 'Name'), el('dd', {}, el('code', {}, d.txt.name), ' ', copyButton(() => d.txt.name, 'Copy')),
+        el('dt', {}, 'Value'), el('dd', {}, el('code', {}, d.txt.value), ' ', copyButton(() => d.txt.value, 'Copy')))) : null;
+    return el('div', { class: 'domain-row stack' },
+      el('div', { class: 'domain-head' },
+        el('strong', {}, d.domain),
+        el('span', {}, rule.company ? rule.company.name : 'No company'),
+        el('span', {}, rule.endsAt ? `Ends ${day(rule.endsAt)}` : 'No end date'),
+        el('span', {}, d.members ? `${d.members} ${d.members === 1 ? 'person' : 'people'} joined through it so far` : 'Nobody joined through it yet')),
+      el('div', {}, ...domainState(d)),
+      record,
+      el('p', { class: 'flush programme-actions' }, check, assertBtn, toDns, remove),
+      rowErr);
+  };
+  const domainInput = el('input', { placeholder: 'partner.example', 'aria-label': 'Domain', autocapitalize: 'off', spellcheck: 'false' });
+  const domainCompany = el('select', { 'aria-label': 'Company' }, el('option', { value: '' }, 'No company'),
+    ...data.companies.map((c) => el('option', { value: c.id }, c.name)));
+  const domainEnds = el('input', { type: 'date', 'aria-label': 'End date' });
+  const domainReason = el('input', { placeholder: 'Optional, for example the partner agreement', 'aria-label': 'Reason' });
+  const domainOut = el('div', { class: 'stack' });
+  const domainErr = errSpan();
+  const domainBody = (extra) => ({ programme: p.id, ...(domainCompany.value ? { company: domainCompany.value } : {}),
+    ...(domainEnds.value ? { endsAt: domainEnds.value } : {}), ...extra });
+  const addDomain = async (body, btn) => {
+    domainErr.textContent = ''; btn.disabled = true;
+    const domain = domainInput.value.trim().toLowerCase();
+    try {
+      const r = await api(`/api/v1/partner-domains/${encodeURIComponent(domain)}`, { method: 'PUT', body: domainBody(body) });
+      const active = r.status === 'verified' || r.status === 'asserted';
+      const movedNote = r.moved?.length ? ` ${r.moved.length} staff ${r.moved.length === 1 ? 'account' : 'accounts'} moved in as you chose.` : '';
+      toast((active ? `Added ${r.domain}${r.joined.length ? `: ${r.joined.length} joined now.` : '.'}` : `Added ${r.domain}. Publish its DNS record to activate the domain.`) + movedNote);
+      reload();
+    } catch (ex) { domainErr.textContent = ex.message; btn.disabled = false; }
+  };
+  const domainPreview = async () => {
+    domainErr.textContent = ''; domainOut.replaceChildren();
+    const domain = domainInput.value.trim().toLowerCase();
+    if (!domain) { domainErr.textContent = 'Type a domain.'; domainInput.focus(); return; }
+    try {
+      const dry = await api(`/api/v1/partner-domains/${encodeURIComponent(domain)}`, { method: 'PUT', body: domainBody({ dryRun: true }) });
+      // Staff stay as they are unless the admin ticks the box below: joining a
+      // programme would narrow them to it (plans/82 M1 part 2b, review).
+      const staff = dry.accounts.filter((a) => a.staff);
+      const others = dry.accounts.filter((a) => !a.staff);
+      const joins = others.filter((a) => a.joins);
+      const moveBox = el('input', { type: 'checkbox' });
+      const moveIds = () => (moveBox.checked ? staff.map((a) => a.id) : []);
+      const withMoves = (extra) => ({ ...extra, ...(moveIds().length ? { moveStaff: moveIds() } : {}) });
+      const viaDns = el('button', { class: 'primary', onclick: () => addDomain(withMoves({}), viaDns) }, 'Add, proved by DNS');
+      const viaAdmin = armConfirmButton({}, 'Add on my say-so', 'Add without DNS?', (disarm) => addDomain(withMoves({ proof: 'admin', ...(domainReason.value.trim() ? { reason: domainReason.value.trim() } : {}) }), viaAdmin).finally(disarm));
+      const person = (a, what) => el('tr', {}, el('td', {}, a.name ?? a.email, el('div', { class: 'muted' }, a.email)), el('td', {}, ...what));
+      const partnerLine = !others.length ? null : others.length === 1
+        ? `1 partner account at ${dry.domain} already signs in here. ${joins.length ? 'Once the domain is active, this account joins straight away.' : 'This account does not join straight away. The table says why.'}`
+        : `${others.length} partner accounts at ${dry.domain} already sign in here. `
+          + (!joins.length ? 'None of them joins straight away. The table says why.'
+            : joins.length === others.length ? 'Once the domain is active, they join straight away.'
+              : `Once the domain is active, ${joins.length} of them join straight away.`);
+      domainOut.replaceChildren(...[
+        !dry.accounts.length ? el('p', { class: 'flush' }, `Nobody at ${dry.domain} signs in here yet. People join when they first sign in with a verified address there.`) : null,
+        partnerLine ? el('p', { class: 'flush' }, partnerLine) : null,
+        others.length ? dataTable(['Person', 'What happens'], others.map((a) => person(a, [
+          a.joins ? 'Joins now' : a.later ? 'Joins later' : 'Does not join', a.reason ? el('div', { class: 'muted' }, a.reason) : null]))) : null,
+        staff.length ? el('div', { class: 'stack domain-staff' },
+          el('h4', { class: 'flush' }, `Already in this workspace as staff: will not join (${staff.length})`),
+          el('p', { class: 'sub flush' }, 'They keep their access as it is. Joining a programme would limit them to its tools and assets, so they move only if you tick the box below.'),
+          dataTable(['Person', 'Today'], staff.map((a) => person(a, ['Staff']))),
+          el('label', { class: 'chk' }, moveBox, el('span', {}, `Also move ${staff.length === 1 ? 'this account' : `these ${staff.length} accounts`} into the programme as ${staff.length === 1 ? 'a partner' : 'partners'}`))) : null,
+        el('p', { class: 'sub flush' }, 'Proved by DNS: you get a TXT record to publish, and the domain becomes active once Lolly Work finds the record. On your say-so: active now, and your name, the time and the reason go in Audit.'),
+        field('Reason, if you add the domain on your say-so', domainReason),
+        el('p', { class: 'programme-actions' }, viaDns, viaAdmin)].filter(Boolean));
+    } catch (ex) { domainErr.textContent = ex.message; }
+  };
+  const domainsCard = el('div', { class: 'card stack' },
+    el('h2', {}, 'Domains'),
+    el('p', { class: 'sub flush' }, 'Anyone who signs in with a verified address at one of these domains joins this programme, and the company you choose. Public mail domains and your own domains cannot be added.'),
+    domains.length ? el('div', { class: 'stack domain-list' }, ...domains.map(domainRow)) : el('p', { class: 'muted' }, 'No domains yet.'),
+    el('h3', {}, 'Add a domain'),
+    el('div', { class: 'grant-fields' }, field('Domain', domainInput), field('Company', domainCompany), field('End date (optional)', domainEnds)),
+    el('p', {}, el('button', { onclick: domainPreview }, 'Preview')), domainErr, domainOut);
+
+  // People, and adding many at once.
+  const rows = [
+    ...data.people.map((m) => el('tr', {}, el('td', {}, m.name), el('td', {}, m.email), el('td', {}, m.company?.name ?? '—'),
+      el('td', {}, m.disabled ? el('span', { class: 'status revoked' }, 'Disabled') : 'Signs in',
+        m.joinedThrough ? el('div', { class: 'muted' }, `Joined through ${m.joinedThrough}`) : null),
+      el('td', {}, m.endsAt ? `Ends ${day(m.endsAt)}` : 'No end date'))),
+    ...data.invited.map((m) => el('tr', {}, el('td', { class: 'muted' }, '—'), el('td', {}, m.email), el('td', {}, m.company?.name ?? '—'),
+      el('td', {}, 'Invited, not signed in yet'),
+      el('td', {}, m.endsAt ? `Ends ${day(m.endsAt)}` : 'No end date'))),
+  ];
+  const countLine = `${data.people.length} signed in, ${data.invited.length} invited`;
+  const list = el('textarea', { rows: '5', spellcheck: 'false', 'aria-label': 'People to add',
+    placeholder: 'ana@partner.example, Ana Silva, Acme Distribution, 2027-06-30\nbo@partner.example' });
+  const out = el('div', { class: 'stack' });
+  const addErr = errSpan();
+  const statusLabel = { new: 'New, will be invited', existing: 'Signs in already, will be added', already: 'Already in, nothing to do', invalid: 'Cannot add', duplicate: 'Listed twice' };
+  const resultLabel = { invited: 'Invited', added: 'Added', unchanged: 'Unchanged', skipped: 'Skipped', refused: 'Refused' };
+  const rowTable = (rs, label) => dataTable(['Line', 'Email', 'Company', 'Ends', 'What happens'], rs.map((r) => el('tr', {},
+    el('td', {}, String(r.line)), el('td', {}, r.email), el('td', {}, r.company ?? '—'), el('td', {}, r.endsAtIso ? day(r.endsAtIso) : '—'),
+    el('td', {}, label(r), r.reason ? el('div', { class: 'muted' }, r.reason) : null))));
+  const preview = async () => {
+    addErr.textContent = ''; out.replaceChildren();
+    try {
+      const plan = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`, { method: 'POST', body: { text: list.value } });
+      const doable = (plan.summary.new ?? 0) + (plan.summary.existing ?? 0);
+      const confirm = el('button', { class: 'primary', disabled: doable ? null : 'disabled', onclick: async () => {
+        confirm.disabled = true;
+        try {
+          const done = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`, { method: 'POST', body: { text: list.value, apply: true } });
+          await programmePeople(p, host, done);
+        } catch (ex) { addErr.textContent = ex.message; confirm.disabled = false; }
+      } }, doable ? `Add ${doable} ${doable === 1 ? 'person' : 'people'}` : 'Nothing to add');
+      out.replaceChildren(el('p', {}, `${plan.summary.new} new, ${plan.summary.existing} already signing in, ${plan.summary.already} already in, ${plan.summary.invalid + plan.summary.duplicate} cannot be added.`),
+        rowTable(plan.rows, (r) => statusLabel[r.status] ?? r.status), el('p', {}, confirm));
+    } catch (ex) { addErr.textContent = ex.message; }
+  };
+  // The result of the list just added, kept across the reload: one sign-in
+  // message for everyone it invited (Work sends no email), then each row.
+  if (lastResult) {
+    const message = el('textarea', { rows: '4', readonly: 'readonly', 'aria-label': 'Sign-in message for everyone invited' });
+    message.value = lastResult.message ?? '';
+    out.replaceChildren(...[
+      el('p', {}, el('strong', {}, 'Done.'), ` ${lastResult.rows.filter((r) => r.result === 'invited').length} invited, ${lastResult.rows.filter((r) => r.result === 'added').length} added.`),
+      lastResult.message ? el('div', { class: 'stack' },
+        el('p', { class: 'flush' }, 'Send everyone you invited this one message, by email or chat:'),
+        message, el('p', {}, copyButton(() => message.value, 'Copy message')),
+        el('p', { class: 'sub flush' }, 'Each person’s own invite link is in ', el('a', { href: '#/users' }, 'People'), ' → Invitations, if you would rather send them one by one.')) : null,
+      rowTable(lastResult.rows, (r) => resultLabel[r.result] ?? r.result)].filter(Boolean));
+  }
+  const peopleCard = el('div', { class: 'card stack' },
+    el('h2', {}, 'People ', el('span', { class: 'muted' }, countLine)),
+    rows.length ? dataTable(['Name', 'Email', 'Company', 'Status', 'Access'], rows) : el('p', { class: 'muted' }, 'Nobody yet.'),
+    el('h3', {}, 'Add people'),
+    el('p', { class: 'sub flush' }, 'Paste a list or a CSV: one address per line, optionally followed by a name, a company and an end date (YYYY-MM-DD), separated by commas. You see what will happen before anything does, and adding the same list again changes nothing.'),
+    list, el('p', {}, el('button', { onclick: preview }, 'Preview')), addErr, out);
+
+  // Ending the partnership.
+  const projectsSel = el('select', { 'aria-label': 'Their projects' },
+    ...(p.team ? [el('option', { value: 'team-readonly' }, `Move their projects to ${p.team}, read-only (the team that owns this programme)`)] : []),
+    el('option', { value: 'me-readonly' }, 'Move their projects to me, read-only'),
+    el('option', { value: 'me' }, 'Move their projects to me, editable'),
+    el('option', { value: 'keep' }, 'Leave their projects where they are'));
+  const noTeam = p.team ? null : el('p', { class: 'sub flush' }, 'This programme has no owning team, so their projects move to you. Set an owning team above to send them to that team instead.');
+  const whoSel = el('select', { 'aria-label': 'Whose access ends' },
+    el('option', { value: '' }, `Everyone in ${p.name}`),
+    ...data.companies.map((c) => el('option', { value: `company:${c.id}` }, `Everyone at ${c.name}`)),
+    ...domains.map((d) => el('option', { value: `domain:${d.domain}` }, `Everyone with an address at ${d.domain}`)));
+  const who = () => {
+    const [kind, id] = whoSel.value.split(/:(.*)/);
+    return kind === 'company' ? { company: id } : kind === 'domain' ? { domain: id } : { programme: p.id };
+  };
+  const endOut = el('div', { class: 'stack' });
+  const endErr = errSpan();
+  const exitPreview = async () => {
+    endErr.textContent = ''; endOut.replaceChildren();
+    try {
+      const dry = await api('/api/v1/programmes/exit', { method: 'POST', body: { ...who(), projects: projectsSel.value } });
+      const projectCount = dry.accounts.reduce((n, a) => n + a.projects.length, 0);
+      const links = dry.accounts.reduce((n, a) => n + a.links, 0);
+      const goLabel = dry.accounts.length ? `End access for ${dry.accounts.length} ${dry.accounts.length === 1 ? 'person' : 'people'}` : 'End the partnership';
+      const go = armConfirmButton({ class: 'danger' }, goLabel, 'Really end it?', async (disarm) => {
+        try {
+          const done = await api('/api/v1/programmes/exit', { method: 'POST', body: { ...who(), projects: projectsSel.value, apply: true } });
+          toast(`Ended access for ${done.accounts.length}`); reload();
+        } catch (ex) { endErr.textContent = ex.message; disarm(); }
+      });
+      endOut.replaceChildren(...[
+        el('p', {}, `${dry.accounts.length} ${dry.accounts.length === 1 ? 'account' : 'accounts'}, ${projectCount} project${projectCount === 1 ? '' : 's'}, ${links} link${links === 1 ? '' : 's'}, ${dry.pendingInvitations.length} open invitation${dry.pendingInvitations.length === 1 ? '' : 's'}.`),
+        dry.accounts.length ? dataTable(['Person', 'Projects', 'Links'], dry.accounts.map((a) => el('tr', {}, el('td', {}, a.name, el('div', { class: 'muted' }, a.email)),
+          el('td', {}, a.projects.map((x) => x.name).join(', ') || '—'), el('td', {}, String(a.links))))) : null,
+        dry.skipped.length ? el('p', { class: 'muted' }, `Left alone: ${dry.skipped.map((s) => `${s.email} (${s.reason})`).join(', ')}.`) : null,
+        dry.domainRules?.length ? el('p', {}, 'First, nobody new joins through ',
+          dry.domainRules.map((r) => `${r.domain} (${r.programme.name}${r.company ? `, ${r.company.name}` : ''})`).join(', '), ' any more.') : null,
+        el('p', { class: 'sub flush' }, 'Their accounts are disabled and signed out, and their links, agent tokens and open invitations stop working. Everything is recorded in Audit.'),
+        dry.accounts.length || dry.pendingInvitations.length || dry.domainRules?.length ? el('p', {}, go) : null].filter(Boolean));
+    } catch (ex) { endErr.textContent = ex.message; }
+  };
+  const endCard = el('div', { class: 'card stack' },
+    el('h2', {}, 'End this partnership'),
+    el('p', { class: 'sub flush' }, 'See who has access and what they own, then end it in one step.'),
+    field('Whose access ends', whoSel), field('Their projects', projectsSel), noTeam,
+    el('p', {}, el('button', { onclick: exitPreview }, 'See what ending it does')), endErr, endOut);
+
+  // Provider folders (plans/82 M1 part 2c): one folder of a connected source,
+  // and everything in it, for the whole programme or one company in it.
+  const assetsText = (n) => `${n} ${n === 1 ? 'asset' : 'assets'}`;
+  const folderName = (path) => path || 'All of it';
+  const folderRow = (f) => {
+    const rowErr = errSpan();
+    const query = new URLSearchParams({ provider: f.provider.id, path: f.path, ...(f.company ? { company: f.company.id } : {}) });
+    const remove = armConfirmButton({ class: 'danger' }, 'Remove', 'Really remove?', async (disarm) => {
+      rowErr.textContent = '';
+      try { await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/folders?${query}`, { method: 'DELETE' }); toast(`Removed ${folderName(f.path)}`); reload(); }
+      catch (ex) { rowErr.textContent = ex.message; disarm(); }
+    });
+    return el('tr', {},
+      el('td', {}, el('div', {}, el('strong', {}, folderName(f.path)), el('div', { class: 'muted' }, f.provider.label))),
+      el('td', {}, f.company ? f.company.name : `Everyone in ${p.name}`),
+      el('td', {}, f.endsAt ? `Ends ${day(f.endsAt)}` : 'No end date'),
+      el('td', {}, assetsText(f.assets)),
+      el('td', {}, remove, rowErr));
+  };
+  const sources = folderData.providers ?? [];
+  const sourceSel = el('select', { 'aria-label': 'Source' }, ...sources.map((s) => el('option', { value: s.id }, s.label)));
+  const folderSel = el('select', { 'aria-label': 'Folder' });
+  // Nothing is chosen at first, and "All of it" comes last: pressing the
+  // button without looking must never give partners the whole source.
+  // Option values: '' is no choice, 'whole' the whole source, 'path:<p>' a folder.
+  const folderNote = el('p', { class: 'sub flush' });
+  const chosenPath = () => (folderSel.value === 'whole' ? '' : folderSel.value.startsWith('path:') ? folderSel.value.slice(5) : null);
+  const describeChoice = () => {
+    const source = sources.find((s) => s.id === sourceSel.value);
+    const path = chosenPath();
+    addFolder.disabled = path === null;
+    if (path === null || !source) { folderNote.textContent = ''; return; }
+    const inside = source.folders.filter((f) => f.path && f.path !== path && (path === '' || f.path.startsWith(`${path}/`)));
+    const names = inside.slice(0, 8).map((f) => `${f.path} (${f.assets})`);
+    const more = inside.length > 8 ? `, and ${inside.length - 8} more folders` : '';
+    folderNote.textContent = inside.length
+      ? `This includes ${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]}${more}.`
+      : '';
+  };
+  const fillFolders = () => {
+    const source = sources.find((s) => s.id === sourceSel.value);
+    const named = (source?.folders ?? []).filter((f) => f.path);
+    const whole = (source?.folders ?? []).find((f) => !f.path);
+    folderSel.replaceChildren(...(source && !source.synced
+      ? [el('option', { value: '', disabled: 'disabled', selected: 'selected' }, 'Syncing: its folders appear when the first sync finishes')]
+      : [el('option', { value: '', selected: 'selected' }, 'Choose a folder'),
+        ...named.map((f) => el('option', { value: `path:${f.path}` }, `${f.path} (${assetsText(f.assets)})`)),
+        ...(whole ? [el('option', { value: 'whole' }, `All of it (${assetsText(whole.assets)})`)] : [])]));
+    describeChoice();
+  };
+  sourceSel.addEventListener('change', fillFolders);
+  folderSel.addEventListener('change', describeChoice);
+  const folderCompany = el('select', { 'aria-label': 'Who gets it' }, el('option', { value: '' }, `Everyone in ${p.name}`),
+    ...data.companies.map((c) => el('option', { value: c.id }, c.name)));
+  const folderEnds = el('input', { type: 'date', 'aria-label': 'End date' });
+  const folderErr = errSpan();
+  const addFolder = el('button', { class: 'primary', disabled: 'disabled', onclick: async () => {
+    const path = chosenPath();
+    if (path === null) return;
+    folderErr.textContent = ''; addFolder.disabled = true;
+    try {
+      await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/folders`, { method: 'PUT', body: {
+        provider: sourceSel.value, path, ...(path === '' ? { whole: true } : {}),
+        ...(folderCompany.value ? { company: folderCompany.value } : {}), ...(folderEnds.value ? { endsAt: folderEnds.value } : {}),
+      } });
+      toast(`Added ${folderName(path)}`); reload();
+    } catch (ex) { folderErr.textContent = ex.message; addFolder.disabled = false; }
+  } }, 'Give this folder');
+  fillFolders();
+  const foldersCard = el('div', { class: 'card stack' },
+    el('h2', {}, 'Provider folders'),
+    el('p', { class: 'sub flush' }, `Give one folder of a connected source, and everything inside it, to ${p.name} or to one company in it. They get those files even when the source is otherwise for your own people, and nothing else from it.`),
+    folderData.folders.length
+      ? dataTable(['Folder', 'Who gets it', 'Access', 'Holds', { label: '', sort: false }], folderData.folders.map(folderRow))
+      : el('p', { class: 'muted' }, 'No folders yet.'),
+    sources.length ? el('h3', {}, 'Give a folder') : null,
+    sources.length
+      ? el('div', { class: 'grant-fields' }, field('Source', sourceSel), field('Folder', folderSel), field('Who gets it', folderCompany), field('End date (optional)', folderEnds))
+      : el('p', { class: 'muted' }, 'No connected sources yet. Connect one under Catalog, then come back to give a folder.'),
+    sources.length ? folderNote : null,
+    sources.length ? el('p', {}, addFolder) : null,
+    folderErr);
+
+  host.replaceChildren(companiesCard, foldersCard, domainsCard, peopleCard, endCard);
+}
+
 
 // ── contractors (plans/02) ───────────────────────────────────────────────────
 // Contractors are NOT accounts — they are expiring, single-tool guest-edit
@@ -5820,15 +6619,18 @@ function grantRow(g) {
     } catch (e) { err.textContent = e.message; delBtn.disabled = false; disarm(); }
   });
   return el('tr', {},
-    el('td', { class: 'mono' }, g.principal),
+    el('td', {}, el('span', { class: 'mono' }, g.principal),
+      programmeGroupNames.has(g.principal.replace(/^group:/, '')) ? el('div', { class: 'muted' }, groupLabel(g.principal.replace(/^group:/, ''))) : null),
     el('td', { class: 'mono' }, g.action),
-    el('td', { class: 'mono' }, g.resource),
+    el('td', {}, el('span', { class: 'mono' }, g.resource),
+      g.neverMatches ? el('p', { class: 'form-err flush' }, `Never matches. ${g.neverMatches} Delete it and add a rule that can apply.`) : null),
     el('td', {}, el('span', { class: `status ${g.effect === 'allow' ? 'live' : 'revoked'}` }, g.effect)),
     el('td', {}, delBtn, err));
 }
 
 async function viewGrants(main) {
   const { grants } = await api('/api/v1/grants');
+  await api('/api/v1/programmes').catch(() => null); // names for programme groups, best-effort
   const sorted = [...grants].sort((a, b) =>
     a.principal.localeCompare(b.principal) || a.action.localeCompare(b.action));
 
@@ -5839,7 +6641,7 @@ async function viewGrants(main) {
   const nameInput = el('input', { placeholder: 'marketing' });
   const actionInput = el('input', { list: 'grant-actions', placeholder: 'export.download' });
   const datalist = el('datalist', { id: 'grant-actions' }, ...KNOWN_ACTIONS.map((a) => el('option', { value: a })));
-  const resourceInput = el('input', { value: '*', placeholder: "* or tool:<id> or catalog:tag/<t>" });
+  const resourceInput = el('input', { value: '*', placeholder: '* or tool:<id>' });
   const effectSel = el('select', {}, el('option', { value: 'deny' }, 'Deny permission'), el('option', { value: 'allow' }, 'Allow permission'));
   const err = errSpan();
   err.id = `grant-error-${++_fieldSeq}`;
@@ -5877,15 +6679,10 @@ async function viewGrants(main) {
     if (principal.endsWith(':')) { invalid(nameInput, kindSel.value === 'user' ? 'Enter the account ID.' : 'Enter the group name.'); return; }
     const action = actionInput.value.trim();
     if (!action) { invalid(actionInput, 'Choose a permission or enter a custom one.'); return; }
-    // An unknown permission is not refused: the server takes any action string
-    // and its vocabulary is wider than KNOWN_ACTIONS (brand.switch,
-    // token.manage, collab.join and more are enforced but unlisted). A typo
-    // would still read as governance in the table, so ask once before storing.
-    if (!KNOWN_ACTIONS.includes(action) && actionInput.dataset.confirmed !== action) {
-      actionInput.dataset.confirmed = action;
-      err.textContent = `${action} is not in the console list. If that is deliberate, press Add grant again to store it.`;
-      return;
-    }
+    // The server refuses a permission it never checks, and a resource that
+    // permission is never checked against, and says why (GRANT_NEVER_MATCHES).
+    // KNOWN_ACTIONS only feeds the suggestions; brand.switch, token.manage,
+    // collab.join and more are enforced but unlisted.
     addBtn.disabled = true;
     try {
       await api('/api/v1/grants', { method: 'POST', body: {
@@ -5902,7 +6699,7 @@ async function viewGrants(main) {
       field('Applies to', kindSel), nameField,
       field('Permission', actionInput), field('Effect', effectSel),
       el('div', { class: 'grant-scope' }, field('Resource scope', resourceInput),
-        el('p', { class: 'sub flush' }, '* matches all resources. Examples: tool:<id>, catalog:tag/<tag>.'))),
+        el('p', { class: 'sub flush' }, '* matches everything. Some permissions narrow further: tool:<id> for using a tool, exporting from it and linking to it, destination:<id> for delivery, project:<id> or session:<id> for sessions and comments, chain:<id> for approvals.'))),
     preview,
     el('p', {}, addBtn),
     err);
@@ -5941,22 +6738,38 @@ async function viewGrants(main) {
 // profile policy. Server-computed through the same assembler the real poll uses,
 // so the preview cannot drift from reality.
 
-function accessDetail(access) {
-  if (!access) return el('span', { class: 'muted' }, 'editable');
-  // The attribution the member's own sidebar shows beside the control, so the
-  // preview answers "why is this locked?" the same way they will read it.
-  const by = access.by
-    ? el('span', { class: 'muted' }, ` · set by ${access.by}${access.reason ? `: ${access.reason}` : ''}`)
-    : null;
+function accessDetail(access, note) {
+  // The overlay's name and the rule's reason, for the admin only: Preview sends
+  // them apart from the member's org-config, which never carries them.
+  const by = note?.by
+    ? el('span', { class: 'muted' }, ` · set by ${note.by}${note.reason ? `: ${note.reason}` : ''}`)
+    : note?.reason ? el('span', { class: 'muted' }, ` · ${note.reason}`) : null;
+  if (!access) return el('span', {}, el('span', { class: 'muted' }, 'editable'), by);
   if (access.level === 'locked') return el('span', {}, el('span', { class: 'status expired' }, 'locked'), ' → ', el('span', { class: 'mono' }, showValue(access.value)), by);
   if (access.level === 'choice') return el('span', {}, el('span', { class: 'status expired' }, 'choice'), ' → ', el('span', { class: 'mono' }, (access.allow ?? []).map(showValue).join(', ')), by);
   if (access.level === 'hidden') return el('span', {}, el('span', { class: 'status revoked' }, 'hidden'), by);
   return el('span', {}, el('span', { class: 'muted' }, access.level), by);
 }
 
+/** Which partner rule decided an input, for the admin (plans/82). Never shown
+ *  to a partner: org-config carries no explanation. */
+function ruleWhy(why) {
+  if (!why) return null;
+  const name = (g) => programmeGroupNames.get(g) ?? companyGroupNames.get(g)?.name ?? g;
+  const does = { editable: 'leaves the input editable', choice: 'offers a choice', locked: 'locks the input', hidden: 'hides the input' };
+  const company = companyGroupNames.get(why.group);
+  const decided = why.scope === 'company'
+    ? `Decided by the rule for ${name(why.group)}${company ? `, a company in ${company.programme}` : ''}${why.over ? `, which overrides the rule for ${name(why.over)}` : ''}.`
+    : `Decided by the rule for ${name(why.group)}.`;
+  const others = why.others?.length
+    ? ` ${why.others.map((o) => `${name(o.group)} ${does[o.level] ?? o.level}`).join('; ')}, and the stricter rule wins.`
+    : '';
+  return el('div', { class: 'muted' }, decided + others);
+}
+
 function renderPreview(data) {
   const { preview, orgConfig } = data;
-  const heading = preview.groups.length ? preview.groups.join(', ') : 'a member with no groups';
+  const heading = preview.groups.length ? preview.groups.map(groupLabel).join(', ') : 'a member with no groups';
 
   const canRows = Object.entries(orgConfig.can).map(([action, ok]) => el('tr', {},
     el('td', { class: 'mono' }, action),
@@ -5966,14 +6779,25 @@ function renderPreview(data) {
   const toolBlocks = govToolIds.length
     ? govToolIds.map((id) => {
         const t = orgConfig.tools[id];
+        const whyFor = preview.why?.[id] ?? {};
+        const notesFor = preview.attribution?.[id] ?? {};
         const inputRows = [
-          ...(t.inputs ?? []).map((i) => el('tr', {}, el('td', { class: 'mono' }, i.id), el('td', {}, accessDetail(i.access)))),
+          ...(t.inputs ?? []).map((i) => el('tr', {}, el('td', { class: 'mono' }, i.id), el('td', {}, accessDetail(i.access, notesFor[i.id]), ruleWhy(whyFor[i.id])))),
           ...(t.hidden ?? []).filter((h) => !(t.inputs ?? []).some((i) => i.id === h))
-            .map((h) => el('tr', {}, el('td', { class: 'mono' }, h), el('td', {}, el('span', { class: 'status revoked' }, 'hidden')))),
+            .map((h) => el('tr', {}, el('td', { class: 'mono' }, h), el('td', {}, accessDetail({ level: 'hidden' }, notesFor[h]), ruleWhy(whyFor[h])))),
+          // An input a partner rule left editable (a company's exception) has
+          // no row on the app's wire, but the admin should see what decided.
+          ...Object.keys(whyFor).filter((k) => !(t.inputs ?? []).some((i) => i.id === k) && !(t.hidden ?? []).includes(k))
+            .map((k) => el('tr', {}, el('td', { class: 'mono' }, k), el('td', {}, accessDetail(null, notesFor[k]), ruleWhy(whyFor[k])))),
         ];
+        // A tool's own export answer, where a grant naming the tool differs from
+        // the Permissions table above.
+        const exportNotes = Object.entries(t.can ?? {}).map(([action, allowed]) =>
+          `${action} ${allowed ? 'allowed' : 'denied'} for this tool`);
         return el('div', { style: 'margin-top:10px' },
           el('div', {}, el('span', { class: 'mono' }, id),
-            t.approvalChain ? el('span', { class: 'muted' }, ` · approval: ${t.approvalChain}`) : null),
+            t.approvalChain ? el('span', { class: 'muted' }, ` · approval: ${t.approvalChain}`) : null,
+            exportNotes.length ? el('span', { class: 'muted' }, ` · ${exportNotes.join(', ')}`) : null),
           inputRows.length ? dataTable(['Input', 'Access'], inputRows) : el('p', { class: 'muted' }, 'Visible. No per-input rules resolved for this tool.'));
       })
     : [el('p', { class: 'empty' }, 'No governed tools are visible to this group (ungoverned tools are always visible and fully editable).')];
@@ -5983,16 +6807,50 @@ function renderPreview(data) {
     el('td', {}, p.mode),
     el('td', { class: 'mono' }, p.value === undefined ? '—' : showValue(p.value))));
 
+  // What the catalog would serve these groups: for a partner programme, the
+  // tools and assets its people get and nothing else.
+  const assets = preview.assets;
+  const assetCard = assets ? el('div', { class: 'card stack' },
+    el('h2', {}, 'Assets'),
+    el('p', { class: 'sub' }, preview.scoped
+      ? 'A partner programme sees the design system’s tokens, fonts and palettes, and the collections, assets and providers that list its group. Nothing shared with everyone reaches the programme.'
+      : 'Everything the catalog serves these groups.'),
+    el('p', {}, `${assets.count} asset${assets.count === 1 ? '' : 's'}`,
+      Object.keys(assets.byType ?? {}).length ? el('span', { class: 'muted' }, ` · ${Object.entries(assets.byType).map(([type, n]) => `${n} ${type}`).join(', ')}`) : null),
+    assets.collections?.length
+      ? dataTable(['Collection', 'Assets'], assets.collections.map((c) => el('tr', {}, el('td', {}, c.name), el('td', {}, String(c.members)))))
+      : el('p', { class: 'muted' }, 'No collections.'),
+    assets.sample?.length
+      ? el('p', { class: 'chips' }, ...assets.sample.map((a) => el('span', { class: 'chip', title: a.id }, a.name)))
+      : null) : null;
+  // The templates these groups get (plans/82 M2). The app is told only which
+  // inputs it may offer; the lines under each template are for the admin.
+  const templates = preview.templates ?? [];
+  const templatesCard = templates.length ? el('div', { class: 'card stack' },
+    el('h2', {}, 'Templates'),
+    el('p', { class: 'sub' }, 'What each template lets these groups change. The notes under each are for you; the app is told only what it may offer.'),
+    dataTable(['Template', 'Can change', 'Fixed'], templates.map((t) => el('tr', {},
+      el('td', {}, el('strong', {}, t.name), ' ', el('span', { class: 'muted' }, t.toolVersion ?? `version ${t.version}`),
+        t.retired ? el('div', { class: 'muted' }, `Retired${t.replacedBy ? `. Replaced by ${t.replacedBy.name}` : ''}.`) : null),
+      el('td', {}, t.canChange.join(', ') || 'Nothing'),
+      el('td', {}, t.fixed.join(', ') || 'Nothing', ...t.why.map((line) => el('div', { class: 'muted' }, line))))), { sortable: false })) : null;
   return el('div', {},
     el('div', { class: 'card stack' },
       el('h2', {}, `As ${heading}`),
       el('p', {}, 'Effective role: ', el('span', { class: 'status review' }, orgConfig.session.role),
         preview.role !== 'member' ? el('span', { class: 'muted' }, `  (these groups escalate role via sign-in)`) : null),
+      preview.scoped ? el('p', {}, el('span', { class: 'status live' }, 'Partner programme'), ' ',
+        `uses ${preview.visibleTools?.length ?? 0} tool${preview.visibleTools?.length === 1 ? '' : 's'}: `,
+        el('span', { class: 'mono' }, (preview.visibleTools ?? []).join(', ') || 'none yet')) : null,
+      preview.templatesOnly?.length ? el('p', {}, el('span', { class: 'status review' }, 'Templates only'), ' ',
+        preview.templatesOnly.map((o) => `${o.toolName}, only through its published templates, set by ${o.setBy.join(' and ')}`).join('. ') + '.') : null,
       el('p', { class: 'sub' }, `${orgConfig.inboxUnread} unread inbox message${orgConfig.inboxUnread === 1 ? '' : 's'} would target this group.`)),
+    templatesCard,
+    assetCard,
     el('div', { class: 'card stack' }, el('h2', {}, 'Permissions'), dataTable(['Action', 'Effective'], canRows)),
     el('div', { class: 'card stack' },
       el('h2', {}, 'Tools'),
-      el('p', { class: 'sub' }, 'Governed tools this group can see, with each input’s effective access. Ungoverned tools are omitted — they are always visible and editable.'),
+      el('p', { class: 'sub' }, 'Governed tools this group can see, with each input’s effective access. Other tools are visible and editable unless they are listed as hidden below.'),
       ...toolBlocks,
       preview.hiddenTools?.length
         ? el('p', { style: 'margin-top:12px' }, el('span', { class: 'status revoked' }, 'hidden from this group'), ' ',
@@ -6003,7 +6861,7 @@ function renderPreview(data) {
   );
 }
 
-async function viewPreview(main) {
+async function viewPreview(main, params) {
   const groupsInput = el('input', { placeholder: 'marketing, brand-team' });
   const resultHost = el('div', {});
   const err = errSpan();
@@ -6022,6 +6880,11 @@ async function viewPreview(main) {
   // Suggestion chips: the role-escalating groups always, plus any group named
   // in a tool overlay (same policy.edit gate as this view, so always available).
   let suggestions = ['owner', 'admin', 'approver', 'author'];
+  // Programme names for the chips and the heading; a programme with no rules
+  // yet is offered too, so an admin can preview it before writing any.
+  const programmes = await api('/api/v1/programmes').then((r) => r.programmes ?? []).catch(() => []);
+  // Programme and company names for the headings and the "which rule decided" lines.
+  await api('/api/v1/groups').then((r) => noteGroups(r.groups ?? [])).catch(() => undefined);
   try {
     const { tools } = await api('/api/v1/policy/tools');
     const seen = new Set();
@@ -6031,12 +6894,14 @@ async function viewPreview(main) {
         for (const r of rules) for (const g of r.groups) if (g !== '*') seen.add(g);
       }
     }
-    suggestions = [...new Set([...suggestions, ...[...seen].sort()])];
+    suggestions = [...new Set([...suggestions, ...[...seen].filter((g) => !g.startsWith('programme-')).sort(), ...programmes.map((p) => p.group)])];
   } catch (e) {
     // A member who lands on this admin-only view degrades the way every other
     // view does: let the 403 reach the router, which renders the role message.
     // Anything else stays best-effort, since the free-text field always works.
-    if (e.status === 403) throw e;
+    // Someone who manages programmes may preview a programme's groups without
+    // policy.edit; they get the page without the rule-group suggestions.
+    if (e.status === 403 && !params?.get?.('groups')) throw e;
   }
 
   main.append(
@@ -6047,11 +6912,14 @@ async function viewPreview(main) {
       el('p', {}, previewBtn),
       suggestions.length
         ? el('p', { class: 'chips' }, el('span', { class: 'muted' }, 'Quick pick: '),
-            ...suggestions.map((g) => el('button', { class: 'chip', onclick: () => run(g) }, g)))
+            ...suggestions.map((g) => el('button', { class: 'chip', title: g, onclick: () => run(g) }, groupLabel(g))))
         : null,
       err),
     resultHost,
   );
+  // #/preview?groups=programme-resellers, the link each partner programme offers.
+  const wanted = params?.get?.('groups');
+  if (wanted) await run(wanted);
 }
 
 // ── docs ────────────────────────────────────────────────────────────────────
@@ -6444,6 +7312,7 @@ const NAV_ICONS = {
   audit: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   contractors: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/>',
+  programmes: '<path d="M11 17l-1.5 1.5a2.12 2.12 0 0 1-3-3L12 10"/><path d="M13 7l1.5-1.5a2.12 2.12 0 0 1 3 3L12 14"/><path d="M8 12l4 4"/><path d="M3 21l3-3"/><path d="M21 3l-3 3"/>',
   grants: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
   preview: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   flags: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
@@ -6610,6 +7479,7 @@ const VIEWS = {
   projects: { title: 'Projects', render: viewProjects },
   users: { title: 'People', render: viewUsers },
   contractors: { title: 'Contractors', render: viewContractors },
+  programmes: { title: 'Partner programmes', render: viewProgrammes },
   grants: { title: 'Grants', render: viewGrants },
   preview: { title: 'Preview', render: viewPreview },
   docs: { title: 'Docs', render: viewDocs },
@@ -6656,7 +7526,7 @@ function brandLogoEl(cls) {
 }
 
 const NAV_GROUPS = [
-  { title: 'Workspace', ids: ['overview', 'projects', 'users', 'contractors'] },
+  { title: 'Workspace', ids: ['overview', 'projects', 'users', 'programmes', 'contractors'] },
   { title: 'Assets & tools', ids: ['catalog', 'providers', 'tools', 'injectables'] },
   { title: 'Governance', ids: ['approvals', 'chains', 'grants', 'tokens'] },
   { title: 'Operations', ids: ['agents', 'activity', 'rooms', 'links', 'messages', 'audit', 'fleet'] },

@@ -11,6 +11,7 @@
 import { sha256Hex } from '../lib/crypto.ts';
 import type { AssetIndex, AssetIndexEntry } from './lifecycle.ts';
 import type { DataSubmissionSummary } from './submit-data.ts';
+import { servedTemplateEntry, type TemplatePublication } from './templates.ts';
 
 /** Prefix every instance-owned asset id carries; also the blob route mount. */
 export const INST_PREFIX = 'inst/';
@@ -122,6 +123,9 @@ export interface InstanceAssetRecord {
    * versioned, where the head answers the question.
    */
   versionSeq?: number;
+  /** A published template's rules and retirement (plans/82 M2,
+   *  catalog/templates.ts). Only on a `template` or `rules-tool` asset. */
+  publication?: TemplatePublication;
   createdAt: string;
 }
 
@@ -137,7 +141,7 @@ export function submissionServable(rec: InstanceAssetRecord): boolean {
  *  visibility so an exited asset keeps the exposure the DAM slice had). */
 export function instanceAssetVisible(rec: InstanceAssetRecord, callerGroups: string[]): boolean {
   const g = rec.groups;
-  if (!g || g === '*') return true;
+  if (!g || g === '*' || g.includes('*')) return true;
   return g.some((x) => callerGroups.includes(x));
 }
 
@@ -160,7 +164,7 @@ export function composeInstanceAssets(index: AssetIndex, records: InstanceAssetR
   // plans/26 catalog submit) are ordinary feed members and always compose in.
   const composable = records
     .filter((r) => (r.exited || !r.origin) && submissionServable(r) && instanceAssetVisible(r, callerGroups))
-    .map((r) => r.entry);
+    .map(servedTemplateEntry);
   if (!shadowed.size && !composable.length) return index;
   return { ...index, assets: [...kept, ...composable] };
 }

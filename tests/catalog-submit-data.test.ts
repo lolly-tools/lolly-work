@@ -121,7 +121,8 @@ test('over HTTP: an approved-by-default template composes into the feed as a tem
   const entry = feed.assets?.find((a) => a.id === body.assetId);
   assert.equal(entry?.type, 'template');
   assert.equal(entry?.name, 'Launch poster');
-  assert.deepEqual(entry?.meta, { toolId: 'design', valueCount: 2 });
+  // The served version (plans/82 M2) rides with what the submission stored.
+  assert.deepEqual(entry?.meta, { toolId: 'design', valueCount: 2, version: 1 });
   assert.deepEqual(entry?.tags, ['launch']);
   const bytes = await fetch(`${base}/catalog/${body.assetId}/json`, { headers: { cookie: author } });
   assert.equal(bytes.headers.get('content-type'), 'application/json');

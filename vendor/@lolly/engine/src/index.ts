@@ -62,7 +62,7 @@ export {
 export type { CssBlendMode, RasterLayer, LayeredRasterDoc, InflateFn } from './raster-layers.ts';
 export { buildInputModel, summarizeInputs, CREDENTIAL_READABLE_TYPES, normalizeTableValue, deriveExportFilename, matchesShowIf, tokenRestoreRefsOf, DEFAULT_FILE_MAX_BYTES } from './inputs.ts';
 export type { TableValue, TableColumnEditor, ShowIf, InputWriteOptions } from './inputs.ts';
-export { parseUrlState, serializeUrlState, serializeHdr, encodeBlocksCompact, encodeTableCompact, decodeTableCompact, RESERVED, HDR_DEFAULTS, VIDEO_CODEC_STRINGS, parseVideoParams, hasVideoParams } from './url-mode.ts';
+export { parseUrlState, serializeUrlState, serializeHdr, encodeBlocksCompact, encodeTableCompact, decodeTableCompact, RESERVED, HDR_DEFAULTS, VIDEO_CODEC_STRINGS, parseVideoParams, hasVideoParams, parseSpots } from './url-mode.ts';
 // The `s=` state address + the still-export frame filter both shells apply (plan 112).
 export { parseFrameAddress, selectFramePage, frameFilterApplies } from './frame-address.ts';
 export {
@@ -74,7 +74,7 @@ export type {
   PresentInteractDepth, PresentInteractOptions, PresentInteractContext, PresentInteractStop, PresentInteractAutoSample,
 } from './present-interact.ts';
 export { looksLikeTable, parseTableText, toTsv, toMarkdown, toHtmlTable } from './table-text.ts';
-export type { HdrSettings, DepthSetting, VideoUrlSettings, VideoQuality } from './url-mode.ts';
+export type { HdrSettings, DepthSetting, SpotsSetting, VideoUrlSettings, VideoQuality } from './url-mode.ts';
 export { LANGS, LANG_META, normalizeLang, flagEmoji, sortedLangs } from './lang.ts';
 export type { Lang, LangSort } from './lang.ts';
 export { packQuery, unpackToken, expandQuery, hasPackedState, isPackAvailable, PACK_PARAM } from './url-pack.ts';
@@ -144,7 +144,7 @@ export {
 export {
   FINISH_MASK_CMYK, buildCmykPaletteMap, cmykKey, paletteHasFinish,
 } from './cmyk-palette.ts';
-export type { BrandPaletteEntry, PaletteHit, PaletteSpotHit } from './cmyk-palette.ts';
+export type { BrandPaletteEntry, CmykPaletteOptions, PaletteHit, PaletteSpotHit } from './cmyk-palette.ts';
 export { iccSeparation, separationLattice, DEVICE_SEPARATION, NEUTRAL_EPSILON } from './cmyk-separation.ts';
 export type { CmykSeparation, SeparateRgb } from './cmyk-separation.ts';
 export {
@@ -574,6 +574,11 @@ export { APPROVAL_RECORD_FORMATS, artworkUnchanged, recordApprovalInCredential }
 export type { ApprovalNotRecordedReason, ApprovalRecordOutcome, RecordApprovalOptions } from './c2pa-approval.ts';
 export { verifyC2pa, extractC2paFromPdf, prepareC2paIngredient, prepareC2paIngredientFromStore, collectIngredients, collectIngredientRecords, extractC2paStore, parseCertificate, signedBy } from './c2pa-verify.ts';
 export type { C2paReport, C2paCheck, ParsedCertificate, C2paIngredientRecord } from './c2pa-verify.ts';
+// A shell that writes its credential in place of one the browser wrote keeps what that
+// credential recorded about the pictures placed in the file, and cuts a PDF's update off first.
+export { placedPicturesOf } from './c2pa-extract.ts';
+export type { PlacedPictures } from './c2pa-extract.ts';
+export { pdfWithoutCredential } from './c2pa-containers.ts';
 export type { Signer as C2paSigner } from './c2pa.ts';
 export { C2PA_CHECK, isExpiredOnly, resolveVerdict, defaultTrustAnchors } from './c2pa-verdict.ts';
 export type { C2paVerdict, C2paVerdictInput, C2paVerdictState } from './c2pa-verdict.ts';
@@ -662,8 +667,8 @@ export {
   EPUB_READ_MAX_OUTPUT_CHARS,
 } from './epub-read.ts';
 export { writeOdt } from './odt.ts';
-export { writeDocx } from './docx.ts';
-export type { DocxDoc, DocxBlock, DocxMedia } from './docx.ts';
+export { writeDocx, snapDocxPage } from './docx.ts';
+export type { DocxDoc, DocxBlock, DocxMedia, DocxPage, DocxStyles } from './docx.ts';
 export {
   decomposeMatrix, boxGeomFromBBox, mapWeight, mapFontFamily, mapAlign,
   safeColor, nodeToBox, finalizeBoxes, parsePenpotContent, collectPenpotFontUsage, penpotShapeToNode, penpotGradientToSpec,
@@ -732,11 +737,19 @@ export { resolveTokenSelection, tokenSelectionKey, parseTokenSelection } from '.
 // design system, chosen per artefact and composed with light and dark.
 export { readTokenAxes, axisOfKind, modeAxis, ROTATION_POLICIES } from './token-axes.ts';
 export type { TokenAxis, TokenAxisOption, AxisWindow, RotationPolicy } from './token-axes.ts';
-export { COLOURWAY_GROUP, COLOURWAY_ROLES, COLOURWAY_ID, colourwaySetName, colourwayPath, colourwayAxis, canonicalFirst } from './colourway.ts';
+export { COLOURWAY_GROUP, COLOURWAY_ROLES, COLOURWAY_ID, colourwaySetName, colourwayPath, colourwayAxis, canonicalFirst, colourwayLinkOf, colourwayLeaves, colourRoleMarkOf } from './colourway.ts';
+export type { ColourRoleMark } from './colourway.ts';
 export { colourwayFamily, pickColourway, withColourway, liftToColourways, addColourway } from './colourway.ts';
 export type { ColourwayRole, ColourwayLead, RotationContext, ColourwayPick, ColourwayEdit, LiftOptions, ColourwayValues, AddColourwayOptions } from './colourway.ts';
 // Editing an existing set of colourways (plans/319 A2, the Brand Studio's data layer).
 export { renameColourway, reorderColourways, setCanonicalColourway, removeColourway, duplicateColourway, colourwaysEditable, colourwayRolesOf, MAX_COLOURWAY_NAME } from './colourway.ts';
+// Colour roles (plans/352): a design system's colours in its own words, the slots they fill, and every edit.
+export { COLOUR_ROLE_GROUP, COLOUR_SLOTS, BINDABLE_COLOUR_SLOTS, DEFAULT_COLOUR_VOCABULARY, COLOUR_SLOT_READS, COLOUR_ROLE_BY_NAME, COLOUR_ROLE_ID, MAX_COLOUR_ROLES, MAX_ROLE_LABEL, MAX_ROLE_DESCRIPTION, WEAK_LC } from './colour-roles.ts';
+export { colourRoleIdRefusal, isUsableColourRoleId, colourRoleIdFromLabel, readColourRoles, colourRolesEditable, colourRoleTable, colourPairContrast, danglingColourAliases, newlyDangling, colourRolesBrief } from './colour-roles.ts';
+export { addColourRole, setColourRoles, bindRole, unbindRole, renameColourRole, describeColourRole, reorderColourRoles, removeColourRole, setRoleValue, setRoleSameAsLight, refreshDerivedOnColours, carryColourRoles } from './colour-roles.ts';
+export { adoptColourRoles, colourRoleThemeAccents, withColourwayKindRestored } from './colour-role-portable.ts';
+export type { AdoptColourRolesOptions, AdoptedColourRole } from './colour-role-portable.ts';
+export type { ColourRoleEntry, ColourRolesReading, ColourPairContrast, RoleOnColour, ColourRoleCell, ColourRoleTableRow, ColourRoleTable, DanglingAlias, ColourRoleRefusal, ColourRoleUse, ColourRoleEdit, AddColourRoleOptions, SetRoleValueOptions, ColourRoleSpec, ColourRoleCarry, BriefColourRoles } from './colour-roles.ts';
 export type { DuplicateColourwayOptions } from './colourway.ts';
 // plans/319 A4: a tool's manifest `tokenAxes` opt-out, which pins an ignored kind of
 // theme group to its canonical option, and the sentence a shell reports it with.
@@ -746,7 +759,8 @@ export {
   parseOklch, formatOklch, hexToOklch, oklchToHex, mixOklch, contrastRatio, deriveBrandTokens,
   RAMP_STEPS_MIN, RAMP_STEPS_MAX, RAMP_STEPS_DEFAULT,
 } from './brand-derive.ts';
-export { deriveColourwaySlots } from './brand-derive.ts';
+export { deriveColourwaySlots, deriveOnColour, isDerivedOnColourValue, onColourFloor } from './brand-derive.ts';
+export type { OnColourOptions } from './brand-derive.ts';
 export type { Oklch, BrandDeriveOptions, ColourwaySlotOptions, ColourwaySlots } from './brand-derive.ts';
 export { gamutSolid, projectGamutSolid, projectSolidPoint, projectSolidPoints, solidPointOklch, labSolidUnit, gamutSolidToSvg, shadedSolidFill } from './gamut-solid.ts';
 // A brand colour's faces: one canonical value plus per-space/per-profile
@@ -1046,6 +1060,8 @@ export type { DesignBriefAssetV1, DesignBriefCatalogV1, DesignBriefOpts, DesignB
 // Brand skills (plan 323): a brand's standards per discipline as design-system assets.
 export { parseBrandSkill, brandSkillScopeHints, admitBrandSkill, classifyBrandSkillLinks, brandSkillCoverage, brandSkillCoverageFacts, exportBrandSkillFolder, brandSkillFreshness, brandSkillsSection, baselineBrandSkill, measureSvgFamily, spreadExemplars, brandSkillFilesSize } from './brand-skill.ts';
 export type { BrandSkillFindingV1, BrandSkillHeadingV1, BrandSkillLinkV1, ParsedBrandSkillV1, AdmittedBrandSkillV1, BrandSkillAdmissionV1, BrandSkillCatalogAssetV1, BrandSkillLinkClassV1, BrandSkillCoverageFactsV1, BrandSkillCoverageStatusV1, BrandSkillCoverageRowV1, BrandSkillCoverageV1, BrandSkillExportModeV1, BrandSkillExportInputV1, BrandSkillExportV1, BrandSkillFreshnessV1, SvgFamilyMeasureV1 } from './brand-skill.ts';
+export { leaveOutScopedTokenText, scopedTokenTextWarnings } from './token-scope.ts';
+export type { ScopedTokenTextV1, TokenTextLeftOutV1 } from './token-scope.ts';
 export { checkDesignHouseRules, designHouseRules, combinationPolicy, DESIGN_HOUSE_RULE_KINDS } from './design-house-rules.ts';
 export type { DesignHouseRuleKind, DesignHouseRuleOpts, DesignHouseRuleResult, HouseRuleFinding } from './design-house-rules.ts';
 // Creation feedback (engine 1.283): house-rule findings and the writing score for the
@@ -1172,7 +1188,7 @@ export type { ArchetypeHintsOptsV1 } from './rebrand-plan.ts';
 // Plan 274 milestone 3: the design-system resolver every renovation surface
 // shares, the review model the queue and the footer render, and the pure plan
 // edits the view, the CLI and the MCP tool apply.
-export { resolveRebrandDesignSystem, swatchesFromColors, themeSlotsFromColors, neutralSlideMaster, colorTokenHash, THEME_SLOTS, THEME_SLOT_TOKENS, THEME_SLOT_ALIASES, FALLBACK_BRAND_FACE } from './rebrand-design-system.ts';
+export { resolveRebrandDesignSystem, swatchesFromColors, themeSlotsFromColors, themeSlotTokensFor, neutralSlideMaster, colorTokenHash, THEME_SLOTS, THEME_SLOT_TOKENS, THEME_SLOT_ALIASES, FALLBACK_BRAND_FACE } from './rebrand-design-system.ts';
 export type { RebrandDesignSystemInputV1, RebrandDesignSystemV1, ThemeSlotV1, ThemeSlotAliasV1 } from './rebrand-design-system.ts';
 export { reviewQueue, objectStates, slideStates, planSummary, pendingSuggestionIds, reviewMessage, effectiveAction, effectiveReplacement, effectiveSlideOrder, reviewFidelity, isCorrected, REVIEW_MESSAGES, REVIEW_NOUNS, REVIEW_FIDELITIES, QUEUE_SECTIONS } from './rebrand-review.ts';
 export type { ReviewMessageV1, ReviewMessageCodeV1, ReviewNounKeyV1, ReviewFidelityV1, QueueSectionV1, QueueItemV1, ObjectStateV1, SlideStateV1, PlanSummaryV1 } from './rebrand-review.ts';

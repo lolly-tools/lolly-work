@@ -112,6 +112,8 @@ export function createBrandfolderProvider(
         ...(asset.attributes.description ? { description: asset.attributes.description as string } : {}),
         nativeType: asset.type,
         sections: sectionName ? [sectionName] : [],
+        // Brandfolder's sections are flat: the section is the folder.
+        folder: sectionName,
         taxonomy: [
           ...(section && sectionName ? [{ id: section.id, name: sectionName, kind: 'section' as const }] : []),
           ...(Array.isArray(rel.collections?.data) ? rel.collections.data.flatMap(ref => { const name = included.get(`${ref.type}:${ref.id}`)?.attributes.name; return typeof name === 'string' && name.trim() ? [{ id: ref.id, name: name.trim(), kind: 'collection' as const }] : []; }) : []),

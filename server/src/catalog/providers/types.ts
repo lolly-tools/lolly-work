@@ -200,6 +200,13 @@ export interface ProviderAssetRef {
   nativeType: string;
   /** Provider-native section/folder names (exposure scoping + tags). */
   sections: string[];
+  /**
+   * The folder the file sits in, as a stable path below the federated root
+   * (`a/b/c`; '' at the root). Partner folder rules match on it (plans/82
+   * M1 part 2c). Absent when the driver cannot say, and then no folder rule
+   * reaches the asset.
+   */
+  folder?: string;
   /** Provider-native collection names for browsing and search. */
   collections?: string[];
   taxonomy?: Array<{ id: string; name: string; kind: 'section' | 'collection' | 'folder'; parentId?: string }>;
