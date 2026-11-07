@@ -1,17 +1,17 @@
 {
-  "generatedFrom": "9526cd88ed2e7d4eed85a659c744e710985e9885",
+  "generatedFrom": "e47127c03ae1b24a1a413e2bf3a0992b2bbccc01",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
-    "version": "1.5.0",
-    "tarball": "lolly-tools-core-1.5.0.tgz",
-    "tarballSha256": "a7f458a2f2072219b225c6de53d4774a914d2a9b739443ad6df786fddb1d6723",
-    "contentHash": "7d0f2e77b9c2552ba1bf5be0fc6293f20d57bce813602226b411ea4bdd7fa815"
+    "version": "1.6.0",
+    "tarball": "lolly-tools-core-1.6.0.tgz",
+    "tarballSha256": "5758ea753dfb16d04501f7bfe375f0d06e31533e5a55ecfa0925c94837d890f8",
+    "contentHash": "e1306d91b7e544b20655df2791826653580a8c021c6dec41a374945f24ef3ba4"
   },
   "engine": {
-    "version": "1.326.0",
-    "tarball": "lolly-engine-1.326.0.tgz",
-    "tarballSha256": "8230cf2f64e9f425346bfe14d8e65e93f3b112a0ba02bff15994c63e30c42842",
-    "contentHash": "b81bd1fe1e0bc436f355627142cf087d483f771e7689a2a1b2de8dd8673bada2"
+    "version": "1.333.0",
+    "tarball": "lolly-engine-1.333.0.tgz",
+    "tarballSha256": "273b72eb14a28b876c1554eb5605361d4fe8cd8f88bcba617b92674a52f56d74",
+    "contentHash": "eaa4858292dc8f71678b0518efafabdf61cb5e28eb98710719180c382b35f61b"
   },
   "schemas": {
     "asset-ref.schema.json": "1e610bd8369b1f4756306709af95bb009aa39981a9776343f92f1c00c51bc3cd",
@@ -20,7 +20,7 @@
     "brand-page-v1.schema.json": "7247afb3c92b529d69755718a44c55d961502ec941371bbc3e42d64f525164ef",
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
-    "canonical-inputs.json": "d7b609ef17a29ceb622d9c7954a8b4258aa1849149866ef87fcbcaa4ca9b2a10",
+    "canonical-inputs.json": "51df61a10a3e2d95a98999ca0ef584170953a1f7b808626f9e16569d72d82cda",
     "canvas-op.schema.json": "c9cfbdd56a0e6c1dd81ddebe5ac7b9e4fc8ce5a789c708123b069b523eb15e60",
     "chart-v1.schema.json": "7bc73ce09be779f9ba04ad7c2a0f872f5c663dc39558c81a74bf8295b272e822",
     "check-report-v1.schema.json": "907111ca5c75d11b72e90c087e884a9ca2312e526125b9db1953641a0c341561",
@@ -34,7 +34,7 @@
     "emoji-style-v1.schema.json": "940b007355b2b2fe2d985b238499f4cb4b02211a1471682bde0b8b77bc1494e1",
     "file-operation-report-v1.schema.json": "f95969fd3f0f5099ef642679e079de1eec7432b73275dfc1772e25a79b0447d7",
     "file-operation-request-v1.schema.json": "20ca45779c17949e4d5a8482209106fd9be768ff89ee71127624860d8d2c13e2",
-    "intent-resolution-v1.schema.json": "a7058332eea8b9413c54c0e972c68f4eeb6db536ab00909fec85d3171866ae5e",
+    "intent-resolution-v1.schema.json": "2d45600a8928490f2cc9a25354715de0bacfdd3923d5184ed0fdfadac87dc719",
     "ratecard.schema.json": "e164d8ce234279c04877511cb9673cc721d0118647cdae0401246c8f35d0b777",
     "read-extract-v1.schema.json": "f61b40c61a5ac3cfdf9202aa25a1467edd43acaddf22d9bed297edb05a9b2d03",
     "rebrand-census-v1.schema.json": "174fca1471739bd5bd01fae50c1a95a07326ed2f51580bac2ee39e04457370c7",
@@ -49,8 +49,8 @@
     "text-frame-v1.schema.json": "4da9745015da8dfd75e60f7e15300604eeedd4902bca7a049d063a396455f069",
     "text-measure-v1.schema.json": "6a3b17fdc8d7d8769d723724b73dabd3d5d74c77df577480a9c42cfcb0a0e976",
     "tokens.schema.json": "012f3050656230bb609eb841c6a7e42a3cfa4088c7c3b938a561a81d3fa13dcc",
-    "tool-intents-v1.schema.json": "73cd58f270cfbf1d4377b18510ed6a300ec31ed5f5f39f244078b54b786f77f0",
+    "tool-intents-v1.schema.json": "16d0882a0c766dba7c139ec9cb56894b9d5d562581ce30fd72a54f5b4ec14470",
     "tool.schema.json": "06b871de399446e106d6d817ed7b998268507e065203ca750d61f94145317f4b",
-    "visual-intent-v1.schema.json": "bd5e9a0737721e4b397f2eae51c549229594811a6713c7f43d78c5f12f5e9c17"
+    "visual-intent-v1.schema.json": "900ee6919913b63504902194ad836fb06852dacb2ea5bbe9631b0915e0e5afbf"
   }
 }

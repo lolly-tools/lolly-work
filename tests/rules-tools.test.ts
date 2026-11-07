@@ -87,7 +87,7 @@ test('only the data is kept: the definition and its facts, never the file\'s cod
   assert.equal(read.data.kind, 'design');
   assert.equal(read.data.definition.id, 'partner-data-sheet');
   assert.ok(!JSON.stringify(read.data).includes('LollyDesignRules'), 'no renderer code in the stored data');
-  assert.deepEqual(read.facts.inputs, [{ id: 'price', label: 'Price' }]);
+  assert.deepEqual(read.facts.inputs, [{ id: 'price', label: 'Price', type: 'text' }]);
   assert.equal(read.facts.version, '1.0.1');
 });
 

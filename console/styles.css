@@ -491,6 +491,7 @@ button.chip { min-height: 24px; display: inline-flex; align-items: center; curso
 .appr-file-stage img, .appr-file-stage video { display: block; max-width: 100%; max-height: min(60vh, 560px); height: auto; }
 .appr-file-stage audio { width: 100%; }
 .appr-file-stage p { margin: 0; text-align: center; }
+.appr-file-covers { margin: 0; font-weight: 600; }
 .appr-file-facts { color: var(--ink-2); font-size: 12.5px; }
 .appr-file-facts p { margin: 0; overflow-wrap: anywhere; }
 .appr-file-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; }
@@ -1545,3 +1546,23 @@ html.account-inspector-open { overflow: hidden; }
   .template-name, .template-actions { grid-column: 1 / -1; }
 }
 @media (max-width: 480px) { .template-cells { grid-template-columns: 1fr; } }
+
+/* A partner company's page (plans/82 M3): logos previewed on both of the lead
+   brand's surfaces, side by side, whatever the checks found. */
+.company-logos { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: var(--sp-7); }
+.company-swatches { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); }
+.company-swatch-figure { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.company-swatch { display: flex; align-items: center; justify-content: center; aspect-ratio: 3 / 2; padding: var(--sp-5); border-radius: var(--radius); border: 1px solid var(--hairline); }
+.company-swatch img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.company-swatch-empty { font-size: 12px; color: #6b7280; }
+.company-swatch.is-dark .company-swatch-empty { color: #c5c9d0; }
+.company-swatch-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ui-color-text-muted); }
+.company-drop { max-width: none; margin: 0; padding: 18px 16px; }
+.company-currency { max-width: 6rem; text-transform: uppercase; }
+.company-revision { margin-left: var(--sp-4); }
+.company-details textarea { min-height: 6.5rem; }
+.template-takes { margin-top: 2px; }
+.preview-drawing { margin-top: var(--sp-3); max-width: 22rem; }
+.preview-drawing img { display: block; width: 100%; height: auto; border: 1px solid var(--hairline); border-radius: var(--radius); background: #fff; }
+.company-history summary { cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.company-history[open] summary { margin-bottom: var(--sp-3); }

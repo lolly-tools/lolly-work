@@ -757,6 +757,47 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), true);
   assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), false, 'a revoked token revokes once');
 
+  // Limits and use on tokens (plans/82 M7, migrations/0094): the figures a token
+  // states round-trip, absent reads back absent, and a put replaces them.
+  assert.equal((await store.getApiToken('tok_scoped'))?.limits, undefined);
+  await store.putApiToken({ ...(await store.getApiToken('tok_scoped'))!, limits: { callsPerMinute: 60, rendersPerMonth: null } });
+  assert.deepEqual((await store.findApiTokenByHash('hash-scoped'))?.limits, { callsPerMinute: 60, rendersPerMonth: null });
+  const { limits: _dropped, ...unlimited } = (await store.getApiToken('tok_scoped'))!;
+  await store.putApiToken(unlimited);
+  assert.equal((await store.getApiToken('tok_scoped'))?.limits, undefined, 'a put without limits clears them');
+  // A token a programme's manager minted says so (migrations/0095), and an owner's does not.
+  assert.equal((await store.getApiToken('tok_scoped'))?.via, undefined);
+  await store.putApiToken({ id: 'tok_programme', label: 'agent', role: 'automation', scopes: ['render'], groups: ['programme-resellers', 'partner'], via: 'programme',
+    tokenHash: 'hash-programme', createdBy: 'user:u1', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
+  assert.equal((await store.findApiTokenByHash('hash-programme'))?.via, 'programme');
+  // Calls per day, and the busiest minute: three in one minute, then one in the next.
+  for (const minute of ['2026-11-07T10:00', '2026-11-07T10:00', '2026-11-07T10:00', '2026-11-07T10:01']) await store.recordTokenCall('tok_use', '2026-11-07', minute);
+  await store.recordTokenCall('tok_use', '2026-11-06', '2026-11-06T23:59');
+  await store.recordTokenRefusal('tok_use', '2026-11-07', 'RATE_LIMITED', '2026-11-07T10:02:00.000Z');
+  await store.recordTokenRefusal('tok_use', '2026-11-07', 'BUDGET_EXHAUSTED', '2026-11-07T11:00:00.000Z');
+  // Renders: the day's cap and the month's cap each refuse a charge whole.
+  assert.deepEqual(await store.chargeTokenRenders('tok_use', '2026-11-06', 4, { day: null, month: null }), { ok: true, day: 4, month: 4 });
+  assert.deepEqual(await store.chargeTokenRenders('tok_use', '2026-11-07', 2, { day: 3, month: null }), { ok: true, day: 2, month: 6 });
+  assert.deepEqual(await store.chargeTokenRenders('tok_use', '2026-11-07', 2, { day: 3, month: null }), { ok: false, period: 'day', used: 2, limit: 3 }, 'a charge that would pass the day is refused whole');
+  assert.deepEqual(await store.chargeTokenRenders('tok_use', '2026-11-07', 1, { day: 3, month: 6 }), { ok: false, period: 'month', used: 6, limit: 6 });
+  assert.deepEqual(await store.chargeTokenRenders('tok_use', '2026-12-01', 1, { day: 3, month: 6 }), { ok: true, day: 1, month: 1 }, 'a new month starts again');
+  // Two charges at once never both pass a cap.
+  const raced = await Promise.all([1, 2, 3, 4].map(() => store.chargeTokenRenders('tok_race', '2026-11-07', 1, { day: 2, month: null })));
+  assert.equal(raced.filter((r) => r.ok).length, 2, 'concurrent charges stop at the cap');
+  await store.refundTokenRenders('tok_use', '2026-11-07', 1);
+  const used = await store.listTokenUsage('2026-11-01', '2026-11-30', ['tok_use']);
+  assert.deepEqual(used.map((r) => r.day), ['2026-11-06', '2026-11-07']);
+  const today = used.find((r) => r.day === '2026-11-07')!;
+  assert.equal(today.calls, 4);
+  assert.equal(today.busiestMinute, 3);
+  assert.equal(today.renders, 1, 'a refund gives renders back');
+  assert.equal(today.rateLimited, 1);
+  assert.equal(today.budgetRefused, 1);
+  assert.equal(today.lastRefusedCode, 'BUDGET_EXHAUSTED');
+  assert.equal(today.lastRefusedAt, '2026-11-07T11:00:00.000Z');
+  assert.deepEqual((await store.listTokenUsage('2026-11-07', '2026-11-07')).map((r) => r.tokenId).sort(), ['tok_race', 'tok_use']);
+  assert.deepEqual(await store.latestTokenRefusals(['tok_use', 'tok_race']), [{ tokenId: 'tok_use', at: '2026-11-07T11:00:00.000Z', code: 'BUDGET_EXHAUSTED' }]);
+
   // invitations (plans/74 W-ID-2): one active row per email, lowercased;
   // re-inviting returns the active row; an expired pending row makes way;
   // acceptance happens once and only while pending and unexpired.
@@ -1431,7 +1472,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deletePartnerFolder({ provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers' });
   assert.deepEqual(await store.listPartnerFolders(), []);
 
-  // Owner-published marks and licence records (plans/82 M4, migrations/0095):
+  // Owner-published marks and licence records (plans/82 M4, migrations/0096):
   // a mark keyed by its scope, a licence record by its asset id, each upserted whole.
   assert.deepEqual(await store.listAssetRightsMarks(), []);
   const mark = { scope: 'folder:dam/event-photos', holder: 'SUSE', terms: 'Published by SUSE. Not an open licence.', statedBy: 'usr_1', statedAt: '2026-11-07T00:00:00.000Z', coveredAtStatement: 180 };
@@ -1453,7 +1494,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteAssetLicence('ext/dam/IMG_2231');
   assert.deepEqual(await store.listAssetLicences(), []);
 
-  // Share anyway choices (plans/82 M4, migrations/0096): one per asset per audience group.
+  // Share anyway choices (plans/82 M4, migrations/0097): one per asset per audience group.
   assert.deepEqual(await store.listRightsChoices(), []);
   const choice = {
     assetId: 'ext/dam/IMG_2231', group: 'company-northwind-it', programmeId: 'resellers-emea', companyId: 'northwind-it', declared: 'CC-BY-NC-4.0', licence: 'CC BY-NC 4.0',
@@ -1484,6 +1525,12 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual((await store.listProgrammeExits({ companyId: 'northwind' })).map((r) => r.id), ['pex_a']);
   assert.deepEqual((await store.listProgrammeExits({ state: 'scheduled' })).map((r) => r.id), ['pex_b']);
   assert.deepEqual((await store.getProgrammeExit('pex_a'))?.result?.ended, { companies: ['northwind'] });
+  const readB = (await store.getProgrammeExit('pex_b'))!;
+  assert.equal(await store.replaceProgrammeExit({ ...readB, state: 'running' }, readB), true, 'a replace against the record as read succeeds');
+  assert.equal(await store.replaceProgrammeExit({ ...readB, state: 'done' }, readB), false, 'a second replace against the same old record fails');
+  assert.equal(await store.replaceProgrammeExit({ ...readB, id: 'nope' }, { ...readB, id: 'nope' }), false, 'an unknown id is never written');
+  assert.equal((await store.getProgrammeExit('pex_b'))?.state, 'running');
+  assert.deepEqual((await store.listProgrammeExits({ state: 'running' })).map((r) => r.id), ['pex_b']);
   await store.putProgrammeExit({ ...(await store.getProgrammeExit('pex_b'))!, state: 'cancelled' });
   assert.equal((await store.getProgrammeExit('pex_b'))?.state, 'cancelled', 'put is an upsert');
   assert.deepEqual((await store.listProgrammeExits({ state: 'scheduled' })), []);

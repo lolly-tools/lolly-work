@@ -57,7 +57,7 @@ export interface RulesToolFacts {
   description?: string;
   formats: string[];
   /** The inputs people may change: the designer's own choice, in their words. */
-  inputs: Array<{ id: string; label: string }>;
+  inputs: Array<{ id: string; label: string; type?: string }>;
 }
 
 export type RulesFileOutcome = { ok: true; data: RulesToolData; facts: RulesToolFacts } | { ok: false; detail: string };
@@ -67,7 +67,7 @@ const sha256 = (bytes: Uint8Array | string): string => createHash('sha256').upda
 
 /** The facts a definition states about itself. */
 export function rulesToolFacts(definition: Record<string, unknown>): RulesToolFacts {
-  const inputs = Array.isArray(definition.inputs) ? definition.inputs as Array<{ input?: { id?: unknown; label?: unknown } }> : [];
+  const inputs = Array.isArray(definition.inputs) ? definition.inputs as Array<{ input?: { id?: unknown; label?: unknown; type?: unknown } }> : [];
   return {
     toolId: String(definition.id),
     version: String(definition.version),
@@ -75,7 +75,8 @@ export function rulesToolFacts(definition: Record<string, unknown>): RulesToolFa
     ...(typeof definition.description === 'string' && definition.description.trim() ? { description: definition.description.trim().slice(0, 500) } : {}),
     formats: Array.isArray(definition.formats) ? definition.formats.filter((f): f is string => typeof f === 'string') : [],
     inputs: inputs.flatMap((f) => typeof f.input?.id === 'string'
-      ? [{ id: f.input.id, label: typeof f.input.label === 'string' && f.input.label ? f.input.label : f.input.id }] : []),
+      ? [{ id: f.input.id, label: typeof f.input.label === 'string' && f.input.label ? f.input.label : f.input.id,
+        ...(typeof f.input.type === 'string' ? { type: f.input.type } : {}) }] : []),
   };
 }
 
