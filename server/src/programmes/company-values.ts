@@ -11,7 +11,8 @@
  *
  * Order, most specific first: the caller's own value (unless the input is
  * locked), then the caller's company profile, then the template's values, then
- * the overlay's group defaults, then the tool's own default. An input a
+ * the overlay's group defaults (the `[{ groups, values }]` shape only), then the
+ * tool's own default. An input a
  * template binds and leaves out of its `editable` list is locked to the company
  * value; so is every input a rules tool binds, since a rules tool has no list of
  * its own to leave one out of; and an input an overlay binds is locked to it
@@ -224,13 +225,23 @@ export function bindOverlay(
   return { ...(overlay ?? { toolId, version: 0 }), inputAccess };
 }
 
-/** An overlay's defaults as group rules. The old flat shape is everyone's. */
+/** An overlay's defaults as group rules. */
 export interface DefaultsRule { groups: string[]; values: Record<string, unknown> }
 
+/**
+ * The defaults that seed renders: the group-rule shape only. Defaults saved in
+ * the older flat shape were stored and never applied, and an upgrade must not
+ * change what partners get without an admin's act, so they stay stored and
+ * unapplied until someone saves them again in the new shape.
+ */
 export function defaultsRules(defaults: ToolOverlay['defaults']): DefaultsRule[] {
-  if (!defaults) return [];
-  if (Array.isArray(defaults)) return defaults;
-  return Object.keys(defaults).length ? [{ groups: ['*'], values: defaults }] : [];
+  return Array.isArray(defaults) ? defaults : [];
+}
+
+/** Whether an overlay still holds defaults in the older flat shape, which apply
+ *  to nothing until they are saved again as group rules. */
+export function legacyDefaults(overlay: Pick<ToolOverlay, 'defaults'> | undefined): boolean {
+  return !!overlay?.defaults && !Array.isArray(overlay.defaults) && Object.keys(overlay.defaults).length > 0;
 }
 
 /**

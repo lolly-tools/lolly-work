@@ -32,7 +32,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { normalizeOverlay } from '../server/src/policy/overlay.ts';
 import {
-  defaultsFor, fieldValue, normalizeBindings, pickCompany, pickProgramme, planBindings, themeOf, type CompanyContext,
+  defaultsFor, fieldValue, legacyDefaults, normalizeBindings, pickCompany, pickProgramme, planBindings, themeOf, type CompanyContext,
 } from '../server/src/programmes/company-values.ts';
 
 // ── the pure rules ─────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ test('which bound inputs lock: outside a template\'s editable list, every one a 
   assert.equal(planBindings({ ...base, ctx: null, ambiguous: true }).ambiguous, false, 'nothing bound, nothing to open');
 });
 
-test('group defaults stack least specific first, and the old flat shape is everyone\'s', () => {
+test('group defaults stack least specific first, and the old flat shape is kept but applies to nothing', () => {
   const overlay = normalizeOverlay('card', { defaults: [
     { groups: ['company-northwind-it'], values: { bg: '#333333' } },
     { groups: ['*'], values: { bg: '#111111', title: 'Everyone' } },
@@ -106,7 +106,11 @@ test('group defaults stack least specific first, and the old flat shape is every
   assert.deepEqual(defaultsFor(overlay, ['programme-resellers', 'company-northwind-it']), { bg: '#333333', title: 'Everyone', price: 'Ask' });
   assert.deepEqual(defaultsFor(overlay, ['programme-resellers', 'company-globex']), { bg: '#222222', title: 'Everyone', price: 'Ask' });
   assert.deepEqual(defaultsFor(overlay, ['marketing']), { bg: '#111111', title: 'Staff' });
-  assert.deepEqual(defaultsFor(normalizeOverlay('card', { defaults: { bg: '#000000' } })!, ['anyone']), { bg: '#000000' });
+  const legacy = normalizeOverlay('card', { defaults: { bg: '#000000' } })!;
+  assert.deepEqual(legacy.defaults, { bg: '#000000' }, 'stored as it was');
+  assert.deepEqual(defaultsFor(legacy, ['anyone']), {}, 'and not applied: an upgrade changes nothing partners get');
+  assert.equal(legacyDefaults(legacy), true);
+  assert.equal(legacyDefaults(overlay), false);
   assert.deepEqual(overlay.bindings, { title: 'name' });
   assert.equal(normalizeOverlay('card', { bindings: { title: 'nickname' } }), null);
   assert.equal(normalizeOverlay('card', { defaults: [{ groups: [], values: {} }] }), null);
@@ -339,4 +343,26 @@ test('Preview says where each value comes from, for the admin only', async () =>
   const rita = await login('rita@northwind.test');
   const config = (await call(rita, 'GET', '/api/v1/org-config')).body;
   assert.ok(!JSON.stringify(config).includes('set from'), 'no why line reaches the app');
+});
+
+test('defaults saved in the old flat shape leave a render byte for byte as it was; the new shape seeds it', async () => {
+  const bruno = await login('bruno@brand.test');
+  const mia = await login('mia@brand.test');
+  await call(bruno, 'PUT', '/api/v1/policy/overlays/data-sheet', {});
+  const before = await render(mia, { price: '4' });
+  assert.equal(before.status, 200, before.text);
+  // A legacy overlay, as an older release stored it: written straight to the store.
+  const current = (await store.listOverlays()).get('data-sheet')!;
+  await store.putOverlay({ ...current, version: current.version + 1, defaults: { bg: '#abcdef', title: 'Legacy title' } });
+  const legacy = await render(mia, { price: '4' });
+  assert.equal(legacy.status, 200, legacy.text);
+  assert.equal(legacy.text, before.text, 'byte for byte as before');
+  assert.equal((await call(mia, 'GET', '/api/v1/org-config')).body.tools['data-sheet']?.defaults, undefined);
+  const saved = await call(bruno, 'PUT', '/api/v1/policy/overlays/data-sheet', { defaults: [{ groups: ['*'], values: { bg: '#abcdef', title: 'New title' } }] });
+  assert.equal(saved.status, 200);
+  const seeded = await render(mia, { price: '4' });
+  assert.match(seeded.text, /#abcdef/);
+  assert.match(seeded.text, /New title/);
+  assert.deepEqual((await call(mia, 'GET', '/api/v1/org-config')).body.tools['data-sheet'].defaults, { bg: '#abcdef', title: 'New title' });
+  await call(bruno, 'PUT', '/api/v1/policy/overlays/data-sheet', {});
 });

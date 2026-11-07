@@ -50,7 +50,8 @@ export interface ToolOverlay {
   };
   /** Values a tool starts from, per group (plans/82 M3): `[{ groups, values }]`,
    *  most specific group winning (programmes/company-values.ts defaultsFor). The
-   *  older flat shape is read as everyone's. */
+   *  older flat shape is kept as stored and applies to nothing until it is
+   *  saved again as group rules. */
   defaults?: Record<string, unknown> | Array<{ groups: string[]; values: Record<string, unknown> }>;
   /** Inputs that take a partner company's values (plans/82 M3): input id to a
    *  company field, for tools partners open directly. */
