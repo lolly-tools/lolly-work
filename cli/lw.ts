@@ -137,6 +137,9 @@ const OPTIONS = {
     projects: { type: 'string' },
     'move-staff': { type: 'string' },
     whole: { type: 'boolean' },
+    // `lw companies profile settings`: contacts who may edit, and the chain they wait for.
+    editors: { type: 'string' },
+    chain: { type: 'string' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -917,6 +920,104 @@ switch (cmd) {
     console.log('Other clients (.cursor/mcp.json, for example):');
     console.log(JSON.stringify(settings, null, 2));
     break;
+  }
+
+  case 'companies': {
+    // A partner company's profile (plans/82 M3): the logos and details every
+    // piece made for it carries, set up once by the brand team.
+    const usage = 'usage: lw companies profile show|history|set|logo|settings <programme> <company> …';
+    if (sub !== 'profile') fail(usage);
+    const verb = positionals[2];
+    const programme = positionals[3];
+    const company = positionals[4];
+    if (!verb || !programme || !company) fail(usage);
+    const at = `/api/v1/programmes/${encodeURIComponent(programme)}/companies/${encodeURIComponent(company)}/profile`;
+    type View = { company: { name: string }; programme: { name: string }; revision: number; profile: Record<string, unknown>;
+      logos: Record<string, { id: string; format: string; version: number }>; settings?: { editors: Array<{ email: string }>; approvalChain: string | null } };
+    const show = (v: View): void => {
+      if (values.json) return;
+      console.log(`${v.company.name} (${v.programme.name})  revision ${v.revision}`);
+      for (const s2 of ['light', 'dark', 'mark']) {
+        const l = v.logos[s2];
+        console.log(`  logo ${s2.padEnd(5)}  ${l ? `${l.id} v${l.version} ${l.format}` : '-'}`);
+      }
+      const p = v.profile as { website?: string; contact?: Record<string, string>; address?: string; currency?: string; taxNote?: string };
+      console.log(`  website     ${p.website ?? '-'}`);
+      console.log(`  contact     ${p.contact ? [p.contact.name, p.contact.email, p.contact.phone].filter(Boolean).join(', ') : '-'}`);
+      console.log(`  address     ${p.address ? p.address.replace(/\n/g, ' / ') : '-'}`);
+      console.log(`  currency    ${p.currency ?? '-'}`);
+      console.log(`  tax note    ${p.taxNote ?? '-'}`);
+      if (v.settings) console.log(`  contacts who may edit: ${v.settings.editors.map((e) => e.email).join(', ') || 'none'}; their changes ${v.settings.approvalChain ? `wait for ${v.settings.approvalChain}` : 'apply at once'}`);
+    };
+    if (verb === 'show') {
+      const v = await call(at) as View;
+      out(v); show(v);
+      break;
+    }
+    if (verb === 'history') {
+      const r = await call(`${at}/history`) as { revisions: Array<{ revision: number; updatedBy: string; updatedAt: string; fields: string[] }> };
+      out(r);
+      if (!values.json) for (const row of r.revisions) console.log(`${String(row.revision).padStart(4)}  ${row.updatedAt.slice(0, 19)}  ${row.updatedBy}  ${row.fields.join(', ')}`);
+      break;
+    }
+    if (verb === 'set') {
+      // --field website=… --field contact.email=… ; an empty value clears one.
+      const body: Record<string, unknown> = {};
+      const contact: Record<string, string | null> = {};
+      for (const pair of values.field ?? []) {
+        const eq = pair.indexOf('=');
+        if (eq < 1) fail(`--field takes key=value, got ${pair}`);
+        const key = pair.slice(0, eq).trim();
+        const value = pair.slice(eq + 1).replace(/\\n/g, '\n');
+        if (key.startsWith('contact.')) contact[key.slice('contact.'.length)] = value || null;
+        else if (['website', 'address', 'currency', 'taxNote'].includes(key)) body[key] = value || null;
+        else fail(`unknown field ${key}: website, contact.name, contact.email, contact.phone, address, currency, taxNote`);
+      }
+      if (Object.keys(contact).length) {
+        const current = ((await call(at)) as View).profile.contact as Record<string, string> | undefined;
+        body.contact = { ...current, ...contact };
+      }
+      if (values.name) body.name = values.name;
+      if (!Object.keys(body).length) fail('usage: lw companies profile set <programme> <company> --field website=https://… [--field contact.email=…] [--name "…"]');
+      const v = await call(at, { method: 'PUT', body }) as View;
+      out(v); show(v);
+      break;
+    }
+    if (verb === 'logo') {
+      const surface = positionals[5];
+      if (!surface || !['light', 'dark', 'mark'].includes(surface)) fail('usage: lw companies profile logo <programme> <company> <light|dark|mark> <file.svg|file.png> [--dry-run] | --rm');
+      if (values.rm) {
+        const v = await call(`${at}/logo?surface=${surface}`, { method: 'DELETE' }) as View;
+        out(v);
+        if (!values.json) console.log(`removed the ${surface} logo; revision ${v.revision}`);
+        break;
+      }
+      const file = positionals[6] ?? fail('name the logo file');
+      const bytes = readFileSync(file);
+      const sent = await fetch(`${base}${at}/logo?surface=${surface}${values['dry-run'] ? '&dryRun=1' : ''}`, {
+        method: 'POST', headers: { ...(values.token ?? process.env.LW_TOKEN ? { authorization: `Bearer ${values.token ?? process.env.LW_TOKEN}` } : savedCookie() ? { cookie: savedCookie()! } : {}),
+          'content-type': contentTypeOf(file), 'x-lolly-client': 'lw-cli engine/0' },
+        body: new Uint8Array(bytes),
+      });
+      const r = await sent.json() as { dryRun: boolean; warnings?: Array<{ message: string }>; asset?: { id: string; version: number }; profile?: { revision: number }; error?: { code: string; message: string } };
+      if (!sent.ok) fail(`${sent.status} ${r.error?.code ?? ''} ${r.error?.message ?? ''}`.trim());
+      out(r);
+      if (!values.json) {
+        for (const w of r.warnings ?? []) console.log(`warning: ${w.message}`);
+        console.log(r.dryRun ? `checked ${file}: it would be accepted${r.warnings?.length ? ' with the warnings above' : ''}` : `stored as ${r.asset!.id} v${r.asset!.version}; revision ${r.profile!.revision}`);
+      }
+      break;
+    }
+    if (verb === 'settings') {
+      const body: Record<string, unknown> = {};
+      if (values.editors !== undefined) body.editors = values.editors === 'none' ? [] : values.editors.split(',').map((e) => e.trim()).filter(Boolean);
+      if (values.chain !== undefined) body.approvalChain = values.chain === 'none' ? null : values.chain;
+      if (!Object.keys(body).length) fail('usage: lw companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <chain-id>|none]');
+      const v = await call(`${at}/settings`, { method: 'PUT', body }) as View;
+      out(v); show(v);
+      break;
+    }
+    fail(usage);
   }
 
   case 'tokens': {
@@ -2045,6 +2146,8 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
   tokens [create --label <l> --scopes <s,...> [--tools <id,...>] [--role <r>] | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
+  companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
+  companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
