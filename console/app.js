@@ -2850,7 +2850,7 @@ function catalogLicenceSection(id) {
       });
       controls.push(el('details', { class: 'tbl' }, el('summary', {}, a.licence ? 'Change the licence record' : 'Record its licence'),
         el('div', { class: 'stack' }, el('div', { class: 'grant-fields' }, field('Licence', decl), field('Credit (optional)', credit)),
-          el('p', { class: 'sub flush' }, 'Write the licence as the rights holder gave it. Lolly keeps your text and reads it with the same rules as everywhere else.'), el('p', {}, save))));
+          el('p', { class: 'sub flush' }, 'Write the licence in the rights holder\u2019s own words. Lolly keeps your text and reads the licence with the same rules as everywhere else.'), el('p', {}, save))));
       if (a.licence) {
         controls.push(armConfirmButton({ class: 'danger' }, 'Remove licence record', 'Remove the record?', async (disarm) => {
           try { await api(`/api/v1/catalog/rights/licences?${new URLSearchParams({ assetId: id })}`, { method: 'DELETE' }); toast('Licence record removed'); draw(); }
@@ -6389,7 +6389,7 @@ async function programmePeople(p, host, lastResult = null) {
   const canMark = (session?.console?.actions ?? []).includes('catalog.edit');
   const licenceNote = el('p', { class: 'sub flush' });
   const oursTick = el('input', { type: 'checkbox', 'aria-label': 'These files are ours' });
-  const oursLabel = el('label', { class: 'chk', hidden: 'hidden' }, oursTick, el('span', {}, 'These files are ours: record the folder as our own statement when I give it. Lolly does not check ownership.'));
+  const oursLabel = el('label', { class: 'chk', hidden: 'hidden' }, oursTick, el('span', {}, 'These files are ours: record a mark on the folder in the same save. Lolly does not check ownership.'));
   let coverageAsk = 0;
   const describeLicences = async (source, path) => {
     const ask = ++coverageAsk;

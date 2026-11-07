@@ -112,6 +112,6 @@ test('who may read them', async () => {
 test('the console says a record is the admin\'s own and never claims a clearance', async () => {
   const source = await readFile(new URL('../console/app.js', import.meta.url), 'utf8');
   assert.match(source, /Lolly does not check ownership/);
-  assert.match(source, /Lolly keeps your text and reads it with the same rules as everywhere else/);
+  assert.match(source, /Lolly keeps your text and reads the licence with the same rules as everywhere else/);
   assert.doesNotMatch(source, /rights cleared|legally safe|fully cleared|copyright verified/i);
 });
