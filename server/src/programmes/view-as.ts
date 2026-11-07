@@ -31,7 +31,8 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { UserRecord } from '../store/types.ts';
-import { VIEW_AS_VIEWER_PREFIX, setViewAsViewer, type Role } from '../rbac/evaluate.ts';
+import { setViewAsViewer, type Role } from '../rbac/evaluate.ts';
+import { enterView } from '../rbac/view-context.ts';
 import { COMPANY_GROUP_PREFIX, programmeGroup, withPartnerMarker } from './types.ts';
 
 /** The request header that carries the token. */
@@ -135,10 +136,9 @@ export function viewAsGroups(claim: Pick<ViewAsClaim, 'p' | 'c'>): string[] {
 
 /** The member a view answers as: no record in the store, groups only, the way the
  *  console Preview builds its subject. Its id names the admin, so nothing it reads
- *  can be mistaken for a real person's, and one marker group names the admin too, so
- *  the feed it is served is also the admin's own (rbac/evaluate.ts). */
+ *  can be mistaken for a real person's. */
 export function viewAsSubject(claim: ViewAsClaim, role: string, label: string, now = new Date().toISOString()): UserRecord {
-  const groups = [...viewAsGroups(claim), `${VIEW_AS_VIEWER_PREFIX}${claim.u}`];
+  const groups = viewAsGroups(claim);
   return {
     id: `view-as:${claim.u}`, sub: `view-as:${claim.u}`, email: 'view-as@example',
     firstname: 'Example', lastname: label,
@@ -239,8 +239,10 @@ export function createViewAs(deps: ViewAsDeps) {
     const groups = viewAsGroups(claim);
     const label = viewingAs.company ? viewingAs.company.name : viewingAs.programme.name;
     const member = viewAsSubject(claim, deps.roleOf(groups), label);
-    // The admin's own access bounds the view (rbac/evaluate.ts).
-    setViewAsViewer(member.id, { userId: admin.id, groups: admin.groups, role: admin.role as Role });
+    // The admin's own access bounds the view (rbac/evaluate.ts, rbac/view-context.ts).
+    const viewer = { userId: admin.id, groups: admin.groups, role: admin.role as Role };
+    setViewAsViewer(member.id, viewer);
+    enterView({ subjectGroups: member.groups, viewer });
     return { view: { member, admin, viewingAs, claim } };
   }
 

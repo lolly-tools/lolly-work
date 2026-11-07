@@ -155,13 +155,13 @@ export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role
 
 /**
  * A view as a partner (programmes/view-as.ts) answers as a synthetic member whose id
- * names the real admin (`view-as:<admin id>`), and whose groups carry one marker,
- * `view-as-viewer:<admin id>`. A view never shows the admin anything they could not
- * see themselves: the admin's own explicit denies apply to that member here, the
- * admin's tool visibility in policy/overlay.ts and the admin's own feed in
- * catalog/served-index.ts. view-as.ts records the admin on every request it admits.
+ * names the real admin (`view-as:<admin id>`). A view never shows the admin anything
+ * they could not see themselves: the admin's own explicit denies apply to that member
+ * here, the admin's tool visibility in policy/overlay.ts and the admin's own feed in
+ * catalog/served-index.ts (through rbac/view-context.ts). view-as.ts records the admin
+ * on every request it admits. Only view-as.ts makes that id, so no account, group or
+ * grant can name it.
  */
-export const VIEW_AS_VIEWER_PREFIX = 'view-as-viewer:';
 export interface ViewAsViewer { userId: string; groups: string[]; role: Role }
 const viewers = new Map<string, ViewAsViewer>();
 export function setViewAsViewer(subjectId: string, viewer: ViewAsViewer): void {
@@ -170,11 +170,6 @@ export function setViewAsViewer(subjectId: string, viewer: ViewAsViewer): void {
 /** The admin behind a view's subject id, or undefined for anyone else. */
 export function viewAsViewerOf(userId: string | undefined): ViewAsViewer | undefined {
   return userId ? viewers.get(userId) : undefined;
-}
-/** The admin behind a view, from the marker in its groups, or undefined. */
-export function viewAsViewerForGroups(groups: readonly string[]): ViewAsViewer | undefined {
-  const marker = groups.find((g) => g.startsWith(VIEW_AS_VIEWER_PREFIX));
-  return marker ? viewers.get(`view-as:${marker.slice(VIEW_AS_VIEWER_PREFIX.length)}`) : undefined;
 }
 
 function principalMatches(selector: string, ctx: Pick<PrincipalCtx, 'userId' | 'groups'>): boolean {

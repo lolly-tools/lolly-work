@@ -97,6 +97,7 @@ import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planB
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
 import { createViewAs, VIEW_AS_HEADER, ViewAsEndedError } from '../programmes/view-as.ts';
+import { withRequestView } from '../rbac/view-context.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { accessEndsFor } from '../programmes/exit-schedule.ts';
@@ -13032,7 +13033,8 @@ export function buildApp(deps: AppDeps): App {
     }
   };
   // One server span per request when OTLP traces are on; otherwise the handler directly.
-  const app: App = (req, res) => otel.serve(req, res, (span) => handle(req, res, span));
+  // Each request carries its own view holder (rbac/view-context.ts), empty unless view-as admits one.
+  const app: App = (req, res) => withRequestView(() => otel.serve(req, res, (span) => handle(req, res, span)));
   appRoutes.set(app, router.descriptions);
   return app;
 }
