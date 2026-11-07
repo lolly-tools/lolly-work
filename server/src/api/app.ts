@@ -100,6 +100,7 @@ import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-ro
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
 import { registerRightsRoutes } from '../programmes/rights-routes.ts';
+import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
@@ -5899,7 +5900,14 @@ export function buildApp(deps: AppDeps): App {
     store, requireAction, audit,
     fragments: async () => { await providersReady; return federation.fragments({ background: true }); },
   });
-  registerRightsRoutes(router, { store, requireAction, feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups })).index; } });
+  // Licences (plans/82 M4): every catalog entry as its source records it, before any mark.
+  const catalogEntriesForRights = async (): Promise<AssetIndexEntry[]> => {
+    await providersReady;
+    const frags = await federation.fragments({ background: true });
+    return [...(await loadAssetIndexById(config.instance.pack)).values(), ...frags.flatMap((f) => f.fragment.assets), ...(await store.listInstanceAssets()).map((r) => r.entry)];
+  };
+  registerRightsRoutes(router, { store, requireAction, catalogEntries: catalogEntriesForRights, feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups })).index; } });
+  registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights });
 
   registerDomainRoutes(router, {
     store, requireAction, audit, resolveTxt,

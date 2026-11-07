@@ -35,6 +35,7 @@ import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../prog
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { CompanyProfile, CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
@@ -2340,6 +2341,37 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deletePartnerFolder(key) {
       await pool.query('delete from partner_folders where provider = $1 and path = $2 and programme_id = $3 and company_id = $4',
         [key.provider, key.path, key.programmeId, key.companyId ?? '']);
+    },
+
+    // Owner-published marks and licence records (migrations/0091), each kept
+    // whole as JSON under its key.
+    async listAssetRightsMarks() {
+      const { rows } = await pool.query('select record from asset_rights_marks order by scope');
+      return rows.map((r) => r.record as AssetRightsMarkRecord);
+    },
+    async putAssetRightsMark(rec) {
+      await pool.query(
+        `insert into asset_rights_marks (scope, record, updated_at) values ($1, $2::jsonb, now())
+         on conflict (scope) do update set record = excluded.record, updated_at = now()`,
+        [rec.scope, JSON.stringify(rec)],
+      );
+    },
+    async deleteAssetRightsMark(scope) {
+      await pool.query('delete from asset_rights_marks where scope = $1', [scope]);
+    },
+    async listAssetLicences() {
+      const { rows } = await pool.query('select record from asset_licence_records order by asset_id');
+      return rows.map((r) => r.record as AssetLicenceRecord);
+    },
+    async putAssetLicence(rec) {
+      await pool.query(
+        `insert into asset_licence_records (asset_id, record, updated_at) values ($1, $2::jsonb, now())
+         on conflict (asset_id) do update set record = excluded.record, updated_at = now()`,
+        [rec.assetId, JSON.stringify(rec)],
+      );
+    },
+    async deleteAssetLicence(assetId) {
+      await pool.query('delete from asset_licence_records where asset_id = $1', [assetId]);
     },
 
     // Partner company profiles (migrations/0089). The current row and one

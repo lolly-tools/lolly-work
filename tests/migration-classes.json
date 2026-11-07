@@ -78,5 +78,6 @@
   "0086_programme_people.sql": "additive",
   "0087_partner_domains.sql": "additive",
   "0088_partner_folders.sql": "additive",
-  "0089_company_profiles.sql": "additive"
+  "0089_company_profiles.sql": "additive",
+  "0091_asset_rights_marks.sql": "additive"
 }

@@ -79,6 +79,10 @@ const OPTIONS = {
     // id in favour of another.
     asset: { type: 'string' },
     note: { type: 'string' },
+    // `lw catalog rights mark|licence` (plans/82 M4).
+    holder: { type: 'string' },
+    terms: { type: 'string' },
+    attribution: { type: 'string' },
     'replaced-by': { type: 'string' },
     replacement: { type: 'string' },
     destination: { type: 'string' },
@@ -1708,6 +1712,54 @@ switch (cmd) {
       // ID-level supersession (plans/31 §6): retire an asset in favour of
       // another. Advice to consumers, never a takedown - lifecycle is the door
       // for that, and the two compose.
+      case 'rights': {
+        // Owner-published marks and licence records (plans/82 M4). A mark or a
+        // licence record is this workspace's own statement; Lolly does not check
+        // ownership or the licence.
+        const what = positionals[2];
+        const usage = 'usage: lw catalog rights [ls] | mark <scope> [--holder "…"] [--terms "…"] [--note "…"] | unmark <scope> | licence <assetId> <declaration> [--attribution "…"] [--note "…"] | unlicence <assetId>';
+        if (what === 'mark') {
+          const scope = positionals[3] ?? fail(usage);
+          const r = await call('/api/v1/catalog/rights/marks', { method: 'PUT', body: { scope, ...(values.holder ? { holder: values.holder } : {}), ...(values.terms ? { terms: values.terms } : {}), ...(values.note ? { note: values.note } : {}) } }) as {
+            mark: { scope: string }; statement: string; covered: { now: number };
+          };
+          out(r);
+          if (!values.json) console.log(`${r.mark.scope}: covers ${r.covered.now} file(s) with no licence record of their own\n${r.statement}`);
+          break;
+        }
+        if (what === 'unmark') {
+          const scope = positionals[3] ?? fail(usage);
+          out(await call(`/api/v1/catalog/rights/marks?scope=${encodeURIComponent(scope)}`, { method: 'DELETE' }));
+          if (!values.json) console.log(`withdrew the mark on ${scope}; its files fall back to what they record themselves`);
+          break;
+        }
+        if (what === 'licence') {
+          const assetId = positionals[3] ?? fail(usage);
+          const declaration = positionals[4] ?? fail(usage);
+          const r = await call('/api/v1/catalog/rights/licences', { method: 'PUT', body: { assetId, declaration, ...(values.attribution ? { attribution: values.attribution } : {}), ...(values.note ? { note: values.note } : {}) } }) as {
+            statement: string; reads: { travels: boolean; licence: string; reason?: string };
+          };
+          out(r);
+          if (!values.json) console.log(`${assetId}: ${r.reads.licence || declaration}${r.reads.travels ? '' : ` (held back from partners: ${r.reads.reason})`}\n${r.statement}`);
+          break;
+        }
+        if (what === 'unlicence') {
+          const assetId = positionals[3] ?? fail(usage);
+          out(await call(`/api/v1/catalog/rights/licences?assetId=${encodeURIComponent(assetId)}`, { method: 'DELETE' }));
+          if (!values.json) console.log(`removed the licence record on ${assetId}`);
+          break;
+        }
+        if (what !== undefined && what !== 'ls' && what !== 'list') fail(usage);
+        const marks = await call('/api/v1/catalog/rights/marks') as { marks: Array<{ scope: string; holder: string; statement: string; covered: { now: number; atStatement?: number } }> };
+        const licences = await call('/api/v1/catalog/rights/licences') as { licences: Array<{ assetId: string; declaration: string; statement: string }> };
+        out({ ...marks, ...licences });
+        if (!values.json) {
+          if (!marks.marks.length && !licences.licences.length) console.log('no marks and no licence records');
+          for (const m of marks.marks) console.log(`mark ${m.scope}  ${m.holder}  covers ${m.covered.now}${m.covered.atStatement !== undefined ? ` (${m.covered.atStatement} when stated)` : ''}\n  ${m.statement}`);
+          for (const l of licences.licences) console.log(`licence ${l.assetId}  ${l.declaration}\n  ${l.statement}`);
+        }
+        break;
+      }
       case 'supersede': {
         const id = positionals[2] ?? fail('usage: lw catalog supersede <assetId> <replacementId> | --rm');
         const replacement = values.rm ? null : positionals[3] ?? values['replaced-by']
@@ -2208,6 +2260,8 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   catalog submit <file> --asset inst/<id> [--note "…"]   new bytes for an asset already in the catalog: version N+1
   catalog versions <id> · catalog rollback <id> <n> · catalog version-rm <id> <n>   the byte history, and moving the head
   catalog supersede <id> <replacementId> | --rm   retire an asset in favour of another (replacedBy)
+  catalog rights [ls] · catalog rights mark <scope> [--holder --terms --note] · unmark <scope>   say a folder (folder:<provider>/<path>), provider, id prefix or asset is your own
+  catalog rights licence <assetId> <declaration> [--attribution --note] · unlicence <assetId>   record the licence of a file that records none
   grants [list] · grants add|rm <principal> <action> [<resource>] --effect deny|allow
   scim token create --idp <provider-id> | list | revoke <id>   provisioning bearers for an IdP (SCIM /scim/v2)
   preview --groups a,b   what a member in those groups would receive

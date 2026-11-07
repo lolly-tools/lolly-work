@@ -187,3 +187,193 @@ export function rightsAnswer(engine: RightsEngine, entry: AssetIndexEntry, compa
 export async function assetRedistribution(entry: AssetIndexEntry, companies: ReadonlySet<string> = new Set()): Promise<RightsAnswer> {
   return rightsAnswer(await loadRightsEngine(), entry, companies);
 }
+
+// -- Marks and licence records (plans/82 M4, W-M4-2) -------------------------
+//
+// A brand team that recorded no licences states, once, that a folder, a
+// provider, an id prefix or one file is its own. A mark is a catalog
+// statement, not proof: it reaches only a file whose own record declares
+// nothing, and it reaches it as one owner-published record, the exact record
+// the engine's `ownerPublished()` reads. A licence record is the admin's own
+// record of one file's licence, for a file that carries none. Neither ever
+// replaces what a file records itself, and neither is written back to a
+// provider: both live in Work's own tables.
+
+/** The fixed declaration a mark records, so a machine reader sees an identifier and not prose. */
+export const OWNER_PUBLISHED_DECLARATION = 'LicenseRef-Owner-Published';
+export const MARK_HOLDER_MAX = 256;
+export const MARK_TERMS_MAX = 1024;
+export const RIGHTS_NOTE_MAX = 500;
+export const LICENCE_DECLARATION_MAX = 200;
+export const LICENCE_ATTRIBUTION_MAX = 1024;
+
+/** One mark: who the holder is, on what terms, and who stated it and when. */
+export interface AssetRightsMarkRecord {
+  /** `asset:<id>`, `folder:<provider>/<path>`, `provider:<id>` or `prefix:<id prefix>`. */
+  scope: string;
+  holder: string;
+  terms: string;
+  note?: string;
+  statedBy: string;
+  statedAt: string;
+  /** Files with no record of their own that the mark covered when it was stated. */
+  coveredAtStatement?: number;
+}
+
+/** The admin's own record of one file's licence. */
+export interface AssetLicenceRecord {
+  assetId: string;
+  /** The declaration exactly as typed. */
+  declaration: string;
+  attribution?: string;
+  note?: string;
+  recordedBy: string;
+  recordedAt: string;
+}
+
+export type MarkScope =
+  | { kind: 'asset'; id: string }
+  | { kind: 'folder'; provider: string; path: string }
+  | { kind: 'provider'; provider: string }
+  | { kind: 'prefix'; prefix: string };
+
+const ASSET_ID = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$/;
+const PROVIDER_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const PREFIX = /^[A-Za-z0-9][A-Za-z0-9._-]*\/(?:[A-Za-z0-9._-]+\/)*$/;
+
+/** Read a scope string, or null when it is not one of the four. */
+export function parseMarkScope(raw: unknown): MarkScope | null {
+  if (typeof raw !== 'string' || raw.length > 1100) return null;
+  const at = raw.indexOf(':');
+  if (at < 1) return null;
+  const kind = raw.slice(0, at);
+  const rest = raw.slice(at + 1);
+  if (kind === 'asset') return ASSET_ID.test(rest) && !rest.includes('..') ? { kind, id: rest } : null;
+  if (kind === 'provider') return PROVIDER_ID.test(rest) ? { kind, provider: rest } : null;
+  if (kind === 'folder') {
+    const slash = rest.indexOf('/');
+    if (slash < 1) return null;
+    const provider = rest.slice(0, slash);
+    const segments = rest.slice(slash + 1).split('/').map((s) => s.trim()).filter(Boolean);
+    if (!PROVIDER_ID.test(provider) || !segments.length || segments.some((s) => s === '.' || s === '..' || /[\u0000-\u001f]/.test(s))) return null;
+    const path = segments.join('/');
+    return path.length <= 1024 ? { kind, provider, path } : null;
+  }
+  if (kind === 'prefix') {
+    if (!PREFIX.test(rest) || rest.length > 512 || rest.startsWith('ext/') || rest.startsWith('inst/')) return null;
+    return { kind, prefix: rest };
+  }
+  return null;
+}
+
+/** The canonical string for a scope, so one statement has one key. */
+export function markScopeKey(scope: MarkScope): string {
+  switch (scope.kind) {
+    case 'asset': return `asset:${scope.id}`;
+    case 'folder': return `folder:${scope.provider}/${scope.path}`;
+    case 'provider': return `provider:${scope.provider}`;
+    case 'prefix': return `prefix:${scope.prefix}`;
+  }
+}
+
+const folderOfEntry = (entry: AssetIndexEntry): string | undefined => {
+  const folder = (entry.meta as { providerFolder?: unknown } | undefined)?.providerFolder;
+  return typeof folder === 'string' ? folder : undefined;
+};
+
+/**
+ * How narrowly a scope covers an entry, or 0 when it does not: one file,
+ * then the longest folder path, then the whole provider, then the longest id
+ * prefix.
+ */
+export function markCovers(scope: MarkScope, entry: AssetIndexEntry): number {
+  switch (scope.kind) {
+    case 'asset': return entry.id === scope.id ? 4_000_000 : 0;
+    case 'folder': {
+      if (!entry.id.startsWith(`ext/${scope.provider}/`)) return 0;
+      const folder = folderOfEntry(entry);
+      return folder !== undefined && (folder === scope.path || folder.startsWith(`${scope.path}/`)) ? 3_000_000 + scope.path.length : 0;
+    }
+    case 'provider': return entry.id.startsWith(`ext/${scope.provider}/`) ? 2_000_000 : 0;
+    case 'prefix': return entry.id.startsWith(scope.prefix) && !entry.id.startsWith('ext/') && !entry.id.startsWith('inst/') ? 1_000_000 + scope.prefix.length : 0;
+  }
+}
+
+/** The narrowest mark covering an entry, or null. */
+export function narrowestMark(entry: AssetIndexEntry, marks: ReadonlyArray<{ scope: MarkScope; mark: AssetRightsMarkRecord }>): AssetRightsMarkRecord | null {
+  let best: AssetRightsMarkRecord | null = null;
+  let rank = 0;
+  for (const { scope, mark } of marks) {
+    const r = markCovers(scope, entry);
+    if (r > rank) { rank = r; best = mark; }
+  }
+  return best;
+}
+
+/** The terms a mark carries when the brand team writes none of its own. */
+export function defaultMarkTerms(holder: string): string {
+  return `Published by ${holder} for the people and partner programmes of this workspace to use in their work. Not an open licence.`;
+}
+
+/**
+ * The one record a mark composes onto a file: the owner, the fixed
+ * declaration and an asserted own-work grant holding the terms. It never
+ * names who stated the mark; that stays in the console and the audit.
+ */
+export function ownerPublishedRecord(entryId: string, mark: AssetRightsMarkRecord): Record<string, unknown> {
+  return {
+    works: [{
+      id: entryId,
+      creators: [{ name: mark.holder, role: 'owner' }],
+      rights: [{ declaration: OWNER_PUBLISHED_DECLARATION, assertedBy: 'catalog', evidence: 'catalog-entry', status: 'unparsed', capturedAt: mark.statedAt }],
+      grants: [{ kind: 'own-work', scope: mark.terms, asserted: true }],
+    }],
+  };
+}
+
+/** Where a file's licence answer comes from. */
+export type RightsSource = 'own' | 'licence-record' | 'mark' | 'none';
+
+/**
+ * Compose licence records and marks onto every entry that records nothing
+ * of its own. A licence record answers first, then the narrowest mark. An
+ * entry with a declaration of its own is returned as it is, so a pack record,
+ * a provider's value or a reviewed licence is never overwritten.
+ */
+export function composeRightsRecords(
+  engine: Pick<RightsEngine, 'assetLicenceDeclaration'>,
+  entries: readonly AssetIndexEntry[],
+  marks: readonly AssetRightsMarkRecord[],
+  licences: readonly AssetLicenceRecord[],
+): AssetIndexEntry[] {
+  if (!marks.length && !licences.length) return entries as AssetIndexEntry[];
+  const scoped = marks.flatMap((mark) => {
+    const scope = parseMarkScope(mark.scope);
+    return scope ? [{ scope, mark }] : [];
+  });
+  const byAsset = new Map(licences.map((l) => [l.assetId, l]));
+  return entries.map((entry) => {
+    if (engine.assetLicenceDeclaration(entry as Record<string, unknown>)) return entry;
+    const licence = byAsset.get(entry.id);
+    if (licence) {
+      const hasAttribution = typeof entry.attribution === 'string' && entry.attribution.trim();
+      return { ...entry, license: licence.declaration, ...(licence.attribution && !hasAttribution ? { attribution: licence.attribution } : {}) };
+    }
+    const mark = narrowestMark(entry, scoped);
+    return mark ? { ...entry, rights: ownerPublishedRecord(entry.id, mark) } : entry;
+  });
+}
+
+/** Which record decides an entry's answer, read from the entry before composition. */
+export function rightsSourceOf(
+  engine: Pick<RightsEngine, 'assetLicenceDeclaration'>,
+  entry: AssetIndexEntry,
+  marks: readonly AssetRightsMarkRecord[],
+  licences: readonly AssetLicenceRecord[],
+): { source: RightsSource; mark?: AssetRightsMarkRecord; licence?: AssetLicenceRecord } {
+  if (engine.assetLicenceDeclaration(entry as Record<string, unknown>)) return { source: 'own' };
+  const licence = licences.find((l) => l.assetId === entry.id);
+  if (licence) return { source: 'licence-record', licence };
+  const mark = narrowestMark(entry, marks.flatMap((m) => { const scope = parseMarkScope(m.scope); return scope ? [{ scope, mark: m }] : []; }));
+  return mark ? { source: 'mark', mark } : { source: 'none' };
+}

@@ -16,7 +16,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import type { AssetIndex, AssetIndexEntry } from '../catalog/lifecycle.ts';
-import { entryCompany, HELD_LABEL, loadRightsEngine, rightsAnswer, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
+import { entryCompany, HELD_LABEL, loadRightsEngine, parseMarkScope, rightsAnswer, type AssetRightsMarkRecord, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
+import { markCoverage, markStatement } from '../catalog/rights-routes.ts';
 import { entryInFolders, folderRuleGroup, liveFolderRules, type PartnerFolderRecord } from './folders.ts';
 import { companyGroup } from './people.ts';
 import { isProgrammeScoped, namesProgrammeGroup, PARTNER_GROUP, programmeGroup } from './types.ts';
@@ -28,6 +29,8 @@ export interface RightsRouteDeps {
   requireAction(req: IncomingMessage, res: ServerResponse, action: string): Promise<UserRecord | null>;
   /** The composed feed a caller with these groups receives. */
   feedFor(groups: string[]): Promise<AssetIndex>;
+  /** Every catalog entry as its source records it, before any mark. */
+  catalogEntries(): Promise<AssetIndexEntry[]>;
 }
 
 /** Held files listed per source row; the rest are counted. */
@@ -64,6 +67,10 @@ export interface SourceRow {
   path?: string;
   collection?: { id: string; name: string };
   company?: { id: string; name: string };
+  /** The scope "These are ours" records for this row: a folder or a whole provider. */
+  markScope?: string;
+  /** The mark already stated on exactly that scope. */
+  mark?: RowMark;
   assets: number;
   travel: { count: number; byLicence: Array<{ licence: string; count: number }> };
   held: { count: number; byReason: Array<{ category: HeldCategory; label: string; count: number }> };
@@ -71,6 +78,18 @@ export interface SourceRow {
   heldFiles: HeldFile[];
   /** Held files past the listed ones. */
   heldMore: number;
+}
+
+/** A mark as the report shows it to the admin: who stated it and when, and what it covers now. */
+export interface RowMark {
+  scope: string;
+  holder: string;
+  terms: string;
+  note?: string;
+  statedBy: { id: string; name: string };
+  statedAt: string;
+  statement: string;
+  covered: { now: number; atStatement?: number };
 }
 
 export interface ProgrammeRightsReport {
@@ -119,9 +138,12 @@ function sourceOf(entry: AssetIndexEntry, answer: RightsAnswer, groups: Readonly
       .sort((a, b) => b.length - a.length);
     if (paths.length) {
       const path = paths[0]!;
-      return { key: `folder:${providerId}/${path}`, row: { kind: 'folder', label: `${label} / ${path || 'all of it'}`, provider: { id: providerId, label }, path } };
+      return {
+        key: `folder:${providerId}/${path}`,
+        row: { kind: 'folder', label: `${label} / ${path || 'all of it'}`, provider: { id: providerId, label }, path, markScope: path ? `folder:${providerId}/${path}` : `provider:${providerId}` },
+      };
     }
-    return { key: `provider:${providerId}`, row: { kind: 'provider', label, provider: { id: providerId, label } } };
+    return { key: `provider:${providerId}`, row: { kind: 'provider', label, provider: { id: providerId, label }, markScope: `provider:${providerId}` } };
   }
   return { key: 'direct', row: { kind: 'direct', label: 'Shared with the programme directly' } };
 }
@@ -251,6 +273,27 @@ export async function linksThatWouldLose(engine: RightsEngine, store: Store, fee
   return { count: losing.length, files, links: losing.slice(0, LINKS_LISTED), more: Math.max(0, losing.length - LINKS_LISTED) };
 }
 
+/** Put the mark stated on each row's own scope beside the row, with what it covers now. */
+async function attachMarks(engine: RightsEngine, store: Store, report: ProgrammeRightsReport, catalogEntries: () => Promise<AssetIndexEntry[]>): Promise<void> {
+  const marks = await store.listAssetRightsMarks();
+  if (!marks.length) return;
+  const byScope = new Map(marks.map((m) => [m.scope, m]));
+  const wanted = report.sources.filter((row) => row.markScope && byScope.has(row.markScope));
+  if (!wanted.length) return;
+  const [entries, licences, users] = await Promise.all([catalogEntries(), store.listAssetLicences(), store.listUsers()]);
+  const nameOf = (id: string): string => { const u = users.find((x) => x.id === id); return u ? personName(u) : id; };
+  for (const row of wanted) {
+    const mark = byScope.get(row.markScope!) as AssetRightsMarkRecord;
+    const scope = parseMarkScope(mark.scope);
+    const name = nameOf(mark.statedBy);
+    row.mark = {
+      scope: mark.scope, holder: mark.holder, terms: mark.terms, ...(mark.note ? { note: mark.note } : {}),
+      statedBy: { id: mark.statedBy, name }, statedAt: mark.statedAt, statement: markStatement(mark, name),
+      covered: { now: scope ? markCoverage(engine, scope, entries, licences) : 0, ...(mark.coveredAtStatement !== undefined ? { atStatement: mark.coveredAtStatement } : {}) },
+    };
+  }
+}
+
 export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): void {
   const { store } = deps;
 
@@ -269,6 +312,7 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
       collections, instAssets, providers, folderRules: folderRules.filter((r) => r.programmeId === programme.id),
       companies: companies.map((c) => ({ id: c.id, name: c.name })),
     }, now);
+    await attachMarks(engine, store, report, deps.catalogEntries);
     const links = await linksThatWouldLose(engine, store, deps.feedFor, now);
     sendJson(res, 200, { programme: { id: programme.id, name: programme.name }, ...report, links }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
