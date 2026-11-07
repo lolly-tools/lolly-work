@@ -146,6 +146,8 @@ const OPTIONS = {
     'calls-per-minute': { type: 'string' },
     'renders-per-day': { type: 'string' },
     'renders-per-month': { type: 'string' },
+    // `lw tokens add --programme <id> --ttl-days 90`: a partner agent's lifetime in days.
+    'ttl-days': { type: 'string' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -1102,6 +1104,56 @@ switch (cmd) {
 
   case 'tokens': {
     // Service tokens (plans/35 wave 2): automation identity, owner-minted.
+    // With --programme, the same verbs act through that programme's manager
+    // routes (plans/82 M7): a partner agent's token, issued and revoked there.
+    const programmeAt = values.programme ? `/api/v1/programmes/${encodeURIComponent(values.programme)}/tokens` : null;
+    type ProgrammeTokenRow = { id: string; label: string; company: string | null; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null;
+      lastUsedAt: string | null; revokedAt: string | null; live: boolean; expired: boolean; expiring: boolean; limits: Record<string, number | null>; limitSources: Record<string, string>;
+      limitOverrides: LimitFigures; usage: { today: { calls: number; renders: number; busiestMinute: number }; month: { renders: number }; week: { rateLimited: number; budgetRefused: number }; lastRefusal: { at: string; code: string } | null } };
+    if (programmeAt && (sub === 'add' || sub === 'create')) {
+      const label = values.label ?? fail('usage: lw tokens add --programme <id> [--company <id>] --label "…" [--scopes render,catalog.read] [--tools a,b] [--ttl-days 90]');
+      const list = (raw: string | undefined) => raw?.split(',').map((item) => item.trim()).filter(Boolean);
+      const scopes = list(values.scopes), tools = list(values.tools), limits = limitFlags({});
+      const ttl = values['ttl-days'] ?? values.days;
+      const t = await call(programmeAt, { method: 'POST', body: { label, ...(values.company ? { company: values.company } : {}), ...(scopes ? { scopes } : {}), ...(tools ? { tools } : {}),
+        ...(ttl ? { ttlDays: Number(ttl) } : {}), ...(limits ? { limits } : {}) } }) as ProgrammeTokenRow & { token: string; programme: string };
+      out(t);
+      if (!values.json) {
+        console.log(`${t.id}  ${t.label}  programme ${t.programme}${t.company ? `/${t.company}` : ''}  scopes ${(t.scopes ?? []).join(',')}${t.tools ? `  tools ${t.tools.join(',')}` : ''}  expires ${t.expiresAt}`);
+        printLimits(t.limits, t.limitSources);
+        console.log(`token (shown once, hand it to the partner now): ${t.token}`);
+      }
+      break;
+    }
+    if (programmeAt && sub === 'revoke') {
+      const id = positionals[2] ?? fail('usage: lw tokens revoke <id> --programme <id>');
+      await call(`${programmeAt}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      console.log(`revoked ${id}`);
+      break;
+    }
+    if (programmeAt && sub === 'limits') {
+      const id = positionals[2] ?? fail('usage: lw tokens limits <id> --programme <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]');
+      const { tokens } = await call(values.company ? `${programmeAt}?company=${encodeURIComponent(values.company)}` : programmeAt) as { tokens: ProgrammeTokenRow[] };
+      const current = tokens.find((t) => t.id === id) ?? fail(`no token ${id} in programme ${values.programme}`);
+      const next = limitFlags(current.limitOverrides ?? {});
+      const shown = next ? await call(`${programmeAt}/${encodeURIComponent(id)}`, { method: 'PUT', body: { limits: next } }) as ProgrammeTokenRow : current;
+      out(shown);
+      if (!values.json) {
+        console.log(`${shown.id}  ${shown.label}`);
+        printLimits(shown.limits, shown.limitSources, { rendersPerDay: shown.usage.today.renders, rendersPerMonth: shown.usage.month.renders });
+      }
+      break;
+    }
+    if (programmeAt && (sub === undefined || sub === 'list')) {
+      const { tokens } = await call(values.company ? `${programmeAt}?company=${encodeURIComponent(values.company)}` : programmeAt) as { tokens: ProgrammeTokenRow[] };
+      out(tokens);
+      if (!values.json) for (const t of tokens) {
+        const state = t.revokedAt ? `REVOKED ${t.revokedAt}` : t.expired ? `EXPIRED ${t.expiresAt}` : `${t.expiring ? 'EXPIRING ' : ''}expires ${t.expiresAt}`;
+        const cap = (n: number | null | undefined) => (n === null || n === undefined ? 'no cap' : n.toLocaleString('en-US'));
+        console.log(`${t.id}  ${t.label}${t.company ? `  company ${t.company}` : ''}  scopes ${(t.scopes ?? []).join(',')}  today ${t.usage.today.calls} calls, ${t.usage.today.renders}/${cap(t.limits.rendersPerDay)} renders  last used ${t.lastUsedAt ?? 'never'}  ${state}`);
+      }
+      break;
+    }
     if (sub === 'create') {
       const label = values.label ?? fail('usage: lw tokens create --label ci --scopes render[,documents,...] [--tools a,b] [--role r] [--days n]');
       const list = (raw: string | undefined) => raw?.split(',').map((item) => item.trim()).filter(Boolean);
@@ -2264,6 +2316,8 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   tokens [create --label <l> --scopes <s,...> [--tools <id,...>] [--role <r>] | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
   tokens programme <id> <programme> [--company <id>] · tokens programme <id> none   place a token in a partner programme, so a partner's agent is scoped like its people
   tokens limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]   a token's limits, where each comes from, and today's use
+  tokens add --programme <id> [--company <id>] --label "…" [--scopes render,catalog.read] [--tools a,b] [--ttl-days 90]   a partner agent's token, issued by the programme's manager
+  tokens list|revoke <id>|limits <id> --programme <id> [--company <id>]   that programme's tokens, through its manager's routes
   programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]   the limits every token placed in a programme takes
   companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
   companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit

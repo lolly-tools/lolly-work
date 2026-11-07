@@ -765,6 +765,11 @@ export async function runStoreConformance(store: Store): Promise<void> {
   const { limits: _dropped, ...unlimited } = (await store.getApiToken('tok_scoped'))!;
   await store.putApiToken(unlimited);
   assert.equal((await store.getApiToken('tok_scoped'))?.limits, undefined, 'a put without limits clears them');
+  // A token a programme's manager minted says so (migrations/0095), and an owner's does not.
+  assert.equal((await store.getApiToken('tok_scoped'))?.via, undefined);
+  await store.putApiToken({ id: 'tok_programme', label: 'agent', role: 'automation', scopes: ['render'], groups: ['programme-resellers', 'partner'], via: 'programme',
+    tokenHash: 'hash-programme', createdBy: 'user:u1', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
+  assert.equal((await store.findApiTokenByHash('hash-programme'))?.via, 'programme');
   // Calls per day, and the busiest minute: three in one minute, then one in the next.
   for (const minute of ['2026-11-07T10:00', '2026-11-07T10:00', '2026-11-07T10:00', '2026-11-07T10:01']) await store.recordTokenCall('tok_use', '2026-11-07', minute);
   await store.recordTokenCall('tok_use', '2026-11-06', '2026-11-06T23:59');

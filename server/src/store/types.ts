@@ -349,6 +349,10 @@ export interface ApiTokenRecord {
    *  no cap. A figure it leaves out takes its programme's, then the instance's;
    *  an internal token has none unless it states one (iam/token-limits.ts). */
   limits?: TokenLimitOverrides;
+  /** `programme` when a programme's manager minted it for that programme (plans/82
+   *  M7, migrations/0095). Such a token never leaves its programme: it is revoked,
+   *  not moved. Absent for a token an owner minted. */
+  via?: 'programme';
   /** sha256 hex of the opaque secret - never the secret itself. */
   tokenHash: string;
   /** 'user:<id>' who minted it. */

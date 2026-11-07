@@ -74,6 +74,7 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     ...(r.tools ? { tools: r.tools as string[] } : {}),
     ...(r.groups ? { groups: r.groups as string[] } : {}),
     ...(r.limits ? { limits: r.limits as ApiTokenRecord['limits'] } : {}),
+    ...(r.via === 'programme' ? { via: 'programme' as const } : {}),
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
     createdAt: new Date(r.created_at as string).toISOString(),
@@ -915,11 +916,11 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // Service tokens (plans/35 wave 2) - the SCIM block's shapes, one row kind over.
     async putApiToken(rec) {
       await pool.query(
-        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools, groups, limits)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools, groups, limits, via)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14)
          on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at, groups = excluded.groups, limits = excluded.limits`,
         [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null, rec.scopes ?? null, rec.tools ?? null, rec.groups ?? null,
-          rec.limits ? JSON.stringify(rec.limits) : null],
+          rec.limits ? JSON.stringify(rec.limits) : null, rec.via ?? null],
       );
     },
     async listApiTokens() {
