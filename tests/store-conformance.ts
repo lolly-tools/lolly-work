@@ -1388,6 +1388,24 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual((await store.setLocalGroups(partnerUser.id, ['partner']))?.localGroups, ['partner']);
   assert.deepEqual((await store.setLocalGroups(partnerUser.id, []))?.localGroups, [], 'an admin removing the marker on purpose makes the account internal');
 
+  // Partner domains (plans/82 M1 part 2b, migrations/0087): one record per
+  // domain, listed by domain, upserted whole (the rule list is replaced).
+  assert.deepEqual(await store.listPartnerDomains(), []);
+  const acmeDomain = { domain: 'acme.example', proof: 'txt' as const, token: 'tok', createdBy: 'usr_1', createdAt: '2026-11-06T00:00:00.000Z', updatedAt: '2026-11-06T00:00:00.000Z',
+    rules: [{ programmeId: 'resellers', companyId: 'acme', endsAt: '2027-06-30T23:59:59.999Z', addedBy: 'usr_1', addedAt: '2026-11-06T00:00:00.000Z' }] };
+  await store.putPartnerDomain(acmeDomain);
+  await store.putPartnerDomain({ ...acmeDomain, domain: 'about.example', rules: [] });
+  assert.deepEqual((await store.listPartnerDomains()).map((d) => d.domain), ['about.example', 'acme.example'], 'listed by domain');
+  await store.putPartnerDomain({ ...acmeDomain, proof: 'admin', assertedBy: 'usr_1', rules: [acmeDomain.rules[0]!, { programmeId: 'isvs', addedBy: 'usr_1', addedAt: 'x' }] });
+  const acmeBack = (await store.listPartnerDomains()).find((d) => d.domain === 'acme.example')!;
+  assert.equal(acmeBack.proof, 'admin', 'put is an upsert');
+  assert.deepEqual(acmeBack.rules.map((r) => r.programmeId), ['resellers', 'isvs']);
+  assert.equal(acmeBack.rules[0]!.endsAt, '2027-06-30T23:59:59.999Z');
+  await store.deletePartnerDomain('nope');
+  await store.deletePartnerDomain('about.example');
+  await store.deletePartnerDomain('acme.example');
+  assert.deepEqual(await store.listPartnerDomains(), []);
+
   // Asset versions (plans/31 section 6, migrations/0020). Keyed (assetId,
   // version), listed oldest-first, and an upsert replaces the snapshot whole -
   // the format SET is what a head move and a rollback swap, so a driver that

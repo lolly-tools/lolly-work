@@ -32,6 +32,11 @@ export interface MembershipRecord {
   endsAt?: string;
   addedBy: string;
   addedAt: string;
+  /** How the person joined: from a list (the default when absent) or by
+   *  signing in from a partner domain, which is `domain`. A live membership
+   *  made through a domain admits its address on its own. */
+  via?: 'list' | 'domain';
+  domain?: string;
   /** Set when the sweep or an exit ended it; the record stays for the audit trail. */
   endedAt?: string;
 }

@@ -1,5 +1,6 @@
 import type { ProgrammeRecord } from '../programmes/types.ts';
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
+import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
 import type { SubjectStore } from '../privacy/subject.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
@@ -1795,6 +1796,12 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   deleteCompany(id: string): Promise<void>;
   listMemberships(): Promise<MembershipRecord[]>;
   putMembership(rec: MembershipRecord): Promise<void>;
+  // Partner domains (plans/82 M1 part 2b, migrations/0087): one record per
+  // domain, holding its proof and the programmes it feeds; upserted whole.
+  listPartnerDomains(): Promise<PartnerDomainRecord[]>;
+  putPartnerDomain(rec: PartnerDomainRecord): Promise<void>;
+  /** Unknown domain is a no-op. Never touches an account or a membership. */
+  deletePartnerDomain(domain: string): Promise<void>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
   // cumulative for everything that was KEPT - a returned submission still spent

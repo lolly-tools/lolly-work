@@ -14,7 +14,10 @@
  *   4. otherwise an email the IdP does not vouch for (`emailVerification`) is
  *      refused before the lists are read, so the refusal reason never says
  *      whether an address or domain is listed or invited;
- *   5. then an invitation, a listed email or a listed domain admits.
+ *   5. then an invitation, a listed email or a listed domain admits;
+ *   6. then a partner domain (plans/82 M1 part 2b) or a live programme
+ *      membership for the address. Neither comes from the configuration:
+ *      the caller reads them from the store and passes them in `partner`.
  *
  * An invitation matches the sign-in's email or one of its
  * `invitationEmails`: the other verified addresses a GitHub account carries
@@ -71,7 +74,7 @@ export interface AdmissionInvitation {
 
 /** `linked`: this sign-in is linked to an existing member who is admitted on
  *  their own standing (app.ts `admitSignIn`, plans/74 "One person, many sign-ins"). */
-export type AdmissionVia = 'email' | 'domain' | 'invitation' | 'open' | 'linked';
+export type AdmissionVia = 'email' | 'domain' | 'invitation' | 'open' | 'linked' | 'partner-domain' | 'partner-member';
 export type AdmissionRefusal = 'disabled' | 'hosted-domain' | 'tenant' | 'email-unverified' | 'not-invited';
 
 export type AdmissionDecision =
@@ -79,6 +82,14 @@ export type AdmissionDecision =
   | { ok: false; reason: AdmissionRefusal };
 
 const lower = (s: string | undefined): string => (s ?? '').trim().toLowerCase();
+
+/** What partner programmes add to the lists: the domains people can join
+ *  through now (proved, not paused, with a live rule), and whether this
+ *  address holds a programme membership that has not ended. */
+export interface AdmissionPartner {
+  domains: readonly string[];
+  member: boolean;
+}
 
 /** The part after the LAST @, lowercased. `a@b@example.com` reads as example.com. */
 export function emailDomain(email: string): string {
@@ -97,6 +108,7 @@ export function decideAdmission(
   policy: AdmissionPolicy | undefined,
   invitation: AdmissionInvitation | null,
   now: number = Date.now(),
+  partner?: AdmissionPartner,
 ): AdmissionDecision {
   if (identity.disabled) return { ok: false, reason: 'disabled' };
   if (idp.hostedDomain && lower(identity.hd) !== lower(idp.hostedDomain)) return { ok: false, reason: 'hosted-domain' };
@@ -119,6 +131,8 @@ export function decideAdmission(
   if (invited || listed || domainListed) {
     return { ok: true, via: invited ? 'invitation' : listed ? 'email' : 'domain', emailVerified: true };
   }
+  if (partner && !!domain && partner.domains.some((d) => lower(d) === domain)) return { ok: true, via: 'partner-domain', emailVerified: true };
+  if (partner?.member && !!email) return { ok: true, via: 'partner-member', emailVerified: true };
   return { ok: false, reason: 'not-invited' };
 }
 

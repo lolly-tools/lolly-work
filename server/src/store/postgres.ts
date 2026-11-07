@@ -33,6 +33,7 @@ import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
 import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../programmes/types.ts';
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
+import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -2296,6 +2297,20 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
          on conflict (programme_id, email) do update set record = excluded.record, updated_at = now()`,
         [rec.programmeId, rec.email, JSON.stringify(rec)],
       );
+    },
+    async listPartnerDomains() {
+      const { rows } = await pool.query('select record from partner_domains order by domain');
+      return rows.map((r) => r.record as PartnerDomainRecord);
+    },
+    async putPartnerDomain(rec) {
+      await pool.query(
+        `insert into partner_domains (domain, record, updated_at) values ($1, $2::jsonb, now())
+         on conflict (domain) do update set record = excluded.record, updated_at = now()`,
+        [rec.domain, JSON.stringify(rec)],
+      );
+    },
+    async deletePartnerDomain(domain) {
+      await pool.query('delete from partner_domains where domain = $1', [domain]);
     },
 
     // Instance asset versions (migrations/0020). Immutable snapshots keyed

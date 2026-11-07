@@ -75,5 +75,6 @@
   "0083_brand_pages.sql": "maintenance",
   "0084_brand_edits.sql": "additive",
   "0085_partner_programmes.sql": "additive",
-  "0086_programme_people.sql": "additive"
+  "0086_programme_people.sql": "additive",
+  "0087_partner_domains.sql": "additive"
 }

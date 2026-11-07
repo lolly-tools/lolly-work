@@ -17,6 +17,7 @@ import type { CollectionRecord } from '../catalog/collections.ts';
 import {
   PARTNER_GROUP, PROGRAMME_ID, programmeGroup, readProgrammeBody, type ProgrammeRecord,
 } from './types.ts';
+import { withdrawDomainRules } from './domain-routes.ts';
 
 type Router = ReturnType<typeof createRouter>;
 
@@ -179,6 +180,8 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
       await store.putCollection(next);
       await deps.audit(`user:${actor.id}`, 'catalog.collection.edit', `collection:${c.id}`, { before: c, after: next, via: `programme:${id}` });
     }
+    // Its partner domains stop admitting anyone (plans/82 M1 part 2b).
+    await withdrawDomainRules(store, deps.audit, `user:${actor.id}`, { programmeId: id }, now, 'programme-delete');
     // Members keep the partner marker, so they see only the essentials until an
     // admin adds them to another programme or makes them internal on purpose.
     await store.deleteLocalGroup(group);
