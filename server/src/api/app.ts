@@ -91,7 +91,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, programmeGroupsOf, reservedGroupName } from '../programmes/types.ts';
+import { isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
@@ -705,14 +705,14 @@ export function buildApp(deps: AppDeps): App {
    *  their programme groups, never one shared with everyone (plans/82 M1). */
   const callerSeesCollection = (user: { groups: string[]; role?: string }, collection: CollectionRecord): boolean =>
     isProgrammeScoped(user.groups, user.role)
-      ? namesProgrammeGroup(collection.groups, new Set(programmeGroupsOf(user.groups)))
+      ? namesProgrammeGroup(collection.groups, new Set(partnerGroupsOf(user.groups)))
       : collectionVisible(collection, user.groups);
   /** Whether a group set sees a provider at all: its exposure groups admit
    *  them, except that a partner programme member sees only a provider whose
    *  groups name one of their programme groups (plans/82 M1). */
   const providerVisibleTo = (rec: ProviderRecord, groups: string[]): boolean =>
     isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups))
-      ? namesProgrammeGroup(rec.exposure.groups, new Set(programmeGroupsOf(groups)))
+      ? namesProgrammeGroup(rec.exposure.groups, new Set(partnerGroupsOf(groups)))
       : callerSeesProvider(rec, groups);
   const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning, requireGeneration: productionMode(config),
     shellDirectories: () => shellDirectories(config.instance),
@@ -8190,7 +8190,7 @@ export function buildApp(deps: AppDeps): App {
     // their own view to that programme.
     const declaredGroups = list('groups');
     const managesProgrammes = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', ['*'], await store.listGrants());
-    const outsider = declaredGroups.filter((g) => !user.groups.includes(g) && !(managesProgrammes && isProgrammeGroup(g)));
+    const outsider = declaredGroups.filter((g) => !user.groups.includes(g) && !(managesProgrammes && isPartnerGroup(g)));
     if (outsider.length) return sendError(res, 403, 'FORBIDDEN', `you are not in ${outsider.join(', ')}, so you cannot submit into it`);
     const type = declaredType;
     if (type && !/^[a-z0-9-]{1,32}$/i.test(type)) return sendError(res, 400, 'INVALID_INPUT', 'type must be a short slug');
