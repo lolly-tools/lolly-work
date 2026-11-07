@@ -20,7 +20,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { folderWithin, foldersFor, normaliseFolderPath, type PartnerFolderRecord } from '../server/src/programmes/folders.ts';
+import { entryInFolders, folderWithin, foldersFor, normaliseFolderPath, type PartnerFolderRecord } from '../server/src/programmes/folders.ts';
 import { folderCounts, sweepFolderRules } from '../server/src/programmes/folder-routes.ts';
 
 const DAY = 86_400_000;
@@ -109,7 +109,9 @@ test('paths: normalised, never climbing out, and matching everything below', () 
   assert.deepEqual([...foldersFor(rules, new Set(['programme-resellers', 'company-acme']), now)], [['dam', ['Partners/EMEA']]]);
   assert.deepEqual([...foldersFor(rules, new Set(['programme-resellers', 'company-globex']), now)], [['dam', ['Partners/EMEA', 'Partners/US']]]);
   assert.deepEqual(folderCounts([{ meta: { providerFolder: 'a/b' } }, { meta: { providerFolder: 'a' } }, { meta: {} }]),
-    [{ path: '', assets: 2 }, { path: 'a', assets: 2 }, { path: 'a/b', assets: 1 }]);
+    [{ path: '', assets: 3 }, { path: 'a', assets: 2 }, { path: 'a/b', assets: 1 }], 'all of it counts an asset with no folder too');
+  assert.ok(entryInFolders(undefined, ['']), 'the whole provider covers an asset whose driver reports no folder');
+  assert.ok(!entryInFolders(undefined, ['a']), 'a named folder does not');
 });
 
 test('a folder rule gives a programme that folder and everything below it, and nothing else of the provider', async () => {

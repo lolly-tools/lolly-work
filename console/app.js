@@ -5886,7 +5886,7 @@ async function programmePeople(p, host, lastResult = null) {
       catch (ex) { rowErr.textContent = ex.message; disarm(); }
     });
     return el('tr', {},
-      el('td', {}, el('strong', {}, folderName(f.path)), el('div', { class: 'muted' }, f.provider.label)),
+      el('td', {}, el('div', {}, el('strong', {}, folderName(f.path)), el('div', { class: 'muted' }, f.provider.label))),
       el('td', {}, f.company ? f.company.name : `Everyone in ${p.name}`),
       el('td', {}, f.endsAt ? `Ends ${day(f.endsAt)}` : 'No end date'),
       el('td', {}, assetsText(f.assets)),
@@ -5897,7 +5897,9 @@ async function programmePeople(p, host, lastResult = null) {
   const folderSel = el('select', { 'aria-label': 'Folder' });
   const fillFolders = () => {
     const source = sources.find((s) => s.id === sourceSel.value);
-    folderSel.replaceChildren(...(source?.folders ?? []).map((f) => el('option', { value: f.path }, `${folderName(f.path)} (${assetsText(f.assets)})`)));
+    folderSel.replaceChildren(...(source && !source.synced
+      ? [el('option', { value: '', disabled: 'disabled' }, 'Syncing: its folders appear when the first sync finishes')]
+      : (source?.folders ?? []).map((f) => el('option', { value: f.path }, `${folderName(f.path)} (${assetsText(f.assets)})`))));
   };
   sourceSel.addEventListener('change', fillFolders);
   fillFolders();

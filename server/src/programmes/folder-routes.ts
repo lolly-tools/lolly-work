@@ -13,7 +13,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import type { FragmentView } from '../catalog/federation.ts';
-import { folderWithin, liveFolderRules, normaliseFolderPath, type PartnerFolderRecord } from './folders.ts';
+import { entryInFolders, liveFolderRules, normaliseFolderPath, type PartnerFolderRecord } from './folders.ts';
 
 type Router = ReturnType<typeof createRouter>;
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
@@ -35,18 +35,16 @@ const folderOf = (entry: object): string | undefined => {
  *  number of assets at or below it. '' is the whole provider. */
 export function folderCounts(assets: ReadonlyArray<object>): Array<{ path: string; assets: number }> {
   const counts = new Map<string, number>();
-  let reported = 0;
   for (const a of assets) {
     const folder = folderOf(a);
     if (folder === undefined) continue;
-    reported += 1;
     const segments = folder.split('/').filter(Boolean);
     for (let i = 1; i <= segments.length; i++) {
       const path = segments.slice(0, i).join('/');
       counts.set(path, (counts.get(path) ?? 0) + 1);
     }
   }
-  return [{ path: '', assets: reported }, ...[...counts].sort(([a], [b]) => a.localeCompare(b)).map(([path, n]) => ({ path, assets: n }))];
+  return [{ path: '', assets: assets.length }, ...[...counts].sort(([a], [b]) => a.localeCompare(b)).map(([path, n]) => ({ path, assets: n }))];
 }
 
 /** Remove rules past their end date, auditing each. Returns how many ended. */
@@ -84,7 +82,9 @@ export function registerFolderRoutes(router: Router, deps: FolderRouteDeps): voi
     if (!(await manager(req, res))) return;
     const programme = await store.getProgramme(String(ctx.params.id));
     if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
-    const [rules, companies, frags, users] = await Promise.all([store.listPartnerFolders(), store.listCompanies(), deps.fragments(), store.listUsers()]);
+    const [rules, companies, frags, users, recs] = await Promise.all([
+      store.listPartnerFolders(), store.listCompanies(), deps.fragments(), store.listUsers(), store.listProviders({ includeFragment: false }),
+    ]);
     const byId = new Map(frags.map((f) => [f.rec.id, f]));
     const nameOf = (id: string) => { const u = users.find((x) => x.id === id); return u ? [u.firstname, u.lastname].filter(Boolean).join(' ') || u.email : id; };
     const mine = rules.filter((r) => r.programmeId === programme.id);
@@ -96,11 +96,16 @@ export function registerFolderRoutes(router: Router, deps: FolderRouteDeps): voi
           provider: { id: r.provider, label: f?.rec.label ?? r.provider }, path: r.path,
           ...(r.companyId ? { company: { id: r.companyId, name: companies.find((c) => c.id === r.companyId)?.name ?? r.companyId } } : {}),
           ...(r.endsAt ? { endsAt: r.endsAt } : {}),
-          assets: f ? f.fragment.assets.filter((a) => { const folder = folderOf(a); return folder !== undefined && folderWithin(folder, r.path); }).length : 0,
+          assets: f ? f.fragment.assets.filter((a) => entryInFolders(folderOf(a), [r.path])).length : 0,
           addedBy: { id: r.addedBy, name: nameOf(r.addedBy) }, addedAt: r.addedAt,
         };
       }),
-      providers: frags.filter((f) => f.rec.enabled).map((f) => ({ id: f.rec.id, label: f.rec.label, folders: folderCounts(f.fragment.assets) })),
+      // Every enabled provider, synced or not: one enabled a moment ago is
+      // listed at once, with its folders once its first sync has finished.
+      providers: recs.filter((r) => r.enabled).map((r) => {
+        const f = byId.get(r.id);
+        return { id: r.id, label: r.label, synced: !!f, folders: f ? folderCounts(f.fragment.assets) : [] };
+      }),
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 

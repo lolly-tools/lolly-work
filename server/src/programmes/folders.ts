@@ -65,9 +65,12 @@ export function foldersFor(rules: readonly PartnerFolderRecord[], partnerGroups:
   return out;
 }
 
-/** Whether a federated entry (by provider and reported folder) falls under any given path. */
+/** Whether a federated entry (by provider and reported folder) falls under
+ *  any given path. The empty path is the whole provider, so it covers an
+ *  entry whose driver reports no folder (a fragment synced before drivers
+ *  did) as well. */
 export function entryInFolders(folder: unknown, paths: readonly string[] | undefined): boolean {
-  return !!paths?.length && typeof folder === 'string' && paths.some((p) => folderWithin(folder, p));
+  return !!paths?.length && paths.some((p) => p === '' || (typeof folder === 'string' && folderWithin(folder, p)));
 }
 
 /** The earliest rule end after `now`, or Infinity: the feed is recomposed then. */
