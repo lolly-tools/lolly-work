@@ -20,7 +20,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
-import { isProgrammeScoped, programmeGroup, PARTNER_GROUP } from './types.ts';
+import { isProgrammeScoped, noteCompanyProgramme, programmeGroup, PARTNER_GROUP } from './types.ts';
 import { domainOfEmail, normaliseDomain, type TxtLookup } from './domains.ts';
 import { forgetDomainCompany, recheckDomains, sweepDomainRules, withdrawDomainRules } from './domain-routes.ts';
 import {
@@ -121,6 +121,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     const at = now();
     const rec: CompanyRecord = { id, programmeId: programme.id, name, createdBy: prior?.createdBy ?? actor.id, createdAt: prior?.createdAt ?? at, updatedAt: at };
     await store.putCompany(rec);
+    noteCompanyProgramme(id, programme.id);
     await store.putLocalGroup({ name: companyGroup(id), description: `Partner company: ${name} (${programme.name})`, createdAt: prior?.createdAt ?? at });
     await deps.audit(`user:${actor.id}`, prior ? 'programme.company.edit' : 'programme.company.create', `programme:${programme.id}`, { company: id, name, ...(prior ? { before: prior.name } : {}) });
     sendJson(res, prior ? 200 : 201, rec);
@@ -134,6 +135,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such company in this programme');
     await store.deleteLocalGroup(companyGroup(id));
     await store.deleteCompany(id);
+    noteCompanyProgramme(id, null);
     await forgetDomainCompany(store, id, now());
     for (const m of (await store.listMemberships()).filter((x) => x.companyId === id)) {
       const { companyId: _drop, ...rest } = m;
