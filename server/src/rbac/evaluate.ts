@@ -155,14 +155,26 @@ export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role
 
 /**
  * A view as a partner (programmes/view-as.ts) answers as a synthetic member whose id
- * names the real admin (`view-as:<admin id>`). The admin's own explicit denies still
- * apply to that member, so a viewed request is allowed only when the partner AND the
- * admin both are: a view never shows the admin something their own access excludes.
- * view-as.ts records the admin behind each subject id on every request it admits.
+ * names the real admin (`view-as:<admin id>`), and whose groups carry one marker,
+ * `view-as-viewer:<admin id>`. A view never shows the admin anything they could not
+ * see themselves: the admin's own explicit denies apply to that member here, the
+ * admin's tool visibility in policy/overlay.ts and the admin's own feed in
+ * catalog/served-index.ts. view-as.ts records the admin on every request it admits.
  */
-const viewers = new Map<string, Pick<PrincipalCtx, 'userId' | 'groups'>>();
-export function setViewAsViewer(subjectId: string, viewer: { userId: string; groups: string[] }): void {
-  viewers.set(subjectId, { userId: viewer.userId, groups: [...viewer.groups] });
+export const VIEW_AS_VIEWER_PREFIX = 'view-as-viewer:';
+export interface ViewAsViewer { userId: string; groups: string[]; role: Role }
+const viewers = new Map<string, ViewAsViewer>();
+export function setViewAsViewer(subjectId: string, viewer: ViewAsViewer): void {
+  viewers.set(subjectId, { userId: viewer.userId, groups: [...viewer.groups], role: viewer.role });
+}
+/** The admin behind a view's subject id, or undefined for anyone else. */
+export function viewAsViewerOf(userId: string | undefined): ViewAsViewer | undefined {
+  return userId ? viewers.get(userId) : undefined;
+}
+/** The admin behind a view, from the marker in its groups, or undefined. */
+export function viewAsViewerForGroups(groups: readonly string[]): ViewAsViewer | undefined {
+  const marker = groups.find((g) => g.startsWith(VIEW_AS_VIEWER_PREFIX));
+  return marker ? viewers.get(`view-as:${marker.slice(VIEW_AS_VIEWER_PREFIX.length)}`) : undefined;
 }
 
 function principalMatches(selector: string, ctx: Pick<PrincipalCtx, 'userId' | 'groups'>): boolean {
@@ -187,7 +199,7 @@ export function grantDecision(
   grants: Grant[],
 ): 'allow' | 'deny' | 'none' {
   let allowed = false;
-  const viewer = ctx.userId ? viewers.get(ctx.userId) : undefined;
+  const viewer = viewAsViewerOf(ctx.userId);
   for (const g of grants) {
     if (g.action !== action) continue;
     if (g.resource !== '*' && !resourceSelectors.includes(g.resource)) continue;

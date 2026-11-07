@@ -50,7 +50,7 @@ before(async () => {
     instance: { name: 'Partner Hub', baseUrl: 'http://localhost', pack },
     render: { worker: { url: `http://127.0.0.1:${typeof workerAddr === 'object' && workerAddr ? workerAddr.port : 0}` } },
     catalogProviders: [{
-      id: 'dam', kind: 'mock', label: 'DAM', enabled: true, exposure: { groups: ['programme-resellers'] },
+      id: 'dam', kind: 'mock', label: 'DAM', enabled: true, exposure: { groups: ['programme-resellers', 'admin'] },
       options: { assets: [{ remoteId: 'd1', name: 'Northwind deck', nativeType: 'file', sections: [], tags: [], approved: true, updatedAt: '2026-05-01T00:00:00.000Z', formats: [{ format: 'pptx', remoteRef: 'f1', filename: 'deck.pptx' }] }] },
       mapping: { defaultType: 'document' },
     }],
@@ -408,4 +408,20 @@ test('the AI lease answers a view as it answers the partner, so the view keeps t
   const viewed = await call(admin, 'GET', '/api/v1/policy/ai', undefined, body.token);
   assert.equal(viewed.status, 200);
   assert.deepEqual(viewed.body, (await call(admin, 'GET', '/api/v1/policy/ai')).body, 'the same deployment policy');
+});
+
+test('a view shows a tool only when the admin sees it too: a tool kept to a group the admin is not in stays hidden', async () => {
+  const admin = await login('admin@test');
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', { company: 'northwind' });
+  const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: body.token } });
+  await store.putOverlay({ toolId: 'price-sheet', version: 1, visibility: { groups: ['pricing'] } } as never);
+  try {
+    // The programme's grant still gives the partner the tool (console Preview says so).
+    const preview = await call(admin, 'GET', '/api/v1/org-config/preview?groups=partner,programme-resellers,company-northwind');
+    assert.ok('price-sheet' in preview.body.orgConfig.tools, 'the partner gets it');
+    assert.equal((await viewed('/tools/price-sheet/tool.json')).status, 404, 'the admin is not in pricing, so the view refuses it');
+    const config = await call(admin, 'GET', '/api/v1/org-config', undefined, body.token);
+    assert.ok(!('price-sheet' in config.body.tools));
+  } finally { await store.deleteOverlay('price-sheet'); }
+  assert.equal((await viewed('/tools/price-sheet/tool.json')).status, 200, 'back once the admin sees it again');
 });

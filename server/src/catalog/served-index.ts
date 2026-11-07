@@ -35,6 +35,7 @@ import { composeCollections } from './collections.ts';
 import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf } from '../programmes/types.ts';
 import { entryInFolders, foldersFor, nextFolderRuleEnd } from '../programmes/folders.ts';
 import { composeRightsRecords, loadRightsEngine } from './rights.ts';
+import { VIEW_AS_VIEWER_PREFIX, viewAsViewerForGroups } from '../rbac/evaluate.ts';
 
 export interface ServedProvider {
   id: string;
@@ -190,6 +191,27 @@ export function nextLifecycleFlip(entries: AssetIndexEntry[], rows: LifecycleRow
     consider(e.availableUntil);
   }
   return next;
+}
+
+/**
+ * A view as a partner's feed: what the partner is served AND the admin behind the view
+ * is served themselves (rbac/evaluate.ts). Collections keep only members still served,
+ * and only providers both feeds show stay listed.
+ */
+function intersectServed(theirs: ServedIndex, mine: ServedIndex): ServedIndex {
+  if (theirs.status !== 'composed') return theirs;
+  const admitted = new Set((mine.index.assets ?? []).map((entry) => entry.id));
+  const assets = (theirs.index.assets ?? []).filter((entry) => admitted.has(entry.id));
+  const served = new Set(assets.map((entry) => entry.id));
+  const index: AssetIndex = { ...theirs.index, assets };
+  if (Array.isArray(theirs.index.collections)) {
+    index.collections = (theirs.index.collections as Array<{ members: string[] }>).map((c) => ({ ...c, members: c.members.filter((m) => served.has(m)) }));
+  }
+  const providerIds = new Set(mine.providers.map((provider) => provider.id));
+  const bytes = Buffer.from(JSON.stringify(index));
+  const version = sha256Hex(bytes).slice(0, 32);
+  return withSort({ status: 'composed', sourceFingerprint: sha256Hex(`${theirs.sourceFingerprint}\n${mine.sourceFingerprint}`), bytes, etag: quoted(version), version,
+    index, providers: theirs.providers.filter((provider) => providerIds.has(provider.id)) });
 }
 
 function withSort(result: Omit<ServedIndex, 'sorted'>): ServedIndex {
@@ -405,8 +427,15 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     return result;
   };
 
-  return {
+  const indexer: ServedIndexer = {
     async forCaller({ groups, paged: wantPaged, background }) {
+      const viewer = viewAsViewerForGroups(groups);
+      if (groups.some((g) => g.startsWith(VIEW_AS_VIEWER_PREFIX))) {
+        // A view whose admin is unknown here sees nothing rather than the partner's feed alone.
+        const own = groups.filter((g) => !g.startsWith(VIEW_AS_VIEWER_PREFIX));
+        const [theirs, mine] = await Promise.all([indexer.forCaller({ groups: own, paged: wantPaged, background }), viewer ? indexer.forCaller({ groups: viewer.groups }) : null]);
+        return mine ? intersectServed(theirs, mine) : intersectServed(theirs, { ...theirs, index: { ...theirs.index, assets: [] }, providers: [] });
+      }
       const key = [...new Set(groups)].sort();
       const base = await full(key, background);
       if (!wantPaged) return base;
@@ -424,4 +453,5 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     },
     compositions: () => compositions,
   };
+  return indexer;
 }

@@ -40,14 +40,14 @@ before(async () => {
     instance: { name: 'Bytes Hub', baseUrl: 'http://localhost', pack },
     rateLimit: { enabled: false },
     dev: { enabled: true, users: [
-      { email: 'admin@test', groups: ['admin'] },
+      { email: 'admin@test', groups: ['admin', 'marketing'] },
       { email: 'staff@test', groups: ['marketing'] },
       { email: 'rita@reseller.test', groups: [] },
     ] },
   }));
   store = createMemoryStore();
   const blobs = createMemoryBlobStore();
-  for (const [id, groups] of [['inst/internal', '*'], ['inst/kit', ['marketing']], ['inst/sub1', '*']] as const) {
+  for (const [id, groups] of [['inst/internal', '*'], ['inst/kit', ['marketing']], ['inst/emea-only', ['emea-sales']], ['inst/sub1', '*']] as const) {
     const stat = await blobs.put(`${id}/png`, Buffer.from(`png:${id}`), 'image/png');
     await store.putInstanceAsset({
       id, entry: instanceAssetEntry(id, { name: id, type: 'image' }, [{ format: 'png', size: stat.size, checksum: stat.checksum }]),
@@ -55,7 +55,9 @@ before(async () => {
       ...(id === 'inst/sub1' ? { submission: { state: 'live', by: 'user:someone', at: new Date().toISOString(), checksum: stat.checksum, size: stat.size, contentType: 'image/png' } } : {}),
     } as never);
   }
-  await store.putCollection({ id: 'emea-kit', name: 'EMEA kit', members: ['inst/kit'], groups: ['marketing'], curator: 'user:x', createdAt: 'x', updatedAt: 'x' });
+  // The kit also holds an asset only the EMEA sales group sees: the programme includes
+  // it, and the admin's own groups do not.
+  await store.putCollection({ id: 'emea-kit', name: 'EMEA kit', members: ['inst/kit', 'inst/emea-only'], groups: ['marketing'], curator: 'user:x', createdAt: 'x', updatedAt: 'x' });
   const app = buildApp({ config, store, blobs, secrets: { session: 'sb', link: 'lb' } });
   server = createServer((req, res) => void app(req, res));
   await new Promise<void>((r) => server.listen(0, () => r()));
@@ -195,4 +197,20 @@ test('an admin viewing as the partner gets exactly the partner\'s bytes, records
   assert.equal((await viewed('/api/v1/catalog/submissions/sub1/bytes')).status, 403, 'and no submission preview at all');
   assert.equal((await own('/catalog/inst/internal/png')).status, 200, 'the admin\'s own read, without the header');
   assert.equal((await own('/catalog/delivery-manifest.json')).status, 200);
+});
+
+test('a view never shows the admin an asset their own groups would not: the partner gets it, the view refuses it', async () => {
+  const admin = await login('admin@test');
+  const rita = await login('rita@reseller.test');
+  assert.equal((await bytes(rita, 'inst/emea-only')).status, 200, 'the programme includes it, so the partner gets it');
+  assert.equal((await bytes(admin, 'inst/emea-only')).status, 403, 'the admin\'s own groups do not show it');
+  const started = await fetch(`${base}/api/v1/programmes/resellers/view-as`, { method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: '{}' });
+  const { token } = await started.json() as { token: string };
+  const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: token } });
+  assert.equal((await viewed('/catalog/inst/emea-only/png')).status, 403, 'refused in the view, as for anyone who may not see it');
+  assert.equal((await viewed('/api/v1/catalog/assets/inst/emea-only')).status, 404);
+  const feed = (await (await viewed('/catalog/assets/index.json')).json()) as { assets: Array<{ id: string }>; collections?: Array<{ id: string; members: string[] }> };
+  assert.ok(!feed.assets.some((a) => a.id === 'inst/emea-only'), 'nor in the view\'s feed');
+  assert.ok(feed.assets.some((a) => a.id === 'inst/kit'), 'what both see stays');
+  assert.deepEqual(feed.collections?.find((c) => c.id === 'emea-kit')?.members, ['inst/kit'], 'the collection keeps only what both see');
 });
