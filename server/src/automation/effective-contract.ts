@@ -68,9 +68,11 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
  * becomes `readOnly` with its locked value as `const` and `default`: the server
  * applies it, and a request that sends it is refused with INPUT_LOCKED. A choice
  * input gains an `enum` of the allowed values, intersected with any enum the
- * tool declares. Every locked or choice input gets one attribution entry.
+ * tool declares. Every locked or choice input gets one attribution entry. An
+ * editable input this caller starts from a value for (an overlay default or a
+ * partner company value, plans/82 M3) carries it as `default`.
  */
-export function effectiveInputSchema(raw: Record<string, unknown>, overlay: ToolOverlay | undefined, groups: string[]): { schema: Record<string, unknown>; effects: PolicyEffect[] } {
+export function effectiveInputSchema(raw: Record<string, unknown>, overlay: ToolOverlay | undefined, groups: string[], defaults: Record<string, unknown> = {}): { schema: Record<string, unknown>; effects: PolicyEffect[] } {
   const rawProperties = (raw.properties && typeof raw.properties === 'object' ? raw.properties : {}) as Record<string, Record<string, unknown>>;
   const rawRequired = Array.isArray(raw.required) ? raw.required as string[] : [];
   const properties: Record<string, unknown> = {};
@@ -94,7 +96,7 @@ export function effectiveInputSchema(raw: Record<string, unknown>, overlay: Tool
       const allowed = declared ? access.allow.filter(value => declared.some(option => same(option, value))) : access.allow;
       properties[id] = { ...property, enum: allowed };
       effects.push({ effect: 'choice', input: id, ...attribution(access) });
-    } else properties[id] = property;
+    } else properties[id] = Object.hasOwn(defaults, id) ? { ...property, default: defaults[id] } : property;
     if (rawRequired.includes(id)) required.push(id);
   }
   const { required: _required, properties: _properties, ...rest } = raw;

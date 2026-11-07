@@ -61,6 +61,10 @@ class Verifier(unittest.TestCase):
         build = F.make_build(key, "a" * 40, "one")
         raw = base64.b64decode(build["receipt"])
         files = R.verify_frontend_receipt(raw, pin, "a" * 40, "web", "lolly-demo")
+        self.assertEqual(R.verify_frontend_receipt(raw, pin, "a" * 40, "web", ("other", "lolly-demo")), files)
+        with self.assertRaises(C.Refusal) as refused_list:
+            R.verify_frontend_receipt(raw, pin, "a" * 40, "web", ("other", "another"))
+        self.assertEqual(refused_list.exception.code, "RECEIPT_PROFILE")
         self.assertIn("index.html", files)
         for source, profile, code in (("b" * 40, "lolly-demo", "RECEIPT_SOURCE"), ("a" * 40, "suse", "RECEIPT_PROFILE")):
             with self.subTest(code=code), self.assertRaises(C.Refusal) as caught:

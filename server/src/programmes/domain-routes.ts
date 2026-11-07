@@ -34,7 +34,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
-import { isProgrammeScoped, programmeGroup } from './types.ts';
+import { isEnded, isProgrammeScoped, programmeGroup } from './types.ts';
 import { companyGroup, type MembershipRecord } from './people.ts';
 import {
   afterLookup, domainActive, domainOfEmail, domainStatus, dueForLookup, liveRules, lookupTxt, normaliseDomain, refuseDomain,
@@ -240,17 +240,19 @@ export async function sweepDomainRules(store: Store, audit: Audit, now = Date.no
 }
 
 /** Remove the rules a partnership exit or a deleted programme ends, and audit
- *  each domain changed with `via` saying why. */
+ *  each domain changed with `via` saying why. Each removed rule comes back
+ *  whole, with the domain's whole record when no rule was left on it, so an
+ *  exit's receipt can put them back on Reopen. */
 export async function withdrawDomainRules(
   store: Store, audit: Audit, actor: string, pick: { domain?: string; programmeId?: string; companyId?: string }, at: string,
   via: 'programme-exit' | 'programme-delete' = 'programme-exit',
-): Promise<Array<{ domain: string; programme: string; company?: string }>> {
-  const removed: Array<{ domain: string; programme: string; company?: string }> = [];
+): Promise<Array<{ domain: string; programme: string; company?: string; rule: DomainRule; removed?: PartnerDomainRecord }>> {
+  const removed: Array<{ domain: string; programme: string; company?: string; rule: DomainRule; removed?: PartnerDomainRecord }> = [];
   for (const rec of await store.listPartnerDomains()) {
-    const gone = rec.rules.filter((r) => rec.domain === pick.domain || r.programmeId === pick.programmeId || (!!pick.companyId && r.companyId === pick.companyId));
+    const gone = rec.rules.filter((r) => rec.domain === pick.domain || (!!pick.programmeId && r.programmeId === pick.programmeId) || (!!pick.companyId && r.companyId === pick.companyId));
     if (!gone.length) continue;
-    for (const r of gone) removed.push({ domain: rec.domain, programme: r.programmeId, ...(r.companyId ? { company: r.companyId } : {}) });
     const left = rec.rules.filter((r) => !gone.includes(r));
+    for (const r of gone) removed.push({ domain: rec.domain, programme: r.programmeId, ...(r.companyId ? { company: r.companyId } : {}), rule: r, ...(left.length ? {} : { removed: rec }) });
     if (left.length) await store.putPartnerDomain({ ...rec, rules: left, updatedAt: at });
     else await store.deletePartnerDomain(rec.domain);
     await audit(actor, 'programme.domain.remove', `domain:${rec.domain}`, { domain: rec.domain, programmes: gone.map((r) => r.programmeId), via });
@@ -338,10 +340,12 @@ export function registerDomainRoutes(router: Router, deps: DomainRouteDeps): voi
     if (body.programme !== undefined) {
       const programme = typeof body.programme === 'string' ? await store.getProgramme(body.programme) : null;
       if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
+      if (isEnded(programme)) return sendError(res, 409, 'PROGRAMME_ENDED', `${programme.name} has ended; reopen it before adding a domain`);
       let companyId: string | undefined;
       if (body.company !== undefined && body.company !== null && body.company !== '') {
         const company = (await store.listCompanies()).find((c) => c.id === body.company && c.programmeId === programme.id);
         if (!company) return sendError(res, 404, 'NOT_FOUND', 'no such company in this programme');
+        if (isEnded(company)) return sendError(res, 409, 'PROGRAMME_ENDED', `${company.name} has ended; reopen it before adding a domain`);
         companyId = company.id;
       }
       const ends = readEnd(body.endsAt, now);

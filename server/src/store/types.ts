@@ -2,8 +2,10 @@ import type { ProgrammeRecord } from '../programmes/types.ts';
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
+import type { TokenLimitOverrides } from '../iam/token-limits.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
 import type { SubjectStore } from '../privacy/subject.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
@@ -325,8 +327,9 @@ export interface ScimTokenRecord {
 
 /** A service token (plans/35 wave 2) - automation identity, the SCIM-token
  *  pattern generalized. Presenting the secret resolves to a synthetic
- *  principal carrying `role` (no groups), so CI drives the action-gated API
- *  without a person's session cookie in a secret store. */
+ *  principal carrying `role` (and `groups` when an owner placed it in a partner
+ *  programme), so CI drives the action-gated API without a person's session
+ *  cookie in a secret store. */
 export interface ApiTokenRecord {
   id: string;
   /** Operator label ("ci", "governance-sync") - names the automation, never a person. */
@@ -337,6 +340,20 @@ export interface ApiTokenRecord {
   scopes?: string[];
   /** The only tools it may name. Absent means any tool its role and grants allow. */
   tools?: string[];
+  /** The partner groups it carries (plans/82 M3, migrations/0090): a programme's
+   *  group, optionally one company's group in it, and the partner marker. The
+   *  principal it resolves to holds these, so the token is scoped exactly like a
+   *  person in that programme. Absent means no groups, as before. */
+  groups?: string[];
+  /** The limits this token states (plans/82 M7, migrations/0094): calls a
+   *  minute, renders a day and renders a month, each a whole number or null for
+   *  no cap. A figure it leaves out takes its programme's, then the instance's;
+   *  an internal token has none unless it states one (iam/token-limits.ts). */
+  limits?: TokenLimitOverrides;
+  /** `programme` when a programme's manager minted it for that programme (plans/82
+   *  M7, migrations/0095). Such a token never leaves its programme: it is revoked,
+   *  not moved. Absent for a token an owner minted. */
+  via?: 'programme';
   /** sha256 hex of the opaque secret - never the secret itself. */
   tokenHash: string;
   /** 'user:<id>' who minted it. */
@@ -348,6 +365,31 @@ export interface ApiTokenRecord {
   /** Set on revoke; a revoked token is kept so its trail survives. */
   revokedAt?: string;
 }
+
+/** One token's use on one UTC day (plans/82 M7, migrations/0094). Counts only:
+ *  no input, title, file name or anything the caller says about itself. */
+export interface TokenUsageDay {
+  tokenId: string;
+  /** YYYY-MM-DD, UTC. */
+  day: string;
+  /** Calls counted on the automation surface, one per MCP message. */
+  calls: number;
+  /** Renders accepted, failed and cancelled ones included. */
+  renders: number;
+  /** The most calls in any one minute of the day. */
+  busiestMinute: number;
+  /** Calls the minute limit turned away. */
+  rateLimited: number;
+  /** Requests the day's or the month's render budget turned away. */
+  budgetRefused: number;
+  lastRefusedAt?: string;
+  lastRefusedCode?: string;
+}
+
+/** The answer to a render charge: the counts after it, or the budget it would pass. */
+export type TokenRenderCharge =
+  | { ok: true; day: number; month: number }
+  | { ok: false; period: 'day' | 'month'; used: number; limit: number };
 
 export type AutomationJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 /** Durable automation job metadata. Result bytes live in BlobStore; this row
@@ -1509,6 +1551,20 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   findApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null>;
   touchApiToken(id: string, at: string): Promise<void>;
   revokeApiToken(id: string, at: string): Promise<boolean>;
+  // Per-token use (plans/82 M7, migrations/0094): one row per token and UTC day.
+  /** Count one call, and the calls in `minute` (YYYY-MM-DDTHH:MM) toward the busiest minute. */
+  recordTokenCall(tokenId: string, day: string, minute: string): Promise<void>;
+  /** Count one call or request a limit turned away, and keep it as the latest. */
+  recordTokenRefusal(tokenId: string, day: string, code: string, at: string): Promise<void>;
+  /** Add `n` renders to the day unless the day's or the month's total would pass
+   *  its cap (null is no cap). Atomic per token, so two replicas never both pass. */
+  chargeTokenRenders(tokenId: string, day: string, n: number, caps: { day: number | null; month: number | null }): Promise<TokenRenderCharge>;
+  /** Give back a charge for work that was never accepted, such as a replay. */
+  refundTokenRenders(tokenId: string, day: string, n: number): Promise<void>;
+  /** Rows from `fromDay` to `toDay` inclusive, for the named tokens or all. */
+  listTokenUsage(fromDay: string, toDay: string, tokenIds?: readonly string[]): Promise<TokenUsageDay[]>;
+  /** Each named token's most recent refusal, ever. */
+  latestTokenRefusals(tokenIds?: readonly string[]): Promise<Array<{ tokenId: string; at: string; code: string }>>;
 
   // Durable automation jobs (plans/39 and 40). All reads are principal-scoped
   // except the runner claim, which atomically leases the oldest queued job.
@@ -1811,6 +1867,19 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putPartnerFolder(rec: PartnerFolderRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deletePartnerFolder(key: { provider: string; path: string; programmeId: string; companyId?: string }): Promise<void>;
+  // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
+  // exit, scheduled, done, cancelled or reopened, upserted whole.
+  /** Newest first. `programmeId` lists a programme's exits and its companies'. */
+  listProgrammeExits(filter?: { programmeId?: string; companyId?: string; state?: ProgrammeExitRecord['state'] }): Promise<ProgrammeExitRecord[]>;
+  getProgrammeExit(id: string): Promise<ProgrammeExitRecord | null>;
+  putProgrammeExit(rec: ProgrammeExitRecord): Promise<void>;
+  /** Write `next` only while the stored record still equals `prev`: how a
+   *  replica claims a scheduled end before running it, and how a change, a
+   *  cancel, a reminder or a reopen never overwrites another one. False when
+   *  the record changed or is gone. */
+  replaceProgrammeExit(next: ProgrammeExitRecord, prev: ProgrammeExitRecord): Promise<boolean>;
+  /** A deleted programme's receipts, or a deleted company's. Returns how many went. */
+  deleteProgrammeExits(pick: { programmeId?: string; companyId?: string }): Promise<number>;
   // Partner company profiles (plans/82 M3, migrations/0089). One current row
   // per company plus a history row per revision.
   getCompanyProfile(companyId: string): Promise<CompanyProfileRecord | null>;
@@ -1826,7 +1895,7 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   listCompanyProfileHistory(companyId: string): Promise<CompanyProfileRevision[]>;
   /** The profile and its whole history. Unknown id is a no-op. */
   deleteCompanyProfile(companyId: string): Promise<void>;
-  // Owner-published marks and licence records (plans/82 M4, migrations/0095).
+  // Owner-published marks and licence records (plans/82 M4, migrations/0096).
   // A mark is keyed by its scope string, a licence record by the asset id.
   listAssetRightsMarks(): Promise<AssetRightsMarkRecord[]>;
   putAssetRightsMark(rec: AssetRightsMarkRecord): Promise<void>;

@@ -47,7 +47,9 @@ export interface RenderEvidence {
   resolved?: ResolvedRenderFacts;
   /** How `enforce.watermark: until-approved` came out; absent under any other rule.
    *  `context.watermark` still states whether the mark was applied. */
-  untilApproved?: { marked: boolean; note: string; approvalId: string | null; inputsDigest: string };
+  untilApproved?: { marked: boolean; note: string; approvalId: string | null; inputsDigest: string;
+    /** Set when one approval covers this template's variants (plans/82 M7): the digest is then the template's fixed inputs'. */
+    covers?: 'template-variants'; template?: { id: string; version: number } };
 }
 
 export interface ResolvedRenderFacts {

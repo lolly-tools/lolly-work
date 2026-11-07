@@ -31,6 +31,8 @@ import { sniffBytes } from '../catalog/submit.ts';
 export type LogoSurface = 'light' | 'dark' | 'mark';
 export const LOGO_SURFACES: readonly LogoSurface[] = ['light', 'dark', 'mark'];
 
+/** The file types a logo may be, as the console offers them. */
+export const LOGO_TYPES = ['image/svg+xml', 'image/png'] as const;
 export const SVG_MAX_BYTES = 512 * 1024;
 export const PNG_MAX_BYTES = 2 * 1024 * 1024;
 export const PNG_MIN_LONG_SIDE = 400;
@@ -134,7 +136,13 @@ export async function cleanSvg(markup: string): Promise<{ svg: string; active: s
   });
   let dom: DomElement;
   try {
-    dom = purify.sanitize(markup, { ...SHELL_SVG_PROFILE }) as DomElement;
+    // DOMPurify lowercases ADD_ATTR in place, so it gets fresh arrays: the
+    // exported profile stays the shell's, verbatim, for every later call.
+    dom = purify.sanitize(markup, {
+      USE_PROFILES: { ...SHELL_SVG_PROFILE.USE_PROFILES },
+      ADD_ATTR: [...SHELL_SVG_PROFILE.ADD_ATTR],
+      RETURN_DOM: SHELL_SVG_PROFILE.RETURN_DOM,
+    }) as DomElement;
   } finally {
     purify.removeAllHooks();
   }

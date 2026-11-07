@@ -41,11 +41,24 @@ import type { SubmitOutcome } from '../catalog/submit.ts';
 import { createApproval, currentStep, isEligible, type Approval } from '../approvals/engine.ts';
 import { randomId, sha256Hex } from '../lib/crypto.ts';
 import { companyGroup, type CompanyRecord } from './people.ts';
-import { checkLogo, LOGO_SURFACES, PNG_MAX_BYTES, type LogoSurface, type LogoSurfaces, type LogoWarning } from './logo-checks.ts';
 import {
-  applyPatch, changedFields, emptyProfileRecord, LOGO_FIELD, readProfileBody, sameProfile,
+  checkLogo, LOGO_MIN_CONTRAST, LOGO_SURFACES, LOGO_TYPES, PNG_MAX_BYTES, PNG_MIN_LONG_SIDE, SVG_MAX_BYTES,
+  type LogoSurface, type LogoSurfaces, type LogoWarning,
+} from './logo-checks.ts';
+import {
+  applyPatch, changedFields, emptyProfileRecord, LIMITS, LOGO_FIELD, MAX_EDITORS, readProfileBody, sameProfile,
   type CompanyProfile, type CompanyProfileRecord, type CompanyProfileSettings,
 } from './profile.ts';
+
+/** The limits these routes enforce, read from the constants that enforce
+ *  them, so the console shows an admin the same numbers the server applies. */
+export const PROFILE_LIMITS = {
+  logo: { types: [...LOGO_TYPES], svgMaxBytes: SVG_MAX_BYTES, pngMaxBytes: PNG_MAX_BYTES, pngMinLongSide: PNG_MIN_LONG_SIDE, minContrast: LOGO_MIN_CONTRAST },
+  fields: { ...LIMITS },
+  editors: MAX_EDITORS,
+  /** Every revision is kept for as long as the company exists. */
+  history: 'all' as const,
+};
 
 type Router = ReturnType<typeof createRouter>;
 
@@ -133,6 +146,7 @@ export function createCompanyProfiles(d: CompanyProfileDeps) {
         ...(rec.revision ? { updatedBy: rec.updatedBy } : {}),
         settings: { editors: await editorsOf(rec.settings), approvalChain: rec.settings.approvalChain ?? null },
       } : { mayEdit: !!opts.mayEdit, changesWait: !!opts.mayEdit && !!rec.settings.approvalChain }),
+      limits: PROFILE_LIMITS,
       ...(pending ? { pending: { approvalId: pending.id, ...(pending.companyProfile?.logo ? { logo: pending.companyProfile.logo.surface } : {}),
         ...(pending.companyProfile?.patch ? { fields: Object.keys(pending.companyProfile.patch) } : {}) } } : {}),
     };
@@ -211,7 +225,7 @@ export function createCompanyProfiles(d: CompanyProfileDeps) {
   const readLogoBytes = async (req: IncomingMessage, res: ServerResponse): Promise<Buffer | null> => {
     let bytes: Buffer;
     try { bytes = await readRaw(req, PNG_MAX_BYTES); } catch {
-      sendError(res, 413, 'LOGO_TOO_LARGE', 'A logo can be up to 512 KB as an SVG or 2048 KB as a PNG.');
+      sendError(res, 413, 'LOGO_TOO_LARGE', `A logo can be up to ${Math.round(SVG_MAX_BYTES / 1024)} KB as an SVG or ${Math.round(PNG_MAX_BYTES / 1024)} KB as a PNG.`);
       return null;
     }
     if (!bytes.length) { sendError(res, 400, 'INVALID_INPUT', 'send the logo file as the request body'); return null; }
@@ -366,7 +380,7 @@ export function createCompanyProfiles(d: CompanyProfileDeps) {
       const prior = await recordOf(m.company.id);
       const next: CompanyProfileSettings = { ...prior.settings };
       if (body?.editors !== undefined) {
-        if (!Array.isArray(body.editors) || !body.editors.every((e) => typeof e === 'string') || body.editors.length > 50) return sendError(res, 400, 'INVALID_INPUT', 'editors is a list of up to 50 people in the company, by id or email');
+        if (!Array.isArray(body.editors) || !body.editors.every((e) => typeof e === 'string') || body.editors.length > MAX_EDITORS) return sendError(res, 400, 'INVALID_INPUT', `editors is a list of up to ${MAX_EDITORS} people in the company, by id or email`);
         const group = companyGroup(m.company.id);
         const users = await store.listUsers();
         const ids: string[] = [];

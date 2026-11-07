@@ -22,7 +22,7 @@ import { AUTOMATION_ROLE, ROLES } from '../rbac/evaluate.ts';
 /** Raised when the vocabulary changes meaning. New scopes are added, never redefined. */
 export const TOKEN_SCOPES_VERSION = 1;
 
-export const TOKEN_SCOPES = ['render', 'documents', 'files', 'delivery', 'catalog.read', 'audit.read'] as const;
+export const TOKEN_SCOPES = ['render', 'documents', 'files', 'delivery', 'catalog.read', 'audit.read', 'approvals.request'] as const;
 export type TokenScope = (typeof TOKEN_SCOPES)[number];
 
 /** Plain words for the console, the CLI and the docs. */
@@ -33,10 +33,31 @@ const SCOPE_WORDS: Record<TokenScope, { label: string; description: string }> = 
   delivery: { label: 'Deliver finished renders', description: 'Send this token\'s own finished renders to organisation destinations and follow those sends.' },
   'catalog.read': { label: 'Read the catalog', description: 'Read catalog and tool files, and search the catalog.' },
   'audit.read': { label: 'Read the audit trail', description: 'Read audit records and the audit head.' },
+  'approvals.request': { label: 'Ask for approval', description: 'File an export review on this token\'s own finished renders, read those requests and withdraw them. Deciding stays with people.' },
 };
 
 export function tokenScopeVocabulary(): { version: number; scopes: Array<{ id: TokenScope; label: string; description: string }> } {
   return { version: TOKEN_SCOPES_VERSION, scopes: TOKEN_SCOPES.map((id) => ({ id, ...SCOPE_WORDS[id] })) };
+}
+
+/** The scopes a token minted for a partner programme may hold (plans/82 M7).
+ *  Never `delivery`, which pushes to the lead brand's own destinations, and never
+ *  `audit.read`, because the audit trail names people. */
+export const PROGRAMME_TOKEN_SCOPES: readonly TokenScope[] = ['render', 'documents', 'files', 'catalog.read', 'approvals.request'];
+/** What a programme token holds when the manager names no scopes. */
+export const PROGRAMME_TOKEN_DEFAULT_SCOPES: readonly TokenScope[] = ['render', 'catalog.read'];
+
+/** The scopes a programme token's mint asks for, checked against the caps. */
+export function parseProgrammeTokenScopes(raw: unknown): TokenScope[] | { error: string; code: 'INVALID_INPUT' | 'SCOPE_NOT_FOR_PROGRAMME' } {
+  if (raw === undefined) return [...PROGRAMME_TOKEN_DEFAULT_SCOPES];
+  if (!Array.isArray(raw) || !raw.length) return { error: 'scopes must be a non-empty list', code: 'INVALID_INPUT' };
+  const unknown = raw.find((scope) => !TOKEN_SCOPES.includes(scope as TokenScope));
+  if (unknown !== undefined) return { error: `unknown scope: ${String(unknown).slice(0, 40)}. Scopes are: ${TOKEN_SCOPES.join(', ')}`, code: 'INVALID_INPUT' };
+  const refused = raw.find((scope) => !PROGRAMME_TOKEN_SCOPES.includes(scope as TokenScope));
+  if (refused !== undefined) {
+    return { error: `a programme token cannot hold ${String(refused)}. It may hold ${PROGRAMME_TOKEN_SCOPES.join(', ')}`, code: 'SCOPE_NOT_FOR_PROGRAMME' };
+  }
+  return TOKEN_SCOPES.filter((scope) => raw.includes(scope));
 }
 
 /** Roles a token may name. The automation role is for tokens only and always needs scopes. */
@@ -93,6 +114,22 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   // the route it mirrors, so this table refuses a tool outside the token's scopes.
   'GET /api/v1/mcp': ANY,
   'POST /api/v1/mcp': ANY,
+
+  // Brand context (plans/82 M7, automation/context-routes.ts): who the token is and
+  // which design system it draws with reach every token; the brand's files, its
+  // skills and the partner's own details are catalog reads.
+  'GET /api/v1/context': ANY,
+  'GET /api/v1/context/me': ANY,
+  'GET /api/v1/context/brand': ANY,
+  'GET /api/v1/context/brand/design-md': ['catalog.read'],
+  'GET /api/v1/context/brand/tokens': ['catalog.read'],
+  'GET /api/v1/context/brand/agents-md': ['catalog.read'],
+  'GET /api/v1/context/brand/checks': ['catalog.read'],
+  'GET /api/v1/context/brand/skills': ['catalog.read'],
+  'GET /api/v1/context/brand/skills/:slug/*': ['catalog.read'],
+  'GET /api/v1/context/partner/company': ['catalog.read'],
+  'GET /api/v1/context/partner/company/logo/:surface': ['catalog.read'],
+  'GET /api/v1/context/partner/templates': ['catalog.read'],
 
   'GET /api/v1/discovery/tools': WORK,
   'GET /api/v1/schema/:toolId': WORK,
@@ -157,6 +194,13 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'HEAD /tools/*': ['catalog.read'],
   'GET /api/v1/catalog/fields': ['catalog.read'],
   'GET /api/v1/catalog/search': ['catalog.read'],
+
+  // Asking for approval (plans/82 M7): a token files and follows its own export
+  // reviews. Acting on a step, listing approvers and reading the file stay with people.
+  'POST /api/v1/approvals': ['approvals.request'],
+  'GET /api/v1/approvals': ['approvals.request'],
+  'GET /api/v1/approvals/:id': ['approvals.request'],
+  'POST /api/v1/approvals/:id/withdraw': ['approvals.request'],
 
   'GET /api/v1/audit': ['audit.read'],
   'GET /api/v1/audit/head': ['audit.read'],

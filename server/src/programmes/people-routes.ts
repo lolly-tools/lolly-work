@@ -8,11 +8,15 @@
  *   changes nothing.
  * - End dates: a membership can end at a set time, and the sweep removes the
  *   programme and company groups then (the partner marker stays).
- * - Ending a partnership by programme, company or list: a dry run of who and
- *   what they own, then one audited step that transfers their projects,
- *   disables their accounts, ends their sessions and revokes their links,
- *   tokens and pending invitations. Only partner accounts are touched; an
- *   internal account in the selection is listed and left alone.
+ * - Ending a partnership by programme, company, domain or list: a dry run of
+ *   who and what they own, then one audited step (programmes/exit.ts) that
+ *   leaves a receipt. Only partner accounts are touched; an internal account
+ *   in the selection is listed and left alone. A programme or company that
+ *   ended is a state: list imports and token placements answer 409
+ *   PROGRAMME_ENDED until it is reopened.
+ * - Placing a service token in a programme, and optionally in one company in
+ *   it (plans/82 M3), so an agent is scoped exactly like the people there.
+ *   An owner act (`token.manage`), like minting the token.
  *
  * Previews and one confirmation, no approval chain: an admin acting alone can
  * do all of this (Andy, 2026-11-06).
@@ -20,10 +24,16 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
-import { isProgrammeScoped, noteCompanyProgramme, programmeGroup, PARTNER_GROUP } from './types.ts';
-import { domainOfEmail, normaliseDomain, type TxtLookup } from './domains.ts';
-import { forgetDomainCompany, recheckDomains, sweepDomainRules, withdrawDomainRules } from './domain-routes.ts';
+import { isEnded, noteCompanyProgramme, programmeGroup, PARTNER_GROUP } from './types.ts';
+import { programmeTokenGroups, tokenGroupsWithout, tokenPlacement } from '../iam/service-tokens.ts';
+import type { TxtLookup } from './domains.ts';
+import { forgetDomainCompany, recheckDomains, sweepDomainRules } from './domain-routes.ts';
 import { sweepFolderRules, withdrawFolderRules } from './folder-routes.ts';
+import { endOfDay, exitLimits, registerScheduleRoutes, sweepScheduledExits } from './exit-schedule.ts';
+import type { NoticeContext } from '../access/messages.ts';
+import type { PeopleNotifier } from '../notify/people.ts';
+import { applyExit, exitDone, exitId, exitPreview, planExit, readExitSelection, type ExitRightsChoices, type ProgrammeExitRecord } from './exit.ts';
+import { registerExitRoutes } from './exit-routes.ts';
 import {
   COMPANY_ID, companyGroup, membershipEnded, parsePeopleList, planRows,
   type CompanyRecord, type MembershipRecord, type PersonRow, type RowPlan,
@@ -45,6 +55,13 @@ export interface PeopleRouteDeps {
   resolveTxt: TxtLookup;
   /** Drop a deleted company's profile, its history and its logos (plans/82 M3). */
   forgetCompanyProfile?(companyId: string): Promise<void>;
+  /** The share-anyway choices an exit withdraws (plans/82 M4). Absent until
+   *  that store exists; the exit then lists and withdraws none. */
+  rightsChoices?: ExitRightsChoices;
+  /** Where the notice before an end is sent (plans/82 M5), and what it says
+   *  about this workspace. Absent, scheduled ends still run and tell nobody. */
+  people?: PeopleNotifier;
+  noticeContext?(nowMs: number): NoticeContext;
 }
 
 /** One message an admin can send to everyone a list invited, instead of one
@@ -101,8 +118,49 @@ export async function sweepProgrammeEnds(store: Store, audit: PeopleRouteDeps['a
   return memberships.length;
 }
 
+/**
+ * Take groups off every live token that carries one of them, keeping the
+ * partner marker: what deleting a company or a programme does to the tokens
+ * placed in it. Audited per token.
+ */
+export async function dropTokenGroups(store: Store, audit: PeopleRouteDeps['audit'], actor: string, drop: ReadonlySet<string>, via: string): Promise<number> {
+  let changed = 0;
+  for (const t of await store.listApiTokens()) {
+    if (t.revokedAt || !(t.groups ?? []).some((g) => drop.has(g))) continue;
+    const groups = tokenGroupsWithout(t, drop)!;
+    await store.putApiToken({ ...t, groups });
+    await audit(actor, 'token.programme', `token:${t.id}`, { removed: (t.groups ?? []).filter((g) => drop.has(g)), via });
+    changed++;
+  }
+  return changed;
+}
+
+/**
+ * Remove the grants naming a group and take the group out of every collection
+ * that names it: what deleting a company does (plans/82 M5), as deleting a
+ * programme always did. Audited per grant and per collection.
+ */
+export async function forgetGroupReach(store: Store, audit: PeopleRouteDeps['audit'], actor: string, group: string, via: string): Promise<void> {
+  for (const g of (await store.listGrants()).filter((x) => x.principal === `group:${group}`)) {
+    await store.deleteGrant(g);
+    await audit(actor, 'grant.delete', `grant:${g.principal}`, { ...g, via });
+  }
+  const at = now();
+  for (const c of await store.listCollections()) {
+    if (!Array.isArray(c.groups) || !c.groups.includes(group)) continue;
+    const groups = c.groups.filter((g) => g !== group);
+    const next = { ...c, groups: groups.length ? groups : '*' as const, updatedAt: at };
+    await store.putCollection(next);
+    await audit(actor, 'catalog.collection.edit', `collection:${c.id}`, { before: c, after: next, via });
+  }
+}
+
 export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteDeps): void {
   const { store } = deps;
+  const scheduleDeps = () => ({
+    store, audit: deps.audit, ...(deps.people ? { people: deps.people } : {}), ...(deps.rightsChoices ? { rights: deps.rightsChoices } : {}),
+    context: deps.noticeContext ?? ((now: number) => ({ workspace: '', baseUrl: '', appBase: '', at: new Date(now).toISOString() })),
+  });
   const manager = (req: IncomingMessage, res: ServerResponse) => deps.requireAction(req, res, 'programme.manage');
   const programmeOr404 = async (res: ServerResponse, id: string) => {
     const rec = await store.getProgramme(id);
@@ -122,7 +180,10 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     const prior = (await store.listCompanies()).find((c) => c.id === id);
     if (prior && prior.programmeId !== programme.id) return sendError(res, 409, 'COMPANY_IN_ANOTHER_PROGRAMME', 'this company id belongs to another programme');
     const at = now();
-    const rec: CompanyRecord = { id, programmeId: programme.id, name, createdBy: prior?.createdBy ?? actor.id, createdAt: prior?.createdAt ?? at, updatedAt: at };
+    if (!prior && isEnded(programme)) return sendError(res, 409, 'PROGRAMME_ENDED', `${programme.name} has ended; reopen it before adding a company`);
+    // A rename keeps an ended company ended.
+    const ended = prior?.endedAt ? { endedAt: prior.endedAt, ...(prior.endedBy ? { endedBy: prior.endedBy } : {}), ...(prior.endedExit ? { endedExit: prior.endedExit } : {}) } : {};
+    const rec: CompanyRecord = { id, programmeId: programme.id, name, createdBy: prior?.createdBy ?? actor.id, createdAt: prior?.createdAt ?? at, updatedAt: at, ...ended };
     await store.putCompany(rec);
     noteCompanyProgramme(id, programme.id);
     await store.putLocalGroup({ name: companyGroup(id), description: `Partner company: ${name} (${programme.name})`, createdAt: prior?.createdAt ?? at });
@@ -146,6 +207,13 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
       const { companyId: _drop, ...rest } = m;
       await store.putMembership(rest);
     }
+    // Tokens placed in the company stay in its programme: the company group
+    // goes, so a company made later with the same id never inherits them.
+    await dropTokenGroups(store, deps.audit, `user:${actor.id}`, new Set([companyGroup(id)]), 'company-delete');
+    // Grants and collection entries naming its group go with it (plans/82
+    // M5), so a company made later with the same id inherits none of them.
+    await forgetGroupReach(store, deps.audit, `user:${actor.id}`, companyGroup(id), 'company-delete');
+    await store.deleteProgrammeExits({ companyId: id });
     await deps.audit(`user:${actor.id}`, 'programme.company.delete', `programme:${programme.id}`, { company: id, name: rec.name });
     sendJson(res, 200, { ok: true });
   });
@@ -192,11 +260,14 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
         ...(typeof r?.endsAt === 'string' && r.endsAt.trim() ? { endsAt: r.endsAt.trim() } : {}) }));
     } else return sendError(res, 400, 'INVALID_INPUT', 'send text (a list or CSV) or rows');
     if (rows.length > 1000) return sendError(res, 400, 'INVALID_INPUT', 'at most 1000 people per list');
+    if (isEnded(programme)) return sendError(res, 409, 'PROGRAMME_ENDED', `${programme.name} has ended; reopen it before adding people`);
     const group = programmeGroup(programme.id);
     const [companies, accounts, memberships, invitations] = await Promise.all([
       store.listCompanies(), accountsByEmail(store), store.listMemberships(), store.listInvitations(),
     ]);
     const programmeCompanies = companies.filter((c) => c.programmeId === programme.id);
+    const endedCompany = programmeCompanies.find((c) => isEnded(c) && rows.some((r) => r.company && (r.company === c.id || r.company.toLowerCase() === c.name.toLowerCase())));
+    if (endedCompany) return sendError(res, 409, 'PROGRAMME_ENDED', `${endedCompany.name} has ended; reopen it, or take it out of the list`);
     const plan = planRows(rows, {
       companies: programmeCompanies,
       accountFor: (email) => accounts.get(email) ?? null,
@@ -260,130 +331,113 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     const rulesEnded = await sweepDomainRules(store, deps.audit);
     const foldersEnded = await sweepFolderRules(store, deps.audit);
     const ended = await sweepProgrammeEnds(store, deps.audit);
-    sendJson(res, 200, { ended, rulesEnded, foldersEnded, domainsChecked: await recheckDomains(store, deps.audit, deps.resolveTxt) });
+    const exitsRun = await sweepScheduledExits(scheduleDeps());
+    sendJson(res, 200, { ended, rulesEnded, foldersEnded, exitsRun, domainsChecked: await recheckDomains(store, deps.audit, deps.resolveTxt) });
   });
 
   // ── ending a partnership ───────────────────────────────────────────────────
-  /** Preview by default; `apply: true` does it. Select by `programme`, `company`,
-   *  `domain` or `emails`; `projects` is `team-readonly` (the default when the
-   *  programme has an owning team), `me-readonly`, `me` or `keep`, and
-   *  `transferTo` names who receives them. The partner domains that would let
-   *  the same people back in are withdrawn first: the whole domain for a
-   *  domain, and the programme's or company's rules otherwise. */
+  /** Preview by default; `apply: true` does it (programmes/exit.ts). Select by
+   *  `programme`, `company`, `domain` or `emails`; `projects` is
+   *  `team-readonly` (the default when the programme has an owning team),
+   *  `me-readonly`, `me` or `keep`, and `transferTo` names who receives them.
+   *  The apply step answers with the receipt's id as `exit`. */
   router.add('POST', '/api/v1/programmes/exit', async (req, res) => {
     const actor = await manager(req, res); if (!actor) return;
-    const body = (await readJson(req, 512 * 1024)) as { programme?: unknown; company?: unknown; domain?: unknown; emails?: unknown; projects?: unknown; transferTo?: unknown; apply?: unknown } | null;
-    const [users, invitations, projects, companies, partnerDomains] = await Promise.all([
-      store.listUsers(), store.listInvitations(), store.listProjects(), store.listCompanies(), store.listPartnerDomains(),
-    ]);
-    let selectGroup: string | undefined;
-    let selectDomain: string | undefined;
-    let emails: Set<string> | undefined;
-    let withdraw: { domain?: string; programmeId?: string; companyId?: string } | undefined;
-    let programme: Awaited<ReturnType<Store['getProgramme']>> = null;
-    if (typeof body?.programme === 'string') {
-      programme = await store.getProgramme(body.programme);
-      if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
-      selectGroup = programmeGroup(body.programme);
-      withdraw = { programmeId: programme.id };
-    } else if (typeof body?.company === 'string') {
-      const company = companies.find((c) => c.id === body.company);
-      if (!company) return sendError(res, 404, 'NOT_FOUND', 'no such company');
-      programme = await store.getProgramme(company.programmeId);
-      selectGroup = companyGroup(body.company);
-      withdraw = { companyId: company.id };
-    } else if (typeof body?.domain === 'string') {
-      selectDomain = normaliseDomain(body.domain) ?? undefined;
-      if (!selectDomain) return sendError(res, 400, 'INVALID_DOMAIN', 'give a domain name, such as partner.example');
-      withdraw = { domain: selectDomain };
-      // A domain that feeds one programme ends with that programme's owning team.
-      const fed = [...new Set(partnerDomains.find((d) => d.domain === selectDomain)?.rules.map((r) => r.programmeId) ?? [])];
-      if (fed.length === 1) programme = await store.getProgramme(fed[0]!);
-    } else if (Array.isArray(body?.emails) && body.emails.every((e) => typeof e === 'string')) {
-      emails = new Set((body.emails as string[]).map((e) => e.trim().toLowerCase()).filter(Boolean));
-      if (!emails.size || emails.size > 1000) return sendError(res, 400, 'INVALID_INPUT', 'name between 1 and 1000 addresses');
-    } else return sendError(res, 400, 'INVALID_INPUT', 'select by programme, company, domain or emails');
-    // Where their projects go (Andy, 2026-11-06): to the team that owns the
-    // programme, read-only, by default. "team-readonly": owned by whoever made
-    // the programme (or you, when that account cannot hold work), shared with
-    // the owning team as viewers, and archived. "me-readonly" and "me" move them
-    // to you; "keep" leaves them.
-    const modes = ['team-readonly', 'me-readonly', 'me', 'keep'] as const;
-    type Mode = (typeof modes)[number];
-    const team = programme?.team;
-    const asked = (modes as readonly string[]).includes(String(body?.projects)) ? body!.projects as Mode : undefined;
-    if (asked === 'team-readonly' && !team) return sendError(res, 400, 'NO_OWNING_TEAM', 'this programme has no owning team: set one on its page, or move the projects to yourself');
-    const projectsMode: Mode = asked ?? (team ? 'team-readonly' : 'me-readonly');
-    let transferTo = actor;
-    if (projectsMode === 'team-readonly' && programme) {
-      const maker = await store.getUser(programme.createdBy);
-      if (maker && !maker.disabledAt && !isProgrammeScoped(maker.groups, maker.role)) transferTo = maker;
+    const body = (await readJson(req, 512 * 1024)) as Record<string, unknown> | null;
+    const selection = readExitSelection(body);
+    if ('error' in selection) return sendError(res, 400, selection.code ?? 'INVALID_INPUT', selection.error);
+    // A date ends a programme or a company at the end of that day in UTC
+    // (programmes/exit-schedule.ts); without one the end is now.
+    const at = body?.at === undefined || body?.at === null || body?.at === '' ? undefined : endOfDay(body.at);
+    if (at && typeof at === 'object') return sendError(res, 400, 'INVALID_INPUT', at.error);
+    if (at && selection.programme === undefined && selection.company === undefined) {
+      return sendError(res, 400, 'INVALID_INPUT', 'a date ends a programme or a company; give people their own end dates in a list instead');
     }
-    if (typeof body?.transferTo === 'string') {
-      const target = await store.getUser(body.transferTo);
-      if (!target || target.disabledAt || isProgrammeScoped(target.groups, target.role)) return sendError(res, 400, 'INVALID_INPUT', 'transfer to an enabled internal account');
-      transferTo = target;
-    }
-    const picks = (email: string, groups: readonly string[]) =>
-      selectGroup ? groups.includes(selectGroup) : selectDomain ? domainOfEmail(email) === selectDomain : emails!.has(email.toLowerCase());
-    const selected = users.filter((u) => !u.id.startsWith('svc_') && picks(u.email, u.groups));
-    const partners = selected.filter((u) => isProgrammeScoped(u.groups, u.role) && u.id !== actor.id);
-    const skipped = selected.filter((u) => !partners.includes(u)).map((u) => ({ id: u.id, email: u.email, reason: u.id === actor.id ? 'your own account' : 'not a partner account' }));
-    const pending = invitations.filter((i) => !i.acceptedAt && !i.revokedAt && picks(i.email, i.groups));
-    const programmeNames = new Map((await store.listProgrammes()).map((x) => [x.id, x.name]));
-    const rulesEnding = withdraw ? partnerDomains.flatMap((d) => d.rules
-      .filter((r) => d.domain === withdraw!.domain || r.programmeId === withdraw!.programmeId || (!!withdraw!.companyId && r.companyId === withdraw!.companyId))
-      .map((r) => ({
-        domain: d.domain, programme: { id: r.programmeId, name: programmeNames.get(r.programmeId) ?? r.programmeId },
-        ...(r.companyId ? { company: { id: r.companyId, name: companies.find((c) => c.id === r.companyId)?.name ?? r.companyId } } : {}),
-      }))) : [];
-    // The same bounded read the single-account offboarding preview uses; past
-    // 200 the count says "200 or more" rather than reading everything.
-    const linksOf = async (userId: string) => Math.min(200, (await store.subjectRows(userId, 'links', '', 201)).length);
-    const accounts = await Promise.all(partners.map(async (u) => ({
-      id: u.id, name: [u.firstname, u.lastname].filter(Boolean).join(' ') || u.email, email: u.email, disabled: !!u.disabledAt,
-      projects: projects.filter((p) => p.ownerId === u.id).map((p) => ({ id: p.id, name: p.name })),
-      links: await linksOf(u.id),
-    })));
+    if (body?.notice !== undefined && typeof body.notice !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'notice must be true or false');
+    const notice = body?.notice !== false;
+    const planned = await planExit(store, selection, actor, { projects: body?.projects, transferTo: body?.transferTo, ...(deps.rightsChoices ? { rights: deps.rightsChoices } : {}) });
+    if (!planned.ok) return sendError(res, planned.status, planned.code, planned.detail);
     if (body?.apply !== true) {
-      return sendJson(res, 200, { dryRun: true, projects: projectsMode, transferTo: { id: transferTo.id, email: transferTo.email }, ...(team ? { team } : {}),
-        accounts, skipped, pendingInvitations: pending.map((i) => ({ id: i.id, email: i.email })), domainRules: rulesEnding }, { 'cache-control': 'no-store' });
+      return sendJson(res, 200, { ...exitPreview(planned.plan), ...(at ? { endsAt: at, notice } : {}), limits: exitLimits(!!deps.people?.emailOn) }, { 'cache-control': 'no-store' });
     }
-    const at = now();
-    // First, so nobody new joins through a domain while the rest runs.
-    const rulesWithdrawn = withdraw ? await withdrawDomainRules(store, deps.audit, `user:${actor.id}`, withdraw, at) : [];
-    const done: Array<Record<string, unknown>> = [];
-    for (const a of accounts) {
-      for (const p of a.projects) {
-        if (projectsMode === 'keep') continue;
-        const project = await store.getProject(p.id);
-        if (!project) continue;
-        const readOnly = projectsMode !== 'me';
-        const next = { ...project, ownerId: transferTo.id, ...(readOnly ? { archivedAt: at } : {}) };
-        if (projectsMode === 'team-readonly' && team) {
-          const visible = project.visibility === 'private' ? [] : project.visibility.groups;
-          next.visibility = { groups: [...new Set([...visible, team])] };
-          const grants = (project.sharing?.groups ?? []).filter((g) => !(g.kind === 'directory' && g.name === team));
-          next.sharing = { ...project.sharing, groups: [...grants, { kind: 'directory', name: team, role: 'viewer' }] };
-        }
-        await store.putProject(next);
-        await deps.audit(`user:${actor.id}`, 'project.transfer', `project:${p.id}`, { from: a.id, to: transferTo.id, via: 'programme-exit',
-          ...(readOnly ? { archived: true } : {}), ...(projectsMode === 'team-readonly' ? { team } : {}) });
-      }
-      const result = await store.offboardUser(a.id, actor.id, at, 1000);
-      await deps.audit(`user:${actor.id}`, 'user.offboard', `user:${a.id}`, { ...result, via: 'programme-exit' });
-      for (const m of (await store.listMemberships()).filter((x) => !x.endedAt && x.email === a.email.toLowerCase())) await store.putMembership({ ...m, endedAt: at });
-      done.push({ id: a.id, result: result.status, projects: projectsMode === 'keep' ? 0 : a.projects.length });
+    if (at) {
+      const { plan } = planned;
+      const target = plan.company ?? plan.programme;
+      if (target && isEnded(target)) return sendError(res, 409, 'PROGRAMME_ENDED', `${target.name} has ended already`);
+      const waiting = (await store.listProgrammeExits({ state: 'scheduled' }))
+        .find((r) => (selection.company ? r.selection.company === selection.company : r.selection.programme === selection.programme));
+      if (waiting) return sendError(res, 409, 'EXIT_SCHEDULED', `this end is set for ${waiting.endsAt?.slice(0, 10)} already; change that date instead`);
+      const createdAt = new Date().toISOString();
+      const rec: ProgrammeExitRecord = {
+        id: exitId(), state: 'scheduled', selection,
+        ...(plan.programme ? { programmeId: plan.programme.id } : {}), ...(plan.company ? { companyId: plan.company.id } : {}),
+        projects: plan.projectsMode, transferTo: plan.transferTo.id, ...(plan.team ? { team: plan.team } : {}),
+        createdBy: actor.id, createdAt, endsAt: at, notice,
+      };
+      await store.putProgrammeExit(rec);
+      await deps.audit(`user:${actor.id}`, 'programme.exit.schedule', plan.programme ? `programme:${plan.programme.id}` : 'programme:list', {
+        exit: rec.id, endsAt: at, notice, projects: plan.projectsMode, ...(plan.company ? { company: plan.company.id } : {}),
+      });
+      return sendJson(res, 201, { scheduled: true, exit: rec.id, endsAt: at, notice }, { 'cache-control': 'no-store' });
     }
-    for (const inv of pending) {
-      await store.revokeInvitation(inv.id, at, { pendingOnly: true });
-      await deps.audit(`user:${actor.id}`, 'invite.revoke', `invitation:${inv.id}`, { was: 'pending', via: 'programme-exit' });
-    }
-    await deps.audit(`user:${actor.id}`, 'programme.exit', selectGroup ? `group:${selectGroup}` : selectDomain ? `domain:${selectDomain}` : 'programme:list', {
-      accounts: done.length, invitationsRevoked: pending.length, skipped: skipped.length, projects: projectsMode, transferTo: transferTo.id, ...(team ? { team } : {}),
-      ...(rulesWithdrawn.length ? { domainRules: rulesWithdrawn.length } : {}),
+    const record = await applyExit(store, deps.audit, planned.plan, {
+      actorRef: `user:${actor.id}`, actorId: actor.id, ...(deps.rightsChoices ? { rights: deps.rightsChoices } : {}),
     });
-    // The same shape as the preview; the store calls returned what was removed.
-    sendJson(res, 200, { dryRun: false, accounts: done, skipped, invitationsRevoked: pending.length, domainRules: rulesWithdrawn.length ? rulesEnding : [] }, { 'cache-control': 'no-store' });
+    sendJson(res, 200, exitDone(record, planned.plan), { 'cache-control': 'no-store' });
+  });
+
+  // Exit receipts and Reopen (plans/82 M5).
+  registerExitRoutes(router, { store, requireAction: deps.requireAction, audit: deps.audit, resolveTxt: deps.resolveTxt, emailOn: () => !!deps.people?.emailOn });
+
+  registerScheduleRoutes(router, { ...scheduleDeps(), requireAction: deps.requireAction });
+
+  // ── service tokens in a programme (plans/82 M3) ────────────────────────────
+  /** Place a service token in a programme, and optionally one company in it,
+   *  with `{ programme, company? }`, or take it out with `{ programme: null }`.
+   *  The token then resolves to a principal carrying those groups, so it reaches
+   *  what a person in that company reaches, through the same code. Taking a
+   *  token out keeps the partner marker, so it keeps only the essentials and
+   *  never becomes an internal token; mint a new one for internal work. Admin
+   *  and owner tokens are never placed: those roles are never scoped. */
+  router.add('PUT', '/api/v1/tokens/:id/programme', async (req, res, ctx) => {
+    const actor = await deps.requireAction(req, res, 'token.manage'); if (!actor) return;
+    const token = await store.getApiToken(String(ctx.params.id));
+    if (!token || token.revokedAt) return sendError(res, 404, 'NOT_FOUND', 'no such live token');
+    if (token.role === 'admin' || token.role === 'owner') {
+      return sendError(res, 400, 'TOKEN_NOT_SCOPED', 'an admin or owner token is never scoped to a programme; mint one with scopes for the partner agent');
+    }
+    const body = (await readJson(req)) as { programme?: unknown; company?: unknown } | null;
+    const before = tokenPlacement(token);
+    // A token a manager minted for a programme never leaves it (plans/82 M7):
+    // it is revoked, not repurposed.
+    if (token.via === 'programme' && body?.programme !== before.programmeId) {
+      return sendError(res, 409, 'PROGRAMME_TOKEN', 'this token was minted for its programme and stays there; revoke it and mint a new one');
+    }
+    let groups: string[] | undefined;
+    let programmeId: string | undefined, companyId: string | undefined;
+    if (body?.programme === null) {
+      groups = before.partner ? [PARTNER_GROUP] : undefined;
+    } else if (typeof body?.programme === 'string') {
+      const programme = await store.getProgramme(body.programme);
+      if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
+      if (isEnded(programme)) return sendError(res, 409, 'PROGRAMME_ENDED', `${programme.name} has ended; reopen it before placing a token there`);
+      programmeId = programme.id;
+      if (body.company !== undefined && body.company !== null) {
+        const company = typeof body.company === 'string' ? (await store.listCompanies()).find((c) => c.id === body.company) : undefined;
+        if (!company || company.programmeId !== programme.id) return sendError(res, 404, 'NOT_FOUND', 'no such company in this programme');
+        if (isEnded(company)) return sendError(res, 409, 'PROGRAMME_ENDED', `${company.name} has ended; reopen it before placing a token there`);
+        companyId = company.id;
+      }
+      groups = programmeTokenGroups(programmeId, companyId);
+    } else return sendError(res, 400, 'INVALID_INPUT', 'send a programme id, with an optional company id, or programme null');
+    const next = { ...token };
+    if (groups) next.groups = groups; else delete next.groups;
+    await store.putApiToken(next);
+    await deps.audit(`user:${actor.id}`, 'token.programme', `token:${token.id}`, {
+      before: { ...(before.programmeId ? { programme: before.programmeId } : {}), ...(before.companyId ? { company: before.companyId } : {}) },
+      after: { ...(programmeId ? { programme: programmeId } : {}), ...(companyId ? { company: companyId } : {}) },
+    });
+    sendJson(res, 200, { id: token.id, label: token.label, groups: next.groups ?? null,
+      ...(programmeId ? { programme: programmeId } : {}), ...(companyId ? { company: companyId } : {}) }, { 'cache-control': 'no-store' });
   });
 }
