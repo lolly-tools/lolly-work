@@ -98,6 +98,7 @@ import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
+import { registerProgrammeTokenRoutes } from '../programmes/token-routes.ts';
 import { createCompanyProfiles } from '../programmes/profile-routes.ts';
 import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../programmes/logo-checks.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
@@ -4444,12 +4445,14 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
-  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; groups?: string[]; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) => {
+  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; groups?: string[]; via?: string; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) => {
     const placed = tokenPlacement(t);
     return { id: t.id, label: t.label, role: t.role, scopes: t.scopes ?? null, tools: t.tools ?? null, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
       legacyUnbounded: t.expiresAt === undefined, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null,
       // Where an owner placed it (plans/82 M3); null when it is not a partner token.
-      programme: placed.programmeId ?? null, company: placed.companyId ?? null, groups: t.groups ?? null };
+      programme: placed.programmeId ?? null, company: placed.companyId ?? null, groups: t.groups ?? null,
+      // 'programme' when its manager minted it there (plans/82 M7): it stays in that programme.
+      via: t.via ?? null };
   };
 
   router.add('POST', '/api/v1/tokens', async (req, res) => {
@@ -4488,6 +4491,8 @@ export function buildApp(deps: AppDeps): App {
       tokenLimitDefaults: tokenLimits.instance });
   });
   registerTokenLimitRoutes(router, { store, limits: tokenLimits, requireAction, audit });
+  // Tokens a programme's manager issues for a partner's agent (plans/82 M7).
+  registerProgrammeTokenRoutes(router, { store, limits: tokenLimits, requireAction, audit });
 
   router.add('DELETE', '/api/v1/tokens/:id', async (req, res, ctx) => {
     const actor = await requireAction(req, res, 'token.manage');

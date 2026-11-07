@@ -39,6 +39,26 @@ export function tokenScopeVocabulary(): { version: number; scopes: Array<{ id: T
   return { version: TOKEN_SCOPES_VERSION, scopes: TOKEN_SCOPES.map((id) => ({ id, ...SCOPE_WORDS[id] })) };
 }
 
+/** The scopes a token minted for a partner programme may hold (plans/82 M7).
+ *  Never `delivery`, which pushes to the lead brand's own destinations, and never
+ *  `audit.read`, because the audit trail names people. */
+export const PROGRAMME_TOKEN_SCOPES: readonly TokenScope[] = ['render', 'documents', 'files', 'catalog.read'];
+/** What a programme token holds when the manager names no scopes. */
+export const PROGRAMME_TOKEN_DEFAULT_SCOPES: readonly TokenScope[] = ['render', 'catalog.read'];
+
+/** The scopes a programme token's mint asks for, checked against the caps. */
+export function parseProgrammeTokenScopes(raw: unknown): TokenScope[] | { error: string; code: 'INVALID_INPUT' | 'SCOPE_NOT_FOR_PROGRAMME' } {
+  if (raw === undefined) return [...PROGRAMME_TOKEN_DEFAULT_SCOPES];
+  if (!Array.isArray(raw) || !raw.length) return { error: 'scopes must be a non-empty list', code: 'INVALID_INPUT' };
+  const unknown = raw.find((scope) => !TOKEN_SCOPES.includes(scope as TokenScope));
+  if (unknown !== undefined) return { error: `unknown scope: ${String(unknown).slice(0, 40)}. Scopes are: ${TOKEN_SCOPES.join(', ')}`, code: 'INVALID_INPUT' };
+  const refused = raw.find((scope) => !PROGRAMME_TOKEN_SCOPES.includes(scope as TokenScope));
+  if (refused !== undefined) {
+    return { error: `a programme token cannot hold ${String(refused)}. It may hold ${PROGRAMME_TOKEN_SCOPES.join(', ')}`, code: 'SCOPE_NOT_FOR_PROGRAMME' };
+  }
+  return TOKEN_SCOPES.filter((scope) => raw.includes(scope));
+}
+
 /** Roles a token may name. The automation role is for tokens only and always needs scopes. */
 export const TOKEN_ROLES: readonly string[] = [...ROLES.filter((role) => role !== 'guest'), AUTOMATION_ROLE];
 
