@@ -7031,7 +7031,13 @@ export function buildApp(deps: AppDeps): App {
       const id = `${INST_PREFIX}${sid}`;
       const rec = await store.getInstanceAsset(id);
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
-      if (!instanceAssetVisible(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
+      // A partner programme member reads exactly what their feed holds (plans/82 M1),
+      // the same rule as their federated bytes, links and asset records: an internal
+      // asset shared with everyone (`*`) is not theirs unless their programme includes
+      // it, and one their programme includes through a collection is.
+      if (user && isProgrammeScoped(user.groups, user.role)
+        ? !(await callerSeesAsset(user, id))
+        : !instanceAssetVisible(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       // A submission under review (or returned) has no public bytes: the feed
       // does not carry it and this route does not serve it. Reviewers preview
       // it through /api/v1/catalog/submissions/:id/bytes instead (plans/31 §3).
