@@ -103,6 +103,10 @@ export function createMemoryRenderStore(links?: MemoryRenderStoreLinks): RenderS
       records.set(record.id, clone(record));
       return { record: clone(record), reused: false };
     },
+    async findRenderByKey(principal, key) {
+      const existing = [...records.values()].find((r) => r.principal === principal && r.idempotencyKey === key);
+      return existing ? clone(existing) : null;
+    },
     async getRender(id, principal) {
       const r = records.get(id);
       return r?.principal === principal ? clone(r) : null;

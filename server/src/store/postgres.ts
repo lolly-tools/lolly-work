@@ -60,7 +60,7 @@ import {
   type ProjectTransferMetadata,
   type CommentNotice, type CommentNoticeWrite,
   type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
-  type ApiTokenRecord, type AutomationCallbackOutcome, type AutomationCallbackRecord, type AutomationCallbackState, type AutomationJobRecord, type EdgePurgeRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type TokenRenderCharge, type TokenUsageDay, type AutomationCallbackOutcome, type AutomationCallbackRecord, type AutomationCallbackState, type AutomationJobRecord, type EdgePurgeRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -73,12 +73,23 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     ...(r.scopes ? { scopes: r.scopes as string[] } : {}),
     ...(r.tools ? { tools: r.tools as string[] } : {}),
     ...(r.groups ? { groups: r.groups as string[] } : {}),
+    ...(r.limits ? { limits: r.limits as ApiTokenRecord['limits'] } : {}),
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
     createdAt: new Date(r.created_at as string).toISOString(),
     ...(r.expires_at ? { expiresAt: new Date(r.expires_at as string).toISOString() } : {}),
     ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
+  };
+}
+
+/** One token_usage row -> record (migrations/0094). */
+function tokenUsageFromRow(r: Record<string, unknown>): TokenUsageDay {
+  return {
+    tokenId: r.token_id as string, day: r.day as string, calls: Number(r.calls), renders: Number(r.renders), busiestMinute: Number(r.busiest_minute),
+    rateLimited: Number(r.rate_limited), budgetRefused: Number(r.budget_refused),
+    ...(r.last_refused_at ? { lastRefusedAt: new Date(r.last_refused_at as string).toISOString() } : {}),
+    ...(r.last_refused_code ? { lastRefusedCode: r.last_refused_code as string } : {}),
   };
 }
 
@@ -364,6 +375,9 @@ const PASSWORD_LINK_LOCK_KEY = 0x1011_0006;
  *  version. Writes are rare (at most one automatic version per document per two
  *  minutes), so one lock for the instance costs nothing that matters. */
 const SESSION_VERSIONS_LOCK_KEY = 0x1011_0007;
+/** The first half of the two-key lock that charges one token's renders at a
+ *  time (plans/82 M7); the second half is the token id's hashtext. */
+const TOKEN_USAGE_LOCK_KEY = 0x1011_0011;
 
 // Appends a `column = $n` clause + its bound value - shared by the two
 // filtered list queries below so the param-numbering logic lives in one place.
@@ -901,10 +915,11 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // Service tokens (plans/35 wave 2) - the SCIM block's shapes, one row kind over.
     async putApiToken(rec) {
       await pool.query(
-        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools, groups)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-         on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at, groups = excluded.groups`,
-        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null, rec.scopes ?? null, rec.tools ?? null, rec.groups ?? null],
+        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools, groups, limits)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+         on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at, groups = excluded.groups, limits = excluded.limits`,
+        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null, rec.scopes ?? null, rec.tools ?? null, rec.groups ?? null,
+          rec.limits ? JSON.stringify(rec.limits) : null],
       );
     },
     async listApiTokens() {
@@ -927,6 +942,80 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         'update api_tokens set revoked_at = $2 where id = $1 and revoked_at is null', [id, at],
       );
       return (rowCount ?? 0) > 0;
+    },
+
+    // Per-token use (plans/82 M7, migrations/0094). The minute columns carry the
+    // current minute's count so the busiest minute is exact across replicas;
+    // every SET expression reads the row as it was before this statement.
+    async recordTokenCall(tokenId, day, minute) {
+      await pool.query(
+        `insert into token_usage (token_id, day, calls, minute_at, minute_calls, busiest_minute) values ($1, $2, 1, $3, 1, 1)
+         on conflict (token_id, day) do update set calls = token_usage.calls + 1,
+           minute_calls = case when token_usage.minute_at = excluded.minute_at then token_usage.minute_calls + 1 else 1 end,
+           busiest_minute = greatest(token_usage.busiest_minute, case when token_usage.minute_at = excluded.minute_at then token_usage.minute_calls + 1 else 1 end),
+           minute_at = excluded.minute_at`,
+        [tokenId, day, minute],
+      );
+    },
+    async recordTokenRefusal(tokenId, day, code, at) {
+      const limited = code === 'RATE_LIMITED' ? 1 : 0;
+      await pool.query(
+        `insert into token_usage (token_id, day, rate_limited, budget_refused, last_refused_at, last_refused_code) values ($1, $2, $3, $4, $5, $6)
+         on conflict (token_id, day) do update set rate_limited = token_usage.rate_limited + excluded.rate_limited,
+           budget_refused = token_usage.budget_refused + excluded.budget_refused,
+           last_refused_code = case when token_usage.last_refused_at is null or excluded.last_refused_at >= token_usage.last_refused_at then excluded.last_refused_code else token_usage.last_refused_code end,
+           last_refused_at = greatest(token_usage.last_refused_at, excluded.last_refused_at)`,
+        [tokenId, day, limited, 1 - limited, at, code],
+      );
+    },
+    async chargeTokenRenders(tokenId, day, n, caps) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        // One charge per token at a time, so the day's and the month's sums
+        // read here are still true when the row is written.
+        await client.query('select pg_advisory_xact_lock($1, hashtext($2))', [TOKEN_USAGE_LOCK_KEY, tokenId]);
+        const { rows } = await client.query(
+          `select coalesce(sum(renders) filter (where day = $3), 0)::int as day_used, coalesce(sum(renders), 0)::int as month_used
+           from token_usage where token_id = $1 and day >= $2 and day <= $3`,
+          [tokenId, `${day.slice(0, 7)}-01`, day],
+        );
+        const dayUsed = Number(rows[0]?.day_used ?? 0), monthUsed = Number(rows[0]?.month_used ?? 0);
+        let refused: TokenRenderCharge | null = null;
+        if (caps.day !== null && dayUsed + n > caps.day) refused = { ok: false, period: 'day', used: dayUsed, limit: caps.day };
+        else if (caps.month !== null && monthUsed + n > caps.month) refused = { ok: false, period: 'month', used: monthUsed, limit: caps.month };
+        if (refused) { await client.query('rollback'); return refused; }
+        await client.query(
+          `insert into token_usage (token_id, day, renders) values ($1, $2, $3)
+           on conflict (token_id, day) do update set renders = token_usage.renders + excluded.renders`,
+          [tokenId, day, n],
+        );
+        await client.query('commit');
+        return { ok: true, day: dayUsed + n, month: monthUsed + n };
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    async refundTokenRenders(tokenId, day, n) {
+      await pool.query('update token_usage set renders = greatest(0, renders - $3) where token_id = $1 and day = $2', [tokenId, day, n]);
+    },
+    async listTokenUsage(fromDay, toDay, tokenIds) {
+      const { rows } = await pool.query(
+        `select * from token_usage where day >= $1 and day <= $2 and ($3::text[] is null or token_id = any($3)) order by token_id, day`,
+        [fromDay, toDay, tokenIds ? [...tokenIds] : null],
+      );
+      return rows.map(tokenUsageFromRow);
+    },
+    async latestTokenRefusals(tokenIds) {
+      const { rows } = await pool.query(
+        `select distinct on (token_id) token_id, last_refused_at, last_refused_code from token_usage
+         where last_refused_at is not null and ($1::text[] is null or token_id = any($1)) order by token_id, last_refused_at desc`,
+        [tokenIds ? [...tokenIds] : null],
+      );
+      return rows.map((r) => ({ tokenId: r.token_id as string, at: new Date(r.last_refused_at as string).toISOString(), code: (r.last_refused_code as string | null) ?? '' }));
     },
 
     // Invitations (plans/74 W-ID-2). The partial unique index on email (where

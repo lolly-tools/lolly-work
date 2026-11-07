@@ -125,8 +125,12 @@ export interface RenderApiDeps {
   tokenPrincipal(req: IncomingMessage): Promise<string | null>;
   /** A person or token allowed to delete any record, such as after a token is revoked. */
   adminMay(req: IncomingMessage): Promise<boolean>;
-  /** The durable render path: authorize, validate, insert, audit, then kick the runner. */
-  submit(principal: string, request: RenderSpec, key?: string): Promise<{ record: RenderRecord; reused: boolean }>;
+  /** The durable render path: authorize, validate, insert, audit, then kick the runner.
+   *  `prepaid` says the renders were already counted against the token's budget. */
+  submit(principal: string, request: RenderSpec, key?: string, retryOf?: string, options?: { prepaid?: boolean }): Promise<{ record: RenderRecord; reused: boolean }>;
+  /** Count a request's renders together against the token's budget (plans/82 M7),
+   *  so one in several formats is refused whole. Absent counts each render alone. */
+  chargeRenders?(principal: string, n: number): Promise<(() => Promise<void>) | undefined>;
   authorize(principal: string, request: RenderSpec): Promise<void>;
   validate(principal: string, request: RenderSpec): Promise<void>;
   callbackAllowed(url: string): boolean;
@@ -155,7 +159,10 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
         await handler(req, res, ctx);
       } catch (error) {
         if (error instanceof RenderApiRefusal) return sendError(res, error.status, error.code, error.message, error.detail);
-        if (error instanceof RenderResourceError) return sendError(res, error.status, error.code, error.message);
+        if (error instanceof RenderResourceError) {
+          if (error.retryAfterSec !== undefined) res.setHeader('retry-after', String(error.retryAfterSec));
+          return sendError(res, error.status, error.code, error.message, error.detail);
+        }
         throw error;
       }
     }, options);
@@ -207,13 +214,17 @@ export function registerRenderApi(router: Pick<ReturnType<typeof createRouter>, 
     });
     if (inserted.reused) return inserted;
     const { record } = inserted;
+    let giveBack: (() => Promise<void>) | undefined;
     try {
+      giveBack = await deps.chargeRenders?.(principal, plans.length);
       for (const plan of plans) {
-        const { record: render } = await deps.submit(principal, { ...plan, compat: { source, requestId: record.id } });
+        const { record: render } = await deps.submit(principal, { ...plan, compat: { source, requestId: record.id } }, undefined, undefined, { prepaid: !!deps.chargeRenders });
         record.renders[plan.format] = render.id;
         await store.setRenderApiRenders(record.id, record.renders);
       }
     } catch (error) {
+      // The request was refused as a whole, so none of its renders count.
+      await giveBack?.().catch(() => {});
       await remove(record).catch(() => {});
       throw error;
     }
