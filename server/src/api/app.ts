@@ -161,7 +161,7 @@ import {
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
 import { listSubmissions, settleSubmission, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
-import { isDataSubmissionType } from '../catalog/submit-data.ts';
+import { isDataSubmissionType, MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
   fieldHaystack, MAX_EXTRACTED_TEXT, normalizeCatalogField, normalizeExtractedText, parseDescriptivePatch, servedFields,
@@ -221,6 +221,7 @@ import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkK
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
+import { templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
@@ -441,7 +442,8 @@ export function buildApp(deps: AppDeps): App {
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
-      const out = await renderToolUnscoped({ ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
+      const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
+        ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
         workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
@@ -702,6 +704,27 @@ export function buildApp(deps: AppDeps): App {
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
     roleOf: (groups) => roleFromGroups(groups, config.idp.roleGroups),
   });
+  /**
+   * A published template as this group set's own feed serves it (plans/82 M2),
+   * for a render that names one: null when the feed does not carry it, which is
+   * also what a revoked, expired or not-yet-live template gets. A retired one is
+   * still in the feed, so the render can say what replaced it.
+   */
+  const publishedTemplateFor = async (groups: string[], id: string): Promise<RenderTemplate | null> => {
+    const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((asset) => asset.id === id && asset.type === 'template');
+    const rec = entry ? await store.getInstanceAsset(id) : null;
+    const blobId = rec?.blobs.json;
+    const blob = blobId ? await blobs.get(blobId) : null;
+    if (!rec || !blob) return null;
+    const values = templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES));
+    const toolId = (entry!.meta as { toolId?: unknown } | undefined)?.toolId;
+    if (!values || typeof toolId !== 'string') return null;
+    return {
+      id, toolId, values, name: typeof entry!.name === 'string' ? entry!.name : id, version: rec.headVersion ?? 1,
+      ...(rec.publication?.editable ? { editable: rec.publication.editable } : {}),
+      ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
+    };
+  };
   /** Whether a person may see a collection: its groups admit them, except that
    *  a partner programme member sees only a collection that names one of
    *  their programme groups, never one shared with everyone (plans/82 M1). */
@@ -3440,7 +3463,7 @@ export function buildApp(deps: AppDeps): App {
     } catch (err) {
       if (err instanceof RenderError) {
         if (err.retryAfter !== undefined) res.setHeader('retry-after', String(err.retryAfter));
-        return sendError(res, err.status, err.code, err.message);
+        return sendError(res, err.status, err.code, err.message, err.details);
       }
       throw err;
     }
@@ -11113,7 +11136,14 @@ export function buildApp(deps: AppDeps): App {
       res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': result.mime, 'x-lolly-cache-key': result.cacheKey, 'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
         ...(result.watermarkNote ? { 'x-lolly-watermark': result.watermarkNote } : {}) });
       res.end(Buffer.from(result.bytes));
-    } catch (e) { if (e instanceof RenderError) return sendError(res, e.status, e.code, e.message); throw e; }
+    } catch (e) {
+      if (!(e instanceof RenderError)) throw e;
+      // Name the refused input, as the GET route does, so an agent knows which one.
+      const v = e.violations?.[0];
+      return sendError(res, e.status, e.code, e.message, v
+        ? { input: v.param, ...(v.by ? { by: v.by } : {}), ...(v.reason ? { reason: v.reason } : {}) }
+        : e.details);
+    }
   });
 
   router.add('POST', '/api/v1/batch', async (req, res) => {
@@ -11260,7 +11290,7 @@ export function buildApp(deps: AppDeps): App {
         const v = err.violations?.[0];
         return sendError(res, err.status, err.code, err.message, v
           ? { input: v.param, ...(v.by ? { by: v.by } : {}), ...(v.reason ? { reason: v.reason } : {}) }
-          : undefined);
+          : err.details);
       }
       throw err;
     }
