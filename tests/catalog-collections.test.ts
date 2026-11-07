@@ -387,11 +387,11 @@ test('a collection link: share serves the listing page, download serves the zip,
   assert.equal(zipRes.headers.get('content-type'), 'application/zip');
   assert.equal(zipRes.headers.get('content-disposition'), 'attachment; filename="Launch_kit.zip"');
   const entries = readZip(Buffer.from(await zipRes.arrayBuffer()));
-  assert.deepEqual(entries.map((e) => e.name), ['Campaign Hero.png', 'Summit Logo.png', 'logo.svg'],
-    'every member, in the curator\'s order, named for the asset');
-  assert.equal(entries[0]?.bytes.toString(), HERO_BYTES);
-  assert.equal(entries[1]?.bytes.toString(), 'mock:dam9:a1:att1');
-  assert.equal(entries[2]?.bytes.toString(), PACK_SVG);
+  assert.deepEqual(entries.map((e) => e.name), ['CREDITS.txt', 'credits.json', 'Campaign Hero.png', 'Summit Logo.png', 'logo.svg'],
+    'the credits first (plans/82 M4), then every member, in the curator\'s order, named for the asset');
+  assert.equal(entries[2]?.bytes.toString(), HERO_BYTES);
+  assert.equal(entries[3]?.bytes.toString(), 'mock:dam9:a1:att1');
+  assert.equal(entries[4]?.bytes.toString(), PACK_SVG);
 
   // The page's own Download-all button is the same signature with ?zip=1, and
   // is followed here as written rather than reconstructed, so a mis-encoded
@@ -400,7 +400,7 @@ test('a collection link: share serves the listing page, download serves the zip,
   assert.ok(zipHref.startsWith(`/l/${share.id}?`), `the page offers its own archive: ${zipHref}`);
   const fromPage = await fetch(`${base}${zipHref}`);
   assert.equal(fromPage.headers.get('content-type'), 'application/zip');
-  assert.equal(readZip(Buffer.from(await fromPage.arrayBuffer())).length, 3);
+  assert.equal(readZip(Buffer.from(await fromPage.arrayBuffer())).length, 5);
 });
 
 test('the boundary: a bearer reaches this collection and nothing else', async () => {
@@ -474,7 +474,7 @@ test('lifecycle governs per member at resolve: an expired or revoked asset leave
   const share = await mintOk(designer, { kind: 'share', target: { collectionId: 'launch' } });
   const zipLink = await mintOk(designer, { kind: 'download', target: { collectionId: 'launch' } });
 
-  assert.equal(readZip(Buffer.from(await (await fetch(zipLink.path)).arrayBuffer())).length, 3);
+  assert.equal(readZip(Buffer.from(await (await fetch(zipLink.path)).arrayBuffer())).length, 5, 'three members and the two credits entries');
 
   await setLifecycle('inst/hero', { validUntil: '2020-01-01T00:00:00.000Z' });
   await setLifecycle('ext/dam9/a1', { revoke: true });
@@ -487,12 +487,12 @@ test('lifecycle governs per member at resolve: an expired or revoked asset leave
   assert.match(html, /2 assets are no longer available/, 'the bearer is told how many, and never which');
 
   const entries = readZip(Buffer.from(await (await fetch(zipLink.path)).arrayBuffer()));
-  assert.deepEqual(entries.map((e) => e.name), ['logo.svg'], 'the archive cannot contain what the page refuses');
+  assert.deepEqual(entries.map((e) => e.name), ['CREDITS.txt', 'credits.json', 'logo.svg'], 'the archive cannot contain what the page refuses');
 
   // And it comes back when the window reopens - the link never changed.
   await setLifecycle('inst/hero', { validUntil: '2099-01-01T00:00:00.000Z' });
   assert.match(await (await fetch(share.path)).text(), /Campaign Hero\.png/);
-  assert.equal(readZip(Buffer.from(await (await fetch(zipLink.path)).arrayBuffer())).length, 2);
+  assert.equal(readZip(Buffer.from(await (await fetch(zipLink.path)).arrayBuffer())).length, 4, 'two members and the two credits entries');
 });
 
 test('deleting a collection stops its links without touching its members', async () => {
@@ -536,9 +536,9 @@ test('the zip builder: safe entry names, deduped, and a real archive', async () 
   await putCollection(admin, 'zippy', { name: 'Zippy', members: ['acme/logo', 'acme/mark'], groups: '*' });
   const link = await mintOk(designer, { kind: 'download', target: { collectionId: 'zippy' } });
   const entries = readZip(Buffer.from(await (await fetch(link.path)).arrayBuffer()));
-  assert.deepEqual(entries.map((e) => e.name), ['logo.svg', 'mark.svg']);
-  assert.equal(entries[0]?.bytes.toString(), PACK_SVG);
-  assert.equal(entries[1]?.bytes.toString(), MARK_SVG);
+  assert.deepEqual(entries.map((e) => e.name), ['CREDITS.txt', 'credits.json', 'logo.svg', 'mark.svg']);
+  assert.equal(entries[2]?.bytes.toString(), PACK_SVG);
+  assert.equal(entries[3]?.bytes.toString(), MARK_SVG);
 });
 
 test('the bearer page renders without a brand pack, and picks up one when there is', () => {
