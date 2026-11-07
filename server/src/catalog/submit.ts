@@ -294,6 +294,10 @@ export interface SubmitDeps {
   /** Reads, checks and rebuilds a Share with rules file (catalog/rules-tools.ts,
    *  plans/82 M2). Absent means this instance takes no rules tools. */
   rulesTools?: RulesToolSubmitter;
+  /** Narrows the duplicate short-circuit beyond the submitter's groups: a partner
+   *  programme member is handed only an asset their feed holds (plans/82 M1).
+   *  Absent: the groups rule alone. */
+  duplicateVisible?: (submitter: SubmitInput['submitter'], rec: InstanceAssetRecord) => Promise<boolean>;
 }
 
 /** What a rules tool submission becomes before it is hashed or stored. */
@@ -332,7 +336,7 @@ export interface SubmitInput {
   /** Exposure groups for the new asset. Absent means every member sees it. */
   groups?: string[];
   contentType?: string;
-  submitter: { id: string; groups: string[] };
+  submitter: { id: string; groups: string[]; role?: string };
   /** The tool a template seeds, when its JSON does not say (the shell's
    *  exported template file carries the tool id in its filename only). */
   toolId?: string;
@@ -421,6 +425,16 @@ export function findByChecksum(
     submissionServable(r) && instanceAssetVisible(r, callerGroups) &&
     (r.submission?.checksum === checksum ||
       (r.entry.formats ?? []).some((f) => (f as { checksum?: string }).checksum === checksum)));
+}
+
+/** The first duplicate this submitter may be handed: findByChecksum's rule, then the
+ *  deployment's own narrowing (SubmitDeps.duplicateVisible), record by record. */
+async function firstDuplicate(deps: SubmitDeps, input: SubmitInput, records: InstanceAssetRecord[], checksum: string): Promise<InstanceAssetRecord | undefined> {
+  for (const rec of records) {
+    if (!findByChecksum([rec], checksum, input.submitter.groups)) continue;
+    if (!deps.duplicateVisible || await deps.duplicateVisible(input.submitter, rec)) return rec;
+  }
+  return undefined;
 }
 
 export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise<SubmitOutcome> {
@@ -535,7 +549,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       };
     }
   }
-  const existing = input.target || input.companyLogo ? undefined : findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
+  const existing = input.target || input.companyLogo ? undefined : await firstDuplicate(deps, input, await store.listInstanceAssets(), checksum);
   if (existing) {
     return {
       ok: true, duplicate: true, record: existing, checksum, scan: 'skipped',
