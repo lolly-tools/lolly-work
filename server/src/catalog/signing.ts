@@ -53,6 +53,9 @@ export const SIGNED_TEMPLATE_FILE = /^templates\/[A-Za-z0-9._-]+\.json$/;
 export interface CatalogCaller {
   overlays: Map<string, ToolOverlay>;
   groups: string[];
+  /** Tools this caller uses only through published templates (plans/82 M2 W5,
+   *  programmes/templates-only.ts): served, but unlisted and marked. */
+  templatesOnly?: ReadonlySet<string>;
   guestToolId?: string;
   /** Opt-in bounded asset inventory; never an access grant. */
   pagedAssets?: boolean;
@@ -111,6 +114,15 @@ export interface ServedToolIndex {
  * bytes and the signature route hashes them, so the two always agree for the
  * same caller. Missing or malformed indexes cannot produce a scoped catalog.
  */
+/**
+ * A templates-only tool's index entry (plans/82 M2 W5): unlisted, so it leaves the
+ * gallery and search, and marked, so the app's Start chooser offers only the
+ * templates published to this caller. Any other entry is returned as it is.
+ */
+export function markTemplatesOnly<T extends { id: string }>(tool: T, caller: Pick<CatalogCaller, 'templatesOnly'>): T {
+  return caller.templatesOnly?.has(tool.id) ? { ...tool, listed: false, templatesOnly: true } : tool;
+}
+
 export async function servedToolIndexBytes(packDir: string, caller: CatalogCaller): Promise<ServedToolIndex | null> {
   let raw: Buffer;
   try {
@@ -122,7 +134,7 @@ export async function servedToolIndexBytes(packDir: string, caller: CatalogCalle
   try {
     const index = JSON.parse(raw.toString('utf8')) as { tools?: Array<{ id: string }> };
     if (!index || !Array.isArray(index.tools)) return null;
-    index.tools = index.tools.filter(tool => tool && typeof tool.id === 'string' && visible(tool.id));
+    index.tools = index.tools.filter(tool => tool && typeof tool.id === 'string' && visible(tool.id)).map(tool => markTemplatesOnly(tool, caller));
     // Rules tools follow the pack's own, in id order; a pack tool keeps its id.
     const packIds = new Set(index.tools.map(tool => tool.id));
     const extra = [...(caller.instanceTools?.values() ?? [])].filter(tool => !packIds.has(tool.id) && visible(tool.id))

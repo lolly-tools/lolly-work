@@ -44,6 +44,9 @@ export interface ProgrammeRecord {
   updatedAt: string;
   /** Bumped on every save, so the audit and a client can see it move. */
   version: number;
+  /** Tools its people use only through the templates published to them
+   *  (plans/82 M2 W5). Off unless listed; see programmes/templates-only.ts. */
+  templatesOnly?: string[];
 }
 
 /** Programme ids are slugs short enough that the group name fits the local-group rule. */

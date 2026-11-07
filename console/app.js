@@ -5674,8 +5674,37 @@ async function programmeTemplates(p, host) {
       fixedTheme: () => !theme.checked,
     };
   };
-  const openNote = (toolName, programmesWithTool) => el('p', { class: 'policy-warning template-open-note' },
-    `People in ${programmesWithTool.join(' and ')} can also open ${toolName} on its own, outside these rules. To keep them inside the rules, publish a Share with rules file instead.`);
+  // Templates only (plans/82 M2 W5): one switch per tool for this programme, off by
+  // default. The open-tool line above it points to it.
+  const onlyTools = new Set(data.templatesOnly ?? []);
+  const openNote = (toolName, programmesWithTool) => {
+    const others = programmesWithTool.filter((n) => n !== p.name);
+    return el('p', { class: 'policy-warning template-open-note' },
+      `People in ${programmesWithTool.join(' and ')} can also open ${toolName} on its own, outside these rules. `
+      + (others.length && others.length === programmesWithTool.length
+        ? `To keep them inside, turn on “Partners use ${toolName} only through its published templates” in ${others.join(' and ')}.`
+        : `To keep them inside, turn on the switch below${others.length ? `, and the same switch in ${others.join(' and ')}` : ''}.`));
+  };
+  const onlySwitch = (toolId, toolName) => {
+    const on = onlyTools.has(toolId);
+    const cb = el('input', { type: 'checkbox', ...(on ? { checked: 'checked' } : {}) });
+    const swErr = errSpan();
+    cb.addEventListener('change', async () => {
+      swErr.textContent = '';
+      try {
+        await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/templates-only/${encodeURIComponent(toolId)}`, { method: 'PUT', body: { on: cb.checked } });
+        toast(cb.checked ? `People in ${p.name} now use ${toolName} only through its published templates` : `People in ${p.name} can open ${toolName} on its own again`);
+        reload();
+      } catch (ex) { cb.checked = !cb.checked; swErr.textContent = ex.message; }
+    });
+    return el('div', { class: 'stack template-only' },
+      el('label', { class: 'chk' }, cb, el('span', {}, `Partners use ${toolName} only through its published templates`)),
+      el('p', { class: 'sub flush' }, on
+        ? `${toolName} is not in their gallery or search. Its Start chooser offers only the templates published to them, and a server render must name one. Copies they saved before keep opening.`
+        : `Off: people in ${p.name} can also open ${toolName} on its own.`),
+      swErr);
+  };
+  const switchShown = new Set();
   const uploadRules = async (file, path) => {
     const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
     const out = await res.json().catch(() => null);
@@ -5770,6 +5799,9 @@ async function programmeTemplates(p, host) {
         el('div', {}, el('div', { class: 'template-label' }, 'Version'), version, el('div', { class: 'muted' }, `Published ${day(t.publishedAt)}`)),
         el('div', { class: 'programme-actions template-actions' }, ...(t.retired ? [restore] : [change, newVersion, retire]), fileInput)),
       t.toolOpenTo?.length && !t.retired ? openNote(t.toolName, t.toolOpenTo) : null,
+      // The switch, once per tool, on the first live row that starts it.
+      t.kind === 'template' && !t.retired && (p.tools.includes(t.toolId) || onlyTools.has(t.toolId)) && !switchShown.has(t.toolId)
+        ? (switchShown.add(t.toolId), onlySwitch(t.toolId, t.toolName)) : null,
       panel, err);
   };
 
@@ -5790,7 +5822,9 @@ async function programmeTemplates(p, host) {
     const chosen = data.candidates.find((c) => c.id === source.value);
     fileField.hidden = source.value !== UPLOAD;
     rules = chosen ? rulesPicker(chosen.inputs, null) : null;
-    rulesHost.replaceChildren(...(rules ? [rules.el, ...(p.tools.includes(chosen.toolId) ? [openNote(chosen.toolName, [p.name])] : [])]
+    const publishNote = (toolName) => el('p', { class: 'policy-warning template-open-note' },
+      `People in ${p.name} can also open ${toolName} on its own, outside these rules. Once it is published, its row has a switch to keep them inside.`);
+    rulesHost.replaceChildren(...(rules ? [rules.el, ...(p.tools.includes(chosen.toolId) && !onlyTools.has(chosen.toolId) ? [publishNote(chosen.toolName)] : [])]
       : source.value === UPLOAD ? [el('p', { class: 'sub flush' }, 'A Share with rules file brings its own rules: partners change only what its designer chose.')] : []));
     publish.disabled = !source.value;
   };
@@ -6790,6 +6824,8 @@ function renderPreview(data) {
       preview.scoped ? el('p', {}, el('span', { class: 'status live' }, 'Partner programme'), ' ',
         `uses ${preview.visibleTools?.length ?? 0} tool${preview.visibleTools?.length === 1 ? '' : 's'}: `,
         el('span', { class: 'mono' }, (preview.visibleTools ?? []).join(', ') || 'none yet')) : null,
+      preview.templatesOnly?.length ? el('p', {}, el('span', { class: 'status review' }, 'Templates only'), ' ',
+        preview.templatesOnly.map((o) => `${o.toolName}, only through its published templates, set by ${o.setBy.join(' and ')}`).join('. ') + '.') : null,
       el('p', { class: 'sub' }, `${orgConfig.inboxUnread} unread inbox message${orgConfig.inboxUnread === 1 ? '' : 's'} would target this group.`)),
     templatesCard,
     assetCard,

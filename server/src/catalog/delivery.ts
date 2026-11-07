@@ -32,7 +32,8 @@ const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 export function catalogVisibilityScope(caller: CatalogCaller): string {
   const toolGrants = caller.guestToolId ? [] : toolUseGrantsFor({ userId: caller.userId, groups: caller.groups }, caller.grants ?? []);
   return sha256Hex(canonicalJson({ groups: [...new Set(caller.groups)].sort(), guestTool: caller.guestToolId ?? null,
-    ...(caller.pagedAssets ? { pagedAssets: true } : {}), ...(toolGrants.length ? { toolGrants } : {}) }));
+    ...(caller.pagedAssets ? { pagedAssets: true } : {}), ...(toolGrants.length ? { toolGrants } : {}),
+    ...(caller.templatesOnly?.size ? { templatesOnly: [...caller.templatesOnly].sort() } : {}) }));
 }
 
 function ids(bytes: Buffer, field: 'tools' | 'assets'): string[] {
@@ -93,6 +94,8 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
       tools: sha256Hex(rawTools), slim: sha256Hex(rawSlim), files: callerFiles,
       overlays: [...caller.overlays].sort(([a], [b]) => a.localeCompare(b)),
       ...(toolGrants.length ? { toolGrants } : {}),
+      // A templates-only switch changes this caller's index without a grant moving.
+      ...(caller.templatesOnly?.size ? { templatesOnly: [...caller.templatesOnly].sort() } : {}),
     }));
     const seq = await deps.store.catalogDeliverySequence(fingerprint, await sourcePublication());
     const files = Object.fromEntries(Object.entries(callerFiles).filter(([path]) => tools.visible(path.slice(0, path.indexOf('/')))));

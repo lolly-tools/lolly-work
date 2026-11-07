@@ -29,7 +29,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { callerCanSeeTool, type CatalogCaller } from './signing.ts';
+import { callerCanSeeTool, markTemplatesOnly, type CatalogCaller } from './signing.ts';
 import { safeFile } from '../api/file-delivery.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 
@@ -129,7 +129,7 @@ export async function servedToolSidecar(packDir: string, rel: string, caller: Ca
     const index = await readJson(join(packDir, 'catalog', 'tools', 'index.slim.json'));
     if (!isObject(index) || !Array.isArray(index.tools)) return { kind: 'not-found' };
     const tools = (index.tools as unknown[]).filter((t): t is { id: string } => isObject(t) && typeof t.id === 'string');
-    index.tools = tools.filter(tool => visible(tool.id));
+    index.tools = tools.filter(tool => visible(tool.id)).map(tool => markTemplatesOnly(tool, caller));
     return { kind: 'json', bytes: Buffer.from(JSON.stringify(index), 'utf8') };
   }
 

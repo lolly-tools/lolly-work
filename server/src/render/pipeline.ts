@@ -137,6 +137,9 @@ export interface RenderDeps {
   /** A rules tool's files (plans/82 M2): this workspace's own build of a
    *  published Share with rules file, for this caller. Null for a pack tool. */
   toolFiles?: (toolId: string) => Promise<ReadonlyMap<string, Buffer> | null>;
+  /** The templates this caller may start the tool from, when a programme they are in
+   *  set it to templates only (plans/82 M2 W5); null when the tool is open to them. */
+  templatesRequired?: (toolId: string) => Promise<Array<{ id: string; name: string }> | null>;
 }
 
 export interface RenderRequest {
@@ -358,6 +361,14 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const expanded = await engine.expandQuery(req.query);
   const st = engine.parseUrlState(expanded, tool.manifest);
   const template = await renderTemplateFor(deps, expanded, req.toolId);
+  // Templates only (programmes/templates-only.ts): the render must start from one of
+  // the caller's published templates, and the refusal lists them.
+  const required = template ? null : await deps.templatesRequired?.(req.toolId) ?? null;
+  if (required) {
+    throw new RenderError('TEMPLATE_REQUIRED', 422,
+      `${req.toolId} is used here only through its published templates. Name one with template=inst/<id>.`,
+      undefined, { templates: required });
+  }
   const declaredIds = (tool.manifest.inputs as { id: string }[]).map((input) => input.id);
   requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, declaredIds, format);
 
