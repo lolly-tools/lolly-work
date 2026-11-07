@@ -38,6 +38,7 @@ import type { AdmissionPolicy, EmailVerification } from '../iam/admission.ts';
 import { GROUP_NAMED_ROLES, PERSON_ROLES, type RoleGroups } from '../rbac/evaluate.ts';
 import { validateSharingPolicy } from '../policy/sharing.ts';
 import { EDGE_DEFAULTS, hostOf, validateEdgeConfig, type EdgeConfig } from '../edge/config.ts';
+import { TOKEN_LIMIT_SEED, checkTokenLimitConfig, type TokenLimits } from '../iam/token-limits.ts';
 
 /** The project's release host, which serves the shell's on-device models
  *  (instance.modelOrigin's default). */
@@ -432,8 +433,12 @@ export interface InstanceConfig {
   /** Automation egress beyond the org's own notify webhook. `callbacks.allowedOrigins`
    *  lists exact HTTPS origins a job, durable render or render batch may name as
    *  its callback URL, beside the exact `notify.webhook.url`. Empty keeps callbacks
-   *  to that one endpoint. Signed with LW_WEBHOOK_SECRET, required at boot when set. */
-  automation: { callbacks: { allowedOrigins: string[] } };
+   *  to that one endpoint. Signed with LW_WEBHOOK_SECRET, required at boot when set.
+   *  `tokenLimits` is the instance default for service tokens placed in a partner
+   *  programme (plans/82 M7, iam/token-limits.ts): calls a minute, renders a day
+   *  and renders a month, each a whole number or null for no cap. A programme or
+   *  a token can state its own; an internal token has none unless it states one. */
+  automation: { callbacks: { allowedOrigins: string[] }; tokenLimits: TokenLimits };
   /** The migration API for people moving off a hosted render API. Off by default.
    *  Result URLs are signed with LW_RENDER_API_URL_SECRET, required when it is on. */
   renderApi: RenderApiConfig;
@@ -720,7 +725,7 @@ const DEFAULTS: InstanceConfig = {
   delivery: { maxBytes: 64 * 1024 * 1024, destinations: [] },
   edge: EDGE_DEFAULTS,
   blobs: { driver: 'pg' },
-  automation: { callbacks: { allowedOrigins: [] } },
+  automation: { callbacks: { allowedOrigins: [] }, tokenLimits: { ...TOKEN_LIMIT_SEED } },
   renderApi: { enabled: false, templates: [], resultUrls: { signedDays: 30 }, urlApi: {} },
   brandPages: BRAND_PAGES_DEFAULTS,
   notify: { people: { email: false } },
@@ -1208,6 +1213,7 @@ export function parseConfig(json: string): InstanceConfig {
     try { u = new URL(String(origin)); } catch { /* refused below */ }
     if (!u || u.protocol !== 'https:' || u.origin !== origin) throw new Error(`invalid automation.callbacks.allowedOrigins entry: ${origin} (an exact https origin, such as https://hooks.example.com)`);
   }
+  cfg.automation = { ...cfg.automation, tokenLimits: checkTokenLimitConfig(cfg.automation.tokenLimits) };
   cfg.renderApi = checkRenderApiConfig(cfg.renderApi);
   cfg.brandPages = checkBrandPagesConfig(cfg.brandPages, TRANSFER_MAX_BYTES);
   if (cfg.notify.webhook) {

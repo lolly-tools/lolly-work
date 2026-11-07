@@ -94,6 +94,13 @@ export interface DiscoveryDeps {
   brandPages: boolean;
   /** Which provider reference schemes resolve for these groups. */
   providerRefs(groups: string[]): Promise<{ cms: boolean; net: boolean }>;
+  /** The published rules tools this group set's feed carries (plans/82 M2), each
+   *  with its own files. They are used, described and rendered like pack tools,
+   *  under their own rules. Absent means none. */
+  publishedTools?(groups: string[]): Promise<ReadonlyMap<string, { files: ReadonlyMap<string, Buffer> }>>;
+  /** A service token's own limits and use (plans/82 M7), or null for anyone else.
+   *  The token reads its figures, never where an admin set them. */
+  tokenLimits?(req: IncomingMessage): Promise<{ limits: Record<string, number | null>; usage: Record<string, unknown> } | null>;
 }
 
 /** The worker's readiness, read from its unauthenticated `/readyz` and kept for
@@ -151,8 +158,9 @@ async function contractFor(deps: DiscoveryDeps, described: ToolDescription, over
 }
 
 export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>, deps: DiscoveryDeps): void {
-  const describe = (toolId: string) => describeTool({ pack: deps.pack(), profile: {} }, toolId,
+  const describe = (toolId: string, files?: ReadonlyMap<string, Buffer>) => describeTool({ pack: deps.pack(), profile: {}, ...(files ? { toolFiles: async () => files } : {}) }, toolId,
     { caps: deps.caps, allowHooksInFastPath: deps.allowHooksInFastPath, tokens: deps.tokens() });
+  const published = async (groups: string[]) => (deps.publishedTools ? await deps.publishedTools(groups) : new Map<string, { files: ReadonlyMap<string, Buffer> }>());
 
   router.add('GET', '/api/v1/discovery', async (req, res) => {
     const engine = await loadEngine();
@@ -195,6 +203,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
       ...(worker && worker !== 'ready' ? [{ feature: 'render-worker', code: worker === 'busy' ? 'RENDER_BUSY' : 'WORKER_UNREACHABLE',
         reason: worker === 'busy' ? 'The render worker is at capacity. Retry shortly.' : 'The render worker did not answer its readiness check.' }] : []),
     ];
+    const own = deps.tokenLimits ? await deps.tokenLimits(req) : null;
     sendJson(res, 200, {
       version: DISCOVERY_VERSION,
       principal: kindOf(caller.principal),
@@ -202,7 +211,8 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
       can,
       render: { formats: deps.caps.formats, hookedTools: deps.caps.hookedTools, ...(worker ? { worker } : {}) },
       assets: { providerRefs: await deps.providerRefs(caller.groups) },
-      limits: { batch: BATCH_LIMITS, toolsPerPage: PAGE.max },
+      limits: { batch: BATCH_LIMITS, toolsPerPage: PAGE.max, ...(own ? { token: own.limits } : {}) },
+      ...(own ? { usage: own.usage } : {}),
       unavailable,
       links: LINKS,
     });
@@ -217,20 +227,22 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
     const cursor = ctx.url.searchParams.get('cursor');
     const after = cursor === null ? null : Buffer.from(cursor, 'base64url').toString('utf8');
     if (after !== null && !TOOL_ID.test(after)) return sendError(res, 400, 'INVALID_INPUT', 'cursor is not one this route issued');
-    const [overlays, grants] = await Promise.all([deps.overlays(), deps.grants()]);
-    // Keyset paging over the sorted pack ids: a cursor only says where to resume,
-    // so it reveals nothing about tools the caller cannot see.
-    const usable = deps.toolIds().filter(id => (after === null || id > after) && mayUseTool(caller.user, id, overlays, grants, deps.accessMode));
+    const [overlays, grants, own] = await Promise.all([deps.overlays(), deps.grants(), caller.user ? published(caller.groups) : Promise.resolve(new Map<string, { files: ReadonlyMap<string, Buffer> }>())]);
+    // Keyset paging over the sorted pack ids and the caller's published rules
+    // tools: a cursor only says where to resume, so it reveals nothing about tools
+    // the caller cannot see.
+    const ids = [...new Set([...deps.toolIds(), ...own.keys()])].sort();
+    const usable = ids.filter(id => (after === null || id > after) && mayUseTool(caller.user, id, overlays, grants, deps.accessMode, own.has(id)));
     const page = usable.slice(0, limit);
     const tools = await Promise.all(page.map(async id => {
       const schema = `/api/v1/schema/${encodeURIComponent(id)}`;
       let described: ToolDescription;
-      try { described = await describe(id); }
+      try { described = await describe(id, own.get(id)?.files); }
       catch { return { id, formats: [], can: { render: false }, schema, unavailable: [{ action: 'use', code: 'TOOL_UNAVAILABLE', reason: 'This deployment cannot load this tool.' }] }; }
       // Formats depend on the deployment and the tool policy only; input rules
       // are left to the schema route, which reads the design-system rules too.
       const allowed = policyFormats(described.server.formats, overlays.get(id));
-      const render = mayRenderTool(caller.user, id, overlays, grants, deps.accessMode);
+      const render = mayRenderTool(caller.user, id, overlays, grants, deps.accessMode, own.has(id));
       return { id, name: described.name, version: described.version, renderer: described.server.renderer, formats: allowed.formats,
         can: { render }, schema, unavailable: [...described.server.unavailable, ...allowed.unavailable, ...(render ? [] : [RENDER_FORBIDDEN])] };
     }));
@@ -242,8 +254,10 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
     if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     const toolId = ctx.params.toolId!;
     const [overlays, grants] = await Promise.all([deps.overlays(), deps.grants()]);
-    if (!mayUseTool(caller.user, toolId, overlays, grants, deps.accessMode)) return sendError(res, 403, 'FORBIDDEN', 'tool.use required');
     if (!TOOL_ID.test(toolId)) return sendError(res, 400, 'INVALID_INPUT', 'bad tool id');
+    // A rules tool the caller's own feed carries is theirs to use, under its own rules.
+    const own = caller.user ? (await published(caller.groups)).get(toolId) : undefined;
+    if (!mayUseTool(caller.user, toolId, overlays, grants, deps.accessMode, !!own)) return sendError(res, 403, 'FORBIDDEN', 'tool.use required');
     const view = ctx.url.searchParams.get('view') ?? 'effective';
     if (view !== 'effective' && view !== 'raw') return sendError(res, 400, 'INVALID_INPUT', 'view must be effective or raw');
     // The raw contract shows inputs policy hides, so it is for the people who write
@@ -252,7 +266,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
       return sendError(res, 403, 'FORBIDDEN', 'policy.edit is required for the raw schema');
     }
     let described: ToolDescription;
-    try { described = await describe(toolId); }
+    try { described = await describe(toolId, own?.files); }
     catch (e) {
       if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
       return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
@@ -270,7 +284,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
     let contract: Awaited<ReturnType<typeof contractFor>>;
     try { contract = await contractFor(deps, described, overlays, caller.groups, format); }
     catch (e) { if (e instanceof BrandError) return sendError(res, e.status, e.code, e.message); throw e; }
-    const render = mayRenderTool(caller.user, toolId, overlays, grants, deps.accessMode);
+    const render = mayRenderTool(caller.user, toolId, overlays, grants, deps.accessMode, !!own);
     sendWithEtag(req, res, {
       apiVersion: described.apiVersion, schema: contract.schema, view, toolId, tool,
       versions: { engine: described.engineVersion, tool: described.version, policy: contract.overlay?.version ?? 0,

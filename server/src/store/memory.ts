@@ -20,7 +20,7 @@ import type { ProjectUserStateRecord, ShareGroupRecord } from './types.ts';
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
  */
-import { randomId } from '../lib/crypto.ts';
+import { canonicalJson, randomId } from '../lib/crypto.ts';
 import { nextEvent, type AuditAnchor, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
 import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
@@ -60,7 +60,7 @@ import {
   type ProjectTransferMetadata,
   type CommentNotice,
   type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
-  type ApiTokenRecord, type AutomationCallbackRecord, type AutomationJobRecord, type EdgeCredentialRecord, type EdgePurgeRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type TokenUsageDay, type AutomationCallbackRecord, type AutomationJobRecord, type EdgeCredentialRecord, type EdgePurgeRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type SessionRevisionCommitResult, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -80,6 +80,14 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const projectUserState = new Map<string, ProjectUserStateRecord>(); // per-person project view (0061)
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
+  const tokenUsage = new Map<string, TokenUsageDay & { minute?: string; minuteCalls: number }>(); // plans/82 M7, by `${tokenId} ${day}`
+  const usageRow = (tokenId: string, day: string) => {
+    const key = `${tokenId} ${day}`;
+    let row = tokenUsage.get(key);
+    if (!row) { row = { tokenId, day, calls: 0, renders: 0, busiestMinute: 0, rateLimited: 0, budgetRefused: 0, minuteCalls: 0 }; tokenUsage.set(key, row); }
+    return row;
+  };
+  const publicUsage = ({ minute: _minute, minuteCalls: _calls, ...row }: TokenUsageDay & { minute?: string; minuteCalls: number }): TokenUsageDay => ({ ...row });
   const documentAgents = new Map<string, DocumentAgentRecord>();
   const projectAgents = new Map<string, ProjectAgentRecord>();
   const agentCreations = new Map<string, { digest: string; sessionId: string }>();
@@ -474,7 +482,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
 
     async putApiToken(rec) {
-      apiTokens.set(rec.id, { ...rec });
+      apiTokens.set(rec.id, { ...rec, ...(rec.limits ? { limits: { ...rec.limits } } : {}) });
     },
     async listApiTokens() {
       return [...apiTokens.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
@@ -493,6 +501,50 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       if (!t || t.revokedAt) return false;
       apiTokens.set(id, { ...t, revokedAt: at });
       return true;
+    },
+    async recordTokenCall(tokenId, day, minute) {
+      const row = usageRow(tokenId, day);
+      row.calls += 1;
+      row.minuteCalls = row.minute === minute ? row.minuteCalls + 1 : 1;
+      row.minute = minute;
+      row.busiestMinute = Math.max(row.busiestMinute, row.minuteCalls);
+    },
+    async recordTokenRefusal(tokenId, day, code, at) {
+      const row = usageRow(tokenId, day);
+      if (code === 'RATE_LIMITED') row.rateLimited += 1; else row.budgetRefused += 1;
+      if (!row.lastRefusedAt || at >= row.lastRefusedAt) { row.lastRefusedAt = at; row.lastRefusedCode = code; }
+    },
+    async chargeTokenRenders(tokenId, day, n, caps) {
+      const monthFrom = `${day.slice(0, 7)}-01`;
+      let dayUsed = 0, monthUsed = 0;
+      for (const row of tokenUsage.values()) {
+        if (row.tokenId !== tokenId || row.day < monthFrom || row.day > day) continue;
+        monthUsed += row.renders;
+        if (row.day === day) dayUsed += row.renders;
+      }
+      if (caps.day !== null && dayUsed + n > caps.day) return { ok: false, period: 'day', used: dayUsed, limit: caps.day };
+      if (caps.month !== null && monthUsed + n > caps.month) return { ok: false, period: 'month', used: monthUsed, limit: caps.month };
+      usageRow(tokenId, day).renders += n;
+      return { ok: true, day: dayUsed + n, month: monthUsed + n };
+    },
+    async refundTokenRenders(tokenId, day, n) {
+      const row = tokenUsage.get(`${tokenId} ${day}`);
+      if (row) row.renders = Math.max(0, row.renders - n);
+    },
+    async listTokenUsage(fromDay, toDay, tokenIds) {
+      const wanted = tokenIds ? new Set(tokenIds) : null;
+      return [...tokenUsage.values()].filter((row) => row.day >= fromDay && row.day <= toDay && (!wanted || wanted.has(row.tokenId)))
+        .sort((a, b) => a.tokenId.localeCompare(b.tokenId) || a.day.localeCompare(b.day)).map(publicUsage);
+    },
+    async latestTokenRefusals(tokenIds) {
+      const wanted = tokenIds ? new Set(tokenIds) : null;
+      const latest = new Map<string, { tokenId: string; at: string; code: string }>();
+      for (const row of tokenUsage.values()) {
+        if (!row.lastRefusedAt || (wanted && !wanted.has(row.tokenId))) continue;
+        const seen = latest.get(row.tokenId);
+        if (!seen || row.lastRefusedAt > seen.at) latest.set(row.tokenId, { tokenId: row.tokenId, at: row.lastRefusedAt, code: row.lastRefusedCode ?? '' });
+      }
+      return [...latest.values()].sort((a, b) => a.tokenId.localeCompare(b.tokenId));
     },
 
     async createInvitation(rec) {
@@ -1514,6 +1566,12 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async putProgrammeExit(rec) {
       programmeExits.set(rec.id, structuredClone(rec));
+    },
+    async replaceProgrammeExit(next, prev) {
+      const stored = programmeExits.get(prev.id);
+      if (!stored || next.id !== prev.id || canonicalJson(stored) !== canonicalJson(prev)) return false;
+      programmeExits.set(next.id, structuredClone(next));
+      return true;
     },
     async deleteProgrammeExits(pick) {
       let n = 0;

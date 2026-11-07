@@ -52,6 +52,12 @@ test('the profile options match the shell source when the shell is checked out',
   assert.deepEqual(SHELL_SVG_PROFILE, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_ATTR: ['calcMode'], RETURN_DOM: true });
 });
 
+test('checking a logo leaves the shared profile exactly as the shell writes it', async () => {
+  await checkLogo(fixture('clean.svg'), 'light', surfaces);
+  await checkLogo(fixture('clean.svg'), 'dark', surfaces);
+  assert.deepEqual(SHELL_SVG_PROFILE, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_ATTR: ['calcMode'], RETURN_DOM: true });
+});
+
 test('a clean SVG passes with no warnings, and the stored bytes are the cleaned markup', async () => {
   const r = accepted(await checkLogo(fixture('clean.svg'), 'light', surfaces));
   assert.equal(r.format, 'svg');

@@ -84,6 +84,7 @@ import { maskEmail, maskEmailSpoken } from '../access/mask.ts';
 import { registerAccessRoutes } from '../access/routes.ts';
 import { SERVICE_TOKEN_PREFIX, hashServiceSecret, mintServiceSecret, serviceAccountFor, tokenPlacement } from '../iam/service-tokens.ts';
 import { parseTokenAuthority, tokenScopeGuard, tokenScopeVocabulary } from '../iam/token-scopes.ts';
+import { TokenLimitRefusal, createTokenLimits, limitsSentence, parseLimitOverrides, registerTokenLimitRoutes, sendTokenLimitRefusal } from '../iam/token-limits.ts';
 import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
 import {
@@ -91,12 +92,15 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { PARTNER_GROUP, isCompanyGroup, isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, programmeGroup, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
+import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, programmeGroup, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
 import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
+import { accessEndsFor } from '../programmes/exit-schedule.ts';
+import { registerProgrammeTokenRoutes } from '../programmes/token-routes.ts';
+import { registerUsageRoutes } from '../programmes/usage-routes.ts';
 import { createCompanyProfiles } from '../programmes/profile-routes.ts';
 import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../programmes/logo-checks.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
@@ -113,7 +117,7 @@ import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
-import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
@@ -135,10 +139,10 @@ import { brandPagesConfig } from '../brand-pages/types.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
 import {
   approvalArtifactPolicy, approvedArtifactBytes, artifactRefusal, artifactRelation, artifactReviewToken, checkArtifactReviewToken, describeExportReview, exportReviewWire,
-  freezeArtifactBytes, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
+  freezeArtifactBytes, freezeRenderBytes, describeRenderReview, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
 } from '../approvals/export-review.ts';
 import { renderInputsDigest } from '../render/inputs-digest.ts';
-import { approvedExportReview, registerExportReviewMatch } from '../approvals/export-review-match.ts';
+import { approvedExportReview, registerExportReviewMatch, templateFixedValues, templateOpenInputs, templateVariantDigest } from '../approvals/export-review-match.ts';
 import { registerFileRoutes } from '../uploads/file-routes.ts';
 import { createFileReference, creationRefusal, fileWire, FORMAT_TYPES, optimizeReport } from '../uploads/files.ts';
 import { liveUpload, readUploadReference, removeUpload, removeUploadsOwnedBy, uploadOwner, uploadPolicy, UploadReferenceError, type UploadRecord } from '../uploads/scoped.ts';
@@ -152,7 +156,7 @@ import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
 } from '../collab/invites.ts';
-import { explainInputAccess, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy, type ToolOverlay } from '../policy/overlay.ts';
+import { explainInputAccess, lockedValues, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy, type ToolOverlay } from '../policy/overlay.ts';
 import {
   applyLifecycleToIndex, assetFormatSha256, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
@@ -234,14 +238,17 @@ import { readToolInputs } from '../policy/tool-inputs.ts';
 import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkKind, type LinkRecord } from '../links/sign.ts';
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
-import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
-import { templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
+import { checkDesignRules, renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
+import type { RenderPartner } from '../render/record.ts';
+import { isPublishedTemplateRef, templateOverlay, templateRetired, templateSeed, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
 import { registerIntentRoutes } from '../automation/intents.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
+import { registerContextRoutes, type ContextSkill } from '../automation/context-routes.ts';
+import { servedType as brandPageFileType } from '../brand-pages/manifest.ts';
 import { mayRenderTool, mayUseTool, PolicyRefusal, policyErrors } from '../automation/effective-contract.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
@@ -463,7 +470,13 @@ export function buildApp(deps: AppDeps): App {
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
-        companyFor: companyForRender,
+        companyFor: companyForRender, partnerFor: partnerForRender,
+        // The design system that drew the render, named as the brand card names it.
+        designSystem: async () => {
+          const tokens = (await brandChrome.public().catch(() => null))?.tokens ?? null;
+          const card = await brandChrome.card(null, null).catch(() => null);
+          return { id: snap.source.name, label: card?.label || snap.source.label, tokens };
+        },
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
@@ -742,15 +755,18 @@ export function buildApp(deps: AppDeps): App {
    */
   const publishedTemplateFor = async (groups: string[], id: string): Promise<RenderTemplate | null> => {
     const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((asset) => asset.id === id && asset.type === 'template');
-    const rec = entry ? await store.getInstanceAsset(id) : null;
+    return entry ? templateFromRecord(id, entry, await store.getInstanceAsset(id)) : null;
+  };
+  /** A template's render shape from its record and the index entry that names it. */
+  const templateFromRecord = async (id: string, entry: AssetIndexEntry, rec: Awaited<ReturnType<typeof store.getInstanceAsset>>): Promise<RenderTemplate | null> => {
     const blobId = rec?.blobs.json;
     const blob = blobId ? await blobs.get(blobId) : null;
     if (!rec || !blob) return null;
     const values = templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES));
-    const toolId = (entry!.meta as { toolId?: unknown } | undefined)?.toolId;
+    const toolId = (entry.meta as { toolId?: unknown } | undefined)?.toolId;
     if (!values || typeof toolId !== 'string') return null;
     return {
-      id, toolId, values, name: typeof entry!.name === 'string' ? entry!.name : id, version: rec.headVersion ?? 1,
+      id, toolId, values, name: typeof entry.name === 'string' ? entry.name : id, version: rec.headVersion ?? 1,
       ...(rec.publication?.editable ? { editable: rec.publication.editable } : {}),
       ...(rec.publication?.fixedTheme ? { fixedTheme: true } : {}),
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
@@ -827,6 +843,24 @@ export function buildApp(deps: AppDeps): App {
       ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
     };
     return out.company || out.programme ? out : undefined;
+  };
+  /** The partner a render is for, as its credential records it (plans/82 M3,
+   *  section 6): the company among the caller's that the template reached, else
+   *  their only one, and the programme that published it, else their only one.
+   *  Never a list and never a guess; nothing for someone outside every programme. */
+  const partnerForRender = async (args: { toolId: string; template: RenderTemplate | null; groups: string[]; role?: string }): Promise<RenderPartner | null> => {
+    if (!isProgrammeScoped(args.groups, args.role)) return null;
+    const companies = await store.listCompanies();
+    const publishedTo = args.template?.groups ?? (await rulesToolBindingsFor(args.groups, args.toolId))?.groups;
+    const picked = pickCompany(args.groups, companies, publishedTo);
+    const programmeId = picked.company?.programmeId ?? pickProgramme(args.groups, companies, publishedTo);
+    const programme = programmeId ? await store.getProgramme(programmeId) : null;
+    const profile = picked.company ? await store.getCompanyProfile(picked.company.id) : null;
+    const out: RenderPartner = {
+      ...(picked.company ? { company: { id: picked.company.id, name: picked.company.name, revision: profile?.revision ?? 0 } } : {}),
+      ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
+    };
+    return out.company || out.programme ? out : null;
   };
   /** An overlay with the caller's company values bound, and the values a tool
    *  starts from: for org-config, Preview and the agents' schema, which have no
@@ -2946,7 +2980,11 @@ export function buildApp(deps: AppDeps): App {
         toolStarts.set(meta.toolId, { defaults: bound.defaults, ...(bound.bindings ? { bindings: bound.bindings } : {}) });
       }
     }
-    const partner = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
+    const partnerBase = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
+    // When their access through a programme ends (plans/82 M5): the earliest
+    // membership end date or scheduled end they would be told about.
+    const ends = scoped ? await accessEndsFor(store, subject) : null;
+    const partner = partnerBase || ends ? { ...partnerBase, ...(ends ? { accessEndsAt: ends.at, accessEndsThrough: ends.programme } : {}) } : undefined;
     const grants = await store.listGrants();
     // The inbox's own count for the same client (its shell and engine
     // selectors): the messages it shows and the comment notices that pass
@@ -3195,6 +3233,34 @@ export function buildApp(deps: AppDeps): App {
       toolName: await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8').then((t) => String((JSON.parse(t) as { name?: unknown }).name ?? toolId)).catch(() => toolId),
       setBy: setBy.map((p) => p.name) })));
     sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, templates, templatesOnly, ...(Object.keys(why).length ? { why } : {}), ...(Object.keys(attribution).length ? { attribution } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
+  });
+
+  // Preview draws a template as these groups get it (plans/82 M3): the same
+  // render path and the same company resolver a partner's render takes, with
+  // the preview mark on and no credential signed. Same gate as Preview.
+  router.add('POST', '/api/v1/org-config/preview/render', async (req, res) => {
+    const body = (await readJson(req)) as { groups?: unknown; template?: unknown } | null;
+    const groups = Array.isArray(body?.groups) ? body!.groups.filter((g): g is string => typeof g === 'string').map((g) => g.trim()).filter(Boolean) : [];
+    const partnerOnly = groups.length > 0 && groups.every((g) => isPartnerGroup(g) || g === PARTNER_GROUP);
+    const viewer = (await memberOf(req)) ?? (await serviceAccountOf(req));
+    const managesProgrammes = !!viewer && partnerOnly
+      && evaluate({ userId: viewer.id, groups: viewer.groups, role: viewer.role as Role }, 'programme.manage', ['*'], await store.listGrants());
+    if (!managesProgrammes && !(await requireAction(req, res, 'policy.edit'))) return;
+    const id = typeof body?.template === 'string' ? body.template : '';
+    const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((a) => a.id === id && (a.type === 'template' || a.type === RULES_TOOL_TYPE));
+    const toolId = (entry?.meta as { toolId?: unknown } | undefined)?.toolId;
+    if (!entry || typeof toolId !== 'string') return sendError(res, 404, 'NOT_FOUND', 'these groups do not get that template');
+    try {
+      const out = await renderTool({ config, instanceCatalogVersion, worker: renderWorker, signer: null, hostedResolver: hostedAssetResolverFor(groups) }, {
+        toolId, format: 'svg', query: entry.type === 'template' ? queryFromInputs({ template: id }) : '',
+        principal: { groups, role: roleFromGroups(groups, config.idp.roleGroups) }, profile: {}, overlays: await store.listOverlays(), watermarkPreview: true,
+      });
+      res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': out.mime, 'cache-control': 'no-store' });
+      res.end(Buffer.from(out.bytes));
+    } catch (e) {
+      if (!(e instanceof RenderError)) throw e;
+      sendError(res, e.status, e.code, e.message);
+    }
   });
 
   // ── telemetry ─────────────────────────────────────────────────────────────
@@ -3880,10 +3946,26 @@ export function buildApp(deps: AppDeps): App {
     presentedTokens.set(req, read);
     return read;
   };
-  router.setGuard(tokenScopeGuard({
+  const scopeGuard = tokenScopeGuard({
     scopesOf: async (req) => { const token = await presentedServiceToken(req); return token ? token.record.scopes ?? null : null; },
     onRefused: (route) => metrics.tokenScopeRefused(route),
-  }));
+  });
+  // Limits and budgets on service tokens (plans/82 M7): a minute bucket of its
+  // own, so the per-IP switch never turns a manager's limits off.
+  const tokenLimits = createTokenLimits({
+    store, instance: config.automation.tokenLimits, limiter: createRateLimiter({ ...config.rateLimit, enabled: true }),
+    onRefused: (code) => metrics.tokenLimited(code),
+  });
+  const limitGuard = tokenLimits.guard(presentedServiceToken);
+  router.setGuard(async (req, res, route) => (await scopeGuard(req, res, route)) && limitGuard(req, res, route));
+  /** A render charge as the durable routes throw it: their refusal, with the detail and the wait. */
+  const chargeRenders = async (principal: string, n: number, replay?: () => Promise<boolean>) => {
+    try { return await tokenLimits.chargeRenders(principal, n, replay); }
+    catch (error) {
+      if (error instanceof TokenLimitRefusal) throw new RenderResourceError(error.code, error.status, error.message, error.detail, error.retryAfterSec);
+      throw error;
+    }
+  };
   const serviceAccountOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
     const token = await presentedServiceToken(req);
     return token ? token.user : null;
@@ -4109,7 +4191,8 @@ export function buildApp(deps: AppDeps): App {
     if (destination.approvalChain && !approvalChain) {
       return sendError(res, 503, 'APPROVAL_CHAIN_UNAVAILABLE', 'the destination approval chain is not configured');
     }
-    if (approvalChain && user.id.startsWith('svc_')) {
+    // A token asks for the delivery's approval only with approvals.request (plans/82 M7).
+    if (approvalChain && user.id.startsWith('svc_') && !(await approvalAskingToken(req))) {
       return sendError(res, 403, 'HUMAN_APPROVAL_REQUIRED', 'this destination requires a member to request human approval');
     }
     const maxBytes = Math.min(config.delivery.maxBytes, destination.maxBytes ?? config.delivery.maxBytes);
@@ -4235,7 +4318,7 @@ export function buildApp(deps: AppDeps): App {
           id: `msg_${randomId(8)}`,
           kind: 'approval', severity: 'action', audience: { groups: step.approvers.groups },
           title: `Approval requested: Deliver ${name} to ${destination.label}`,
-          body: `${user.email} asked for review on the “${step.name}” step.`,
+          body: `${await askerOf(user)} asked for review on the “${step.name}” step.`,
           cta: { label: 'Review', url: '/admin#/approvals' },
           dismissible: true,
         });
@@ -4243,7 +4326,7 @@ export function buildApp(deps: AppDeps): App {
           !candidate.disabledAt && candidate.id !== user.id && isEligible(step, candidate.groups));
         notifier.email(reviewers.map((candidate) => candidate.email),
           `Approval requested: Deliver ${name} to ${destination.label}`,
-          `${user.email} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
+          `${await askerOf(user)} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
       }
       notifier.event('approval.requested', {
         id: approvalId, title: `Deliver ${name} to ${destination.label}`,
@@ -4330,7 +4413,8 @@ export function buildApp(deps: AppDeps): App {
     if (destination.approvalChain && !approvalChain) {
       return sendError(res, 503, 'APPROVAL_CHAIN_UNAVAILABLE', 'the destination approval chain is not configured');
     }
-    if (approvalChain && user.id.startsWith('svc_')) {
+    // A token asks for the delivery's approval only with approvals.request (plans/82 M7).
+    if (approvalChain && user.id.startsWith('svc_') && !(await approvalAskingToken(req))) {
       return sendError(res, 403, 'HUMAN_APPROVAL_REQUIRED', 'this destination requires a member to request human approval');
     }
 
@@ -4450,7 +4534,7 @@ export function buildApp(deps: AppDeps): App {
           id: `msg_${randomId(8)}`,
           kind: 'approval', severity: 'action', audience: { groups: step.approvers.groups },
           title: `Approval requested: Deliver ${name} to ${destination.label}`,
-          body: `${user.email} asked for review on the “${step.name}” step.`,
+          body: `${await askerOf(user)} asked for review on the “${step.name}” step.`,
           cta: { label: 'Review', url: '/admin#/approvals' },
           dismissible: true,
         });
@@ -4458,7 +4542,7 @@ export function buildApp(deps: AppDeps): App {
           !candidate.disabledAt && candidate.id !== user.id && isEligible(step, candidate.groups));
         notifier.email(reviewers.map((candidate) => candidate.email),
           `Approval requested: Deliver ${name} to ${destination.label}`,
-          `${user.email} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
+          `${await askerOf(user)} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
       }
       notifier.event('approval.requested', {
         id: approvalId, title: `Deliver ${name} to ${destination.label}`,
@@ -4528,41 +4612,56 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
-  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; groups?: string[]; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) => {
+  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; groups?: string[]; via?: string; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) => {
     const placed = tokenPlacement(t);
     return { id: t.id, label: t.label, role: t.role, scopes: t.scopes ?? null, tools: t.tools ?? null, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
       legacyUnbounded: t.expiresAt === undefined, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null,
       // Where an owner placed it (plans/82 M3); null when it is not a partner token.
-      programme: placed.programmeId ?? null, company: placed.companyId ?? null, groups: t.groups ?? null };
+      programme: placed.programmeId ?? null, company: placed.companyId ?? null, groups: t.groups ?? null,
+      // 'programme' when its manager minted it there (plans/82 M7): it stays in that programme.
+      via: t.via ?? null };
   };
 
   router.add('POST', '/api/v1/tokens', async (req, res) => {
     const actor = await requireAction(req, res, 'token.manage');
     if (!actor) return;
-    const body = (await readJson(req)) as { label?: unknown; role?: unknown; scopes?: unknown; tools?: unknown; ttlDays?: unknown } | null;
+    const body = (await readJson(req)) as { label?: unknown; role?: unknown; scopes?: unknown; tools?: unknown; ttlDays?: unknown; limits?: unknown } | null;
     const label = typeof body?.label === 'string' ? body.label.trim().slice(0, 80) : '';
     if (!label) return sendError(res, 400, 'INVALID_INPUT', 'label required - name the automation, not a person');
     const authority = parseTokenAuthority(body);
     if ('error' in authority) return sendError(res, 400, 'INVALID_INPUT', authority.error);
+    // Limits an owner states at mint (plans/82 M7); an internal token has none otherwise.
+    const limits = body?.limits === undefined || body.limits === null ? {} : parseLimitOverrides(body.limits);
+    if ('error' in limits) return sendError(res, 400, 'INVALID_INPUT', limits.error);
     const { secret, tokenHash } = mintServiceSecret();
     let expiresAt: string;
     try { expiresAt = credentialExpiry(body?.ttlDays); }
     catch { return sendError(res, 400, 'INVALID_INPUT', 'ttlDays must be an integer from 1 to 365'); }
-    const rec = {
-      id: `tok_${randomId(8)}`, label, ...authority, tokenHash,
+    const rec: ApiTokenRecord = {
+      id: `tok_${randomId(8)}`, label, ...authority, ...(Object.keys(limits).length ? { limits } : {}), tokenHash,
       createdBy: `user:${actor.id}`, createdAt: new Date().toISOString(), expiresAt,
     };
     await store.putApiToken(rec);
-    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, ...authority, expiresAt });
+    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, ...authority, expiresAt, ...(rec.limits ? { limits: rec.limits } : {}) });
     // The one and only time the secret exists in a response.
-    sendJson(res, 201, { ...tokenWire(rec), token: secret }, { 'cache-control': 'no-store' });
+    const view = (await tokenLimits.adminViews([rec])).get(rec.id)!;
+    sendJson(res, 201, { ...tokenWire(rec), ...view, token: secret }, { 'cache-control': 'no-store' });
   });
 
   router.add('GET', '/api/v1/tokens', async (req, res) => {
     if (!(await requireAction(req, res, 'token.manage'))) return;
-    const tokens = (await store.listApiTokens()).map(tokenWire);
-    sendJson(res, 200, { tokens, legacyUnboundedCount: tokens.filter(token => token.legacyUnbounded && !token.revokedAt).length, scopeVocabulary: tokenScopeVocabulary() });
+    const records = await store.listApiTokens();
+    // Each token's limits, where each comes from, and its use against them (plans/82 M7).
+    const views = await tokenLimits.adminViews(records);
+    const tokens = records.map((rec) => ({ ...tokenWire(rec), ...views.get(rec.id)! }));
+    sendJson(res, 200, { tokens, legacyUnboundedCount: tokens.filter(token => token.legacyUnbounded && !token.revokedAt).length, scopeVocabulary: tokenScopeVocabulary(),
+      tokenLimitDefaults: tokenLimits.instance });
   });
+  registerTokenLimitRoutes(router, { store, limits: tokenLimits, requireAction, audit });
+  // Tokens a programme's manager issues for a partner's agent (plans/82 M7).
+  registerProgrammeTokenRoutes(router, { store, limits: tokenLimits, requireAction, audit });
+  // What a programme's tokens did, counted from records Work already keeps (plans/82 M7).
+  registerUsageRoutes(router, { store, requireAction });
 
   router.add('DELETE', '/api/v1/tokens/:id', async (req, res, ctx) => {
     const actor = await requireAction(req, res, 'token.manage');
@@ -5925,7 +6024,38 @@ export function buildApp(deps: AppDeps): App {
     for (const u of await store.listUsers()) {
       map.set(u.id, { name: displayName(u), email: u.email });
     }
+    // A token that asked (plans/82 M7) reads as the agent it is, never as a person.
+    for (const t of await store.listApiTokens()) map.set(`svc_${t.id}`, { name: await askerOf(serviceAccountFor(t)), email: '' });
     return map;
+  };
+  /** The longest token label an approver's notice prints, in characters. */
+  const ASKER_LABEL_MAX = 40;
+  /** Who asked, as an approver reads it: a person's address, or a token as the agent
+   *  it is ("Northwind IT's agent (Rita's agent)"), with its label and company or
+   *  programme. Never a person behind a token. */
+  const askerOf = async (user: UserRecord): Promise<string> => {
+    if (!user.id.startsWith('svc_')) return user.email;
+    const token = await store.getApiToken(user.id.slice('svc_'.length));
+    if (!token) return 'A service token';
+    // The label in brackets, cut short so a long one cannot swamp the notice, and left out when there is none.
+    const label = token.label.replace(/\s+/g, ' ').trim();
+    const named = label.length > ASKER_LABEL_MAX ? `${label.slice(0, ASKER_LABEL_MAX - 3).trimEnd()}...` : label;
+    const inBrackets = named ? ` (${named})` : '';
+    const placed = tokenPlacement(token);
+    if (placed.companyId) {
+      const company = (await store.listCompanies()).find((c) => c.id === placed.companyId);
+      if (company) return `${company.name}'s agent${inBrackets}`;
+    }
+    if (placed.programmeId) {
+      const programme = await store.getProgramme(placed.programmeId);
+      if (programme) return `An agent for ${programme.name}${inBrackets}`;
+    }
+    return named ? `The service token ${named}` : 'A service token';
+  };
+  /** The service token on this request when it holds approvals.request, else null. */
+  const approvalAskingToken = async (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | null> => {
+    const token = await presentedServiceToken(req);
+    return token && token.record.scopes?.includes('approvals.request') ? token : null;
   };
 
   // Chains: any member may read the catalogue of chains; editing one is policy.edit.
@@ -6014,6 +6144,18 @@ export function buildApp(deps: AppDeps): App {
   // The server's own reading of the values a request reports: the version it
   // serves, and the digest under the render path's normalisation. The values go
   // no further than this function, and a digest from the client is never read.
+  /** A published template as a request about it reads it: from the asker's own feed,
+   *  or, for the brand team that manages a programme it is published to, from its
+   *  record, because they publish it without being in the programme (plans/82 M7). */
+  const templateForReview = async (user: UserRecord, id: string): Promise<RenderTemplate | null> => {
+    const own = await publishedTemplateFor(user.groups, id);
+    if (own) return own;
+    const rec = await store.getInstanceAsset(id);
+    if (!rec || rec.entry.type !== 'template' || !submissionServable(rec)) return null;
+    const programmes = (Array.isArray(rec.groups) ? rec.groups : []).filter(isProgrammeGroup).map((g) => `programme:${g.slice(PROGRAMME_GROUP_PREFIX.length)}`);
+    if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', [...programmes, '*'], await store.listGrants())) return null;
+    return templateFromRecord(id, rec.entry, rec);
+  };
   const exportReviewInputs = async (user: UserRecord, toolId: string, format: string, query: string | undefined) => {
     const engine = await loadEngine();
     let tool: Awaited<ReturnType<typeof engine.loadTool>>;
@@ -6022,10 +6164,25 @@ export function buildApp(deps: AppDeps): App {
     const toolVersion = String(tool.manifest.version);
     if (query === undefined) return { toolVersion, inputsDigest: null, inputsGap: 'values-not-sent' as const };
     try {
-      const state = engine.parseUrlState(await engine.expandQuery(query), tool.manifest);
+      const expanded = await engine.expandQuery(query);
+      const state = engine.parseUrlState(expanded, tool.manifest);
       const rules = await managedRuleContext(brand.current() ?? await brand.snapshot(), toolId, format);
       const original = (await store.listOverlays()).get(toolId);
+      // One approval for a template's variants (plans/82 M7): a request or a match that
+      // names a published template of this tool is keyed on the template's fixed inputs,
+      // as the render will be.
+      const templateRef = new URLSearchParams(expanded).get('template');
       const overlay = rules ? projectRuleOverlay(original, rules, user.groups) : original;
+      if (original?.enforce?.approvalCovers === 'template-variants' && isPublishedTemplateRef(templateRef)) {
+        const template = await templateForReview(user, templateRef);
+        const open = template && template.toolId === toolId ? templateOpenInputs(template, original.bindings) : null;
+        if (template && open) {
+          const ids = (tool.manifest.inputs as { id: string }[]).map((input) => input.id);
+          const start = { ...templateSeed(defaultsFor(original, user.groups), ids), ...templateSeed(template.values, ids) };
+          const fixed = templateFixedValues(ids, open, start, lockedValues(templateOverlay(overlay, template, user.groups, ids), user.groups));
+          return { toolVersion, inputsDigest: templateVariantDigest(template, open, fixed), covers: 'template-variants' as const, templateRef: { id: template.id, version: template.version, name: template.name } };
+        }
+      }
       return { toolVersion, inputsDigest: renderInputsDigest(engine, tool.manifest, state.values as Record<string, unknown>, overlay, user.groups, renderProfileOf(user)) };
     } catch { return { toolVersion, inputsDigest: null, inputsGap: 'values-unreadable' as const }; }
   };
@@ -6063,10 +6220,100 @@ export function buildApp(deps: AppDeps): App {
     return { subject, upload };
   };
 
+  /**
+   * A service token's export review of one of its own finished renders (plans/82
+   * M7). Nobody is nominated: the chain's eligible approvers decide. The chain is
+   * the tool's bound escalation chain; with none, a chain the token's programme
+   * lists; a partner's agent never reaches an internal chain by name. An internal
+   * token may name any chain, as a person may.
+   */
+  const submitTokenReview = async (res: ServerResponse, asking: { record: ApiTokenRecord; user: UserRecord },
+    body: { subjectType?: string; title?: string; chainId?: string; nominees?: unknown; exportReview?: unknown } | null): Promise<void> => {
+    const { user, record } = asking;
+    const actor = `service:${user.id}`;
+    if (body?.subjectType !== 'export-review') return sendError(res, 400, 'INVALID_INPUT', 'A service token asks only for an export review of one of its own renders.');
+    if (body.nominees !== undefined && (!Array.isArray(body.nominees) || body.nominees.length)) return sendError(res, 400, 'NOMINEES_NOT_FOR_TOKEN', 'A service token nominates nobody. The chain\'s approvers decide.');
+    const renderId = (body.exportReview as { renderId?: unknown } | undefined)?.renderId;
+    if (typeof renderId !== 'string' || !/^rnd_[A-Za-z0-9_-]{1,64}$/.test(renderId)) return sendError(res, 400, 'INVALID_INPUT', 'exportReview needs the renderId of one of this token\'s finished renders.');
+    const policy = approvalArtifactPolicy(config);
+    if (!policy.enabled) return sendError(res, 404, 'NOT_FOUND', 'This instance does not take a file with a request.');
+    const render = await store.getRender(renderId, actor);
+    if (!render) return sendError(res, 404, 'NOT_FOUND', 'no such render');
+    if (render.state !== 'succeeded' || !render.output) return sendError(res, 409, 'RENDER_NOT_SUCCEEDED', 'render has no successful output');
+    if (render.output.expiredAt) return sendError(res, 410, 'OUTPUT_EXPIRED', 'output retention has removed this output');
+    try { await currentRenderCaller(actor, render.request); }
+    catch (error) { if (error instanceof RenderResourceError) return sendError(res, error.status, error.code, error.message); throw error; }
+    const toolId = render.request.toolId, format = render.request.format;
+    // The approvals.request scope is what lets a token ask, so no allow grant is
+    // needed; an explicit export.request deny still refuses, as it refuses a person.
+    if (grantDecision({ userId: user.id, groups: user.groups }, 'export.request', [`tool:${toolId}`, '*'], await store.listGrants()) === 'deny') {
+      return sendError(res, 403, 'FORBIDDEN', 'export.request is denied for this tool');
+    }
+    // The chain: bound to the tool, else one the programme lists.
+    const placed = tokenPlacement(record);
+    const bound = (await store.listOverlays()).get(toolId)?.enforce?.escalation;
+    let chainId: string | undefined;
+    if (bound) {
+      if (body.chainId !== undefined && body.chainId !== bound) return sendError(res, 400, 'CHAIN_NOT_BOUND', 'This tool goes through a different approval chain.');
+      chainId = bound;
+    } else if (placed.partner) {
+      const listed = placed.programmeId ? (await store.getProgramme(placed.programmeId))?.approvalChains ?? [] : [];
+      chainId = typeof body.chainId === 'string' ? (listed.includes(body.chainId) ? body.chainId : undefined) : listed.length === 1 ? listed[0] : undefined;
+      if (!chainId) return sendError(res, 403, 'CHAIN_NOT_FOR_PROGRAMME', listed.length > 1 && body.chainId === undefined
+        ? `Name one of this programme's chains: ${listed.join(', ')}.` : 'This programme lists no approval chain this token may ask through.');
+    } else chainId = typeof body.chainId === 'string' ? body.chainId : undefined;
+    if (!chainId) return sendError(res, 400, 'INVALID_INPUT', 'chainId required');
+    const chain = await store.getChain(chainId);
+    if (!chain) return sendError(res, 404, 'NOT_FOUND', 'no such chain');
+    const blob = await blobs.get(render.output.ref);
+    if (!blob) return sendError(res, 410, 'OUTPUT_UNAVAILABLE', 'retained render output is unavailable');
+    const bytes = await readBlobBody(blob.body, render.output.size).catch(() => null);
+    if (!bytes || bytes.byteLength !== render.output.size || sha256Hex(bytes) !== render.output.sha256) return sendError(res, 409, 'OUTPUT_INTEGRITY', 'retained output no longer matches its receipt');
+    if (bytes.byteLength > policy.maxFileBytes) return sendError(res, 413, 'UPLOAD_TOO_LARGE', `A request can carry at most ${policy.maxFileBytes} bytes.`);
+    if (heldArtifactBytes(await store.listApprovals()) + bytes.byteLength > policy.instanceBudgetBytes) return sendError(res, 413, 'APPROVAL_ARTIFACT_BUDGET', 'This instance has no room for another request file.');
+    // Only the render's own receipt says what these bytes were made from: the tool
+    // version that ran and, under until-approved, the digest the render took. The
+    // tool's current version and policy are never read here, so an approval of an
+    // older file cannot clear renders from a newer tool. A render made without
+    // until-approved has no digest, and its approval is of this file alone.
+    const evidence = render.output.evidence;
+    const exportReview = describeRenderReview(bytes, { toolId, format, name: `${render.id}.${format}`,
+      toolVersion: evidence?.tool?.version ?? null, inputsDigest: evidence?.untilApproved?.inputsDigest ?? null }, new Date().toISOString());
+    if (!exportReview) return sendError(res, 422, 'ARTIFACT_FORMAT_MISMATCH', `That file is not a ${format} file.`);
+    const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 200) : `${toolId} (${format})`;
+    const approval = createApproval({ id: `apr_${randomId(8)}`, subjectType: 'export-review', subjectRef: `export-review:${exportReview.fingerprint}`, title, chain, nominees: [], createdBy: user.id, now: new Date().toISOString() });
+    try { await freezeRenderBytes(blobs, bytes, approval.id, exportReview); }
+    catch { return sendError(res, 503, 'ARTIFACT_STORE_FAILED', 'The file could not be kept with the request. Nothing was asked.'); }
+    approval.exportReview = exportReview;
+    await store.putApproval(approval);
+    await audit(actor, 'approval.submit', `approval:${approval.id}`, {
+      chainId: chain.id, subjectType: approval.subjectType, renderId: render.id, sha256: exportReview.sha256, size: exportReview.size, format, toolId,
+    });
+    const step0 = currentStep(approval);
+    const asker = await askerOf(user);
+    const [users, grants] = await Promise.all([store.listUsers(), store.listGrants()]);
+    const reviewers = users.filter((candidate) => !candidate.disabledAt && !!step0 && isEligible(step0, candidate.groups)
+      && evaluate({ userId: candidate.id, groups: candidate.groups, role: candidate.role as Role }, 'approval.act', [`chain:${chain.id}`, approval.subjectRef, '*'], grants));
+    if (step0) {
+      await store.putMessage({
+        id: `msg_${randomId(8)}`, kind: 'approval', severity: 'action', audience: { groups: step0.approvers.groups },
+        title: `Approval requested: ${approval.title}`,
+        body: `${asker} asked for your review on the “${step0.name}” step.`,
+        cta: { label: 'Review', url: '/admin#/approvals' },
+        data: { kind: 'export-review', approvalId: approval.id },
+        dismissible: true,
+      });
+    }
+    notifier.email(reviewers.map((u) => u.email), `Approval requested: ${approval.title}`,
+      `${asker} asked for review on the “${step0?.name ?? 'first'}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
+    notifier.event('approval.requested', { id: approval.id, title: approval.title, chainId: chain.id, by: actor });
+    sendJson(res, 201, serializeApproval(approval, user.id, 'mine', await actorsMap()));
+  };
+
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
   registerProgrammeRoutes(router, {
-    store, requireAction, audit,
+    store, requireAction, audit, instanceTokenLimits: config.automation.tokenLimits,
     toolIds: async () => {
       try {
         const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
@@ -6099,7 +6346,7 @@ export function buildApp(deps: AppDeps): App {
   });
   companyProfiles.register(router);
   registerProgrammePeopleRoutes(router, {
-    store, requireAction, audit,
+    store, requireAction, audit, people, noticeContext: (now) => noticeContext(config, now),
     // Ending a partnership withdraws its share anyway choices (plans/82 M4 and M5).
     rightsChoices: exitRightsChoices(store, audit),
     forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
@@ -6123,10 +6370,11 @@ export function buildApp(deps: AppDeps): App {
     toolFacts: async (toolId) => {
       if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
       try {
-        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown; inputs?: Array<{ id?: unknown; label?: unknown }> };
+        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown; inputs?: Array<{ id?: unknown; label?: unknown; type?: unknown }> };
         return {
           name: typeof manifest.name === 'string' ? manifest.name : toolId,
-          inputs: (manifest.inputs ?? []).flatMap((i) => typeof i?.id === 'string' ? [{ id: i.id, label: typeof i.label === 'string' && i.label ? i.label : i.id }] : []),
+          inputs: (manifest.inputs ?? []).flatMap((i) => typeof i?.id === 'string'
+            ? [{ id: i.id, label: typeof i.label === 'string' && i.label ? i.label : i.id, ...(typeof i.type === 'string' ? { type: i.type } : {}) }] : []),
         };
       } catch { return null; }
     },
@@ -6213,11 +6461,16 @@ export function buildApp(deps: AppDeps): App {
   });
 
   router.add('POST', '/api/v1/approvals', async (req, res) => {
-    const user = await memberOf(req);
+    const member = await memberOf(req);
+    // A service token asks only with `approvals.request` (plans/82 M7), and only
+    // for an export review of its own finished render.
+    const asking = member ? null : await approvalAskingToken(req);
+    const user = member ?? asking?.user ?? null;
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const body = (await readJson(req)) as {
       subjectType?: string; subjectRef?: string; title?: string; chainId?: string; nominees?: unknown; sourceReview?: unknown; exportReview?: unknown;
     } | null;
+    if (asking) return submitTokenReview(res, asking, body);
     if (!SUBJECT_TYPES.includes(body?.subjectType as never)) {
       return sendError(res, 400, 'INVALID_INPUT', 'subjectType must be asset|tool-change|config|guest-link|source-review|export-review');
     }
@@ -6307,7 +6560,14 @@ export function buildApp(deps: AppDeps): App {
   // List: ?mine=1 (raised by me) | ?inbox=1 (open on a step my groups may act on) |
   // default merges both, tagging each row with a `relation`.
   router.add('GET', '/api/v1/approvals', async (req, res, ctx) => {
-    const user = await memberOf(req);
+    const member = await memberOf(req);
+    const asking = member ? null : await approvalAskingToken(req);
+    if (asking) {
+      const actors = await actorsMap();
+      const own = (await store.listApprovals({ createdBy: asking.user.id })).map((a) => serializeApproval(a, asking.user.id, 'mine', actors));
+      return sendJson(res, 200, { approvals: own.sort((x, y) => (x.createdAt < y.createdAt ? 1 : -1)) });
+    }
+    const user = member;
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const wantMine = ctx.url.searchParams.get('mine') === '1';
     const wantInbox = ctx.url.searchParams.get('inbox') === '1';
@@ -6332,6 +6592,15 @@ export function buildApp(deps: AppDeps): App {
     const approvals = [...out.values()].sort((x, y) => (x.createdAt < y.createdAt ? 1 : -1));
     sendJson(res, 200, { approvals });
   });
+
+  /** One request, read by whoever asked: a person or a token holding approvals.request (plans/82 M7). */
+  router.add('GET', '/api/v1/approvals/:id', async (req, res, ctx) => {
+    const user = (await memberOf(req)) ?? (await approvalAskingToken(req))?.user ?? null;
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const approval = await store.getApproval(ctx.params.id as string);
+    if (!approval || approval.createdBy !== user.id || (approval.sourceReview && !await seesSourceReview(user, approval.sourceReview))) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
+    sendJson(res, 200, serializeApproval(approval, user.id, 'mine', await actorsMap()), { 'cache-control': 'no-store' });
+  }, { delivery: 'person-private' });
 
   // The file a request carries. Reviewers and people who acted read it; the
   // requester reads it only once approved, through approvedArtifactBytes. Inert
@@ -6437,7 +6706,7 @@ export function buildApp(deps: AppDeps): App {
 
   // Withdraw: submitter only, while not terminal.
   router.add('POST', '/api/v1/approvals/:id/withdraw', async (req, res, ctx) => {
-    const user = await memberOf(req);
+    const user = (await memberOf(req)) ?? (await approvalAskingToken(req))?.user ?? null;
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const approval = await store.getApproval(ctx.params.id as string);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
@@ -6454,7 +6723,7 @@ export function buildApp(deps: AppDeps): App {
     // digest stay.
     if (next.exportReview) next = await removeArtifactBytes(blobs, next, 'withdrawn', new Date().toISOString());
     await store.putApproval(next);
-    await audit(`user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
+    await audit(user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
     // Withdrawing the review of a catalog submission returns the asset too:
     // leaving it `submitted` behind a closed approval would strand it.
     await settleAssetSubmission(next, user.id);
@@ -11372,6 +11641,9 @@ export function buildApp(deps: AppDeps): App {
     if (!body || typeof body !== 'object' || Array.isArray(body)) { sendError(res, 400, 'INVALID_INPUT', 'JSON object body required'); return null; }
     return body as Record<string, unknown>;
   };
+  /** A published rules tool's own files for this caller, or null for a pack tool (plans/82 M2, M7). */
+  const publishedToolFiles = (caller: { user: UserRecord | null; groups: string[] }) => async (toolId: string) =>
+    caller.user ? (await instanceToolsFor(caller.groups)).get(toolId)?.files ?? null : null;
   // One rule for every automation route and for discovery (automation/effective-contract.ts).
   const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
     mayRenderTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode,
@@ -11445,11 +11717,28 @@ export function buildApp(deps: AppDeps): App {
   const validateRenderRequest = async (principal: string, request: RenderSpec): Promise<void> => {
     const caller = await currentRenderCaller(principal, request);
     if (!renderCaps.formats.includes(request.format)) throw new RenderResourceError('FORMAT_UNSUPPORTED', 422, 'this deployment cannot render the requested format');
+    // A published rules tool (plans/82 M2) is validated from its own files, built for
+    // this caller's feed, and under its own rules, as its render will be.
+    const own = (await instanceToolsFor(caller.groups)).get(request.toolId)?.files ?? null;
     try {
-      const result = await validateVerb({ pack: config.instance.pack, profile: caller.profile }, { toolId: request.toolId, inputs: request.inputs }) as { ok: boolean };
+      // The designer's rules first, so a fixed or ruled-out input is named with its own code.
+      if (own) {
+        const engine = await loadEngine();
+        const tool = await engine.loadTool(request.toolId, async (path: string) => {
+          const file = own.get(path.slice(path.indexOf('/') + 1));
+          if (!file) throw Object.assign(new Error(`no such file: ${path}`), { code: 'ENOENT' });
+          return file.toString('utf8');
+        });
+        await checkDesignRules(engine, tool, queryFromInputs(request.inputs), request.format);
+      }
+      const result = await validateVerb({ pack: config.instance.pack, profile: caller.profile, ...(own ? { toolFiles: async () => own } : {}) }, { toolId: request.toolId, inputs: request.inputs }) as { ok: boolean };
       if (!result.ok) throw new RenderResourceError('INPUT_VALIDATION_FAILED', 422, 'inputs do not satisfy the tool schema');
     } catch (e) {
       if (e instanceof RenderResourceError) throw e;
+      if (e instanceof RenderError) {
+        const v = e.violations?.[0];
+        throw new RenderResourceError(e.code, e.status, e.message, v ? { input: v.param } : undefined);
+      }
       throw new RenderResourceError('TOOL_UNAVAILABLE', 422, 'tool could not be loaded for validation');
     }
   };
@@ -11491,6 +11780,7 @@ export function buildApp(deps: AppDeps): App {
       return resolveBindingRows(binding, hostedAssetResolverFor(caller.groups));
     },
     outputTokenPrincipal: renderTokens.principal,
+    chargeRenders,
   });
   deps.onRenderRunner?.(durableRenders);
   registerRenderApi(router, {
@@ -11501,6 +11791,7 @@ export function buildApp(deps: AppDeps): App {
       return !!member && evaluate({ userId: member.id, groups: member.groups, role: member.role as Role }, 'instance.config', ['*'], await store.listGrants());
     },
     submit: durable.submit,
+    chargeRenders: (principal, n) => chargeRenders(principal, n),
     authorize: async (principal, request) => { await currentRenderCaller(principal, request); },
     validate: validateRenderRequest,
     callbackAllowed: (url) => !!secrets.webhook && callbackUrlAllowed(config, url),
@@ -11552,7 +11843,7 @@ export function buildApp(deps: AppDeps): App {
     // Compile, validate and package read this policy. Batch rows render through the
     // pipeline, which applies the rules for the batch format itself.
     const governed = ['compile', 'validate', 'package'].includes(job.verb) ? body.toolId : undefined;
-    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format) };
+    const context = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format) };
     if (job.verb === 'batch') {
       if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const record = job;
@@ -11639,6 +11930,18 @@ export function buildApp(deps: AppDeps): App {
     }
   };
 
+  /** Count renders on the job routes against a token's budget. False means the
+   *  refusal was sent; a keyed replay of an existing job counts nothing. */
+  const chargeAutomation = async (res: ServerResponse, principal: string, n: number, idempotencyKey?: string): Promise<(() => Promise<void>) | undefined | false> => {
+    try {
+      return await tokenLimits.chargeRenders(principal, n, idempotencyKey === undefined ? undefined : async () => !!(await automationJobs.findByKey(principal, idempotencyKey)));
+    } catch (error) {
+      if (!(error instanceof TokenLimitRefusal)) throw error;
+      sendTokenLimitRefusal(res, error);
+      return false;
+    }
+  };
+
   const discoveryDeps: DiscoveryDeps = {
     caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
@@ -11650,6 +11953,12 @@ export function buildApp(deps: AppDeps): App {
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
     liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, brandPages: brandPagesConfig(config).enabled, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
+    tokenLimits: async (req) => {
+      const token = await presentedServiceToken(req);
+      return token ? tokenLimits.ownView(token.record) : null;
+    },
+    // Published rules tools are used, described and rendered from the caller's own feed (plans/82 M2, M7).
+    publishedTools: (groups) => instanceToolsFor(groups),
     providerRefs: async (groups) => {
       await providersReady;
       const enabled = (await store.listProviders()).filter(provider => provider.enabled);
@@ -11660,7 +11969,118 @@ export function buildApp(deps: AppDeps): App {
   registerIntentRoutes(router, discoveryDeps);
   brandPages.register(router, { shell: serveShell });
   brandEdits.register(router);
-  registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit });
+  // Brand context for a service token (plans/82 M7): the lead brand, the caller's
+  // company and its templates, read as GET /api/v1/context/* and as MCP resources.
+  const tokensFileOf = (snap: { source: { root: string; tokensHead: string | null; assets: Array<{ id: string; formats?: Array<{ format?: string; url?: string }> }> } }): string | null => {
+    const head = snap.source.assets.find((a) => a.id === snap.source.tokensHead);
+    const url = (head?.formats?.find((f) => f.format === 'json') ?? head?.formats?.[0])?.url;
+    return url && url.startsWith('/catalog/') && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(url) ? join(snap.source.root, url.slice(1)) : null;
+  };
+  const designMdMemo = new Map<string, Promise<string | null>>();
+  registerContextRoutes(router, {
+    tokenOf: presentedServiceToken,
+    programmeName: async (id) => (await store.getProgramme(id))?.name ?? null,
+    companyName: async (id) => (await store.listCompanies()).find((c) => c.id === id)?.name ?? null,
+    ownLimits: (record) => tokenLimits.ownView(record),
+    brand: async () => {
+      const snap = brand.current() ?? await brand.snapshot();
+      return { id: snap.source.id, name: snap.source.label || snap.source.name, revision: snap.revision };
+    },
+    page: async () => {
+      // Only a page the public can read right now: its current, published revision,
+      // while brand pages are on. A staged revision, one awaiting approval, an
+      // unpublished page or a page on an instance with pages off never reaches a
+      // token, so nothing is published by this route that is not already public.
+      if (!brandPages.enabled()) return null;
+      const snap = brand.current() ?? await brand.snapshot();
+      // A page's id is its design system's name, the profile name a source carries.
+      const live = await brandPages.live(snap.source.name);
+      if ('missing' in live || live.revision.state !== 'live') return null;
+      return {
+        slug: live.revision.slug, revision: live.revision.n, manifest: live.revision.manifest,
+        url: brandPages.pageUrl(live.revision.slug),
+        read: async (path) => {
+          const file = live.files.get(path);
+          const bytes = file ? await brandPages.readFile(live.revision, file) : null;
+          return bytes ? { bytes, mediaType: brandPageFileType(path) } : null;
+        },
+      };
+    },
+    tokens: async () => {
+      const file = tokensFileOf(brand.current() ?? await brand.snapshot());
+      return file ? readFile(file).catch(() => null) : null;
+    },
+    generatedDesignMd: async (groups) => {
+      const snap = brand.current() ?? await brand.snapshot();
+      const served = await servedIndex.forCaller({ groups });
+      // One file per design-system revision and feed: what it names is what this caller may see.
+      const key = `${snap.revision}:${served.version}`;
+      if (!designMdMemo.has(key)) {
+        if (designMdMemo.size > 32) designMdMemo.delete(designMdMemo.keys().next().value as string);
+        designMdMemo.set(key, (async () => {
+          const engine = await loadEngine() as unknown as { writeDesignMd?: (input: Record<string, unknown>) => string };
+          const file = tokensFileOf(snap);
+          if (typeof engine.writeDesignMd !== 'function' || !file) return null;
+          const doc = JSON.parse(await readFile(file, 'utf8')) as unknown;
+          const assets = (served.index.assets ?? []).map((a) => ({ id: a.id, name: a.name, type: a.type, tags: a.tags, formats: a.formats, meta: a.meta }));
+          return engine.writeDesignMd({ doc, name: snap.source.label || snap.source.name, catalog: { ...(snap.source.tokensHead ? { tokensAsset: snap.source.tokensHead } : {}), assets } });
+        })().catch((error) => { console.error(`context: DESIGN.md was not written: ${(error as Error).message}`); return null; }));
+      }
+      return designMdMemo.get(key)!;
+    },
+    company: async (groups) => {
+      const { ctx } = await companyContextFor(groups);
+      return ctx ? { id: ctx.company.id, name: ctx.company.name, programme: ctx.programme ?? null, revision: ctx.revision, profile: ctx.profile as unknown as Record<string, unknown> } : null;
+    },
+    companyLogo: async (groups, id) => {
+      const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
+      if (!rec || !submissionServable(rec) || !instanceAssetVisible(rec, groups)) return null;
+      if ((await store.getLifecycle(id))?.revokedAt) return null;
+      const [format, blobId] = Object.entries(rec.blobs)[0] ?? [];
+      const blob = blobId ? await blobs.get(blobId) : null;
+      if (!format || !blob) return null;
+      return { bytes: await readBlobBody(blob.body, 4 * 1024 * 1024), mediaType: format === 'svg' ? 'image/svg+xml' : 'image/png' };
+    },
+    templates: async (groups) => {
+      const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+      const out = [];
+      for (const entry of feed.filter((a) => a.type === 'template')) {
+        const rec = await store.getInstanceAsset(entry.id);
+        const toolId = (entry.meta as { toolId?: unknown } | undefined)?.toolId;
+        if (!rec || typeof toolId !== 'string') continue;
+        out.push({ id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, toolId, version: rec.headVersion ?? 1,
+          editable: rec.publication?.editable ?? [], bindings: (rec.publication?.bindings as Record<string, unknown> | undefined) ?? null, retired: templateRetired(rec) });
+      }
+      return out;
+    },
+    skills: async (groups) => {
+      const snap = brand.current() ?? await brand.snapshot();
+      // A partner's agent reads public skills only, whatever else its feed carries.
+      // A context caller is a service token, and a token in a programme is never an admin's.
+      const partner = isProgrammeScoped(groups, undefined);
+      const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+      const inPack = (url: unknown): string | null => typeof url === 'string' && url.startsWith('/catalog/') && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(url) ? join(snap.source.root, url.slice(1)) : null;
+      const out: ContextSkill[] = [];
+      for (const entry of feed.filter((a) => a.type === 'skill')) {
+        const meta = (entry.meta as { skill?: { name?: unknown; description?: unknown; discipline?: unknown; audience?: unknown; files?: Array<{ path?: unknown; url?: unknown }> } } | undefined)?.skill;
+        if (!meta || typeof meta.name !== 'string' || (partner && meta.audience !== 'public')) continue;
+        const files = new Map<string, string>();
+        const main = inPack(entry.formats?.[0]?.url);
+        if (main) files.set('SKILL.md', main);
+        for (const f of meta.files ?? []) { const at = inPack(f.url); if (typeof f.path === 'string' && at) files.set(f.path, at); }
+        out.push({ slug: meta.name, name: typeof entry.name === 'string' ? entry.name : meta.name, description: typeof meta.description === 'string' ? meta.description : '',
+          discipline: typeof meta.discipline === 'string' ? meta.discipline : 'other', files: [...files.keys()],
+          read: async (path) => {
+            const at = files.get(path);
+            const bytes = at ? await readFile(at).catch(() => null) : null;
+            return bytes ? { bytes, mediaType: path.endsWith('.json') ? 'application/json' : path.endsWith('.csv') ? 'text/csv; charset=utf-8' : 'text/markdown; charset=utf-8' } : null;
+          } });
+      }
+      return out;
+    },
+  });
+  registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit,
+    spendCall: (record) => tokenLimits.spendCall(record), limitsSentence: async (record) => limitsSentence((await tokenLimits.resolve(record)).limits) });
 
   for (const verb of ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize'] as const) {
     router.add('POST', `/api/v1/${verb}`, async (req, res, ctx) => {
@@ -11669,7 +12089,7 @@ export function buildApp(deps: AppDeps): App {
       const body = await automationBody(req, res); if (!body) return;
       if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
       const hostedResolver = hostedAssetResolverFor(caller.groups);
-      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal), ...automationFiles(caller),
+      const automationContext = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver, readUpload: automationUploadReader(caller.principal), ...automationFiles(caller),
         policy: await automationPolicy(caller, verb === 'compile' || verb === 'validate' ? body.toolId : undefined, body.format) };
       const execute = async (): Promise<unknown> => {
         let result: unknown;
@@ -11707,7 +12127,7 @@ export function buildApp(deps: AppDeps): App {
     if (!(await requireAutomationTools(res, caller, body, body.document))) return;
     const execute = async () => {
       const document = body.document ?? (await compileVerb(
-        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format) },
+        { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format) },
         body as unknown as Parameters<typeof compileVerb>[1],
       ) as { document: unknown }).document;
       return packageVerb(document);
@@ -11749,11 +12169,16 @@ export function buildApp(deps: AppDeps): App {
       return result;
     };
     const wantsAsync = ctx.url.searchParams.get('async') === '1' || /respond-async/i.test(String(req.headers.prefer ?? ''));
+    const idempotencyKey = String(req.headers['idempotency-key'] ?? '') || undefined;
+    // One render counted against a token's budget when accepted (plans/82 M7).
+    const giveBack = await chargeAutomation(res, caller.principal, 1, idempotencyKey);
+    if (giveBack === false) return;
     if (wantsAsync) {
       const queued = await enqueueAutomation(res, caller, 'render', body, async () => {
         const result = await execute();
         return { mime: result.mime, bytes: result.bytes };
-      }, String(req.headers['idempotency-key'] ?? '') || undefined);
+      }, idempotencyKey);
+      if (!queued || queued.reused) await giveBack?.();
       if (!queued) return;
       const { job, reused } = queued;
       return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
@@ -11765,6 +12190,8 @@ export function buildApp(deps: AppDeps): App {
       res.end(Buffer.from(result.bytes));
     } catch (e) {
       if (!(e instanceof RenderError)) throw e;
+      // A request refused for what it asked never ran, so it counts nothing.
+      if (e.status < 500) await giveBack?.();
       // Name the refused input, as the GET route does, so an agent knows which one.
       const v = e.violations?.[0];
       return sendError(res, e.status, e.code, e.message, v
@@ -11791,14 +12218,19 @@ export function buildApp(deps: AppDeps): App {
     const rowPolicy = await automationPolicy(caller, body.toolId, body.format);
     for (let index = 0; index < rows.length; index++) {
       const check = await validateVerb(
-        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: rowPolicy },
+        { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), policy: rowPolicy },
         { toolId: body.toolId, inputs: rows[index] },
       ) as { ok: boolean; errors?: unknown[] };
       if (!check.ok) return sendError(res, 422, 'ROW_VALIDATION_FAILED', `batch row ${index} does not satisfy the tool input schema`, { row: index, errors: check.errors ?? [] });
     }
+    const idempotencyKey = String(req.headers['idempotency-key'] ?? '') || undefined;
+    // Every row counted at once; a batch the budget cannot hold is refused whole (plans/82 M7).
+    const giveBack = await chargeAutomation(res, caller.principal, rows.length, idempotencyKey);
+    if (giveBack === false) return;
     const queued = await enqueueAutomation(res, caller, 'batch', { ...body, rows }, async record => {
       return executeDurableAutomation(record, new AbortController().signal);
-    }, String(req.headers['idempotency-key'] ?? '') || undefined);
+    }, idempotencyKey);
+    if (!queued || queued.reused) await giveBack?.();
     if (!queued) return;
     const { job, reused } = queued;
     return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
