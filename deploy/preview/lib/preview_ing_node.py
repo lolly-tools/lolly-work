@@ -637,7 +637,7 @@ class IngRunner(N.Runner):
                 require(receipt.status == 200, "RECEIPT_INVALID", f"HTTP {receipt.status}")
                 require(hashlib.sha256(receipt.body).hexdigest() == expect["receipt"], "RECEIPT_INVALID",
                         "the served receipt is not the build's")
-                served = verify_frontend_receipt(receipt.body, self.pin, expect["lolly"], A.ING["receiptTarget"], A.ING["receiptProfile"])
+                served = verify_frontend_receipt(receipt.body, self.pin, expect["lolly"], A.ING["receiptTarget"], A.ING["receiptProfiles"])
                 require(served.get("index.html") == expect["index"], "RECEIPT_INVALID", "the receipt names another index.html")
                 checks.record("receipt", True, "the shell's receipt verifies against the lolly.ing pin")
             except Refusal as exc:

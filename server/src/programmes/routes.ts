@@ -19,6 +19,8 @@ import {
 } from './types.ts';
 import { withdrawDomainRules } from './domain-routes.ts';
 import { withdrawFolderRules } from './folder-routes.ts';
+import { dropTokenGroups } from './people-routes.ts';
+import { companyGroup } from './people.ts';
 
 type Router = ReturnType<typeof createRouter>;
 
@@ -109,9 +111,13 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     if (team && !(await store.listLocalGroups()).some((g) => g.name === team) && !(await store.listUsers()).some((u) => u.idpGroups.includes(team))) {
       return sendError(res, 400, 'UNKNOWN_GROUP', `no group called ${team}`);
     }
+    // An edit keeps what other routes own on the record: the templates-only
+    // switch (M2) and the ended state (M5).
     const rec: ProgrammeRecord = {
       id, name: body.name, ...(body.description ? { description: body.description } : {}), ...(team ? { team } : {}),
       createdBy: prior?.createdBy ?? actor.id, createdAt: prior?.createdAt ?? now, updatedAt: now, version: (prior?.version ?? 0) + 1,
+      ...(prior?.templatesOnly?.length ? { templatesOnly: prior.templatesOnly } : {}),
+      ...(prior?.endedAt ? { endedAt: prior.endedAt, ...(prior.endedBy ? { endedBy: prior.endedBy } : {}), ...(prior.endedExit ? { endedExit: prior.endedExit } : {}) } : {}),
     };
     const group = programmeGroup(id);
     const localGroups = await store.listLocalGroups();
@@ -184,6 +190,11 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     // Its partner domains stop admitting anyone (plans/82 M1 part 2b).
     await withdrawDomainRules(store, deps.audit, `user:${actor.id}`, { programmeId: id }, now, 'programme-delete');
     await withdrawFolderRules(store, deps.audit, `user:${actor.id}`, { programmeId: id }, 'programme-delete');
+    // Tokens placed in it keep the partner marker, like its people (plans/82 M3).
+    const companyGroups = (await store.listCompanies()).filter((c) => c.programmeId === id).map((c) => companyGroup(c.id));
+    await dropTokenGroups(store, deps.audit, `user:${actor.id}`, new Set([group, ...companyGroups]), 'programme-delete');
+    // Its exit receipts go with it, and its companies' (plans/82 M5).
+    await store.deleteProgrammeExits({ programmeId: id });
     // Members keep the partner marker, so they see only the essentials until an
     // admin adds them to another programme or makes them internal on purpose.
     await store.deleteLocalGroup(group);

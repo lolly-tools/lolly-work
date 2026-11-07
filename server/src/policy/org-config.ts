@@ -121,6 +121,11 @@ export interface OrgConfigPayload {
   /** The caller's partner company and programme (plans/82 M3), for programme
    *  members only. The logo ids are catalog assets the caller already receives. */
   partner?: OrgConfigPartner;
+  /** True when the caller reaches this workspace through a partner programme
+   *  (`isProgrammeScoped`), so the app keeps their home to what is published to
+   *  them (plans/82 M6). It says how the person reaches the workspace, never which
+   *  workspace. Absent for everyone else, and on older servers. */
+  programmeScoped?: true;
   /** Permission bits for this caller (CLIENT_ACTIONS), for honest UI. */
   can: Record<string, boolean>;
   /** What the shell may offer when this caller creates a team project:
@@ -247,7 +252,7 @@ export function policyVersionOf(
   deliveryDestinations: ConfigDeliveryDestination[] = [],
   grants: Grant[] = [],
   ai: AiPolicy = resolveAiPolicy(undefined, new Map()),
-  member?: { groups: readonly string[]; role: string; sharingGroups: readonly string[]; flagService?: ReadonlyMap<string, boolean>; partner?: OrgConfigPartner; toolStarts?: unknown },
+  member?: { groups: readonly string[]; role: string; sharingGroups: readonly string[]; flagService?: ReadonlyMap<string, boolean>; partner?: OrgConfigPartner; toolStarts?: unknown; programmeScoped?: true },
   /** Deployment settings that move `can` bits or payload blocks for every
    *  caller: the invite policy, whether guest links are on and the home view
    *  (`instance.homeView`). Absent for
@@ -278,6 +283,9 @@ export function policyVersionOf(
         // when set, so other callers keep their version.
         ...(member.partner ? { partner: member.partner } : {}),
         ...(member.toolStarts ? { toolStarts: member.toolStarts } : {}),
+        // Rides the payload, so it rides the version (plans/82 M6). Present only
+        // for a programme member, so other callers keep their version.
+        ...(member.programmeScoped ? { programmeScoped: true } : {}),
       },
     } : {}),
     overlays: [...overlays.values()].sort((a, b) => a.toolId.localeCompare(b.toolId)),
@@ -379,6 +387,9 @@ export function assembleOrgConfig(opts: {
   partner?: OrgConfigPartner;
   /** Per tool, the values it starts from and the inputs bound to company fields. */
   toolStarts?: Map<string, { defaults: Record<string, unknown>; bindings?: Record<string, string> }>;
+  /** Published rules tools the caller's feed carries (plans/82 M3): listed for
+   *  them whatever the tool grants say, since a grant never names one. */
+  publishedTools?: ReadonlySet<string>;
   inboxUnread: number;
 }): OrgConfigPayload {
   const { config, user, overlays, inboxUnread } = opts;
@@ -387,6 +398,7 @@ export function assembleOrgConfig(opts: {
   const injectables = opts.injectables ?? new Map<string, InjectableRecord>();
   const grants = opts.grants ?? [];
   const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
+  const programmeScoped = isProgrammeScoped(user.groups, user.role);
   const profilePolicy = defaultProfilePolicy(user);
   const sharingGroups = sharingGroupsOf(user.groups, config.idp?.roleGroups);
   const sharingPolicy = resolveSharingPolicy(config.policy.sharing);
@@ -397,7 +409,7 @@ export function assembleOrgConfig(opts: {
     // wins over both, and over the role default. The tool feed and the tool
     // files ask the same toolVisibleWithGrants, so a tool absent here is absent
     // there too. Genuinely-hidden tools stay ABSENT - the caller never learns.
-    if (!toolVisibleWithGrants(overlay, toolId, principal, grants)) continue;
+    if (!opts.publishedTools?.has(toolId) && !toolVisibleWithGrants(overlay, toolId, principal, grants)) continue;
     // Without a readable manifest the overlay's own rule keys stand in for the
     // declared list: a lock or a hide the operator wrote by id still reaches
     // the shell. Only a '*' rule needs the manifest to expand, and that miss is
@@ -525,6 +537,7 @@ export function assembleOrgConfig(opts: {
     profilePolicy,
     tools,
     ...(opts.partner ? { partner: opts.partner } : {}),
+    ...(programmeScoped ? { programmeScoped: true as const } : {}),
     can,
     ...(approvalArtifacts.enabled && (can['export.request'] || mayActOnSomeApproval(principal, grants)) ? { approvals: { exportReview: { maxFileBytes: approvalArtifacts.maxFileBytes, partBytes: TRANSFER_PART_BYTES, match: true, ...(opts.approvalRecording ? { recordInCredentials: true } : {}) } } } : {}),
     ...(can['brand.page.publish'] ? { brandPages: { maxBundleBytes: brandPages.maxBundleBytes, maxFileBytes: brandPages.maxFileBytes, partBytes: TRANSFER_PART_BYTES, approval: !!brandPages.approvalChain } } : {}),
@@ -553,7 +566,7 @@ export function assembleOrgConfig(opts: {
       }
       return base;
     })(),
-    injectables: projectInjectables(injectables.values(), user.groups, isProgrammeScoped(user.groups, user.role)),
+    injectables: projectInjectables(injectables.values(), user.groups, programmeScoped),
     destinations,
     telemetry: {
       level: config.policy.telemetry,
@@ -567,7 +580,8 @@ export function assembleOrgConfig(opts: {
       resolveAiPolicy(config.policy.ai, flagGovernance),
       { groups: user.groups, role: user.role, sharingGroups, ...(opts.flagService ? { flagService: opts.flagService } : {}),
         ...(opts.partner ? { partner: opts.partner } : {}),
-        ...(opts.toolStarts?.size ? { toolStarts: [...opts.toolStarts].sort(([a], [b]) => a.localeCompare(b)) } : {}) },
+        ...(opts.toolStarts?.size ? { toolStarts: [...opts.toolStarts].sort(([a], [b]) => a.localeCompare(b)) } : {}),
+        ...(programmeScoped ? { programmeScoped: true as const } : {}) },
       {
         invites: invitePolicy, guestLinks: config.policy.guestLinks?.enabled !== false,
         // The sharing limits are part of the payload (lolly plan 299 M1).

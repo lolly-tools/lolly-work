@@ -82,7 +82,7 @@ import { DECLINE_SHOWN_DAYS, closeRequestsForEmail, requestStateFor } from '../a
 import { acceptedNotice, noticeContext, skippedNotice, welcomeNotice } from '../access/messages.ts';
 import { maskEmail, maskEmailSpoken } from '../access/mask.ts';
 import { registerAccessRoutes } from '../access/routes.ts';
-import { SERVICE_TOKEN_PREFIX, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
+import { SERVICE_TOKEN_PREFIX, hashServiceSecret, mintServiceSecret, serviceAccountFor, tokenPlacement } from '../iam/service-tokens.ts';
 import { parseTokenAuthority, tokenScopeGuard, tokenScopeVocabulary } from '../iam/token-scopes.ts';
 import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
@@ -2916,6 +2916,22 @@ export function buildApp(deps: AppDeps): App {
       if (bound.overlay) overlays.set(toolId, bound.overlay);
       if (Object.keys(bound.defaults).length || bound.bindings) toolStarts.set(toolId, { defaults: bound.defaults, ...(bound.bindings ? { bindings: bound.bindings } : {}) });
     }
+    // A Share with rules file that takes company values (plans/82 M3) has no
+    // overlay, so its bound inputs ride the same lock path as one: each is locked
+    // to the company's value. It reaches the caller through their feed, not a
+    // tool grant, so it is listed for them whatever the grants say.
+    const publishedTools = new Set<string>();
+    if (scoped && subject.groups.some(isCompanyGroup)) {
+      for (const entry of (await servedIndex.forCaller({ groups: subject.groups })).index.assets ?? []) {
+        const meta = (entry.meta ?? {}) as { toolId?: unknown; bindings?: unknown; retired?: unknown };
+        if (entry.type !== RULES_TOOL_TYPE || typeof meta.toolId !== 'string' || !meta.bindings || meta.retired || projectedOverlays.has(meta.toolId)) continue;
+        const bound = await companyOverlayFor(undefined, meta.toolId, subject.groups, company);
+        if (!bound.overlay) continue;
+        overlays.set(meta.toolId, bound.overlay);
+        publishedTools.add(meta.toolId);
+        toolStarts.set(meta.toolId, { defaults: bound.defaults, ...(bound.bindings ? { bindings: bound.bindings } : {}) });
+      }
+    }
     const partner = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
     const grants = await store.listGrants();
     // The inbox's own count for the same client (its shell and engine
@@ -2926,10 +2942,12 @@ export function buildApp(deps: AppDeps): App {
     const injectables = new Map((await store.listInjectables()).map((r) => [r.id, r]));
     const toolInputs = new Map<string, Array<{ id: string }> | null>();
     for (const toolId of overlays.keys()) {
-      toolInputs.set(toolId, await readToolInputs(config.instance.pack, toolId));
+      // A rules tool is not in the pack; its bound inputs stand in for the list.
+      toolInputs.set(toolId, publishedTools.has(toolId) ? null : await readToolInputs(config.instance.pack, toolId));
     }
     const flagServiceMap = flagServiceAnswers ? await flagServiceAnswers : undefined;
-    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, ...(partner ? { partner } : {}), ...(toolStarts.size ? { toolStarts } : {}), brandEdits: brandEditsCapability(brandSnapshot, brand.mutable), approvalRecording: approvalArtifactPolicy(config).recordInCredentials && !await approvalRecorder.unavailable(), ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
+    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, ...(partner ? { partner } : {}), ...(toolStarts.size ? { toolStarts } : {}),
+      ...(publishedTools.size ? { publishedTools } : {}), brandEdits: brandEditsCapability(brandSnapshot, brand.mutable), approvalRecording: approvalArtifactPolicy(config).recordInCredentials && !await approvalRecorder.unavailable(), ...(flagServiceMap ? { flagService: flagServiceMap } : {}), injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
   };
 
   // A small, uncached lease renewal. Resolve membership on every request so a
@@ -4455,9 +4473,13 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
-  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) =>
-    ({ id: t.id, label: t.label, role: t.role, scopes: t.scopes ?? null, tools: t.tools ?? null, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
-      legacyUnbounded: t.expiresAt === undefined, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null });
+  const tokenWire = (t: { id: string; label: string; role: string; scopes?: string[]; tools?: string[]; groups?: string[]; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) => {
+    const placed = tokenPlacement(t);
+    return { id: t.id, label: t.label, role: t.role, scopes: t.scopes ?? null, tools: t.tools ?? null, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
+      legacyUnbounded: t.expiresAt === undefined, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null,
+      // Where an owner placed it (plans/82 M3); null when it is not a partner token.
+      programme: placed.programmeId ?? null, company: placed.companyId ?? null, groups: t.groups ?? null };
+  };
 
   router.add('POST', '/api/v1/tokens', async (req, res) => {
     const actor = await requireAction(req, res, 'token.manage');
