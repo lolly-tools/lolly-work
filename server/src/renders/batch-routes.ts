@@ -16,7 +16,10 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
         if (!principal) return sendError(res, 401, 'UNAUTHORIZED', 'an authenticated user or service token is required');
         await handler(principal, req, res, ctx);
       } catch (e) {
-        if (e instanceof RenderResourceError) return sendError(res, e.status, e.code, e.message);
+        if (e instanceof RenderResourceError) {
+          if (e.retryAfterSec !== undefined) res.setHeader('retry-after', String(e.retryAfterSec));
+          return sendError(res, e.status, e.code, e.message, e.detail);
+        }
         throw e;
       }
     }, options.personPrivate ? { delivery: 'person-private' } : undefined);
@@ -39,7 +42,15 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
         throw e;
       }
     }
-    const saved = await store.insertRenderBatch(batch);
+    // Every new row is counted at once, and a batch the budget cannot hold is
+    // refused whole. A row a retry reuses ran before and counts nothing now.
+    const batchKey = batch.idempotencyKey;
+    const giveBack = await deps.chargeRenders?.(batch.principal, batch.rows.filter((row) => row.render.state === 'queued').length,
+      batchKey === undefined ? undefined : async () => !!(await store.findRenderBatchByKey(batch.principal, batchKey)));
+    let saved: { record: RenderBatchRecord; reused: boolean };
+    try { saved = await store.insertRenderBatch(batch); }
+    catch (error) { await giveBack?.(); throw error; }
+    if (saved.reused) await giveBack?.();
     if (saved.record.requestHash !== batch.requestHash) throw new RenderResourceError('IDEMPOTENCY_KEY_REUSED', 409, 'Idempotency-Key already identifies a different batch request');
     if (!saved.reused) await deps.audit(batch.principal, batch.retryOf ? 'render.batch.retry' : 'render.batch.create', saved.record.id,
       { toolId: batch.request.toolId, format: batch.request.format, rows: batch.rows.length, ...(batch.retryOf ? { retryOf: batch.retryOf } : {}) });

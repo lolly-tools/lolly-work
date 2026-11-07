@@ -21,6 +21,7 @@ import { withdrawDomainRules } from './domain-routes.ts';
 import { withdrawFolderRules } from './folder-routes.ts';
 import { dropTokenGroups } from './people-routes.ts';
 import { companyGroup } from './people.ts';
+import { TOKEN_LIMIT_KEYS, parseLimitOverrides, type TokenLimitOverrides, type TokenLimits, type TokenLimitSource, type TokenLimitKey } from '../iam/token-limits.ts';
 
 type Router = ReturnType<typeof createRouter>;
 
@@ -30,6 +31,8 @@ export interface ProgrammeRouteDeps {
   audit(actor: string, action: string, subject: string, payload?: Record<string, unknown>): Promise<unknown>;
   /** The pack's tool ids, so a programme cannot name a tool that is not here. */
   toolIds(): Promise<string[]>;
+  /** `automation.tokenLimits`, the figures a programme's tokens take unless it states its own. */
+  instanceTokenLimits?: Readonly<TokenLimits>;
 }
 
 /** What the console and the CLI read for one programme. */
@@ -38,6 +41,21 @@ export interface ProgrammeView extends ProgrammeRecord {
   tools: string[];
   collections: Array<{ id: string; name: string; members: number }>;
   members: Array<{ id: string; name: string; email: string }>;
+  /** What every token placed here takes (plans/82 M7): each figure and whether the
+   *  programme states it or the instance default applies. A token may state its own. */
+  tokenLimitDefaults?: { limits: TokenLimits; sources: Record<TokenLimitKey, Extract<TokenLimitSource, 'programme' | 'instance'>> };
+}
+
+/** The figures a programme's tokens take, and where each comes from. */
+export function programmeTokenLimits(rec: Pick<ProgrammeRecord, 'tokenLimits'>, instance: Readonly<TokenLimits>): NonNullable<ProgrammeView['tokenLimitDefaults']> {
+  const limits = {} as TokenLimits;
+  const sources = {} as Record<TokenLimitKey, 'programme' | 'instance'>;
+  for (const key of TOKEN_LIMIT_KEYS) {
+    const stated = !!rec.tokenLimits && Object.hasOwn(rec.tokenLimits, key);
+    limits[key] = stated ? rec.tokenLimits![key] ?? null : instance[key];
+    sources[key] = stated ? 'programme' : 'instance';
+  }
+  return { limits, sources };
 }
 
 const toolGrant = (group: string, toolId: string): Grant => ({ principal: `group:${group}`, action: 'tool.use', resource: `tool:${toolId}`, effect: 'allow' });
@@ -46,7 +64,7 @@ function namesGroup(rec: CollectionRecord, group: string): boolean {
   return Array.isArray(rec.groups) && rec.groups.includes(group);
 }
 
-export async function programmeView(store: Store, rec: ProgrammeRecord): Promise<ProgrammeView> {
+export async function programmeView(store: Store, rec: ProgrammeRecord, instanceTokenLimits?: Readonly<TokenLimits>): Promise<ProgrammeView> {
   const group = programmeGroup(rec.id);
   const [grants, collections, users] = await Promise.all([store.listGrants(), store.listCollections(), store.listUsers()]);
   return {
@@ -58,23 +76,25 @@ export async function programmeView(store: Store, rec: ProgrammeRecord): Promise
     members: users.filter((u) => u.groups.includes(group))
       .map((u) => ({ id: u.id, name: [u.firstname, u.lastname].filter(Boolean).join(' ') || u.email, email: u.email }))
       .sort((a, b) => a.name.localeCompare(b.name)),
+    ...(instanceTokenLimits ? { tokenLimitDefaults: programmeTokenLimits(rec, instanceTokenLimits) } : {}),
   };
 }
 
 export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps): void {
   const { store } = deps;
+  const view = (rec: ProgrammeRecord) => programmeView(store, rec, deps.instanceTokenLimits);
 
   router.add('GET', '/api/v1/programmes', async (req, res) => {
     if (!(await deps.requireAction(req, res, 'programme.manage'))) return;
     const list = await store.listProgrammes();
-    sendJson(res, 200, { programmes: await Promise.all(list.map((p) => programmeView(store, p))) }, { 'cache-control': 'no-store' });
+    sendJson(res, 200, { programmes: await Promise.all(list.map(view)) }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 
   router.add('GET', '/api/v1/programmes/:id', async (req, res, ctx) => {
     if (!(await deps.requireAction(req, res, 'programme.manage'))) return;
     const rec = await store.getProgramme(String(ctx.params.id));
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
-    sendJson(res, 200, await programmeView(store, rec), { 'cache-control': 'no-store' });
+    sendJson(res, 200, await view(rec), { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 
   /** Create or replace. The id is permanent; the body carries the name, the
@@ -87,7 +107,15 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     const raw = await readJson(req);
     const body = readProgrammeBody(raw);
     if ('error' in body) return sendError(res, 400, 'INVALID_INPUT', body.error);
-    const extra = (raw ?? {}) as { tools?: unknown; collections?: unknown };
+    const extra = (raw ?? {}) as { tools?: unknown; collections?: unknown; tokenLimits?: unknown; approvalChains?: unknown };
+    // The limits its tokens take (plans/82 M7): absent keeps what is stored, null
+    // returns every figure to the instance default.
+    let tokenLimits: TokenLimitOverrides | undefined;
+    if (extra.tokenLimits !== undefined && extra.tokenLimits !== null) {
+      const parsed = parseLimitOverrides(extra.tokenLimits, 'tokenLimits');
+      if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
+      tokenLimits = parsed;
+    }
     const ids = (v: unknown, field: string): string[] | { error: string } => {
       if (v === undefined) return [];
       if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) return { error: `${field} must be a list of ids` };
@@ -112,12 +140,29 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
       return sendError(res, 400, 'UNKNOWN_GROUP', `no group called ${team}`);
     }
     // An edit keeps what other routes own on the record: the templates-only
-    // switch (M2) and the ended state (M5).
+    // switch (M2) and the ended state (M5). Token limits (M7) change only when
+    // the body names them.
+    const limits = extra.tokenLimits === undefined ? prior?.tokenLimits : tokenLimits;
+    // The chains its tokens may ask through (plans/82 M7): absent keeps them, null or [] clears.
+    let chains = prior?.approvalChains;
+    if (extra.approvalChains !== undefined) {
+      if (extra.approvalChains === null) chains = undefined;
+      else {
+        const listed = ids(extra.approvalChains, 'approvalChains');
+        if ('error' in listed) return sendError(res, 400, 'INVALID_INPUT', listed.error);
+        const unknownChains = [];
+        for (const chainId of listed) if (!(await store.getChain(chainId))) unknownChains.push(chainId);
+        if (unknownChains.length) return sendError(res, 400, 'UNKNOWN_CHAIN', `not approval chains: ${unknownChains.slice(0, 5).join(', ')}`);
+        chains = listed.length ? listed.sort() : undefined;
+      }
+    }
     const rec: ProgrammeRecord = {
       id, name: body.name, ...(body.description ? { description: body.description } : {}), ...(team ? { team } : {}),
       createdBy: prior?.createdBy ?? actor.id, createdAt: prior?.createdAt ?? now, updatedAt: now, version: (prior?.version ?? 0) + 1,
       ...(prior?.templatesOnly?.length ? { templatesOnly: prior.templatesOnly } : {}),
       ...(prior?.endedAt ? { endedAt: prior.endedAt, ...(prior.endedBy ? { endedBy: prior.endedBy } : {}), ...(prior.endedExit ? { endedExit: prior.endedExit } : {}) } : {}),
+      ...(limits && Object.keys(limits).length ? { tokenLimits: limits } : {}),
+      ...(chains?.length ? { approvalChains: chains } : {}),
     };
     const group = programmeGroup(id);
     const localGroups = await store.listLocalGroups();
@@ -161,10 +206,14 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
         await deps.audit(`user:${actor.id}`, 'catalog.collection.edit', `collection:${c.id}`, { before: c, after: next, via: `programme:${id}` });
       }
     }
-    const after = await programmeView(store, rec);
+    const after = await view(rec);
     await deps.audit(`user:${actor.id}`, prior ? 'programme.edit' : 'programme.create', `programme:${id}`, {
       before: before ? summary(before) : null, after: summary(after),
     });
+    const limitsBefore = prior?.tokenLimits ?? {}, limitsAfter = rec.tokenLimits ?? {};
+    if (JSON.stringify(limitsBefore) !== JSON.stringify(limitsAfter)) {
+      await deps.audit(`user:${actor.id}`, 'programme.limits', `programme:${id}`, { before: limitsBefore, after: limitsAfter });
+    }
     sendJson(res, prior ? 200 : 201, after);
   });
 
@@ -206,5 +255,6 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
 
 /** The audit payload for a programme: what it includes, never who is in it. */
 function summary(v: ProgrammeView): Record<string, unknown> {
-  return { name: v.name, ...(v.description ? { description: v.description } : {}), ...(v.team ? { team: v.team } : {}), tools: v.tools, collections: v.collections.map((c) => c.id), members: v.members.length };
+  return { name: v.name, ...(v.description ? { description: v.description } : {}), ...(v.team ? { team: v.team } : {}), tools: v.tools, collections: v.collections.map((c) => c.id), members: v.members.length,
+    ...(v.approvalChains?.length ? { approvalChains: v.approvalChains } : {}) };
 }
