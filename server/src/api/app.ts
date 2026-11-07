@@ -84,6 +84,7 @@ import { maskEmail, maskEmailSpoken } from '../access/mask.ts';
 import { registerAccessRoutes } from '../access/routes.ts';
 import { SERVICE_TOKEN_PREFIX, hashServiceSecret, mintServiceSecret, serviceAccountFor, tokenPlacement } from '../iam/service-tokens.ts';
 import { parseTokenAuthority, tokenScopeGuard, tokenScopeVocabulary } from '../iam/token-scopes.ts';
+import { TokenLimitRefusal, createTokenLimits, limitsSentence, parseLimitOverrides, registerTokenLimitRoutes, sendTokenLimitRefusal } from '../iam/token-limits.ts';
 import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
 import {
@@ -235,6 +236,7 @@ import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkK
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
+import type { RenderPartner } from '../render/record.ts';
 import { templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
@@ -463,7 +465,13 @@ export function buildApp(deps: AppDeps): App {
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
-        companyFor: companyForRender,
+        companyFor: companyForRender, partnerFor: partnerForRender,
+        // The design system that drew the render, named as the brand card names it.
+        designSystem: async () => {
+          const tokens = (await brandChrome.public().catch(() => null))?.tokens ?? null;
+          const card = await brandChrome.card(null, null).catch(() => null);
+          return { id: snap.source.name, label: card?.label || snap.source.label, tokens };
+        },
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
@@ -827,6 +835,24 @@ export function buildApp(deps: AppDeps): App {
       ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
     };
     return out.company || out.programme ? out : undefined;
+  };
+  /** The partner a render is for, as its credential records it (plans/82 M3,
+   *  section 6): the company among the caller's that the template reached, else
+   *  their only one, and the programme that published it, else their only one.
+   *  Never a list and never a guess; nothing for someone outside every programme. */
+  const partnerForRender = async (args: { toolId: string; template: RenderTemplate | null; groups: string[]; role?: string }): Promise<RenderPartner | null> => {
+    if (!isProgrammeScoped(args.groups, args.role)) return null;
+    const companies = await store.listCompanies();
+    const publishedTo = args.template?.groups ?? (await rulesToolBindingsFor(args.groups, args.toolId))?.groups;
+    const picked = pickCompany(args.groups, companies, publishedTo);
+    const programmeId = picked.company?.programmeId ?? pickProgramme(args.groups, companies, publishedTo);
+    const programme = programmeId ? await store.getProgramme(programmeId) : null;
+    const profile = picked.company ? await store.getCompanyProfile(picked.company.id) : null;
+    const out: RenderPartner = {
+      ...(picked.company ? { company: { id: picked.company.id, name: picked.company.name, revision: profile?.revision ?? 0 } } : {}),
+      ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
+    };
+    return out.company || out.programme ? out : null;
   };
   /** An overlay with the caller's company values bound, and the values a tool
    *  starts from: for org-config, Preview and the agents' schema, which have no
@@ -3880,10 +3906,26 @@ export function buildApp(deps: AppDeps): App {
     presentedTokens.set(req, read);
     return read;
   };
-  router.setGuard(tokenScopeGuard({
+  const scopeGuard = tokenScopeGuard({
     scopesOf: async (req) => { const token = await presentedServiceToken(req); return token ? token.record.scopes ?? null : null; },
     onRefused: (route) => metrics.tokenScopeRefused(route),
-  }));
+  });
+  // Limits and budgets on service tokens (plans/82 M7): a minute bucket of its
+  // own, so the per-IP switch never turns a manager's limits off.
+  const tokenLimits = createTokenLimits({
+    store, instance: config.automation.tokenLimits, limiter: createRateLimiter({ ...config.rateLimit, enabled: true }),
+    onRefused: (code) => metrics.tokenLimited(code),
+  });
+  const limitGuard = tokenLimits.guard(presentedServiceToken);
+  router.setGuard(async (req, res, route) => (await scopeGuard(req, res, route)) && limitGuard(req, res, route));
+  /** A render charge as the durable routes throw it: their refusal, with the detail and the wait. */
+  const chargeRenders = async (principal: string, n: number, replay?: () => Promise<boolean>) => {
+    try { return await tokenLimits.chargeRenders(principal, n, replay); }
+    catch (error) {
+      if (error instanceof TokenLimitRefusal) throw new RenderResourceError(error.code, error.status, error.message, error.detail, error.retryAfterSec);
+      throw error;
+    }
+  };
   const serviceAccountOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
     const token = await presentedServiceToken(req);
     return token ? token.user : null;
@@ -4539,30 +4581,39 @@ export function buildApp(deps: AppDeps): App {
   router.add('POST', '/api/v1/tokens', async (req, res) => {
     const actor = await requireAction(req, res, 'token.manage');
     if (!actor) return;
-    const body = (await readJson(req)) as { label?: unknown; role?: unknown; scopes?: unknown; tools?: unknown; ttlDays?: unknown } | null;
+    const body = (await readJson(req)) as { label?: unknown; role?: unknown; scopes?: unknown; tools?: unknown; ttlDays?: unknown; limits?: unknown } | null;
     const label = typeof body?.label === 'string' ? body.label.trim().slice(0, 80) : '';
     if (!label) return sendError(res, 400, 'INVALID_INPUT', 'label required - name the automation, not a person');
     const authority = parseTokenAuthority(body);
     if ('error' in authority) return sendError(res, 400, 'INVALID_INPUT', authority.error);
+    // Limits an owner states at mint (plans/82 M7); an internal token has none otherwise.
+    const limits = body?.limits === undefined || body.limits === null ? {} : parseLimitOverrides(body.limits);
+    if ('error' in limits) return sendError(res, 400, 'INVALID_INPUT', limits.error);
     const { secret, tokenHash } = mintServiceSecret();
     let expiresAt: string;
     try { expiresAt = credentialExpiry(body?.ttlDays); }
     catch { return sendError(res, 400, 'INVALID_INPUT', 'ttlDays must be an integer from 1 to 365'); }
-    const rec = {
-      id: `tok_${randomId(8)}`, label, ...authority, tokenHash,
+    const rec: ApiTokenRecord = {
+      id: `tok_${randomId(8)}`, label, ...authority, ...(Object.keys(limits).length ? { limits } : {}), tokenHash,
       createdBy: `user:${actor.id}`, createdAt: new Date().toISOString(), expiresAt,
     };
     await store.putApiToken(rec);
-    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, ...authority, expiresAt });
+    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, ...authority, expiresAt, ...(rec.limits ? { limits: rec.limits } : {}) });
     // The one and only time the secret exists in a response.
-    sendJson(res, 201, { ...tokenWire(rec), token: secret }, { 'cache-control': 'no-store' });
+    const view = (await tokenLimits.adminViews([rec])).get(rec.id)!;
+    sendJson(res, 201, { ...tokenWire(rec), ...view, token: secret }, { 'cache-control': 'no-store' });
   });
 
   router.add('GET', '/api/v1/tokens', async (req, res) => {
     if (!(await requireAction(req, res, 'token.manage'))) return;
-    const tokens = (await store.listApiTokens()).map(tokenWire);
-    sendJson(res, 200, { tokens, legacyUnboundedCount: tokens.filter(token => token.legacyUnbounded && !token.revokedAt).length, scopeVocabulary: tokenScopeVocabulary() });
+    const records = await store.listApiTokens();
+    // Each token's limits, where each comes from, and its use against them (plans/82 M7).
+    const views = await tokenLimits.adminViews(records);
+    const tokens = records.map((rec) => ({ ...tokenWire(rec), ...views.get(rec.id)! }));
+    sendJson(res, 200, { tokens, legacyUnboundedCount: tokens.filter(token => token.legacyUnbounded && !token.revokedAt).length, scopeVocabulary: tokenScopeVocabulary(),
+      tokenLimitDefaults: tokenLimits.instance });
   });
+  registerTokenLimitRoutes(router, { store, limits: tokenLimits, requireAction, audit });
 
   router.add('DELETE', '/api/v1/tokens/:id', async (req, res, ctx) => {
     const actor = await requireAction(req, res, 'token.manage');
@@ -6066,7 +6117,7 @@ export function buildApp(deps: AppDeps): App {
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
   registerProgrammeRoutes(router, {
-    store, requireAction, audit,
+    store, requireAction, audit, instanceTokenLimits: config.automation.tokenLimits,
     toolIds: async () => {
       try {
         const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
@@ -11481,6 +11532,7 @@ export function buildApp(deps: AppDeps): App {
       return resolveBindingRows(binding, hostedAssetResolverFor(caller.groups));
     },
     outputTokenPrincipal: renderTokens.principal,
+    chargeRenders,
   });
   deps.onRenderRunner?.(durableRenders);
   registerRenderApi(router, {
@@ -11491,6 +11543,7 @@ export function buildApp(deps: AppDeps): App {
       return !!member && evaluate({ userId: member.id, groups: member.groups, role: member.role as Role }, 'instance.config', ['*'], await store.listGrants());
     },
     submit: durable.submit,
+    chargeRenders: (principal, n) => chargeRenders(principal, n),
     authorize: async (principal, request) => { await currentRenderCaller(principal, request); },
     validate: validateRenderRequest,
     callbackAllowed: (url) => !!secrets.webhook && callbackUrlAllowed(config, url),
@@ -11629,6 +11682,18 @@ export function buildApp(deps: AppDeps): App {
     }
   };
 
+  /** Count renders on the job routes against a token's budget. False means the
+   *  refusal was sent; a keyed replay of an existing job counts nothing. */
+  const chargeAutomation = async (res: ServerResponse, principal: string, n: number, idempotencyKey?: string): Promise<(() => Promise<void>) | undefined | false> => {
+    try {
+      return await tokenLimits.chargeRenders(principal, n, idempotencyKey === undefined ? undefined : async () => !!(await automationJobs.findByKey(principal, idempotencyKey)));
+    } catch (error) {
+      if (!(error instanceof TokenLimitRefusal)) throw error;
+      sendTokenLimitRefusal(res, error);
+      return false;
+    }
+  };
+
   const discoveryDeps: DiscoveryDeps = {
     caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
@@ -11640,6 +11705,10 @@ export function buildApp(deps: AppDeps): App {
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
     liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, brandPages: brandPagesConfig(config).enabled, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
+    tokenLimits: async (req) => {
+      const token = await presentedServiceToken(req);
+      return token ? tokenLimits.ownView(token.record) : null;
+    },
     providerRefs: async (groups) => {
       await providersReady;
       const enabled = (await store.listProviders()).filter(provider => provider.enabled);
@@ -11650,7 +11719,8 @@ export function buildApp(deps: AppDeps): App {
   registerIntentRoutes(router, discoveryDeps);
   brandPages.register(router, { shell: serveShell });
   brandEdits.register(router);
-  registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit });
+  registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit,
+    spendCall: (record) => tokenLimits.spendCall(record), limitsSentence: async (record) => limitsSentence((await tokenLimits.resolve(record)).limits) });
 
   for (const verb of ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize'] as const) {
     router.add('POST', `/api/v1/${verb}`, async (req, res, ctx) => {
@@ -11739,11 +11809,16 @@ export function buildApp(deps: AppDeps): App {
       return result;
     };
     const wantsAsync = ctx.url.searchParams.get('async') === '1' || /respond-async/i.test(String(req.headers.prefer ?? ''));
+    const idempotencyKey = String(req.headers['idempotency-key'] ?? '') || undefined;
+    // One render counted against a token's budget when accepted (plans/82 M7).
+    const giveBack = await chargeAutomation(res, caller.principal, 1, idempotencyKey);
+    if (giveBack === false) return;
     if (wantsAsync) {
       const queued = await enqueueAutomation(res, caller, 'render', body, async () => {
         const result = await execute();
         return { mime: result.mime, bytes: result.bytes };
-      }, String(req.headers['idempotency-key'] ?? '') || undefined);
+      }, idempotencyKey);
+      if (!queued || queued.reused) await giveBack?.();
       if (!queued) return;
       const { job, reused } = queued;
       return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });
@@ -11755,6 +11830,8 @@ export function buildApp(deps: AppDeps): App {
       res.end(Buffer.from(result.bytes));
     } catch (e) {
       if (!(e instanceof RenderError)) throw e;
+      // A request refused for what it asked never ran, so it counts nothing.
+      if (e.status < 500) await giveBack?.();
       // Name the refused input, as the GET route does, so an agent knows which one.
       const v = e.violations?.[0];
       return sendError(res, e.status, e.code, e.message, v
@@ -11786,9 +11863,14 @@ export function buildApp(deps: AppDeps): App {
       ) as { ok: boolean; errors?: unknown[] };
       if (!check.ok) return sendError(res, 422, 'ROW_VALIDATION_FAILED', `batch row ${index} does not satisfy the tool input schema`, { row: index, errors: check.errors ?? [] });
     }
+    const idempotencyKey = String(req.headers['idempotency-key'] ?? '') || undefined;
+    // Every row counted at once; a batch the budget cannot hold is refused whole (plans/82 M7).
+    const giveBack = await chargeAutomation(res, caller.principal, rows.length, idempotencyKey);
+    if (giveBack === false) return;
     const queued = await enqueueAutomation(res, caller, 'batch', { ...body, rows }, async record => {
       return executeDurableAutomation(record, new AbortController().signal);
-    }, String(req.headers['idempotency-key'] ?? '') || undefined);
+    }, idempotencyKey);
+    if (!queued || queued.reused) await giveBack?.();
     if (!queued) return;
     const { job, reused } = queued;
     return sendJson(res, reused && job.state === 'done' ? 200 : 202, automationWire(job), { location: `/api/v1/jobs/${job.id}` });

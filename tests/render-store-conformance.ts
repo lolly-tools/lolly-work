@@ -17,6 +17,10 @@ export async function runRenderStoreConformance(store: RenderStore): Promise<voi
   const r = submissions[0]!.record;
   assert.equal(await store.getRender(r.id, 'user:other'), null);
   assert.deepEqual(await store.listRenders('user:other', 100, 0), []);
+  // A token's render budget skips a replay, so the key is read before the insert (plans/82 M7).
+  assert.equal((await store.findRenderByKey(principal, 'same'))?.id, r.id);
+  assert.equal(await store.findRenderByKey('user:other', 'same'), null, 'a key belongs to one principal');
+  assert.equal(await store.findRenderByKey(principal, 'unused'), null);
   const conflict = await store.insertRender({ ...first, requestHash: 'different' });
   assert.equal(conflict.record.requestHash, r.requestHash, 'idempotency conflict never overwrites original');
   r.request.inputs.title = 'mutated';
