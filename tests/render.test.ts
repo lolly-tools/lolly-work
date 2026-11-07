@@ -815,6 +815,19 @@ test('(l3) a worker that never accepts a connection answers 503 RENDER_BUSY with
     assert.equal((await res.json() as { error: { code: string } }).error.code, 'RENDER_BUSY');
     assert.equal(res.headers.get('retry-after'), '5');
   }
+  // A connect budget longer than the render deadline still answers RENDER_BUSY,
+  // not RENDER_TIMEOUT: the retrying stops before the deadline.
+  const short = await makeServer(
+    { render: { allowHooksInFastPath: false, worker: { url: `http://127.0.0.1:${port}`, timeoutMs: 1500, connectRetryMs: 30_000 } } },
+    [],
+    { renderWorker: 'gone-key' },
+  );
+  const shortCookie = await login(short.base, 'admin@test');
+  const started = Date.now();
+  const res = await fetch(`${short.base}/api/v1/render`, { method: 'POST', headers: { cookie: shortCookie, 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'hooky', format: 'svg', inputs: {} }) });
+  assert.equal(res.status, 503);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, 'RENDER_BUSY');
+  assert.ok(Date.now() - started < 1500, 'answered before the render deadline');
 });
 
 test('(m) a worker widens the format tier: jpg + pdf render via /rasterise, jpeg aliases jpg, and a workerless deploy still 400s', async () => {

@@ -460,7 +460,7 @@ export function buildApp(deps: AppDeps): App {
   // `submitter`: the person the render is for. The worker may then read the
   // project files its inputs name, while that person can see them (plan 76 M4j).
   const renderTool = (...args: [...Parameters<typeof renderToolUnscoped>, submitter?: UserRecord | null]) => {
-    const run = async (signal: AbortSignal) => {
+    const run = async (signal: AbortSignal, deadlineAt: number) => {
       await catalogPreparation;
       signal.throwIfAborted();
       const snap = brand.current()!;
@@ -478,7 +478,7 @@ export function buildApp(deps: AppDeps): App {
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
-        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
+        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal, deadlineAt });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;

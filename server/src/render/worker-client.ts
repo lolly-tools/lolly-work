@@ -161,6 +161,14 @@ export interface WorkerReply {
  *  the payload, so the caller needs both. */
 export interface WorkerExchange { payload: string; reply: WorkerReply }
 
+/** Per-call options. `now` and `fetchImpl` are injectable for tests;
+ *  `deadlineAt` is when the caller's render deadline falls (epoch ms). */
+export interface WorkerCallOpts { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal; deadlineAt?: number }
+
+/** Retrying a refused connection stops this long before the render deadline,
+ *  so RENDER_BUSY reaches the caller rather than RENDER_TIMEOUT. */
+const DEADLINE_MARGIN_MS = 500;
+
 /** Pull dispatch plugs in here (render.worker.dispatch "pull"); absent means
  *  push. It signs the job when a worker takes it and resolves with that
  *  worker's reply. */
@@ -173,21 +181,26 @@ export type WorkerDispatch = (path: WorkerPath, job: Record<string, unknown>,
  *  raster) can find no endpoint for a few seconds. Each attempt is a new
  *  request, signed afresh and connected afresh, with a short backoff, until
  *  `connectRetryMs` has passed; then the job fails as 503 RENDER_BUSY with
- *  Retry-After. Every other failure, and every answer the worker gives, is
+ *  Retry-After. The retrying also stops DEADLINE_MARGIN_MS before the caller's
+ *  render deadline, and no new attempt starts once the time is up; an attempt
+ *  already under way is bounded by `timeoutMs` and the render deadline, as
+ *  before. Every other failure, and every answer the worker gives, is
  *  returned on the first attempt as before. */
 async function pushExchange(cfg: WorkerConfig, path: WorkerPath, job: Record<string, unknown>,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal }, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
-  const budget = cfg.connectRetryMs ?? WORKER_CONNECT_RETRY_MS;
+  opts: WorkerCallOpts, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
   const started = Date.now();
+  const until = Math.min(started + (cfg.connectRetryMs ?? WORKER_CONNECT_RETRY_MS),
+    opts.deadlineAt !== undefined ? opts.deadlineAt - DEADLINE_MARGIN_MS : Number.POSITIVE_INFINITY);
   for (let attempt = 1; ; attempt++) {
     try {
       return await pushOnce(cfg, path, job, opts, readBody);
     } catch (e) {
       if (opts.signal?.aborted || !isWorkerConnectFailure(e)) throw e;
-      const waited = Date.now() - started;
-      const wait = Math.min(CONNECT_BACKOFF_FIRST_MS * 2 ** (attempt - 1), CONNECT_BACKOFF_MAX_MS, budget - waited);
+      const left = until - Date.now();
+      // Wait a little less than the time left, so the last try starts before it runs out.
+      const wait = Math.min(CONNECT_BACKOFF_FIRST_MS * 2 ** (attempt - 1), CONNECT_BACKOFF_MAX_MS, left - CONNECT_BACKOFF_FIRST_MS);
       if (wait <= 0) {
-        throw new WorkerError(`render worker not accepting connections (${connectFailureCode(e)}) after ${attempt} attempt${attempt === 1 ? '' : 's'} over ${Math.round(waited / 1000)} s; retry shortly`,
+        throw new WorkerError(`render worker not accepting connections (${connectFailureCode(e)}) after ${attempt} attempt${attempt === 1 ? '' : 's'} over ${Math.round((Date.now() - started) / 1000)} s; retry shortly`,
           503, { code: 'RENDER_BUSY', retryAfter: WORKER_UNREACHABLE_RETRY_AFTER_S });
       }
       await pause(wait, undefined, opts.signal ? { signal: opts.signal } : {});
@@ -197,7 +210,7 @@ async function pushExchange(cfg: WorkerConfig, path: WorkerPath, job: Record<str
 
 /** One signed POST. The timeout spans the request and its whole body, as it always has. */
 async function pushOnce(cfg: WorkerConfig, path: WorkerPath, job: Record<string, unknown>,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal }, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
+  opts: WorkerCallOpts, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
   const payload = canonicalJson({ ...job, ts: opts.now ?? Date.now() });
   const sig = signBody(payload, cfg.secret);
   const ctrl = new AbortController();
@@ -221,7 +234,7 @@ async function pushOnce(cfg: WorkerConfig, path: WorkerPath, job: Record<string,
 }
 
 function exchange(cfg: WorkerConfig, path: WorkerPath, job: Record<string, unknown>,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal }, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
+  opts: WorkerCallOpts, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
   return cfg.dispatch
     ? cfg.dispatch(path, job, { ...(opts.signal ? { signal: opts.signal } : {}), timeoutMs: cfg.timeoutMs })
     : pushExchange(cfg, path, job, opts, readBody);
@@ -252,7 +265,7 @@ function replyError(reply: WorkerReply, what: string): WorkerError {
 export async function renderViaWorker(
   cfg: WorkerConfig,
   job: WorkerJob,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal; onEvidence?: (evidence: WorkerEvidence) => void } = {},
+  opts: WorkerCallOpts & { onEvidence?: (evidence: WorkerEvidence) => void } = {},
 ): Promise<string> {
   opts.signal?.throwIfAborted();
   try {
@@ -293,7 +306,7 @@ export async function renderViaWorker(
 export async function rasteriseViaWorker(
   cfg: WorkerConfig,
   job: RasterJob,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
+  opts: WorkerCallOpts = {},
 ): Promise<RasterResult> {
   opts.signal?.throwIfAborted();
   try {

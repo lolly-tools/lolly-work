@@ -159,8 +159,19 @@ test('a worker that never listens fails as 503 RENDER_BUSY with Retry-After once
       && e.retryAfter === WORKER_UNREACHABLE_RETRY_AFTER_S && /ECONNREFUSED/.test(e.message),
   );
   const took = Date.now() - started;
-  assert.ok(took >= 550 && took < 3000, `bounded by connectRetryMs (took ${took} ms)`);
+  assert.ok(took <= 700, `no attempt starts after connectRetryMs (took ${took} ms)`);
   assert.ok(attempts >= 2, 'it tried more than once');
+});
+
+test('retrying stops before the caller\'s render deadline, so RENDER_BUSY answers rather than RENDER_TIMEOUT', async () => {
+  const worker = await refusingWorker(() => ({ status: 200, body: {} }));
+  const started = Date.now();
+  await assert.rejects(
+    renderViaWorker({ ...CFG, url: worker.base, connectRetryMs: 30_000 }, JOB, { deadlineAt: started + 1500 }),
+    (e: WorkerError) => e instanceof WorkerError && e.status === 503 && e.code === 'RENDER_BUSY',
+  );
+  const took = Date.now() - started;
+  assert.ok(took < 1500, `answered before the deadline (took ${took} ms)`);
 });
 
 test('connectRetryMs 0 answers RENDER_BUSY after the first refused connect', async () => {
