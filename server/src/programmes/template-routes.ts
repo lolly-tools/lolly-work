@@ -118,6 +118,7 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
     const reach = await programmeGroups(store, programme);
     const labels = await groupLabels(store);
+    const companies = await store.listCompanies();
     const all = await store.listInstanceAssets();
     const rows = [];
     for (const rec of all) {
@@ -128,10 +129,13 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       const facts = type === 'template' ? await deps.toolFacts(toolId) : null;
       const replacedBy = rec.publication?.replacedBy;
       const replacement = replacedBy ? await store.getInstanceAsset(replacedBy) : null;
-      // Programmes in the audience that can also open the base tool on its own.
+      // Programmes in the audience, directly or through one of their companies,
+      // whose people can also open the base tool on its own.
       const openTo: string[] = [];
       if (type === 'template') {
-        for (const g of groupsOf(rec).filter((x) => x.startsWith('programme-'))) {
+        const audienceProgrammes = new Set(groupsOf(rec).flatMap((g) => g.startsWith('programme-') ? [g]
+          : g.startsWith(COMPANY_GROUP_PREFIX) ? companies.filter((c) => `${COMPANY_GROUP_PREFIX}${c.id}` === g).map((c) => programmeGroup(c.programmeId)) : []));
+        for (const g of audienceProgrammes) {
           if (await deps.toolOpenTo(g, toolId)) openTo.push(labels.get(g)?.replace(/^Everyone in /, '') ?? g);
         }
       }

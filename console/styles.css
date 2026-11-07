@@ -1531,7 +1531,7 @@ html.account-inspector-open { overflow: hidden; }
 
 /* Templates on a partner programme (plans/82 M2): one row per template, with
    what it does opening in a panel underneath rather than in a dialog. */
-.template-list { display: flex; flex-direction: column; gap: var(--sp-6); }
+.template-list { display: flex; flex-direction: column; gap: var(--sp-6); margin-top: var(--sp-4); }
 .template-row { display: flex; flex-direction: column; gap: var(--sp-4); padding-bottom: var(--sp-6); border-bottom: 1px solid var(--grid); }
 .template-cells { display: grid; grid-template-columns: minmax(12rem, 1.4fr) 1fr 1fr minmax(7rem, .6fr) auto; gap: var(--sp-4) var(--sp-7); align-items: start; }
 .template-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ui-color-text-muted); margin-bottom: 2px; }

@@ -2920,7 +2920,7 @@ export function buildApp(deps: AppDeps): App {
         ...(meta.retired ? { retired: true, ...(meta.replacedBy ? { replacedBy: { id: meta.replacedBy, name: String(replacement?.name ?? meta.replacedBy) } } : {}) } : {}),
       };
       if (entry.type === RULES_TOOL_TYPE) {
-        templates.push({ ...base, canChange: (meta.inputs ?? []).map((i) => i.label), fixed: ['everything else in the design'],
+        templates.push({ ...base, canChange: (meta.inputs ?? []).map((i) => i.label), fixed: ['Everything else in the design'],
           why: ['The Share with rules file\u2019s own rules.', ...(meta.rebuilt ? ['Rebuilt with this workspace\u2019s Design.'] : [])] });
         continue;
       }

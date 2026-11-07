@@ -141,7 +141,9 @@ test('who gets it and what they may change are edited in place; every input open
   assert.equal((await ritaEntry(published))?.meta?.editable, undefined);
   const acme = await call(admin, 'PUT', path, { groups: ['company-acme'], editable: ['price', 'title'] });
   assert.equal(acme.status, 200);
-  assert.deepEqual((await listed()).templates[0].audience, [{ group: 'company-acme', label: 'Acme Distribution' }]);
+  const row = (await listed()).templates[0];
+  assert.deepEqual(row.audience, [{ group: 'company-acme', label: 'Acme Distribution' }]);
+  assert.deepEqual(row.toolOpenTo, ['Resellers'], 'a company\'s programme can open the tool too');
   assert.deepEqual((await ritaEntry(published))?.meta?.editable, ['price', 'title']);
 });
 
