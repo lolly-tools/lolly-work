@@ -1494,6 +1494,22 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteAssetLicence('ext/dam/IMG_2231');
   assert.deepEqual(await store.listAssetLicences(), []);
 
+  // Share anyway choices (plans/82 M4, migrations/0097): one per asset per audience group.
+  assert.deepEqual(await store.listRightsChoices(), []);
+  const choice = {
+    assetId: 'ext/dam/IMG_2231', group: 'company-northwind-it', programmeId: 'resellers-emea', companyId: 'northwind-it', declared: 'CC-BY-NC-4.0', licence: 'CC BY-NC 4.0',
+    reason: 'CC-BY-NC-4.0 is recorded and not yet interpreted', checksum: 'abc', rulesVersion: 'rights-rules-x', fingerprint: 'sha256:00', chosenBy: 'usr_1', chosenAt: '2026-11-07T00:00:00.000Z',
+  };
+  await store.putRightsChoice(choice);
+  await store.putRightsChoice({ ...choice, group: 'programme-resellers-emea', companyId: undefined as never });
+  await store.putRightsChoice({ ...choice, note: 'ref 2026-114' });
+  assert.deepEqual((await store.listRightsChoices()).map((c) => [c.group, c.note ?? '']), [['company-northwind-it', 'ref 2026-114'], ['programme-resellers-emea', '']], 'put is an upsert');
+  await store.deleteRightsChoice({ assetId: 'nope', group: 'company-northwind-it' });
+  await store.deleteRightsChoice({ assetId: 'ext/dam/IMG_2231', group: 'programme-resellers-emea' });
+  assert.equal((await store.listRightsChoices()).length, 1);
+  await store.deleteRightsChoice({ assetId: 'ext/dam/IMG_2231', group: 'company-northwind-it' });
+  assert.deepEqual(await store.listRightsChoices(), []);
+
   // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
   // exit, newest first, filtered by programme, company or state, upserted
   // whole; deleting a programme's receipts takes its companies' too.

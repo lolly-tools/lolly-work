@@ -5,6 +5,7 @@ import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
+import type { RightsChoiceRecord } from '../programmes/rights.ts';
 import type { TokenLimitOverrides } from '../iam/token-limits.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
 import type { SubjectStore } from '../privacy/subject.ts';
@@ -1905,6 +1906,12 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putAssetLicence(rec: AssetLicenceRecord): Promise<void>;
   /** Unknown asset id is a no-op. */
   deleteAssetLicence(assetId: string): Promise<void>;
+  // Share anyway choices (plans/82 M4, migrations/0097): one per asset per
+  // audience group, `programme-<id>` or `company-<id>`.
+  listRightsChoices(): Promise<RightsChoiceRecord[]>;
+  putRightsChoice(rec: RightsChoiceRecord): Promise<void>;
+  /** Unknown key is a no-op. */
+  deleteRightsChoice(key: { assetId: string; group: string }): Promise<void>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
   // cumulative for everything that was KEPT - a returned submission still spent
