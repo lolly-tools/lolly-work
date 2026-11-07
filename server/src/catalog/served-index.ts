@@ -264,8 +264,11 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       f.rec.id, f.fragment.hash, f.stale ? 1 : 0, f.fragment.assets.length, f.rec.label, JSON.stringify(f.rec.exposure.groups ?? '*'),
     ].join(':')).join('|');
 
-  const full = async (groups: string[], background = false, ungated = false): Promise<ServedIndex> => {
+  const full = async (groups: string[], background = false, ungatedAsked = false): Promise<ServedIndex> => {
     await deps.ready;
+    // Only a programme-scoped caller is ever gated, so for anyone else the
+    // ungated feed is the feed and shares its memo.
+    const ungated = ungatedAsked && isProgrammeScoped(groups, deps.roleOf?.(groups));
     const key = `${groups.join('\n')}${ungated ? '\n(ungated)' : ''}`;
     const packFile = join(deps.pack(), 'catalog', 'assets', 'index.json');
     let packStamp = `${packFile}:missing`;
@@ -452,7 +455,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       const pending = background ? (await deps.store.listProviders({ includeFragment: false }))
         .filter(provider => provider.enabled && sees(provider) && !represented.has(provider.id))
         .map(provider => provider.id).sort() : [];
-      return pagedFrom(base, `${key.join('\n')}${ungated ? '\n(ungated)' : ''}`, pending);
+      return pagedFrom(base, `${key.join('\n')}${ungated && scoped ? '\n(ungated)' : ''}`, pending);
     },
     compositions: () => compositions,
   };
