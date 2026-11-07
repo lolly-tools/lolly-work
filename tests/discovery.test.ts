@@ -23,6 +23,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import type { ToolOverlay } from '../server/src/policy/overlay.ts';
 import { renderCapabilities, toolServerFormats } from '../server/src/render/capabilities.ts';
 import { effectiveInputSchema, policyFormats } from '../server/src/automation/effective-contract.ts';
+import { createWorkerProbe } from '../server/src/automation/discovery.ts';
 
 interface Harness { server: Server; base: string; store: ReturnType<typeof createMemoryStore> }
 const servers: Server[] = [];
@@ -362,6 +363,22 @@ test('an open deployment answers anonymous callers as guests', async () => {
   const tools = await json(await fetch(`${srv.base}/api/v1/discovery/tools?limit=100`));
   assert.ok(!tools.tools.some((tool: any) => tool.id === HIDDEN_TOOL), 'a visibility rule hides the tool from anonymous callers');
   assert.equal((await fetch(`${srv.base}/api/v1/schema/governed-card?view=raw`)).status, 403);
+});
+
+test('the readiness probe reads at most 4 KiB of the worker\'s body and stops there', async () => {
+  let pulled = 0, cancelled = false;
+  const chunk = new TextEncoder().encode(`{"atCapacity":true,"pad":"${'x'.repeat(1024)}`);
+  const fetchImpl = (async () => new Response(new ReadableStream({
+    pull(controller) { pulled++; if (pulled > 1000) controller.close(); else controller.enqueue(chunk); },
+    cancel() { cancelled = true; },
+  }), { status: 200 })) as unknown as typeof fetch;
+  const probe = createWorkerProbe({ url: 'http://127.0.0.1:9', secret: 's', timeoutMs: 1000 }, fetchImpl);
+  assert.equal(await probe(), 'ready', 'an oversized body is not read as a full worker');
+  assert.ok(cancelled, 'the rest of the body is cancelled');
+  assert.ok(pulled < 10, `read ${pulled} chunks, not the whole stream`);
+  const small = createWorkerProbe({ url: 'http://127.0.0.1:9', secret: 's', timeoutMs: 1000 },
+    (async () => new Response(JSON.stringify({ ok: true, active: 1, capacity: 1, atCapacity: true }), { status: 200 })) as unknown as typeof fetch);
+  assert.equal(await small(), 'busy');
 });
 
 test('a configured worker widens discovery, and its live readiness reaches the caller view', async () => {

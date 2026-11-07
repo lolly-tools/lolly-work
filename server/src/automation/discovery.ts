@@ -103,6 +103,23 @@ export interface DiscoveryDeps {
   tokenLimits?(req: IncomingMessage): Promise<{ limits: Record<string, number | null>; usage: Record<string, unknown> } | null>;
 }
 
+/** A response body as text, or null once it passes `limit` bytes (the rest is
+ *  never read). */
+async function boundedText(res: Response, limit: number): Promise<string | null> {
+  const reader = res.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) { await reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 /** The worker's readiness, read from its unauthenticated `/readyz` and kept for
  *  `ttlMs`, so discovery never sends more than one probe per interval. A worker
  *  reports a full set of slots as `atCapacity` on a 200; an older worker
@@ -118,9 +135,9 @@ export function createWorkerProbe(cfg: WorkerConfig, fetchImpl: typeof fetch, tt
           await res.body?.cancel().catch(() => {});
           return res.status === 503 ? 'busy' : 'unreachable';
         }
-        const text = await res.text();
+        const text = await boundedText(res, 4096);
         let full = false;
-        try { full = text.length <= 4096 && (JSON.parse(text) as { atCapacity?: unknown } | null)?.atCapacity === true; } catch { /* a bare 200 is ready */ }
+        try { full = text !== null && (JSON.parse(text) as { atCapacity?: unknown } | null)?.atCapacity === true; } catch { /* a bare 200 is ready */ }
         return full ? 'busy' : 'ready';
       } catch { return 'unreachable'; }
     })();
