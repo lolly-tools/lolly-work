@@ -60,6 +60,10 @@ export interface ProgrammeRecord {
    *  (plans/82 M7): a key left out takes the instance default, and null is no
    *  cap. See iam/token-limits.ts. */
   tokenLimits?: TokenLimitOverrides;
+  /** The approval chains this programme's tokens may ask through (plans/82 M7),
+   *  set by its manager. A tool bound to a chain uses that chain; with neither, a
+   *  partner's agent cannot ask, so it never reaches an internal chain by name. */
+  approvalChains?: string[];
 }
 
 /** Whether a programme or company record is ended (plans/82 M5). */

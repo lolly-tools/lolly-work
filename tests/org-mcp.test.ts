@@ -261,7 +261,8 @@ test('policy hides and locks inputs, and refuses with the HTTP codes', async () 
 test('an unscoped token works by its role', async () => {
   const t = await boot();
   const admin = (await t.mint({ role: 'admin' })).token;
-  assert.deepEqual(names(await t.list(admin)), names(ORG_TOOLS));
+  // Every tool but the approval ones, which a token gets only by naming approvals.request (plans/82 M7).
+  assert.deepEqual(names(await t.list(admin)), names(ORG_TOOLS.filter((tool) => !tool.optIn)));
   assert.match((await t.call(admin, 'render_tool', { toolId: 'card', format: 'svg' })).value.id, /^rnd_/);
 
   // The member role cannot render on the server: its render tools are absent, and a

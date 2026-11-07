@@ -130,7 +130,7 @@ import { brandPagesConfig } from '../brand-pages/types.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
 import {
   approvalArtifactPolicy, approvedArtifactBytes, artifactRefusal, artifactRelation, artifactReviewToken, checkArtifactReviewToken, describeExportReview, exportReviewWire,
-  freezeArtifactBytes, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
+  freezeArtifactBytes, freezeRenderBytes, describeRenderReview, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
 } from '../approvals/export-review.ts';
 import { renderInputsDigest } from '../render/inputs-digest.ts';
 import { approvedExportReview, registerExportReviewMatch } from '../approvals/export-review-match.ts';
@@ -4099,7 +4099,8 @@ export function buildApp(deps: AppDeps): App {
     if (destination.approvalChain && !approvalChain) {
       return sendError(res, 503, 'APPROVAL_CHAIN_UNAVAILABLE', 'the destination approval chain is not configured');
     }
-    if (approvalChain && user.id.startsWith('svc_')) {
+    // A token asks for the delivery's approval only with approvals.request (plans/82 M7).
+    if (approvalChain && user.id.startsWith('svc_') && !(await approvalAskingToken(req))) {
       return sendError(res, 403, 'HUMAN_APPROVAL_REQUIRED', 'this destination requires a member to request human approval');
     }
     const maxBytes = Math.min(config.delivery.maxBytes, destination.maxBytes ?? config.delivery.maxBytes);
@@ -4225,7 +4226,7 @@ export function buildApp(deps: AppDeps): App {
           id: `msg_${randomId(8)}`,
           kind: 'approval', severity: 'action', audience: { groups: step.approvers.groups },
           title: `Approval requested: Deliver ${name} to ${destination.label}`,
-          body: `${user.email} asked for review on the “${step.name}” step.`,
+          body: `${await askerOf(user)} asked for review on the “${step.name}” step.`,
           cta: { label: 'Review', url: '/admin#/approvals' },
           dismissible: true,
         });
@@ -4233,7 +4234,7 @@ export function buildApp(deps: AppDeps): App {
           !candidate.disabledAt && candidate.id !== user.id && isEligible(step, candidate.groups));
         notifier.email(reviewers.map((candidate) => candidate.email),
           `Approval requested: Deliver ${name} to ${destination.label}`,
-          `${user.email} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
+          `${await askerOf(user)} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
       }
       notifier.event('approval.requested', {
         id: approvalId, title: `Deliver ${name} to ${destination.label}`,
@@ -4320,7 +4321,8 @@ export function buildApp(deps: AppDeps): App {
     if (destination.approvalChain && !approvalChain) {
       return sendError(res, 503, 'APPROVAL_CHAIN_UNAVAILABLE', 'the destination approval chain is not configured');
     }
-    if (approvalChain && user.id.startsWith('svc_')) {
+    // A token asks for the delivery's approval only with approvals.request (plans/82 M7).
+    if (approvalChain && user.id.startsWith('svc_') && !(await approvalAskingToken(req))) {
       return sendError(res, 403, 'HUMAN_APPROVAL_REQUIRED', 'this destination requires a member to request human approval');
     }
 
@@ -4440,7 +4442,7 @@ export function buildApp(deps: AppDeps): App {
           id: `msg_${randomId(8)}`,
           kind: 'approval', severity: 'action', audience: { groups: step.approvers.groups },
           title: `Approval requested: Deliver ${name} to ${destination.label}`,
-          body: `${user.email} asked for review on the “${step.name}” step.`,
+          body: `${await askerOf(user)} asked for review on the “${step.name}” step.`,
           cta: { label: 'Review', url: '/admin#/approvals' },
           dismissible: true,
         });
@@ -4448,7 +4450,7 @@ export function buildApp(deps: AppDeps): App {
           !candidate.disabledAt && candidate.id !== user.id && isEligible(step, candidate.groups));
         notifier.email(reviewers.map((candidate) => candidate.email),
           `Approval requested: Deliver ${name} to ${destination.label}`,
-          `${user.email} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
+          `${await askerOf(user)} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
       }
       notifier.event('approval.requested', {
         id: approvalId, title: `Deliver ${name} to ${destination.label}`,
@@ -5905,7 +5907,38 @@ export function buildApp(deps: AppDeps): App {
     for (const u of await store.listUsers()) {
       map.set(u.id, { name: displayName(u), email: u.email });
     }
+    // A token that asked (plans/82 M7) reads as the agent it is, never as a person.
+    for (const t of await store.listApiTokens()) map.set(`svc_${t.id}`, { name: await askerOf(serviceAccountFor(t)), email: '' });
     return map;
+  };
+  /** The longest token label an approver's notice prints, in characters. */
+  const ASKER_LABEL_MAX = 40;
+  /** Who asked, as an approver reads it: a person's address, or a token as the agent
+   *  it is ("Northwind IT's agent (Rita's agent)"), with its label and company or
+   *  programme. Never a person behind a token. */
+  const askerOf = async (user: UserRecord): Promise<string> => {
+    if (!user.id.startsWith('svc_')) return user.email;
+    const token = await store.getApiToken(user.id.slice('svc_'.length));
+    if (!token) return 'A service token';
+    // The label in brackets, cut short so a long one cannot swamp the notice, and left out when there is none.
+    const label = token.label.replace(/\s+/g, ' ').trim();
+    const named = label.length > ASKER_LABEL_MAX ? `${label.slice(0, ASKER_LABEL_MAX - 3).trimEnd()}...` : label;
+    const inBrackets = named ? ` (${named})` : '';
+    const placed = tokenPlacement(token);
+    if (placed.companyId) {
+      const company = (await store.listCompanies()).find((c) => c.id === placed.companyId);
+      if (company) return `${company.name}'s agent${inBrackets}`;
+    }
+    if (placed.programmeId) {
+      const programme = await store.getProgramme(placed.programmeId);
+      if (programme) return `An agent for ${programme.name}${inBrackets}`;
+    }
+    return named ? `The service token ${named}` : 'A service token';
+  };
+  /** The service token on this request when it holds approvals.request, else null. */
+  const approvalAskingToken = async (req: IncomingMessage): Promise<{ record: ApiTokenRecord; user: UserRecord } | null> => {
+    const token = await presentedServiceToken(req);
+    return token && token.record.scopes?.includes('approvals.request') ? token : null;
   };
 
   // Chains: any member may read the catalogue of chains; editing one is policy.edit.
@@ -6043,6 +6076,89 @@ export function buildApp(deps: AppDeps): App {
     return { subject, upload };
   };
 
+  /**
+   * A service token's export review of one of its own finished renders (plans/82
+   * M7). Nobody is nominated: the chain's eligible approvers decide. The chain is
+   * the tool's bound escalation chain; with none, a chain the token's programme
+   * lists; a partner's agent never reaches an internal chain by name. An internal
+   * token may name any chain, as a person may.
+   */
+  const submitTokenReview = async (res: ServerResponse, asking: { record: ApiTokenRecord; user: UserRecord },
+    body: { subjectType?: string; title?: string; chainId?: string; nominees?: unknown; exportReview?: unknown } | null): Promise<void> => {
+    const { user, record } = asking;
+    const actor = `service:${user.id}`;
+    if (body?.subjectType !== 'export-review') return sendError(res, 400, 'INVALID_INPUT', 'A service token asks only for an export review of one of its own renders.');
+    if (body.nominees !== undefined && (!Array.isArray(body.nominees) || body.nominees.length)) return sendError(res, 400, 'NOMINEES_NOT_FOR_TOKEN', 'A service token nominates nobody. The chain\'s approvers decide.');
+    const renderId = (body.exportReview as { renderId?: unknown } | undefined)?.renderId;
+    if (typeof renderId !== 'string' || !/^rnd_[A-Za-z0-9_-]{1,64}$/.test(renderId)) return sendError(res, 400, 'INVALID_INPUT', 'exportReview needs the renderId of one of this token\'s finished renders.');
+    const policy = approvalArtifactPolicy(config);
+    if (!policy.enabled) return sendError(res, 404, 'NOT_FOUND', 'This instance does not take a file with a request.');
+    const render = await store.getRender(renderId, actor);
+    if (!render) return sendError(res, 404, 'NOT_FOUND', 'no such render');
+    if (render.state !== 'succeeded' || !render.output) return sendError(res, 409, 'RENDER_NOT_SUCCEEDED', 'render has no successful output');
+    if (render.output.expiredAt) return sendError(res, 410, 'OUTPUT_EXPIRED', 'output retention has removed this output');
+    try { await currentRenderCaller(actor, render.request); }
+    catch (error) { if (error instanceof RenderResourceError) return sendError(res, error.status, error.code, error.message); throw error; }
+    const toolId = render.request.toolId, format = render.request.format;
+    // The chain: bound to the tool, else one the programme lists.
+    const placed = tokenPlacement(record);
+    const bound = (await store.listOverlays()).get(toolId)?.enforce?.escalation;
+    let chainId: string | undefined;
+    if (bound) {
+      if (body.chainId !== undefined && body.chainId !== bound) return sendError(res, 400, 'CHAIN_NOT_BOUND', 'This tool goes through a different approval chain.');
+      chainId = bound;
+    } else if (placed.partner) {
+      const listed = placed.programmeId ? (await store.getProgramme(placed.programmeId))?.approvalChains ?? [] : [];
+      chainId = typeof body.chainId === 'string' ? (listed.includes(body.chainId) ? body.chainId : undefined) : listed.length === 1 ? listed[0] : undefined;
+      if (!chainId) return sendError(res, 403, 'CHAIN_NOT_FOR_PROGRAMME', listed.length > 1 && body.chainId === undefined
+        ? `Name one of this programme's chains: ${listed.join(', ')}.` : 'This programme lists no approval chain this token may ask through.');
+    } else chainId = typeof body.chainId === 'string' ? body.chainId : undefined;
+    if (!chainId) return sendError(res, 400, 'INVALID_INPUT', 'chainId required');
+    const chain = await store.getChain(chainId);
+    if (!chain) return sendError(res, 404, 'NOT_FOUND', 'no such chain');
+    const blob = await blobs.get(render.output.ref);
+    if (!blob) return sendError(res, 410, 'OUTPUT_UNAVAILABLE', 'retained render output is unavailable');
+    const bytes = await readBlobBody(blob.body, render.output.size).catch(() => null);
+    if (!bytes || bytes.byteLength !== render.output.size || sha256Hex(bytes) !== render.output.sha256) return sendError(res, 409, 'OUTPUT_INTEGRITY', 'retained output no longer matches its receipt');
+    if (bytes.byteLength > policy.maxFileBytes) return sendError(res, 413, 'UPLOAD_TOO_LARGE', `A request can carry at most ${policy.maxFileBytes} bytes.`);
+    if (heldArtifactBytes(await store.listApprovals()) + bytes.byteLength > policy.instanceBudgetBytes) return sendError(res, 413, 'APPROVAL_ARTIFACT_BUDGET', 'This instance has no room for another request file.');
+    // The digest the render took under until-approved is exact; otherwise work it out
+    // as a request from the app would, from the render's own inputs.
+    const recorded = render.output.evidence?.untilApproved?.inputsDigest;
+    const facts = recorded ? { toolVersion: render.output.evidence?.tool?.version ?? null, inputsDigest: recorded }
+      : await exportReviewInputs(user, toolId, format, queryFromInputs(render.request.inputs));
+    const exportReview = describeRenderReview(bytes, { toolId, format, name: `${render.id}.${format}`, toolVersion: facts.toolVersion ?? null, inputsDigest: facts.inputsDigest ?? null }, new Date().toISOString());
+    if (!exportReview) return sendError(res, 422, 'ARTIFACT_FORMAT_MISMATCH', `That file is not a ${format} file.`);
+    const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 200) : `${toolId} (${format})`;
+    const approval = createApproval({ id: `apr_${randomId(8)}`, subjectType: 'export-review', subjectRef: `export-review:${exportReview.fingerprint}`, title, chain, nominees: [], createdBy: user.id, now: new Date().toISOString() });
+    try { await freezeRenderBytes(blobs, bytes, approval.id, exportReview); }
+    catch { return sendError(res, 503, 'ARTIFACT_STORE_FAILED', 'The file could not be kept with the request. Nothing was asked.'); }
+    approval.exportReview = exportReview;
+    await store.putApproval(approval);
+    await audit(actor, 'approval.submit', `approval:${approval.id}`, {
+      chainId: chain.id, subjectType: approval.subjectType, renderId: render.id, sha256: exportReview.sha256, size: exportReview.size, format, toolId,
+    });
+    const step0 = currentStep(approval);
+    const asker = await askerOf(user);
+    const [users, grants] = await Promise.all([store.listUsers(), store.listGrants()]);
+    const reviewers = users.filter((candidate) => !candidate.disabledAt && !!step0 && isEligible(step0, candidate.groups)
+      && evaluate({ userId: candidate.id, groups: candidate.groups, role: candidate.role as Role }, 'approval.act', [`chain:${chain.id}`, approval.subjectRef, '*'], grants));
+    if (step0) {
+      await store.putMessage({
+        id: `msg_${randomId(8)}`, kind: 'approval', severity: 'action', audience: { groups: step0.approvers.groups },
+        title: `Approval requested: ${approval.title}`,
+        body: `${asker} asked for your review on the “${step0.name}” step.`,
+        cta: { label: 'Review', url: '/admin#/approvals' },
+        data: { kind: 'export-review', approvalId: approval.id },
+        dismissible: true,
+      });
+    }
+    notifier.email(reviewers.map((u) => u.email), `Approval requested: ${approval.title}`,
+      `${asker} asked for review on the “${step0?.name ?? 'first'}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
+    notifier.event('approval.requested', { id: approval.id, title: approval.title, chainId: chain.id, by: actor });
+    sendJson(res, 201, serializeApproval(approval, user.id, 'mine', await actorsMap()));
+  };
+
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
   registerProgrammeRoutes(router, {
@@ -6164,11 +6280,16 @@ export function buildApp(deps: AppDeps): App {
   });
 
   router.add('POST', '/api/v1/approvals', async (req, res) => {
-    const user = await memberOf(req);
+    const member = await memberOf(req);
+    // A service token asks only with `approvals.request` (plans/82 M7), and only
+    // for an export review of its own finished render.
+    const asking = member ? null : await approvalAskingToken(req);
+    const user = member ?? asking?.user ?? null;
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const body = (await readJson(req)) as {
       subjectType?: string; subjectRef?: string; title?: string; chainId?: string; nominees?: unknown; sourceReview?: unknown; exportReview?: unknown;
     } | null;
+    if (asking) return submitTokenReview(res, asking, body);
     if (!SUBJECT_TYPES.includes(body?.subjectType as never)) {
       return sendError(res, 400, 'INVALID_INPUT', 'subjectType must be asset|tool-change|config|guest-link|source-review|export-review');
     }
@@ -6258,7 +6379,14 @@ export function buildApp(deps: AppDeps): App {
   // List: ?mine=1 (raised by me) | ?inbox=1 (open on a step my groups may act on) |
   // default merges both, tagging each row with a `relation`.
   router.add('GET', '/api/v1/approvals', async (req, res, ctx) => {
-    const user = await memberOf(req);
+    const member = await memberOf(req);
+    const asking = member ? null : await approvalAskingToken(req);
+    if (asking) {
+      const actors = await actorsMap();
+      const own = (await store.listApprovals({ createdBy: asking.user.id })).map((a) => serializeApproval(a, asking.user.id, 'mine', actors));
+      return sendJson(res, 200, { approvals: own.sort((x, y) => (x.createdAt < y.createdAt ? 1 : -1)) });
+    }
+    const user = member;
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const wantMine = ctx.url.searchParams.get('mine') === '1';
     const wantInbox = ctx.url.searchParams.get('inbox') === '1';
@@ -6283,6 +6411,15 @@ export function buildApp(deps: AppDeps): App {
     const approvals = [...out.values()].sort((x, y) => (x.createdAt < y.createdAt ? 1 : -1));
     sendJson(res, 200, { approvals });
   });
+
+  /** One request, read by whoever asked: a person or a token holding approvals.request (plans/82 M7). */
+  router.add('GET', '/api/v1/approvals/:id', async (req, res, ctx) => {
+    const user = (await memberOf(req)) ?? (await approvalAskingToken(req))?.user ?? null;
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const approval = await store.getApproval(ctx.params.id as string);
+    if (!approval || approval.createdBy !== user.id || (approval.sourceReview && !await seesSourceReview(user, approval.sourceReview))) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
+    sendJson(res, 200, serializeApproval(approval, user.id, 'mine', await actorsMap()), { 'cache-control': 'no-store' });
+  }, { delivery: 'person-private' });
 
   // The file a request carries. Reviewers and people who acted read it; the
   // requester reads it only once approved, through approvedArtifactBytes. Inert
@@ -6388,7 +6525,7 @@ export function buildApp(deps: AppDeps): App {
 
   // Withdraw: submitter only, while not terminal.
   router.add('POST', '/api/v1/approvals/:id/withdraw', async (req, res, ctx) => {
-    const user = await memberOf(req);
+    const user = (await memberOf(req)) ?? (await approvalAskingToken(req))?.user ?? null;
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const approval = await store.getApproval(ctx.params.id as string);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
@@ -6405,7 +6542,7 @@ export function buildApp(deps: AppDeps): App {
     // digest stay.
     if (next.exportReview) next = await removeArtifactBytes(blobs, next, 'withdrawn', new Date().toISOString());
     await store.putApproval(next);
-    await audit(`user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
+    await audit(user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
     // Withdrawing the review of a catalog submission returns the asset too:
     // leaving it `submitted` behind a closed approval would strand it.
     await settleAssetSubmission(next, user.id);
