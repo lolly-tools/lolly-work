@@ -16,6 +16,7 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { instanceAssetEntry } from '../server/src/catalog/instance-assets.ts';
+import { VIEW_AS_HEADER } from '../server/src/programmes/view-as.ts';
 
 let server: Server;
 let base = '';
@@ -175,4 +176,23 @@ test('answers that depend on who asks make the browser ask again, and the check 
   assert.equal(again.headers.get('cache-control'), 'private, no-cache, no-transform');
   const borrowed = await fetch(`${base}/catalog/inst/internal/png`, { headers: { cookie: rita, 'if-none-match': etag } });
   assert.equal(borrowed.status, 403, 'a copy cached for someone else is never confirmed for a partner');
+});
+
+test('an admin viewing as the partner gets exactly the partner\'s bytes, records and files, and their own reads are unchanged', async () => {
+  const admin = await login('admin@test');
+  const started = await fetch(`${base}/api/v1/programmes/resellers/view-as`, { method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(started.status, 201);
+  const { token } = await started.json() as { token: string };
+  const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: token } });
+  const own = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin } });
+  assert.equal((await viewed('/catalog/inst/kit/png')).status, 200, 'the kit their programme includes');
+  assert.equal((await viewed('/catalog/inst/internal/png')).status, 403, 'not an internal asset shared with everyone');
+  assert.equal((await viewed('/catalog/inst/internal/png?v=1')).status, 403, 'nor a prior version of it');
+  assert.equal((await viewed('/api/v1/catalog/assets/inst/internal')).status, 404, 'nor its record');
+  assert.equal((await viewed('/api/v1/catalog/assets/inst/kit')).status, 200);
+  assert.equal((await viewed('/catalog/delivery-manifest.json')).status, 404, 'not the release inventory');
+  assert.equal((await viewed('/catalog/fonts/OFL.txt')).status, 200, 'the licence text their font names');
+  assert.equal((await viewed('/api/v1/catalog/submissions/sub1/bytes')).status, 403, 'and no submission preview at all');
+  assert.equal((await own('/catalog/inst/internal/png')).status, 200, 'the admin\'s own read, without the header');
+  assert.equal((await own('/catalog/delivery-manifest.json')).status, 200);
 });
