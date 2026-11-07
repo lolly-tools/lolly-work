@@ -250,3 +250,15 @@ test('a retired template answers 410 with what replaced it, and the feed says so
   assert.equal(entry?.meta?.retired, true, 'still in the feed, so a saved copy can say what happened');
   assert.equal(entry?.meta?.replacedBy, 'inst/next0001');
 });
+
+test('a template travels in the inputs of validate and durable renders, as agents send it', async () => {
+  await setPublication({ editable: ['price'] });
+  const rita = await login('rita@acme.test');
+  const checked = await call(rita, 'POST', '/api/v1/validate', { toolId: 'price-card', inputs: { template: templateId, price: '€ 99' } });
+  assert.equal(checked.status, 200, checked.text);
+  assert.equal(checked.body.ok, true, JSON.stringify(checked.body));
+  const queued = await call(rita, 'POST', '/api/v1/renders', { toolId: 'price-card', format: 'svg', inputs: { template: templateId, price: '€ 99' } });
+  // This test server runs no durable render runner; what matters is that the
+  // template no longer fails the input check every durable render passes first.
+  assert.notEqual(queued.body?.error?.code, 'INPUT_VALIDATION_FAILED', queued.text);
+});
