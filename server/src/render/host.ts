@@ -136,7 +136,17 @@ async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRe
         if (!asset) return null;
         try { return await get(asset.id); } catch (err) { if (err instanceof AssetHeldError) throw err; return null; }
       }
-      if (hostedResolver && (ref.provider === 'cms' || ref.provider === 'net')) return (await hostedResolver(ref))?.asset ?? null;
+      if (hostedResolver && (ref.provider === 'cms' || ref.provider === 'net')) {
+        const asset = (await hostedResolver(ref))?.asset ?? null;
+        // A DAM file reached by cms:// answers to the licence gate by its
+        // catalog id, the one its meta.source names (plans/82 M4).
+        const source = ref.provider === 'cms' && typeof asset?.meta?.source === 'string' ? asset.meta.source : null;
+        if (gate && source && !gate.allows(source)) {
+          gate.held.add(source);
+          throw new AssetHeldError(source);
+        }
+        return asset;
+      }
       // cms:// and net:// deliberately fail closed until an instance-configured
       // provider supplies credentials and an outbound allowlist.
       return null;

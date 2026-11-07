@@ -6,7 +6,8 @@
  * draws only files their own feed holds, and answers 422 ASSET_HELD naming the
  * file otherwise, whether the file comes from the tool's default, the caller's
  * own value or a template; a compile answers the same way (package and the
- * document verbs compile through the same verb); staff renders and report
+ * document verbs compile through the same verb), a cms:// file included by
+ * its catalog id; staff renders and report
  * mode are unchanged; and the programme report lists the published templates
  * that seed files one of the programme's audiences will not receive, and why,
  * so the brand team sees them before a partner's render is refused.
@@ -61,7 +62,7 @@ before(async () => {
   const configFor = (partnerRights?: 'gate') => parseConfig(JSON.stringify({
     instance: { name: 'SUSE', baseUrl: 'http://localhost', pack }, rateLimit: { enabled: false },
     ...(partnerRights ? { policy: { catalog: { partnerRights } } } : {}),
-    dev: { enabled: true, users: [{ email: 'bruno@test', groups: ['admin'], name: 'Bruno Marsh' }, { email: 'rita@northwind.test', groups: [] }, { email: 'mia@test', groups: ['marketing'] }] },
+    dev: { enabled: true, users: [{ email: 'bruno@test', groups: ['admin'], name: 'Bruno Marsh' }, { email: 'rita@northwind.test', groups: [] }, { email: 'mia@test', groups: ['marketing'] }, { email: 'owner@test', groups: ['owner'] }] },
   }));
   const config = configFor();
   const store = createMemoryStore();
@@ -169,4 +170,28 @@ test('a compile is gated the same way: a partner\'s document never carries a fil
   const staffReport = await compile('mia@test', base, {});
   assert.equal(staffGate.status, 200, staffGate.text);
   assert.equal(staffGate.text, staffReport.text, 'staff compiles are byte-identical with the gate on');
+});
+
+test('a cms:// file in a compile answers to the gate by its catalog id, as a library file does', async () => {
+  const bruno = await login('bruno@test', gateBase);
+  const post = (cookie: string, path: string, body?: unknown) => fetch(`${gateBase}${path}`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const svg = Buffer.from(SVG('#0aa')).toString('base64');
+  const made = await post(bruno, '/api/v1/catalog/providers', {
+    id: 'dam', kind: 'mock', label: 'Brandfolder', exposure: { groups: ['marketing'] },
+    options: { assets: [{ remoteId: 'e1', name: 'Event photo', nativeType: 'file', sections: [], folder: 'event-photos', tags: [], approved: true, formats: [{ format: 'svg', remoteRef: 'svg', size: 100 }] }], blobBase64: { e1: svg } },
+  });
+  assert.ok([200, 201].includes(made.status), await made.text());
+  assert.equal((await post(await login('owner@test', gateBase), '/api/v1/catalog/providers/dam/enable')).status, 200);
+  const folder = await fetch(`${gateBase}/api/v1/programmes/resellers-emea/folders`, { method: 'PUT', headers: { cookie: bruno, 'content-type': 'application/json' }, body: JSON.stringify({ provider: 'dam', path: 'event-photos' }) });
+  assert.equal(folder.status, 201, await folder.text());
+  const compile = async (email: string) => {
+    const res = await fetch(`${gateBase}/api/v1/compile`, { method: 'POST', headers: { cookie: await login(email, gateBase), 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'photo-card', inputs: { photo: 'cms://dam/e1' } }) });
+    return { status: res.status, text: await res.text() };
+  };
+  const held = await compile('rita@northwind.test');
+  assert.equal(held.status, 422, held.text);
+  assert.match(held.text, /"ASSET_HELD"/);
+  assert.match(held.text, /ext\/dam\/e1/, 'named by its catalog id');
+  const staff = await compile('mia@test');
+  assert.equal(staff.status, 200, staff.text);
 });
