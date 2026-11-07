@@ -134,6 +134,9 @@ export interface RenderDeps {
    *  render path takes no published templates, and a render that names one is
    *  refused rather than run without its rules. */
   templateFor?: (id: string) => Promise<RenderTemplate | null>;
+  /** A rules tool's files (plans/82 M2): this workspace's own build of a
+   *  published Share with rules file, for this caller. Null for a pack tool. */
+  toolFiles?: (toolId: string) => Promise<ReadonlyMap<string, Buffer> | null>;
 }
 
 export interface RenderRequest {
@@ -208,6 +211,34 @@ async function renderTemplateFor(deps: RenderDeps, query: string, toolId: string
   }
   if (template.toolId !== toolId) throw new RenderError('TEMPLATE_TOOL_MISMATCH', 422, `This template starts ${template.toolId}, not ${toolId}.`);
   return template;
+}
+
+/**
+ * A rules tool's own rules (plans/82 M2): a tool whose manifest carries a
+ * `designTool` policy was made with Share with rules, and the designer fixed
+ * everything it does not declare. A param that names anything else answers
+ * 422 INPUT_LOCKED instead of being dropped, so an agent knows it was refused;
+ * a value outside the designer's choices (an option, a range, an approved
+ * image) answers 422 INPUT_NOT_ALLOWED; and only the designer's formats render.
+ */
+function requireDesignRules(engine: EngineApi, manifest: LoadedTool['manifest'], query: string, values: Record<string, unknown>, declared: string[], format: string): void {
+  const policy = (manifest as { designTool?: { formats?: string[] } }).designTool;
+  if (!policy) return;
+  const known = new Set(declared);
+  const fixed = [...new Set([...new URLSearchParams(query).keys()])].filter((key) => !engine.RESERVED.has(key) && !known.has(key));
+  if (fixed.length) {
+    throw new RenderError('INPUT_LOCKED', 422, `The designer fixed these: ${fixed.join(', ')}`,
+      fixed.map((param) => ({ param, code: 'INPUT_LOCKED' as const })));
+  }
+  if (Array.isArray(policy.formats) && !policy.formats.includes(format)) {
+    throw new RenderError('FORMAT_NOT_ALLOWED', 403, `The designer allows only ${policy.formats.join(', ')} for this tool`);
+  }
+  try { engine.assertDesignValues(policy, values); }
+  catch (error) {
+    const message = String((error as Error).message ?? error);
+    const param = declared.find((id) => Object.hasOwn(values, id) && message.includes(id)) ?? declared.find((id) => Object.hasOwn(values, id)) ?? '';
+    throw new RenderError('INPUT_NOT_ALLOWED', 422, message, param ? [{ param, code: 'INPUT_NOT_ALLOWED' }] : undefined);
+  }
 }
 
 /** A failed tool load, as the render error the routes already answer. */
@@ -293,8 +324,11 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // Load the tool through the real engine (validates the manifest + enforces its
   // engineVersion range). fetchFile resolves against <pack>/tools/.
   const files: RenderEvidence['tool']['files'] = [];
+  const built = await deps.toolFiles?.(req.toolId) ?? null;
   const fetchFile = async (p: string): Promise<string> => {
-    const text = await readFile(join(pack, 'tools', p), 'utf8');
+    const own = built?.get(p.slice(p.indexOf('/') + 1));
+    if (built && !own) throw Object.assign(new Error(`no such file: ${p}`), { code: 'ENOENT' });
+    const text = own ? own.toString('utf8') : await readFile(join(pack, 'tools', p), 'utf8');
     files.push({ path: p, sha256: sha256Hex(text), size: Buffer.byteLength(text) });
     return text;
   };
@@ -317,6 +351,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const st = engine.parseUrlState(expanded, tool.manifest);
   const template = await renderTemplateFor(deps, expanded, req.toolId);
   const declaredIds = (tool.manifest.inputs as { id: string }[]).map((input) => input.id);
+  requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, declaredIds, format);
 
   // Policy BEFORE render. A caller that supplies a locked/hidden/not-allowed
   // param is refused (422); then the overlay's locked values are baked over the

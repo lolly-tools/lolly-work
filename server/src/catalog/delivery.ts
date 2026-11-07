@@ -86,13 +86,16 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     // Every tool.use grant moves the sequence, as an overlay edit does, because
     // either can change which tools a caller is served.
     const toolGrants = (caller.grants ?? []).filter(g => g.action === 'tool.use').map(g => `${g.principal} ${g.effect} ${g.resource}`).sort();
+    // Rules tools (plans/82 M2) are this caller's own build: their digests join
+    // the pack's, so the directory hashes, the sequence and the envelope agree.
+    const callerFiles = tools.instanceFiles ? { ...allFiles, ...tools.instanceFiles } : allFiles;
     const fingerprint = sha256Hex(canonicalJson({ assets: assets.sourceFingerprint,
-      tools: sha256Hex(rawTools), slim: sha256Hex(rawSlim), files: allFiles,
+      tools: sha256Hex(rawTools), slim: sha256Hex(rawSlim), files: callerFiles,
       overlays: [...caller.overlays].sort(([a], [b]) => a.localeCompare(b)),
       ...(toolGrants.length ? { toolGrants } : {}),
     }));
     const seq = await deps.store.catalogDeliverySequence(fingerprint, await sourcePublication());
-    const files = Object.fromEntries(Object.entries(allFiles).filter(([path]) => tools.visible(path.slice(0, path.indexOf('/')))));
+    const files = Object.fromEntries(Object.entries(callerFiles).filter(([path]) => tools.visible(path.slice(0, path.indexOf('/')))));
     const toolDirs = toolDirectoryDigests(files);
     await remember(scope, 'tools', tools.bytes);
     if (assets.status !== 'missing') await remember(scope, 'assets', assets.bytes);

@@ -222,6 +222,7 @@ import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type Collect
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
 import { templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
+import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
@@ -239,7 +240,7 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
-import { CATALOG_INDEX_REL, CATALOG_PUBLIC_KEY_ROUTE, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning, type CatalogCaller } from '../catalog/signing.ts';
+import { CATALOG_INDEX_REL, CATALOG_PUBLIC_KEY_ROUTE, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning, toolDirectoryDigests, type CatalogCaller, type InstanceTool } from '../catalog/signing.ts';
 import { publicCard, shellStubFor } from '../shell/share-cards.ts';
 import { addressedToolArt, isToolKeyedCatalogPath, servedToolSidecar, toolArtAddress } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
@@ -443,6 +444,7 @@ export function buildApp(deps: AppDeps): App {
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
+        toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
         workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
@@ -724,6 +726,64 @@ export function buildApp(deps: AppDeps): App {
       ...(rec.publication?.editable ? { editable: rec.publication.editable } : {}),
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
     };
+  };
+  // ── rules tools (plans/82 M2) ───────────────────────────────────────────
+  // A published Share with rules file is stored as data and built here, with
+  // this workspace's own engine compiler and pack Design renderer, for the
+  // people whose feed carries it. Builds are memoised per data and renderer;
+  // the set per group key is memoised per served feed version.
+  const rulesToolBuild = createRulesToolBuilder();
+  const rendererMemo = new Map<string, Promise<DesignRenderer | null>>();
+  const designRenderer = (pack: string): Promise<DesignRenderer | null> => {
+    let hit = rendererMemo.get(pack);
+    if (!hit) { hit = loadDesignRenderer(pack); rendererMemo.set(pack, hit); if (rendererMemo.size > 8) rendererMemo.delete(rendererMemo.keys().next().value as string); }
+    return hit;
+  };
+  const instanceToolMemo = new Map<string, { version: string; tools: Map<string, InstanceTool> }>();
+  const EMPTY_TOOLS: Map<string, InstanceTool> = new Map();
+  const instanceToolsFor = async (groups: string[]): Promise<Map<string, InstanceTool>> => {
+    const key = [...new Set(groups)].sort().join('\u0000');
+    const served = await servedIndex.forCaller({ groups });
+    const pack = config.instance.pack;
+    const entries = (served.index.assets ?? []).filter((asset) => asset.type === RULES_TOOL_TYPE);
+    if (!entries.length) return EMPTY_TOOLS;
+    const renderer = await designRenderer(pack);
+    if (!renderer) return EMPTY_TOOLS;
+    const version = `${served.version}\n${pack}\n${renderer.digest}`;
+    const hit = instanceToolMemo.get(key);
+    if (hit?.version === version) return hit.tools;
+    const tools = new Map<string, InstanceTool>();
+    for (const entry of entries) {
+      const rec = await store.getInstanceAsset(entry.id);
+      const blob = rec?.blobs.json ? await blobs.get(rec.blobs.json) : null;
+      if (!rec || !blob) continue;
+      const bytes = await readBlobBody(blob.body, MAX_RULES_FILE_BYTES * 2);
+      const data = readRulesToolData(bytes);
+      if (!data) continue;
+      let built: BuiltRulesTool;
+      try { built = await rulesToolBuild(data, sha256Hex(bytes), renderer); }
+      catch (error) { log('warn', 'rules tool did not build', { assetId: rec.id, error: String((error as Error).message ?? error).slice(0, 200) }); continue; }
+      // A pack tool keeps its id: one added to the pack later wins over a rules tool.
+      if (existsSync(join(pack, 'tools', built.toolId, 'tool.json'))) continue;
+      const manifest = built.manifest as { name?: unknown; description?: unknown; version?: unknown; render?: { width?: number; height?: number; formats?: string[] } };
+      const meta = (entry.meta ?? {}) as { retired?: unknown };
+      const digests: Record<string, string> = {};
+      for (const [path, file] of built.files) digests[`${built.toolId}/${path}`] = sha256Hex(file);
+      tools.set(built.toolId, {
+        id: built.toolId, assetId: rec.id, files: built.files, digests,
+        entry: {
+          id: built.toolId, name: manifest.name ?? entry.name, ...(manifest.description ? { description: manifest.description } : {}),
+          version: manifest.version, status: 'community', category: 'designer', tags: ['template'],
+          formats: manifest.render?.formats ?? [], width: manifest.render?.width, height: manifest.render?.height,
+          exportable: true, templateId: rec.id,
+          // A retired rules tool still opens for a saved copy, but leaves the gallery.
+          ...(meta.retired ? { listed: false, retired: true } : {}),
+        },
+      });
+    }
+    instanceToolMemo.set(key, { version, tools });
+    if (instanceToolMemo.size > 64) instanceToolMemo.delete(instanceToolMemo.keys().next().value as string);
+    return tools;
   };
   /** Whether a person may see a collection: its groups admit them, except that
    *  a partner programme member sees only a collection that names one of
@@ -6250,10 +6310,14 @@ export function buildApp(deps: AppDeps): App {
   const catalogCallerOf = async (
     user: { id?: string; groups: string[]; role?: string } | null | undefined,
     guestToolId?: string,
-  ): Promise<CatalogCaller> => ({
-    overlays: await store.listOverlays(), groups: user?.groups ?? [], grants: await store.listGrants(),
-    ...(user?.id ? { userId: user.id } : {}), ...(user?.role ? { role: user.role } : {}), ...(guestToolId ? { guestToolId } : {}),
-  });
+  ): Promise<CatalogCaller> => {
+    const instanceTools = guestToolId ? undefined : await instanceToolsFor(user?.groups ?? []);
+    return {
+      overlays: await store.listOverlays(), groups: user?.groups ?? [], grants: await store.listGrants(),
+      ...(user?.id ? { userId: user.id } : {}), ...(user?.role ? { role: user.role } : {}), ...(guestToolId ? { guestToolId } : {}),
+      ...(instanceTools?.size ? { instanceTools } : {}),
+    };
+  };
   const serveTool: Handler = async (req, res, ctx) => {
     // The bare `/tools` is the app's gallery route, not a tool file.
     if (!ctx.params['*'] && serveShell) return serveShell(req, res, 'tools');
@@ -6273,6 +6337,15 @@ export function buildApp(deps: AppDeps): App {
     const toolCaller = await catalogCallerOf(user, guestTool ? toolId : undefined);
     if (!guestTool && !callerCanSeeTool(toolCaller, toolId)) {
       return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
+    }
+    const instanceTool = guestTool ? undefined : toolCaller.instanceTools?.get(toolId);
+    if (instanceTool) {
+      // A rules tool's files are this workspace's own build, held in memory.
+      if (addressed && toolDirectoryDigests(instanceTool.digests)[toolId]?.slice(0, 16) !== addressed[2]!.toLowerCase()) return sendError(res, 404, 'NOT_FOUND', 'no such tool release');
+      const file = instanceTool.files.get(rel.slice(rawId.length + 1).replace(/\\/g, '/'));
+      if (!file) return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
+      sendBytes(req, res, file, { contentType: contentType(rel), ranges: true, headers: { 'cache-control': cachePolicy('instance-private').cacheControl } });
+      return;
     }
     if (addressed) {
       const view = await catalogDelivery.current(config.instance.pack, toolCaller);
@@ -8074,6 +8147,11 @@ export function buildApp(deps: AppDeps): App {
       } catch { /* the inputs read already proved the file is there */ }
       return { inputs: inputs.map((i) => String(i.id)), ...(name ? { name } : {}) };
     },
+    // A Share with rules file (plans/82 M2), rebuilt from its data here.
+    rulesTools: createRulesToolSubmitter({
+      store, pack: () => config.instance.pack,
+      toolExists: async (toolId: string) => existsSync(join(config.instance.pack, 'tools', toolId, 'tool.json')),
+    }),
   });
 
   /** The console/CLI view of one submission: the record's own descriptive entry
@@ -8193,7 +8271,12 @@ export function buildApp(deps: AppDeps): App {
         return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset takes new versions; a federated or pack asset is versioned where it lives');
       }
       target = await store.getInstanceAsset(targetId);
-      if (!target || !(await callerSeesAsset(user, targetId))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+      // Someone who manages partner programmes publishes into them without
+      // joining (plans/82 M1), so they version what they published there too
+      // (M2): an asset whose groups are all programme or company groups.
+      const managesTarget = !!target && Array.isArray(target.groups) && target.groups.length > 0 && target.groups.every(isPartnerGroup)
+        && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', ['*'], await store.listGrants());
+      if (!target || !(managesTarget || await callerSeesAsset(user, targetId))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       // A PIN is a local copy of a federated asset whose IDENTITY is still the
       // provider's (plans/27 §5): the feed serves the ext/* entry and the ext
       // blob route maps its formats through `refMap`. Versioning one would fork
@@ -10753,9 +10836,11 @@ export function buildApp(deps: AppDeps): App {
   };
   // One rule for every automation route and for discovery (automation/effective-contract.ts).
   const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
-    mayRenderTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
+    mayRenderTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode,
+      !!caller.user && (await instanceToolsFor(caller.groups)).has(toolId));
   const automationMayUse = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
-    mayUseTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode);
+    mayUseTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode,
+      !!caller.user && (await instanceToolsFor(caller.groups)).has(toolId));
   // The caller's tool policy, which compile, validate and batch rows check inputs
   // against. For a named tool, design-system choice rules narrow its overlay as
   // the render pipeline does: the named format's rules, or with no format only

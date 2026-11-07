@@ -21,7 +21,7 @@
  */
 
 /** The two kinds, as the `type` query param and the served entry name them. */
-export const DATA_SUBMISSION_TYPES = ['template', 'user-tool'] as const;
+export const DATA_SUBMISSION_TYPES = ['template', 'user-tool', 'rules-tool'] as const;
 export type DataSubmissionType = (typeof DATA_SUBMISSION_TYPES)[number];
 
 export const isDataSubmissionType = (type: unknown): type is DataSubmissionType =>
@@ -37,7 +37,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 /** What a reviewer reads instead of a thumbnail, kept on the submission. */
 export interface DataSubmissionSummary {
   kind: DataSubmissionType;
-  /** The tool the seed opens in (`toolId` for a template, `baseToolId` for a user tool). */
+  /** The tool the seed opens in (`toolId` for a template, `baseToolId` for a user
+   *  tool), or for a rules tool (plans/82 M2) the tool's own id. */
   toolId: string;
   /** The tool's display name from the pack, when it has one. */
   toolName?: string;
@@ -77,6 +78,8 @@ export async function parseDataSubmission(
   lookup: ToolLookup,
   declared: { name?: string; description?: string; toolId?: string } = {},
 ): Promise<DataSubmissionOutcome> {
+  // A rules tool is a Share with rules file, read by catalog/rules-tools.ts.
+  if (kind === 'rules-tool') return { ok: false, detail: 'this catalog takes no rules tools' };
   if (bytes.length > MAX_DATA_SUBMISSION_BYTES) {
     return { ok: false, detail: `a ${kind} is at most ${MAX_DATA_SUBMISSION_BYTES} bytes` };
   }

@@ -58,9 +58,10 @@ const EOCD_SIG = 0x06054b50;
 const CENTRAL_SIG = 0x02014b50;
 const LOCAL_SIG = 0x04034b50;
 
-interface Entry { name: string; method: number; compressedSize: number; localOffset: number; flags: number; crc: number; size: number }
+export interface ZipEntry { name: string; method: number; compressedSize: number; localOffset: number; flags: number; crc: number; size: number }
 
-function centralEntries(bytes: Buffer): Entry[] {
+/** The central directory of a zip, refusing zip64 and duplicate names. */
+export function centralEntries(bytes: Buffer): ZipEntry[] {
   // EOCD sits in the last 22..(22+65535) bytes; scan backward for its signature.
   const from = Math.max(0, bytes.length - 22 - 0xffff);
   let eocd = -1;
@@ -71,7 +72,7 @@ function centralEntries(bytes: Buffer): Entry[] {
   const count = bytes.readUInt16LE(eocd + 10);
   let at = bytes.readUInt32LE(eocd + 16);
   if (count === 0xffff || at === 0xffffffff) throw new Error('zip64 archive - not an instance pack');
-  const out: Entry[] = [];
+  const out: ZipEntry[] = [];
   const seen = new Set<string>();
   for (let i = 0; i < count; i++) {
     if (at + 46 > bytes.length || bytes.readUInt32LE(at) !== CENTRAL_SIG) throw new Error('malformed zip central directory');
@@ -94,7 +95,8 @@ function centralEntries(bytes: Buffer): Entry[] {
   return out;
 }
 
-function entryBytes(bytes: Buffer, e: Entry): Buffer {
+/** One entry's bytes, stored or deflated, bounded by the pack budget. */
+export function entryBytes(bytes: Buffer, e: ZipEntry): Buffer {
   if (e.localOffset + 30 > bytes.length) throw new Error('malformed zip local header');
   if (bytes.readUInt32LE(e.localOffset) !== LOCAL_SIG) throw new Error(`malformed zip local header for ${e.name}`);
   const nameLen = bytes.readUInt16LE(e.localOffset + 26);
@@ -161,7 +163,7 @@ export function instancePackTokensChecksum(bytes: Buffer): string | null {
 const sri = (bytes: Uint8Array): string => `sha256-${createHash('sha256').update(bytes).digest('base64')}`;
 
 /** The stored form of one entry, copied byte for byte: its local header and its data. */
-function rawEntry(bytes: Buffer, e: Entry): Buffer {
+function rawEntry(bytes: Buffer, e: ZipEntry): Buffer {
   // A data descriptor would follow the data, and nothing here records its length.
   if (e.flags & 0x8) throw new Error('pack entry uses a data descriptor');
   const nameLen = bytes.readUInt16LE(e.localOffset + 26);
@@ -170,7 +172,7 @@ function rawEntry(bytes: Buffer, e: Entry): Buffer {
 }
 
 /** A new deflated entry, with its local header. */
-function newEntry(name: string, data: Buffer): { local: Buffer; entry: Entry } {
+function newEntry(name: string, data: Buffer): { local: Buffer; entry: ZipEntry } {
   const deflated = deflateRawSync(data), method = deflated.length < data.length ? 8 : 0, payload = method === 8 ? deflated : data;
   const nameBytes = Buffer.from(name, 'utf8'), crc = crc32(data) >>> 0;
   const header = Buffer.alloc(30);
@@ -185,7 +187,7 @@ function newEntry(name: string, data: Buffer): { local: Buffer; entry: Entry } {
   return { local: Buffer.concat([header, nameBytes, payload]), entry: { name, method, compressedSize: payload.length, localOffset: 0, flags: 0x0800, crc, size: data.length } };
 }
 
-function zipOf(parts: Array<{ local: Buffer; entry: Entry }>): Buffer {
+function zipOf(parts: Array<{ local: Buffer; entry: ZipEntry }>): Buffer {
   const out: Buffer[] = [], central: Buffer[] = [];
   let offset = 0;
   for (const { local, entry } of parts) {

@@ -51,7 +51,7 @@ import {
 import {
   applyVersionToRecord, backfillVersionOne, nextVersionNumber, versionBlobKey, type AssetVersionRecord,
 } from './versions.ts';
-import { isDataSubmissionType, parseDataSubmission, type ToolLookup } from './submit-data.ts';
+import { isDataSubmissionType, parseDataSubmission, type DataSubmissionSummary, type ToolLookup } from './submit-data.ts';
 import { MAX_MEMBERS } from './collections.ts';
 import type { SubmitPolicy, SubmitScanHook } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
@@ -291,6 +291,20 @@ export interface SubmitDeps {
   /** The pack's tools, for a template or user-tool submission (submit-data.ts).
    *  Absent means this instance takes no data submissions. */
   toolLookup?: ToolLookup;
+  /** Reads, checks and rebuilds a Share with rules file (catalog/rules-tools.ts,
+   *  plans/82 M2). Absent means this instance takes no rules tools. */
+  rulesTools?: RulesToolSubmitter;
+}
+
+/** What a rules tool submission becomes before it is hashed or stored. */
+export type PreparedData =
+  | { ok: true; bytes: Buffer; name: string; description?: string; summary: DataSubmissionSummary; meta: Record<string, unknown> }
+  | { ok: false; detail: string };
+
+export interface RulesToolSubmitter {
+  /** A Share with rules file, as the data it is rebuilt from. `target` is the
+   *  published rules tool a new version is for. */
+  prepare(bytes: Buffer, target?: InstanceAssetRecord): Promise<PreparedData>;
 }
 
 export interface SubmitInput {
@@ -453,15 +467,24 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   //     feed will serve, and a reviewer approves exactly those. A version of
   //     an existing template answers the same check: it is the same kind of
   //     asset, whatever the caller declared.
-  const dataKind = [input.type, input.target?.entry.type].find(isDataSubmissionType);
-  let data: Awaited<ReturnType<typeof parseDataSubmission>> | undefined;
-  if (dataKind) {
+  // A version keeps the kind it was published as, whatever the caller declared.
+  const dataKind = input.target ? [input.target.entry.type].find(isDataSubmissionType) : [input.type].find(isDataSubmissionType);
+  let data: PreparedData | undefined;
+  if (dataKind === 'rules-tool') {
+    // A Share with rules file (plans/82 M2): only its data is kept, and the
+    // tool is rebuilt from it with this workspace's own compiler.
+    if (!deps.rulesTools) return { ok: false, code: 'INVALID_SUBMISSION', detail: 'this catalog takes no rules tools' };
+    data = await deps.rulesTools.prepare(input.bytes, input.target);
+  } else if (dataKind) {
     if (!deps.toolLookup) return { ok: false, code: 'INVALID_SUBMISSION', detail: 'this catalog takes no template submissions' };
-    data = await parseDataSubmission(dataKind, input.bytes, deps.toolLookup, {
+    const parsed = await parseDataSubmission(dataKind, input.bytes, deps.toolLookup, {
       ...(input.target ? {} : { name: input.name }),
       ...(input.description ? { description: input.description } : {}),
       ...(input.toolId ? { toolId: input.toolId } : {}),
     });
+    data = parsed.ok ? { ...parsed, meta: dataEntryMeta(parsed) } : parsed;
+  }
+  if (data) {
     if (!data.ok) return { ok: false, code: 'INVALID_SUBMISSION', detail: data.detail };
     input = { ...input, bytes: data.bytes, name: input.target ? input.name : data.name };
     size = input.bytes.length;
@@ -585,9 +608,13 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     // The asset's own `submission` block is left exactly as it was - it records
     // how this asset ENTERED the catalog, and rewriting it with a later
     // upload's checksum would make the audit trail say the wrong thing.
+    // A template's or rules tool's served meta describes the bytes it serves, so
+    // it moves with the head (a rules tool's version and inputs, plans/82 M2).
+    const moved = applyVersionToRecord(target, row);
+    if (data?.ok) moved.entry = { ...moved.entry, meta: data.meta };
     try {
       await store.putAssetVersion(row);
-      await store.putInstanceAsset(applyVersionToRecord(target, row));
+      await store.putInstanceAsset(moved);
     } catch (err) {
       await release();
       throw err;
@@ -602,7 +629,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     });
     return {
       ok: true, duplicate: false,
-      record: (await store.getInstanceAsset(target.id)) ?? applyVersionToRecord(target, row),
+      record: (await store.getInstanceAsset(target.id)) ?? moved,
       checksum: vstat.checksum, scan, credential: detectedNew.status, version: next,
     };
   }
@@ -644,7 +671,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       ...(sniffed.width && sniffed.height ? { width: sniffed.width, height: sniffed.height } : {}),
       // What a shell needs to offer a template or user tool before fetching
       // its JSON: the tool it opens in, and how much it sets.
-      ...(data?.ok ? { meta: dataEntryMeta(data) } : {}),
+      ...(data?.ok ? { meta: data.meta } : {}),
     }, [{ format: sniffed.format, size: stat.size, checksum: stat.checksum }]),
     blobs: { [sniffed.format]: `${id}/${sniffed.format}` },
     ...(input.groups?.length ? { groups: input.groups } : {}),

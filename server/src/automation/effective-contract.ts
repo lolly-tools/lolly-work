@@ -15,7 +15,7 @@
  * caller renders with, and attribution names the overlay and the rule's own
  * reason, never the groups a rule matched.
  */
-import { evaluate, type Grant, type Role } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, type Grant, type Role } from '../rbac/evaluate.ts';
 import { checkParams, lockedValues, resolveInputAccess, toolVisibleWithGrants, type ParamViolation, type ToolOverlay } from '../policy/overlay.ts';
 import type { UnavailableFormat } from '../render/capabilities.ts';
 
@@ -40,17 +40,20 @@ type AccessMode = 'open' | 'gated' | 'per-tool';
  *  explicit allow, and the role default decides the rest. An anonymous caller
  *  may use a tool only on an open deployment and only when no visibility rule
  *  hides it from everyone. */
-export function mayUseTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode): boolean {
-  if (!user) return mode === 'open' && toolVisibleWithGrants(overlays.get(toolId), toolId, { groups: [] }, grants);
+export function mayUseTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode, published = false): boolean {
+  if (!user) return mode === 'open' && !published && toolVisibleWithGrants(overlays.get(toolId), toolId, { groups: [] }, grants);
   if (user.tokenTools && !user.tokenTools.includes(toolId)) return false;
   const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
-  if (!toolVisibleWithGrants(overlays.get(toolId), toolId, principal, grants)) return false;
+  // `published`: a rules tool this caller's own feed carries (plans/82 M2). Its
+  // publication is its allow, so only a deny hides it.
+  if (published ? grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants) === 'deny'
+    : !toolVisibleWithGrants(overlays.get(toolId), toolId, principal, grants)) return false;
   return evaluate(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
 }
 
 /** Server rendering needs `tool.use` and `export.server`. */
-export function mayRenderTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode): boolean {
-  if (!mayUseTool(user, toolId, overlays, grants, mode)) return false;
+export function mayRenderTool(user: ToolCaller | null, toolId: string, overlays: Map<string, ToolOverlay>, grants: Grant[], mode: AccessMode, published = false): boolean {
+  if (!mayUseTool(user, toolId, overlays, grants, mode, published)) return false;
   if (!user) return mode === 'open';
   if (user.tokenScopes && !user.tokenScopes.includes('render')) return false;
   return evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'export.server', [`tool:${toolId}`, '*'], grants);
