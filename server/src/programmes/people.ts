@@ -19,6 +19,14 @@ export interface CompanyRecord {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /** Set when this company's partnership ended, on its own or with its
+   *  programme (plans/82 M5). The record and its profile stay; Delete is the
+   *  separate step. */
+  endedAt?: string;
+  /** Who ended it, a user id. */
+  endedBy?: string;
+  /** The exit receipt that ended it (programmes/exit.ts). */
+  endedExit?: string;
 }
 
 /** One person's place in a programme: what the groups cannot hold. */
