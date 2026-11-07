@@ -129,6 +129,10 @@ const OPTIONS = {
     origin: { type: 'string' },
     // Partner programmes (plans/82 M1 part 2): lw domains, lw people.
     programme: { type: 'string' },
+    description: { type: 'string' },
+    team: { type: 'string' },
+    editable: { type: 'string' },
+    bindings: { type: 'string' },
     company: { type: 'string' },
     domain: { type: 'string' },
     ends: { type: 'string' },
@@ -182,17 +186,18 @@ async function response(path: string, opts: { method?: string; body?: unknown; h
   // passing --token or LW_TOKEN means "act as the automation", never as
   // whoever last signed in on this machine.
   const bearer = values.token ?? process.env.LW_TOKEN;
+  const rawBody = opts.body instanceof Uint8Array ? new Uint8Array(opts.body) : undefined;
   let res: Response;
   try {
     res = await fetch(`${base}${path}`, {
       method: opts.method ?? 'GET',
       headers: {
         ...(bearer ? { authorization: `Bearer ${bearer}` } : cookie ? { cookie } : {}),
-        ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...(opts.body !== undefined ? { 'content-type': rawBody ? 'application/octet-stream' : 'application/json' } : {}),
         ...opts.headers,
         'x-lolly-client': 'lw-cli engine/0',
       },
-      ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+      ...(opts.body !== undefined ? { body: rawBody ?? JSON.stringify(opts.body) } : {}),
     });
   } catch {
     // A stack trace out of node:net tells a first-time operator nothing. The
@@ -1001,10 +1006,35 @@ switch (cmd) {
   }
 
   case 'companies': {
+    if (sub !== 'profile') {
+      const usage = 'usage: lw companies [ls] <programme> | add <programme> <company> --name "…" | rm <programme> <company>';
+      const editing = sub === 'add' || sub === 'rm';
+      const programme = editing || sub === 'ls' || sub === 'list' ? positionals[2] : sub;
+      if (!programme || positionals.length !== (editing ? 4 : sub === 'ls' || sub === 'list' ? 3 : 2)) fail(usage);
+      const at = `/api/v1/programmes/${encodeURIComponent(programme)}`;
+      type Company = { id: string; name: string; endedAt?: string };
+      if (editing) {
+        const company = positionals[3] ?? fail(usage);
+        if (sub === 'add' && !values.name) fail(usage);
+        const r = await call(`${at}/companies/${encodeURIComponent(company)}`, {
+          method: sub === 'add' ? 'PUT' : 'DELETE',
+          ...(sub === 'add' ? { body: { name: values.name } } : {}),
+        }) as Company;
+        out(r);
+        if (!values.json) console.log(sub === 'add' ? `${r.id}  ${r.name}` : `removed ${company} from ${programme}`);
+      } else {
+        const r = await call(`${at}/people`) as { companies: Company[] };
+        out(r.companies);
+        if (!values.json) {
+          if (!r.companies.length) console.log('no companies in this programme');
+          for (const c of r.companies) console.log(`${c.id}  ${c.name}${c.endedAt ? `  ended ${c.endedAt.slice(0, 10)}` : ''}`);
+        }
+      }
+      break;
+    }
     // A partner company's profile (plans/82 M3): the logos and details every
     // piece made for it carries, set up once by the brand team.
     const usage = 'usage: lw companies profile show|history|set|logo|settings <programme> <company> …';
-    if (sub !== 'profile') fail(usage);
     const verb = positionals[2];
     const programme = positionals[3];
     const company = positionals[4];
@@ -1101,7 +1131,49 @@ switch (cmd) {
   case 'programmes': {
     // Partner programmes (plans/82). `limits` is what every token placed in one
     // takes unless it states its own (M7): with no flag, the figures and sources.
-    const usage = 'usage: lw programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day <n>|none|default] [--renders-per-month <n>|none|default] | lw programmes usage <id> [<tokenId>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--by day|week] [--csv]';
+    const usage = 'usage: lw programmes [ls] | show <id> | create <id> --name "…" | set <id> [--name "…"] [--description "…"] [--team <group>] [--tools a,b] | rm <id> | limits <id> | usage <id>';
+    type Programme = { id: string; name: string; description?: string; group: string; team?: string; tools: string[]; collections: unknown[]; members: unknown[]; endedAt?: string };
+    const show = (p: Programme): void => {
+      if (values.json) return;
+      console.log(`${p.id}  ${p.name}  ${p.group}${p.endedAt ? `  ended ${p.endedAt.slice(0, 10)}` : ''}`);
+      if (p.description) console.log(`  ${p.description}`);
+      console.log(`  team ${p.team ?? '-'}  tools ${p.tools.join(', ') || '-'}  ${p.collections.length} collection(s)  ${p.members.length} member(s)`);
+    };
+    if (sub === undefined || sub === 'ls' || sub === 'list') {
+      if (positionals.length > (sub ? 2 : 1)) fail(usage);
+      const r = await call('/api/v1/programmes') as { programmes: Programme[] };
+      out(r);
+      if (!values.json) {
+        if (!r.programmes.length) console.log('no partner programmes');
+        for (const p of r.programmes) console.log(`${p.id}  ${p.name}  ${p.tools.length} tool(s)  ${p.members.length} member(s)${p.endedAt ? '  ended' : ''}`);
+      }
+      break;
+    }
+    if (sub === 'show' || sub === 'create' || sub === 'set' || sub === 'rm') {
+      const id = positionals[2];
+      if (!id || positionals.length !== 3) fail(usage);
+      const at = `/api/v1/programmes/${encodeURIComponent(id)}`;
+      if (sub === 'rm') {
+        out(await call(at, { method: 'DELETE' }));
+        if (!values.json) console.log(`removed programme ${id}`);
+        break;
+      }
+      if (sub === 'show') {
+        const r = await call(at) as Programme;
+        out(r); show(r);
+        break;
+      }
+      if (sub === 'create' && !values.name) fail('usage: lw programmes create <id> --name "…" [--description "…"] [--team <group>] [--tools a,b]');
+      if (sub === 'set' && !(['name', 'description', 'team', 'tools'] as const).some((key) => values[key] !== undefined)) fail('nothing to change: name --name, --description, --team or --tools');
+      // The route requires a name and replaces the description on every save.
+      const current = sub === 'set' ? await call(at) as Programme : undefined;
+      const body: Record<string, unknown> = current ? { name: current.name, description: current.description } : {};
+      for (const key of ['name', 'description', 'team'] as const) if (values[key] !== undefined) body[key] = values[key];
+      if (values.tools !== undefined) body.tools = values.tools.split(',').map((t) => t.trim()).filter(Boolean);
+      const r = await call(at, { method: 'PUT', body }) as Programme;
+      out(r); show(r);
+      break;
+    }
     if (sub === 'usage') {
       // What the programme's tokens did, counted (M7): counts only, never an input or a prompt.
       const id = positionals[2] ?? fail(usage);
@@ -1137,6 +1209,79 @@ switch (cmd) {
       console.log(`${shown.id}  ${shown.name}: every token placed here takes these unless it states its own`);
       if (shown.tokenLimitDefaults) printLimits(shown.tokenLimitDefaults.limits, shown.tokenLimitDefaults.sources);
     }
+    break;
+  }
+
+  case 'templates': {
+    const usage = 'usage: lw templates [ls] <programme> | publish <programme> --from <inst/id> --groups g1,g2 | upload <programme> <file.lolly> --groups g1,g2 | set <programme> <asset> [--groups …] [--editable …|all] [--bindings …] | retire <programme> <asset> [--replaced-by <asset>] | restore <programme> <asset> | only <programme> <tool> on|off';
+    const verbs = ['publish', 'upload', 'set', 'retire', 'restore', 'only'];
+    const editing = sub !== undefined && verbs.includes(sub);
+    const programme = editing || sub === 'ls' || sub === 'list' ? positionals[2] : sub;
+    if (!programme) fail(usage);
+    const at = `/api/v1/programmes/${encodeURIComponent(programme)}`;
+    const list = (raw: string) => raw.split(',').map((s) => s.trim()).filter(Boolean);
+    const rules = (): Record<string, unknown> => {
+      const body: Record<string, unknown> = {};
+      if (values.groups !== undefined) body.groups = list(values.groups);
+      if (values.editable !== undefined) body.editable = values.editable === 'all' ? null : list(values.editable);
+      if (values.bindings !== undefined) {
+        body.bindings = Object.fromEntries(list(values.bindings).map((pair) => {
+          const eq = pair.indexOf('=');
+          const input = pair.slice(0, eq).trim();
+          const field = pair.slice(eq + 1).trim();
+          if (eq < 1 || !input || !field) fail(`--bindings takes input=field pairs, got ${pair}`);
+          return [input, field];
+        }));
+      }
+      return body;
+    };
+    if (!editing) {
+      if (positionals.length !== (sub === 'ls' || sub === 'list' ? 3 : 2)) fail(usage);
+      const r = await call(`${at}/templates`) as { templatesOnly: string[]; templates: Array<{ id: string; name: string; toolName: string; groups: string[]; editable: string[] | null; version: number; state: string; retired?: { replacedBy?: string } }> };
+      out(r);
+      if (!values.json) {
+        if (r.templatesOnly.length) console.log(`templates only: ${r.templatesOnly.join(', ')}`);
+        if (!r.templates.length) console.log('no templates published to this programme');
+        for (const t of r.templates) console.log(`${t.id}  ${t.name}  ${t.toolName}  v${t.version}  [${t.retired ? 'retired' : t.state}]  ${t.groups.join(', ')}  editable ${t.editable === null ? 'all' : t.editable.join(', ') || 'none'}`);
+      }
+      break;
+    }
+    if (sub === 'only') {
+      const tool = positionals[3];
+      const state = positionals[4];
+      if (!tool || (state !== 'on' && state !== 'off') || positionals.length !== 5) fail(usage);
+      const r = await call(`${at}/templates-only/${encodeURIComponent(tool)}`, { method: 'PUT', body: { on: state === 'on' } }) as { programme: string; toolId: string; on: boolean };
+      out(r);
+      if (!values.json) console.log(`${r.programme}  ${r.toolId}  templates only ${r.on ? 'on' : 'off'}`);
+      break;
+    }
+    let r: { id: string; groups?: string[]; state?: string; replacedBy?: string };
+    if (sub === 'publish') {
+      if (positionals.length !== 3 || !values.from || !values.groups) fail(usage);
+      r = await call(`${at}/templates`, { method: 'POST', body: { from: values.from, ...rules() } }) as typeof r;
+    } else if (sub === 'upload') {
+      const file = positionals[3];
+      if (!file || positionals.length !== 4 || !values.groups) fail(usage);
+      let bytes: Buffer;
+      try { bytes = readFileSync(file); } catch { fail(`cannot read ${file}`); }
+      const q = new URLSearchParams({ groups: list(values.groups).join(',') });
+      r = await call(`${at}/templates/rules-file?${q}`, { method: 'POST', body: bytes }) as typeof r;
+    } else {
+      const asset = positionals[3];
+      if (!asset || positionals.length !== 4) fail(usage);
+      const assetAt = `${at}/templates/${encodeURIComponent(asset.replace(/^inst\//, ''))}`;
+      if (sub === 'set') {
+        const body = rules();
+        if (!Object.keys(body).length) fail('nothing to change: name --groups, --editable or --bindings');
+        r = await call(assetAt, { method: 'PUT', body }) as typeof r;
+      } else if (sub === 'retire') {
+        r = await call(`${assetAt}/retire`, { method: 'POST', body: { ...(values['replaced-by'] !== undefined ? { replacedBy: values['replaced-by'] } : {}) } }) as typeof r;
+      } else {
+        r = await call(`${assetAt}/restore`, { method: 'POST' }) as typeof r;
+      }
+    }
+    out(r);
+    if (!values.json) console.log(`${r.id}  ${sub === 'publish' ? 'published' : sub === 'upload' ? 'uploaded' : sub === 'set' ? 'updated' : sub === 'retire' ? 'retired' : 'restored'}${r.state ? `  [${r.state}]` : ''}${r.groups ? `  ${r.groups.join(', ')}` : ''}${r.replacedBy ? `  replaced by ${r.replacedBy}` : ''}`);
     break;
   }
 
@@ -2345,7 +2490,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
     const unknown = cmd !== undefined && !values.help;
     const write = unknown ? console.error : console.log;
     if (unknown) write(`lw: unknown command "${cmd}"`);
-    write(`lw — lolly-work admin CLI (base: ${base})
+    write(`lw - lolly-work admin CLI (base: ${base})
 
   login                      device-code sign-in: confirm the short code in a signed-in browser
   login --email <dev-user>   sign in via the dev provider
@@ -2356,10 +2501,25 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   tokens limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]   a token's limits, where each comes from, and today's use
   tokens add --programme <id> [--company <id>] --label "…" [--scopes render,catalog.read] [--tools a,b] [--ttl-days 90]   a partner agent's token, issued by the programme's manager
   tokens list|revoke <id>|limits <id> --programme <id> [--company <id>]   that programme's tokens, through its manager's routes
+  programmes [ls]   list partner programmes with tool and member counts
+  programmes show <id>   show a programme's name, team, tools and member counts
+  programmes create <id> --name "…" [--description "…"] [--team <group>] [--tools a,b,…]   create a partner programme
+  programmes set <id> [--name "…"] [--description "…"] [--team <group>] [--tools a,b,…]   change the named fields of a partner programme
+  programmes rm <id>   remove a partner programme
   programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]   the limits every token placed in a programme takes
   programmes usage <id> [<tokenId>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--by day|week] [--csv]   what the programme's tokens did, counted
+  companies [ls] <programme>   list the companies in a partner programme
+  companies add <programme> <company> --name "…"   add or rename a partner company
+  companies rm <programme> <company>   remove a company from a partner programme
   companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
   companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
+  templates [ls] <programme>   list the templates published to a programme and its companies
+  templates publish <programme> --from <inst/id> --groups g1,g2 [--editable a,b|all] [--bindings input=field,…]   publish a catalog template with audience and input rules
+  templates upload <programme> <file.lolly> --groups g1,g2   publish a Share with rules file to partner groups
+  templates set <programme> <asset> [--groups …] [--editable …|all] [--bindings …]   change a template's audience or input rules
+  templates retire <programme> <asset> [--replaced-by <asset>]   stop new starts from a template and name an optional replacement
+  templates restore <programme> <asset>   make a retired template available again
+  templates only <programme> <tool> on|off   choose whether partners use a tool only through published templates
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
@@ -2430,7 +2590,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   edge purge [--tag t]... [--url u]... [--path p]...   queue a purge on every configured provider (owner)
   edge credential <id> [--rm]   seal a provider API key or token (prompts; never argv)
 
-  --base <url> or LW_BASE — instance to talk to · --json for machine output`);
+  --base <url> or LW_BASE   instance to talk to · --json for machine output`);
     if (unknown) process.exit(1);
     break;
   }
