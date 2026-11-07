@@ -31,6 +31,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { decidePartnerRightsDefault, partnerRightsState, type InstanceDefaultRecord } from '../server/src/catalog/rights-mode.ts';
 import { RIGHTS_EXEMPT_TYPES } from '../server/src/programmes/types.ts';
+import { instanceAssetEntry } from '../server/src/catalog/instance-assets.ts';
 import { withFreshPostgres } from './pg-test-schema.ts';
 
 const ENGINE_SPEC: string = '@lolly/engine';
@@ -109,6 +110,8 @@ const PACK = [
 ];
 
 let store: ReturnType<typeof createMemoryStore>;
+// One blob store for both servers, so an instance file reads the same from each.
+const blobs = createMemoryBlobStore();
 const servers: Server[] = [];
 let gate = '';
 let report = '';
@@ -125,7 +128,7 @@ async function start(partnerRights: 'report' | 'gate' | undefined, pack: string)
       { email: 'rita@northwind.test', groups: [] },
     ] },
   }));
-  const app = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'sg', link: 'lg', credential: 'a-32-byte-or-longer-master-secret!' } });
+  const app = buildApp({ config, store, blobs, secrets: { session: 'sg', link: 'lg', credential: 'a-32-byte-or-longer-master-secret!' } });
   const server = createServer((req, res) => void app(req, res));
   await new Promise<void>((r) => server.listen(0, () => r()));
   servers.push(server);
@@ -302,4 +305,28 @@ test('the setup check gives the mode, why, and in report mode what the gate woul
   assert.equal(reporting.status, 'warning');
   assert.match(reporting.message, /^Report only: this instance keeps no database, so nothing was decided\. Set policy\.catalog\.partnerRights to change it\. \d+ assets? in 1 programme would be held back/);
   assert.match(reporting.message, /Mark the folders that are yours, then set policy\.catalog\.partnerRights to gate\.$/);
+});
+
+test('instance and pack file bytes follow the gate through the feed checks (#346): a held file does not serve to a partner', async () => {
+  for (const [id, license] of [['inst/open-shot', 'CC-BY-4.0'], ['inst/plain-shot', undefined]] as const) {
+    const stat = await blobs.put(`${id}/png`, Buffer.from(`png:${id}`), 'image/png');
+    await store.putInstanceAsset({
+      id, entry: instanceAssetEntry(id, { name: id, type: 'image', ...(license ? { license } : {}) }, [{ format: 'png', size: stat.size, checksum: stat.checksum }]),
+      blobs: { png: `${id}/png` }, groups: ['marketing'], createdAt: new Date().toISOString(),
+    } as never);
+  }
+  await store.putCollection({
+    id: 'inst-kit', name: 'Instance kit', members: ['inst/open-shot', 'inst/plain-shot'], groups: ['programme-resellers-emea', 'marketing'], curator: 'user:x', createdAt: 'x', updatedAt: 'x',
+  });
+  const status = async (base: string, email: string, path: string) => (await fetch(`${base}${path}`, { headers: { cookie: await login(base, email) } })).status;
+  // An instance file: instanceAssetReadable reads the caller's feed, which the gate shapes.
+  assert.equal(await status(gate, 'rita@northwind.test', '/catalog/inst/open-shot/png'), 200, 'a file whose licence travels');
+  assert.equal(await status(gate, 'rita@northwind.test', '/catalog/inst/plain-shot/png'), 403, 'a file with no licence record is held');
+  assert.equal(await status(report, 'rita@northwind.test', '/catalog/inst/plain-shot/png'), 200, 'report mode changes nothing a partner receives');
+  assert.equal(await status(gate, 'staff@test', '/catalog/inst/plain-shot/png'), 200, 'staff unchanged');
+  // A pack file: feedNamesFile answers only for a file the caller's gated feed names.
+  assert.equal(await status(gate, 'rita@northwind.test', '/catalog/assets/acme/open.jpg'), 200);
+  assert.equal(await status(gate, 'rita@northwind.test', '/catalog/assets/acme/unrecorded.jpg'), 404, 'a held pack file is not named by the feed');
+  assert.equal(await status(report, 'rita@northwind.test', '/catalog/assets/acme/unrecorded.jpg'), 200);
+  assert.equal(await status(gate, 'staff@test', '/catalog/assets/acme/unrecorded.jpg'), 200);
 });
