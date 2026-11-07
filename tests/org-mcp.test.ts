@@ -322,7 +322,8 @@ test('malformed messages are refused without running anything', async () => {
   assert.equal((await send('{"jsonrpc":"2.0","id":1,"method":"ping"}', { 'mcp-protocol-version': '1999-01-01' })).status, 400);
   assert.equal((await send('{"jsonrpc":"2.0","method":"notifications/initialized"}')).status, 202);
 
-  assert.equal((await t.rpc(token, 'resources/list')).body.error?.code, -32601);
+  // Resources are served (plans/82 M7); prompts are not.
+  assert.equal((await t.rpc(token, 'prompts/list')).body.error?.code, -32601);
   assert.equal((await t.rpc(token, 'tools/call', { name: 'no_such_tool' })).body.error?.code, -32602);
   assert.equal((await t.rpc(token, 'tools/call', { name: '__proto__' })).body.error?.code, -32602);
 
