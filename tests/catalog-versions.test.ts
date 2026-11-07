@@ -290,7 +290,10 @@ test('new bytes land as version 2: the feed serves the head, ?v=1 keeps the old 
   const pinned = await fetch(`${base}/catalog/inst/hero/png?v=1`, { headers: { cookie: admin } });
   assert.equal(pinned.status, 200);
   assert.equal(Buffer.from(await pinned.arrayBuffer()).toString('hex'), PNG_V1.toString('hex'));
-  assert.equal(pinned.headers.get('etag'), `"${(before?.formats as Array<Record<string, unknown>>)[0]!.checksum}"`);
+  // The blob ETag is the store's hex digest; the feed states the same digest as SRI.
+  const pinnedSri = String((before?.formats as Array<Record<string, unknown>>)[0]!.checksum);
+  assert.match(pinnedSri, /^sha256-/);
+  assert.equal(pinned.headers.get('etag'), `"${Buffer.from(pinnedSri.slice('sha256-'.length), 'base64').toString('hex')}"`);
 
   const list = await versions(base, admin, 'inst/hero');
   assert.equal(list.head, 2);
