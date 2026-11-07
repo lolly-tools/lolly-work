@@ -47,6 +47,8 @@ export interface MembershipRecord {
   domain?: string;
   /** Set when the sweep or an exit ended it; the record stays for the audit trail. */
   endedAt?: string;
+  /** The reminders before `endsAt` already sent (programmes/exit-schedule.ts). */
+  notices?: { d14?: string; d1?: string };
 }
 
 export { COMPANY_GROUP_PREFIX, isCompanyGroup };

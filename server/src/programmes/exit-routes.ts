@@ -15,7 +15,8 @@ import { readJson, sendError, sendJson, type createRouter } from '../api/router.
 import type { Store, UserRecord } from '../store/types.ts';
 import type { TxtLookup } from './domains.ts';
 import type { ProgrammeExitRecord } from './exit.ts';
-import { REOPEN_DAYS, reopenExit, reopenOffered, reopenUntil } from './reopen.ts';
+import { emptyReopen, REOPEN_DAYS, reopenExit, reopenOffered, reopenUntil } from './reopen.ts';
+import { exitLimits, retireExitNotices } from './exit-schedule.ts';
 
 type Router = ReturnType<typeof createRouter>;
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
@@ -25,6 +26,8 @@ export interface ExitRouteDeps {
   requireAction(req: IncomingMessage, res: ServerResponse, action: string): Promise<UserRecord | null>;
   audit: Audit;
   resolveTxt: TxtLookup;
+  /** Whether the notice before an end is also emailed, for the limits shown. */
+  emailOn?(): boolean;
 }
 
 /** One receipt as the console lists it: counts, never the whole result. */
@@ -58,7 +61,10 @@ export function registerExitRoutes(router: Router, deps: ExitRouteDeps): void {
     if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
     const people = await names();
     const list = await store.listProgrammeExits({ programmeId: programme.id });
-    sendJson(res, 200, { programme: programme.id, reopenDays: REOPEN_DAYS, exits: await Promise.all(list.map((r) => exitSummary(store, r, people))) }, { 'cache-control': 'no-store' });
+    sendJson(res, 200, {
+      programme: programme.id, reopenDays: REOPEN_DAYS, limits: exitLimits(deps.emailOn?.() ?? false),
+      exits: await Promise.all(list.map((r) => exitSummary(store, r, people))),
+    }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 
   router.add('GET', '/api/v1/programmes/exits/:exit', async (req, res, ctx) => {
@@ -79,9 +85,15 @@ export function registerExitRoutes(router: Router, deps: ExitRouteDeps): void {
     const apply = body.apply === true;
     const projects = body.projects !== false;
     const at = new Date().toISOString();
+    // Claimed before anything is put back, so two admins pressing Reopen at
+    // once reopen it once.
+    const claimed: ProgrammeExitRecord = { ...rec, state: 'reopened', reopened: { at, by: actor.id, projects, result: emptyReopen() } };
+    if (apply && !(await store.replaceProgrammeExit(claimed, rec))) return sendError(res, 409, 'NOT_REOPENABLE', 'this end was reopened meanwhile');
     const result = await reopenExit(store, deps.audit, rec, { apply, projects, actorRef: `user:${actor.id}`, actorId: actor.id, resolveTxt: deps.resolveTxt });
     if (apply) {
-      await store.putProgrammeExit({ ...rec, state: 'reopened', reopened: { at, by: actor.id, projects, result } });
+      await store.putProgrammeExit({ ...claimed, reopened: { at, by: actor.id, projects, result } });
+      // A notice that named the end date is no longer true.
+      await retireExitNotices(store, rec.id, at);
       await deps.audit(`user:${actor.id}`, 'programme.exit.reopen', rec.programmeId ? `programme:${rec.programmeId}` : 'programme:list', {
         exit: rec.id, projects,
         accounts: result.accounts.filter((a) => a.result === 'enabled' || a.result === 'rejoined').length,

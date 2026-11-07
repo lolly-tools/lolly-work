@@ -42,6 +42,22 @@ export function createPostgresRenderStore(pool: RenderDatabase): RenderStore {
       const { rows } = await pool.query('select * from renders where principal=$1 and idempotency_key=$2', [principal, key]);
       return rows[0] ? renderFromRow(rows[0]) : null;
     },
+    async renderUsage(principals, fromIso, toIso) {
+      const { rows } = await pool.query(
+        `select principal, to_char(created_at at time zone 'UTC', 'YYYY-MM-DD') as day, request->>'toolId' as tool_id, request->>'format' as format, state,
+           output->'partner'->>'company' as company, count(*)::int as n
+         from renders where principal = any($1) and created_at >= $2 and created_at < $3
+         group by 1, 2, 3, 4, 5, 6`, [[...principals], fromIso, toIso]);
+      return rows.map((r) => ({ principal: r.principal as string, day: r.day as string, toolId: r.tool_id as string, format: r.format as string,
+        state: r.state as RenderRecord['state'], company: (r.company as string | null) ?? null, count: Number(r.n) }));
+    },
+    async renderBatchUsage(principals, fromIso, toIso) {
+      const { rows } = await pool.query(
+        `select b.principal, to_char(b.created_at at time zone 'UTC', 'YYYY-MM-DD') as day, count(distinct b.id)::int as batches, count(r.render_id)::int as rows
+         from render_batches b left join render_batch_rows r on r.batch_id = b.id
+         where b.principal = any($1) and b.created_at >= $2 and b.created_at < $3 group by 1, 2`, [[...principals], fromIso, toIso]);
+      return rows.map((r) => ({ principal: r.principal as string, day: r.day as string, batches: Number(r.batches), rows: Number(r.rows) }));
+    },
     async getRender(id, principal) {
       const { rows } = await pool.query('select * from renders where id=$1 and principal=$2', [id, principal]);
       return rows[0] ? renderFromRow(rows[0]) : null;

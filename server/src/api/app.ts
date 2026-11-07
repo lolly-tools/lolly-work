@@ -98,7 +98,9 @@ import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
+import { accessEndsFor } from '../programmes/exit-schedule.ts';
 import { registerProgrammeTokenRoutes } from '../programmes/token-routes.ts';
+import { registerUsageRoutes } from '../programmes/usage-routes.ts';
 import { createCompanyProfiles } from '../programmes/profile-routes.ts';
 import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../programmes/logo-checks.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
@@ -238,6 +240,8 @@ import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
 import { registerIntentRoutes } from '../automation/intents.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
+import { registerContextRoutes, type ContextSkill } from '../automation/context-routes.ts';
+import { servedType as brandPageFileType } from '../brand-pages/manifest.ts';
 import { mayRenderTool, mayUseTool, PolicyRefusal, policyErrors } from '../automation/effective-contract.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
@@ -2962,7 +2966,11 @@ export function buildApp(deps: AppDeps): App {
         toolStarts.set(meta.toolId, { defaults: bound.defaults, ...(bound.bindings ? { bindings: bound.bindings } : {}) });
       }
     }
-    const partner = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
+    const partnerBase = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
+    // When their access through a programme ends (plans/82 M5): the earliest
+    // membership end date or scheduled end they would be told about.
+    const ends = scoped ? await accessEndsFor(store, subject) : null;
+    const partner = partnerBase || ends ? { ...partnerBase, ...(ends ? { accessEndsAt: ends.at, accessEndsThrough: ends.programme } : {}) } : undefined;
     const grants = await store.listGrants();
     // The inbox's own count for the same client (its shell and engine
     // selectors): the messages it shows and the comment notices that pass
@@ -4567,6 +4575,8 @@ export function buildApp(deps: AppDeps): App {
   registerTokenLimitRoutes(router, { store, limits: tokenLimits, requireAction, audit });
   // Tokens a programme's manager issues for a partner's agent (plans/82 M7).
   registerProgrammeTokenRoutes(router, { store, limits: tokenLimits, requireAction, audit });
+  // What a programme's tokens did, counted from records Work already keeps (plans/82 M7).
+  registerUsageRoutes(router, { store, requireAction });
 
   router.add('DELETE', '/api/v1/tokens/:id', async (req, res, ctx) => {
     const actor = await requireAction(req, res, 'token.manage');
@@ -6107,7 +6117,7 @@ export function buildApp(deps: AppDeps): App {
   });
   companyProfiles.register(router);
   registerProgrammePeopleRoutes(router, {
-    store, requireAction, audit,
+    store, requireAction, audit, people, noticeContext: (now) => noticeContext(config, now),
     forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
     invite: async (actor, email, groups, endsAt) => {
       // The invitation can be accepted until the membership ends, and never for
@@ -11567,6 +11577,116 @@ export function buildApp(deps: AppDeps): App {
   registerIntentRoutes(router, discoveryDeps);
   brandPages.register(router, { shell: serveShell });
   brandEdits.register(router);
+  // Brand context for a service token (plans/82 M7): the lead brand, the caller's
+  // company and its templates, read as GET /api/v1/context/* and as MCP resources.
+  const tokensFileOf = (snap: { source: { root: string; tokensHead: string | null; assets: Array<{ id: string; formats?: Array<{ format?: string; url?: string }> }> } }): string | null => {
+    const head = snap.source.assets.find((a) => a.id === snap.source.tokensHead);
+    const url = (head?.formats?.find((f) => f.format === 'json') ?? head?.formats?.[0])?.url;
+    return url && url.startsWith('/catalog/') && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(url) ? join(snap.source.root, url.slice(1)) : null;
+  };
+  const designMdMemo = new Map<string, Promise<string | null>>();
+  registerContextRoutes(router, {
+    tokenOf: presentedServiceToken,
+    programmeName: async (id) => (await store.getProgramme(id))?.name ?? null,
+    companyName: async (id) => (await store.listCompanies()).find((c) => c.id === id)?.name ?? null,
+    ownLimits: (record) => tokenLimits.ownView(record),
+    brand: async () => {
+      const snap = brand.current() ?? await brand.snapshot();
+      return { id: snap.source.id, name: snap.source.label || snap.source.name, revision: snap.revision };
+    },
+    page: async () => {
+      // Only a page the public can read right now: its current, published revision,
+      // while brand pages are on. A staged revision, one awaiting approval, an
+      // unpublished page or a page on an instance with pages off never reaches a
+      // token, so nothing is published by this route that is not already public.
+      if (!brandPages.enabled()) return null;
+      const snap = brand.current() ?? await brand.snapshot();
+      // A page's id is its design system's name, the profile name a source carries.
+      const live = await brandPages.live(snap.source.name);
+      if ('missing' in live || live.revision.state !== 'live') return null;
+      return {
+        slug: live.revision.slug, revision: live.revision.n, manifest: live.revision.manifest,
+        url: brandPages.pageUrl(live.revision.slug),
+        read: async (path) => {
+          const file = live.files.get(path);
+          const bytes = file ? await brandPages.readFile(live.revision, file) : null;
+          return bytes ? { bytes, mediaType: brandPageFileType(path) } : null;
+        },
+      };
+    },
+    tokens: async () => {
+      const file = tokensFileOf(brand.current() ?? await brand.snapshot());
+      return file ? readFile(file).catch(() => null) : null;
+    },
+    generatedDesignMd: async (groups) => {
+      const snap = brand.current() ?? await brand.snapshot();
+      const served = await servedIndex.forCaller({ groups });
+      // One file per design-system revision and feed: what it names is what this caller may see.
+      const key = `${snap.revision}:${served.version}`;
+      if (!designMdMemo.has(key)) {
+        if (designMdMemo.size > 32) designMdMemo.delete(designMdMemo.keys().next().value as string);
+        designMdMemo.set(key, (async () => {
+          const engine = await loadEngine() as unknown as { writeDesignMd?: (input: Record<string, unknown>) => string };
+          const file = tokensFileOf(snap);
+          if (typeof engine.writeDesignMd !== 'function' || !file) return null;
+          const doc = JSON.parse(await readFile(file, 'utf8')) as unknown;
+          const assets = (served.index.assets ?? []).map((a) => ({ id: a.id, name: a.name, type: a.type, tags: a.tags, formats: a.formats, meta: a.meta }));
+          return engine.writeDesignMd({ doc, name: snap.source.label || snap.source.name, catalog: { ...(snap.source.tokensHead ? { tokensAsset: snap.source.tokensHead } : {}), assets } });
+        })().catch((error) => { console.error(`context: DESIGN.md was not written: ${(error as Error).message}`); return null; }));
+      }
+      return designMdMemo.get(key)!;
+    },
+    company: async (groups) => {
+      const { ctx } = await companyContextFor(groups);
+      return ctx ? { id: ctx.company.id, name: ctx.company.name, programme: ctx.programme ?? null, revision: ctx.revision, profile: ctx.profile as unknown as Record<string, unknown> } : null;
+    },
+    companyLogo: async (groups, id) => {
+      const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
+      if (!rec || !submissionServable(rec) || !instanceAssetVisible(rec, groups)) return null;
+      if ((await store.getLifecycle(id))?.revokedAt) return null;
+      const [format, blobId] = Object.entries(rec.blobs)[0] ?? [];
+      const blob = blobId ? await blobs.get(blobId) : null;
+      if (!format || !blob) return null;
+      return { bytes: await readBlobBody(blob.body, 4 * 1024 * 1024), mediaType: format === 'svg' ? 'image/svg+xml' : 'image/png' };
+    },
+    templates: async (groups) => {
+      const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+      const out = [];
+      for (const entry of feed.filter((a) => a.type === 'template')) {
+        const rec = await store.getInstanceAsset(entry.id);
+        const toolId = (entry.meta as { toolId?: unknown } | undefined)?.toolId;
+        if (!rec || typeof toolId !== 'string') continue;
+        out.push({ id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, toolId, version: rec.headVersion ?? 1,
+          editable: rec.publication?.editable ?? [], bindings: (rec.publication?.bindings as Record<string, unknown> | undefined) ?? null, retired: templateRetired(rec) });
+      }
+      return out;
+    },
+    skills: async (groups) => {
+      const snap = brand.current() ?? await brand.snapshot();
+      // A partner's agent reads public skills only, whatever else its feed carries.
+      // A context caller is a service token, and a token in a programme is never an admin's.
+      const partner = isProgrammeScoped(groups, undefined);
+      const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+      const inPack = (url: unknown): string | null => typeof url === 'string' && url.startsWith('/catalog/') && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(url) ? join(snap.source.root, url.slice(1)) : null;
+      const out: ContextSkill[] = [];
+      for (const entry of feed.filter((a) => a.type === 'skill')) {
+        const meta = (entry.meta as { skill?: { name?: unknown; description?: unknown; discipline?: unknown; audience?: unknown; files?: Array<{ path?: unknown; url?: unknown }> } } | undefined)?.skill;
+        if (!meta || typeof meta.name !== 'string' || (partner && meta.audience !== 'public')) continue;
+        const files = new Map<string, string>();
+        const main = inPack(entry.formats?.[0]?.url);
+        if (main) files.set('SKILL.md', main);
+        for (const f of meta.files ?? []) { const at = inPack(f.url); if (typeof f.path === 'string' && at) files.set(f.path, at); }
+        out.push({ slug: meta.name, name: typeof entry.name === 'string' ? entry.name : meta.name, description: typeof meta.description === 'string' ? meta.description : '',
+          discipline: typeof meta.discipline === 'string' ? meta.discipline : 'other', files: [...files.keys()],
+          read: async (path) => {
+            const at = files.get(path);
+            const bytes = at ? await readFile(at).catch(() => null) : null;
+            return bytes ? { bytes, mediaType: path.endsWith('.json') ? 'application/json' : path.endsWith('.csv') ? 'text/csv; charset=utf-8' : 'text/markdown; charset=utf-8' } : null;
+          } });
+      }
+      return out;
+    },
+  });
   registerOrgMcp({ router, origin: config.instance.baseUrl, durableRenders: !!deps.onRenderRunner, tokenOf: presentedServiceToken, audit,
     spendCall: (record) => tokenLimits.spendCall(record), limitsSentence: async (record) => limitsSentence((await tokenLimits.resolve(record)).limits) });
 

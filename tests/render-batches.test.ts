@@ -22,6 +22,14 @@ async function conformance(store: RenderStore) {
   assert.equal(await store.getRenderBatch(batch.id, 'user:other'), null);
   assert.equal(await store.cancelRenderBatch(batch.id, 'user:other'), null);
   assert.deepEqual(await store.listRenderBatches('user:other', 10, 0), []);
+  // The per-token counts (plans/82 M7): one batch of three rows, and its renders by state.
+  const day = batch.createdAt.slice(0, 10);
+  const window = [`${day}T00:00:00.000Z`, new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString()] as const;
+  assert.deepEqual(await store.renderBatchUsage([principal, 'user:other'], ...window), [{ principal, day, batches: 1, rows: 3 }]);
+  const counted = await store.renderUsage([principal], ...window);
+  assert.equal(counted.reduce((n, r) => n + r.count, 0), 3);
+  assert.ok(counted.every((r) => r.principal === principal && r.day === day && r.state === 'queued' && r.company === null));
+  assert.deepEqual(await store.renderUsage([principal], '2000-01-01T00:00:00.000Z', '2000-01-02T00:00:00.000Z'), []);
   assert.deepEqual(batch.rows.map((row) => row.key), ['uk', 'fr', 'de'], 'authored order survives storage');
   assert.equal(batch.rows[0]!.render.request.inputs.bg, '#ffffff');
   assert.equal(batch.rows[0]!.render.request.inputs.title, 'Hello');

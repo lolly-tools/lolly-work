@@ -300,6 +300,13 @@ export function createBrandPages(d: BrandPagesDeps) {
     res.end();
   };
 
+  /** A page's live revision and its files, or why it is not served. */
+  const liveOf = async (slug: string): Promise<LiveBrandPage | { missing: 404 | 410 }> => {
+    const record = isBrandPageSlug(slug) ? await d.store.getBrandPage(slug) : null;
+    if (record?.current === null && record.unpublishedAt) return { missing: 410 };
+    return (record && record.current !== null ? await loadLive(slug, record.current) : null) ?? { missing: 404 };
+  };
+
   const liveIndex = async () => {
     const live = await d.store.listLiveBrandPageRevisions(INDEX_LIMIT + 1);
     return {
@@ -324,11 +331,6 @@ export function createBrandPages(d: BrandPagesDeps) {
       // The same path the shell's own fallback route hands over.
       if (opts.shell) return opts.shell(req, res, ctx.url.pathname.split('/').filter(Boolean).map(decodeURIComponent).join('/'));
       sendError(res, 404, 'NOT_FOUND', `no route for ${req.method} ${ctx.url.pathname}`);
-    };
-    const liveOf = async (slug: string): Promise<LiveBrandPage | { missing: 404 | 410 }> => {
-      const record = isBrandPageSlug(slug) ? await d.store.getBrandPage(slug) : null;
-      if (record?.current === null && record.unpublishedAt) return { missing: 410 };
-      return (record && record.current !== null ? await loadLive(slug, record.current) : null) ?? { missing: 404 };
     };
     const serve = async (req: IncomingMessage, res: ServerResponse, ctx: RouteCtx): Promise<void> => {
       const slug = ctx.params.slug;
@@ -434,5 +436,7 @@ export function createBrandPages(d: BrandPagesDeps) {
     });
   };
 
-  return { register, settleApproval };
+  /** For the organisation MCP's brand resources (plans/82 M7): a token reads the
+   *  live page's own bytes whether or not pages are public on this instance. */
+  return { register, settleApproval, live: liveOf, readFile, pageUrl, enabled: () => cfg().enabled };
 }

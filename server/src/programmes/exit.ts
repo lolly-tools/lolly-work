@@ -123,12 +123,13 @@ export interface ExitResult {
 
 /**
  * One exit, from the dry run's choices to what it did (migrations/0093).
- * `scheduled` waits for its date, `done` ran, `cancelled` was called off
+ * `scheduled` waits for its date, `running` was claimed by the sweep or an
+ * End now and is being carried out, `done` ran, `cancelled` was called off
  * before its date and `reopened` was undone.
  */
 export interface ProgrammeExitRecord {
   id: string;
-  state: 'scheduled' | 'done' | 'cancelled' | 'reopened';
+  state: 'scheduled' | 'running' | 'done' | 'cancelled' | 'reopened';
   selection: ExitSelection;
   /** The programme it belongs to, when there is one. */
   programmeId?: string;
@@ -486,6 +487,9 @@ export async function applyExit(
     actorRef: string; actorId: string; createdBy?: string; createdAt?: string; id?: string; via?: 'scheduled'; rights?: ExitRightsChoices;
     /** The scheduled receipt this run completes; its schedule fields are kept. */
     prior?: ProgrammeExitRecord;
+    /** Who the ended mark names, when not the person running it (a scheduled
+     *  end names the person who scheduled it). */
+    endedBy?: string;
   },
 ): Promise<ProgrammeExitRecord> {
   const at = new Date().toISOString();
@@ -580,7 +584,7 @@ export async function applyExit(
   }
 
   const id = opts.id ?? exitId();
-  const endedBy = opts.createdBy ?? opts.actorId;
+  const endedBy = opts.endedBy ?? opts.createdBy ?? opts.actorId;
   // Mark what ended. A record already ended keeps its first end.
   if (plan.selection.programme !== undefined && plan.programme) {
     const current = await store.getProgramme(plan.programme.id);
