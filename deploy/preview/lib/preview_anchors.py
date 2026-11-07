@@ -97,7 +97,9 @@ ING = {
     "refNamePattern": "docker.io/library/lolly-ing-instance:run-{run}-{attempt}",
     # The server's catalog signing key reference. The cut-over switches which Secret it names (review 2026-10-25 H3).
     "signingKeyEnv": "LW_CATALOG_SIGNING_KEY",
-    "receiptProfile": "suse",
+    # The content profiles a lolly.ing shell may be built with. Both stay accepted, so a
+    # rollback to a build from before Lolly Demo sat beside SUSE still verifies.
+    "receiptProfiles": ("suse", "suse-with-demo"),
     "receiptTarget": "web",
     # First-party repositories whose changes are listed before a switch (R21 R3).
     "sourceRepositories": {"suse": "lolly-tools/suse-lolly", "work": "lolly-tools/lolly-work", "lolly": "lolly-tools/lolly"},
