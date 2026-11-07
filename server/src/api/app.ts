@@ -108,7 +108,8 @@ import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
 import { registerRightsRoutes } from '../programmes/rights-routes.ts';
 import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
-import { loadRightsEngine } from '../catalog/rights.ts';
+import { loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
+import { CHOICE_NOTE_MAX, choiceFingerprint, exitRightsChoices, factsOf } from '../programmes/rights.ts';
 import { collectionCredits } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
@@ -3333,16 +3334,21 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // ── links ─────────────────────────────────────────────────────────────────
-  router.add('POST', '/api/v1/links', async (req, res) => {
+  router.add('POST', '/api/v1/links', async (req, res, ctx) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const body = (await readJson(req)) as {
-      kind?: LinkKind; target?: LinkRecord['target']; ttlHours?: number; password?: string; projectId?: string;
+      kind?: LinkKind; target?: LinkRecord['target']; ttlHours?: number; password?: string; projectId?: string; includeHeld?: unknown; note?: unknown;
     } | null;
     const kind = body?.kind;
     if (!kind || !LINK_KINDS.includes(kind)) return sendError(res, 400, 'INVALID_INPUT', 'kind must be share|embed|download|guest-edit');
     if (!body?.target || (!body.target.toolId && !body.target.sessionId && !body.target.assetId && !body.target.collectionId)) {
       return sendError(res, 400, 'INVALID_INPUT', 'target.toolId, target.sessionId, target.assetId or target.collectionId required');
+    }
+    // The server alone writes target.includeHeld (plans/82 M4).
+    if (body.target.includeHeld !== undefined) {
+      const { includeHeld: _fromRequest, ...target } = body.target;
+      body.target = target;
     }
     // An asset target has no tool to open, so it cannot admit a guest seat
     // (plans/31 §2 1b names share/embed/download only). Refuse rather than
@@ -3460,6 +3466,35 @@ export function buildApp(deps: AppDeps): App {
       }
       body.target = { ...body.target, collectionId: collection.id };
     }
+    // Licences (plans/82 M4). `?dryRun=1` lists which files the link would
+    // carry and which the licence gate holds back, with the reason, and writes
+    // nothing. `includeHeld: true` from a member of staff records the held
+    // files on the signed target, each with the fingerprint of its facts.
+    const dryRun = ctx.url.searchParams.get('dryRun') === '1';
+    if (body.note !== undefined && (typeof body.note !== 'string' || body.note.trim().length > CHOICE_NOTE_MAX)) return sendError(res, 400, 'INVALID_INPUT', `note is text, at most ${CHOICE_NOTE_MAX} characters`);
+    const linkNote = typeof body.note === 'string' ? body.note.trim() : '';
+    if (dryRun || body.includeHeld === true) {
+      if (!body.target.assetId && !body.target.collectionId) return sendError(res, 400, 'INVALID_INPUT', 'a dry run and includeHeld are for links to catalog files');
+      if (!dryRun && isProgrammeScoped(user.groups, user.role)) return sendError(res, 403, 'FORBIDDEN', 'only staff can send files held back by their licence');
+      const ids = body.target.collectionId ? (await store.getCollection(body.target.collectionId))?.members ?? [] : [body.target.assetId!.trim()];
+      const [engine, seen] = await Promise.all([loadRightsEngine(), entriesSeenBy(user.groups)]);
+      const files = ids.map((id) => ({ id, entry: seen.get(id), answer: seen.has(id) ? rightsAnswer(engine, seen.get(id)!) : null }));
+      if (dryRun) {
+        return sendJson(res, 200, {
+          dryRun: true,
+          travel: files.filter((f) => f.answer && f.answer.state !== 'held').length,
+          held: files.filter((f) => f.answer?.state === 'held').length,
+          files: files.map(({ id, entry, answer }) => ({
+            id, name: entry && typeof entry.name === 'string' ? entry.name : id,
+            ...(answer?.state === 'held'
+              ? { travels: false, licence: answer.licence, declared: answer.declared, category: answer.category, reason: answer.reason, ...(answer.conditions?.length ? { conditions: answer.conditions } : {}) }
+              : answer ? { travels: true, ...(answer.state === 'travels' ? { licence: answer.licence } : {}) } : { travels: null }),
+          })),
+        }, { 'cache-control': 'no-store' });
+      }
+      const held = files.flatMap((f) => (f.entry && f.answer?.state === 'held' ? [{ id: f.id, fingerprint: choiceFingerprint(factsOf(engine, f.entry, 'link')) }] : []));
+      if (held.length) body.target = { ...body.target, includeHeld: held };
+    }
     const maxTtl = kind === 'guest-edit' ? config.policy.guestLinks.maxTtlHours : 24 * 365;
     const defTtl = kind === 'guest-edit' ? config.policy.guestLinks.defaultTtlHours : DEFAULT_TTL_SEC[kind] / 3600;
     if (body.ttlHours !== undefined && (typeof body.ttlHours !== 'number' || !Number.isFinite(body.ttlHours) || body.ttlHours <= 0)) return sendError(res, 400, 'INVALID_INPUT', 'ttlHours must be a positive finite number');
@@ -3478,9 +3513,10 @@ export function buildApp(deps: AppDeps): App {
     await audit(`user:${user.id}`, 'link.create', `link:${link.id}`, {
       kind, toolId: body.target.toolId ?? null, assetId: body.target.assetId ?? null,
       collectionId: body.target.collectionId ?? null, ...(link.target.open ? { open: true } : {}),
+      ...(link.target.includeHeld ? { includeHeld: link.target.includeHeld.map((h) => h.id), ...(linkNote ? { note: linkNote } : {}) } : {}),
     });
     sendJson(res, 201, { id: link.id, kind, url: `${config.instance.baseUrl}${linkPath(link, secrets.link)}`, expiresAt: new Date(link.exp * 1000).toISOString(),
-      ...(link.target.open ? { open: true } : {}) });
+      ...(link.target.open ? { open: true } : {}), ...(link.target.includeHeld ? { includeHeld: link.target.includeHeld.length } : {}) });
   });
 
   router.add('POST', '/api/v1/links/:id/revoke', async (req, res, ctx) => {
@@ -6245,6 +6281,8 @@ export function buildApp(deps: AppDeps): App {
   companyProfiles.register(router);
   registerProgrammePeopleRoutes(router, {
     store, requireAction, audit, people, noticeContext: (now) => noticeContext(config, now),
+    // Ending a partnership withdraws its share anyway choices (plans/82 M4 and M5).
+    rightsChoices: exitRightsChoices(store, audit),
     forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
     invite: async (actor, email, groups, endsAt) => {
       // The invitation can be accepted until the membership ends, and never for
@@ -6302,13 +6340,19 @@ export function buildApp(deps: AppDeps): App {
     store, requireAction, audit,
     fragments: async () => { await providersReady; return federation.fragments({ background: true }); },
   });
+  /** Each catalog entry a caller with these groups is served, by id (plans/82 M4). */
+  const entriesSeenBy = async (groups: string[]): Promise<Map<string, AssetIndexEntry>> => {
+    await providersReady;
+    const feed = (await servedIndex.forCaller({ groups })).index;
+    return new Map((feed.assets ?? []).map((entry) => [entry.id, entry]));
+  };
   // Licences (plans/82 M4): every catalog entry as its source records it, before any mark.
   const catalogEntriesForRights = async (): Promise<AssetIndexEntry[]> => {
     await providersReady;
     const frags = await federation.fragments({ background: true });
     return [...(await loadAssetIndexById(config.instance.pack)).values(), ...frags.flatMap((f) => f.fragment.assets), ...(await store.listInstanceAssets()).map((r) => r.entry)];
   };
-  registerRightsRoutes(router, { store, requireAction, catalogEntries: catalogEntriesForRights, feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups })).index; } });
+  registerRightsRoutes(router, { store, requireAction, audit, catalogEntries: catalogEntriesForRights, feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups })).index; } });
   registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights });
 
   registerDomainRoutes(router, {
@@ -7750,12 +7794,8 @@ export function buildApp(deps: AppDeps): App {
 
   /** Each catalog entry a link names, as the link's maker sees it: the
    *  licence and credit a collection ZIP's credits print come from here. */
-  const linkMakerEntries = async (link: LinkRecord): Promise<Map<string, AssetIndexEntry>> => {
-    const maker = await store.getUser(link.createdBy);
-    await providersReady;
-    const feed = (await servedIndex.forCaller({ groups: maker?.groups ?? [] })).index;
-    return new Map((feed.assets ?? []).map((entry) => [entry.id, entry]));
-  };
+  const linkMakerEntries = async (link: LinkRecord): Promise<Map<string, AssetIndexEntry>> =>
+    entriesSeenBy((await store.getUser(link.createdBy))?.groups ?? []);
 
   const serveLinkedCollection = async (
     req: IncomingMessage, res: ServerResponse, link: LinkRecord, url: URL,

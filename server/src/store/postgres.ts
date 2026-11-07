@@ -36,6 +36,7 @@ import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
+import type { RightsChoiceRecord } from '../programmes/rights.ts';
 import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfile, CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
@@ -2464,6 +2465,21 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async deleteAssetLicence(assetId) {
       await pool.query('delete from asset_licence_records where asset_id = $1', [assetId]);
+    },
+    // Share anyway choices (migrations/0097).
+    async listRightsChoices() {
+      const { rows } = await pool.query('select record from programme_rights_choices order by asset_id, audience_group');
+      return rows.map((r) => r.record as RightsChoiceRecord);
+    },
+    async putRightsChoice(rec) {
+      await pool.query(
+        `insert into programme_rights_choices (asset_id, audience_group, programme_id, record, updated_at) values ($1, $2, $3, $4::jsonb, now())
+         on conflict (asset_id, audience_group) do update set programme_id = excluded.programme_id, record = excluded.record, updated_at = now()`,
+        [rec.assetId, rec.group, rec.programmeId, JSON.stringify(rec)],
+      );
+    },
+    async deleteRightsChoice(key) {
+      await pool.query('delete from programme_rights_choices where asset_id = $1 and audience_group = $2', [key.assetId, key.group]);
     },
     // Partnership exit receipts (migrations/0093): one jsonb record per exit.
     async listProgrammeExits(filter) {
