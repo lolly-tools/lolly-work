@@ -41,14 +41,19 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
     return [...new Set(groups.map((group) => group.trim()).filter(Boolean))];
   };
   // Inputs that take a partner company's values (plans/82 M3), one select per input.
-  const COMPANY_FIELDS = [['', 'Not from the company'], ['name', 'Company name'], ['logo', 'Logo (by mode)'], ['logoLight', 'Logo for light surfaces'],
+  const COMPANY_FIELDS = [['name', 'Company name'], ['logo', 'Logo (by mode)'], ['logoLight', 'Logo for light surfaces'],
     ['logoDark', 'Logo for dark surfaces'], ['mark', 'Mark'], ['website', 'Website'], ['contact', 'Contact'], ['contactEmail', 'Contact email'],
     ['contactPhone', 'Contact phone'], ['address', 'Address'], ['currency', 'Currency'], ['taxNote', 'Tax note']];
+  const LOGO_FIELDS = new Set(['logo', 'logoLight', 'logoDark', 'mark']);
   // Only inputs that can hold a company detail: text, a link or a picture. One
   // already bound stays listed whatever its type, so it can be cleared.
   const bindable = (input) => !input.type || ['text', 'longtext', 'url', 'asset'].includes(input.type) || !!original.bindings?.[input.id];
+  // A picture input takes a logo or the mark, a text input takes a detail. The
+  // current choice stays listed so it can be kept or cleared.
+  const choicesFor = (input) => COMPANY_FIELDS.filter(([value]) => !input.type || value === original.bindings?.[input.id]
+    || (input.type === 'asset' ? LOGO_FIELDS.has(value) : !LOGO_FIELDS.has(value)));
   const bindingSelects = new Map((tool.inputs ?? []).filter(bindable).map((input) => [input.id, el('select', { 'aria-label': `What ${input.label ?? input.id} takes from the company` },
-    ...COMPANY_FIELDS.map(([value, label]) => el('option', { value, selected: value === (original.bindings?.[input.id] ?? '') ? '' : null }, label)))]));
+    ...[['', 'Not from the company'], ...choicesFor(input)].map(([value, label]) => el('option', { value, selected: value === (original.bindings?.[input.id] ?? '') ? '' : null }, label)))]));
   // Defaults saved before they applied are kept and change nothing until the
   // person editing chooses to apply them.
   const legacyDefaults = !!original.defaults && !Array.isArray(original.defaults) && Object.keys(original.defaults).length > 0;

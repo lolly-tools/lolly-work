@@ -388,3 +388,18 @@ test('a real HTTP form save retains defaults and SVG-only enforcement, member re
     await rm(pack, { recursive: true, force: true });
   }
 });
+
+test('Takes from the company offers a picture input the logos and the mark, and a text input the details', () => {
+  const view = page({ bindings: { heading: 'logo' } }, undefined, [
+    { id: 'company', label: 'Issued by', type: 'text', default: '' },
+    { id: 'logo', label: 'Event logo', type: 'asset', default: '' },
+    { id: 'heading', label: 'Title', type: 'text', default: '' },
+    { id: 'seal', label: 'Seal', type: 'boolean', default: true },
+  ]);
+  const choices = (label: string) => [...view.find(`select[aria-label="What ${label} takes from the company"]`).options].map((o: { value: string }) => o.value);
+  assert.deepEqual(choices('Event logo'), ['', 'logo', 'logoLight', 'logoDark', 'mark']);
+  assert.deepEqual(choices('Issued by'), ['', 'name', 'website', 'contact', 'contactEmail', 'contactPhone', 'address', 'currency', 'taxNote']);
+  assert.ok(choices('Title').includes('logo'), 'a choice saved earlier stays listed so it can be kept or cleared');
+  assert.equal(view.find('select[aria-label="What Seal takes from the company"]'), null, 'a switch holds no company detail');
+  view.dom.window.close();
+});

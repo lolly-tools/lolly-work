@@ -31,12 +31,12 @@ import { MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE } from '../catalog/rules-tools.ts
 import { randomId } from '../lib/crypto.ts';
 import { COMPANY_GROUP_PREFIX, isPartnerGroup, programmeGroup, type ProgrammeRecord } from './types.ts';
 import { isTemplatesOnlyToolId, withTemplatesOnly } from './templates-only.ts';
-import { COMPANY_FIELDS, FIELD_LABELS, normalizeBindings } from './company-values.ts';
+import { COMPANY_FIELDS, FIELD_LABELS, LOGO_FIELDS, normalizeBindings } from './company-values.ts';
 
 type Router = ReturnType<typeof createRouter>;
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
 
-export interface ToolFacts { name: string; inputs: Array<{ id: string; label: string }> }
+export interface ToolFacts { name: string; inputs: Array<{ id: string; label: string; type?: string }> }
 
 export interface TemplateRouteDeps {
   store: Store;
@@ -208,7 +208,7 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       templatesOnlyTools: await Promise.all((programme.templatesOnly ?? []).map(async (id) => ({ id, name: (await deps.toolFacts(id))?.name ?? id }))),
       templates: rows, candidates,
       // What a binding may name, for the "Takes from the company" picker.
-      companyFields: COMPANY_FIELDS.map((id) => ({ id, label: FIELD_LABELS[id] })),
+      companyFields: COMPANY_FIELDS.map((id) => ({ id, label: FIELD_LABELS[id], kind: LOGO_FIELDS.has(id) ? 'logo' : 'text' })),
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 

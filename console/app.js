@@ -5920,10 +5920,14 @@ async function programmeTemplates(p, host) {
   // partner company's details. One select per input, nothing chosen by default.
   const fields = data.companyFields ?? [];
   const fieldLabel = (id) => fields.find((f) => f.id === id)?.label ?? id;
+  // A picture input takes a logo or the mark, a text input takes a detail; an
+  // input of unknown type is offered both. The current choice stays listed.
+  const fieldsFor = (input, bound) => fields.filter((f) => !input.type || !f.kind || f.id === bound
+    || (input.type === 'asset' ? f.kind === 'logo' : f.kind === 'text'));
   const bindingsPicker = (inputs, bindings, kind) => {
     const selects = new Map(inputs.map((i) => [i.id, el('select', { 'aria-label': `What ${i.label} takes from the company` },
       el('option', { value: '' }, 'Not from the company'),
-      ...fields.map((f) => el('option', { value: f.id, ...(bindings?.[i.id] === f.id ? { selected: 'selected' } : {}) }, f.label)))]));
+      ...fieldsFor(i, bindings?.[i.id]).map((f) => el('option', { value: f.id, ...(bindings?.[i.id] === f.id ? { selected: 'selected' } : {}) }, f.label)))]));
     return {
       el: el('div', { class: 'stack template-bindings' },
         el('strong', {}, 'Takes from the company'),

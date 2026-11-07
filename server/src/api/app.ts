@@ -6043,10 +6043,11 @@ export function buildApp(deps: AppDeps): App {
     toolFacts: async (toolId) => {
       if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
       try {
-        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown; inputs?: Array<{ id?: unknown; label?: unknown }> };
+        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown; inputs?: Array<{ id?: unknown; label?: unknown; type?: unknown }> };
         return {
           name: typeof manifest.name === 'string' ? manifest.name : toolId,
-          inputs: (manifest.inputs ?? []).flatMap((i) => typeof i?.id === 'string' ? [{ id: i.id, label: typeof i.label === 'string' && i.label ? i.label : i.id }] : []),
+          inputs: (manifest.inputs ?? []).flatMap((i) => typeof i?.id === 'string'
+            ? [{ id: i.id, label: typeof i.label === 'string' && i.label ? i.label : i.id, ...(typeof i.type === 'string' ? { type: i.type } : {}) }] : []),
         };
       } catch { return null; }
     },
