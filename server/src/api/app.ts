@@ -542,7 +542,7 @@ export function buildApp(deps: AppDeps): App {
   // The Chromium render worker is active only when both the URL and the shared
   // HMAC key are present; otherwise hooked tools keep 501-ing (unchanged).
   const renderWorker: WorkerConfig | undefined = config.render.worker.url && secrets.renderWorker
-    ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs, requireHttps: productionMode(config) }
+    ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs, connectRetryMs: config.render.worker.connectRetryMs, requireHttps: productionMode(config) }
     : undefined;
   // Pull dispatch (render.worker.dispatch "pull", plan 324 M3): render and
   // raster jobs wait in this process until a worker leases one over
@@ -12095,6 +12095,7 @@ export function buildApp(deps: AppDeps): App {
       if (!(e instanceof RenderError)) throw e;
       // A request refused for what it asked never ran, so it counts nothing.
       if (e.status < 500) await giveBack?.();
+      if (e.retryAfter !== undefined) res.setHeader('retry-after', String(e.retryAfter));
       // Name the refused input, as the GET route does, so an agent knows which one.
       const v = e.violations?.[0];
       return sendError(res, e.status, e.code, e.message, v
