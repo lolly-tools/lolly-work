@@ -30,7 +30,7 @@ const readZip = async (bytes: Uint8Array): Promise<Array<{ name: string; bytes: 
   ((await import(ENGINE_SPEC)) as { readZip: (b: Uint8Array) => Array<{ name: string; bytes: Uint8Array }> }).readZip(bytes);
 
 const TERMS = 'Published by Acme for the people and partner programmes of this workspace to use in their work. Not an open licence.';
-const FILES: Record<string, string> = { 'open.jpg': 'open-bytes', 'nc.jpg': 'nc-bytes', 'mark.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>', 'stock.jpg': 'stock-bytes', 'CREDITS.txt': 'a file that happens to share the name' };
+const FILES: Record<string, string> = { 'open.jpg': 'open-bytes', 'nc.jpg': 'nc-bytes', 'mark.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>', 'stock.jpg': 'stock-bytes', 'CREDITS.txt': 'a partner\'s own credits file', 'credits.json': '{"theirs":true}' };
 const PACK = [
   { id: 'acme/photo/open', name: 'Open photo', type: 'raster', file: 'open.jpg', license: 'CC-BY-4.0', attribution: 'Photo by B. Person, CC BY 4.0' },
   { id: 'acme/photo/nc', name: 'Sponsored photo', type: 'raster', file: 'nc.jpg', license: 'CC-BY-NC-4.0', attribution: 'Photo by A. Person' },
@@ -42,6 +42,7 @@ const PACK = [
   },
   { id: 'acme/photo/stock', name: 'Stock photo', type: 'raster', file: 'stock.jpg' },
   { id: 'acme/doc/credits', name: 'Old credits', type: 'document', file: 'CREDITS.txt' },
+  { id: 'acme/doc/credits-json', name: 'Old credits data', type: 'data', file: 'credits.json' },
 ];
 
 let server: Server;
@@ -68,6 +69,7 @@ before(async () => {
     id: 'launch-kit', name: 'Launch kit', members: PACK.map((a) => a.id), groups: ['marketing'], curator: 'user:x', createdAt: 'x', updatedAt: 'x',
   });
   await store.putCollection({ id: 'empty', name: 'Empty', members: [], groups: ['marketing'], curator: 'user:x', createdAt: 'x', updatedAt: 'x' });
+  await store.putCollection({ id: 'plain', name: 'Plain', members: ['acme/photo/open', 'acme/photo/stock'], groups: ['marketing'], curator: 'user:x', createdAt: 'x', updatedAt: 'x' });
   const app = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'sz', link: 'lz', credential: 'a-32-byte-or-longer-master-secret!' } });
   server = createServer((req, res) => void app(req, res));
   await new Promise<void>((r) => server.listen(0, () => r()));
@@ -97,10 +99,11 @@ test('a collection ZIP carries CREDITS.txt and credits.json first, read back fro
   const bytes = new Uint8Array(await res.arrayBuffer());
   const entries = await readZip(bytes);
   const names = entries.map((e) => e.name);
-  assert.deepEqual(names.slice(0, 2), ['CREDITS.txt', 'credits.json'], 'written first, so a download cut short still holds them');
+  assert.deepEqual(names.slice(0, 2), ['CREDITS (2).txt', 'credits (2).json'], 'written first; on a clash the companion takes the next free names');
   assert.equal(names.length, 2 + PACK.length);
-  assert.equal(new Set(names).size, names.length, 'a member that shares the name is renamed, never shadowed');
-  assert.ok(!names.slice(2).includes('CREDITS.txt'));
+  assert.equal(new Set(names).size, names.length, 'nothing is shadowed');
+  assert.equal(text(entries.find((e) => e.name === 'CREDITS.txt')?.bytes), FILES['CREDITS.txt'], 'a member called CREDITS.txt keeps its name and its bytes');
+  assert.equal(text(entries.find((e) => e.name === 'credits.json')?.bytes), FILES['credits.json'], 'and so does a member called credits.json');
 
   const credits = text(entries[0]!.bytes);
   const json = JSON.parse(text(entries[1]!.bytes)) as { travelled: Array<Record<string, unknown>> };
@@ -131,9 +134,15 @@ test('a collection ZIP carries CREDITS.txt and credits.json first, read back fro
   const row = (await store.listAudit()).filter((e) => e.action === 'catalog.collection.download').at(-1)!;
   assert.deepEqual(row.payload, {
     linkId: link.id, entries: PACK.length, withheld: 0,
-    credits: { state: 'written', files: { 'CREDITS.txt': sha(entries[0]!.bytes), 'credits.json': sha(entries[1]!.bytes) } },
+    credits: { state: 'written', files: { 'CREDITS (2).txt': sha(entries[0]!.bytes), 'credits (2).json': sha(entries[1]!.bytes) } },
   });
   assert.ok(!JSON.stringify(row.payload).includes('included'), 'never recorded as included');
+});
+
+test('with no clash, the companion is CREDITS.txt and credits.json, and member names are as they always were', async () => {
+  const link = await mint({ kind: 'download', target: { collectionId: 'plain' } });
+  const entries = await readZip(new Uint8Array(await (await fetch(link.path)).arrayBuffer()));
+  assert.deepEqual(entries.map((e) => e.name), ['CREDITS.txt', 'credits.json', 'open.jpg', 'stock.jpg']);
 });
 
 test('a single file through a link is unchanged, and the page says nothing about credits', async () => {
