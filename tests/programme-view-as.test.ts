@@ -17,11 +17,16 @@ import { join } from 'node:path';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { VIEW_AS_HEADER, VIEW_AS_TTL_SEC, readViewAs, signViewAs } from '../server/src/programmes/view-as.ts';
+import { VIEW_AS_HEADER, VIEW_AS_TTL_SEC, createViewAs, readViewAs, signViewAs } from '../server/src/programmes/view-as.ts';
+import { createCollabGateway, COLLAB_WS_PREFIX, type CollabGateway } from '../server/src/collab/gateway.ts';
+import { WebSocket } from 'ws';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { UserRecord } from '../server/src/store/types.ts';
 
 let server: Server;
 let base = '';
 let store: ReturnType<typeof createMemoryStore>;
+let collab: CollabGateway;
 const SECRET = 'view-as-session-secret';
 const TOOLS = ['price-sheet', 'qr-code', 'internal-deck'];
 
@@ -45,7 +50,9 @@ before(async () => {
   }));
   store = createMemoryStore();
   const app = buildApp({ config, store, secrets: { session: SECRET, link: 'lv' } });
+  collab = createCollabGateway({ config, store, secrets: { session: SECRET, link: 'lv' } });
   server = createServer((req, res) => void app(req, res));
+  server.on('upgrade', (req, socket, head) => { if (!collab.handleUpgrade(req, socket, head)) socket.destroy(); });
   await new Promise<void>((r) => server.listen(0, () => r()));
   const addr = server.address();
   base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
@@ -56,7 +63,7 @@ before(async () => {
   await call(admin, 'PUT', '/api/v1/programmes/isv/companies/contoso', { name: 'Contoso' });
 });
 
-after(() => server.close());
+after(() => { collab.close(); server.close(); });
 
 async function login(email: string): Promise<string> {
   const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
@@ -158,4 +165,73 @@ test('stopping is audited, and a view of a programme the admin no longer manages
   const adminId = (await store.getUserBySub('dev:admin@test'))!.id;
   await store.putGrant({ principal: `user:${adminId}`, action: 'programme.manage', resource: 'programme:isv', effect: 'deny' } as never);
   assert.equal((await call(admin, 'GET', '/api/v1/org-config', undefined, body.token)).body.error.code, 'VIEWING_AS_ENDED');
+});
+
+/** Open a WebSocket and report how the upgrade was answered. */
+function upgrade(path: string, headers: Record<string, string>): Promise<{ status: number; body: string }> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`${base.replace('http', 'ws')}${path}`, { headers });
+    ws.on('unexpected-response', (_req, res) => {
+      let body = ''; res.on('data', (c: Buffer) => { body += c; }); res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    ws.on('open', () => { ws.close(); resolve({ status: 101, body: '' }); });
+    ws.on('error', () => undefined);
+  });
+}
+
+test('a tab viewing as a partner never joins a live room, by header or by the query marker', async () => {
+  const admin = await login('admin@test');
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', {});
+  const byHeader = await upgrade(`${COLLAB_WS_PREFIX}ses_anything`, { cookie: admin, [VIEW_AS_HEADER]: body.token });
+  assert.equal(byHeader.status, 403);
+  assert.match(byHeader.body, /VIEWING_AS/);
+  const byMarker = await upgrade(`${COLLAB_WS_PREFIX}ses_anything?view-as=1`, { cookie: admin });
+  assert.equal(byMarker.status, 403);
+  assert.match(byMarker.body, /VIEWING_AS/);
+});
+
+test('the browser cache is kept apart: a view is never stored, and every partner read varies on the view', async () => {
+  const admin = await login('admin@test');
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', { company: 'northwind' });
+  for (const path of ['/catalog/tools/index.json', '/api/v1/org-config', '/tools/price-sheet/tool.json']) {
+    const viewed = await fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: body.token } });
+    assert.equal(viewed.status, 200, path);
+    assert.match(viewed.headers.get('cache-control') ?? '', /\bno-store\b/, `${path}: a view is never stored`);
+    assert.match(viewed.headers.get('vary') ?? '', /x-lw-view-as/i, path);
+    const own = await fetch(`${base}${path}`, { headers: { cookie: admin } });
+    assert.match(own.headers.get('vary') ?? '', /x-lw-view-as/i, `${path}: the admin's own answer varies on the view too`);
+  }
+});
+
+test('a later authentication in the same request checks the admin again, so a view that ended mid-request answers nothing', async () => {
+  const admin = { id: 'u-admin', sessionEpoch: 2, groups: ['admin'], role: 'admin' } as unknown as UserRecord;
+  let session: UserRecord | null = admin;
+  let manages = true;
+  const audits: string[] = [];
+  const view = createViewAs({
+    sessionMember: async () => session, delegated: () => false, mayManage: async () => manages,
+    programme: async (id) => ({ id, name: 'Resellers' }), company: async (id) => ({ id, programmeId: 'resellers', name: 'Northwind IT' }),
+    roleOf: () => 'member', secret: SECRET, verifySecrets: SECRET, audit: async (_a, action) => { audits.push(action); },
+  });
+  const token = signViewAs({ v: 1, u: 'u-admin', e: 2, p: 'resellers', c: 'northwind', exp: Math.floor(Date.now() / 1000) + 60 }, SECRET);
+  const headers: Record<string, unknown> = {};
+  const res = { setHeader(n: string, v: unknown) { headers[n] = v; }, getHeader(n: string) { return headers[n]; }, writeHead() { return this; }, end() { return this; } } as unknown as ServerResponse;
+  const request = () => ({ method: 'GET', url: '/catalog/x.png', headers: { cookie: 'lw_session=x', [VIEW_AS_HEADER]: token } }) as unknown as IncomingMessage;
+  // Passed at the gate, then the admin loses the programme before the route checks again.
+  let req = request();
+  assert.equal(await view.gate(req, res, '/catalog/x.png'), false);
+  assert.ok((await view.member(req))?.groups.includes('company-northwind'));
+  manages = false;
+  assert.equal(await view.member(req), null, 'no longer managing the programme');
+  // The same for an admin disabled or signed out everywhere in between.
+  manages = true; req = request();
+  assert.equal(await view.gate(req, res, '/catalog/x.png'), false);
+  session = { ...admin, sessionEpoch: 3 } as UserRecord;
+  assert.equal(await view.member(req), null, 'signed out everywhere');
+  session = admin; req = request();
+  assert.equal(await view.gate(req, res, '/catalog/x.png'), false);
+  session = null;
+  assert.equal(await view.member(req), null, 'disabled');
+  // A request that is not a view is not this module's to answer.
+  assert.equal(await view.member({ method: 'GET', url: '/', headers: {} } as unknown as IncomingMessage), undefined);
 });

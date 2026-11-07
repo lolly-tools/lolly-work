@@ -135,6 +135,7 @@ import type { BoxRow, CanvasOp, GeometryField, OpOrigin, ParamValue, Scalar } fr
 import { sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
 import type { ProjectRecord, SessionRecord, Store, UserRecord } from '../store/types.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
+import { isViewAsUpgrade } from '../programmes/view-as.ts';
 import { guestActor, readPrincipal, type GuestSession } from '../iam/sessions.ts';
 import { localSessionKey } from '../iam/local-logout.ts';
 import { linkResourceSelectors, type LinkRecord } from '../links/sign.ts';
@@ -1901,6 +1902,12 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         return true;
       }
       if (sessionId === null) return false;
+      // A tab viewing as a partner (programmes/view-as.ts) is read-only: it never joins
+      // a room, as the partner or as the admin.
+      if (isViewAsUpgrade(req)) {
+        try { refuse(socket, 403, 'VIEWING_AS', 'Not while viewing as a partner.'); } catch { socket.destroy(); }
+        return true;
+      }
       try {
         // The socket is ours from here; auth is async, so guard it against an
         // error in the gap (an unhandled 'error' on a raw socket kills the process).

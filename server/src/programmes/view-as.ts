@@ -45,6 +45,14 @@ export const VIEW_AS_READS: readonly RegExp[] = [
   /^\/api\/v1\/me\/company\/profile$/,
 ];
 
+/** A WebSocket upgrade from a tab viewing as a partner: the header, or the query
+ *  marker a browser has to use, since it cannot set a header on a WebSocket. A view
+ *  never joins a live room, as the partner or as the admin. */
+export function isViewAsUpgrade(req: IncomingMessage): boolean {
+  if (req.headers[VIEW_AS_HEADER] !== undefined) return true;
+  try { return new URL(req.url ?? '/', 'http://local').searchParams.has('view-as'); } catch { return true; }
+}
+
 /** What a token says. Short keys: the token travels on every request of the tab. */
 export interface ViewAsClaim {
   v: 1;
@@ -105,6 +113,38 @@ export function viewAsSubject(claim: ViewAsClaim, role: string, label: string, n
   } as UserRecord;
 }
 
+/**
+ * Keep the browser's own cache apart for a route that can answer both ways: every
+ * answer varies on the view header, and an answer to a view is never stored, so
+ * switching from one company to another, or back to the admin's own view, never
+ * reads bytes cached for the other. Headers a route passes to writeHead are merged.
+ */
+function partitionCache(res: ServerResponse, view: boolean): void {
+  const original = res.writeHead;
+  const varyWith = (vary: unknown): string =>
+    [...new Set([...String(vary ?? '').split(',').map((v) => v.trim()).filter(Boolean), VIEW_AS_HEADER])].join(', ');
+  res.writeHead = function (this: ServerResponse, status: number, ...args: unknown[]) {
+    const at = typeof args[0] === 'string' ? 1 : 0;
+    const passed = args[at];
+    if (passed && typeof passed === 'object' && !Array.isArray(passed)) {
+      const headers = { ...(passed as Record<string, unknown>) };
+      let vary: unknown = this.getHeader('vary');
+      for (const name of Object.keys(headers)) {
+        const lower = name.toLowerCase();
+        if (lower === 'vary') { vary = headers[name]; delete headers[name]; }
+        if (view && lower === 'cache-control') delete headers[name];
+      }
+      headers.vary = varyWith(vary);
+      if (view) headers['cache-control'] = 'no-store';
+      args[at] = headers;
+    } else {
+      this.setHeader('vary', varyWith(this.getHeader('vary')));
+      if (view) this.setHeader('cache-control', 'no-store');
+    }
+    return Reflect.apply(original, this, [status, ...args]);
+  } as ServerResponse['writeHead'];
+}
+
 /** What org-config says about an active view, for the app's banner. */
 export interface ViewingAs { programme: { id: string; name: string }; company?: { id: string; name: string } }
 
@@ -124,7 +164,7 @@ export interface ViewAsDeps {
 }
 
 /** One request's view: who answers, and who asked. */
-interface ActiveView { member: UserRecord; admin: UserRecord; viewingAs: ViewingAs }
+interface ActiveView { member: UserRecord; admin: UserRecord; viewingAs: ViewingAs; claim: ViewAsClaim }
 
 export function createViewAs(deps: ViewAsDeps) {
   const now = () => (deps.now ? deps.now() : Date.now());
@@ -144,36 +184,70 @@ export function createViewAs(deps: ViewAsDeps) {
    * Run before any route. Returns true when it answered the request itself (a refusal).
    * A request with no header passes untouched.
    */
+  /**
+   * The check every view-as request passes, at the gate and again at every later
+   * authentication in the same request: the admin behind the request's own session,
+   * at the epoch the token names, still managing a programme and company that are
+   * still there. Returns what failed, or the view.
+   */
+  async function check(req: IncomingMessage, claim: ViewAsClaim): Promise<{ fail: 'mismatch'; admin: UserRecord | null } | { fail: 'ended' } | { view: ActiveView }> {
+    const admin = deps.delegated(req) || req.headers.authorization !== undefined ? null : await deps.sessionMember(req);
+    if (!admin || admin.id !== claim.u || admin.sessionEpoch !== claim.e) return { fail: 'mismatch', admin };
+    const viewingAs = (await deps.mayManage(admin, claim.p)) ? await scope(claim) : null;
+    if (!viewingAs) return { fail: 'ended' };
+    const groups = viewAsGroups(claim);
+    const label = viewingAs.company ? viewingAs.company.name : viewingAs.programme.name;
+    return { view: { member: viewAsSubject(claim, deps.roleOf(groups), label), admin, viewingAs, claim } };
+  }
+
+  const ended = (res: ServerResponse): true => {
+    sendError(res, 403, 'VIEWING_AS_ENDED', 'This view as a partner has ended. Stop viewing and start again.');
+    return true;
+  };
+
+  /**
+   * Run before any route. Returns true when it answered the request itself (a refusal).
+   * A request with no header passes, with only its cache kept apart from a view's.
+   */
   async function gate(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<boolean> {
+    const method = req.method ?? 'GET';
+    const partnerRead = (method === 'GET' || method === 'HEAD') && VIEW_AS_READS.some((re) => re.test(pathname));
     const header = req.headers[VIEW_AS_HEADER];
-    if (header === undefined) return false;
+    if (header === undefined) { if (partnerRead) partitionCache(res, false); return false; }
     // The admin's own sign-in plumbing (session, sign-out) stays theirs.
     if (pathname.startsWith('/api/auth/')) return false;
     const claim = readViewAs(Array.isArray(header) ? header[0] : header, deps.verifySecrets, now());
-    if (!claim) { sendError(res, 403, 'VIEWING_AS_ENDED', 'This view as a partner has ended. Stop viewing and start again.'); return true; }
-    const admin = deps.delegated(req) ? null : await deps.sessionMember(req);
-    if (!admin || admin.id !== claim.u || admin.sessionEpoch !== claim.e) {
-      await deps.audit(admin ? `user:${admin.id}` : 'anonymous', 'programme.view-as.mismatch', `programme:${claim.p}`, {
+    if (!claim) return ended(res);
+    const result = await check(req, claim);
+    if ('fail' in result && result.fail === 'mismatch') {
+      await deps.audit(result.admin ? `user:${result.admin.id}` : 'anonymous', 'programme.view-as.mismatch', `programme:${claim.p}`, {
         via: 'view-as', claimedUser: claim.u, path: pathname, ...(claim.c ? { company: claim.c } : {}),
       });
       sendError(res, 403, 'VIEWING_AS_MISMATCH', 'This view as a partner belongs to another session.');
       return true;
     }
-    const method = req.method ?? 'GET';
-    if ((method !== 'GET' && method !== 'HEAD') || !VIEW_AS_READS.some((re) => re.test(pathname))) {
-      sendError(res, 403, 'VIEWING_AS', 'Not while viewing as a partner.');
-      return true;
-    }
-    const viewingAs = (await deps.mayManage(admin, claim.p)) ? await scope(claim) : null;
-    if (!viewingAs) { sendError(res, 403, 'VIEWING_AS_ENDED', 'This view as a partner has ended. Stop viewing and start again.'); return true; }
-    const groups = viewAsGroups(claim);
-    const label = viewingAs.company ? viewingAs.company.name : viewingAs.programme.name;
-    active.set(req, { member: viewAsSubject(claim, deps.roleOf(groups), label), admin, viewingAs });
+    if (!partnerRead) { sendError(res, 403, 'VIEWING_AS', 'Not while viewing as a partner.'); return true; }
+    if ('fail' in result) return ended(res);
+    active.set(req, result.view);
+    partitionCache(res, true);
     return false;
   }
 
-  /** The partner this request answers as, when it is a view-as read. */
-  const member = (req: IncomingMessage): UserRecord | undefined => active.get(req)?.member;
+  /**
+   * Who a request authenticates as, when it is a view: the partner, after the same
+   * check the gate ran, so a route that authenticates again after slow work (a file
+   * conversion, say) sees an admin who was disabled, signed out everywhere or lost the
+   * programme in between. `undefined` when the request is not a view, `null` when the
+   * view has ended.
+   */
+  async function member(req: IncomingMessage): Promise<UserRecord | null | undefined> {
+    const view = active.get(req);
+    if (!view) return undefined;
+    const result = await check(req, view.claim);
+    if ('fail' in result) { active.delete(req); return null; }
+    active.set(req, result.view);
+    return result.view.member;
+  }
 
   /** Mark an org-config payload as a view: the banner's names, and no write offered. */
   function decorate<T extends { can: Record<string, boolean> }>(req: IncomingMessage, payload: T): T & { viewingAs?: ViewingAs } {

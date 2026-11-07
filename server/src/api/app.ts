@@ -611,7 +611,7 @@ export function buildApp(deps: AppDeps): App {
   // the disabled-account and pre-epoch-token refusals.
   const memberOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
     // A view-as read answers as the partner it names (programmes/view-as.ts).
-    const viewed = viewAs.member(req); if (viewed) return viewed;
+    const viewed = await viewAs.member(req); if (viewed !== undefined) return viewed;
     const delegated = agentRequests.principal(req);
     if (!delegated) return resolveMember(store, req.headers.cookie, sessionVerify);
     const user = await store.getUser(delegated.userId);
