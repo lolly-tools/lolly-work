@@ -774,7 +774,8 @@ export function buildApp(deps: AppDeps): App {
         id: built.toolId, assetId: rec.id, files: built.files, digests,
         entry: {
           id: built.toolId, name: manifest.name ?? entry.name, ...(manifest.description ? { description: manifest.description } : {}),
-          version: manifest.version, status: 'community', category: 'designer', tags: ['template'],
+          // Published by this workspace, so it reads as the workspace's own, not as a community tool.
+          version: manifest.version, status: 'official', category: 'designer', tags: ['template'],
           formats: manifest.render?.formats ?? [], width: manifest.render?.width, height: manifest.render?.height,
           exportable: true, templateId: rec.id,
           // A retired rules tool still opens for a saved copy, but leaves the gallery.
