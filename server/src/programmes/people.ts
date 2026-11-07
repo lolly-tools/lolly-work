@@ -9,7 +9,7 @@
  * groups: a membership record only adds what a group cannot hold, the end
  * date and who added the person.
  */
-import { PROGRAMME_ID } from './types.ts';
+import { COMPANY_GROUP_PREFIX, isCompanyGroup, PROGRAMME_ID } from './types.ts';
 
 export interface CompanyRecord {
   /** A permanent slug, unique across the instance. */
@@ -41,9 +41,8 @@ export interface MembershipRecord {
   endedAt?: string;
 }
 
-export const COMPANY_GROUP_PREFIX = 'company-';
+export { COMPANY_GROUP_PREFIX, isCompanyGroup };
 export const companyGroup = (id: string): string => `${COMPANY_GROUP_PREFIX}${id}`;
-export const isCompanyGroup = (g: string): boolean => g.startsWith(COMPANY_GROUP_PREFIX) && g.length > COMPANY_GROUP_PREFIX.length;
 export const COMPANY_ID = PROGRAMME_ID;
 
 const EMAIL = /^[^\s@,;<>"]+@[^\s@,;<>".][^\s@,;<>"]*$/;

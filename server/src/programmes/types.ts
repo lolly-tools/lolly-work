@@ -66,6 +66,28 @@ export function programmeGroupsOf(groups: readonly string[]): string[] {
   return groups.filter(isProgrammeGroup);
 }
 
+/** Every company group starts with this (plans/82 M1 part 2). */
+export const COMPANY_GROUP_PREFIX = 'company-';
+
+/** A partner company's group, `company-<id>`. */
+export function isCompanyGroup(group: string): boolean {
+  return group.startsWith(COMPANY_GROUP_PREFIX) && group.length > COMPANY_GROUP_PREFIX.length;
+}
+
+/**
+ * A group that partner scope reads: a programme's or a company's. What is
+ * shared with either reaches the partners in it, and nothing shared with
+ * everyone does. Both are reserved names only the programme routes create.
+ */
+export function isPartnerGroup(group: string): boolean {
+  return isProgrammeGroup(group) || isCompanyGroup(group);
+}
+
+/** The programme and company groups among a person's groups. */
+export function partnerGroupsOf(groups: readonly string[]): string[] {
+  return groups.filter(isPartnerGroup);
+}
+
 /**
  * The marker a person keeps after leaving their last programme. Joining any
  * programme group adds it (the store's setLocalGroups), and leaving one never
@@ -83,7 +105,7 @@ export function withPartnerMarker(localGroups: string[]): string[] {
 /** Group names only the programme routes may create: programme groups, company
  *  groups (`company-<id>`, plans/82 M1 part 2) and the partner marker. */
 export function reservedGroupName(name: string): boolean {
-  return name === PARTNER_GROUP || name.startsWith(PROGRAMME_GROUP_PREFIX) || name.startsWith('company-');
+  return name === PARTNER_GROUP || name.startsWith(PROGRAMME_GROUP_PREFIX) || name.startsWith(COMPANY_GROUP_PREFIX);
 }
 
 /**
