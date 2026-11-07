@@ -7,6 +7,18 @@
  * template draws an SVG, so it renders in process and never meets the
  * worker. Set LW_RENDER_CANARY_SHELL to a built shell (its dist, which also
  * carries tools/ and catalog/) to run it.
+ *
+ * A release shell pins a catalog public key and refuses a catalog the
+ * instance does not sign. For one, also set LW_RENDER_CANARY_PUBLIC_KEY to
+ * the public JWK it was built with and LW_RENDER_CANARY_SIGNING_KEY to that
+ * disposable fixture's private key, as the project-files canary takes them.
+ * The third render is the preview deploy smoke's own request: a member
+ * service token whose only grant is export.server on tool:qr-code.
+ *
+ * Why the budget matters (plan 353, 2026-11-07): a lolly.ing release shell
+ * built with SUSE and Lolly Demo side by side takes 516 requests for a
+ * qr-code render, 7 more than with SUSE alone (509), so the flat 512 refused
+ * it and the smoke got a 502.
  */
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -68,10 +80,16 @@ async function setup() {
   const { requestBudgetFor, shellAppFiles } = await import('../workers/render/src/request-budget.ts');
   let counting = false;
   let served = 0;
+  // What a failed render leaves behind: refused requests and the page's own errors.
+  const failed: string[] = [];
+  const diagnostics: string[] = [];
   let handler: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined;
   const app = createServer((req, res) => {
-    // The renders' own API calls come from this test with a session cookie; the page's do not.
-    if (counting && !req.headers.cookie?.includes('lw_session=')) served++;
+    // The renders' own API calls come from this test with a session cookie or a
+    // service token; the page's carry neither.
+    if (counting && !req.headers.cookie?.includes('lw_session=') && !req.headers.authorization) served++;
+    const path = (req.url ?? '').split('?')[0]!;
+    res.once('finish', () => { if (counting && res.statusCode >= 400 && failed.length < 20) failed.push(`${res.statusCode} ${path}`); });
     void handler!(req, res);
   });
   await new Promise<void>((resolve) => app.listen(0, '127.0.0.1', resolve));
@@ -85,17 +103,35 @@ async function setup() {
   const { chromium } = await import(playwrightPath) as { chromium: { launch(o: object): Promise<Browser> } };
   const { workerBrowserOptions } = await import('../workers/render/src/browser-launch.ts');
   const browser = await chromium.launch(workerBrowserOptions());
+  const createContext = browser.newContext.bind(browser);
+  browser.newContext = async (options) => {
+    const context = await createContext(options);
+    context.on('page', (page) => {
+      page.on('pageerror', (error) => { if (diagnostics.length < 20) diagnostics.push(error.message.slice(0, 500)); });
+      page.on('console', (message) => { if (message.type() === 'error' && diagnostics.length < 20) diagnostics.push(message.text().slice(0, 500)); });
+    });
+    return context;
+  };
   const worker = await import('../workers/render/src/server.ts');
   worker.__setBrowserGetterForTests(async () => browser as never);
   if (!worker.server.listening) await new Promise((resolve) => worker.server.once('listening', resolve));
+  const catalogPublicKey = process.env.LW_RENDER_CANARY_PUBLIC_KEY ? JSON.parse(process.env.LW_RENDER_CANARY_PUBLIC_KEY) as Record<string, unknown> : undefined;
   const config = parseConfig(JSON.stringify({
-    instance: { name: 'Budget canary', baseUrl: base, pack: shell, shellDir: shell },
+    instance: { name: 'Budget canary', baseUrl: base, pack: shell, shellDir: shell, ...(catalogPublicKey ? { catalogPublicKey } : {}) },
     rateLimit: { enabled: false },
     render: { worker: { url: `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`, timeoutMs: 240_000 } },
     dev: { enabled: true, users: [{ email: 'admin@test', groups: ['admin'] }, { email: 'rita@northwind.test', groups: [] }] },
   }));
   const store = createMemoryStore();
-  handler = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'budget-session', link: 'budget-link', renderWorker: 'request-budget-canary' } });
+  handler = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'budget-session', link: 'budget-link', renderWorker: 'request-budget-canary',
+    ...(process.env.LW_RENDER_CANARY_SIGNING_KEY ? { catalogSigningKey: process.env.LW_RENDER_CANARY_SIGNING_KEY } : {}) } });
+  // The preview deploy smoke's account (deploy/preview/lib/preview_ing_node.py):
+  // a member service token whose only grant is export.server on tool:qr-code.
+  const { mintServiceSecret } = await import('../server/src/iam/service-tokens.ts');
+  const smoke = mintServiceSecret();
+  await store.putApiToken({ id: 'tok_budgetsmoke', label: 'smoke', role: 'member', tokenHash: smoke.tokenHash,
+    createdBy: 'user:canary', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
+  await store.putGrant({ principal: 'user:svc_tok_budgetsmoke', action: 'export.server', resource: 'tool:qr-code', effect: 'allow' });
   const login = async (email: string) => (await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' }))
     .headers.getSetCookie().find((c) => c.startsWith('lw_session='))!.split(';')[0]!;
   const admin = await login('admin@test');
@@ -115,11 +151,15 @@ async function setup() {
   return {
     budget,
     /** One server render, counting the requests the worker's page made to the instance. */
-    async render(who: 'admin' | 'rita', toolId: string, inputs: Record<string, unknown>) {
-      served = 0; counting = true;
+    async render(who: 'admin' | 'rita' | 'smoke', toolId: string, inputs: Record<string, unknown>) {
+      served = 0; counting = true; failed.length = 0; diagnostics.length = 0;
       try {
-        const res = await call(who === 'admin' ? admin : await login('rita@northwind.test'), 'POST', '/api/v1/render', { toolId, format: 'svg', inputs });
-        return { status: res.status, body: Buffer.from(await res.arrayBuffer()).toString('utf8'), requests: served };
+        const res = who === 'smoke'
+          ? await fetch(`${base}/api/v1/render`, { method: 'POST', body: JSON.stringify({ toolId, format: 'svg', inputs }),
+            headers: { authorization: `Bearer ${smoke.secret}`, 'content-type': 'application/json', accept: 'image/svg+xml' } })
+          : await call(who === 'admin' ? admin : await login('rita@northwind.test'), 'POST', '/api/v1/render', { toolId, format: 'svg', inputs });
+        return { status: res.status, body: Buffer.from(await res.arrayBuffer()).toString('utf8'), requests: served,
+          failed: [...failed], diagnostics: [...diagnostics] };
       } finally { counting = false; void rita; }
     },
     async close() {
@@ -132,14 +172,15 @@ async function setup() {
   };
 }
 
-test('qr-code and a Design rules tool render through the worker within the budget it derives from the shell', { skip, timeout: 600_000 }, async () => {
+test('qr-code, a Design rules tool and the deploy smoke\'s own request render through the worker within the budget it derives from the shell', { skip, timeout: 600_000 }, async () => {
   const e = await once();
   assert.ok(e.budget > 512, `the derived budget (${e.budget}) is above the old flat 512`);
-  for (const [who, toolId, inputs] of [['admin', 'qr-code', { url: 'https://example.com' }], ['rita', 'budget-sheet', { price: '€ 990' }]] as const) {
+  for (const [who, toolId, inputs] of [['admin', 'qr-code', { url: 'https://example.com' }], ['rita', 'budget-sheet', { price: '€ 990' }],
+    ['smoke', 'qr-code', { url: 'https://lolly.example/?preview-smoke=1' }]] as const) {
     const out = await e.render(who, toolId, inputs);
-    assert.equal(out.status, 200, `${toolId}: ${out.body.slice(0, 300)}`);
+    assert.equal(out.status, 200, `${who} ${toolId}: ${out.body.slice(0, 300)}\nrefused: ${out.failed.join(', ')}\npage: ${out.diagnostics.join(' | ')}`);
     assert.match(out.body, /<svg[\s>]/, `${toolId} is an SVG`);
-    assert.ok(out.requests > 0 && out.requests <= e.budget, `${toolId}: ${out.requests} requests within ${e.budget}`);
-    console.log(`${toolId}: ${out.requests} requests, budget ${e.budget}`);
+    assert.ok(out.requests > 0 && out.requests <= e.budget, `${who} ${toolId}: ${out.requests} requests within ${e.budget}`);
+    console.log(`${who} ${toolId}: ${out.requests} requests, budget ${e.budget}`);
   }
 });
