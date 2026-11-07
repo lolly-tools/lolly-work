@@ -164,9 +164,34 @@ export function composeInstanceAssets(index: AssetIndex, records: InstanceAssetR
   // plans/26 catalog submit) are ordinary feed members and always compose in.
   const composable = records
     .filter((r) => (r.exited || !r.origin) && submissionServable(r) && instanceAssetVisible(r, callerGroups))
-    .map(servedTemplateEntry);
+    .map((r) => servedWithSri(servedTemplateEntry(r)));
   if (!shadowed.size && !composable.length) return index;
   return { ...index, assets: [...kept, ...composable] };
+}
+
+/**
+ * A served checksum in the asset schema's form (schemas/asset.schema.json):
+ * `sha256-<base64>`. The blob store records a hex digest, and an instance
+ * asset's stored entry keeps it, so the feed converts at serve time; that also
+ * covers rows written before this conversion existed. A release shell checks
+ * every signed format against the SRI form and refuses the whole asset index
+ * when one does not match, so one hex row left the caller with no catalog.
+ * Any other value is left as it is.
+ */
+export function sriChecksum(checksum: unknown): unknown {
+  return typeof checksum === 'string' && /^[0-9a-f]{64}$/.test(checksum)
+    ? `sha256-${Buffer.from(checksum, 'hex').toString('base64')}` : checksum;
+}
+
+/** One served entry with each format's checksum, localized ones included, in SRI form. */
+function servedWithSri(entry: AssetIndexEntry): AssetIndexEntry {
+  const convert = (formats: unknown): unknown => Array.isArray(formats)
+    ? formats.map((f) => f && typeof f === 'object' && 'checksum' in f ? { ...f, checksum: sriChecksum((f as { checksum?: unknown }).checksum) } : f)
+    : formats;
+  const locales = entry.locales && typeof entry.locales === 'object' && !Array.isArray(entry.locales)
+    ? Object.fromEntries(Object.entries(entry.locales as Record<string, unknown>).map(([locale, formats]) => [locale, convert(formats)]))
+    : undefined;
+  return { ...entry, ...(entry.formats ? { formats: convert(entry.formats) as AssetIndexEntry['formats'] } : {}), ...(locales ? { locales } : {}) };
 }
 
 /** Prefix a federated asset id carries - mirrors providers/types EXT_PREFIX
