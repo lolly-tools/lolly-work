@@ -1431,6 +1431,38 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deletePartnerFolder({ provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers' });
   assert.deepEqual(await store.listPartnerFolders(), []);
 
+  // Partner company profiles (plans/82 M3, migrations/0089): a save writes the
+  // row and its history copy together and refuses a stale revision; settings
+  // are never a revision; delete takes the history too.
+  assert.equal(await store.getCompanyProfile('northwind'), null);
+  const profile1 = { companyId: 'northwind', revision: 1, profile: { name: 'Northwind IT', currency: 'EUR', contact: { name: 'Rita', email: 'rita@n.test' } }, updatedBy: 'user:usr_1', updatedAt: '2026-11-07T00:00:00.000Z' };
+  assert.equal(await store.saveCompanyProfile(profile1, 1), false, 'a save against a revision that is not stored writes nothing');
+  assert.equal(await store.getCompanyProfile('northwind'), null);
+  assert.equal(await store.saveCompanyProfile(profile1, 0), true);
+  await store.putCompanyProfileSettings('northwind', { editors: ['usr_2'], approvalChain: 'partner-details' });
+  assert.equal(await store.saveCompanyProfile({ ...profile1, revision: 2, profile: { ...profile1.profile, currency: 'GBP' }, updatedAt: '2026-11-07T01:00:00.000Z' }, 0), false, 'a stale revision is refused');
+  assert.equal(await store.saveCompanyProfile({ ...profile1, revision: 2, profile: { ...profile1.profile, currency: 'GBP' }, updatedAt: '2026-11-07T01:00:00.000Z' }, 1), true);
+  const current = await store.getCompanyProfile('northwind');
+  assert.equal(current?.revision, 2);
+  assert.equal(current?.profile.currency, 'GBP');
+  assert.deepEqual(current?.settings, { editors: ['usr_2'], approvalChain: 'partner-details' }, 'a save keeps the settings');
+  assert.equal(current?.updatedAt, '2026-11-07T01:00:00.000Z');
+  assert.deepEqual((await store.listCompanyProfileHistory('northwind')).map((r) => [r.revision, r.profile.currency]), [[1, 'EUR'], [2, 'GBP']]);
+  assert.deepEqual((await store.getCompanyProfileRevision('northwind', 1))?.profile, profile1.profile);
+  assert.equal(await store.getCompanyProfileRevision('northwind', 3), null);
+  await store.putCompanyProfileSettings('globex', { editors: ['usr_3'] });
+  const settingsOnly = await store.getCompanyProfile('globex');
+  assert.equal(settingsOnly?.revision, 0, 'settings alone make no revision');
+  assert.deepEqual(settingsOnly?.profile, {});
+  assert.deepEqual(await store.listCompanyProfileHistory('globex'), []);
+  assert.deepEqual((await store.listCompanyProfiles()).map((r) => r.companyId), ['globex', 'northwind']);
+  await store.deleteCompanyProfile('northwind');
+  await store.deleteCompanyProfile('globex');
+  await store.deleteCompanyProfile('nope');
+  assert.equal(await store.getCompanyProfile('northwind'), null);
+  assert.deepEqual(await store.listCompanyProfileHistory('northwind'), []);
+  assert.deepEqual(await store.listCompanyProfiles(), []);
+
   // Asset versions (plans/31 section 6, migrations/0020). Keyed (assetId,
   // version), listed oldest-first, and an upsert replaces the snapshot whole -
   // the format SET is what a head move and a rollback swap, so a driver that

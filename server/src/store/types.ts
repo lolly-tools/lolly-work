@@ -2,6 +2,7 @@ import type { ProgrammeRecord } from '../programmes/types.ts';
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
 import type { SubjectStore } from '../privacy/subject.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
@@ -1815,6 +1816,21 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putPartnerFolder(rec: PartnerFolderRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deletePartnerFolder(key: { provider: string; path: string; programmeId: string; companyId?: string }): Promise<void>;
+  // Partner company profiles (plans/82 M3, migrations/0089). One current row
+  // per company plus a history row per revision.
+  getCompanyProfile(companyId: string): Promise<CompanyProfileRecord | null>;
+  listCompanyProfiles(): Promise<CompanyProfileRecord[]>;
+  /** Save a new revision, the row and its history copy together, keeping the
+   *  settings. Writes nothing and answers false when the stored revision is no
+   *  longer `expectRevision` (0 for a company with no profile yet). */
+  saveCompanyProfile(rec: Omit<CompanyProfileRecord, 'settings'>, expectRevision: number): Promise<boolean>;
+  /** Who else may edit, and whether their changes wait. Never a revision. */
+  putCompanyProfileSettings(companyId: string, settings: CompanyProfileSettings): Promise<void>;
+  getCompanyProfileRevision(companyId: string, revision: number): Promise<CompanyProfileRevision | null>;
+  /** Oldest first. */
+  listCompanyProfileHistory(companyId: string): Promise<CompanyProfileRevision[]>;
+  /** The profile and its whole history. Unknown id is a no-op. */
+  deleteCompanyProfile(companyId: string): Promise<void>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
   // cumulative for everything that was KEPT - a returned submission still spent

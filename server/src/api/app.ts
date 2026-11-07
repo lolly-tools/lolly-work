@@ -94,6 +94,8 @@ import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
 import { PARTNER_GROUP, isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
+import { createCompanyProfiles } from '../programmes/profile-routes.ts';
+import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../programmes/logo-checks.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
@@ -5822,8 +5824,29 @@ export function buildApp(deps: AppDeps): App {
   // The company-to-programme map input rules read (programmes/types.ts):
   // loaded now, kept by the company routes, reloaded by the minute sweep.
   void store.listCompanies().then(setCompanyProgrammes, () => undefined);
+  // Partner company profiles (plans/82 M3): the guest brand a partner's pieces
+  // carry. The contrast check reads the lead brand's surfaces from the active
+  // design system's tokens, once per tokens document.
+  const surfaceCache = new WeakMap<object, Promise<LogoSurfaces>>();
+  const companyProfiles = createCompanyProfiles({
+    store, blobs, notifier, baseUrl: config.instance.baseUrl, requireAction, memberOf, audit,
+    surfaces: async () => {
+      const tokens = (await brandChrome.public().catch(() => null))?.tokens;
+      if (!tokens || typeof tokens !== 'object') return DEFAULT_SURFACES;
+      let read = surfaceCache.get(tokens);
+      if (!read) { read = surfacesFromTokens(tokens).catch(() => DEFAULT_SURFACES); surfaceCache.set(tokens, read); }
+      return read;
+    },
+    submitLogo: async (submitter, input) => {
+      const outcome = await submitAsset(submitDeps(), { ...input, submitter });
+      if (outcome.ok) await trimVersionHistory(outcome.record).catch(() => 0);
+      return outcome;
+    },
+  });
+  companyProfiles.register(router);
   registerProgrammePeopleRoutes(router, {
     store, requireAction, audit,
+    forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
     invite: async (actor, email, groups, endsAt) => {
       // The invitation can be accepted until the membership ends, and never for
       // more than the 366 days any invitation may stay open.
@@ -6106,7 +6129,8 @@ export function buildApp(deps: AppDeps): App {
     // the submitter its own, more specific message, so the generic one below is
     // skipped rather than doubled up.
     const wasDomainSubject = isTerminal(next.state)
-      ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id) || await brandPages.settleApproval(next, user.id) || await brandEdits.settleApproval(next, user.id))
+      ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id) || await brandPages.settleApproval(next, user.id) || await brandEdits.settleApproval(next, user.id)
+        || await companyProfiles.settleApproval(next, user.id))
       : false;
     if (isTerminal(next.state) && !wasDomainSubject) {
       await store.putMessage({
@@ -6153,6 +6177,7 @@ export function buildApp(deps: AppDeps): App {
     await settleDeliveryApproval(next, user.id);
     await brandPages.settleApproval(next, user.id);
     await brandEdits.settleApproval(next, user.id);
+    await companyProfiles.settleApproval(next, user.id);
     sendJson(res, 200, serializeApproval(next, user.id, undefined, await actorsMap()));
   });
 

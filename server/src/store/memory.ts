@@ -41,6 +41,7 @@ import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../prog
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { CompanyProfileRecord, CompanyProfileRevision } from '../programmes/profile.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -194,6 +195,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const memberships = new Map<string, MembershipRecord>();
   const partnerDomains = new Map<string, PartnerDomainRecord>();
   const partnerFolders = new Map<string, PartnerFolderRecord>();
+  const companyProfiles = new Map<string, CompanyProfileRecord>();
+  const companyProfileHistory = new Map<string, CompanyProfileRevision[]>();
   const folderKey = (k: { provider: string; path: string; programmeId: string; companyId?: string }) => [k.provider, k.path, k.programmeId, k.companyId ?? ''].join('\n');
   /** `${assetId} ${version}` (space-joined) - the composite key migration 0020 makes a
    *  primary key. One flat map keeps the memory driver's shape as close to the
@@ -1448,6 +1451,37 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deletePartnerFolder(key) {
       partnerFolders.delete(folderKey(key));
+    },
+    async getCompanyProfile(companyId) {
+      const rec = companyProfiles.get(companyId);
+      return rec ? structuredClone(rec) : null;
+    },
+    async listCompanyProfiles() {
+      return [...companyProfiles.values()].map((r) => structuredClone(r)).sort((a, b) => a.companyId.localeCompare(b.companyId));
+    },
+    async saveCompanyProfile(rec, expectRevision) {
+      const prior = companyProfiles.get(rec.companyId);
+      if ((prior?.revision ?? 0) !== expectRevision) return false;
+      companyProfiles.set(rec.companyId, structuredClone({ ...rec, settings: prior?.settings ?? {} }));
+      const history = companyProfileHistory.get(rec.companyId) ?? [];
+      history.push(structuredClone({ companyId: rec.companyId, revision: rec.revision, profile: rec.profile, updatedBy: rec.updatedBy, updatedAt: rec.updatedAt }));
+      companyProfileHistory.set(rec.companyId, history);
+      return true;
+    },
+    async putCompanyProfileSettings(companyId, settings) {
+      const prior = companyProfiles.get(companyId) ?? { companyId, revision: 0, profile: {}, settings: {}, updatedBy: '', updatedAt: '' };
+      companyProfiles.set(companyId, { ...prior, settings: structuredClone(settings) });
+    },
+    async getCompanyProfileRevision(companyId, revision) {
+      const row = (companyProfileHistory.get(companyId) ?? []).find((r) => r.revision === revision);
+      return row ? structuredClone(row) : null;
+    },
+    async listCompanyProfileHistory(companyId) {
+      return (companyProfileHistory.get(companyId) ?? []).map((r) => structuredClone(r)).sort((a, b) => a.revision - b.revision);
+    },
+    async deleteCompanyProfile(companyId) {
+      companyProfiles.delete(companyId);
+      companyProfileHistory.delete(companyId);
     },
 
     async listAssetVersions(assetId) {
