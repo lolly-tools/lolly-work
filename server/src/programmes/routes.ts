@@ -107,7 +107,7 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     const raw = await readJson(req);
     const body = readProgrammeBody(raw);
     if ('error' in body) return sendError(res, 400, 'INVALID_INPUT', body.error);
-    const extra = (raw ?? {}) as { tools?: unknown; collections?: unknown; tokenLimits?: unknown };
+    const extra = (raw ?? {}) as { tools?: unknown; collections?: unknown; tokenLimits?: unknown; approvalChains?: unknown };
     // The limits its tokens take (plans/82 M7): absent keeps what is stored, null
     // returns every figure to the instance default.
     let tokenLimits: TokenLimitOverrides | undefined;
@@ -143,12 +143,26 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     // switch (M2) and the ended state (M5). Token limits (M7) change only when
     // the body names them.
     const limits = extra.tokenLimits === undefined ? prior?.tokenLimits : tokenLimits;
+    // The chains its tokens may ask through (plans/82 M7): absent keeps them, null or [] clears.
+    let chains = prior?.approvalChains;
+    if (extra.approvalChains !== undefined) {
+      if (extra.approvalChains === null) chains = undefined;
+      else {
+        const listed = ids(extra.approvalChains, 'approvalChains');
+        if ('error' in listed) return sendError(res, 400, 'INVALID_INPUT', listed.error);
+        const unknownChains = [];
+        for (const chainId of listed) if (!(await store.getChain(chainId))) unknownChains.push(chainId);
+        if (unknownChains.length) return sendError(res, 400, 'UNKNOWN_CHAIN', `not approval chains: ${unknownChains.slice(0, 5).join(', ')}`);
+        chains = listed.length ? listed.sort() : undefined;
+      }
+    }
     const rec: ProgrammeRecord = {
       id, name: body.name, ...(body.description ? { description: body.description } : {}), ...(team ? { team } : {}),
       createdBy: prior?.createdBy ?? actor.id, createdAt: prior?.createdAt ?? now, updatedAt: now, version: (prior?.version ?? 0) + 1,
       ...(prior?.templatesOnly?.length ? { templatesOnly: prior.templatesOnly } : {}),
       ...(prior?.endedAt ? { endedAt: prior.endedAt, ...(prior.endedBy ? { endedBy: prior.endedBy } : {}), ...(prior.endedExit ? { endedExit: prior.endedExit } : {}) } : {}),
       ...(limits && Object.keys(limits).length ? { tokenLimits: limits } : {}),
+      ...(chains?.length ? { approvalChains: chains } : {}),
     };
     const group = programmeGroup(id);
     const localGroups = await store.listLocalGroups();
@@ -241,5 +255,6 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
 
 /** The audit payload for a programme: what it includes, never who is in it. */
 function summary(v: ProgrammeView): Record<string, unknown> {
-  return { name: v.name, ...(v.description ? { description: v.description } : {}), ...(v.team ? { team: v.team } : {}), tools: v.tools, collections: v.collections.map((c) => c.id), members: v.members.length };
+  return { name: v.name, ...(v.description ? { description: v.description } : {}), ...(v.team ? { team: v.team } : {}), tools: v.tools, collections: v.collections.map((c) => c.id), members: v.members.length,
+    ...(v.approvalChains?.length ? { approvalChains: v.approvalChains } : {}) };
 }

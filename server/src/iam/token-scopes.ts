@@ -22,7 +22,7 @@ import { AUTOMATION_ROLE, ROLES } from '../rbac/evaluate.ts';
 /** Raised when the vocabulary changes meaning. New scopes are added, never redefined. */
 export const TOKEN_SCOPES_VERSION = 1;
 
-export const TOKEN_SCOPES = ['render', 'documents', 'files', 'delivery', 'catalog.read', 'audit.read'] as const;
+export const TOKEN_SCOPES = ['render', 'documents', 'files', 'delivery', 'catalog.read', 'audit.read', 'approvals.request'] as const;
 export type TokenScope = (typeof TOKEN_SCOPES)[number];
 
 /** Plain words for the console, the CLI and the docs. */
@@ -33,6 +33,7 @@ const SCOPE_WORDS: Record<TokenScope, { label: string; description: string }> = 
   delivery: { label: 'Deliver finished renders', description: 'Send this token\'s own finished renders to organisation destinations and follow those sends.' },
   'catalog.read': { label: 'Read the catalog', description: 'Read catalog and tool files, and search the catalog.' },
   'audit.read': { label: 'Read the audit trail', description: 'Read audit records and the audit head.' },
+  'approvals.request': { label: 'Ask for approval', description: 'File an export review on this token\'s own finished renders, read those requests and withdraw them. Deciding stays with people.' },
 };
 
 export function tokenScopeVocabulary(): { version: number; scopes: Array<{ id: TokenScope; label: string; description: string }> } {
@@ -42,7 +43,7 @@ export function tokenScopeVocabulary(): { version: number; scopes: Array<{ id: T
 /** The scopes a token minted for a partner programme may hold (plans/82 M7).
  *  Never `delivery`, which pushes to the lead brand's own destinations, and never
  *  `audit.read`, because the audit trail names people. */
-export const PROGRAMME_TOKEN_SCOPES: readonly TokenScope[] = ['render', 'documents', 'files', 'catalog.read'];
+export const PROGRAMME_TOKEN_SCOPES: readonly TokenScope[] = ['render', 'documents', 'files', 'catalog.read', 'approvals.request'];
 /** What a programme token holds when the manager names no scopes. */
 export const PROGRAMME_TOKEN_DEFAULT_SCOPES: readonly TokenScope[] = ['render', 'catalog.read'];
 
@@ -193,6 +194,13 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'HEAD /tools/*': ['catalog.read'],
   'GET /api/v1/catalog/fields': ['catalog.read'],
   'GET /api/v1/catalog/search': ['catalog.read'],
+
+  // Asking for approval (plans/82 M7): a token files and follows its own export
+  // reviews. Acting on a step, listing approvers and reading the file stay with people.
+  'POST /api/v1/approvals': ['approvals.request'],
+  'GET /api/v1/approvals': ['approvals.request'],
+  'GET /api/v1/approvals/:id': ['approvals.request'],
+  'POST /api/v1/approvals/:id/withdraw': ['approvals.request'],
 
   'GET /api/v1/audit': ['audit.read'],
   'GET /api/v1/audit/head': ['audit.read'],

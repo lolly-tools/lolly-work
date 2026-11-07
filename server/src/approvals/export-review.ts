@@ -99,7 +99,9 @@ export interface ExportReviewSubject {
   /** The person's choice at the request. Absent when the instance did not offer one. */
   recordInCredentials?: boolean;
   fingerprint: string;
-  origin: 'member-session' | 'agent-delegated';
+  /** `service-token`: a token holding `approvals.request` asked about one of its own
+   *  finished renders (plans/82 M7), and the bytes came from that render, not an upload. */
+  origin: 'member-session' | 'agent-delegated' | 'service-token';
   frozenAt: string;
   /** Set once, when the approved file is settled. Outside the fingerprint: it records
    *  what happened after the decision the fingerprint binds. */
@@ -223,6 +225,46 @@ export async function describeExportReview(
     ...(request.recordInCredentials !== undefined ? { recordInCredentials: request.recordInCredentials } : {}),
   };
   return { apiVersion: 'work/export-review-v1', ...facts, fingerprint: exportReviewFingerprint(facts), origin, frozenAt: now, parts: upload.parts };
+}
+
+/**
+ * A service token's own finished render as the reviewed file (plans/82 M7). The
+ * bytes are the render's output, already checked against its receipt, so there
+ * is no upload round trip; the inputs digest is the one the render itself took,
+ * so no gap is possible. Null when the format and the file's opening bytes
+ * disagree.
+ */
+export function describeRenderReview(
+  bytes: Uint8Array,
+  facts: { toolId: string; format: string; name: string; toolVersion: string | null; inputsDigest: string | null },
+  now: string,
+): ExportReviewSubject | null {
+  const media = artifactMedia(facts.format, bytes.subarray(0, TRANSFER_PART_BYTES));
+  if (!media) return null;
+  const parts: TransferPart[] = [];
+  for (let at = 0; at < bytes.length; at += TRANSFER_PART_BYTES) {
+    const chunk = bytes.subarray(at, Math.min(bytes.length, at + TRANSFER_PART_BYTES));
+    parts.push({ size: chunk.length, checksum: sha256Bytes(chunk) });
+  }
+  const frozen: Frozen = {
+    sha256: sha256Bytes(bytes), size: bytes.length, name: facts.name, format: facts.format, ...media,
+    toolId: facts.toolId, toolVersion: facts.toolVersion, inputsDigest: facts.inputsDigest,
+  };
+  return { apiVersion: 'work/export-review-v1', ...frozen, fingerprint: exportReviewFingerprint(frozen), origin: 'service-token', frozenAt: now, parts };
+}
+
+/** Write a render's bytes as the approval's own parts, as an upload's are frozen. */
+export async function freezeRenderBytes(blobs: BlobStore, bytes: Uint8Array, approvalId: string, subject: ExportReviewSubject): Promise<void> {
+  try {
+    for (let n = 0, at = 0; n < subject.parts.length; n++) {
+      const part = subject.parts[n]!;
+      await blobs.put(artifactPartId(approvalId, n), Buffer.from(bytes.subarray(at, at + part.size)), subject.mediaType, { size: part.size, sha256: part.checksum });
+      at += part.size;
+    }
+  } catch (error) {
+    await removeTransferParts({ blobs, partId: part => artifactPartId(approvalId, part) }, subject.parts.length);
+    throw error;
+  }
 }
 
 /** Copy the verified upload to the approval's own parts. A part that fails its
