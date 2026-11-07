@@ -57,7 +57,23 @@ export interface TemplateRouteDeps {
   now?: () => Date;
 }
 
-const PUBLISHED_TYPES = new Set(['template', RULES_TOOL_TYPE]);
+export const PUBLISHED_TYPES: ReadonlySet<string> = new Set(['template', RULES_TOOL_TYPE]);
+
+/**
+ * Retire a published template: new starts stop, saved copies keep working,
+ * and renders that name it answer 410 with the replacement, when there is one.
+ * Audited as `programme.template.retire`; `via` says when something other
+ * than the Retire button did it (an ended partnership, plans/82 M5).
+ */
+export async function retireTemplate(
+  store: Store, audit: Audit, actor: string, programmeId: string, rec: InstanceAssetRecord,
+  opts: { at: string; replacedBy?: string; via?: string },
+): Promise<void> {
+  await store.putInstanceAsset({ ...rec, publication: { ...rec.publication, retiredAt: opts.at, retiredBy: actor, ...(opts.replacedBy ? { replacedBy: opts.replacedBy } : {}) } });
+  await audit(actor, 'programme.template.retire', `programme:${programmeId}`, {
+    template: rec.id, ...(opts.replacedBy ? { replacedBy: opts.replacedBy } : {}), ...(opts.via ? { via: opts.via } : {}),
+  });
+}
 
 /** The groups a programme reaches: its own, and each of its companies'. */
 async function programmeGroups(store: Store, programme: ProgrammeRecord): Promise<Map<string, string>> {
@@ -390,8 +406,7 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       replacedBy = other.id;
     }
     const at = now();
-    await store.putInstanceAsset({ ...rec, publication: { ...rec.publication, retiredAt: at, retiredBy: `user:${actor.id}`, ...(replacedBy ? { replacedBy } : {}) } });
-    await audit(`user:${actor.id}`, 'programme.template.retire', `programme:${programme.id}`, { template: rec.id, ...(replacedBy ? { replacedBy } : {}) });
+    await retireTemplate(store, audit, `user:${actor.id}`, programme.id, rec, { at, ...(replacedBy ? { replacedBy } : {}) });
     sendJson(res, 200, { id: rec.id, retiredAt: at, ...(replacedBy ? { replacedBy } : {}) });
   });
 

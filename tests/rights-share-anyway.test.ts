@@ -224,3 +224,18 @@ test('includeHeld: staff only, fingerprinted on the signed target, never taken f
   assert.equal((await call(rita, 'POST', '/api/v1/links', { kind: 'share', target: { assetId: 'ext/dam/e1' }, includeHeld: true })).status, 403);
   assert.equal((await call(rita, 'POST', '/api/v1/links?dryRun=1', { kind: 'share', target: { assetId: 'ext/dam/e1' } })).status, 200, 'a partner may still look');
 });
+
+test('ending a company lists its share anyway choices in the dry run and withdraws them with via programme-exit', async () => {
+  const bruno = await login('bruno@test');
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/rights/choices', { assetIds: ['acme/photo/sponsored'], company: 'globex' })).status, 200);
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/rights/choices', { assetIds: ['ext/dam/e2'] })).status, 200);
+  const dry = await call(bruno, 'POST', '/api/v1/programmes/exit', { company: 'globex' });
+  assert.equal(dry.status, 200, JSON.stringify(dry.body));
+  assert.deepEqual(dry.body.rightsChoices, [{ assetId: 'acme/photo/sponsored', group: 'company-globex', licence: 'CC-BY-NC-4.0' }], 'the company\'s choice, not the programme\'s');
+  assert.equal((await store.listRightsChoices()).length, 2, 'a dry run withdraws nothing');
+  const applied = await call(bruno, 'POST', '/api/v1/programmes/exit', { company: 'globex', apply: true });
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.deepEqual((await store.listRightsChoices()).map((c) => c.group), ['programme-resellers-emea']);
+  const row = (await store.listAudit()).filter((e) => e.action === 'programme.rights.withdraw').at(-1)!;
+  assert.deepEqual([row.payload!.assetId, row.payload!.group, row.payload!.via], ['acme/photo/sponsored', 'company-globex', 'programme-exit']);
+});
