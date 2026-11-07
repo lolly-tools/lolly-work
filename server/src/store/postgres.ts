@@ -2343,7 +2343,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         [key.provider, key.path, key.programmeId, key.companyId ?? '']);
     },
 
-    // Owner-published marks and licence records (migrations/0091), each kept
+    // Owner-published marks and licence records (migrations/0095), each kept
     // whole as JSON under its key.
     async listAssetRightsMarks() {
       const { rows } = await pool.query('select record from asset_rights_marks order by scope');

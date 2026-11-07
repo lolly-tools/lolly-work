@@ -1826,7 +1826,7 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   listCompanyProfileHistory(companyId: string): Promise<CompanyProfileRevision[]>;
   /** The profile and its whole history. Unknown id is a no-op. */
   deleteCompanyProfile(companyId: string): Promise<void>;
-  // Owner-published marks and licence records (plans/82 M4, migrations/0091).
+  // Owner-published marks and licence records (plans/82 M4, migrations/0095).
   // A mark is keyed by its scope string, a licence record by the asset id.
   listAssetRightsMarks(): Promise<AssetRightsMarkRecord[]>;
   putAssetRightsMark(rec: AssetRightsMarkRecord): Promise<void>;
