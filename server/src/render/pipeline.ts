@@ -248,6 +248,91 @@ async function renderTemplateFor(deps: RenderDeps, query: string, toolId: string
   return template;
 }
 
+/** A rules tool's own rules, checked before a durable render is accepted, so a
+ *  refused input answers at once rather than as a failed render (plans/82 M7). */
+export async function checkDesignRules(engine: EngineApi, tool: LoadedTool, query: string, format: string): Promise<void> {
+  const expanded = vectorFieldParams(await engine.expandQuery(query), tool.manifest);
+  const st = engine.parseUrlState(expanded, tool.manifest);
+  requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, format);
+}
+
+type VectorInput = { id: string; type: string; urlKey?: string; fields?: { id: string }[] };
+
+/**
+ * URL mode reads a vector input only as one flat param per field (`frame.x=30`).
+ * The API and MCP take inputs as JSON, so a vector arrives as one object, which
+ * queryFromInputs writes as `frame={"x":30,...}`. That form becomes the
+ * per-field params here, before the query is read, so a framing value given as
+ * an object renders and digests the same as the same value given per field.
+ */
+export function vectorFieldParams(query: string, manifest: LoadedTool['manifest']): string {
+  const vectors = ((manifest.inputs ?? []) as VectorInput[]).filter((input) => input.type === 'vector');
+  if (!vectors.length) return query;
+  const params = new URLSearchParams(query);
+  let changed = false;
+  for (const input of vectors) {
+    for (const key of [input.id, input.urlKey].filter((k): k is string => !!k)) {
+      const raw = params.get(key);
+      if (raw === null || !raw.trimStart().startsWith('{')) continue;
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch { continue; }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      params.delete(key);
+      changed = true;
+      for (const field of input.fields ?? []) {
+        const value = (parsed as Record<string, unknown>)[field.id];
+        if ((typeof value === 'number' || typeof value === 'string') && !params.has(`${key}.${field.id}`)) params.set(`${key}.${field.id}`, String(value));
+      }
+    }
+  }
+  return changed ? params.toString() : query;
+}
+
+/** One refusal under a rules tool's own rules, as validate lists them and the
+ *  render answers the first kind of. */
+export interface DesignRuleIssue { code: 'INPUT_LOCKED' | 'FORMAT_NOT_ALLOWED' | 'INPUT_NOT_ALLOWED'; message: string; param?: string }
+
+/** Every param a rules tool reads: each declared input by id and urlKey, and a
+ *  vector input's per-field params. */
+function designParamKeys(manifest: LoadedTool['manifest']): Set<string> {
+  const keys = new Set<string>();
+  for (const input of (manifest.inputs ?? []) as VectorInput[]) {
+    for (const key of [input.id, input.urlKey].filter((k): k is string => !!k)) {
+      keys.add(key);
+      if (input.type === 'vector') for (const field of input.fields ?? []) keys.add(`${key}.${field.id}`);
+    }
+  }
+  return keys;
+}
+
+/**
+ * The issues a request raises under a rules tool's own rules (plans/82 M2):
+ * a param the tool does not read (INPUT_LOCKED), a format the designer did not
+ * enable (FORMAT_NOT_ALLOWED, checked only when a format is given) and a value
+ * outside the designer's choices (INPUT_NOT_ALLOWED). Empty for any other tool.
+ */
+export function designRuleIssues(engine: EngineApi, manifest: LoadedTool['manifest'], query: string, values: Record<string, unknown>, format?: string): DesignRuleIssue[] {
+  const policy = (manifest as { designTool?: { formats?: string[] } }).designTool;
+  if (!policy) return [];
+  const issues: DesignRuleIssue[] = [];
+  const known = designParamKeys(manifest);
+  const fixed = [...new Set([...new URLSearchParams(query).keys()])].filter((key) => !engine.RESERVED.has(key) && !known.has(key));
+  for (const param of fixed) issues.push({ code: 'INPUT_LOCKED', message: `The designer fixed ${param}`, param });
+  if (format !== undefined && Array.isArray(policy.formats) && !policy.formats.includes(format)) {
+    issues.push({ code: 'FORMAT_NOT_ALLOWED', message: `The designer allows only ${policy.formats.join(', ')} for this tool` });
+  }
+  try { engine.assertDesignValues(policy, values); }
+  catch (error) {
+    const inputs = (manifest.inputs ?? []) as { id: string; label?: string }[];
+    for (const message of String((error as Error).message ?? error).split('\n').filter(Boolean)) {
+      const input = inputs.find((i) => message.startsWith(`${i.label || i.id}:`))
+        ?? inputs.find((i) => Object.hasOwn(values, i.id) && message.includes(i.id)) ?? inputs.find((i) => Object.hasOwn(values, i.id));
+      issues.push({ code: 'INPUT_NOT_ALLOWED', message, ...(input ? { param: input.id } : {}) });
+    }
+  }
+  return issues;
+}
+
 /**
  * A rules tool's own rules (plans/82 M2): a tool whose manifest carries a
  * `designTool` policy was made with Share with rules, and the designer fixed
@@ -256,23 +341,19 @@ async function renderTemplateFor(deps: RenderDeps, query: string, toolId: string
  * a value outside the designer's choices (an option, a range, an approved
  * image) answers 422 INPUT_NOT_ALLOWED; and only the designer's formats render.
  */
-function requireDesignRules(engine: EngineApi, manifest: LoadedTool['manifest'], query: string, values: Record<string, unknown>, declared: string[], format: string): void {
-  const policy = (manifest as { designTool?: { formats?: string[] } }).designTool;
-  if (!policy) return;
-  const known = new Set(declared);
-  const fixed = [...new Set([...new URLSearchParams(query).keys()])].filter((key) => !engine.RESERVED.has(key) && !known.has(key));
-  if (fixed.length) {
-    throw new RenderError('INPUT_LOCKED', 422, `The designer fixed these: ${fixed.join(', ')}`,
-      fixed.map((param) => ({ param, code: 'INPUT_LOCKED' as const })));
+function requireDesignRules(engine: EngineApi, manifest: LoadedTool['manifest'], query: string, values: Record<string, unknown>, format: string): void {
+  const issues = designRuleIssues(engine, manifest, query, values, format);
+  const locked = issues.filter((issue) => issue.code === 'INPUT_LOCKED').map((issue) => issue.param!);
+  if (locked.length) {
+    throw new RenderError('INPUT_LOCKED', 422, `The designer fixed these: ${locked.join(', ')}`,
+      locked.map((param) => ({ param, code: 'INPUT_LOCKED' as const })));
   }
-  if (Array.isArray(policy.formats) && !policy.formats.includes(format)) {
-    throw new RenderError('FORMAT_NOT_ALLOWED', 403, `The designer allows only ${policy.formats.join(', ')} for this tool`);
-  }
-  try { engine.assertDesignValues(policy, values); }
-  catch (error) {
-    const message = String((error as Error).message ?? error);
-    const param = declared.find((id) => Object.hasOwn(values, id) && message.includes(id)) ?? declared.find((id) => Object.hasOwn(values, id)) ?? '';
-    throw new RenderError('INPUT_NOT_ALLOWED', 422, message, param ? [{ param, code: 'INPUT_NOT_ALLOWED' }] : undefined);
+  const format_ = issues.find((issue) => issue.code === 'FORMAT_NOT_ALLOWED');
+  if (format_) throw new RenderError('FORMAT_NOT_ALLOWED', 403, format_.message);
+  const values_ = issues.filter((issue) => issue.code === 'INPUT_NOT_ALLOWED');
+  if (values_.length) {
+    const param = values_.find((issue) => issue.param)?.param ?? '';
+    throw new RenderError('INPUT_NOT_ALLOWED', 422, values_.map((issue) => issue.message).join('\n'), param ? [{ param, code: 'INPUT_NOT_ALLOWED' }] : undefined);
   }
 }
 
@@ -294,7 +375,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   }
   const engine = await loadEngine(), plan = production.repair;
   const tool = await loadForRender(req.toolId, id => engine.loadTool(id, path => readFile(join(deps.config.instance.pack, 'tools', path), 'utf8')));
-  const expanded = await engine.expandQuery(req.query), state = engine.parseUrlState(expanded, tool.manifest);
+  const expanded = vectorFieldParams(await engine.expandQuery(req.query), tool.manifest), state = engine.parseUrlState(expanded, tool.manifest);
   const declared = new Set((tool.manifest.inputs as { id: string }[]).map(input => input.id));
   if (Object.keys(plan.permitted).some(key => !declared.has(key))) throw new ProductionError(['repair-input-not-declared']);
   const inputs = Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: state.values }).filter(i => declared.has(i.id)).map(i => [i.id, i.value]));
@@ -382,7 +463,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const inWorker = hooked || (htmlLayout && !!deps.worker);
 
   // Parse the shared URL-mode query (unpacking a packed z= first).
-  const expanded = await engine.expandQuery(req.query);
+  const expanded = vectorFieldParams(await engine.expandQuery(req.query), tool.manifest);
   const st = engine.parseUrlState(expanded, tool.manifest);
   const template = await renderTemplateFor(deps, expanded, req.toolId);
   // Templates only (programmes/templates-only.ts): the render must start from one of
@@ -394,7 +475,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       undefined, { templates: required });
   }
   const declaredIds = (tool.manifest.inputs as { id: string }[]).map((input) => input.id);
-  requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, declaredIds, format);
+  requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, format);
 
   // Policy BEFORE render. A caller that supplies a locked/hidden/not-allowed
   // param is refused (422); then the overlay's locked values are baked over the

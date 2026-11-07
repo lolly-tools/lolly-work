@@ -231,7 +231,7 @@ import { readToolInputs } from '../policy/tool-inputs.ts';
 import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkKind, type LinkRecord } from '../links/sign.ts';
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
-import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
+import { checkDesignRules, renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
 import type { RenderPartner } from '../render/record.ts';
 import { templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
@@ -11241,6 +11241,9 @@ export function buildApp(deps: AppDeps): App {
     if (!body || typeof body !== 'object' || Array.isArray(body)) { sendError(res, 400, 'INVALID_INPUT', 'JSON object body required'); return null; }
     return body as Record<string, unknown>;
   };
+  /** A published rules tool's own files for this caller, or null for a pack tool (plans/82 M2, M7). */
+  const publishedToolFiles = (caller: { user: UserRecord | null; groups: string[] }) => async (toolId: string) =>
+    caller.user ? (await instanceToolsFor(caller.groups)).get(toolId)?.files ?? null : null;
   // One rule for every automation route and for discovery (automation/effective-contract.ts).
   const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> =>
     mayRenderTool(caller.user, toolId, await store.listOverlays(), await store.listGrants(), config.policy.defaultAccessMode,
@@ -11314,11 +11317,28 @@ export function buildApp(deps: AppDeps): App {
   const validateRenderRequest = async (principal: string, request: RenderSpec): Promise<void> => {
     const caller = await currentRenderCaller(principal, request);
     if (!renderCaps.formats.includes(request.format)) throw new RenderResourceError('FORMAT_UNSUPPORTED', 422, 'this deployment cannot render the requested format');
+    // A published rules tool (plans/82 M2) is validated from its own files, built for
+    // this caller's feed, and under its own rules, as its render will be.
+    const own = (await instanceToolsFor(caller.groups)).get(request.toolId)?.files ?? null;
     try {
-      const result = await validateVerb({ pack: config.instance.pack, profile: caller.profile }, { toolId: request.toolId, inputs: request.inputs }) as { ok: boolean };
+      // The designer's rules first, so a fixed or ruled-out input is named with its own code.
+      if (own) {
+        const engine = await loadEngine();
+        const tool = await engine.loadTool(request.toolId, async (path: string) => {
+          const file = own.get(path.slice(path.indexOf('/') + 1));
+          if (!file) throw Object.assign(new Error(`no such file: ${path}`), { code: 'ENOENT' });
+          return file.toString('utf8');
+        });
+        await checkDesignRules(engine, tool, queryFromInputs(request.inputs), request.format);
+      }
+      const result = await validateVerb({ pack: config.instance.pack, profile: caller.profile, ...(own ? { toolFiles: async () => own } : {}) }, { toolId: request.toolId, inputs: request.inputs }) as { ok: boolean };
       if (!result.ok) throw new RenderResourceError('INPUT_VALIDATION_FAILED', 422, 'inputs do not satisfy the tool schema');
     } catch (e) {
       if (e instanceof RenderResourceError) throw e;
+      if (e instanceof RenderError) {
+        const v = e.violations?.[0];
+        throw new RenderResourceError(e.code, e.status, e.message, v ? { input: v.param } : undefined);
+      }
       throw new RenderResourceError('TOOL_UNAVAILABLE', 422, 'tool could not be loaded for validation');
     }
   };
@@ -11423,7 +11443,7 @@ export function buildApp(deps: AppDeps): App {
     // Compile, validate and package read this policy. Batch rows render through the
     // pipeline, which applies the rules for the batch format itself.
     const governed = ['compile', 'validate', 'package'].includes(job.verb) ? body.toolId : undefined;
-    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format) };
+    const context = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format) };
     if (job.verb === 'batch') {
       if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const record = job;
@@ -11537,6 +11557,8 @@ export function buildApp(deps: AppDeps): App {
       const token = await presentedServiceToken(req);
       return token ? tokenLimits.ownView(token.record) : null;
     },
+    // Published rules tools are used, described and rendered from the caller's own feed (plans/82 M2, M7).
+    publishedTools: (groups) => instanceToolsFor(groups),
     providerRefs: async (groups) => {
       await providersReady;
       const enabled = (await store.listProviders()).filter(provider => provider.enabled);
@@ -11667,7 +11689,7 @@ export function buildApp(deps: AppDeps): App {
       const body = await automationBody(req, res); if (!body) return;
       if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
       const hostedResolver = hostedAssetResolverFor(caller.groups);
-      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver, readUpload: automationUploadReader(caller.principal), ...automationFiles(caller),
+      const automationContext = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver, readUpload: automationUploadReader(caller.principal), ...automationFiles(caller),
         policy: await automationPolicy(caller, verb === 'compile' || verb === 'validate' ? body.toolId : undefined, body.format) };
       const execute = async (): Promise<unknown> => {
         let result: unknown;
@@ -11705,7 +11727,7 @@ export function buildApp(deps: AppDeps): App {
     if (!(await requireAutomationTools(res, caller, body, body.document))) return;
     const execute = async () => {
       const document = body.document ?? (await compileVerb(
-        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format) },
+        { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format) },
         body as unknown as Parameters<typeof compileVerb>[1],
       ) as { document: unknown }).document;
       return packageVerb(document);
@@ -11796,7 +11818,7 @@ export function buildApp(deps: AppDeps): App {
     const rowPolicy = await automationPolicy(caller, body.toolId, body.format);
     for (let index = 0; index < rows.length; index++) {
       const check = await validateVerb(
-        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups), policy: rowPolicy },
+        { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), policy: rowPolicy },
         { toolId: body.toolId, inputs: rows[index] },
       ) as { ok: boolean; errors?: unknown[] };
       if (!check.ok) return sendError(res, 422, 'ROW_VALIDATION_FAILED', `batch row ${index} does not satisfy the tool input schema`, { row: index, errors: check.errors ?? [] });
