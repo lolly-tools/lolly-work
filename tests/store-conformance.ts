@@ -1431,7 +1431,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deletePartnerFolder({ provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers' });
   assert.deepEqual(await store.listPartnerFolders(), []);
 
-  // Owner-published marks and licence records (plans/82 M4, migrations/0091):
+  // Owner-published marks and licence records (plans/82 M4, migrations/0095):
   // a mark keyed by its scope, a licence record by its asset id, each upserted whole.
   assert.deepEqual(await store.listAssetRightsMarks(), []);
   const mark = { scope: 'folder:dam/event-photos', holder: 'SUSE', terms: 'Published by SUSE. Not an open licence.', statedBy: 'usr_1', statedAt: '2026-11-07T00:00:00.000Z', coveredAtStatement: 180 };
