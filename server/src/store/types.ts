@@ -6,6 +6,8 @@ import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
+/** Which share anyway choices a withdrawal takes. */
+export type RightsChoicePick = { key: { assetId: string; group: string }; programmeId?: string } | { companyId: string } | { programmeId: string };
 import type { InstanceDefaultRecord } from '../catalog/rights-mode.ts';
 import type { TokenLimitOverrides } from '../iam/token-limits.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
@@ -1913,12 +1915,21 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putRightsChoice(rec: RightsChoiceRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deleteRightsChoice(key: { assetId: string; group: string }): Promise<void>;
+  /** Write share anyway choices and one audit event each in one transaction,
+   *  under the choices' own lock. The audience is read again inside it, so a
+   *  programme or company that ended or went meanwhile refuses the write and
+   *  nothing is kept. Null when written. */
+  putRightsChoicesAudited(records: RightsChoiceRecord[], audience: { programmeId: string; companyId?: string }, events: AuditEventBody[]): Promise<null | 'AUDIENCE_GONE' | 'AUDIENCE_ENDED'>;
+  /** Delete the choices `pick` names (one key, a company's, or a programme's
+   *  and its companies') with one audit event each, in one transaction under
+   *  the same lock. Returns what went. */
+  withdrawRightsChoicesAudited(pick: RightsChoicePick, event: (rec: RightsChoiceRecord) => AuditEventBody): Promise<RightsChoiceRecord[]>;
   // Defaults an instance decides once (plans/82 M4, migrations/0098). A memory
   // store records nothing and answers the partner rights default as 'report'.
   getInstanceDefault(key: string): Promise<InstanceDefaultRecord | null>;
   /** Insert once: when the key already has a row, that row is kept and returned. */
   recordInstanceDefault(rec: InstanceDefaultRecord): Promise<InstanceDefaultRecord>;
-  /** Whether any account exists, service accounts included. */
+  /** Whether any account exists: a person, or a stored service token. */
   hasAccounts(): Promise<boolean>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are

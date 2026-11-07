@@ -14,7 +14,8 @@
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import type { AssetIndexEntry } from '../catalog/lifecycle.ts';
 import { rightsAnswer, type RightsEngine } from '../catalog/rights.ts';
-import type { Store } from '../store/types.ts';
+import type { RightsChoicePick, Store } from '../store/types.ts';
+import type { AuditEventBody } from '../audit/chain.ts';
 import type { ExitRightsChoice, ExitRightsChoices } from './exit.ts';
 
 export const CHOICE_NOTE_MAX = 500;
@@ -51,15 +52,33 @@ export interface ChoiceFacts {
 }
 
 /**
- * The checksum a choice binds: the head format's own checksum where the
- * catalog records one, else the entry's version (a federated entry's hash of
- * its upstream date and formats). Either moves when the file does.
+ * The bytes a choice binds: every rendition the entry serves, its localised
+ * ones included, each by its checksum, with the entry's version beside them.
+ * A federated entry's version is a hash of its upstream date and formats, so
+ * it moves with the bytes and stands in for checksums the provider does not
+ * give. Null when the identity cannot be established (a rendition with no
+ * checksum on an entry with no such version): a choice is never remembered
+ * against bytes that could change under it.
  */
-export function assetChecksum(entry: AssetIndexEntry): string {
-  const head = Array.isArray(entry.formats) ? entry.formats.find((f) => f && f.format !== 'thumb') : undefined;
-  const checksum = (head as { checksum?: unknown } | undefined)?.checksum;
-  if (typeof checksum === 'string' && checksum) return checksum;
-  return typeof entry.version === 'string' ? entry.version : '';
+export function assetIdentity(entry: AssetIndexEntry): string | null {
+  type Rendition = { format: string; url: string; checksum: string | null; locale?: string };
+  const renditions: Rendition[] = [];
+  const add = (f: unknown, locale?: string): void => {
+    if (!f || typeof f !== 'object') return;
+    const r = f as { format?: unknown; url?: unknown; checksum?: unknown };
+    renditions.push({ format: String(r.format ?? ''), url: String(r.url ?? ''), checksum: typeof r.checksum === 'string' && r.checksum ? r.checksum : null, ...(locale ? { locale } : {}) });
+  };
+  for (const f of Array.isArray(entry.formats) ? entry.formats : []) add(f);
+  const locales = (entry as { locales?: unknown }).locales;
+  if (locales && typeof locales === 'object') {
+    for (const [locale, list] of Object.entries(locales as Record<string, unknown>)) if (Array.isArray(list)) for (const f of list) add(f, locale);
+  }
+  const version = typeof entry.version === 'string' && entry.version ? entry.version : typeof entry.version === 'number' ? String(entry.version) : null;
+  const summed = renditions.length > 0 && renditions.every((r) => r.checksum !== null);
+  const federated = typeof entry.id === 'string' && entry.id.startsWith('ext/') && version !== null;
+  if (!summed && !federated) return null;
+  renditions.sort((a, b) => (a.locale ?? '').localeCompare(b.locale ?? '') || a.format.localeCompare(b.format) || a.url.localeCompare(b.url));
+  return `sha256:${sha256Hex(canonicalJson({ renditions, version }))}`;
 }
 
 /** sha256 over the canonical facts, as `sha256:<hex>`. */
@@ -69,12 +88,21 @@ export function choiceFingerprint(facts: ChoiceFacts): string {
   }))}`;
 }
 
-/** The facts of one entry for one audience, now. */
-export function factsOf(engine: RightsEngine, entry: AssetIndexEntry, group: string): ChoiceFacts {
+/** The facts of one entry for one audience, now; null when its bytes have no identity. */
+export function factsOf(engine: RightsEngine, entry: AssetIndexEntry, group: string): ChoiceFacts | null {
+  const identity = assetIdentity(entry);
+  if (!identity) return null;
   return {
-    assetId: entry.id, checksum: assetChecksum(entry), declaration: engine.assetLicenceDeclaration(entry as Record<string, unknown>),
+    assetId: entry.id, checksum: identity, declaration: engine.assetLicenceDeclaration(entry as Record<string, unknown>),
     group, rulesVersion: engine.RIGHTS_RULES_VERSION,
   };
+}
+
+/** The fingerprint a choice for this entry and audience carries now, or null
+ *  when its bytes have no identity: a null never matches a stored choice. */
+export function currentFingerprint(engine: RightsEngine, entry: AssetIndexEntry, group: string): string | null {
+  const facts = factsOf(engine, entry, group);
+  return facts ? choiceFingerprint(facts) : null;
 }
 
 /**
@@ -88,7 +116,7 @@ export type ChoiceStanding = 'live' | 'needs-choosing' | 'not-needed' | 'gone';
 export function choiceStanding(engine: RightsEngine, choice: RightsChoiceRecord, entry: AssetIndexEntry | undefined, companies: ReadonlySet<string> = new Set()): ChoiceStanding {
   if (!entry) return 'gone';
   if (rightsAnswer(engine, entry, companies).state !== 'held') return 'not-needed';
-  return choiceFingerprint(factsOf(engine, entry, choice.group)) === choice.fingerprint ? 'live' : 'needs-choosing';
+  return currentFingerprint(engine, entry, choice.group) === choice.fingerprint ? 'live' : 'needs-choosing';
 }
 
 /** The asset ids a caller holding `groups` receives through a live choice. */
@@ -101,24 +129,28 @@ export function liveChoiceIds(engine: RightsEngine, choices: readonly RightsChoi
   return out;
 }
 
-type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
+/** Makes the audit event a store writes in the same transaction as a choice. */
+export type AuditBodyOf = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => AuditEventBody;
+const plainBody: AuditBodyOf = (actor, action, subject, payload) => ({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
+
+/** The audit event for one withdrawn choice. */
+export function withdrawEvent(bodyOf: AuditBodyOf, actor: string, c: RightsChoiceRecord, via: string): AuditEventBody {
+  return bodyOf(actor, 'programme.rights.withdraw', `programme:${c.programmeId}`, { assetId: c.assetId, group: c.group, licence: c.declared, fingerprint: c.fingerprint, via });
+}
 
 /**
- * Withdraw every choice made for a programme or for one company, auditing
- * each as `programme.rights.withdraw` with `via`. Ending a partnership (M5)
- * calls this. A withdrawn choice is not restored later: it was remembered
- * against its facts, so the admin chooses again where needed.
+ * Withdraw every choice made for a programme (its companies' included) or for
+ * one company, each audited as `programme.rights.withdraw` with `via`, the
+ * deletes and their events in one transaction. Ending a partnership (M5) and
+ * deleting a programme or company call this. A withdrawn choice is not
+ * restored later: it was remembered against its facts, so the admin chooses
+ * again where needed, and a programme or company made later with the same id
+ * starts with none.
  */
-export async function withdrawRightsChoices(store: Store, audit: Audit, actor: string, pick: { programmeId?: string; companyId?: string }, via: string): Promise<RightsChoiceRecord[]> {
-  // A programme's own choices and its companies' carry its id; a company's carry the company's.
-  const gone = (await store.listRightsChoices()).filter((c) => (pick.companyId ? c.companyId === pick.companyId : !!pick.programmeId && c.programmeId === pick.programmeId));
-  for (const c of gone) {
-    await store.deleteRightsChoice({ assetId: c.assetId, group: c.group });
-    await audit(actor, 'programme.rights.withdraw', `programme:${c.programmeId}`, {
-      assetId: c.assetId, group: c.group, licence: c.declared, fingerprint: c.fingerprint, via,
-    });
-  }
-  return gone;
+export async function withdrawRightsChoices(store: Store, bodyOf: AuditBodyOf, actor: string, pick: { programmeId?: string; companyId?: string }, via: string): Promise<RightsChoiceRecord[]> {
+  const which: RightsChoicePick | null = pick.companyId ? { companyId: pick.companyId } : pick.programmeId ? { programmeId: pick.programmeId } : null;
+  if (!which) return [];
+  return store.withdrawRightsChoicesAudited(which, (c) => withdrawEvent(bodyOf, actor, c, via));
 }
 
 /** A choice as an exit lists it: the file, the audience and the licence recorded. */
@@ -127,15 +159,15 @@ const exitView = (c: RightsChoiceRecord): ExitRightsChoice => ({ assetId: c.asse
 /**
  * The share anyway store as ending a partnership needs it (plans/82 M5): the
  * choices a programme or company holds, and their withdrawal, audited as
- * `programme.rights.withdraw` with the exit's `via`. The exit route and the
- * minute sweep for scheduled ends take the same object.
+ * `programme.rights.withdraw` with the exit's `via`. The exit route, the
+ * minute sweep for scheduled ends and the delete routes take the same object.
  */
-export function exitRightsChoices(store: Store, audit: Audit): ExitRightsChoices {
+export function exitRightsChoices(store: Store, bodyOf: AuditBodyOf = plainBody): ExitRightsChoices {
   return {
     list: async (pick) => (await store.listRightsChoices())
       .filter((c) => (pick.companyId ? c.companyId === pick.companyId : !!pick.programmeId && c.programmeId === pick.programmeId))
       .map(exitView),
-    withdraw: async (actor, pick, via) => (await withdrawRightsChoices(store, audit, actor, pick, via)).map(exitView),
+    withdraw: async (actor, pick, via) => (await withdrawRightsChoices(store, bodyOf, actor, pick, via)).map(exitView),
   };
 }
 

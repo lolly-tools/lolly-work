@@ -21,8 +21,8 @@ import { markCoverage, markStatement } from '../catalog/rights-routes.ts';
 import { entryInFolders, folderRuleGroup, liveFolderRules, type PartnerFolderRecord } from './folders.ts';
 import { companyGroup } from './people.ts';
 import type { PartnerRightsState } from '../catalog/rights-mode.ts';
-import { CHOICE_NOTE_MAX, CHOICES_PER_REQUEST, choiceFingerprint, choiceStanding, factsOf, type ChoiceStanding, type RightsChoiceRecord } from './rights.ts';
-import { isProgrammeScoped, namesProgrammeGroup, PARTNER_GROUP, programmeGroup } from './types.ts';
+import { CHOICE_NOTE_MAX, CHOICES_PER_REQUEST, choiceFingerprint, choiceStanding, currentFingerprint, factsOf, withdrawEvent, type AuditBodyOf, type ChoiceStanding, type RightsChoiceRecord } from './rights.ts';
+import { isEnded, isProgrammeScoped, namesProgrammeGroup, PARTNER_GROUP, programmeGroup } from './types.ts';
 
 type Router = ReturnType<typeof createRouter>;
 
@@ -32,6 +32,8 @@ export interface RightsRouteDeps {
   store: Store;
   requireAction(req: IncomingMessage, res: ServerResponse, action: string): Promise<UserRecord | null>;
   audit: Audit;
+  /** The audit event a store writes in the same transaction as a choice. */
+  auditBody?: AuditBodyOf;
   /** The composed feed a caller with these groups receives. */
   feedFor(groups: string[]): Promise<AssetIndex>;
   /** Every catalog entry as its source records it, before any mark. */
@@ -350,7 +352,7 @@ export async function linksThatWouldLose(engine: RightsEngine, store: Store, fee
       if (rightsAnswer(engine, entry).state !== 'held') continue;
       // A file the minter chose to send at mint, still on the facts it was chosen against, stays.
       const chosen = target.includeHeld?.find((h) => h.id === raw);
-      if (chosen && chosen.fingerprint === choiceFingerprint(factsOf(engine, entry, 'link'))) continue;
+      if (chosen && chosen.fingerprint === currentFingerprint(engine, entry, 'link')) continue;
       held++;
     }
     if (!held) continue;
@@ -460,10 +462,14 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
       return sendError(res, 400, 'INVALID_INPUT', `note is text, at most ${CHOICE_NOTE_MAX} characters`);
     }
     const note = typeof body.note === 'string' ? body.note.trim() : '';
+    // An audience that ended takes no new choice: reopening it later must not
+    // inherit one. The store reads the audience again inside the write.
+    if (isEnded(programme)) return sendError(res, 409, 'AUDIENCE_ENDED', 'this programme has ended; share anyway is for a programme that is running');
     let companyId: string | undefined;
     if (body.company !== undefined && body.company !== null && body.company !== '') {
       const company = (await store.listCompanies()).find((c) => c.id === body.company && c.programmeId === programme.id);
       if (!company) return sendError(res, 404, 'NOT_FOUND', 'no such company in this programme');
+      if (isEnded(company)) return sendError(res, 409, 'AUDIENCE_ENDED', 'this company\'s partnership has ended; share anyway is for a company that is in the programme');
       companyId = company.id;
     }
     const group = companyId ? companyGroup(companyId) : programmeGroup(programme.id);
@@ -475,24 +481,31 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     if (notInFeed.length) return sendError(res, 404, 'NOT_IN_FEED', `${notInFeed.length} of these files ${notInFeed.length === 1 ? 'is' : 'are'} not in this audience's feed`);
     const notHeld = [...new Set(ids)].filter((id) => rightsAnswer(engine, entries.get(id)!, companies).state !== 'held');
     if (notHeld.length) return sendError(res, 409, 'NOT_HELD', `${notHeld.length} of these files already reach this audience; share anyway is for files held back`);
+    // A choice is remembered against the file's bytes, so a file whose bytes
+    // carry no checksum cannot be chosen.
+    const unnamed = [...new Set(ids)].filter((id) => !factsOf(engine, entries.get(id)!, group)).length;
+    if (unnamed) return sendError(res, 409, 'NO_FILE_IDENTITY', `Files with no checksum cannot be shared anyway (${unnamed} here): a choice is remembered against the file's bytes.`);
     const at = new Date().toISOString();
     const made: RightsChoiceRecord[] = [];
+    const bodyOf = deps.auditBody ?? ((actor, action, subject, payload) => ({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) }));
     for (const id of new Set(ids)) {
       const entry = entries.get(id)!;
       const answer = rightsAnswer(engine, entry, companies);
-      if (answer.state !== 'held') continue;
       const facts = factsOf(engine, entry, group);
-      const rec: RightsChoiceRecord = {
+      if (answer.state !== 'held' || !facts) continue;
+      made.push({
         assetId: id, group, programmeId: programme.id, ...(companyId ? { companyId } : {}),
         declared: answer.declared, licence: answer.licence, reason: answer.reason, checksum: facts.checksum, rulesVersion: facts.rulesVersion,
         fingerprint: choiceFingerprint(facts), ...(note ? { note } : {}), chosenBy: actor.id, chosenAt: at,
-      };
-      await store.putRightsChoice(rec);
-      await deps.audit(`user:${actor.id}`, 'programme.rights.share-anyway', `programme:${programme.id}`, {
-        assetId: id, group, licence: rec.declared, reason: rec.reason, ...(note ? { note } : {}), fingerprint: rec.fingerprint,
       });
-      made.push(rec);
     }
+    // Each choice and its audit row commit together, or none does.
+    const refused = await store.putRightsChoicesAudited(made, { programmeId: programme.id, ...(companyId ? { companyId } : {}) }, made.map((rec) =>
+      bodyOf(`user:${actor.id}`, 'programme.rights.share-anyway', `programme:${programme.id}`, {
+        assetId: rec.assetId, group, licence: rec.declared, reason: rec.reason, ...(note ? { note } : {}), fingerprint: rec.fingerprint,
+      })));
+    if (refused === 'AUDIENCE_ENDED') return sendError(res, 409, 'AUDIENCE_ENDED', 'this audience ended while the choice was being made; nothing was shared');
+    if (refused) return sendError(res, 404, 'NOT_FOUND', 'this audience no longer exists; nothing was shared');
     const users = new Map([[actor.id, actor]]);
     const named = companyId ? (await store.listCompanies()).filter((x) => x.id === companyId) : [];
     sendJson(res, 200, { choices: made.map((c) => choiceView(engine, c, entries.get(c.assetId), users, named)) });
@@ -506,12 +519,9 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     const assetId = ctx.url.searchParams.get('assetId') ?? '';
     const companyId = ctx.url.searchParams.get('company') || undefined;
     const group = companyId ? companyGroup(companyId) : programmeGroup(programme.id);
-    const prior = (await store.listRightsChoices()).find((c) => c.assetId === assetId && c.group === group && c.programmeId === programme.id);
-    if (!prior) return sendError(res, 404, 'NOT_FOUND', 'no such choice in this programme');
-    await store.deleteRightsChoice({ assetId, group });
-    await deps.audit(`user:${actor.id}`, 'programme.rights.withdraw', `programme:${programme.id}`, {
-      assetId, group, licence: prior.declared, fingerprint: prior.fingerprint, via: 'console',
-    });
+    const bodyOf = deps.auditBody ?? ((actor, action, subject, payload) => ({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) }));
+    const gone = await store.withdrawRightsChoicesAudited({ key: { assetId, group }, programmeId: programme.id }, (c) => withdrawEvent(bodyOf, `user:${actor.id}`, c, 'console'));
+    if (!gone.length) return sendError(res, 404, 'NOT_FOUND', 'no such choice in this programme');
     sendJson(res, 200, { ok: true });
   });
 }
