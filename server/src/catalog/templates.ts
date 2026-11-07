@@ -19,8 +19,8 @@
  *   the replacement (decision D2). Lifecycle revoke stays the hard stop.
  *
  * The served feed carries `meta.version`, `meta.editable`, `meta.fixedTheme`,
- * `meta.retired` and `meta.replacedBy`, never a rule's name or reason: the app offers what may
- * change and nothing else (Andy, 2026-10-19).
+ * `meta.retired`, `meta.replacedBy` and `meta.bindings`, never a rule's name or
+ * reason: the app offers what may change and nothing else (Andy, 2026-10-19).
  *
  * On a server render that names a template (`template=inst/<id>`), its rules
  * become an overlay already resolved for the caller: each input takes the
@@ -43,6 +43,11 @@ export interface TemplatePublication {
   retiredBy?: string;
   /** The published template that replaces it. */
   replacedBy?: string;
+  /** Inputs that take the partner company's values (plans/82 M3): input id to
+   *  company field (programmes/company-values.ts). A bound input left out of
+   *  `editable` is locked to the company value; in a rules tool every bound
+   *  input is. */
+  bindings?: Record<string, import('../programmes/company-values.ts').CompanyField>;
 }
 
 /** What a server render needs from a template the caller may use. */
@@ -57,6 +62,10 @@ export interface RenderTemplate {
   editable?: string[];
   fixedTheme?: boolean;
   retired?: { replacedBy?: string };
+  /** Its company bindings, and the groups it was published to, which decide
+   *  the company and programme a render is for (plans/82 M3). */
+  bindings?: Record<string, import('../programmes/company-values.ts').CompanyField>;
+  groups?: string[];
 }
 
 /** The id a template-scoped render names: an instance template, `inst/<id>`.
@@ -106,6 +115,9 @@ export function servedTemplateEntry(rec: InstanceAssetRecord): AssetIndexEntry {
     ...(pub?.fixedTheme ? { fixedTheme: true } : {}),
     ...(pub?.retiredAt ? { retired: true } : {}),
     ...(pub?.replacedBy ? { replacedBy: pub.replacedBy } : {}),
+    // Which inputs take the partner company's values: the app seeds them
+    // from org-config's `partner.company` (plans/82 M3).
+    ...(pub?.bindings ? { bindings: { ...pub.bindings } } : {}),
   };
   return { ...rec.entry, meta };
 }
