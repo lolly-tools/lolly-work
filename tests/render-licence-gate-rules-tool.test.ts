@@ -3,9 +3,9 @@
  * The licence gate and a rules tool from the feed (plans/82 M2 and M4, W-M4-8).
  *
  * Pinned here: with the gate on, a Northwind IT token's server render of a
- * published rules tool is refused at once with 422 ASSET_HELD naming the file
- * when the tool's own default or the caller's value names a catalog file the
- * gate holds back, before the render reaches a worker. A rules file links no
+ * published rules tool is refused at once with 422 ASSET_HELD when the tool's
+ * own default or the caller's value names a catalog file the gate holds back
+ * (naming it only when the caller named it), before the render reaches a worker. A rules file links no
  * picture (rules-tools.ts refuses one), so a catalog file reaches a rules tool
  * through an asset input. The rules tool's own rules still answer first
  * (#337), a file the feed holds goes ahead, and staff renders are unchanged.
@@ -138,9 +138,10 @@ test('a Northwind token\'s render of a rules tool that draws a held file is refu
   const held = await render({ token: northwind }, 'sheet-held', { price: '€ 99' });
   assert.equal(held.status, 422, held.text);
   assert.equal(held.error?.code, 'ASSET_HELD');
-  assert.match(held.error?.message ?? '', /acme\/photo\/unrecorded/);
+  assert.equal(held.error?.message, 'This render uses a file that is not available to you.', 'a default the agent never named is counted, not named');
   const named = await render({ token: northwind }, 'sheet-open', { price: '€ 99', photo: 'acme/photo/unrecorded' });
   assert.equal(named.error?.code, 'ASSET_HELD', 'so does the caller\'s own value');
+  assert.match(named.error?.message ?? '', /acme\/photo\/unrecorded/, 'which is named back');
   // The rules tool's own rules still answer first.
   const ruledOut = await render({ token: northwind }, 'sheet-held', { price: '€'.repeat(60) });
   assert.equal(ruledOut.error?.code, 'INPUT_NOT_ALLOWED', ruledOut.text);

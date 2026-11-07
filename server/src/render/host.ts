@@ -28,33 +28,55 @@ import type { HostedAssetResult, HostedProviderRef } from '../catalog/providers/
 export type ObserveCatalogAsset = (asset: AssetRef, bytes: Uint8Array) => void;
 
 /**
- * The licence gate on a server render (plans/82 M4): for a programme-scoped
- * caller, the catalog files their own feed holds. A file it leaves out is
- * not drawn: `get` throws this, and `held` lists it so the render can say
- * which file it was.
+ * What a programme-scoped caller's render or compile may draw (plans/82 M4
+ * and M6): the catalog files their own feed holds, scoped to their
+ * programmes and, with the licence gate on, gated by licence. Every host
+ * lookup, read and listing goes through `allows`; a file it leaves out is
+ * not drawn, `get` throws and `held` lists it.
  */
 export interface RenderAssetGate {
   allows(id: string): boolean;
   held: Set<string>;
+  /** Every catalog id, so a value or an embedded reference can be recognised. */
+  catalogIds?: ReadonlySet<string>;
 }
 
-/** Catalog files the caller's licence gate holds back: the first, and all of them. */
+/** What a refusal tells the caller: files they named themselves by id, the rest only counted. */
+export interface AssetHeldReport { message: string; assets: string[]; more: number }
+
+/**
+ * The refusal for files a caller may not draw. A file the caller named in
+ * their own values is named back; one that came from a default, a locked
+ * value or a template is only counted, so a refusal never tells someone
+ * about a file they cannot see.
+ */
+export function assetHeldReport(ids: readonly string[], supplied: ReadonlySet<string> = new Set(), what = 'render'): AssetHeldReport {
+  const all = [...new Set(ids)].sort();
+  const named = all.filter((id) => supplied.has(id));
+  const more = all.length - named.length;
+  const files = (n: number): string => (n === 1 ? 'a file that is' : `${n} files that are`);
+  const message = named.length
+    ? `This ${what} uses ${named.length === 1 ? 'a file that is' : 'files that are'} not available to you: ${named.join(', ')}${more ? `, and ${more} more` : ''}.`
+    : `This ${what} uses ${files(more)} not available to you.`;
+  return { message, assets: named, more };
+}
+
+/** Catalog files a caller may not draw: all of them, and those the caller named. */
 export class AssetHeldError extends Error {
   readonly assetId: string;
   readonly assets: string[];
-  constructor(assets: string | readonly string[]) {
+  readonly supplied: ReadonlySet<string>;
+  constructor(assets: string | readonly string[], supplied: ReadonlySet<string> = new Set()) {
     const list = typeof assets === 'string' ? [assets] : [...new Set(assets)].sort();
-    super(assetHeldSentence(list));
+    super(assetHeldReport(list, supplied).message);
     this.name = 'AssetHeldError';
     this.assetId = list[0] ?? '';
     this.assets = list;
+    this.supplied = supplied;
   }
-}
-
-/** What a refused render or compile tells the caller, naming each held file. */
-export function assetHeldSentence(ids: readonly string[], what = 'render'): string {
-  const list = [...new Set(ids)].sort();
-  return `This ${what} uses ${list.length === 1 ? 'a file that is' : 'files that are'} not available to you: ${list.join(', ')}.`;
+  report(what = 'render'): AssetHeldReport {
+    return assetHeldReport(this.assets, this.supplied, what);
+  }
 }
 
 // One catalog-asset record as it appears in <pack>/catalog/assets/index.json.

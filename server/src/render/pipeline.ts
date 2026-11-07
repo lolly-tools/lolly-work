@@ -35,7 +35,7 @@ import { inspectOutput, outputVerificationProblems, OutputVerificationError, par
 import { applyPreviewWatermark, shouldWatermark, untilApprovedNote } from './watermark.ts';
 import { renderInputsDigest } from './inputs-digest.ts';
 import { templateFixedValues, templateOpenInputs, templateVariantDigest, type ExportReviewKey } from '../approvals/export-review-match.ts';
-import { AssetHeldError, assetHeldSentence, withRenderHost, type RenderAssetGate } from './host.ts';
+import { AssetHeldError, assetHeldReport, withRenderHost, type RenderAssetGate } from './host.ts';
 import { referencedAssetIds } from '../catalog/rights.ts';
 import { createVmHookExecutor } from './vm-hooks.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
@@ -66,10 +66,10 @@ const MAX_SCALE = 1e9;
  *  back for one release if the worker raster path misbehaves. Removed with resvg. */
 const LEGACY_RESVG = process.env.LW_RENDER_LEGACY_RESVG === '1';
 
-/** A render that would draw files the caller's licence gate holds back (plans/82 M4). */
-function assetHeld(ids: string[]): RenderError {
-  const list = [...new Set(ids)].sort();
-  return new RenderError('ASSET_HELD', 422, assetHeldSentence(list), undefined, { assets: list });
+/** A render that would draw files the caller may not (plans/82 M4): the caller's own named, the rest counted. */
+function assetHeld(ids: string[], supplied: ReadonlySet<string>): RenderError {
+  const report = assetHeldReport(ids, supplied);
+  return new RenderError('ASSET_HELD', 422, report.message, undefined, { assets: report.assets, ...(report.more ? { more: report.more } : {}) });
 }
 
 /** A caller-facing render problem carrying an HTTP status + envelope code. */
@@ -158,11 +158,13 @@ export interface RenderDeps {
   partnerFor?: (args: { toolId: string; template: RenderTemplate | null; groups: string[]; role?: string }) => Promise<RenderPartner | null>;
   /** The design system that drew the render and its tokens, for the record. */
   designSystem?: () => Promise<{ id: string; label: string; tokens: unknown } | null>;
-  /** The licence gate on this render (plans/82 M4): for a programme-scoped
-   *  caller with the gate on, the catalog files their own gated feed holds,
-   *  and every catalog id, so a value is read as a file only when it names
-   *  one. Null when nothing is gated, which leaves the render as it was. */
-  assetGate?: (groups: string[], role?: string) => Promise<{ allows(id: string): boolean; catalogIds: ReadonlySet<string> } | null>;
+  /** What a programme-scoped caller may draw (plans/82 M4 and M6): the
+   *  catalog files their own feed holds (scoped, and gated by licence with the
+   *  gate on), every catalog id, so a value is read as a file only when it
+   *  names one, and the feed's revision, so a cached render never outlives a
+   *  change to what they may draw. Null for everyone else, which leaves the
+   *  render as it was. */
+  assetGate?: (groups: string[], role?: string) => Promise<{ allows(id: string): boolean; catalogIds: ReadonlySet<string>; revision: string } | null>;
 }
 
 /** What a render takes from the caller's partner company (plans/82 M3). */
@@ -194,6 +196,10 @@ export interface RenderRequest {
    *  `enforce.watermark: 'never'` still turns it off, and under `until-approved` an
    *  approved match does too. */
   watermarkPreview?: boolean;
+  /** Whose reach the files are drawn under, when not the principal's: a
+   *  signed tool link a partner made renders with no principal and draws only
+   *  what its maker may draw now (plans/82 M4). */
+  assetScope?: { groups: string[]; role?: string };
 }
 
 export interface RenderOutput {
@@ -540,19 +546,23 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const bakedValues = await resolveHostedValues(
     { ...seed, ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
   ) as Record<string, unknown>;
-  // The licence gate (plans/82 M4): a file the caller's own feed leaves out is
-  // never drawn. Every file the values or the tool's defaults name is checked
-  // here, before either render tier runs; the in-process host refuses any
-  // other read of one, and the worker reads the catalog as this caller.
-  const gate = await deps.assetGate?.(groups, req.principal?.role) ?? null;
-  const hostGate: RenderAssetGate | undefined = gate ? { allows: (id) => gate.allows(id), held: new Set() } : undefined;
+  // What the caller may draw (plans/82 M4 and M6): a file their own feed
+  // leaves out is never drawn. Every file the values or the tool's defaults
+  // name is checked here, before either render tier runs; the in-process host
+  // answers every lookup, read and listing from the same feed, and the worker
+  // reads the catalog as this caller. A refusal names only files the caller
+  // named themselves.
+  const scope = req.assetScope ?? { groups, ...(req.principal?.role ? { role: req.principal.role } : {}) };
+  const gate = await deps.assetGate?.(scope.groups, scope.role) ?? null;
+  const hostGate: RenderAssetGate | undefined = gate ? { allows: (id) => gate.allows(id), held: new Set(), catalogIds: gate.catalogIds } : undefined;
+  const supplied: ReadonlySet<string> = gate ? new Set(referencedAssetIds(st.values, gate.catalogIds)) : new Set();
   if (gate) {
     const defaults = Object.fromEntries((tool.manifest.inputs as Array<{ id: string; default?: unknown }>).map((i) => [i.id, i.default]));
     // A rules tool from the feed reaches a catalog file only through an asset
     // input (rules-tools.ts refuses a linked picture), so its defaults and the
     // values cover it as they do a pack tool.
     const named = referencedAssetIds({ ...defaults, ...bakedValues }, gate.catalogIds).filter((id) => !gate.allows(id));
-    if (named.length) throw assetHeld(named);
+    if (named.length) throw assetHeld(named, supplied);
   }
   const initialValues = deps.managedRules ? Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues }).map(i => [i.id, i.value])) : {};
   requireRuleValues(deps.managedRules, { ...initialValues, ...bakedValues });
@@ -612,6 +622,8 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       ...(template ? { template: { id: template.id, version: template.version, editable: template.editable ?? null } } : {}), brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
       // A signed file records the partner, so a profile revision moves the bytes.
       ...(partner && deps.signer ? { partner } : {}),
+      // What the caller may draw: a withdrawn choice or mark moves the key.
+      ...(gate ? { assets: gate.revision } : {}),
       worker: deps.worker ? evidenceHash(deps.worker.url) : null,
       signer: deps.signer ? evidenceHash({ chain: deps.signer.chain.map((cert) => sha256Hex(cert)), claimGenerator: deps.signer.claimGenerator }) : null },
   });
@@ -731,10 +743,10 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       });
     } catch (e) {
       // A held file the engine reached for, past the check above (plans/82 M4).
-      if (e instanceof AssetHeldError) throw assetHeld([e.assetId, ...(hostGate?.held ?? [])]);
+      if (e instanceof AssetHeldError) throw assetHeld([...e.assets, ...(hostGate?.held ?? [])], supplied);
       throw e;
     }
-    if (hostGate?.held.size) throw assetHeld([...hostGate.held]);
+    if (hostGate?.held.size) throw assetHeld([...hostGate.held], supplied);
   }
 
   const sourceObserved = !inWorker || files.every(file => workerEvidence?.resources.some(r => {

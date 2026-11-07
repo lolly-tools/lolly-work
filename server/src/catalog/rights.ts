@@ -376,17 +376,55 @@ export function rightsSourceOf(
 }
 
 /**
- * Every catalog asset id some values name: a bare id string, or an asset
- * reference's `id`, anywhere inside them. Only ids in `known` count, so free
- * text that happens to contain a slash is never read as a file. Bounded.
+ * The catalog id a string names: a bare id, the provider form
+ * `catalog://<id>` or `library://<id>`, or a DAM file as `cms://<provider>/<remote id>`,
+ * which is `ext/<provider>/<remote id>` (a query or fragment ignored).
+ */
+export function catalogIdOf(value: string): string {
+  const m = /^(catalog|library|cms):\/\/([^?#]*)/i.exec(value);
+  if (!m) return value;
+  let rest: string;
+  try { rest = m[2]!.split('/').filter(Boolean).map(decodeURIComponent).join('/'); } catch { return value; }
+  return m[1]!.toLowerCase() === 'cms' ? `ext/${rest}` : rest;
+}
+
+/**
+ * Every catalog asset id some values name: a bare id string, a provider ref
+ * (`catalog://`, `library://`), or an asset reference's `id`, anywhere inside
+ * them. Only ids in `known` count, so free text that happens to contain a
+ * slash is never read as a file. Bounded.
  */
 export function referencedAssetIds(values: unknown, known: ReadonlySet<string>, depth = 0): string[] {
   if (depth > 8 || values === null || values === undefined) return [];
-  if (typeof values === 'string') return known.has(values) ? [values] : [];
+  if (typeof values === 'string') { const id = catalogIdOf(values); return known.has(id) ? [id] : []; }
   if (Array.isArray(values)) return [...new Set(values.slice(0, 500).flatMap((v) => referencedAssetIds(v, known, depth + 1)))];
   if (typeof values === 'object') {
     return [...new Set(Object.values(values as Record<string, unknown>).slice(0, 500).flatMap((v) => referencedAssetIds(v, known, depth + 1)))];
   }
   return [];
+}
+
+/**
+ * The catalog files a payload carries the bytes of (plans/82 M4): an asset
+ * reference whose `id` the catalog knows and that holds its bytes inline (a
+ * `data:` url) or marks them baked. A compiled document carries these in its
+ * manifest's defaults and its values, whether or not a read happened, so the
+ * gate checks them before the document leaves. The walk is bounded.
+ */
+export function embeddedAssetIds(payload: unknown, known: ReadonlySet<string>): string[] {
+  const out = new Set<string>();
+  let budget = 200_000;
+  const walk = (value: unknown, depth: number): void => {
+    if (--budget < 0 || depth > 64 || value === null || typeof value !== 'object') return;
+    if (Array.isArray(value)) { for (const v of value) walk(v, depth + 1); return; }
+    const o = value as Record<string, unknown>;
+    const id = typeof o.id === 'string' ? catalogIdOf(o.id) : '';
+    const inline = typeof o.url === 'string' && o.url.startsWith('data:');
+    const baked = !!o.meta && typeof o.meta === 'object' && (o.meta as { baked?: unknown }).baked === true;
+    if (id && known.has(id) && (inline || baked)) out.add(id);
+    for (const v of Object.values(o)) walk(v, depth + 1);
+  };
+  walk(payload, 0);
+  return [...out].sort();
 }
 

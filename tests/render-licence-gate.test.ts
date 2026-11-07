@@ -14,6 +14,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,6 +27,7 @@ import { buildApp } from '../server/src/api/app.ts';
 import { instanceAssetEntry } from '../server/src/catalog/instance-assets.ts';
 import { seededAssetIds } from '../server/src/programmes/rights-routes.ts';
 import { renderTool, type RenderRequest } from '../server/src/render/pipeline.ts';
+import { AssetHeldError, withRenderHost } from '../server/src/render/host.ts';
 
 const SVG = (fill: string) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="${fill}"/></svg>`;
 const PACK = [
@@ -44,6 +46,11 @@ const PHOTO_CARD = {
   render: { width: 10, height: 10, formats: ['svg'] },
   inputs: [{ id: 'photo', label: 'Photo', type: 'asset', default: 'acme/photo/unrecorded' }, { id: 'title', label: 'Title', type: 'text', default: 'x' }],
 };
+const BAKED_CARD = {
+  ...PHOTO_CARD, id: 'baked-card', name: 'Baked card',
+  inputs: [{ id: 'photo', label: 'Photo', type: 'asset', default: { source: 'library', id: 'acme/photo/unrecorded', type: 'vector', format: 'svg',
+    url: `data:image/svg+xml;base64,${Buffer.from(SVG('#a00')).toString('base64')}`, meta: { baked: true } } }, { id: 'title', label: 'Title', type: 'text', default: 'x' }],
+};
 const PHOTO_TEMPLATE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" width="10" height="10"><image href="{{asset photo}}" width="10" height="10"/><text>{{title}}</text></svg>';
 
 before(async () => {
@@ -51,13 +58,17 @@ before(async () => {
   await mkdir(join(pack, 'catalog', 'tools'), { recursive: true });
   await mkdir(join(pack, 'catalog', 'assets', 'acme'), { recursive: true });
   packDir = pack;
-  await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({ tools: [{ id: 'photo-card' }] }));
+  await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({ tools: [{ id: 'photo-card' }, { id: 'baked-card' }] }));
   await mkdir(join(pack, 'tools', 'photo-card'), { recursive: true });
   await writeFile(join(pack, 'tools', 'photo-card', 'tool.json'), JSON.stringify(PHOTO_CARD));
   await writeFile(join(pack, 'tools', 'photo-card', 'template.html'), PHOTO_TEMPLATE);
+  // A tool whose default is a saved catalog reference carrying its bytes inline.
+  await mkdir(join(pack, 'tools', 'baked-card'), { recursive: true });
+  await writeFile(join(pack, 'tools', 'baked-card', 'tool.json'), JSON.stringify(BAKED_CARD));
+  await writeFile(join(pack, 'tools', 'baked-card', 'template.html'), PHOTO_TEMPLATE);
   for (const a of PACK) await writeFile(join(pack, 'catalog', 'assets', 'acme', a.file), a.body);
   await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({
-    version: 1, assets: PACK.map(({ file, body: _b, ...a }) => ({ ...a, formats: [{ format: file.split('.').pop(), url: `assets/acme/${file}` }] })),
+    version: 1, assets: PACK.map(({ file, body, ...a }) => ({ ...a, formats: [{ format: file.split('.').pop(), url: `assets/acme/${file}`, checksum: `sha256-${createHash('sha256').update(body).digest('base64')}` }] })),
   }));
   const configFor = (partnerRights?: 'gate') => parseConfig(JSON.stringify({
     instance: { name: 'SUSE', baseUrl: 'http://localhost', pack }, rateLimit: { enabled: false },
@@ -88,7 +99,7 @@ before(async () => {
   const gateAddr = gateServer.address();
   gateBase = `http://127.0.0.1:${typeof gateAddr === 'object' && gateAddr ? gateAddr.port : 0}`;
   const bruno = await login('bruno@test');
-  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea', { name: 'Resellers, EMEA', tools: ['photo-card'] })).status, 201);
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea', { name: 'Resellers, EMEA', tools: ['photo-card', 'baked-card'] })).status, 201);
   assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/companies/northwind-it', { name: 'Northwind IT' })).status, 201);
   await login('rita@northwind.test');
   assert.equal((await call(bruno, 'POST', '/api/v1/programmes/resellers-emea/people', { rows: [{ email: 'rita@northwind.test', company: 'northwind-it' }], apply: true })).status, 200);
@@ -126,14 +137,22 @@ test('the pipeline: a gated caller\'s render draws only files their feed holds, 
   const config = parseConfig(JSON.stringify({ instance: { name: 'SUSE', baseUrl: 'http://localhost', pack: packDir }, dev: { enabled: true } }));
   const request: RenderRequest = { toolId: 'photo-card', format: 'svg', query: '', principal: { groups: ['programme-resellers-emea', 'partner'] }, profile: {}, overlays: new Map() };
   const catalogIds = new Set(PACK.map((a) => a.id));
-  const assetGate = async () => ({ allows: (id: string) => id !== 'acme/photo/unrecorded' && id !== 'acme/photo/internal', catalogIds });
-  await assert.rejects(renderTool({ config, assetGate }, request), (e: { code?: string; status?: number; details?: { assets?: string[] } }) =>
-    e.code === 'ASSET_HELD' && e.status === 422 && e.details?.assets?.[0] === 'acme/photo/unrecorded', 'the tool\'s own default names a held file');
-  await assert.rejects(renderTool({ config, assetGate }, { ...request, query: 'photo=acme%2Fphoto%2Finternal' }), (e: { code?: string }) => e.code === 'ASSET_HELD', 'so does the caller\'s own value');
+  const assetGate = async () => ({ allows: (id: string) => id !== 'acme/photo/unrecorded' && id !== 'acme/photo/internal', catalogIds, revision: 'r1' });
+  // A default the caller never named is refused and counted, never named.
+  await assert.rejects(renderTool({ config, assetGate }, request), (e: { code?: string; status?: number; message?: string; details?: { assets?: string[]; more?: number } }) =>
+    e.code === 'ASSET_HELD' && e.status === 422 && e.details?.assets?.length === 0 && e.details?.more === 1 && e.message === 'This render uses a file that is not available to you.', 'the tool\'s own default');
+  await assert.rejects(renderTool({ config, assetGate }, { ...request, query: 'photo=acme%2Fphoto%2Finternal' }), (e: { code?: string; details?: { assets?: string[] } }) =>
+    e.code === 'ASSET_HELD' && e.details?.assets?.[0] === 'acme/photo/internal', 'the caller\'s own value is named back');
+  await assert.rejects(renderTool({ config, assetGate }, { ...request, query: 'photo=catalog%3A%2F%2Facme%2Fphoto%2Finternal' }), (e: { code?: string }) => e.code === 'ASSET_HELD', 'and so is its catalog:// form');
   const open = await renderTool({ config, assetGate }, { ...request, query: 'photo=acme%2Fphoto%2Fopen' });
   assert.match(Buffer.from(open.bytes).toString(), /<image[^>]*href="data:image\/svg\+xml;base64,/, 'a file their feed holds is drawn');
   const before = await renderTool({ config }, request);
   const ungated = await renderTool({ config, assetGate: async () => null }, request);
+  // The gate's revision is in the cache key, so a change to what the caller may draw is never answered from the cache.
+  const allowAll = async (revision: string) => ({ allows: () => true, catalogIds, revision });
+  const first = await renderTool({ config, assetGate: () => allowAll('r1') }, { ...request, query: 'photo=acme%2Fphoto%2Fopen' });
+  const second = await renderTool({ config, assetGate: () => allowAll('r2') }, { ...request, query: 'photo=acme%2Fphoto%2Fopen' });
+  assert.notEqual(first.cacheKey, second.cacheKey);
   assert.equal(Buffer.from(ungated.bytes).toString(), Buffer.from(before.bytes).toString(), 'with no gate, the same bytes as before');
 });
 
@@ -142,7 +161,7 @@ test('over HTTP: Rita\'s render is refused with the gate on, and nothing changes
   assert.equal(gated.status, 422, await gated.clone().text());
   const body = await gated.json() as { error: { code: string; message: string } };
   assert.equal(body.error.code, 'ASSET_HELD');
-  assert.match(body.error.message, /acme\/photo\/unrecorded/);
+  assert.equal(body.error.message, 'This render uses a file that is not available to you.', 'a default she never named is counted, not named');
   const reporting = await fetch(`${base}/render/photo-card.svg`, { headers: { cookie: await login('rita@northwind.test') } });
   assert.equal(reporting.status, 200, 'report mode changes nothing a partner receives');
   const staffGate = await (await fetch(`${gateBase}/render/photo-card.svg`, { headers: { cookie: await login('mia@test', gateBase) } })).text();
@@ -160,7 +179,9 @@ test('a compile is gated the same way: a partner\'s document never carries a fil
   assert.equal(held.status, 422, held.text);
   const body = JSON.parse(held.text) as { error: { code: string; message: string; assets?: string[] } };
   assert.equal(body.error.code, 'ASSET_HELD');
-  assert.match(body.error.message, /^This document uses a file that is not available to you: acme\/photo\/unrecorded\.$/);
+  assert.equal(body.error.message, 'This document uses a file that is not available to you.');
+  const named = await compile('rita@northwind.test', gateBase, { photo: 'acme/photo/unrecorded' });
+  assert.match(named.text, /This document uses a file that is not available to you: acme\/photo\/unrecorded\./, 'her own value is named back');
   const open = await compile('rita@northwind.test', gateBase, { photo: 'acme/photo/open' });
   assert.equal(open.status, 200, open.text);
   assert.match(open.text, /data:image\/svg\+xml;base64,/, 'a file their feed holds is in the document');
@@ -194,4 +215,67 @@ test('a cms:// file in a compile answers to the gate by its catalog id, as a lib
   assert.match(held.text, /ext\/dam\/e1/, 'named by its catalog id');
   const staff = await compile('mia@test');
   assert.equal(staff.status, 200, staff.text);
+});
+
+test('the render host answers every lookup, read and listing from the caller\'s own feed', async () => {
+  const gate = { allows: (id: string) => id === 'acme/photo/open', held: new Set<string>() };
+  await withRenderHost({ pack: packDir, profile: {}, assetGate: gate }, async (_dom, host) => {
+    assert.deepEqual((await host.assets.query({})).map((a) => a.id), ['acme/photo/open'], 'a listing holds only what the feed holds');
+    assert.equal(await host.assets.isAvailable('acme/photo/internal'), false);
+    await assert.rejects(host.assets.get('acme/photo/internal'), (e: Error) => e instanceof AssetHeldError);
+    await assert.rejects(host.assets.resolveProvider!({ raw: 'library://acme/photo/internal', provider: 'library', scope: 'acme', path: 'photo/internal', query: {} }), (e: Error) => e instanceof AssetHeldError);
+    assert.equal((await host.assets.get('acme/photo/open')).id, 'acme/photo/open');
+  });
+  assert.deepEqual([...gate.held].sort(), ['acme/photo/internal']);
+});
+
+test('in either mode a partner draws only files their own feed holds: report mode scopes, gate mode also gates', async () => {
+  const compile = async (at: string, inputs: Record<string, unknown>) => {
+    const res = await fetch(`${at}/api/v1/compile`, { method: 'POST', headers: { cookie: await login('rita@northwind.test', at), 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'photo-card', inputs }) });
+    return { status: res.status, text: await res.text() };
+  };
+  for (const at of [base, gateBase]) {
+    const outside = await compile(at, { photo: 'library://acme/photo/internal' });
+    assert.equal(outside.status, 422, `${at === base ? 'report' : 'gate'}: ${outside.text}`);
+    assert.match(outside.text, /acme\/photo\/internal/, 'her own value is named back');
+    assert.equal((await compile(at, { photo: 'library://acme/photo/open' })).status, 200);
+    const render = await fetch(`${at}/render/photo-card.svg?photo=${encodeURIComponent('catalog://acme/photo/internal')}`, { headers: { cookie: await login('rita@northwind.test', at) } });
+    assert.equal(render.status, 422, 'the catalog:// form of a file outside her feed');
+  }
+  assert.equal((await compile(base, { photo: 'library://acme/photo/unrecorded' })).status, 200, 'report mode: in her feed');
+  assert.equal((await compile(gateBase, { photo: 'library://acme/photo/unrecorded' })).status, 422, 'gate mode: held by its licence');
+});
+
+test('a compile never returns a held file carried in a default, inline or baked, and /package inherits that', async () => {
+  const rita = await login('rita@northwind.test', gateBase);
+  for (const path of ['/api/v1/compile', '/api/v1/package']) {
+    const res = await fetch(`${gateBase}${path}`, { method: 'POST', headers: { cookie: rita, 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'baked-card', inputs: { photo: null } }) });
+    assert.equal(res.status, 422, `${path}: ${await res.clone().text()}`);
+    const body = await res.json() as { error: { code: string; message: string } };
+    assert.equal(body.error.code, 'ASSET_HELD');
+    assert.doesNotMatch(body.error.message, /acme\/photo\/unrecorded/, 'a default she never named is not named');
+  }
+  const staff = await fetch(`${gateBase}/api/v1/compile`, { method: 'POST', headers: { cookie: await login('mia@test', gateBase), 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'baked-card', inputs: {} }) });
+  assert.equal(staff.status, 200, 'staff unchanged');
+});
+
+test('a tool link a partner made draws only what that partner may draw now, and a cached render never outlives a withdrawn choice', async () => {
+  const rita = await login('rita@northwind.test', gateBase);
+  const bruno = await login('bruno@test', gateBase);
+  const made = await fetch(`${gateBase}/api/v1/links`, { method: 'POST', headers: { cookie: rita, 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'download', target: { toolId: 'photo-card', format: 'svg', params: { photo: 'acme/photo/unrecorded' } } }) });
+  assert.equal(made.status, 201, await made.clone().text());
+  const url = ((await made.json()) as { url: string }).url.replace('http://localhost', gateBase);
+  assert.equal((await fetch(url)).status, 422, 'held for its maker, so held in the link');
+  const direct = `${gateBase}/render/photo-card.svg?photo=${encodeURIComponent('catalog://acme/photo/unrecorded')}`;
+  assert.equal((await fetch(direct, { headers: { cookie: rita } })).status, 422);
+  const put = await fetch(`${gateBase}/api/v1/programmes/resellers-emea/rights/choices`, { method: 'PUT', headers: { cookie: bruno, 'content-type': 'application/json' },
+    body: JSON.stringify({ assetIds: ['acme/photo/unrecorded'], company: 'northwind-it' }) });
+  assert.equal(put.status, 200, await put.text());
+  assert.equal((await fetch(url)).status, 200, 'shared anyway with her company, so the link draws it');
+  assert.equal((await fetch(direct, { headers: { cookie: rita } })).status, 200);
+  const withdraw = await fetch(`${gateBase}/api/v1/programmes/resellers-emea/rights/choices?assetId=${encodeURIComponent('acme/photo/unrecorded')}&company=northwind-it`, { method: 'DELETE', headers: { cookie: bruno } });
+  assert.equal(withdraw.status, 200);
+  assert.equal((await fetch(url)).status, 422, 'withdrawn: the link is held again on its next fetch');
+  assert.equal((await fetch(direct, { headers: { cookie: rita } })).status, 422, 'and the cached render is not served');
 });

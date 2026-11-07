@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts';
 import { loadToolOrRefuse } from '../render/tool-load.ts';
 import { AssetHeldError, withRenderHost, type RenderAssetGate } from '../render/host.ts';
+import { embeddedAssetIds, referencedAssetIds } from '../catalog/rights.ts';
 import { designRuleIssues, vectorFieldParams } from '../render/pipeline.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { isSvgTemplate, toolServerFormats, type RenderCapabilities, type ToolServerFormats } from '../render/capabilities.ts';
@@ -32,8 +33,9 @@ export interface AutomationContext {
   /** A published rules tool's own files, from the caller's served feed (plans/82
    *  M2), or null for a tool the pack holds. Tool-relative path to bytes. */
   toolFiles?: (toolId: string) => Promise<ReadonlyMap<string, Buffer> | null>;
-  /** The licence gate for a programme-scoped caller (plans/82 M4), fresh for
-   *  each request: a compile that reaches for a file it holds back is refused. */
+  /** What a programme-scoped caller may draw (plans/82 M4 and M6), fresh for
+   *  each request: a compile that reaches for, or carries, a file outside it
+   *  is refused. */
   assetGate?: RenderAssetGate;
 }
 /** What a verb knows of a file reference it read. */
@@ -89,10 +91,26 @@ export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Pro
   const { engine, tool } = await load(ctx, req.toolId);
   requireDeclaredFormat(tool, req.format);
   const inputs = ctx.policy ? applyInputPolicy(req.inputs ?? {}, ctx.policy.overlays.get(req.toolId), ctx.policy.groups) : req.inputs ?? {};
-  const compiled = await withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
-  // The engine drops a file it cannot read and carries on, so a held file is
-  // refused here rather than left out of the document without a word.
-  if (ctx.assetGate?.held.size) throw new AssetHeldError([...ctx.assetGate.held]);
+  const gate = ctx.assetGate;
+  const known = gate?.catalogIds ?? new Set<string>();
+  const supplied = new Set(referencedAssetIds(req.inputs ?? {}, known));
+  let compiled: unknown;
+  try {
+    compiled = await withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
+  } catch (e) {
+    if (e instanceof AssetHeldError) throw new AssetHeldError([...e.assets, ...(gate?.held ?? [])], supplied);
+    throw e;
+  }
+  if (gate) {
+    // The engine drops a file it cannot read and carries on, so a held file is
+    // refused here rather than left out without a word. A document also
+    // carries files no read touched: a default or a value holding its bytes
+    // inline or marked baked, in its manifest and its values. Every one is
+    // checked before the document leaves, and /package compiles through here.
+    const document = (compiled as { document?: { values?: unknown } } | null)?.document;
+    const carried = [...embeddedAssetIds(compiled, known), ...referencedAssetIds(document?.values, known)].filter((id) => !gate.allows(id));
+    if (gate.held.size || carried.length) throw new AssetHeldError([...gate.held, ...carried], supplied);
+  }
   return compiled;
 }
 

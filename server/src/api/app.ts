@@ -239,7 +239,7 @@ import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkK
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { checkDesignRules, renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
-import { AssetHeldError, assetHeldSentence, type RenderAssetGate } from '../render/host.ts';
+import { AssetHeldError, type RenderAssetGate } from '../render/host.ts';
 import type { RenderPartner } from '../render/record.ts';
 import { isPublishedTemplateRef, templateOverlay, templateRetired, templateSeed, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
@@ -466,19 +466,22 @@ export function buildApp(deps: AppDeps): App {
   });
   const brandRules = createBrandRuleService(brand, store, deploymentConfig.dev.enabled);
   const config = { ...deploymentConfig, instance: { ...deploymentConfig.instance, get pack() { return brand.root(); } } };
-  // The licence gate on server renders and compiles (plans/82 M4): with the
-  // gate on, a programme-scoped caller draws only files their own feed holds.
-  const licenceAssetGate = async (groups: string[], role?: string): Promise<{ allows(id: string): boolean; catalogIds: ReadonlySet<string> } | null> => {
-    if ((await partnerRightsReady).mode !== 'gate' || !isProgrammeScoped(groups, role)) return null;
+  // What a programme-scoped caller's server render or compile may draw
+  // (plans/82 M4 and M6): exactly the files their own feed holds, in either
+  // mode. In report mode that feed is scoped to their programmes; with the
+  // licence gate on it is gated by licence too. Staff draw as before.
+  const licenceAssetGate = async (groups: string[], role?: string): Promise<{ allows(id: string): boolean; catalogIds: ReadonlySet<string>; revision: string } | null> => {
+    if (!isProgrammeScoped(groups, role)) return null;
     await providersReady;
-    const allowed = new Set(((await servedIndex.forCaller({ groups })).index.assets ?? []).map((entry) => entry.id));
+    const served = await servedIndex.forCaller({ groups });
+    const allowed = new Set((served.index.assets ?? []).map((entry) => entry.id));
     const catalogIds = new Set((await catalogEntriesForRights()).map((entry) => entry.id));
-    return { allows: (id) => allowed.has(id), catalogIds };
+    return { allows: (id) => allowed.has(id), catalogIds, revision: `${(await partnerRightsReady).mode}:${served.version}` };
   };
   /** The same gate for one automation request: it notes each file it held back. */
   const automationAssetGate = async (caller: { user: { groups: string[]; role?: string } | null; groups: string[] }): Promise<{ assetGate?: RenderAssetGate }> => {
     const gate = await licenceAssetGate(caller.groups, caller.user?.role);
-    return gate ? { assetGate: { allows: (id) => gate.allows(id), held: new Set<string>() } } : {};
+    return gate ? { assetGate: { allows: (id) => gate.allows(id), held: new Set<string>(), catalogIds: gate.catalogIds } } : {};
   };
   // `submitter`: the person the render is for. The worker may then read the
   // project files its inputs name, while that person can see them (plan 76 M4j).
@@ -502,7 +505,7 @@ export function buildApp(deps: AppDeps): App {
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
-        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
+        workerReadToken: mintRenderRead(args[1].assetScope?.groups ?? args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;
@@ -3930,10 +3933,16 @@ export function buildApp(deps: AppDeps): App {
         else q.set(k, v);
       }
     }
+    // A link a partner made draws only what that partner may draw now (plans/82
+    // M4): their programme scope and licence permissions, read again on every
+    // fetch, so a withdrawn choice or mark reaches a live link.
+    const linkMaker = await store.getUser(link.createdBy);
+    const assetScope = linkMaker && isProgrammeScoped(linkMaker.groups, linkMaker.role)
+      ? { groups: linkMaker.groups, ...(linkMaker.role ? { role: linkMaker.role } : {}) } : undefined;
     try {
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner() }, {
         toolId, format: fmt, query: q.toString(),
-        principal: null, profile: {}, overlays: await store.listOverlays(),
+        principal: null, profile: {}, overlays: await store.listOverlays(), ...(assetScope ? { assetScope } : {}),
       });
       const etag = `W/"r-${result.cacheKey.slice(0, 16)}"`;
       if (result.evidence?.brandRules || result.watermarkNote) setDeliveryClass(res, 'person-private');
@@ -12231,7 +12240,7 @@ export function buildApp(deps: AppDeps): App {
         if (e instanceof UploadReferenceError) return sendError(res, e.status, e.code, e.message);
         if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
         if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
-        if (e instanceof AssetHeldError) return sendError(res, 422, 'ASSET_HELD', assetHeldSentence(e.assets, 'document'), { assets: e.assets });
+        if (e instanceof AssetHeldError) { const r = e.report('document'); return sendError(res, 422, 'ASSET_HELD', r.message, { assets: r.assets, ...(r.more ? { more: r.more } : {}) }); }
         return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
       }
     });
@@ -12267,7 +12276,7 @@ export function buildApp(deps: AppDeps): App {
     } catch (e) {
       if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
       if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
-      if (e instanceof AssetHeldError) return sendError(res, 422, 'ASSET_HELD', assetHeldSentence(e.assets, 'document'), { assets: e.assets });
+      if (e instanceof AssetHeldError) { const r = e.report('document'); return sendError(res, 422, 'ASSET_HELD', r.message, { assets: r.assets, ...(r.more ? { more: r.more } : {}) }); }
       return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
     }
   });
