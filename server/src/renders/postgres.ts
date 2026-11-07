@@ -38,6 +38,10 @@ export function createPostgresRenderStore(pool: RenderDatabase): RenderStore {
       if (!existing.rows[0]) throw new Error('render idempotency record disappeared');
       return { record: renderFromRow(existing.rows[0]), reused: true };
     },
+    async findRenderByKey(principal, key) {
+      const { rows } = await pool.query('select * from renders where principal=$1 and idempotency_key=$2', [principal, key]);
+      return rows[0] ? renderFromRow(rows[0]) : null;
+    },
     async getRender(id, principal) {
       const { rows } = await pool.query('select * from renders where id=$1 and principal=$2', [id, principal]);
       return rows[0] ? renderFromRow(rows[0]) : null;

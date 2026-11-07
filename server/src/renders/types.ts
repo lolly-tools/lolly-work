@@ -76,6 +76,8 @@ export interface RenderStore {
   cancelRenderBatch(id: string, principal: string): Promise<RenderBatchRecord | null>;
   /** Atomic insert; a principal/key collision returns the original immutable request. */
   insertRender(record: RenderRecord): Promise<{ record: RenderRecord; reused: boolean }>;
+  /** The render an idempotency key already names, so a replay is known before it is counted. */
+  findRenderByKey(principal: string, key: string): Promise<RenderRecord | null>;
   getRender(id: string, principal: string): Promise<RenderRecord | null>;
   listRenders(principal: string, limit: number, offset: number): Promise<RenderRecord[]>;
   /** Claim queued/expired work, incrementing the fencing token/attempt atomically.
@@ -136,10 +138,16 @@ export interface RenderBatchRecord {
 export class RenderResourceError extends Error {
   readonly code: string;
   readonly status: number;
-  constructor(code: string, status: number, message: string) {
+  /** Fields the error body carries beside code and message, such as a budget's figures. */
+  readonly detail?: Record<string, unknown>;
+  /** Sent as Retry-After, for a refusal that a wait undoes. */
+  readonly retryAfterSec?: number;
+  constructor(code: string, status: number, message: string, detail?: Record<string, unknown>, retryAfterSec?: number) {
     super(message);
     this.code = code;
     this.status = status;
     this.name = 'RenderResourceError';
+    if (detail) this.detail = detail;
+    if (retryAfterSec !== undefined) this.retryAfterSec = retryAfterSec;
   }
 }

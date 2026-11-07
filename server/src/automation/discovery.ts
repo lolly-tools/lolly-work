@@ -94,6 +94,9 @@ export interface DiscoveryDeps {
   brandPages: boolean;
   /** Which provider reference schemes resolve for these groups. */
   providerRefs(groups: string[]): Promise<{ cms: boolean; net: boolean }>;
+  /** A service token's own limits and use (plans/82 M7), or null for anyone else.
+   *  The token reads its figures, never where an admin set them. */
+  tokenLimits?(req: IncomingMessage): Promise<{ limits: Record<string, number | null>; usage: Record<string, unknown> } | null>;
 }
 
 /** The worker's readiness, read from its unauthenticated `/readyz` and kept for
@@ -195,6 +198,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
       ...(worker && worker !== 'ready' ? [{ feature: 'render-worker', code: worker === 'busy' ? 'RENDER_BUSY' : 'WORKER_UNREACHABLE',
         reason: worker === 'busy' ? 'The render worker is at capacity. Retry shortly.' : 'The render worker did not answer its readiness check.' }] : []),
     ];
+    const own = deps.tokenLimits ? await deps.tokenLimits(req) : null;
     sendJson(res, 200, {
       version: DISCOVERY_VERSION,
       principal: kindOf(caller.principal),
@@ -202,7 +206,8 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
       can,
       render: { formats: deps.caps.formats, hookedTools: deps.caps.hookedTools, ...(worker ? { worker } : {}) },
       assets: { providerRefs: await deps.providerRefs(caller.groups) },
-      limits: { batch: BATCH_LIMITS, toolsPerPage: PAGE.max },
+      limits: { batch: BATCH_LIMITS, toolsPerPage: PAGE.max, ...(own ? { token: own.limits } : {}) },
+      ...(own ? { usage: own.usage } : {}),
       unavailable,
       links: LINKS,
     });
