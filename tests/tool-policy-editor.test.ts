@@ -20,7 +20,7 @@ const consoleSource = readFileSync(new URL('../console/app.js', import.meta.url)
 const pause = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** Use the console's real DOM/label helpers and router without booting a session. */
-function page(overlay: object = {}, api?: (path: string, options: any) => Promise<unknown>, inputs = [{ id: 'title', label: 'Title', default: 'Hello' }]) {
+function page(overlay: object = {}, api?: (path: string, options: any) => Promise<unknown>, inputs: Array<{ id: string; label: string; type?: string; default?: unknown }> = [{ id: 'title', label: 'Title', default: 'Hello' }]) {
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', {
     url: 'https://work.example/admin#/tools', runScripts: 'outside-only',
   });
