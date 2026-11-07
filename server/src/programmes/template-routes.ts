@@ -185,6 +185,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       programme: programme.id,
       reach: [...reach].map(([group, label]) => ({ group, label })),
       templatesOnly: programme.templatesOnly ?? [],
+      // Their names, for a switch shown with no live template of the tool to name it.
+      templatesOnlyTools: await Promise.all((programme.templatesOnly ?? []).map(async (id) => ({ id, name: (await deps.toolFacts(id))?.name ?? id }))),
       templates: rows, candidates,
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });

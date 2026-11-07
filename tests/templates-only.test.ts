@@ -148,6 +148,7 @@ test('on: the tool leaves the gallery, its files stay, and a plain render is ref
 
   const list = (await call(await login('admin@test'), 'GET', '/api/v1/programmes/resellers/templates')).body;
   assert.deepEqual(list.templatesOnly, ['price-card']);
+  assert.deepEqual(list.templatesOnlyTools, [{ id: 'price-card', name: 'Price card' }]);
   assert.equal(list.templates[0].toolOpenTo, undefined, 'the card no longer says they can open it on its own');
   const audit = await store.listAudit();
   assert.ok(audit.some((e) => e.action === 'programme.template.only' && e.subject === 'programme:resellers' && e.payload?.on === true && e.payload?.toolId === 'price-card'));

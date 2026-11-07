@@ -5866,7 +5866,7 @@ async function programmeTemplates(p, host) {
   const rowEls = current.map(row);
   // A switch left on for a tool with no live template here still shows, with its gap line.
   const orphanSwitches = [...onlyTools].filter((toolId) => !switchShown.has(toolId))
-    .map((toolId) => onlySwitch(toolId, current.find((t) => t.toolId === toolId)?.toolName ?? toolId));
+    .map((toolId) => onlySwitch(toolId, (data.templatesOnlyTools ?? []).find((x) => x.id === toolId)?.name ?? toolId));
   host.replaceChildren(el('div', { class: 'card stack' },
     el('h2', {}, 'Templates'),
     el('p', { class: 'sub flush' }, `Starting points people in ${p.name} see on their home and in each tool. They change only what the template allows.`),
