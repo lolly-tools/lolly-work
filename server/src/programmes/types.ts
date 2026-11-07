@@ -89,6 +89,36 @@ export function partnerGroupsOf(groups: readonly string[]): string[] {
 }
 
 /**
+ * Which programme each company belongs to, by group: `company-<id>` to
+ * `programme-<id>`. Input rules need it to let a company's rule override its
+ * own programme's rule (plans/82, coordinator 2026-11-06), and a rule names
+ * only the company. A company never changes programme (the routes refuse a
+ * move), so the map only ever gains or loses whole entries. The app loads it
+ * at boot, sets it on each company change, and reloads it every minute and
+ * before org-config and Preview answer. A company missing here (brand new,
+ * on another replica) is compared stricter-wins with the programmes, which is
+ * never more permissive than the right answer.
+ */
+const companyProgrammes = new Map<string, string>();
+
+/** Replace the whole map from the store's company records. */
+export function setCompanyProgrammes(companies: ReadonlyArray<{ id: string; programmeId: string }>): void {
+  companyProgrammes.clear();
+  for (const c of companies) companyProgrammes.set(`${COMPANY_GROUP_PREFIX}${c.id}`, programmeGroup(c.programmeId));
+}
+
+/** Record one company, or forget it with `programmeId` null. */
+export function noteCompanyProgramme(companyId: string, programmeId: string | null): void {
+  if (programmeId) companyProgrammes.set(`${COMPANY_GROUP_PREFIX}${companyId}`, programmeGroup(programmeId));
+  else companyProgrammes.delete(`${COMPANY_GROUP_PREFIX}${companyId}`);
+}
+
+/** The programme group a company group belongs to, when known. */
+export function programmeOfCompany(group: string): string | undefined {
+  return companyProgrammes.get(group);
+}
+
+/**
  * The marker a person keeps after leaving their last programme. Joining any
  * programme group adds it (the store's setLocalGroups), and leaving one never
  * removes it, so a former partner sees only the essentials rather than
