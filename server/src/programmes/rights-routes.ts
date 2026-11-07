@@ -92,10 +92,67 @@ export interface RowMark {
   covered: { now: number; atStatement?: number };
 }
 
+/**
+ * Held pack files under one top-level id prefix (`suse/`), by the
+ * declaration they carry. A pack file reaches a programme through a
+ * collection, so its row has no folder to mark; this is where the brand team
+ * sees, for example, that every file under suse/ declares an identifier
+ * these rules do not carry.
+ */
+export interface PrefixRow {
+  prefix: string;
+  held: number;
+  byDeclaration: Array<{ declared: string; category: HeldCategory; label: string; count: number }>;
+  /** One sentence per declaration, such as "210 files under suse/ declare LicenseRef-SUSE-Proprietary, an identifier these rules do not carry." */
+  sentences: string[];
+  /** Held files here that declare nothing: a mark at this prefix would reach them. */
+  unrecorded: number;
+  /** The scope "These are ours" records, offered only when a mark can act on some of these files. */
+  markScope?: string;
+  /** What would clear the files a mark cannot reach, when some declare an identifier these rules do not carry. */
+  clearedBy?: string;
+}
+
+/** What clears pack files that declare an identifier these rules do not carry. */
+export const IDENTIFIER_CLEARED_BY = 'The owner can record these as owner-published in the pack, or the rules can be widened. Ask your Lolly administrator.';
+
 export interface ProgrammeRightsReport {
   rules: string;
   totals: { assets: number; travel: number; held: number; exempt: number };
   sources: SourceRow[];
+  prefixes: PrefixRow[];
+}
+
+/** Group held pack files (not `ext/*` or `inst/*`) by top-level id prefix. */
+export function packPrefixRows(held: ReadonlyArray<{ id: string; declared: string; category: HeldCategory }>): PrefixRow[] {
+  const by = new Map<string, Map<string, { category: HeldCategory; count: number }>>();
+  for (const f of held) {
+    if (f.id.startsWith('ext/') || f.id.startsWith('inst/')) continue;
+    const cut = f.id.indexOf('/');
+    if (cut < 1) continue;
+    const prefix = f.id.slice(0, cut + 1);
+    const decls = by.get(prefix) ?? new Map();
+    const key = f.declared;
+    const row = decls.get(key) ?? { category: f.category, count: 0 };
+    row.count++;
+    decls.set(key, row);
+    by.set(prefix, decls);
+  }
+  return [...by].map(([prefix, decls]) => {
+    const byDeclaration = [...decls].map(([declared, d]) => ({ declared, category: d.category, label: HELD_LABEL[d.category], count: d.count }))
+      .sort((a, b) => b.count - a.count || a.declared.localeCompare(b.declared));
+    const held = byDeclaration.reduce((n, d) => n + d.count, 0);
+    const unrecorded = byDeclaration.filter((d) => !d.declared).reduce((n, d) => n + d.count, 0);
+    const sentences = byDeclaration.map((d) => {
+      const files = `${d.count} ${d.count === 1 ? 'file' : 'files'} under ${prefix}`;
+      return d.declared ? `${files} ${d.count === 1 ? 'declares' : 'declare'} ${d.declared}, ${d.label}.` : `${files} ${d.count === 1 ? 'records' : 'record'} no licence.`;
+    });
+    return {
+      prefix, held, byDeclaration, sentences, unrecorded,
+      ...(unrecorded ? { markScope: `prefix:${prefix}` } : {}),
+      ...(byDeclaration.some((d) => d.category === 'identifier') ? { clearedBy: IDENTIFIER_CLEARED_BY } : {}),
+    };
+  }).sort((a, b) => b.held - a.held || a.prefix.localeCompare(b.prefix));
 }
 
 const nameOf = (entry: AssetIndexEntry): string => (typeof entry.name === 'string' && entry.name ? entry.name : entry.id);
@@ -163,6 +220,7 @@ export function programmeRightsReport(
   const companies = new Set(sources.companies.map((c) => c.id));
   const rows = new Map<string, SourceRow & { licences: Map<string, number>; reasons: Map<HeldCategory, number> }>();
   const totals = { assets: 0, travel: 0, held: 0, exempt: 0 };
+  const heldAll: Array<{ id: string; declared: string; category: HeldCategory }> = [];
   for (const entry of feed.assets ?? []) {
     const answer = rightsAnswer(engine, entry, companies);
     const { key, row: shape } = sourceOf(entry, answer, groups, sources, now);
@@ -184,6 +242,7 @@ export function programmeRightsReport(
       row.held.count++;
       totals.held++;
       row.reasons.set(answer.category, (row.reasons.get(answer.category) ?? 0) + 1);
+      heldAll.push({ id: entry.id, declared: answer.declared, category: answer.category });
       if (row.heldFiles.length < HELD_LISTED) {
         row.heldFiles.push({
           id: entry.id, name: nameOf(entry), licence: answer.licence, declared: answer.declared, category: answer.category, reason: answer.reason,
@@ -196,6 +255,7 @@ export function programmeRightsReport(
   return {
     rules: engine.RIGHTS_RULES_VERSION,
     totals,
+    prefixes: packPrefixRows(heldAll),
     sources: sorted.map(({ licences, reasons, ...row }) => ({
       ...row,
       travel: { count: row.travel.count, byLicence: [...licences].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([licence, count]) => ({ licence, count })) },
