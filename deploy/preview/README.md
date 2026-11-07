@@ -578,7 +578,7 @@ lane, `lollyLane`, `lollyLaneBase` and `lollyLaneRun`.
     Then the index digest, the linux/amd64 manifest, the config and the DiffIDs are checked, and the run tag the
     import kept is removed.
   - After the switch the smoke verifies the shell's served `/release-frontend.sig.json` against the lolly.ing pin
-    (source `LSHA`, target `web`, profile `suse`), its sha256 against `receiptSha256`, and `/` against
+    (source `LSHA`, target `web`, profile `suse` or `suse-with-demo`), its sha256 against `receiptSha256`, and `/` against
     `shell.indexSha256`.
 - **lolly-work PR #207, the migration classifier and `LW_MIGRATE_EXPECT`.**
   - A Job from the new image, with no environment, runs `node scripts/classify-migrations.ts --json --only <pending>`.

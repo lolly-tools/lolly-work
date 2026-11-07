@@ -160,6 +160,17 @@ class IngRules(unittest.TestCase):
     def manifest(self, **overrides):
         return IF.ing_manifest(self.build, 1100, **overrides)
 
+    def test_a_shell_may_carry_either_lolly_ing_profile_and_no_other(self):
+        """Lolly Demo beside SUSE (plan 353). The older name stays valid so a rollback verifies."""
+        def with_profile(shell, settings):
+            manifest = json.loads(json.dumps(self.manifest()))
+            manifest["shell"]["profile"], manifest["buildSettings"]["profile"] = shell, settings
+            return manifest
+        for profile in ("suse", "suse-with-demo"):
+            I.validate_manifest(with_profile(profile, profile), self.run, W_NEW)
+        refused(self, lambda: I.validate_manifest(with_profile("lolly-demo", "lolly-demo"), self.run, W_NEW), "MANIFEST_INVALID")
+        refused(self, lambda: I.validate_manifest(with_profile("suse", "suse-with-demo"), self.run, W_NEW), "MANIFEST_INVALID")
+
     def test_the_suse_lolly_manifest_binds_to_its_run_and_the_work_commit(self):
         """suse-lolly #28's manifest, bound to the run (R22 S6)."""
         release = I.validate_manifest(self.manifest(), self.run, W_NEW)

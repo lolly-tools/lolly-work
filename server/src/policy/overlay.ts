@@ -9,6 +9,7 @@
 
 import { grantDecision, type Grant } from '../rbac/evaluate.ts';
 import { isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, programmeOfCompany } from '../programmes/types.ts';
+import { normalizeBindings } from '../programmes/company-values.ts';
 
 export type AccessLevel = 'editable' | 'choice' | 'locked' | 'hidden';
 
@@ -46,8 +47,20 @@ export interface ToolOverlay {
     c2pa?: 'org-identity' | 'off';
     watermark?: 'until-approved' | 'always' | 'never';
     escalation?: string;
+    /** What one approval covers under until-approved (plans/82 M7): absent or
+     *  `file` is one file's exact inputs; `template-variants` is every file made
+     *  from one version of a published template of this tool, whatever the
+     *  inputs the programme may edit or the company fills. Off unless set. */
+    approvalCovers?: 'file' | 'template-variants';
   };
-  defaults?: Record<string, unknown>;
+  /** Values a tool starts from, per group (plans/82 M3): `[{ groups, values }]`,
+   *  most specific group winning (programmes/company-values.ts defaultsFor). The
+   *  older flat shape is kept as stored and applies to nothing until it is
+   *  saved again as group rules. */
+  defaults?: Record<string, unknown> | Array<{ groups: string[]; values: Record<string, unknown> }>;
+  /** Inputs that take a partner company's values (plans/82 M3): input id to a
+   *  company field, for tools partners open directly. */
+  bindings?: Record<string, import('../programmes/company-values.ts').CompanyField>;
 }
 
 export interface ResolvedAccess {
@@ -357,7 +370,7 @@ const REASON_MAX = 200;
 export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 0): ToolOverlay | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const body = raw as {
-    name?: unknown; inputAccess?: unknown; visibility?: unknown; enforce?: unknown; defaults?: unknown;
+    name?: unknown; inputAccess?: unknown; visibility?: unknown; enforce?: unknown; defaults?: unknown; bindings?: unknown;
   };
   const overlay: ToolOverlay = { toolId, version: currentVersion + 1 };
 
@@ -409,7 +422,7 @@ export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 
 
   if (body.enforce !== undefined && body.enforce !== null) {
     if (typeof body.enforce !== 'object' || Array.isArray(body.enforce)) return null;
-    const e = body.enforce as { watermark?: unknown; formats?: unknown; escalation?: unknown };
+    const e = body.enforce as { watermark?: unknown; formats?: unknown; escalation?: unknown; approvalCovers?: unknown };
     const enforce: NonNullable<ToolOverlay['enforce']> = {};
     if (e.watermark !== undefined) {
       if (!WATERMARKS.includes(e.watermark as typeof WATERMARKS[number])) return null;
@@ -425,12 +438,34 @@ export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 
       if (typeof e.escalation !== 'string' || !/^[a-z0-9][a-z0-9-]{0,127}$/.test(e.escalation)) return null;
       enforce.escalation = e.escalation;
     }
+    // One approval for a template's variants (plans/82 M7). `file` is the default
+    // and is not stored.
+    if (e.approvalCovers !== undefined && e.approvalCovers !== null) {
+      if (e.approvalCovers !== 'file' && e.approvalCovers !== 'template-variants') return null;
+      if (e.approvalCovers === 'template-variants') enforce.approvalCovers = 'template-variants';
+    }
     if (Object.keys(enforce).length) overlay.enforce = enforce;
   }
 
   if (body.defaults !== undefined && body.defaults !== null) {
-    if (typeof body.defaults !== 'object' || Array.isArray(body.defaults)) return null;
-    if (Object.keys(body.defaults as object).length) overlay.defaults = body.defaults as Record<string, unknown>;
+    if (typeof body.defaults !== 'object') return null;
+    if (Array.isArray(body.defaults)) {
+      // Group rules (plans/82 M3): each names its groups and the values they start from.
+      const rules: Array<{ groups: string[]; values: Record<string, unknown> }> = [];
+      for (const r of body.defaults as unknown[]) {
+        const groups = cleanGroups((r as { groups?: unknown })?.groups);
+        const values = (r as { values?: unknown })?.values;
+        if (!groups || !values || typeof values !== 'object' || Array.isArray(values)) return null;
+        if (Object.keys(values).length) rules.push({ groups, values: values as Record<string, unknown> });
+      }
+      if (rules.length) overlay.defaults = rules;
+    } else if (Object.keys(body.defaults as object).length) overlay.defaults = body.defaults as Record<string, unknown>;
+  }
+
+  if (body.bindings !== undefined && body.bindings !== null) {
+    const bindings = normalizeBindings(body.bindings);
+    if ('error' in bindings) return null;
+    if (bindings.bindings) overlay.bindings = bindings.bindings;
   }
 
   return overlay;

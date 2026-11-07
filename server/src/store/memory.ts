@@ -20,7 +20,7 @@ import type { ProjectUserStateRecord, ShareGroupRecord } from './types.ts';
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
  */
-import { randomId } from '../lib/crypto.ts';
+import { canonicalJson, randomId } from '../lib/crypto.ts';
 import { nextEvent, type AuditAnchor, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
 import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
@@ -41,6 +41,8 @@ import { sortProgrammes, withPartnerMarker, type ProgrammeRecord } from '../prog
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { ProgrammeExitRecord } from '../programmes/exit.ts';
+import type { CompanyProfileRecord, CompanyProfileRevision } from '../programmes/profile.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -55,7 +57,7 @@ import {
   type ProjectTransferMetadata,
   type CommentNotice,
   type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
-  type ApiTokenRecord, type AutomationCallbackRecord, type AutomationJobRecord, type EdgeCredentialRecord, type EdgePurgeRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type TokenUsageDay, type AutomationCallbackRecord, type AutomationJobRecord, type EdgeCredentialRecord, type EdgePurgeRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type SessionRevisionCommitResult, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -75,6 +77,14 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const projectUserState = new Map<string, ProjectUserStateRecord>(); // per-person project view (0061)
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
+  const tokenUsage = new Map<string, TokenUsageDay & { minute?: string; minuteCalls: number }>(); // plans/82 M7, by `${tokenId} ${day}`
+  const usageRow = (tokenId: string, day: string) => {
+    const key = `${tokenId} ${day}`;
+    let row = tokenUsage.get(key);
+    if (!row) { row = { tokenId, day, calls: 0, renders: 0, busiestMinute: 0, rateLimited: 0, budgetRefused: 0, minuteCalls: 0 }; tokenUsage.set(key, row); }
+    return row;
+  };
+  const publicUsage = ({ minute: _minute, minuteCalls: _calls, ...row }: TokenUsageDay & { minute?: string; minuteCalls: number }): TokenUsageDay => ({ ...row });
   const documentAgents = new Map<string, DocumentAgentRecord>();
   const projectAgents = new Map<string, ProjectAgentRecord>();
   const agentCreations = new Map<string, { digest: string; sessionId: string }>();
@@ -194,6 +204,9 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const memberships = new Map<string, MembershipRecord>();
   const partnerDomains = new Map<string, PartnerDomainRecord>();
   const partnerFolders = new Map<string, PartnerFolderRecord>();
+  const programmeExits = new Map<string, ProgrammeExitRecord>();
+  const companyProfiles = new Map<string, CompanyProfileRecord>();
+  const companyProfileHistory = new Map<string, CompanyProfileRevision[]>();
   const folderKey = (k: { provider: string; path: string; programmeId: string; companyId?: string }) => [k.provider, k.path, k.programmeId, k.companyId ?? ''].join('\n');
   /** `${assetId} ${version}` (space-joined) - the composite key migration 0020 makes a
    *  primary key. One flat map keeps the memory driver's shape as close to the
@@ -460,7 +473,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
 
     async putApiToken(rec) {
-      apiTokens.set(rec.id, { ...rec });
+      apiTokens.set(rec.id, { ...rec, ...(rec.limits ? { limits: { ...rec.limits } } : {}) });
     },
     async listApiTokens() {
       return [...apiTokens.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
@@ -479,6 +492,50 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       if (!t || t.revokedAt) return false;
       apiTokens.set(id, { ...t, revokedAt: at });
       return true;
+    },
+    async recordTokenCall(tokenId, day, minute) {
+      const row = usageRow(tokenId, day);
+      row.calls += 1;
+      row.minuteCalls = row.minute === minute ? row.minuteCalls + 1 : 1;
+      row.minute = minute;
+      row.busiestMinute = Math.max(row.busiestMinute, row.minuteCalls);
+    },
+    async recordTokenRefusal(tokenId, day, code, at) {
+      const row = usageRow(tokenId, day);
+      if (code === 'RATE_LIMITED') row.rateLimited += 1; else row.budgetRefused += 1;
+      if (!row.lastRefusedAt || at >= row.lastRefusedAt) { row.lastRefusedAt = at; row.lastRefusedCode = code; }
+    },
+    async chargeTokenRenders(tokenId, day, n, caps) {
+      const monthFrom = `${day.slice(0, 7)}-01`;
+      let dayUsed = 0, monthUsed = 0;
+      for (const row of tokenUsage.values()) {
+        if (row.tokenId !== tokenId || row.day < monthFrom || row.day > day) continue;
+        monthUsed += row.renders;
+        if (row.day === day) dayUsed += row.renders;
+      }
+      if (caps.day !== null && dayUsed + n > caps.day) return { ok: false, period: 'day', used: dayUsed, limit: caps.day };
+      if (caps.month !== null && monthUsed + n > caps.month) return { ok: false, period: 'month', used: monthUsed, limit: caps.month };
+      usageRow(tokenId, day).renders += n;
+      return { ok: true, day: dayUsed + n, month: monthUsed + n };
+    },
+    async refundTokenRenders(tokenId, day, n) {
+      const row = tokenUsage.get(`${tokenId} ${day}`);
+      if (row) row.renders = Math.max(0, row.renders - n);
+    },
+    async listTokenUsage(fromDay, toDay, tokenIds) {
+      const wanted = tokenIds ? new Set(tokenIds) : null;
+      return [...tokenUsage.values()].filter((row) => row.day >= fromDay && row.day <= toDay && (!wanted || wanted.has(row.tokenId)))
+        .sort((a, b) => a.tokenId.localeCompare(b.tokenId) || a.day.localeCompare(b.day)).map(publicUsage);
+    },
+    async latestTokenRefusals(tokenIds) {
+      const wanted = tokenIds ? new Set(tokenIds) : null;
+      const latest = new Map<string, { tokenId: string; at: string; code: string }>();
+      for (const row of tokenUsage.values()) {
+        if (!row.lastRefusedAt || (wanted && !wanted.has(row.tokenId))) continue;
+        const seen = latest.get(row.tokenId);
+        if (!seen || row.lastRefusedAt > seen.at) latest.set(row.tokenId, { tokenId: row.tokenId, at: row.lastRefusedAt, code: row.lastRefusedCode ?? '' });
+      }
+      return [...latest.values()].sort((a, b) => a.tokenId.localeCompare(b.tokenId));
     },
 
     async createInvitation(rec) {
@@ -1448,6 +1505,66 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deletePartnerFolder(key) {
       partnerFolders.delete(folderKey(key));
+    },
+    async listProgrammeExits(filter) {
+      return [...programmeExits.values()]
+        .filter((r) => (!filter?.programmeId || r.programmeId === filter.programmeId) && (!filter?.companyId || r.companyId === filter.companyId)
+          && (!filter?.state || r.state === filter.state))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+        .map((r) => structuredClone(r));
+    },
+    async getProgrammeExit(id) {
+      const rec = programmeExits.get(id);
+      return rec ? structuredClone(rec) : null;
+    },
+    async putProgrammeExit(rec) {
+      programmeExits.set(rec.id, structuredClone(rec));
+    },
+    async replaceProgrammeExit(next, prev) {
+      const stored = programmeExits.get(prev.id);
+      if (!stored || next.id !== prev.id || canonicalJson(stored) !== canonicalJson(prev)) return false;
+      programmeExits.set(next.id, structuredClone(next));
+      return true;
+    },
+    async deleteProgrammeExits(pick) {
+      let n = 0;
+      for (const r of [...programmeExits.values()]) {
+        if (pick.companyId ? r.companyId !== pick.companyId : !pick.programmeId || r.programmeId !== pick.programmeId) continue;
+        programmeExits.delete(r.id);
+        n++;
+      }
+      return n;
+    },
+    async getCompanyProfile(companyId) {
+      const rec = companyProfiles.get(companyId);
+      return rec ? structuredClone(rec) : null;
+    },
+    async listCompanyProfiles() {
+      return [...companyProfiles.values()].map((r) => structuredClone(r)).sort((a, b) => a.companyId.localeCompare(b.companyId));
+    },
+    async saveCompanyProfile(rec, expectRevision) {
+      const prior = companyProfiles.get(rec.companyId);
+      if ((prior?.revision ?? 0) !== expectRevision) return false;
+      companyProfiles.set(rec.companyId, structuredClone({ ...rec, settings: prior?.settings ?? {} }));
+      const history = companyProfileHistory.get(rec.companyId) ?? [];
+      history.push(structuredClone({ companyId: rec.companyId, revision: rec.revision, profile: rec.profile, updatedBy: rec.updatedBy, updatedAt: rec.updatedAt }));
+      companyProfileHistory.set(rec.companyId, history);
+      return true;
+    },
+    async putCompanyProfileSettings(companyId, settings) {
+      const prior = companyProfiles.get(companyId) ?? { companyId, revision: 0, profile: {}, settings: {}, updatedBy: '', updatedAt: '' };
+      companyProfiles.set(companyId, { ...prior, settings: structuredClone(settings) });
+    },
+    async getCompanyProfileRevision(companyId, revision) {
+      const row = (companyProfileHistory.get(companyId) ?? []).find((r) => r.revision === revision);
+      return row ? structuredClone(row) : null;
+    },
+    async listCompanyProfileHistory(companyId) {
+      return (companyProfileHistory.get(companyId) ?? []).map((r) => structuredClone(r)).sort((a, b) => a.revision - b.revision);
+    },
+    async deleteCompanyProfile(companyId) {
+      companyProfiles.delete(companyId);
+      companyProfileHistory.delete(companyId);
     },
 
     async listAssetVersions(assetId) {

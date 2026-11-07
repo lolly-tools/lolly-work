@@ -23,7 +23,7 @@
  *    no resume in v1.
  */
 
-export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review' | 'export-review' | 'brand-page' | 'brand-edit';
+export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review' | 'export-review' | 'brand-page' | 'brand-edit' | 'company-profile';
 
 export type ApprovalState = 'submitted' | 'in_review' | 'approved' | 'rejected' | 'withdrawn';
 
@@ -63,6 +63,8 @@ export interface Approval {
   brandPage?: { slug: string; revision: number; digest: string; name: string; files: number; size: number; held: number };
   /** One immutable edit of a design system's tokens (brand/edit-routes.ts). The digest covers the whole document. */
   brandEdit?: { sourceId: string; revision: number; digest: string; changes: number };
+  /** A partner company contact's change to its profile (programmes/profile-routes.ts, plans/82 M3). */
+  companyProfile?: import('../programmes/profile-routes.ts').CompanyProfileApproval;
   id: string;
   subjectType: SubjectType;
   subjectRef: string;

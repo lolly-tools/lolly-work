@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 80" width="240" height="80">
+  <title>Northwind IT</title>
+  <style>.mark{fill:#0b3d91}@keyframes spin{to{transform:rotate(360deg)}}.dot{animation:spin 4s linear infinite;transform-box:fill-box}</style>
+  <defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#0b3d91"/><stop offset="1" stop-color="#1e88e5"/></linearGradient></defs>
+  <path class="mark" d="M10 70 L40 10 L70 70 Z"/>
+  <circle class="dot" cx="40" cy="50" r="6" fill="url(#g)"/>
+  <text x="90" y="52" font-size="28" fill="#1a1a1a">Northwind IT</text>
+</svg>

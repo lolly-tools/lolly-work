@@ -237,6 +237,9 @@ export interface C2paEmbedOptions {
   author?: unknown;
   ingredients?: unknown;
   actions?: unknown;
+  /** The Lolly record's flat scalar keys (the `tools.lolly.export` assertion):
+   *  the design system, its theme choices and the partner (plans/82 M3). */
+  environment?: Record<string, string>;
 }
 
 // string-typed (non-literal) so tsc doesn't resolve the sibling .ts source.

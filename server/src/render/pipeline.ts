@@ -34,7 +34,7 @@ import { createAssetObserver, effectivePolicySha256, evidenceHash, finishRenderE
 import { inspectOutput, outputVerificationProblems, OutputVerificationError, parseOutputVerification, verificationTarget, type OutputVerification } from './output-inspection.ts';
 import { applyPreviewWatermark, shouldWatermark, untilApprovedNote } from './watermark.ts';
 import { renderInputsDigest } from './inputs-digest.ts';
-import type { ExportReviewKey } from '../approvals/export-review-match.ts';
+import { templateFixedValues, templateOpenInputs, templateVariantDigest, type ExportReviewKey } from '../approvals/export-review-match.ts';
 import { withRenderHost } from './host.ts';
 import { createVmHookExecutor } from './vm-hooks.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
@@ -49,6 +49,8 @@ export { RENDER_TIER, WORKER_RASTER_FORMATS, renderCapabilities, type RenderForm
 import { isSvgTemplate, renderCapabilities } from './capabilities.ts';
 import { loadToolOrRefuse, ToolLoadRefusal } from './tool-load.ts';
 import { isPublishedTemplateRef, templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
+import { bindOverlay, defaultsFor, LOGO_FIELDS, themeOf, type BindingPlan, type Theme } from '../programmes/company-values.ts';
+import { recordEnvironment, recordedThemes, type RenderPartner } from './record.ts';
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
  *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
@@ -140,6 +142,24 @@ export interface RenderDeps {
   /** The templates this caller may start the tool from, when a programme they are in
    *  set it to templates only (plans/82 M2 W5); null when the tool is open to them. */
   templatesRequired?: (toolId: string) => Promise<Array<{ id: string; name: string }> | null>;
+  /** The partner company values this caller's render takes (plans/82 M3,
+   *  programmes/company-values.ts): null when nothing binds the tool or the
+   *  caller is in no company. Absent means this render path binds nothing. */
+  companyFor?: (args: { toolId: string; template: RenderTemplate | null; theme: Theme; toolOverlay: ToolOverlay | undefined; groups: string[] }) => Promise<RenderCompany | null>;
+  /** The partner company and programme a render is for (plans/82 M3, section 6):
+   *  recorded in its Content Credential. Null for anyone outside a programme. */
+  partnerFor?: (args: { toolId: string; template: RenderTemplate | null; groups: string[]; role?: string }) => Promise<RenderPartner | null>;
+  /** The design system that drew the render and its tokens, for the record. */
+  designSystem?: () => Promise<{ id: string; label: string; tokens: unknown } | null>;
+}
+
+/** What a render takes from the caller's partner company (plans/82 M3). */
+export interface RenderCompany {
+  plan: BindingPlan;
+  company?: { id: string; name: string; revision: number };
+  programme?: { id: string; name: string };
+  /** The resolved asset a logo id renders as, or null when it cannot be read. */
+  logo(id: string): Promise<unknown | null>;
 }
 
 export interface RenderRequest {
@@ -173,6 +193,8 @@ export interface RenderOutput {
   evidence?: RenderEvidence;
   /** Present under `until-approved`: plain words for how this render came out. */
   watermarkNote?: string;
+  /** The partner the render was made for, as its credential records it (plans/82 M3). */
+  partner?: RenderPartner;
 }
 
 async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedResolver']): Promise<unknown> {
@@ -226,6 +248,91 @@ async function renderTemplateFor(deps: RenderDeps, query: string, toolId: string
   return template;
 }
 
+/** A rules tool's own rules, checked before a durable render is accepted, so a
+ *  refused input answers at once rather than as a failed render (plans/82 M7). */
+export async function checkDesignRules(engine: EngineApi, tool: LoadedTool, query: string, format: string): Promise<void> {
+  const expanded = vectorFieldParams(await engine.expandQuery(query), tool.manifest);
+  const st = engine.parseUrlState(expanded, tool.manifest);
+  requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, format);
+}
+
+type VectorInput = { id: string; type: string; urlKey?: string; fields?: { id: string }[] };
+
+/**
+ * URL mode reads a vector input only as one flat param per field (`frame.x=30`).
+ * The API and MCP take inputs as JSON, so a vector arrives as one object, which
+ * queryFromInputs writes as `frame={"x":30,...}`. That form becomes the
+ * per-field params here, before the query is read, so a framing value given as
+ * an object renders and digests the same as the same value given per field.
+ */
+export function vectorFieldParams(query: string, manifest: LoadedTool['manifest']): string {
+  const vectors = ((manifest.inputs ?? []) as VectorInput[]).filter((input) => input.type === 'vector');
+  if (!vectors.length) return query;
+  const params = new URLSearchParams(query);
+  let changed = false;
+  for (const input of vectors) {
+    for (const key of [input.id, input.urlKey].filter((k): k is string => !!k)) {
+      const raw = params.get(key);
+      if (raw === null || !raw.trimStart().startsWith('{')) continue;
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch { continue; }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      params.delete(key);
+      changed = true;
+      for (const field of input.fields ?? []) {
+        const value = (parsed as Record<string, unknown>)[field.id];
+        if ((typeof value === 'number' || typeof value === 'string') && !params.has(`${key}.${field.id}`)) params.set(`${key}.${field.id}`, String(value));
+      }
+    }
+  }
+  return changed ? params.toString() : query;
+}
+
+/** One refusal under a rules tool's own rules, as validate lists them and the
+ *  render answers the first kind of. */
+export interface DesignRuleIssue { code: 'INPUT_LOCKED' | 'FORMAT_NOT_ALLOWED' | 'INPUT_NOT_ALLOWED'; message: string; param?: string }
+
+/** Every param a rules tool reads: each declared input by id and urlKey, and a
+ *  vector input's per-field params. */
+function designParamKeys(manifest: LoadedTool['manifest']): Set<string> {
+  const keys = new Set<string>();
+  for (const input of (manifest.inputs ?? []) as VectorInput[]) {
+    for (const key of [input.id, input.urlKey].filter((k): k is string => !!k)) {
+      keys.add(key);
+      if (input.type === 'vector') for (const field of input.fields ?? []) keys.add(`${key}.${field.id}`);
+    }
+  }
+  return keys;
+}
+
+/**
+ * The issues a request raises under a rules tool's own rules (plans/82 M2):
+ * a param the tool does not read (INPUT_LOCKED), a format the designer did not
+ * enable (FORMAT_NOT_ALLOWED, checked only when a format is given) and a value
+ * outside the designer's choices (INPUT_NOT_ALLOWED). Empty for any other tool.
+ */
+export function designRuleIssues(engine: EngineApi, manifest: LoadedTool['manifest'], query: string, values: Record<string, unknown>, format?: string): DesignRuleIssue[] {
+  const policy = (manifest as { designTool?: { formats?: string[] } }).designTool;
+  if (!policy) return [];
+  const issues: DesignRuleIssue[] = [];
+  const known = designParamKeys(manifest);
+  const fixed = [...new Set([...new URLSearchParams(query).keys()])].filter((key) => !engine.RESERVED.has(key) && !known.has(key));
+  for (const param of fixed) issues.push({ code: 'INPUT_LOCKED', message: `The designer fixed ${param}`, param });
+  if (format !== undefined && Array.isArray(policy.formats) && !policy.formats.includes(format)) {
+    issues.push({ code: 'FORMAT_NOT_ALLOWED', message: `The designer allows only ${policy.formats.join(', ')} for this tool` });
+  }
+  try { engine.assertDesignValues(policy, values); }
+  catch (error) {
+    const inputs = (manifest.inputs ?? []) as { id: string; label?: string }[];
+    for (const message of String((error as Error).message ?? error).split('\n').filter(Boolean)) {
+      const input = inputs.find((i) => message.startsWith(`${i.label || i.id}:`))
+        ?? inputs.find((i) => Object.hasOwn(values, i.id) && message.includes(i.id)) ?? inputs.find((i) => Object.hasOwn(values, i.id));
+      issues.push({ code: 'INPUT_NOT_ALLOWED', message, ...(input ? { param: input.id } : {}) });
+    }
+  }
+  return issues;
+}
+
 /**
  * A rules tool's own rules (plans/82 M2): a tool whose manifest carries a
  * `designTool` policy was made with Share with rules, and the designer fixed
@@ -234,23 +341,19 @@ async function renderTemplateFor(deps: RenderDeps, query: string, toolId: string
  * a value outside the designer's choices (an option, a range, an approved
  * image) answers 422 INPUT_NOT_ALLOWED; and only the designer's formats render.
  */
-function requireDesignRules(engine: EngineApi, manifest: LoadedTool['manifest'], query: string, values: Record<string, unknown>, declared: string[], format: string): void {
-  const policy = (manifest as { designTool?: { formats?: string[] } }).designTool;
-  if (!policy) return;
-  const known = new Set(declared);
-  const fixed = [...new Set([...new URLSearchParams(query).keys()])].filter((key) => !engine.RESERVED.has(key) && !known.has(key));
-  if (fixed.length) {
-    throw new RenderError('INPUT_LOCKED', 422, `The designer fixed these: ${fixed.join(', ')}`,
-      fixed.map((param) => ({ param, code: 'INPUT_LOCKED' as const })));
+function requireDesignRules(engine: EngineApi, manifest: LoadedTool['manifest'], query: string, values: Record<string, unknown>, format: string): void {
+  const issues = designRuleIssues(engine, manifest, query, values, format);
+  const locked = issues.filter((issue) => issue.code === 'INPUT_LOCKED').map((issue) => issue.param!);
+  if (locked.length) {
+    throw new RenderError('INPUT_LOCKED', 422, `The designer fixed these: ${locked.join(', ')}`,
+      locked.map((param) => ({ param, code: 'INPUT_LOCKED' as const })));
   }
-  if (Array.isArray(policy.formats) && !policy.formats.includes(format)) {
-    throw new RenderError('FORMAT_NOT_ALLOWED', 403, `The designer allows only ${policy.formats.join(', ')} for this tool`);
-  }
-  try { engine.assertDesignValues(policy, values); }
-  catch (error) {
-    const message = String((error as Error).message ?? error);
-    const param = declared.find((id) => Object.hasOwn(values, id) && message.includes(id)) ?? declared.find((id) => Object.hasOwn(values, id)) ?? '';
-    throw new RenderError('INPUT_NOT_ALLOWED', 422, message, param ? [{ param, code: 'INPUT_NOT_ALLOWED' }] : undefined);
+  const format_ = issues.find((issue) => issue.code === 'FORMAT_NOT_ALLOWED');
+  if (format_) throw new RenderError('FORMAT_NOT_ALLOWED', 403, format_.message);
+  const values_ = issues.filter((issue) => issue.code === 'INPUT_NOT_ALLOWED');
+  if (values_.length) {
+    const param = values_.find((issue) => issue.param)?.param ?? '';
+    throw new RenderError('INPUT_NOT_ALLOWED', 422, values_.map((issue) => issue.message).join('\n'), param ? [{ param, code: 'INPUT_NOT_ALLOWED' }] : undefined);
   }
 }
 
@@ -272,7 +375,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   }
   const engine = await loadEngine(), plan = production.repair;
   const tool = await loadForRender(req.toolId, id => engine.loadTool(id, path => readFile(join(deps.config.instance.pack, 'tools', path), 'utf8')));
-  const expanded = await engine.expandQuery(req.query), state = engine.parseUrlState(expanded, tool.manifest);
+  const expanded = vectorFieldParams(await engine.expandQuery(req.query), tool.manifest), state = engine.parseUrlState(expanded, tool.manifest);
   const declared = new Set((tool.manifest.inputs as { id: string }[]).map(input => input.id));
   if (Object.keys(plan.permitted).some(key => !declared.has(key))) throw new ProductionError(['repair-input-not-declared']);
   const inputs = Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: state.values }).filter(i => declared.has(i.id)).map(i => [i.id, i.value]));
@@ -360,7 +463,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const inWorker = hooked || (htmlLayout && !!deps.worker);
 
   // Parse the shared URL-mode query (unpacking a packed z= first).
-  const expanded = await engine.expandQuery(req.query);
+  const expanded = vectorFieldParams(await engine.expandQuery(req.query), tool.manifest);
   const st = engine.parseUrlState(expanded, tool.manifest);
   const template = await renderTemplateFor(deps, expanded, req.toolId);
   // Templates only (programmes/templates-only.ts): the render must start from one of
@@ -372,18 +475,41 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       undefined, { templates: required });
   }
   const declaredIds = (tool.manifest.inputs as { id: string }[]).map((input) => input.id);
-  requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, declaredIds, format);
+  requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, format);
 
   // Policy BEFORE render. A caller that supplies a locked/hidden/not-allowed
   // param is refused (422); then the overlay's locked values are baked over the
   // caller's - so a locked input renders its policy value regardless of input.
   const groups = req.principal?.groups ?? [];
   const toolOverlay = deps.managedRules ? projectRuleOverlay(req.overlays.get(req.toolId), deps.managedRules, groups) : req.overlays.get(req.toolId);
-  // A template's rules join the tool's own, stricter wins (catalog/templates.ts).
-  const overlay = template ? templateOverlay(toolOverlay, template, groups, declaredIds) : toolOverlay;
-  // The template's values are where the render starts; the caller's own values
-  // land on top, and the fixed ones are baked over both below.
-  const seed = template ? templateSeed(template.values, declaredIds) : {};
+  // The partner company's values (plans/82 M3, programmes/company-values.ts).
+  // A logo field renders as the company's own asset, read here so both render
+  // tiers see the same bytes; a logo that cannot be read is left unbound.
+  const company = await deps.companyFor?.({ toolId: req.toolId, template, theme: themeOf(st.tokenSelection), toolOverlay, groups }) ?? null;
+  const inputTypes = new Map((tool.manifest.inputs as Array<{ id: string; type?: string }>).map((i) => [i.id, i.type]));
+  const companyValues: Record<string, unknown> = {};
+  for (const [id, raw] of Object.entries(company?.plan.values ?? {})) {
+    if (!declaredIds.includes(id)) continue;
+    if (LOGO_FIELDS.has(company!.plan.bound[id]!) && inputTypes.get(id) === 'asset') {
+      const ref = await company!.logo(raw);
+      if (ref) companyValues[id] = ref;
+    } else companyValues[id] = raw;
+  }
+  const plan = company ? { ...company.plan, locked: company.plan.locked.filter((id) => Object.hasOwn(companyValues, id)) } : null;
+  // Who the piece is for, as its credential records it (plans/82 M3, section 6).
+  const partner = await deps.partnerFor?.({ toolId: req.toolId, template, groups, ...(req.principal?.role ? { role: req.principal.role } : {}) }) ?? null;
+  // A template's rules join the tool's own, stricter wins (catalog/templates.ts),
+  // and a bound input they fix is fixed to the company's value.
+  const templated = template ? templateOverlay(toolOverlay, template, groups, declaredIds) : toolOverlay;
+  const overlay = plan ? bindOverlay(templated, toolOverlay, plan, groups, req.toolId, company!.company?.name, (id) => companyValues[id]) : templated;
+  // Where the render starts, least specific first: the overlay's defaults for
+  // these groups, the template's values, then the company's. The caller's own
+  // values land on top, and the fixed ones are baked over everything below.
+  // Someone in two companies gets the tool's own default for a bound input.
+  const templateStart = template ? templateSeed(template.values, declaredIds) : {};
+  if (plan?.ambiguous) for (const id of Object.keys(plan.bound)) delete templateStart[id];
+  const overlayDefaults = templateSeed(defaultsFor(req.overlays.get(req.toolId), groups), declaredIds);
+  const seed = { ...overlayDefaults, ...templateStart, ...companyValues };
   // Per-tool format policy (overlay enforce.formats - plans/23 §3.A): a format
   // the deployment CAN produce may still be disallowed for this tool. A policy
   // 403, deliberately distinct from the capability 400 at the top: absent (400)
@@ -420,14 +546,23 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // `until-approved` reads the approval record on every render, so a decision takes
   // effect on the next one. A lookup that fails leaves the mark on.
   const watermarkRule = overlay?.enforce?.watermark;
-  const inputsDigest = watermarkRule === 'until-approved'
-    ? renderInputsDigest(engine, tool.manifest, { ...seed, ...st.values } as Record<string, unknown>, overlay, groups, req.profile) : null;
+  // One approval can cover a template's variants (plans/82 M7): then the key is the
+  // template's fixed inputs only, at the values this render fixes them to, so a
+  // partner's price or logo changes nothing. A template with no editable list
+  // fixes nothing, and each of its files needs its own approval.
+  const variantOpen = template && overlay?.enforce?.approvalCovers === 'template-variants'
+    ? templateOpenInputs(template, req.overlays.get(req.toolId)?.bindings) : null;
+  const coversVariants = !!variantOpen;
+  const inputsDigest = watermarkRule !== 'until-approved' ? null
+    : variantOpen ? templateVariantDigest(template!, variantOpen, templateFixedValues(declaredIds, variantOpen, { ...overlayDefaults, ...templateStart }, lockedValues(overlay, groups)))
+    : renderInputsDigest(engine, tool.manifest, { ...seed, ...st.values } as Record<string, unknown>, overlay, groups, req.profile);
   const approval = inputsDigest
     ? await deps.approvedExportReview?.({ toolId: req.toolId, toolVersion: String(tool.manifest.version), format, inputsDigest }).catch(() => null) ?? null
     : null;
   const watermark = shouldWatermark(watermarkRule, req.watermarkPreview === true, !!approval);
   const untilApproved = inputsDigest
-    ? { marked: watermark, note: untilApprovedNote(watermark), approvalId: approval?.id ?? null, inputsDigest } : undefined;
+    ? { marked: watermark, note: untilApprovedNote(watermark), approvalId: approval?.id ?? null, inputsDigest,
+      ...(coversVariants ? { covers: 'template-variants' as const, template: { id: template!.id, version: template!.version } } : {}) } : undefined;
   const pxW = toPx(engine, st.width, st.unit, st.dpi);
   const pxH = toPx(engine, st.height, st.unit, st.dpi);
   const context: RenderEvidence['context'] = {
@@ -449,6 +584,8 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     params: bakedValues,
     context: { ...context, sourceHash, ...(untilApproved ? { untilApproved: untilApproved.approvalId } : {}),
       ...(template ? { template: { id: template.id, version: template.version, editable: template.editable ?? null } } : {}), brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
+      // A signed file records the partner, so a profile revision moves the bytes.
+      ...(partner && deps.signer ? { partner } : {}),
       worker: deps.worker ? evidenceHash(deps.worker.url) : null,
       signer: deps.signer ? evidenceHash({ chain: deps.signer.chain.map((cert) => sha256Hex(cert)), claimGenerator: deps.signer.claimGenerator }) : null },
   });
@@ -458,7 +595,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const cacheable = !observer && !tool.manifest.hooks;
   const cached = cacheable ? cacheGet(cacheKey) : undefined;
   if (cached) return { bytes: cached.bytes, mime: cached.mime, cacheKey, ...(cached.provenance ? { provenance: cached.provenance } : {}),
-    ...(untilApproved ? { watermarkNote: untilApproved.note } : {}) };
+    ...(untilApproved ? { watermarkNote: untilApproved.note } : {}), ...(partner ? { partner } : {}) };
 
   // Render path: hooked or HTML-layout tool → Chromium worker (or 501 when none);
   // otherwise the in-process jsdom fast path. Both converge on an SVG string post-processed
@@ -625,10 +762,20 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // still ship), matching how provenance degrades. Cache the signed bytes.
   if (deps.signer) {
     try {
+      // The Lolly record (plans/82 M3, section 6): the design system and its theme
+      // choices, as the app writes them, and the partner. Nothing else.
+      const system = await deps.designSystem?.().catch(() => null) ?? null;
+      const tokenEngine = engine as unknown as Parameters<typeof recordedThemes>[0] & { designRecordEnvironment(meta: unknown): Record<string, string> };
+      const environment = recordEnvironment({
+        designSystem: system ? { id: system.id, label: system.label } : null,
+        themes: system ? recordedThemes(tokenEngine, system.tokens, st.tokenSelection as Record<string, string> | null) : [],
+        partner, designRecordEnvironment: (meta) => tokenEngine.designRecordEnvironment(meta),
+      });
       out.bytes = await engine.embedC2pa(out.bytes, format, {
         signer: { privateKey: deps.signer.privateKey, certDer: deps.signer.certDer, chain: deps.signer.chain },
         title: req.toolId,
         ...(deps.signer.claimGenerator ? { claimGenerator: deps.signer.claimGenerator } : {}),
+        ...(Object.keys(environment).length ? { environment } : {}),
       });
     } catch (e) {
       // Log to stderr (container stream); ship the unsigned bytes rather than 500.
@@ -672,7 +819,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       ...(format !== 'svg' ? ['rasterizer-fonts-unattested'] : []),
       ...observation.limitations].sort(),
   }, out.bytes) : undefined;
-  return { ...out, cacheKey, ...(evidence ? { evidence } : {}), ...(untilApproved ? { watermarkNote: untilApproved.note } : {}) };
+  return { ...out, cacheKey, ...(evidence ? { evidence } : {}), ...(untilApproved ? { watermarkNote: untilApproved.note } : {}), ...(partner ? { partner } : {}) };
 }
 
 /** Rasterise an SVG string to PNG via resvg, longest edge bounded by the cap. */

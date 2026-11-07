@@ -220,6 +220,24 @@ test('a destination that needs a person answers in plain words, and sends nothin
   assert.equal((await store.listApprovals()).length, 0, 'a token raises no approval');
 });
 
+test('a token holding approvals.request asks for the delivery\'s approval, and nothing is sent until a person decides (plans/82 M7)', async () => {
+  const { id, token } = await mint(['render', 'delivery', 'approvals.request']);
+  const before = objects.size;
+  const approvalsBefore = (await store.listApprovals()).length;
+  const renderId = await finishedRender(id);
+  const asked = await call(token, 'deliver_render', { renderId, destinationId: 'reviewed', name: 'card.png' });
+  assert.equal(asked.isError, false, JSON.stringify(asked.value));
+  assert.equal(asked.value.state, 'awaiting-approval');
+  assert.match(asked.value.note, /waiting for a person to approve/);
+  assert.equal(objects.size, before, 'nothing is sent before a person approves');
+  const approvals = await store.listApprovals();
+  assert.equal(approvals.length, approvalsBefore + 1);
+  const approval = approvals.find((a) => a.createdBy === `svc_${id}`)!;
+  assert.equal(approval.subjectType, 'delivery');
+  const notice = (await store.listMessages()).find((m) => m.title === 'Approval requested: Deliver card.png to Reviewed release');
+  assert.equal(notice?.body, 'The service token agent asked for review on the “Review” step.');
+});
+
 test('a delivery already waiting on a person says so', async () => {
   // The route refuses tokens first today, so this pins the wording if a delivery ever
   // reaches this tool in that state.

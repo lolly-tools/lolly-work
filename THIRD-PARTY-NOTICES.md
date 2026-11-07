@@ -85,6 +85,21 @@ full MPL-2.0 text ships with the package
 https://mozilla.org/MPL/2.0/. Source: https://github.com/thx/resvg-js.
 ```
 
+### DOMPurify 3.4.17
+
+- SPDX-License-Identifier: `(MPL-2.0 OR Apache-2.0)`, used under `MPL-2.0`
+- Copyright: (c) Cure53 and other contributors
+- Cleans a partner company's SVG logo on upload with the same SVG profile the
+  Lolly shell applies (`server/src/programmes/logo-checks.ts`).
+
+```text
+DOMPurify is dual-licensed under the Mozilla Public License, Version 2.0 and
+the Apache License, Version 2.0. lolly-work uses it under MPL-2.0, the
+license of lolly-work itself. The full text of the Mozilla Public License,
+Version 2.0 is in this repository's LICENSE file and at
+https://mozilla.org/MPL/2.0/. Source: https://github.com/cure53/DOMPurify
+```
+
 ### pg 8.22.0
 
 - SPDX-License-Identifier: `MIT`

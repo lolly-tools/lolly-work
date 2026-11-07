@@ -142,8 +142,8 @@ def validate_manifest(manifest, run, wsha):
         refuse_release_key(key_id, "the build")
     require(all(key_id == thumbprint for key_id in keys), "KEY_MISMATCH",
             "the build is not pinned to and signed with the lolly.ing key the tool pins")
-    require(shell.get("profile") == A.ING["receiptProfile"] and settings.get("profile") == A.ING["receiptProfile"],
-            "MANIFEST_INVALID", "the shell is not the suse profile")
+    require(shell.get("profile") in A.ING["receiptProfiles"] and settings.get("profile") == shell.get("profile"),
+            "MANIFEST_INVALID", "the shell was not built with a lolly.ing profile")
     require(isinstance(shell.get("indexSha256"), str) and HEX64.fullmatch(shell["indexSha256"])
             and isinstance(manifest.get("receiptSha256"), str) and HEX64.fullmatch(manifest["receiptSha256"])
             and manifest["receiptSha256"] == shell.get("receiptSha256"), "MANIFEST_INVALID", "the shell index or receipt hash")
