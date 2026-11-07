@@ -1478,7 +1478,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(await store.getInstanceDefault('conformance.default'), decided);
   assert.equal(typeof await store.hasAccounts(), 'boolean');
 
-  // Partnership exit receipts (plans/82 M5, migrations/0097): one record per
+  // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
   // exit, newest first, filtered by programme, company or state, upserted
   // whole; deleting a programme's receipts takes its companies' too.
   assert.deepEqual(await store.listProgrammeExits(), []);

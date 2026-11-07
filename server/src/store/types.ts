@@ -1820,7 +1820,7 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putPartnerFolder(rec: PartnerFolderRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deletePartnerFolder(key: { provider: string; path: string; programmeId: string; companyId?: string }): Promise<void>;
-  // Partnership exit receipts (plans/82 M5, migrations/0097): one record per
+  // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
   // exit, scheduled, done, cancelled or reopened, upserted whole.
   /** Newest first. `programmeId` lists a programme's exits and its companies'. */
   listProgrammeExits(filter?: { programmeId?: string; companyId?: string; state?: ProgrammeExitRecord['state'] }): Promise<ProgrammeExitRecord[]>;
