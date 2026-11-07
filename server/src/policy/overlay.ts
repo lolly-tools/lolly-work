@@ -8,7 +8,7 @@
  */
 
 import { grantDecision, type Grant } from '../rbac/evaluate.ts';
-import { isProgrammeGroup, isProgrammeScoped } from '../programmes/types.ts';
+import { isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, programmeOfCompany } from '../programmes/types.ts';
 
 export type AccessLevel = 'editable' | 'choice' | 'locked' | 'hidden';
 
@@ -56,6 +56,22 @@ export interface ResolvedAccess {
   reason?: string;
 }
 
+/**
+ * For a partner, which rule decided and why: a company's rule (overriding its
+ * own programme's), or a programme's, and the other programmes it was compared
+ * with. Only `explainInputAccess` returns it, and only the console's Preview
+ * calls that, so no partner, app or agent ever reads it.
+ */
+export interface AccessWhy {
+  scope: 'company' | 'programme';
+  /** The company or programme group the deciding rule names. */
+  group: string;
+  /** For a company rule, its programme's group, when that programme had a rule too. */
+  over?: string;
+  /** The other programmes' results, each less strict than or as strict as this one. */
+  others?: Array<{ group: string; level: AccessLevel }>;
+}
+
 const EDITABLE: ResolvedAccess = { level: 'editable' };
 
 function ruleMatches(rule: InputRule, groups: string[]): boolean {
@@ -76,7 +92,24 @@ function rulesFor(table: Record<string, InputRule[]>, key: string): InputRule[] 
   return Array.isArray(rules) ? rules : undefined;
 }
 
-/** First matching rule for the input (falling back to the '*' input default) wins. */
+/**
+ * The rule for one input, for a person in these groups (falling back to the
+ * '*' input default).
+ *
+ * Someone with no partner rule that names their groups gets the first matching
+ * rule, in the order the overlay was written. For a partner, the rules that
+ * name their own programme or company groups decide, whatever their order
+ * (plans/82, Andy's decisions 3 and 9, settled with the coordinator
+ * 2026-11-06):
+ *   - within one programme, a rule for the person's company overrides the
+ *     programme's rule: the company is the more specific scope;
+ *   - across programmes, the stricter result wins, the way a deny beats an
+ *     allow among grants;
+ *   - a partner-specific rule beats a generic one (`*`, a staff group).
+ * Several rules in one scope are compared stricter-wins too, so no outcome
+ * hangs on the order rules were added; only equally strict rules fall back to
+ * the overlay's order.
+ */
 export function resolveInputAccess(
   overlay: ToolOverlay | undefined,
   inputId: string,
@@ -87,12 +120,7 @@ export function resolveInputAccess(
   if (!rules) return EDITABLE;
   const first = rules.find((rule) => ruleMatches(rule, groups));
   if (!first) return EDITABLE;
-  // A person in two partner programmes gets the stricter rule, the way a deny
-  // beats an allow among grants (Andy, plans/82 decision 11). This applies only
-  // when the first matching rule names one of their programme groups; every
-  // other case keeps the first-match order the overlay was written in.
-  const viaProgramme = (rule: InputRule): boolean => rule.groups.some((g) => isProgrammeGroup(g) && groups.includes(g));
-  const rule = viaProgramme(first) ? strictest(rules.filter(viaProgramme)) : first;
+  const rule = resolvePartnerRule(rules, groups)?.rule ?? first;
   const out: ResolvedAccess = { level: rule.level };
   if ('value' in rule) out.value = rule.value;
   if (rule.allow) out.allow = rule.allow;
@@ -103,6 +131,58 @@ export function resolveInputAccess(
   if (overlay.name) out.by = overlay.name;
   if (rule.reason) out.reason = rule.reason;
   return out;
+}
+
+/** Why `resolveInputAccess` gave a partner what it gave, for an admin's
+ *  Preview; null when no partner rule decided (the overlay's order did). */
+export function explainInputAccess(overlay: ToolOverlay | undefined, inputId: string, groups: string[]): AccessWhy | null {
+  if (!overlay?.inputAccess) return null;
+  const rules = rulesFor(overlay.inputAccess, inputId) ?? rulesFor(overlay.inputAccess, '*');
+  return rules ? resolvePartnerRule(rules, groups)?.why ?? null : null;
+}
+
+/** One scope's answer: a programme with its company rules first, or a company
+ *  whose programme is not known yet. */
+interface ScopePick { rule: InputRule; at: number; scope: 'company' | 'programme'; group: string; over?: string; key: string }
+
+function resolvePartnerRule(rules: InputRule[], groups: string[]): { rule: InputRule; why: AccessWhy } | null {
+  const mine = groups.filter(isPartnerGroup);
+  if (!mine.length) return null;
+  const naming = (g: string) => rules.filter((r) => r.groups.includes(g));
+  if (!mine.some((g) => naming(g).length)) return null;
+  const at = (r: InputRule) => rules.indexOf(r);
+  const programmes = mine.filter(isProgrammeGroup);
+  const companies = mine.filter(isCompanyGroup);
+  const picks: ScopePick[] = [];
+  const placed = new Set<string>();
+  for (const p of programmes) {
+    const inside = companies.filter((c) => programmeOfCompany(c) === p);
+    inside.forEach((c) => placed.add(c));
+    const companyRules = [...new Set(inside.flatMap(naming))];
+    const ownRules = naming(p);
+    if (companyRules.length) {
+      const rule = strictest(companyRules);
+      const group = inside.find((c) => rule.groups.includes(c)) ?? inside[0]!;
+      picks.push({ rule, at: Math.min(...companyRules.map(at)), scope: 'company', group, ...(ownRules.length ? { over: p } : {}), key: p });
+    } else if (ownRules.length) {
+      picks.push({ rule: strictest(ownRules), at: Math.min(...ownRules.map(at)), scope: 'programme', group: p, key: p });
+    }
+  }
+  // A company whose programme is unknown (or not one of theirs) stands as a
+  // scope of its own, compared stricter-wins: never more permissive.
+  for (const c of companies.filter((x) => !placed.has(x))) {
+    const own = naming(c);
+    if (own.length) picks.push({ rule: strictest(own), at: Math.min(...own.map(at)), scope: 'company', group: c, key: c });
+  }
+  if (!picks.length) return null;
+  picks.sort((a, b) => a.at - b.at);
+  const rule = strictest(picks.map((p) => p.rule));
+  const winner = picks.find((p) => p.rule === rule || (p.rule.level === rule.level && p.rule.groups === rule.groups)) ?? picks[0]!;
+  const others = picks.filter((p) => p !== winner).map((p) => ({ group: p.key, level: p.rule.level }));
+  return {
+    rule,
+    why: { scope: winner.scope, group: winner.group, ...(winner.over ? { over: winner.over } : {}), ...(others.length ? { others } : {}) },
+  };
 }
 
 const STRICTNESS: Record<AccessLevel, number> = { editable: 0, choice: 1, locked: 2, hidden: 3 };

@@ -92,11 +92,18 @@ function noteGroups(list) {
     if (typeof g?.name === 'string' && g.name.startsWith('programme-') && typeof g.description === 'string' && g.description.startsWith(PROGRAMME_GROUP_NOTE)) {
       programmeGroupNames.set(g.name, g.description.slice(PROGRAMME_GROUP_NOTE.length));
     }
+    // A company's group carries "Partner company: <name> (<programme>)".
+    const company = typeof g?.name === 'string' && g.name.startsWith('company-') && typeof g.description === 'string'
+      ? /^Partner company: (.+) \((.+)\)$/.exec(g.description) : null;
+    if (company) companyGroupNames.set(g.name, { name: company[1], programme: company[2] });
   }
 }
+const companyGroupNames = new Map();
 function groupLabel(name) {
   const programme = programmeGroupNames.get(name);
-  return programme ? `${programme} (partner programme)` : name;
+  if (programme) return `${programme} (partner programme)`;
+  const company = companyGroupNames.get(name);
+  return company ? `${company.name} (company in ${company.programme})` : name;
 }
 
 // ── tiny dom helpers ────────────────────────────────────────────────────────
@@ -6442,6 +6449,22 @@ function accessDetail(access) {
   return el('span', {}, el('span', { class: 'muted' }, access.level), by);
 }
 
+/** Which partner rule decided an input, for the admin (plans/82). Never shown
+ *  to a partner: org-config carries no explanation. */
+function ruleWhy(why) {
+  if (!why) return null;
+  const name = (g) => programmeGroupNames.get(g) ?? companyGroupNames.get(g)?.name ?? g;
+  const does = { editable: 'leaves the input editable', choice: 'offers a choice', locked: 'locks the input', hidden: 'hides the input' };
+  const company = companyGroupNames.get(why.group);
+  const decided = why.scope === 'company'
+    ? `Decided by the rule for ${name(why.group)}${company ? `, a company in ${company.programme}` : ''}${why.over ? `, which overrides the rule for ${name(why.over)}` : ''}.`
+    : `Decided by the rule for ${name(why.group)}.`;
+  const others = why.others?.length
+    ? ` ${why.others.map((o) => `${name(o.group)} ${does[o.level] ?? o.level}`).join('; ')}, and the stricter rule wins.`
+    : '';
+  return el('div', { class: 'muted' }, decided + others);
+}
+
 function renderPreview(data) {
   const { preview, orgConfig } = data;
   const heading = preview.groups.length ? preview.groups.map(groupLabel).join(', ') : 'a member with no groups';
@@ -6454,10 +6477,15 @@ function renderPreview(data) {
   const toolBlocks = govToolIds.length
     ? govToolIds.map((id) => {
         const t = orgConfig.tools[id];
+        const whyFor = preview.why?.[id] ?? {};
         const inputRows = [
-          ...(t.inputs ?? []).map((i) => el('tr', {}, el('td', { class: 'mono' }, i.id), el('td', {}, accessDetail(i.access)))),
+          ...(t.inputs ?? []).map((i) => el('tr', {}, el('td', { class: 'mono' }, i.id), el('td', {}, accessDetail(i.access), ruleWhy(whyFor[i.id])))),
           ...(t.hidden ?? []).filter((h) => !(t.inputs ?? []).some((i) => i.id === h))
-            .map((h) => el('tr', {}, el('td', { class: 'mono' }, h), el('td', {}, el('span', { class: 'status revoked' }, 'hidden')))),
+            .map((h) => el('tr', {}, el('td', { class: 'mono' }, h), el('td', {}, el('span', { class: 'status revoked' }, 'hidden'), ruleWhy(whyFor[h])))),
+          // An input a partner rule left editable (a company's exception) has
+          // no row on the app's wire, but the admin should see what decided.
+          ...Object.keys(whyFor).filter((k) => !(t.inputs ?? []).some((i) => i.id === k) && !(t.hidden ?? []).includes(k))
+            .map((k) => el('tr', {}, el('td', { class: 'mono' }, k), el('td', {}, accessDetail(null), ruleWhy(whyFor[k])))),
         ];
         // A tool's own export answer, where a grant naming the tool differs from
         // the Permissions table above.
@@ -6538,6 +6566,8 @@ async function viewPreview(main, params) {
   // Programme names for the chips and the heading; a programme with no rules
   // yet is offered too, so an admin can preview it before writing any.
   const programmes = await api('/api/v1/programmes').then((r) => r.programmes ?? []).catch(() => []);
+  // Programme and company names for the headings and the "which rule decided" lines.
+  await api('/api/v1/groups').then((r) => noteGroups(r.groups ?? [])).catch(() => undefined);
   try {
     const { tools } = await api('/api/v1/policy/tools');
     const seen = new Set();

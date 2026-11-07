@@ -91,7 +91,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName } from '../programmes/types.ts';
+import { isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
@@ -138,7 +138,7 @@ import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
 } from '../collab/invites.ts';
-import { normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess } from '../policy/overlay.ts';
+import { explainInputAccess, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy } from '../policy/overlay.ts';
 import {
   applyLifecycleToIndex, assetFormatSha256, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
@@ -2699,6 +2699,9 @@ export function buildApp(deps: AppDeps): App {
     // Asked first so the flag service's round trip overlaps the store reads.
     // It never rejects: a failure leaves each flag on Work's governed value.
     const flagServiceAnswers = flagService?.evaluate({ groups: subject.groups, role: subject.role });
+    // Which programme each company is in, fresh, so a company's input rule
+    // overrides its own programme's here (policy/overlay.ts).
+    if (subject.groups.some(isPartnerGroup)) setCompanyProgrammes(await store.listCompanies());
     const brandSnapshot = brand.current() ?? await brand.snapshot();
     const overlays = await brandRules.project(brandSnapshot, subject.groups);
     const grants = await store.listGrants();
@@ -2800,7 +2803,21 @@ export function buildApp(deps: AppDeps): App {
       sample: feedAssets.slice(0, 24).map((a) => ({ id: a.id, name: typeof a.name === 'string' ? a.name : a.id, type: a.type ?? null })),
       collections: ((feed.collections ?? []) as Array<{ id: string; name: string; members: string[] }>).map((c) => ({ id: c.id, name: c.name, members: c.members.length })),
     };
-    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets }, orgConfig }, { 'cache-control': 'no-store' });
+    // Which partner rule decided each governed input, for the admin reading
+    // this (plans/82): a company's rule over its programme's, or the stricter
+    // of two programmes. It is never on org-config, so a partner never sees it.
+    const projected = await brandRules.project(brand.current() ?? await brand.snapshot(), groups);
+    const why: Record<string, Record<string, AccessWhy>> = {};
+    for (const [toolId, entry] of Object.entries(orgConfig.tools as Record<string, { inputs?: Array<{ id: string }>; hidden?: string[] }>)) {
+      // Every input a rule names, editable ones included: an exception that
+      // leaves an input editable is exactly what the admin wants to see.
+      const named = Object.keys(projected.get(toolId)?.inputAccess ?? {}).filter((k) => k !== '*');
+      for (const inputId of new Set([...(entry.inputs ?? []).map((i) => i.id), ...(entry.hidden ?? []), ...named])) {
+        const explained = explainInputAccess(projected.get(toolId), inputId, groups);
+        if (explained) (why[toolId] ??= {})[inputId] = explained;
+      }
+    }
+    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, ...(Object.keys(why).length ? { why } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
   });
 
   // ── telemetry ─────────────────────────────────────────────────────────────
@@ -5619,6 +5636,9 @@ export function buildApp(deps: AppDeps): App {
     },
   });
 
+  // The company-to-programme map input rules read (programmes/types.ts):
+  // loaded now, kept by the company routes, reloaded by the minute sweep.
+  void store.listCompanies().then(setCompanyProgrammes, () => undefined);
   registerProgrammePeopleRoutes(router, {
     store, requireAction, audit,
     invite: async (actor, email, groups, endsAt) => {

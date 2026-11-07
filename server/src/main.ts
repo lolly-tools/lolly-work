@@ -40,6 +40,7 @@ import { grantNeverMatches } from './rbac/grant-shape.ts';
 import { sweepProgrammeEnds } from './programmes/people-routes.ts';
 import { recheckDomains, sweepDomainRules } from './programmes/domain-routes.ts';
 import { sweepFolderRules } from './programmes/folder-routes.ts';
+import { setCompanyProgrammes } from './programmes/types.ts';
 import { resolveTxt } from 'node:dns/promises';
 import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
 
@@ -273,6 +274,8 @@ if (config.audit.headLog.intervalMinutes > 0) {
 const sweepAudit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
   store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
 const sweepEnds = async (): Promise<number> => {
+  // Each replica reloads which programme each company is in (input rules).
+  setCompanyProgrammes(await store.listCompanies());
   await sweepDomainRules(store, sweepAudit);
   await sweepFolderRules(store, sweepAudit);
   const ended = await sweepProgrammeEnds(store, sweepAudit);
