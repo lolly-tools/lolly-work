@@ -38,14 +38,23 @@ export interface RenderAssetGate {
   held: Set<string>;
 }
 
-/** A catalog file the caller's licence gate holds back. */
+/** Catalog files the caller's licence gate holds back: the first, and all of them. */
 export class AssetHeldError extends Error {
   readonly assetId: string;
-  constructor(assetId: string) {
-    super(`${assetId} is not available to this render`);
+  readonly assets: string[];
+  constructor(assets: string | readonly string[]) {
+    const list = typeof assets === 'string' ? [assets] : [...new Set(assets)].sort();
+    super(assetHeldSentence(list));
     this.name = 'AssetHeldError';
-    this.assetId = assetId;
+    this.assetId = list[0] ?? '';
+    this.assets = list;
   }
+}
+
+/** What a refused render or compile tells the caller, naming each held file. */
+export function assetHeldSentence(ids: readonly string[], what = 'render'): string {
+  const list = [...new Set(ids)].sort();
+  return `This ${what} uses ${list.length === 1 ? 'a file that is' : 'files that are'} not available to you: ${list.join(', ')}.`;
 }
 
 // One catalog-asset record as it appears in <pack>/catalog/assets/index.json.

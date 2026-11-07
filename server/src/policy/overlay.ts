@@ -47,6 +47,11 @@ export interface ToolOverlay {
     c2pa?: 'org-identity' | 'off';
     watermark?: 'until-approved' | 'always' | 'never';
     escalation?: string;
+    /** What one approval covers under until-approved (plans/82 M7): absent or
+     *  `file` is one file's exact inputs; `template-variants` is every file made
+     *  from one version of a published template of this tool, whatever the
+     *  inputs the programme may edit or the company fills. Off unless set. */
+    approvalCovers?: 'file' | 'template-variants';
   };
   /** Values a tool starts from, per group (plans/82 M3): `[{ groups, values }]`,
    *  most specific group winning (programmes/company-values.ts defaultsFor). The
@@ -417,7 +422,7 @@ export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 
 
   if (body.enforce !== undefined && body.enforce !== null) {
     if (typeof body.enforce !== 'object' || Array.isArray(body.enforce)) return null;
-    const e = body.enforce as { watermark?: unknown; formats?: unknown; escalation?: unknown };
+    const e = body.enforce as { watermark?: unknown; formats?: unknown; escalation?: unknown; approvalCovers?: unknown };
     const enforce: NonNullable<ToolOverlay['enforce']> = {};
     if (e.watermark !== undefined) {
       if (!WATERMARKS.includes(e.watermark as typeof WATERMARKS[number])) return null;
@@ -432,6 +437,12 @@ export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 
     if (e.escalation !== undefined && e.escalation !== null && e.escalation !== '') {
       if (typeof e.escalation !== 'string' || !/^[a-z0-9][a-z0-9-]{0,127}$/.test(e.escalation)) return null;
       enforce.escalation = e.escalation;
+    }
+    // One approval for a template's variants (plans/82 M7). `file` is the default
+    // and is not stored.
+    if (e.approvalCovers !== undefined && e.approvalCovers !== null) {
+      if (e.approvalCovers !== 'file' && e.approvalCovers !== 'template-variants') return null;
+      if (e.approvalCovers === 'template-variants') enforce.approvalCovers = 'template-variants';
     }
     if (Object.keys(enforce).length) overlay.enforce = enforce;
   }

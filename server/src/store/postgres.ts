@@ -77,6 +77,7 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     ...(r.tools ? { tools: r.tools as string[] } : {}),
     ...(r.groups ? { groups: r.groups as string[] } : {}),
     ...(r.limits ? { limits: r.limits as ApiTokenRecord['limits'] } : {}),
+    ...(r.via === 'programme' ? { via: 'programme' as const } : {}),
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
     createdAt: new Date(r.created_at as string).toISOString(),
@@ -918,11 +919,11 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // Service tokens (plans/35 wave 2) - the SCIM block's shapes, one row kind over.
     async putApiToken(rec) {
       await pool.query(
-        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools, groups, limits)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at, scopes, tools, groups, limits, via)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14)
          on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at, groups = excluded.groups, limits = excluded.limits`,
         [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null, rec.scopes ?? null, rec.tools ?? null, rec.groups ?? null,
-          rec.limits ? JSON.stringify(rec.limits) : null],
+          rec.limits ? JSON.stringify(rec.limits) : null, rec.via ?? null],
       );
     },
     async listApiTokens() {
@@ -2436,7 +2437,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         [key.provider, key.path, key.programmeId, key.companyId ?? '']);
     },
 
-    // Owner-published marks and licence records (migrations/0095), each kept
+    // Owner-published marks and licence records (migrations/0096), each kept
     // whole as JSON under its key.
     async listAssetRightsMarks() {
       const { rows } = await pool.query('select record from asset_rights_marks order by scope');
@@ -2466,7 +2467,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteAssetLicence(assetId) {
       await pool.query('delete from asset_licence_records where asset_id = $1', [assetId]);
     },
-    // Share anyway choices (migrations/0096).
+    // Share anyway choices (migrations/0097).
     async listRightsChoices() {
       const { rows } = await pool.query('select record from programme_rights_choices order by asset_id, audience_group');
       return rows.map((r) => r.record as RightsChoiceRecord);
@@ -2481,7 +2482,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteRightsChoice(key) {
       await pool.query('delete from programme_rights_choices where asset_id = $1 and audience_group = $2', [key.assetId, key.group]);
     },
-    // Defaults an instance decides once (migrations/0097): insert once, never update.
+    // Defaults an instance decides once (migrations/0098): insert once, never update.
     async getInstanceDefault(key) {
       const { rows } = await pool.query('select record from instance_defaults where key = $1', [key]);
       return rows[0] ? rows[0].record as InstanceDefaultRecord : null;
@@ -2517,6 +2518,17 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
            record = excluded.record, updated_at = now()`,
         [rec.id, rec.programmeId ?? '', rec.companyId ?? '', rec.state, JSON.stringify(rec), rec.createdAt],
       );
+    },
+    async replaceProgrammeExit(next, prev) {
+      if (next.id !== prev.id) return false;
+      // jsonb equality ignores key order, so the record read back compares
+      // equal to the one stored.
+      const r = await pool.query(
+        `update programme_exits set programme_id = $2, company_id = $3, state = $4, record = $5::jsonb, updated_at = now()
+         where id = $1 and record = $6::jsonb`,
+        [next.id, next.programmeId ?? '', next.companyId ?? '', next.state, JSON.stringify(next), JSON.stringify(prev)],
+      );
+      return (r.rowCount ?? 0) === 1;
     },
     async deleteProgrammeExits(pick) {
       if (pick.companyId) return (await pool.query('delete from programme_exits where company_id = $1', [pick.companyId])).rowCount ?? 0;

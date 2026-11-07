@@ -5,10 +5,11 @@
  * Pinned here: with the gate on, a programme-scoped caller's server render
  * draws only files their own feed holds, and answers 422 ASSET_HELD naming the
  * file otherwise, whether the file comes from the tool's default, the caller's
- * own value or a template; staff renders and report mode are unchanged; and
- * the programme report lists the published templates that seed files one of
- * the programme's audiences will not receive, and why, so the brand team sees
- * it before a partner's render is refused.
+ * own value or a template; a compile answers the same way (package and the
+ * document verbs compile through the same verb); staff renders and report
+ * mode are unchanged; and the programme report lists the published templates
+ * that seed files one of the programme's audiences will not receive, and why,
+ * so the brand team sees them before a partner's render is refused.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -148,3 +149,24 @@ test('over HTTP: Rita\'s render is refused with the gate on, and nothing changes
   assert.equal(staffGate, staffReport, 'staff renders are byte-identical with the gate on');
 });
 
+
+test('a compile is gated the same way: a partner\'s document never carries a file the gate holds back', async () => {
+  const compile = async (email: string, at: string, inputs: Record<string, unknown>) => {
+    const res = await fetch(`${at}/api/v1/compile`, { method: 'POST', headers: { cookie: await login(email, at), 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'photo-card', inputs }) });
+    return { status: res.status, text: await res.text() };
+  };
+  const held = await compile('rita@northwind.test', gateBase, {});
+  assert.equal(held.status, 422, held.text);
+  const body = JSON.parse(held.text) as { error: { code: string; message: string; assets?: string[] } };
+  assert.equal(body.error.code, 'ASSET_HELD');
+  assert.match(body.error.message, /^This document uses a file that is not available to you: acme\/photo\/unrecorded\.$/);
+  const open = await compile('rita@northwind.test', gateBase, { photo: 'acme/photo/open' });
+  assert.equal(open.status, 200, open.text);
+  assert.match(open.text, /data:image\/svg\+xml;base64,/, 'a file their feed holds is in the document');
+  const reporting = await compile('rita@northwind.test', base, {});
+  assert.equal(reporting.status, 200, 'report mode changes nothing a partner receives');
+  const staffGate = await compile('mia@test', gateBase, {});
+  const staffReport = await compile('mia@test', base, {});
+  assert.equal(staffGate.status, 200, staffGate.text);
+  assert.equal(staffGate.text, staffReport.text, 'staff compiles are byte-identical with the gate on');
+});

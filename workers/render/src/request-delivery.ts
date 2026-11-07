@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 import type { APIResponse, Route } from 'playwright-core';
+import { REQUEST_BUDGET_FLOOR, RENDER_MAX_BYTES, RESPONSE_MAX_BYTES } from './request-budget.ts';
 
+/** One render's allowance: requests, bytes per response and bytes in all.
+ *  A render of the shell takes its request count from ./request-budget.ts;
+ *  a rasterise, which runs no app code, keeps the floor. */
 export class ResponseBudget {
   private requests = 0;
   private bytes = 0;
   readonly responseBytes: number;
   readonly totalBytes: number;
   readonly requestCount: number;
-  constructor(responseBytes = 32 * 1024 * 1024, totalBytes = 128 * 1024 * 1024, requestCount = 512) {
+  constructor(responseBytes = RESPONSE_MAX_BYTES, totalBytes = RENDER_MAX_BYTES, requestCount = REQUEST_BUDGET_FLOOR) {
     this.responseBytes = responseBytes; this.totalBytes = totalBytes; this.requestCount = requestCount;
   }
   begin(): void {

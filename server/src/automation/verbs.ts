@@ -5,7 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts';
 import { loadToolOrRefuse } from '../render/tool-load.ts';
-import { withRenderHost } from '../render/host.ts';
+import { AssetHeldError, withRenderHost, type RenderAssetGate } from '../render/host.ts';
+import { designRuleIssues, vectorFieldParams } from '../render/pipeline.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { isSvgTemplate, toolServerFormats, type RenderCapabilities, type ToolServerFormats } from '../render/capabilities.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
@@ -28,6 +29,12 @@ export interface AutomationContext {
    *  `source` when the input was one, and answer what the files routes show. */
   saveFile?: (output: Uint8Array, made: { source?: VerbFile; input: Uint8Array; opts?: Record<string, unknown>; stages: string[] }) => Promise<unknown>;
   policy?: { overlays: Map<string, ToolOverlay>; groups: string[] };
+  /** A published rules tool's own files, from the caller's served feed (plans/82
+   *  M2), or null for a tool the pack holds. Tool-relative path to bytes. */
+  toolFiles?: (toolId: string) => Promise<ReadonlyMap<string, Buffer> | null>;
+  /** The licence gate for a programme-scoped caller (plans/82 M4), fresh for
+   *  each request: a compile that reaches for a file it holds back is refused. */
+  assetGate?: RenderAssetGate;
 }
 /** What a verb knows of a file reference it read. */
 export interface VerbFile { id: string; checksum: string; name: string; contentType: string }
@@ -41,14 +48,22 @@ function requireDeclaredFormat(tool: LoadedTool, format: unknown): void {
   if (typeof format !== 'string' || !tool.manifest.render.formats.map(formatKey).includes(formatKey(format))) throw new Error('format is not one this tool declares');
 }
 
-async function load(pack: string, toolId: string): Promise<{ engine: Awaited<ReturnType<typeof loadEngine>>; tool: LoadedTool }> {
+async function load(ctx: Pick<AutomationContext, 'pack' | 'toolFiles'>, toolId: string): Promise<{ engine: Awaited<ReturnType<typeof loadEngine>>; tool: LoadedTool }> {
   const engine = await loadEngine();
-  const tool = await loadToolOrRefuse(toolId, (id) => engine.loadTool(id, (path) => readFile(join(pack, 'tools', path), 'utf8')));
+  // A published rules tool reads its own files, built for this caller, and nothing from the pack.
+  const own = await ctx.toolFiles?.(toolId) ?? null;
+  const read = async (path: string): Promise<string> => {
+    if (!own) return readFile(join(ctx.pack, 'tools', path), 'utf8');
+    const file = own.get(path.slice(path.indexOf('/') + 1));
+    if (!file) throw Object.assign(new Error(`no such file: ${path}`), { code: 'ENOENT' });
+    return file.toString('utf8');
+  };
+  const tool = await loadToolOrRefuse(toolId, (id) => engine.loadTool(id, read));
   return { engine, tool };
 }
 
 export async function schemaVerb(ctx: AutomationContext, toolId: string): Promise<unknown> {
-  const { engine, tool } = await load(ctx.pack, toolId);
+  const { engine, tool } = await load(ctx, toolId);
   return { apiVersion: engine.DOCUMENT_API_VERSION, schema: engine.documentSchema(tool) };
 }
 
@@ -60,7 +75,7 @@ export interface ToolDescription {
   raw: Record<string, unknown>; server: ToolServerFormats; manifest: LoadedTool['manifest'];
 }
 export async function describeTool(ctx: AutomationContext, toolId: string, deployment: { caps: RenderCapabilities; allowHooksInFastPath: boolean; tokens: boolean }): Promise<ToolDescription> {
-  const { engine, tool } = await load(ctx.pack, toolId);
+  const { engine, tool } = await load(ctx, toolId);
   const template = tool.template;
   return {
     toolId, name: typeof tool.manifest.name === 'string' ? tool.manifest.name : toolId, version: tool.manifest.version,
@@ -71,22 +86,38 @@ export async function describeTool(ctx: AutomationContext, toolId: string, deplo
 }
 
 export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Promise<unknown> {
-  const { engine, tool } = await load(ctx.pack, req.toolId);
+  const { engine, tool } = await load(ctx, req.toolId);
   requireDeclaredFormat(tool, req.format);
   const inputs = ctx.policy ? applyInputPolicy(req.inputs ?? {}, ctx.policy.overlays.get(req.toolId), ctx.policy.groups) : req.inputs ?? {};
-  return withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
+  const compiled = await withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
+  // The engine drops a file it cannot read and carries on, so a held file is
+  // refused here rather than left out of the document without a word.
+  if (ctx.assetGate?.held.size) throw new AssetHeldError([...ctx.assetGate.held]);
+  return compiled;
 }
 
 export async function validateVerb(ctx: AutomationContext, body: Record<string, unknown>): Promise<unknown> {
   if (typeof body.toolId === 'string') {
-    const { engine, tool } = await load(ctx.pack, body.toolId);
+    const { engine, tool } = await load(ctx, body.toolId);
     requireDeclaredFormat(tool, body.format);
+    const format = typeof body.format === 'string' ? body.format : undefined;
+    // A rules tool's own rules (plans/82 M2) refuse here what the render refuses:
+    // a param the designer fixed, a format not enabled and a value outside the
+    // designer's choices, each with the code the render answers.
+    const designed = async <T extends { ok: boolean; errors: unknown[] }>(result: T, query: string): Promise<T> => {
+      if (!(tool.manifest as { designTool?: unknown }).designTool) return result;
+      const expanded = vectorFieldParams(await engine.expandQuery(query), tool.manifest);
+      const issues = designRuleIssues(engine, tool.manifest, expanded, engine.parseUrlState(expanded, tool.manifest).values as Record<string, unknown>, format);
+      if (!issues.length) return result;
+      const errors = [...result.errors, ...issues.map((issue) => ({ path: issue.param ? `/${issue.param}` : '/format', message: issue.message, code: issue.code }))];
+      return { ...result, ok: false, errors };
+    };
     const governed = (result: { ok: boolean; errors: unknown[]; warnings: unknown[] }, values: () => Record<string, unknown>) =>
       ctx.policy ? effectiveValidation(result, values(), ctx.policy.overlays.get(body.toolId as string), ctx.policy.groups) : result;
     if (typeof body.recipe === 'string') {
       const recipe = body.recipe;
       const result = engine.validateDocument({ kind: 'recipe', manifest: tool.manifest, value: recipe });
-      return result.ok ? governed(result, () => engine.parseUrlState(recipe, tool.manifest).values) : result;
+      return result.ok ? designed(governed(result, () => engine.parseUrlState(recipe, tool.manifest).values), recipe) : result;
     }
     const raw = (body.inputs && typeof body.inputs === 'object' ? body.inputs : {}) as Record<string, unknown>;
     // A published template the render starts from (plans/82 M2) rides in the inputs
@@ -94,7 +125,7 @@ export async function validateVerb(ctx: AutomationContext, body: Record<string, 
     // checks it and applies its rules; the schema check here is for the inputs.
     const { template, ...rest } = raw;
     const value = isPublishedTemplateRef(template) ? rest : raw;
-    return governed(engine.validateDocument({ kind: 'inputs', manifest: tool.manifest, value }), () => value);
+    return designed(governed(engine.validateDocument({ kind: 'inputs', manifest: tool.manifest, value }), () => value), queryFromInputs(value));
   }
   const engine = await loadEngine();
   if (body.document !== undefined) return engine.validateDocument({ kind: 'document', value: body.document });

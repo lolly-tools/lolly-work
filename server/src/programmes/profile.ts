@@ -82,6 +82,8 @@ export const DETAIL_FIELDS = ['website', 'contact', 'address', 'currency', 'taxN
 type DetailField = (typeof DETAIL_FIELDS)[number];
 
 export const LIMITS = { name: 120, website: 500, contactName: 120, email: 254, phone: 40, address: 600, addressLines: 6, taxNote: 200 } as const;
+/** Contacts a company may name as editors. */
+export const MAX_EDITORS = 50;
 
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/;
 const EMAIL = /^[^\s@,;<>"]+@[^\s@,;<>".][^\s@,;<>"]*\.[^\s@,;<>"]+$/;

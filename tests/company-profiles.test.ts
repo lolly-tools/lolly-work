@@ -22,7 +22,8 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { readProfileBody } from '../server/src/programmes/profile.ts';
+import { LIMITS, MAX_EDITORS, readProfileBody } from '../server/src/programmes/profile.ts';
+import { LOGO_TYPES, PNG_MAX_BYTES, PNG_MIN_LONG_SIDE, SVG_MAX_BYTES } from '../server/src/programmes/logo-checks.ts';
 
 let server: Server;
 let base = '';
@@ -355,4 +356,17 @@ test('lw companies profile shows, sets, checks and stores a logo, and lists the 
   const history = await lw('companies', 'profile', 'history', 'resellers-emea', 'northwind-it');
   assert.equal(history.code, 0, history.err);
   assert.match(history.out, /mark/);
+});
+
+test('the profile view shows an admin the limits the server enforces, from the same constants', async () => {
+  const bruno = await setUp();
+  const view = (await call(bruno, 'GET', P)).body;
+  assert.deepEqual(view.limits.logo.types, [...LOGO_TYPES]);
+  assert.equal(view.limits.logo.svgMaxBytes, SVG_MAX_BYTES);
+  assert.equal(view.limits.logo.pngMaxBytes, PNG_MAX_BYTES);
+  assert.equal(view.limits.logo.pngMinLongSide, PNG_MIN_LONG_SIDE);
+  assert.deepEqual(view.limits.fields, { ...LIMITS });
+  assert.equal(view.limits.editors, MAX_EDITORS);
+  assert.equal(view.limits.history, 'all', 'every revision is kept');
+  assert.ok((await call(await login('rita@northwind.test'), 'GET', '/api/v1/me/company/profile')).body.limits, 'a contact sees the same limits');
 });

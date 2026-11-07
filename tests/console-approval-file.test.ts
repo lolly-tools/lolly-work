@@ -3,7 +3,8 @@
  * The console's approval card for an export review, in jsdom: a reviewer's Approve
  * stays off until the file has loaded and its digest checked, the decision carries
  * the fingerprint and the token that came with the bytes, and the requester sees
- * only facts until the request is approved. An older request says it has no file.
+ * only facts until the request is approved. An older request says it has no file,
+ * and a request that covers a template's variants says so before the file.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -147,5 +148,23 @@ test('the card says what approving does to the file, and "recorded" only after t
     assert.match(line, /The approved file is the file as reviewed/);
     assert.doesNotMatch(line, /recorded in this file/, 'never claims a recording');
   }
+  p.close();
+});
+
+test('a request that covers a template\'s variants says so before the file, to reviewer and requester alike', async () => {
+  const p = page();
+  const variants = file({ covers: 'template-variants', templateRef: { id: 'inst/partner-data-sheet', version: 3, name: 'Partner data sheet' }, format: 'pdf', preview: 'pdf' });
+  const sentence = 'Approves Partner data sheet v3 as PDF for every price, logo and contact. This file is one example.';
+  for (const [a, actionable] of [[approval({ exportReview: variants }), true], [approval({ exportReview: variants, relation: 'mine', mine: true }), false], [approval({ exportReview: variants, state: 'approved' }), false]] as const) {
+    const card = p.render(a, actionable);
+    const line = card.querySelector('.appr-file .appr-file-covers');
+    assert.equal(line?.textContent, sentence);
+    assert.equal(card.querySelector('.appr-file')?.firstElementChild, line, 'the sentence comes before the file');
+  }
+  // A request made before the name was kept reads the template's id.
+  const older = p.render(approval({ exportReview: file({ covers: 'template-variants', templateRef: { id: 'inst/partner-data-sheet', version: 2 } }) }), true);
+  assert.equal(older.querySelector('.appr-file-covers')?.textContent, 'Approves inst/partner-data-sheet v2 as PNG for every price, logo and contact. This file is one example.');
+  // A request for one file says nothing of the kind.
+  assert.equal(p.render(approval(), true).querySelector('.appr-file-covers'), null);
   p.close();
 });

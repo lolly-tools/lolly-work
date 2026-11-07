@@ -352,6 +352,10 @@ export interface ApiTokenRecord {
    *  no cap. A figure it leaves out takes its programme's, then the instance's;
    *  an internal token has none unless it states one (iam/token-limits.ts). */
   limits?: TokenLimitOverrides;
+  /** `programme` when a programme's manager minted it for that programme (plans/82
+   *  M7, migrations/0095). Such a token never leaves its programme: it is revoked,
+   *  not moved. Absent for a token an owner minted. */
+  via?: 'programme';
   /** sha256 hex of the opaque secret - never the secret itself. */
   tokenHash: string;
   /** 'user:<id>' who minted it. */
@@ -1871,6 +1875,11 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   listProgrammeExits(filter?: { programmeId?: string; companyId?: string; state?: ProgrammeExitRecord['state'] }): Promise<ProgrammeExitRecord[]>;
   getProgrammeExit(id: string): Promise<ProgrammeExitRecord | null>;
   putProgrammeExit(rec: ProgrammeExitRecord): Promise<void>;
+  /** Write `next` only while the stored record still equals `prev`: how a
+   *  replica claims a scheduled end before running it, and how a change, a
+   *  cancel, a reminder or a reopen never overwrites another one. False when
+   *  the record changed or is gone. */
+  replaceProgrammeExit(next: ProgrammeExitRecord, prev: ProgrammeExitRecord): Promise<boolean>;
   /** A deleted programme's receipts, or a deleted company's. Returns how many went. */
   deleteProgrammeExits(pick: { programmeId?: string; companyId?: string }): Promise<number>;
   // Partner company profiles (plans/82 M3, migrations/0089). One current row
@@ -1888,7 +1897,7 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   listCompanyProfileHistory(companyId: string): Promise<CompanyProfileRevision[]>;
   /** The profile and its whole history. Unknown id is a no-op. */
   deleteCompanyProfile(companyId: string): Promise<void>;
-  // Owner-published marks and licence records (plans/82 M4, migrations/0095).
+  // Owner-published marks and licence records (plans/82 M4, migrations/0096).
   // A mark is keyed by its scope string, a licence record by the asset id.
   listAssetRightsMarks(): Promise<AssetRightsMarkRecord[]>;
   putAssetRightsMark(rec: AssetRightsMarkRecord): Promise<void>;
@@ -1898,13 +1907,13 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putAssetLicence(rec: AssetLicenceRecord): Promise<void>;
   /** Unknown asset id is a no-op. */
   deleteAssetLicence(assetId: string): Promise<void>;
-  // Share anyway choices (plans/82 M4, migrations/0096): one per asset per
+  // Share anyway choices (plans/82 M4, migrations/0097): one per asset per
   // audience group, `programme-<id>` or `company-<id>`.
   listRightsChoices(): Promise<RightsChoiceRecord[]>;
   putRightsChoice(rec: RightsChoiceRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deleteRightsChoice(key: { assetId: string; group: string }): Promise<void>;
-  // Defaults an instance decides once (plans/82 M4, migrations/0097). A memory
+  // Defaults an instance decides once (plans/82 M4, migrations/0098). A memory
   // store records nothing and answers the partner rights default as 'report'.
   getInstanceDefault(key: string): Promise<InstanceDefaultRecord | null>;
   /** Insert once: when the key already has a row, that row is kept and returned. */
