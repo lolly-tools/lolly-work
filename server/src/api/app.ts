@@ -2808,6 +2808,10 @@ export function buildApp(deps: AppDeps): App {
     // of two programmes. It is never on org-config, so a partner never sees it.
     const projected = await brandRules.project(brand.current() ?? await brand.snapshot(), groups);
     const why: Record<string, Record<string, AccessWhy>> = {};
+    // The overlay's name and the rule's reason, which org-config leaves off so
+    // a person making an asset never reads policy notes (plans/82 M0). The
+    // admin reading Preview is who they are written for.
+    const attribution: Record<string, Record<string, { by?: string; reason?: string }>> = {};
     for (const [toolId, entry] of Object.entries(orgConfig.tools as Record<string, { inputs?: Array<{ id: string }>; hidden?: string[] }>)) {
       // Every input a rule names, editable ones included: an exception that
       // leaves an input editable is exactly what the admin wants to see.
@@ -2815,9 +2819,11 @@ export function buildApp(deps: AppDeps): App {
       for (const inputId of new Set([...(entry.inputs ?? []).map((i) => i.id), ...(entry.hidden ?? []), ...named])) {
         const explained = explainInputAccess(projected.get(toolId), inputId, groups);
         if (explained) (why[toolId] ??= {})[inputId] = explained;
+        const { by, reason } = resolveInputAccess(projected.get(toolId), inputId, groups);
+        if (by || reason) (attribution[toolId] ??= {})[inputId] = { ...(by ? { by } : {}), ...(reason ? { reason } : {}) };
       }
     }
-    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, ...(Object.keys(why).length ? { why } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
+    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, ...(Object.keys(why).length ? { why } : {}), ...(Object.keys(attribution).length ? { attribution } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
   });
 
   // ── telemetry ─────────────────────────────────────────────────────────────

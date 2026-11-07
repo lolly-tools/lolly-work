@@ -164,6 +164,10 @@ test('the app\'s org-config gives the decided access with no explanation; Previe
   const preview = (await call(admin, 'GET', '/api/v1/org-config/preview?groups=programme-resellers,company-acme,partner')).body;
   assert.deepEqual(preview.preview.why['price-sheet'].price, { scope: 'company', group: 'company-acme', over: 'programme-resellers' },
     'the exception that leaves price editable is explained too');
+  // The overlay's name and the rule's reason are the admin's to read in
+  // Preview (they stay off the member's org-config, checked above).
+  assert.deepEqual(preview.preview.attribution['price-sheet'].price, { by: 'Partner pricing', reason: 'Acme sets its own price' });
+  assert.ok(!JSON.stringify(preview.orgConfig).includes('Acme sets its own price'), 'the org-config inside Preview is still the member\'s');
   const resellerOnly = (await call(admin, 'GET', '/api/v1/org-config/preview?groups=programme-resellers,partner')).body;
   assert.deepEqual(resellerOnly.preview.why['price-sheet'].price, { scope: 'programme', group: 'programme-resellers' });
   assert.equal(resellerOnly.orgConfig.tools['price-sheet'].inputs.find((i: { id: string }) => i.id === 'price').access.level, 'locked');

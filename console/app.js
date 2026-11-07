@@ -6465,13 +6465,13 @@ async function viewGrants(main) {
 // profile policy. Server-computed through the same assembler the real poll uses,
 // so the preview cannot drift from reality.
 
-function accessDetail(access) {
-  if (!access) return el('span', { class: 'muted' }, 'editable');
-  // The attribution the member's own sidebar shows beside the control, so the
-  // preview answers "why is this locked?" the same way they will read it.
-  const by = access.by
-    ? el('span', { class: 'muted' }, ` · set by ${access.by}${access.reason ? `: ${access.reason}` : ''}`)
-    : null;
+function accessDetail(access, note) {
+  // The overlay's name and the rule's reason, for the admin only: Preview sends
+  // them apart from the member's org-config, which never carries them.
+  const by = note?.by
+    ? el('span', { class: 'muted' }, ` · set by ${note.by}${note.reason ? `: ${note.reason}` : ''}`)
+    : note?.reason ? el('span', { class: 'muted' }, ` · ${note.reason}`) : null;
+  if (!access) return el('span', {}, el('span', { class: 'muted' }, 'editable'), by);
   if (access.level === 'locked') return el('span', {}, el('span', { class: 'status expired' }, 'locked'), ' → ', el('span', { class: 'mono' }, showValue(access.value)), by);
   if (access.level === 'choice') return el('span', {}, el('span', { class: 'status expired' }, 'choice'), ' → ', el('span', { class: 'mono' }, (access.allow ?? []).map(showValue).join(', ')), by);
   if (access.level === 'hidden') return el('span', {}, el('span', { class: 'status revoked' }, 'hidden'), by);
@@ -6507,14 +6507,15 @@ function renderPreview(data) {
     ? govToolIds.map((id) => {
         const t = orgConfig.tools[id];
         const whyFor = preview.why?.[id] ?? {};
+        const notesFor = preview.attribution?.[id] ?? {};
         const inputRows = [
-          ...(t.inputs ?? []).map((i) => el('tr', {}, el('td', { class: 'mono' }, i.id), el('td', {}, accessDetail(i.access), ruleWhy(whyFor[i.id])))),
+          ...(t.inputs ?? []).map((i) => el('tr', {}, el('td', { class: 'mono' }, i.id), el('td', {}, accessDetail(i.access, notesFor[i.id]), ruleWhy(whyFor[i.id])))),
           ...(t.hidden ?? []).filter((h) => !(t.inputs ?? []).some((i) => i.id === h))
-            .map((h) => el('tr', {}, el('td', { class: 'mono' }, h), el('td', {}, el('span', { class: 'status revoked' }, 'hidden'), ruleWhy(whyFor[h])))),
+            .map((h) => el('tr', {}, el('td', { class: 'mono' }, h), el('td', {}, accessDetail({ level: 'hidden' }, notesFor[h]), ruleWhy(whyFor[h])))),
           // An input a partner rule left editable (a company's exception) has
           // no row on the app's wire, but the admin should see what decided.
           ...Object.keys(whyFor).filter((k) => !(t.inputs ?? []).some((i) => i.id === k) && !(t.hidden ?? []).includes(k))
-            .map((k) => el('tr', {}, el('td', { class: 'mono' }, k), el('td', {}, accessDetail(null), ruleWhy(whyFor[k])))),
+            .map((k) => el('tr', {}, el('td', { class: 'mono' }, k), el('td', {}, accessDetail(null, notesFor[k]), ruleWhy(whyFor[k])))),
         ];
         // A tool's own export answer, where a grant naming the tool differs from
         // the Permissions table above.
