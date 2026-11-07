@@ -74,6 +74,18 @@ before(async () => {
       submission: { state, by: `user:${ritaId}`, at: new Date().toISOString(), checksum: stat.checksum, size: stat.size, contentType: 'image/png' },
     } as never);
   }
+  // A staff member's own live submission, published only to another programme's
+  // group they are not in: staff keep their relationship to what they submitted.
+  await login('staff@test');
+  const staffId = (await store.getUserBySub('dev:staff@test'))!.id;
+  {
+    const stat = await blobs.put('inst/staff-live/png', Buffer.from('png:inst/staff-live'), 'image/png');
+    await store.putInstanceAsset({
+      id: 'inst/staff-live', entry: instanceAssetEntry('inst/staff-live', { name: 'staff.txt', type: 'image' }, [{ format: 'png', size: stat.size, checksum: stat.checksum }]),
+      blobs: { png: 'inst/staff-live/png' }, groups: ['programme-other'] as never, createdAt: new Date().toISOString(),
+      submission: { state: 'live', by: `user:${staffId}`, at: new Date().toISOString(), checksum: stat.checksum, size: stat.size, contentType: 'image/png' },
+    } as never);
+  }
   await fetch(`${base}/api/v1/users/${ritaId}/local-groups`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ groups: ['programme-resellers'] }) });
   // A partner trusted to edit catalog metadata, and staff who may too.
   await store.putGrant({ principal: 'group:programme-resellers', action: 'catalog.edit', resource: '*', effect: 'allow' } as never);
@@ -116,6 +128,7 @@ test('a submitter reads their own upload while it waits, and only what their fee
   assert.equal((await preview(staff, 'rita-pending')).status, 403, 'not staff\'s while it waits');
   assert.equal((await preview(rita, 'rita-live')).status, 403, 'live and shared with everyone, but not in their programme');
   assert.equal((await preview(staff, 'rita-live')).status, 200, 'live: the ordinary rule');
+  assert.equal((await preview(staff, 'staff-live')).status, 200, 'staff keep their own live submission, published to a group they are not in');
 });
 
 test('a partner allowed to edit catalog metadata still sees only the records their feed holds', async () => {

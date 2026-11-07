@@ -9115,11 +9115,15 @@ export function buildApp(deps: AppDeps): App {
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     // Only the submitter and whoever may act on the step see a PENDING
     // submission's bytes, which are the submitter's own upload: nothing can
-    // replace them before the decision. Once it is live the ordinary rule
-    // takes over for everyone, the submitter included, so this route keeps
-    // working for an already-published asset and a partner reads it only
-    // while their feed holds it (plans/82 M1).
-    if (submissionServable(rec) ? !(await instanceAssetReadable(user, rec)) : !(await submissionRelation(rec, user))) {
+    // replace them before the decision. Once it is live, staff keep that
+    // relationship beside the ordinary exposure rule, so this route keeps
+    // working for an already-published asset. A partner programme member
+    // reads a live one only while their feed holds it, their own included
+    // (plans/82 M1).
+    const allowed = !submissionServable(rec) ? !!(await submissionRelation(rec, user))
+      : isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
+        : !!(await submissionRelation(rec, user)) || instanceAssetVisible(rec, user.groups);
+    if (!allowed) {
       return sendError(res, 403, 'FORBIDDEN', 'not yours to review');
     }
     // Once it is published this row is an ordinary catalog asset, so it answers
