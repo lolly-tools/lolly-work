@@ -31,6 +31,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { decidePartnerRightsDefault, partnerRightsState, type InstanceDefaultRecord } from '../server/src/catalog/rights-mode.ts';
 import { RIGHTS_EXEMPT_TYPES } from '../server/src/programmes/types.ts';
+import { withFreshPostgres } from './pg-test-schema.ts';
 
 const ENGINE_SPEC: string = '@lolly/engine';
 const readZip = async (bytes: Uint8Array): Promise<Array<{ name: string; bytes: Uint8Array }>> =>
@@ -71,6 +72,23 @@ test('the mode: decided once from the accounts, never moved after, and configura
   const recorded = await decidePartnerRightsDefault(memory);
   assert.equal(partnerRightsState(cfg(), recorded).mode, 'report', 'a memory store answers report');
   assert.equal(partnerRightsState(cfg(), recorded).source, 'memory-store');
+});
+
+const pgUrl = process.env.LW_TEST_DATABASE_URL;
+test('on Postgres: an empty database records gate, one with accounts records report, and neither moves', { skip: !pgUrl && 'set LW_TEST_DATABASE_URL to run' }, async () => {
+  await withFreshPostgres(pgUrl as string, async (pg) => {
+    assert.equal((await decidePartnerRightsDefault(pg)).value, 'gate', 'a fresh install');
+    await pg.upsertUserBySub({ sub: 'dev:first@test', email: 'first@test', groups: [], role: 'owner' });
+    assert.equal((await decidePartnerRightsDefault(pg)).value, 'gate', 'the first sign-in changes nothing');
+  });
+  await withFreshPostgres(pgUrl as string, async (pg) => {
+    await pg.upsertUserBySub({ sub: 'dev:old@test', email: 'old@test', groups: [], role: 'owner' });
+    const decided = await decidePartnerRightsDefault(pg);
+    assert.deepEqual([decided.value, decided.why], ['report', 'upgrade-with-accounts'], 'an upgrade with accounts in it');
+    // A re-applied template is a restart with no partnerRights in the config.
+    assert.equal(partnerRightsState(cfg(), await pg.getInstanceDefault('catalog.partnerRights')).mode, 'report');
+    assert.equal(partnerRightsState(cfg('gate'), await pg.getInstanceDefault('catalog.partnerRights')).mode, 'gate', 'the line in config wins');
+  });
 });
 
 test('brand skills join the exempt types, beside the design system and published files', () => {
@@ -238,6 +256,29 @@ test('a link staff made leaves held files out unless its minter chose them, and 
   assert.equal((await call(gate, await login(gate, 'bruno@test'), 'DELETE', '/api/v1/catalog/rights/marks?scope=folder:dam/event-photos')).status, 200);
   assert.equal((await fetch(single.path)).status, 404);
   assert.notEqual((await fetch(rita.path)).status, 200);
+});
+
+test('an agent token placed in the company is gated as the person is: feed, bytes and search_assets', async () => {
+  const owner = await login(gate, 'owner@test');
+  const minted = await call(gate, owner, 'POST', '/api/v1/tokens', { label: 'northwind agent', scopes: ['catalog.read'] });
+  assert.equal(minted.status, 201, JSON.stringify(minted.body));
+  const token = minted.body.token as string;
+  assert.equal((await call(gate, owner, 'PUT', `/api/v1/tokens/${minted.body.id}/programme`, { programme: 'resellers-emea', company: 'northwind-it' })).status, 200);
+  const bearer = { authorization: `Bearer ${token}` };
+  const feed = await (await fetch(`${gate}/catalog/assets/index.json`, { headers: bearer })).json() as { assets: Array<{ id: string }> };
+  const ids = feed.assets.map((a) => a.id);
+  assert.ok(ids.includes('acme/photo/open') && ids.includes('acme/skill/voice'));
+  for (const held of ['acme/photo/unrecorded', 'ext/dam/s1']) assert.ok(!ids.includes(held), held);
+  assert.notEqual((await fetch(`${gate}/catalog/ext/dam/s1/f`, { headers: bearer })).status, 200);
+  const rpc = await fetch(`${gate}/api/v1/mcp`, {
+    method: 'POST', headers: { ...bearer, 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'search_assets', arguments: { query: 'photo', limit: 50 } } }),
+  });
+  const body = await rpc.json() as { result: { content: Array<{ text: string }> } };
+  const found = JSON.parse(body.result.content[0]!.text) as { results: Array<{ id: string }> };
+  const foundIds = found.results.map((r) => r.id);
+  assert.ok(foundIds.includes('acme/photo/open'));
+  assert.ok(!foundIds.includes('acme/photo/unrecorded') && !foundIds.some((id) => id === 'ext/dam/s1'), 'search_assets keeps to the gated feed');
 });
 
 test('staff receive the same feed bytes with the gate on or off', async () => {
