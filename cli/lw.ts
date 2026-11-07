@@ -148,6 +148,10 @@ const OPTIONS = {
     'renders-per-month': { type: 'string' },
     // `lw tokens add --programme <id> --ttl-days 90`: a partner agent's lifetime in days.
     'ttl-days': { type: 'string' },
+    // `lw programmes usage <id> --from YYYY-MM-DD --to YYYY-MM-DD --by day|week [--csv]` (plans/82 M7).
+    to: { type: 'string' },
+    by: { type: 'string' },
+    csv: { type: 'boolean' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -1086,7 +1090,30 @@ switch (cmd) {
   case 'programmes': {
     // Partner programmes (plans/82). `limits` is what every token placed in one
     // takes unless it states its own (M7): with no flag, the figures and sources.
-    const usage = 'usage: lw programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day <n>|none|default] [--renders-per-month <n>|none|default]';
+    const usage = 'usage: lw programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day <n>|none|default] [--renders-per-month <n>|none|default] | lw programmes usage <id> [<tokenId>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--by day|week] [--csv]';
+    if (sub === 'usage') {
+      // What the programme's tokens did, counted (M7): counts only, never an input or a prompt.
+      const id = positionals[2] ?? fail(usage);
+      const q = new URLSearchParams();
+      for (const key of ['from', 'to', 'by'] as const) if (values[key]) q.set(key, String(values[key]));
+      if (positionals[3]) q.set('token', positionals[3]);
+      if (values.csv) q.set('format', 'csv');
+      const at = `/api/v1/programmes/${encodeURIComponent(id)}/usage${q.size ? `?${q}` : ''}`;
+      if (values.csv) { process.stdout.write(await (await response(at)).text()); break; }
+      type Cells = { calls: number; renders: number; batches: { count: number; rows: number }; approvals: { open: number; approved: number; rejected: number }; refusals: Record<string, number> };
+      const r = await call(at) as { from: string; to: string; by: string; tokens: Array<{ id: string; label: string; company: string | null; totals: Cells; periods: Array<{ period: string } & Cells> }>; totals: Cells };
+      out(r);
+      if (!values.json) {
+        const refused = (c: Cells) => Object.values(c.refusals).reduce((n, v) => n + v, 0);
+        const line = (c: Cells) => `${c.calls} calls, ${c.renders} renders, ${c.batches.count} batches (${c.batches.rows} rows), ${c.approvals.open + c.approvals.approved + c.approvals.rejected} approval requests, ${refused(c)} refused`;
+        console.log(`${id}, ${r.from} to ${r.to} by ${r.by}: ${line(r.totals)}`);
+        for (const t of r.tokens) {
+          console.log(`  ${t.id}  ${t.label}${t.company ? `  company ${t.company}` : ''}: ${line(t.totals)}`);
+          for (const p of t.periods) console.log(`    ${p.period}  ${line(p)}`);
+        }
+      }
+      break;
+    }
     if (sub !== 'limits') fail(usage);
     const id = positionals[2] ?? fail(usage);
     type ProgrammeLimitView = { id: string; name: string; tokenLimits?: LimitFigures; tokenLimitDefaults?: { limits: Record<string, number | null>; sources: Record<string, string> } };
@@ -2319,6 +2346,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   tokens add --programme <id> [--company <id>] --label "…" [--scopes render,catalog.read] [--tools a,b] [--ttl-days 90]   a partner agent's token, issued by the programme's manager
   tokens list|revoke <id>|limits <id> --programme <id> [--company <id>]   that programme's tokens, through its manager's routes
   programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]   the limits every token placed in a programme takes
+  programmes usage <id> [<tokenId>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--by day|week] [--csv]   what the programme's tokens did, counted
   companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
   companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
