@@ -3828,6 +3828,14 @@ function approvalRecordLine(a, x) {
 // The file an export review is about, or the plain facts when this person cannot
 // have it yet. The artwork on screen is drawn from the bytes the digest was checked
 // against, so what a reviewer sees is what the record names.
+// A request that covers a template's variants (plans/82 M7) says so before the
+// file: the reviewer sees one file and decides for every file from that version.
+function variantCoverLine(x) {
+  if (x.covers !== 'template-variants' || !x.templateRef) return null;
+  const name = x.templateRef.name || x.templateRef.id;
+  return el('p', { class: 'appr-file-covers' }, `Approves ${name} v${x.templateRef.version} as ${x.format.toUpperCase()} for every price, logo and contact. This file is one example.`);
+}
+
 function exportReviewPanel(a, { actionable }) {
   const x = a.exportReview;
   const state = { token: null, onReady: null };
@@ -3841,7 +3849,7 @@ function exportReviewPanel(a, { actionable }) {
     recordLine ? el('p', {}, recordLine) : null);
   const stage = el('div', { class: 'appr-file-stage' });
   const actions = el('div', { class: 'appr-file-actions' });
-  const panel = el('div', { class: 'appr-file' }, stage, facts, actions);
+  const panel = el('div', { class: 'appr-file' }, variantCoverLine(x), stage, facts, actions);
   const say = (text, role) => { stage.replaceChildren(el('p', { class: 'muted', ...(role ? { role } : {}) }, text)); };
   const mine = a.relation === 'mine';
   if (x.removedAt) { say(x.removedBecause === 'withdrawn' ? 'This request was withdrawn, so its file was removed.' : 'This file was removed under the retention policy. Its digest stays on the record.'); return { element: panel, state }; }

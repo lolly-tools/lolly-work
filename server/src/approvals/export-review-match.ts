@@ -17,6 +17,53 @@ import { readJson, sendError, sendJson, type createRouter } from '../api/router.
 import { evaluate, type Grant, type Role } from '../rbac/evaluate.ts';
 import { artifactRelation } from './export-review.ts';
 import { isTerminal, type Approval } from './engine.ts';
+import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
+
+/** What a template-variants approval names: the template and its version. */
+export interface TemplateCovered { id: string; version: number }
+
+/**
+ * The inputs one approval of a template's variants leaves open (plans/82 M7):
+ * those the template lets its programme edit and those company bindings fill,
+ * the template's own bindings and the tool overlay's. Null when the template
+ * states no editable list: such a template fixes nothing a partner could not
+ * change, so one approval cannot cover its variants and each file needs its own.
+ */
+export function templateOpenInputs(template: { editable?: readonly string[] | null; bindings?: Record<string, unknown> }, overlayBindings?: Record<string, unknown>): string[] | null {
+  if (!Array.isArray(template.editable)) return null;
+  return [...new Set([...template.editable, ...Object.keys(template.bindings ?? {}), ...Object.keys(overlayBindings ?? {})])].sort();
+}
+
+/**
+ * The values a render under the template cannot change, as the effective policy
+ * fixes them: every declared input outside the open set, at the value a lock
+ * gives (a tool's own lock wins over the template's value), else where the
+ * render starts (the template's value over the overlay's defaults for these
+ * groups). An input with neither renders the tool's default, which the tool
+ * version the match also keys on fixes.
+ */
+export function templateFixedValues(inputIds: readonly string[], open: readonly string[], start: Record<string, unknown>, locked: Record<string, unknown>): Record<string, unknown> {
+  const fixed: Record<string, unknown> = {};
+  for (const id of [...inputIds].sort()) {
+    if (open.includes(id)) continue;
+    if (Object.hasOwn(locked, id)) fixed[id] = locked[id];
+    else if (Object.hasOwn(start, id)) fixed[id] = start[id];
+  }
+  return fixed;
+}
+
+/**
+ * The key one approval of a template's variants matches (plans/82 M7): the
+ * template, its version, the inputs it leaves open and the values it fixes, as
+ * the effective policy fixes them for the caller. A partner cannot change a
+ * fixed value (422 INPUT_LOCKED), so prices, headings, logos and contacts vary
+ * freely under one decision. A new template version, a change to what is open
+ * or a different fixed value (a tool lock for another company, say) needs a
+ * new approval.
+ */
+export function templateVariantDigest(template: TemplateCovered, open: readonly string[], fixed: Record<string, unknown>): string {
+  return sha256Hex(canonicalJson({ covers: 'template-variants', template: template.id, version: template.version, open: [...open].sort(), fixed }));
+}
 
 export interface ExportReviewKey { toolId: string; format: string; inputsDigest: string }
 

@@ -284,6 +284,17 @@ test('stored fields unsupported by the policy writer block saves instead of bein
   } finally { p.cleanup(); }
 });
 
+test('a console save keeps the variant-approval switch set through the API (plans/82 M7)', async () => {
+  const original: ToolOverlay = { toolId: 'card', version: 3, enforce: { watermark: 'until-approved', escalation: 'legal', approvalCovers: 'template-variants' } };
+  const p = page(original);
+  try {
+    p.input('input', 'Renamed'); await p.save();
+    assert.equal(p.calls.length, 1, 'the save is not blocked');
+    assert.equal((p.calls[0]?.body as { enforce?: { approvalCovers?: string } }).enforce?.approvalCovers, 'template-variants', 'the switch stays as it was');
+    assert.equal(normalizeOverlay('card', p.calls[0]?.body, 3)?.enforce?.approvalCovers, 'template-variants');
+  } finally { p.cleanup(); }
+});
+
 test('undeclared inputs and prototype-named inputs retain their rules when the manifest is incomplete', async () => {
   const p = page({ inputAccess: { toString: [{ groups: ['*'], level: 'locked', value: 'Safe' }] } }, undefined,
     [{ id: 'toString', label: 'Text', default: '' }, { id: 'constructor', label: 'Other', default: '' }]);

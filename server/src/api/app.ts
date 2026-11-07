@@ -92,7 +92,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { PARTNER_GROUP, isCompanyGroup, isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
+import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
 import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
@@ -135,7 +135,7 @@ import {
   freezeArtifactBytes, freezeRenderBytes, describeRenderReview, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
 } from '../approvals/export-review.ts';
 import { renderInputsDigest } from '../render/inputs-digest.ts';
-import { approvedExportReview, registerExportReviewMatch } from '../approvals/export-review-match.ts';
+import { approvedExportReview, registerExportReviewMatch, templateFixedValues, templateOpenInputs, templateVariantDigest } from '../approvals/export-review-match.ts';
 import { registerFileRoutes } from '../uploads/file-routes.ts';
 import { createFileReference, creationRefusal, fileWire, FORMAT_TYPES, optimizeReport } from '../uploads/files.ts';
 import { liveUpload, readUploadReference, removeUpload, removeUploadsOwnedBy, uploadOwner, uploadPolicy, UploadReferenceError, type UploadRecord } from '../uploads/scoped.ts';
@@ -149,7 +149,7 @@ import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
 } from '../collab/invites.ts';
-import { explainInputAccess, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy, type ToolOverlay } from '../policy/overlay.ts';
+import { explainInputAccess, lockedValues, normalizeOverlay, toolVisibleTo, toolVisibleWithGrants, resolveInputAccess, type AccessWhy, type ToolOverlay } from '../policy/overlay.ts';
 import {
   applyLifecycleToIndex, assetFormatSha256, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
@@ -233,7 +233,7 @@ import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type Collect
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { checkDesignRules, renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
 import type { RenderPartner } from '../render/record.ts';
-import { templateRetired, templateValues, type RenderTemplate } from '../catalog/templates.ts';
+import { isPublishedTemplateRef, templateOverlay, templateRetired, templateSeed, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
@@ -741,15 +741,18 @@ export function buildApp(deps: AppDeps): App {
    */
   const publishedTemplateFor = async (groups: string[], id: string): Promise<RenderTemplate | null> => {
     const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((asset) => asset.id === id && asset.type === 'template');
-    const rec = entry ? await store.getInstanceAsset(id) : null;
+    return entry ? templateFromRecord(id, entry, await store.getInstanceAsset(id)) : null;
+  };
+  /** A template's render shape from its record and the index entry that names it. */
+  const templateFromRecord = async (id: string, entry: AssetIndexEntry, rec: Awaited<ReturnType<typeof store.getInstanceAsset>>): Promise<RenderTemplate | null> => {
     const blobId = rec?.blobs.json;
     const blob = blobId ? await blobs.get(blobId) : null;
     if (!rec || !blob) return null;
     const values = templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES));
-    const toolId = (entry!.meta as { toolId?: unknown } | undefined)?.toolId;
+    const toolId = (entry.meta as { toolId?: unknown } | undefined)?.toolId;
     if (!values || typeof toolId !== 'string') return null;
     return {
-      id, toolId, values, name: typeof entry!.name === 'string' ? entry!.name : id, version: rec.headVersion ?? 1,
+      id, toolId, values, name: typeof entry.name === 'string' ? entry.name : id, version: rec.headVersion ?? 1,
       ...(rec.publication?.editable ? { editable: rec.publication.editable } : {}),
       ...(rec.publication?.fixedTheme ? { fixedTheme: true } : {}),
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
@@ -6035,6 +6038,18 @@ export function buildApp(deps: AppDeps): App {
   // The server's own reading of the values a request reports: the version it
   // serves, and the digest under the render path's normalisation. The values go
   // no further than this function, and a digest from the client is never read.
+  /** A published template as a request about it reads it: from the asker's own feed,
+   *  or, for the brand team that manages a programme it is published to, from its
+   *  record, because they publish it without being in the programme (plans/82 M7). */
+  const templateForReview = async (user: UserRecord, id: string): Promise<RenderTemplate | null> => {
+    const own = await publishedTemplateFor(user.groups, id);
+    if (own) return own;
+    const rec = await store.getInstanceAsset(id);
+    if (!rec || rec.entry.type !== 'template' || !submissionServable(rec)) return null;
+    const programmes = (Array.isArray(rec.groups) ? rec.groups : []).filter(isProgrammeGroup).map((g) => `programme:${g.slice(PROGRAMME_GROUP_PREFIX.length)}`);
+    if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', [...programmes, '*'], await store.listGrants())) return null;
+    return templateFromRecord(id, rec.entry, rec);
+  };
   const exportReviewInputs = async (user: UserRecord, toolId: string, format: string, query: string | undefined) => {
     const engine = await loadEngine();
     let tool: Awaited<ReturnType<typeof engine.loadTool>>;
@@ -6043,10 +6058,25 @@ export function buildApp(deps: AppDeps): App {
     const toolVersion = String(tool.manifest.version);
     if (query === undefined) return { toolVersion, inputsDigest: null, inputsGap: 'values-not-sent' as const };
     try {
-      const state = engine.parseUrlState(await engine.expandQuery(query), tool.manifest);
+      const expanded = await engine.expandQuery(query);
+      const state = engine.parseUrlState(expanded, tool.manifest);
       const rules = await managedRuleContext(brand.current() ?? await brand.snapshot(), toolId, format);
       const original = (await store.listOverlays()).get(toolId);
+      // One approval for a template's variants (plans/82 M7): a request or a match that
+      // names a published template of this tool is keyed on the template's fixed inputs,
+      // as the render will be.
+      const templateRef = new URLSearchParams(expanded).get('template');
       const overlay = rules ? projectRuleOverlay(original, rules, user.groups) : original;
+      if (original?.enforce?.approvalCovers === 'template-variants' && isPublishedTemplateRef(templateRef)) {
+        const template = await templateForReview(user, templateRef);
+        const open = template && template.toolId === toolId ? templateOpenInputs(template, original.bindings) : null;
+        if (template && open) {
+          const ids = (tool.manifest.inputs as { id: string }[]).map((input) => input.id);
+          const start = { ...templateSeed(defaultsFor(original, user.groups), ids), ...templateSeed(template.values, ids) };
+          const fixed = templateFixedValues(ids, open, start, lockedValues(templateOverlay(overlay, template, user.groups, ids), user.groups));
+          return { toolVersion, inputsDigest: templateVariantDigest(template, open, fixed), covers: 'template-variants' as const, templateRef: { id: template.id, version: template.version, name: template.name } };
+        }
+      }
       return { toolVersion, inputsDigest: renderInputsDigest(engine, tool.manifest, state.values as Record<string, unknown>, overlay, user.groups, renderProfileOf(user)) };
     } catch { return { toolVersion, inputsDigest: null, inputsGap: 'values-unreadable' as const }; }
   };
