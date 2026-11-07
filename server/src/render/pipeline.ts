@@ -151,7 +151,9 @@ export interface RenderRequest {
   /** URL-mode query string (no leading '?'), the shared param contract. */
   query: string;
   /** The caller's group set for policy resolution (never trusted for identity). */
-  principal: { groups: string[] } | null;
+  /** Who the render is for. `role` lets an admin or owner stay unscoped by a partner
+   *  programme here, as in the gallery (programmes/types.ts isProgrammeScoped). */
+  principal: { groups: string[]; role?: string } | null;
   /** Server-built profile for `bindToProfile` resolution - from the auth'd user, never params. */
   profile: Profile;
   /** All tool overlays (the policy version hashes the full set; the tool's own is derived). */

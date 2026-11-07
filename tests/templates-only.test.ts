@@ -11,7 +11,7 @@
  *     422 TEMPLATE_REQUIRED with the templates they may use, and one that names a
  *     template still renders;
  *   - across programmes the stricter rule wins, Preview says which programme set it,
- *     and an admin is never scoped;
+ *     and an admin is never scoped, in the gallery or in a render;
  *   - the switch is audited, only a programme manager may set it, and the
  *     Templates card stops saying the programme can open the tool on its own.
  */
@@ -168,6 +168,18 @@ test('the stricter rule wins across programmes, Preview says who set it, and an 
   assert.deepEqual([...templatesOnlyFor(programmes, companies, ['company-acme', 'partner']).keys()], ['price-card'], 'through the company alone');
   assert.equal(templatesOnlyFor(programmes, companies, ['programme-resellers'], 'admin').size, 0, 'an admin is never scoped');
   assert.equal(templatesOnlyFor(programmes, companies, ['programme-distributors', 'partner']).size, 0, 'only the programme that set it');
+});
+
+test('an admin in the programme is never scoped: the gallery and every render agree', async () => {
+  const admin = await login('admin@test');
+  assert.equal((await call(admin, 'POST', '/api/v1/programmes/resellers/people', { rows: [{ email: 'admin@test' }], apply: true })).status, 200);
+  const adminIn = await login('admin@test');
+  const index = (await call(adminIn, 'GET', '/catalog/tools/index.json')).body as { tools: Array<{ id: string; templatesOnly?: boolean; listed?: boolean }> };
+  const entry = index.tools.find((t) => t.id === 'price-card');
+  assert.equal(entry?.templatesOnly, undefined, 'the gallery leaves an admin unscoped');
+  const plain = await call(adminIn, 'POST', '/api/v1/render', { toolId: 'price-card', format: 'svg', inputs: { title: 'Admin' } });
+  assert.equal(plain.status, 200, `and so does a render: ${plain.text}`);
+  assert.equal((await render({ title: 'Rita' })).status, 422, 'while the partner beside them is still held to the templates');
 });
 
 test('off again lists the tool and renders without a template, and only a programme manager may switch', async () => {

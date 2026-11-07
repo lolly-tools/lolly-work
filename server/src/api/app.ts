@@ -451,7 +451,7 @@ export function buildApp(deps: AppDeps): App {
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
-        templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], toolId),
+        templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
         workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
@@ -738,9 +738,13 @@ export function buildApp(deps: AppDeps): App {
   };
   // Templates only (plans/82 M2 W5): the tools someone uses only through the
   // templates published to them, and for a render, the templates they may name.
+  // Who a render is for: groups, and the role, so an admin or owner is never scoped to a
+  // programme in a render either, as in the gallery and the served index.
+  const renderPrincipal = (user: { groups: string[]; role?: string } | null | undefined, groups?: string[]) =>
+    ({ groups: groups ?? user?.groups ?? [], ...(user?.role ? { role: user.role } : {}) });
   const templatesOnlyOf = async (groups: string[], role?: string) => templatesOnlyFor(await store.listProgrammes(), await store.listCompanies(), groups, role);
-  const templatesRequiredFor = async (groups: string[], toolId: string): Promise<Array<{ id: string; name: string }> | null> => {
-    if (!(await templatesOnlyOf(groups)).has(toolId)) return null;
+  const templatesRequiredFor = async (groups: string[], role: string | undefined, toolId: string): Promise<Array<{ id: string; name: string }> | null> => {
+    if (!(await templatesOnlyOf(groups, role)).has(toolId)) return null;
     const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
     return feed.filter((a) => a.type === 'template' && (a.meta as { toolId?: unknown; retired?: unknown } | undefined)?.toolId === toolId && !(a.meta as { retired?: unknown }).retired)
       .map((a) => ({ id: a.id, name: typeof a.name === 'string' ? a.name : a.id }));
@@ -11051,7 +11055,7 @@ export function buildApp(deps: AppDeps): App {
         signal, toolId: record.request.toolId, format: record.request.format, query: queryFromInputs(record.request.inputs),
         verification: record.request.verification,
         production: record.request.production,
-        principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
+        principal: renderPrincipal(caller.user, caller.groups), profile: caller.profile, overlays: await store.listOverlays(),
       }, caller.user);
       signal.throwIfAborted();
       await currentRenderCaller(record.principal, record.request);
@@ -11158,7 +11162,7 @@ export function buildApp(deps: AppDeps): App {
           if (index >= rows.length) return;
           let result: Awaited<ReturnType<typeof renderTool>> | null = null; let error: unknown;
           for (let attempt = 0; attempt <= retries && !result; attempt++) {
-            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }, caller.user); }
+            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: renderPrincipal(caller.user, caller.groups), profile: caller.profile, overlays }, caller.user); }
             catch (caught) { error = caught; }
           }
           if (result) { retainedBytes += result.bytes.byteLength; if (retainedBytes > 128 * 1024 * 1024) throw new Error('Batch output exceeds 128 MB. Split the batch.'); }
@@ -11188,7 +11192,7 @@ export function buildApp(deps: AppDeps): App {
     if (job.verb === 'render') {
       if (typeof body.toolId !== 'string' || typeof body.format !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const rendered = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: context.hostedResolver }, {
-        toolId: body.toolId, format: body.format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>), principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
+        toolId: body.toolId, format: body.format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>), principal: renderPrincipal(caller.user, caller.groups), profile: caller.profile, overlays: await store.listOverlays(),
       }, caller.user);
       signal.throwIfAborted(); return { mime: rendered.mime, bytes: rendered.bytes };
     }
@@ -11326,7 +11330,7 @@ export function buildApp(deps: AppDeps): App {
     const execute = async () => {
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, {
         toolId, format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>),
-        principal: caller.user ? { groups: caller.user.groups } : { groups: [] }, profile: caller.profile,
+        principal: renderPrincipal(caller.user), profile: caller.profile,
         overlays: await store.listOverlays(),
       }, caller.user);
       return result;
@@ -11468,7 +11472,7 @@ export function buildApp(deps: AppDeps): App {
       const signer = await getC2paSigner();
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer }, {
         toolId, format, query,
-        principal: user ? { groups: user.groups } : { groups: [] },
+        principal: renderPrincipal(user),
         profile: renderProfileOf(user),
         overlays,
       }, user);
