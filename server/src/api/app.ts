@@ -97,6 +97,7 @@ import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
+import { registerRightsRoutes } from '../programmes/rights-routes.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
@@ -5875,6 +5876,7 @@ export function buildApp(deps: AppDeps): App {
     store, requireAction, audit,
     fragments: async () => { await providersReady; return federation.fragments({ background: true }); },
   });
+  registerRightsRoutes(router, { store, requireAction, feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups })).index; } });
 
   registerDomainRoutes(router, {
     store, requireAction, audit, resolveTxt,
