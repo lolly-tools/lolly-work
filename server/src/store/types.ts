@@ -2,6 +2,7 @@ import type { ProgrammeRecord } from '../programmes/types.ts';
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
@@ -326,8 +327,9 @@ export interface ScimTokenRecord {
 
 /** A service token (plans/35 wave 2) - automation identity, the SCIM-token
  *  pattern generalized. Presenting the secret resolves to a synthetic
- *  principal carrying `role` (no groups), so CI drives the action-gated API
- *  without a person's session cookie in a secret store. */
+ *  principal carrying `role` (and `groups` when an owner placed it in a partner
+ *  programme), so CI drives the action-gated API without a person's session
+ *  cookie in a secret store. */
 export interface ApiTokenRecord {
   id: string;
   /** Operator label ("ci", "governance-sync") - names the automation, never a person. */
@@ -338,6 +340,11 @@ export interface ApiTokenRecord {
   scopes?: string[];
   /** The only tools it may name. Absent means any tool its role and grants allow. */
   tools?: string[];
+  /** The partner groups it carries (plans/82 M3, migrations/0090): a programme's
+   *  group, optionally one company's group in it, and the partner marker. The
+   *  principal it resolves to holds these, so the token is scoped exactly like a
+   *  person in that programme. Absent means no groups, as before. */
+  groups?: string[];
   /** sha256 hex of the opaque secret - never the secret itself. */
   tokenHash: string;
   /** 'user:<id>' who minted it. */
@@ -1812,6 +1819,14 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putPartnerFolder(rec: PartnerFolderRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deletePartnerFolder(key: { provider: string; path: string; programmeId: string; companyId?: string }): Promise<void>;
+  // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
+  // exit, scheduled, done, cancelled or reopened, upserted whole.
+  /** Newest first. `programmeId` lists a programme's exits and its companies'. */
+  listProgrammeExits(filter?: { programmeId?: string; companyId?: string; state?: ProgrammeExitRecord['state'] }): Promise<ProgrammeExitRecord[]>;
+  getProgrammeExit(id: string): Promise<ProgrammeExitRecord | null>;
+  putProgrammeExit(rec: ProgrammeExitRecord): Promise<void>;
+  /** A deleted programme's receipts, or a deleted company's. Returns how many went. */
+  deleteProgrammeExits(pick: { programmeId?: string; companyId?: string }): Promise<number>;
   // Partner company profiles (plans/82 M3, migrations/0089). One current row
   // per company plus a history row per revision.
   getCompanyProfile(companyId: string): Promise<CompanyProfileRecord | null>;

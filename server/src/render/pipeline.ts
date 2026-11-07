@@ -49,6 +49,7 @@ export { RENDER_TIER, WORKER_RASTER_FORMATS, renderCapabilities, type RenderForm
 import { isSvgTemplate, renderCapabilities } from './capabilities.ts';
 import { loadToolOrRefuse, ToolLoadRefusal } from './tool-load.ts';
 import { isPublishedTemplateRef, templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
+import { bindOverlay, defaultsFor, LOGO_FIELDS, themeOf, type BindingPlan, type Theme } from '../programmes/company-values.ts';
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
  *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
@@ -140,6 +141,19 @@ export interface RenderDeps {
   /** The templates this caller may start the tool from, when a programme they are in
    *  set it to templates only (plans/82 M2 W5); null when the tool is open to them. */
   templatesRequired?: (toolId: string) => Promise<Array<{ id: string; name: string }> | null>;
+  /** The partner company values this caller's render takes (plans/82 M3,
+   *  programmes/company-values.ts): null when nothing binds the tool or the
+   *  caller is in no company. Absent means this render path binds nothing. */
+  companyFor?: (args: { toolId: string; template: RenderTemplate | null; theme: Theme; toolOverlay: ToolOverlay | undefined; groups: string[] }) => Promise<RenderCompany | null>;
+}
+
+/** What a render takes from the caller's partner company (plans/82 M3). */
+export interface RenderCompany {
+  plan: BindingPlan;
+  company?: { id: string; name: string; revision: number };
+  programme?: { id: string; name: string };
+  /** The resolved asset a logo id renders as, or null when it cannot be read. */
+  logo(id: string): Promise<unknown | null>;
 }
 
 export interface RenderRequest {
@@ -379,11 +393,32 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // caller's - so a locked input renders its policy value regardless of input.
   const groups = req.principal?.groups ?? [];
   const toolOverlay = deps.managedRules ? projectRuleOverlay(req.overlays.get(req.toolId), deps.managedRules, groups) : req.overlays.get(req.toolId);
-  // A template's rules join the tool's own, stricter wins (catalog/templates.ts).
-  const overlay = template ? templateOverlay(toolOverlay, template, groups, declaredIds) : toolOverlay;
-  // The template's values are where the render starts; the caller's own values
-  // land on top, and the fixed ones are baked over both below.
-  const seed = template ? templateSeed(template.values, declaredIds) : {};
+  // The partner company's values (plans/82 M3, programmes/company-values.ts).
+  // A logo field renders as the company's own asset, read here so both render
+  // tiers see the same bytes; a logo that cannot be read is left unbound.
+  const company = await deps.companyFor?.({ toolId: req.toolId, template, theme: themeOf(st.tokenSelection), toolOverlay, groups }) ?? null;
+  const inputTypes = new Map((tool.manifest.inputs as Array<{ id: string; type?: string }>).map((i) => [i.id, i.type]));
+  const companyValues: Record<string, unknown> = {};
+  for (const [id, raw] of Object.entries(company?.plan.values ?? {})) {
+    if (!declaredIds.includes(id)) continue;
+    if (LOGO_FIELDS.has(company!.plan.bound[id]!) && inputTypes.get(id) === 'asset') {
+      const ref = await company!.logo(raw);
+      if (ref) companyValues[id] = ref;
+    } else companyValues[id] = raw;
+  }
+  const plan = company ? { ...company.plan, locked: company.plan.locked.filter((id) => Object.hasOwn(companyValues, id)) } : null;
+  // A template's rules join the tool's own, stricter wins (catalog/templates.ts),
+  // and a bound input they fix is fixed to the company's value.
+  const templated = template ? templateOverlay(toolOverlay, template, groups, declaredIds) : toolOverlay;
+  const overlay = plan ? bindOverlay(templated, toolOverlay, plan, groups, req.toolId, company!.company?.name, (id) => companyValues[id]) : templated;
+  // Where the render starts, least specific first: the overlay's defaults for
+  // these groups, the template's values, then the company's. The caller's own
+  // values land on top, and the fixed ones are baked over everything below.
+  // Someone in two companies gets the tool's own default for a bound input.
+  const templateStart = template ? templateSeed(template.values, declaredIds) : {};
+  if (plan?.ambiguous) for (const id of Object.keys(plan.bound)) delete templateStart[id];
+  const overlayDefaults = templateSeed(defaultsFor(req.overlays.get(req.toolId), groups), declaredIds);
+  const seed = { ...overlayDefaults, ...templateStart, ...companyValues };
   // Per-tool format policy (overlay enforce.formats - plans/23 §3.A): a format
   // the deployment CAN produce may still be disallowed for this tool. A policy
   // 403, deliberately distinct from the capability 400 at the top: absent (400)

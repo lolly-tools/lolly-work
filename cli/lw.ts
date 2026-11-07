@@ -862,15 +862,33 @@ switch (cmd) {
         : list ? { emails: readFileSync(list === '-' ? 0 : list, 'utf8').split(/[\s,;]+/).filter(Boolean) } : null;
       if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]');
       const r = await call('/api/v1/programmes/exit', { method: 'POST', body: { ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
-        dryRun: boolean; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
+        dryRun: boolean; exit?: string; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
+        stays?: Array<{ email: string; stays: string[] }>; cannotEnd?: Array<{ email: string; reason: string }>; notEnded?: Array<{ email: string; reason: string }>;
         pendingInvitations?: unknown[]; invitationsRevoked?: number; domainRules?: Array<{ domain: string; programme: { name: string } }>;
+        tokens?: Array<{ id: string; label: string }>; tokensRevoked?: number;
+        templates?: Array<{ id: string; name: string; action: 'retire' | 'narrow' }>;
+        folders?: Array<{ provider: string; path: string }>; foldersEnded?: number;
+        rightsChoices?: Array<{ assetId: string; group: string }>; rightsChoicesWithdrawn?: number;
+        alreadyEnded?: { at: string }; ended?: { programme?: string; companies: string[] };
       };
       out(r);
       if (!values.json) {
-        for (const a of r.accounts) console.log(`${r.dryRun ? 'ends    ' : 'ended   '}  ${a.email ?? a.id}`);
-        for (const s2 of r.skipped) console.log(`left      ${s2.email}  ${s2.reason}`);
-        for (const d of r.domainRules ?? []) console.log(`${r.dryRun ? 'withdraws' : 'withdrew '} ${d.domain} (${d.programme.name})`);
-        console.log(r.dryRun ? `${r.pendingInvitations?.length ?? 0} open invitation(s) would be revoked; run again with --apply to do it` : `${r.invitationsRevoked ?? 0} open invitation(s) revoked`);
+        const verb = (now: string, then: string) => (r.dryRun ? now : then).padEnd(9);
+        if (r.alreadyEnded) console.log(`already ended on ${r.alreadyEnded.at.slice(0, 10)}; this ends what is left`);
+        for (const a of r.accounts) console.log(`${verb('ends', 'ended')} ${a.email ?? a.id}`);
+        for (const a of r.stays ?? []) console.log(`${verb('stays', 'stays')} ${a.email}  leaves this one, also in ${a.stays.join(', ')}`);
+        for (const a of [...(r.cannotEnd ?? []), ...(r.notEnded ?? [])]) console.log(`${verb('not ended', 'not ended')} ${a.email}  ${a.reason}`);
+        for (const s2 of r.skipped) console.log(`${'left'.padEnd(9)} ${s2.email}  ${s2.reason}`);
+        for (const d of r.domainRules ?? []) console.log(`${verb('withdraws', 'withdrew')} ${d.domain} (${d.programme.name})`);
+        for (const t of r.tokens ?? []) console.log(`${verb('revokes', 'revoked')} token ${t.id} (${t.label})`);
+        for (const t of r.templates ?? []) console.log(`${t.action === 'retire' ? verb('retires', 'retired') : verb('narrows', 'narrowed')} template ${t.name}`);
+        for (const f of r.folders ?? []) console.log(`${verb('ends', 'ended')} folder ${f.provider}/${f.path || '(all of it)'}`);
+        for (const c of r.rightsChoices ?? []) console.log(`${verb('withdraws', 'withdrew')} share anyway ${c.assetId} for ${c.group}`);
+        if (!r.dryRun && r.tokensRevoked) console.log(`${r.tokensRevoked} service token(s) revoked`);
+        if (!r.dryRun && r.foldersEnded) console.log(`${r.foldersEnded} folder rule(s) ended`);
+        if (!r.dryRun && r.rightsChoicesWithdrawn) console.log(`${r.rightsChoicesWithdrawn} share-anyway choice(s) withdrawn`);
+        if (!r.dryRun && r.ended && (r.ended.programme || r.ended.companies.length)) console.log(`ended: ${[r.ended.programme, ...r.ended.companies].filter(Boolean).join(', ')}`);
+        console.log(r.dryRun ? `${r.pendingInvitations?.length ?? 0} open invitation(s) would be revoked; run again with --apply to end access` : `${r.invitationsRevoked ?? 0} open invitation(s) revoked; receipt ${r.exit}`);
       }
       break;
     }
@@ -1047,12 +1065,26 @@ switch (cmd) {
       console.log(`revoked ${id}`);
       break;
     }
+    if (sub === 'programme') {
+      // Place a token in a partner programme and optionally one company in it
+      // (plans/82 M3), so a partner's agent is scoped like the people there.
+      const usage = 'usage: lw tokens programme <id> <programme> [--company <id>] | lw tokens programme <id> none';
+      const id = positionals[2] ?? fail(usage);
+      const programme = positionals[3] ?? fail(usage);
+      const r = await call(`/api/v1/tokens/${encodeURIComponent(id)}/programme`, { method: 'PUT',
+        body: programme === 'none' ? { programme: null } : { programme, ...(values.company ? { company: values.company } : {}) } }) as { id: string; programme?: string; company?: string };
+      out(r);
+      if (!values.json) console.log(r.programme ? `${r.id} is in ${r.programme}${r.company ? `, company ${r.company}` : ''}: it reaches what a person there reaches`
+        : `${r.id} is in no programme: it keeps only the essentials. Mint a new token for internal work`);
+      break;
+    }
     const { tokens } = await call('/api/v1/tokens') as {
-      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null }>;
+      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null; programme?: string | null; company?: string | null }>;
     };
     out(tokens);
     if (!values.json) for (const t of tokens) {
-      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
+      const placed = t.programme ? `programme ${t.programme}${t.company ? `/${t.company}` : ''}  ` : '';
+      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${placed}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
     }
     break;
   }
@@ -2198,6 +2230,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
   tokens [create --label <l> --scopes <s,...> [--tools <id,...>] [--role <r>] | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
+  tokens programme <id> <programme> [--company <id>] · tokens programme <id> none   place a token in a partner programme, so a partner's agent is scoped like its people
   companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
   companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
