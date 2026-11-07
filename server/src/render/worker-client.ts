@@ -9,6 +9,7 @@
  * Chromium and returns SVG, which the plane then watermarks / provenances /
  * rasterises exactly like an in-process render (policy stays in the plane).
  */
+import { connect } from 'node:net';
 import { setTimeout as pause } from 'node:timers/promises';
 import { hmac, macEquals, canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { serviceUrl } from '../lib/service-url.ts';
@@ -161,9 +162,32 @@ export interface WorkerReply {
  *  the payload, so the caller needs both. */
 export interface WorkerExchange { payload: string; reply: WorkerReply }
 
-/** Per-call options. `now` and `fetchImpl` are injectable for tests;
+/** Per-call options. `now`, `fetchImpl` and `probe` are injectable for tests;
  *  `deadlineAt` is when the caller's render deadline falls (epoch ms). */
-export interface WorkerCallOpts { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal; deadlineAt?: number }
+export interface WorkerCallOpts { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal; deadlineAt?: number; probe?: ConnectProbe }
+
+/** Resolves null once a connection to `endpoint` opens, or the failure's code
+ *  when it is refused or not open within `timeoutMs`. */
+export type ConnectProbe = (endpoint: string, timeoutMs: number, signal?: AbortSignal) => Promise<string | null>;
+
+/** A plain TCP connect to the worker's host and port, closed at once. Any
+ *  failure other than a connect failure resolves null, so the request that
+ *  follows reports it as it always has. */
+export const tcpConnectProbe: ConnectProbe = (endpoint, timeoutMs, signal) => {
+  if (timeoutMs <= 0) return Promise.resolve('UND_ERR_CONNECT_TIMEOUT');
+  const url = new URL(endpoint);
+  const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80);
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    const socket = connect({ host: url.hostname.replace(/^\[|\]$/g, ''), port, timeout: timeoutMs });
+    const onAbort = (): void => { socket.destroy(); reject(signal!.reason); };
+    const done = (value: string | null): void => { signal?.removeEventListener('abort', onAbort); socket.destroy(); resolve(value); };
+    socket.once('connect', () => done(null));
+    socket.once('timeout', () => done('UND_ERR_CONNECT_TIMEOUT'));
+    socket.once('error', (e: NodeJS.ErrnoException) => done(e.code && CONNECT_FAILURE_CODES.has(e.code) ? e.code : null));
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+};
 
 /** Retrying a refused connection stops this long before the render deadline,
  *  so RENDER_BUSY reaches the caller rather than RENDER_TIMEOUT. */
@@ -182,29 +206,35 @@ export type WorkerDispatch = (path: WorkerPath, job: Record<string, unknown>,
  *  request, signed afresh and connected afresh, with a short backoff, until
  *  `connectRetryMs` has passed; then the job fails as 503 RENDER_BUSY with
  *  Retry-After. The retrying also stops DEADLINE_MARGIN_MS before the caller's
- *  render deadline, and no new attempt starts once the time is up; an attempt
- *  already under way is bounded by `timeoutMs` and the render deadline, as
- *  before. Every other failure, and every answer the worker gives, is
- *  returned on the first attempt as before. */
+ *  render deadline, and no attempt starts once the time is up. Before each
+ *  retry a TCP connect, bounded by the time left, checks that the worker
+ *  accepts connections, so a connect that hangs cannot carry the job past the
+ *  budget or the deadline. Every other failure, and every answer the worker
+ *  gives, is returned on the first attempt as before. */
 async function pushExchange(cfg: WorkerConfig, path: WorkerPath, job: Record<string, unknown>,
   opts: WorkerCallOpts, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
   const started = Date.now();
   const until = Math.min(started + (cfg.connectRetryMs ?? WORKER_CONNECT_RETRY_MS),
     opts.deadlineAt !== undefined ? opts.deadlineAt - DEADLINE_MARGIN_MS : Number.POSITIVE_INFINITY);
+  const busy = (tries: number, code: string): WorkerError => new WorkerError(
+    `render worker not accepting connections (${code}) after ${tries} attempt${tries === 1 ? '' : 's'} over ${Math.round((Date.now() - started) / 1000)} s; retry shortly`,
+    503, { code: 'RENDER_BUSY', retryAfter: WORKER_UNREACHABLE_RETRY_AFTER_S });
+  const probe = opts.probe ?? tcpConnectProbe;
   for (let attempt = 1; ; attempt++) {
-    try {
-      return await pushOnce(cfg, path, job, opts, readBody);
-    } catch (e) {
-      if (opts.signal?.aborted || !isWorkerConnectFailure(e)) throw e;
-      const left = until - Date.now();
-      // Wait a little less than the time left, so the last try starts before it runs out.
-      const wait = Math.min(CONNECT_BACKOFF_FIRST_MS * 2 ** (attempt - 1), CONNECT_BACKOFF_MAX_MS, left - CONNECT_BACKOFF_FIRST_MS);
-      if (wait <= 0) {
-        throw new WorkerError(`render worker not accepting connections (${connectFailureCode(e)}) after ${attempt} attempt${attempt === 1 ? '' : 's'} over ${Math.round((Date.now() - started) / 1000)} s; retry shortly`,
-          503, { code: 'RENDER_BUSY', retryAfter: WORKER_UNREACHABLE_RETRY_AFTER_S });
+    let failed: string | null = attempt === 1 ? null : await probe(workerEndpoint(cfg, path), until - Date.now(), opts.signal);
+    if (failed === null) {
+      try {
+        return await pushOnce(cfg, path, job, opts, readBody);
+      } catch (e) {
+        if (opts.signal?.aborted || !isWorkerConnectFailure(e)) throw e;
+        failed = connectFailureCode(e);
       }
-      await pause(wait, undefined, opts.signal ? { signal: opts.signal } : {});
     }
+    // Wait a little less than the time left, so the last try starts before it runs out.
+    const wait = Math.min(CONNECT_BACKOFF_FIRST_MS * 2 ** (attempt - 1), CONNECT_BACKOFF_MAX_MS, until - Date.now() - CONNECT_BACKOFF_FIRST_MS);
+    if (wait <= 0) throw busy(attempt, failed);
+    await pause(wait, undefined, opts.signal ? { signal: opts.signal } : {});
+    if (Date.now() >= until) throw busy(attempt, failed);
   }
 }
 

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { signBody, verifyBody, renderViaWorker, rasteriseViaWorker, WorkerError, WORKER_TS_SKEW_MS, WORKER_CONNECT_RETRY_MS, WORKER_UNREACHABLE_RETRY_AFTER_S, isWorkerConnectFailure } from '../server/src/render/worker-client.ts';
+import { signBody, verifyBody, renderViaWorker, rasteriseViaWorker, WorkerError, WORKER_TS_SKEW_MS, WORKER_CONNECT_RETRY_MS, WORKER_UNREACHABLE_RETRY_AFTER_S, isWorkerConnectFailure, tcpConnectProbe, type ConnectProbe } from '../server/src/render/worker-client.ts';
 
 const SECRET = 'shared-key';
 const CFG = { url: 'https://worker.local', secret: SECRET, timeoutMs: 5000 };
@@ -117,50 +117,43 @@ async function refusingWorker(handler: (path: string, raw: string) => { status: 
 }
 
 test('a worker that refuses connections is tried again until it listens, with real sockets', async () => {
-  const worker = await refusingWorker(() => ({ status: 200, body: { svg: okSvg } }));
-  let attempts = 0;
-  const fetchImpl: typeof fetch = async (url, init) => {
-    attempts++;
-    if (attempts === 3) await worker.open(); // the first two connects are refused
-    return fetch(url, init);
-  };
+  let served = 0;
+  const worker = await refusingWorker(() => { served++; return { status: 200, body: { svg: okSvg } }; });
+  const started = Date.now();
+  const opening = setTimeout(() => void worker.open(), 600);
   try {
-    const svg = await renderViaWorker({ ...CFG, url: worker.base, connectRetryMs: 10_000 }, JOB, { fetchImpl });
+    const svg = await renderViaWorker({ ...CFG, url: worker.base, connectRetryMs: 10_000 }, JOB);
     assert.equal(svg, okSvg);
-    assert.equal(attempts, 3);
-  } finally { await worker.close(); }
+    assert.equal(served, 1, 'one request reached the worker');
+    assert.ok(Date.now() - started >= 550, 'it waited for the worker to listen');
+  } finally { clearTimeout(opening); await worker.close(); }
 });
 
 test('each attempt is signed afresh, so the signature and ts match the body that arrived', async () => {
   let arrived = { sig: '', body: '' };
   const worker = await refusingWorker(() => ({ status: 200, body: { svg: okSvg } }));
-  let attempts = 0;
   const fetchImpl: typeof fetch = async (url, init) => {
-    attempts++;
-    if (attempts === 2) await worker.open();
     const response = await fetch(url, init);
     arrived = { sig: (init!.headers as Record<string, string>)['x-lw-render-sig'] ?? '', body: String(init!.body) };
     return response;
   };
+  const opening = setTimeout(() => void worker.open(), 300);
   try {
     await renderViaWorker({ ...CFG, url: worker.base, connectRetryMs: 10_000 }, JOB, { fetchImpl });
     assert.ok(verifyBody(arrived.body, SECRET, arrived.sig));
-  } finally { await worker.close(); }
+  } finally { clearTimeout(opening); await worker.close(); }
 });
 
 test('a worker that never listens fails as 503 RENDER_BUSY with Retry-After once connectRetryMs has passed', async () => {
   const worker = await refusingWorker(() => ({ status: 200, body: {} }));
-  let attempts = 0;
-  const fetchImpl: typeof fetch = async (url, init) => { attempts++; return fetch(url, init); };
   const started = Date.now();
   await assert.rejects(
-    rasteriseViaWorker({ ...CFG, url: worker.base, connectRetryMs: 600 }, RASTER_JOB, { fetchImpl }),
+    rasteriseViaWorker({ ...CFG, url: worker.base, connectRetryMs: 600 }, RASTER_JOB),
     (e: WorkerError) => e instanceof WorkerError && e.status === 503 && e.code === 'RENDER_BUSY'
-      && e.retryAfter === WORKER_UNREACHABLE_RETRY_AFTER_S && /ECONNREFUSED/.test(e.message),
+      && e.retryAfter === WORKER_UNREACHABLE_RETRY_AFTER_S && /ECONNREFUSED\) after [2-9] attempts/.test(e.message),
   );
   const took = Date.now() - started;
   assert.ok(took <= 700, `no attempt starts after connectRetryMs (took ${took} ms)`);
-  assert.ok(attempts >= 2, 'it tried more than once');
 });
 
 test('retrying stops before the caller\'s render deadline, so RENDER_BUSY answers rather than RENDER_TIMEOUT', async () => {
@@ -174,27 +167,46 @@ test('retrying stops before the caller\'s render deadline, so RENDER_BUSY answer
   assert.ok(took < 1500, `answered before the deadline (took ${took} ms)`);
 });
 
+test('a retry whose connect hangs is cut off at the time left, so the deadline is not reached', async () => {
+  // Attempt 1 hangs in connect for 600 ms and then times out. Every check after
+  // that hangs for as long as it is allowed: the retrying must still answer
+  // before the deadline.
+  const timedOut = () => new TypeError('fetch failed', { cause: Object.assign(new Error('Connect Timeout Error'), { code: 'UND_ERR_CONNECT_TIMEOUT' }) });
+  const fetchImpl: typeof fetch = async () => { await new Promise(resolve => setTimeout(resolve, 600)); throw timedOut(); };
+  const allowed: number[] = [];
+  const probe: ConnectProbe = async (_endpoint, timeoutMs) => { allowed.push(timeoutMs); await new Promise(resolve => setTimeout(resolve, Math.max(0, timeoutMs))); return 'UND_ERR_CONNECT_TIMEOUT'; };
+  const started = Date.now();
+  await assert.rejects(
+    renderViaWorker({ ...CFG, connectRetryMs: 30_000 }, JOB, { fetchImpl, probe, deadlineAt: started + 2000 }),
+    (e: WorkerError) => e.status === 503 && e.code === 'RENDER_BUSY' && /UND_ERR_CONNECT_TIMEOUT/.test(e.message),
+  );
+  assert.ok(Date.now() - started < 2000, `answered before the deadline (took ${Date.now() - started} ms)`);
+  assert.ok(allowed.length >= 1 && allowed.every(ms => ms <= 2000 - 500 - 600), `each check is bounded by the time left: ${allowed.join(', ')}`);
+});
+
 test('connectRetryMs 0 answers RENDER_BUSY after the first refused connect', async () => {
   const worker = await refusingWorker(() => ({ status: 200, body: {} }));
-  let attempts = 0;
-  const fetchImpl: typeof fetch = async (url, init) => { attempts++; return fetch(url, init); };
-  await assert.rejects(renderViaWorker({ ...CFG, url: worker.base, connectRetryMs: 0 }, JOB, { fetchImpl }),
-    (e: WorkerError) => e.status === 503 && e.code === 'RENDER_BUSY');
-  assert.equal(attempts, 1);
+  await assert.rejects(renderViaWorker({ ...CFG, url: worker.base, connectRetryMs: 0 }, JOB),
+    (e: WorkerError) => e.status === 503 && e.code === 'RENDER_BUSY' && /after 1 attempt /.test(e.message));
 });
 
 test('cancelling while the client waits to retry stops at once with the caller\'s abort', async () => {
   const worker = await refusingWorker(() => ({ status: 200, body: {} }));
   const controller = new AbortController();
-  let attempts = 0;
-  const fetchImpl: typeof fetch = async (url, init) => {
-    attempts++;
-    if (attempts === 2) setTimeout(() => controller.abort(), 20);
-    return fetch(url, init);
-  };
+  const cancel = setTimeout(() => controller.abort(), 300);
   const started = Date.now();
-  await assert.rejects(renderViaWorker({ ...CFG, url: worker.base, connectRetryMs: 30_000 }, JOB, { fetchImpl, signal: controller.signal }), { name: 'AbortError' });
-  assert.ok(Date.now() - started < 2000, 'the wait ends with the abort, not the retry budget');
+  try {
+    await assert.rejects(renderViaWorker({ ...CFG, url: worker.base, connectRetryMs: 30_000 }, JOB, { signal: controller.signal }), { name: 'AbortError' });
+    assert.ok(Date.now() - started < 2000, 'the wait ends with the abort, not the retry budget');
+  } finally { clearTimeout(cancel); }
+});
+
+test('the TCP check reports a refused port and an open one', async () => {
+  const worker = await refusingWorker(() => ({ status: 200, body: {} }));
+  assert.equal(await tcpConnectProbe(`${worker.base}/render`, 1000), 'ECONNREFUSED');
+  await worker.open();
+  try { assert.equal(await tcpConnectProbe(`${worker.base}/render`, 1000), null); } finally { await worker.close(); }
+  assert.equal(await tcpConnectProbe(`${worker.base}/render`, 0), 'UND_ERR_CONNECT_TIMEOUT', 'no time left is a timeout, with no connect tried');
 });
 
 test('the default connect retry budget is 30 s', () => {
