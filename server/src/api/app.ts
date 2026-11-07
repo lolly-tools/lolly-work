@@ -406,6 +406,11 @@ export function appRouteDescriptions(app: App): ReturnType<DescribeRoutes> {
   return describe();
 }
 
+/** The Preview row for a template's colourway and mode (plans/82 M2). */
+const COLOURWAY_ROW = 'Colourway and mode';
+/** A value taken from the design system: a token reference such as `{color.semantic.primary}`. */
+const isTokenRef = (value: unknown): boolean => typeof value === 'string' && /^\{[^{}]+\}$/.test(value);
+
 export function buildApp(deps: AppDeps): App {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
   const resolveTxt: TxtLookup = deps.resolveTxt ?? dnsResolveTxt;
@@ -725,6 +730,7 @@ export function buildApp(deps: AppDeps): App {
     return {
       id, toolId, values, name: typeof entry!.name === 'string' ? entry!.name : id, version: rec.headVersion ?? 1,
       ...(rec.publication?.editable ? { editable: rec.publication.editable } : {}),
+      ...(rec.publication?.fixedTheme ? { fixedTheme: true } : {}),
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
     };
   };
@@ -2921,7 +2927,7 @@ export function buildApp(deps: AppDeps): App {
     // which inputs it may offer.
     const templates: Array<Record<string, unknown>> = [];
     for (const entry of feedAssets.filter((a) => a.type === 'template' || a.type === RULES_TOOL_TYPE)) {
-      const meta = (entry.meta ?? {}) as { toolId?: string; version?: number; toolVersion?: string; editable?: string[]; inputs?: Array<{ id: string; label: string }>; rebuilt?: boolean; retired?: boolean; replacedBy?: string };
+      const meta = (entry.meta ?? {}) as { toolId?: string; version?: number; toolVersion?: string; editable?: string[]; fixedTheme?: boolean; inputs?: Array<{ id: string; label: string }>; rebuilt?: boolean; retired?: boolean; replacedBy?: string };
       const replacement = meta.replacedBy ? feedAssets.find((a) => a.id === meta.replacedBy) ?? await store.getInstanceAsset(meta.replacedBy).then((r) => r?.entry ?? null) : null;
       const base = {
         id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, kind: entry.type, version: meta.version ?? 1,
@@ -2929,12 +2935,16 @@ export function buildApp(deps: AppDeps): App {
         ...(meta.retired ? { retired: true, ...(meta.replacedBy ? { replacedBy: { id: meta.replacedBy, name: String(replacement?.name ?? meta.replacedBy) } } : {}) } : {}),
       };
       if (entry.type === RULES_TOOL_TYPE) {
-        templates.push({ ...base, canChange: (meta.inputs ?? []).map((i) => i.label), fixed: ['Everything else in the design'],
-          why: ['The Share with rules file\u2019s own rules.', ...(meta.rebuilt ? ['Rebuilt with this workspace\u2019s Design.'] : [])] });
+        // Design's rules say nothing about colourway and mode, so the app offers
+        // them, and Preview says so (plans/82 M2 review).
+        templates.push({ ...base, canChange: [...(meta.inputs ?? []).map((i) => i.label), COLOURWAY_ROW], fixed: ['Everything else in the design'],
+          why: ['The Share with rules file\u2019s own rules.', 'Colourway and mode: Design\u2019s rules leave them open, so colours from the design system follow what partners pick.',
+            ...(meta.rebuilt ? ['Rebuilt with this workspace\u2019s Design.'] : [])] });
         continue;
       }
       const toolId = String(meta.toolId ?? '');
-      const inputs = (await readToolManifestInputs(toolId) ?? []).map((i) => ({ id: String(i.id), label: typeof i.label === 'string' && i.label ? i.label : String(i.id) }));
+      const manifestInputs = await readToolManifestInputs(toolId) ?? [];
+      const inputs = manifestInputs.map((i) => ({ id: String(i.id), label: typeof i.label === 'string' && i.label ? i.label : String(i.id) }));
       const toolName = await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8').then((t) => String((JSON.parse(t) as { name?: unknown }).name ?? toolId)).catch(() => toolId);
       const canChange: string[] = [], fixed: string[] = [], whyLines: string[] = [];
       whyLines.push(meta.editable ? 'Fixed by the template\u2019s rules.' : 'No rules: every input stays editable unless the tool\u2019s own rules say otherwise.');
@@ -2946,6 +2956,18 @@ export function buildApp(deps: AppDeps): App {
         if (theirs && own.level !== 'editable') {
           whyLines.push(`${input.label}: ${own.level === 'choice' ? 'a choice only' : own.level} for these groups by the ${toolName} rule${own.by ? ` \u201c${own.by}\u201d` : ''}, which is stricter.`);
         }
+      }
+      // Colourway and mode, shown only when the template draws a colour from the
+      // design system: a token reference, in its own values or the tool's defaults.
+      const values = (await publishedTemplateFor(groups, entry.id))?.values ?? {};
+      const followers = manifestInputs.filter((i) => isTokenRef(Object.hasOwn(values, String(i.id)) ? values[String(i.id)] : i.default))
+        .map((i) => inputs.find((x) => x.id === String(i.id))?.label ?? String(i.id));
+      if (followers.length && meta.fixedTheme) {
+        fixed.push(COLOURWAY_ROW);
+        whyLines.push('Colourway and mode: fixed by the template\u2019s rules.');
+      } else if (followers.length) {
+        canChange.push(COLOURWAY_ROW);
+        whyLines.push(`${followers.join(', ')} ${followers.length === 1 ? 'follows' : 'follow'} the colourway and mode partners pick.`);
       }
       if (visibleTools.includes(toolId)) whyLines.push(`These groups can also open ${toolName} on its own, outside these rules.`);
       templates.push({ ...base, toolId, toolName, canChange, fixed, why: whyLines });

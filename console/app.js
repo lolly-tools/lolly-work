@@ -5630,19 +5630,34 @@ async function programmeTemplates(p, host) {
     ...data.reach,
     ...programmes.filter((o) => o.id !== p.id).map((o) => ({ group: o.group, label: `Everyone in ${o.name}` })),
   ];
+  // A ticked company says which programme it is in, so a company ticked on its
+  // own reads plainly as "only them", and ticked with its programme as no change.
   const audiencePicker = (chosen) => {
     const picked = new Set(chosen);
+    const note = el('p', { class: 'sub flush template-audience-note' });
+    const sync = () => {
+      const companies = audienceChoices.filter((a) => a.group.startsWith('company-') && picked.has(a.group)).map((a) => a.label);
+      const whole = picked.has(`programme-${p.id}`);
+      note.textContent = !companies.length ? ''
+        : `${companies.join(' and ')} ${companies.length === 1 ? 'is' : 'are'} in ${p.name}. ${whole ? `Everyone in ${p.name} gets it.` : `Only ${companies.length === 1 ? companies[0] : 'they'} ${companies.length === 1 ? 'gets' : 'get'} it, not everyone in ${p.name}.`}`;
+      note.hidden = !companies.length;
+    };
     const list = el('div', { class: 'chk-list template-audience' }, ...audienceChoices.map((a) => {
       const cb = el('input', { type: 'checkbox', ...(picked.has(a.group) ? { checked: 'checked' } : {}) });
-      cb.addEventListener('change', () => { if (cb.checked) picked.add(a.group); else picked.delete(a.group); });
+      cb.addEventListener('change', () => { if (cb.checked) picked.add(a.group); else picked.delete(a.group); sync(); });
       return el('label', { class: 'chk' }, cb, el('span', {}, a.label));
     }));
-    return { list, value: () => audienceChoices.map((a) => a.group).filter((g) => picked.has(g)) };
+    sync();
+    return { list: el('div', { class: 'stack' }, list, note), value: () => audienceChoices.map((a) => a.group).filter((g) => picked.has(g)) };
   };
   // Which inputs partners may change, with the count always in view, so a
   // template is never published with everything open by accident.
-  const rulesPicker = (inputs, editable) => {
+  // Colourway and mode sit below the inputs, ticked unless the template keeps
+  // its own: they are the brand's approved choices, and they move every colour
+  // the tool takes from the design system.
+  const rulesPicker = (inputs, editable, fixedTheme = false) => {
     const open = new Set(editable ?? inputs.map((i) => i.id));
+    const theme = el('input', { type: 'checkbox', ...(fixedTheme ? {} : { checked: 'checked' }) });
     const count = el('strong', { class: 'template-count' });
     const sync = () => { count.textContent = `Partners can change ${open.size} of ${inputs.length} input${inputs.length === 1 ? '' : 's'}`; };
     const list = el('div', { class: 'chk-list template-inputs' }, ...inputs.map((i) => {
@@ -5652,9 +5667,11 @@ async function programmeTemplates(p, host) {
     }));
     sync();
     return {
-      el: el('div', { class: 'stack template-rules' }, count, el('p', { class: 'sub flush' }, 'Untick what stays as the template has it.'), list),
+      el: el('div', { class: 'stack template-rules' }, count, el('p', { class: 'sub flush' }, 'Untick what stays as the template has it.'), list,
+        el('div', { class: 'chk-list template-theme' }, el('label', { class: 'chk' }, theme, el('span', {}, 'Colourway and mode')))),
       // Every input open is the same as no rules at all.
       value: () => (open.size === inputs.length ? null : inputs.map((i) => i.id).filter((id) => open.has(id))),
+      fixedTheme: () => !theme.checked,
     };
   };
   const openNote = (toolName, programmesWithTool) => el('p', { class: 'policy-warning template-open-note' },
@@ -5676,7 +5693,7 @@ async function programmeTemplates(p, host) {
       : `Everything (${t.inputs.length} input${t.inputs.length === 1 ? '' : 's'})`;
     const change = el('button', { onclick: () => {
       const who = audiencePicker(t.groups);
-      const rules = t.kind === 'template' ? rulesPicker(t.inputs, t.editable) : null;
+      const rules = t.kind === 'template' ? rulesPicker(t.inputs, t.editable, t.fixedTheme) : null;
       const saveErr = errSpan();
       showPanel(
         field('Who gets it', who.list),
@@ -5685,7 +5702,7 @@ async function programmeTemplates(p, host) {
           el('button', { class: 'primary', onclick: async () => {
             saveErr.textContent = '';
             try {
-              await api(`${base}/${bare(t.id)}`, { method: 'PUT', body: { groups: who.value(), ...(rules ? { editable: rules.value() } : {}) } });
+              await api(`${base}/${bare(t.id)}`, { method: 'PUT', body: { groups: who.value(), ...(rules ? { editable: rules.value(), fixedTheme: rules.fixedTheme() } : {}) } });
               toast(`Saved ${t.name}`); reload();
             } catch (ex) { saveErr.textContent = ex.message; }
           } }, 'Save'),
@@ -5791,7 +5808,7 @@ async function programmeTemplates(p, host) {
         const out = await uploadRules(f, `${base}/rules-file?${new URLSearchParams({ groups: groups.join(',') })}`);
         toast(out.state === 'submitted' ? 'Sent. It is waiting for review.' : 'Published');
       } else {
-        await api(base, { method: 'POST', body: { from: source.value, groups, editable: rules?.value() ?? null } });
+        await api(base, { method: 'POST', body: { from: source.value, groups, editable: rules?.value() ?? null, fixedTheme: rules?.fixedTheme() ?? false } });
         toast('Published');
       }
       reload();

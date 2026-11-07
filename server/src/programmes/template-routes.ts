@@ -150,6 +150,9 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
         audience: groupsOf(rec).map((g) => ({ group: g, label: labels.get(g) ?? g })),
         editable: type === 'template' ? rec.publication?.editable ?? null : (Array.isArray((meta as { editable?: unknown }).editable) ? (meta as { editable: string[] }).editable : []),
         inputs: type === 'template' ? facts?.inputs ?? [] : meta.inputs ?? [],
+        // Colourway and mode: a tool template keeps them when its rules say so; a
+        // Share with rules file leaves them open, as Design's own rules do.
+        fixedTheme: type === 'template' && !!rec.publication?.fixedTheme,
         version: rec.headVersion ?? 1,
         ...(meta.toolVersion ? { toolVersion: meta.toolVersion } : {}),
         ...(meta.rebuilt ? { rebuilt: true } : {}),
@@ -181,12 +184,13 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 
-  /** Publish one of the catalog's templates: `{ from, groups, editable? }`. The
+  /** Publish one of the catalog's templates: `{ from, groups, editable?, fixedTheme? }`. The
    *  programme gets its own copy, with its own versions, rules and retirement. */
   router.add('POST', '/api/v1/programmes/:id/templates', async (req, res, ctx) => {
     const actor = await manager(req, res); if (!actor) return;
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
-    const body = ((await readJson(req)) ?? {}) as { from?: unknown; groups?: unknown; editable?: unknown };
+    const body = ((await readJson(req)) ?? {}) as { from?: unknown; groups?: unknown; editable?: unknown; fixedTheme?: unknown };
+    if (body.fixedTheme !== undefined && typeof body.fixedTheme !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'fixedTheme must be true or false');
     const source = await catalogTemplate(body.from);
     if (!source) return sendError(res, 404, 'NOT_FOUND', 'no such template in the catalog');
     const groups = audienceOf(body.groups ?? [programmeGroup(programme.id)]);
@@ -217,16 +221,18 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
         state: 'live', by: `user:${actor.id}`, at, checksum: stat.checksum, size: stat.size, contentType: 'application/json',
         ...(source.submission?.data ? { data: source.submission.data } : {}), note: `Published from ${source.id}`,
       },
-      ...(editable.editable ? { publication: { editable: editable.editable } } : {}),
+      ...(editable.editable || body.fixedTheme ? { publication: {
+        ...(editable.editable ? { editable: editable.editable } : {}), ...(body.fixedTheme ? { fixedTheme: true } : {}),
+      } } : {}),
       createdAt: at,
     };
     await store.putInstanceAsset(record);
     await store.putLifecycle({ assetId: id, onExpiry: 'hide' });
     await store.putCredential({ assetId: id, status: 'none', sniffedAt: at });
     await audit(`user:${actor.id}`, 'programme.template.publish', `programme:${programme.id}`, {
-      template: id, from: source.id, toolId, groups, editable: editable.editable ?? null,
+      template: id, from: source.id, toolId, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true,
     });
-    sendJson(res, 201, { id, groups, editable: editable.editable ?? null });
+    sendJson(res, 201, { id, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true });
   });
 
   /** Publish a Share with rules file: the `.lolly` as the body, `?groups=` for who
@@ -248,12 +254,16 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     sendJson(res, 201, { id: out.id, state: out.state, groups });
   });
 
-  /** Change who gets it or what they may change: `{ groups?, editable? }`. */
+  /** Change who gets it or what they may change: `{ groups?, editable?, fixedTheme? }`. */
   router.add('PUT', '/api/v1/programmes/:id/templates/:asset', async (req, res, ctx) => {
     const actor = await manager(req, res); if (!actor) return;
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
     const rec = await publishedHere(res, programme, `${INST_PREFIX}${String(ctx.params.asset)}`); if (!rec) return;
-    const body = ((await readJson(req)) ?? {}) as { groups?: unknown; editable?: unknown };
+    const body = ((await readJson(req)) ?? {}) as { groups?: unknown; editable?: unknown; fixedTheme?: unknown };
+    if (body.fixedTheme !== undefined && typeof body.fixedTheme !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'fixedTheme must be true or false');
+    if ((body.editable !== undefined || body.fixedTheme !== undefined) && rec.entry.type !== 'template') {
+      return sendError(res, 400, 'INVALID_INPUT', 'a Share with rules file brings its own rules; change them in Lolly and publish a new version');
+    }
     let next = rec;
     if (body.groups !== undefined) {
       const groups = audienceOf(body.groups);
@@ -261,7 +271,6 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       next = { ...next, groups };
     }
     if (body.editable !== undefined) {
-      if (rec.entry.type !== 'template') return sendError(res, 400, 'INVALID_INPUT', 'a Share with rules file brings its own rules; change them in Lolly and publish a new version');
       const facts = await deps.toolFacts(String((rec.entry.meta as { toolId?: unknown } | undefined)?.toolId ?? ''));
       const editable = normalizeEditable(body.editable, facts?.inputs.map((i) => i.id) ?? []);
       if ('error' in editable) return sendError(res, 400, 'INVALID_INPUT', editable.error);
@@ -270,13 +279,19 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       const publication = { ...rest, ...(editable.editable ? { editable: editable.editable } : {}) };
       next = { ...next, publication: Object.keys(publication).length ? publication : undefined };
     }
+    if (body.fixedTheme !== undefined) {
+      const { fixedTheme: _was, ...rest } = next.publication ?? {};
+      void _was;
+      const publication = { ...rest, ...(body.fixedTheme ? { fixedTheme: true } : {}) };
+      next = { ...next, publication: Object.keys(publication).length ? publication : undefined };
+    }
     await store.putInstanceAsset(next);
     await audit(`user:${actor.id}`, 'programme.template.update', `programme:${programme.id}`, {
       template: rec.id,
-      before: { groups: groupsOf(rec), editable: rec.publication?.editable ?? null },
-      after: { groups: groupsOf(next), editable: next.publication?.editable ?? null },
+      before: { groups: groupsOf(rec), editable: rec.publication?.editable ?? null, fixedTheme: !!rec.publication?.fixedTheme },
+      after: { groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme },
     });
-    sendJson(res, 200, { id: rec.id, groups: groupsOf(next), editable: next.publication?.editable ?? null });
+    sendJson(res, 200, { id: rec.id, groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme });
   });
 
   /** A new version of a tool template from another catalog template of the

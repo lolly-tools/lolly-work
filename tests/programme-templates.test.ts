@@ -42,6 +42,7 @@ const manifest = {
     { id: 'title', label: 'Product', type: 'text', default: 'Product' },
     { id: 'price', label: 'Price', type: 'text', default: '' },
     { id: 'bg', label: 'Background', type: 'color', default: '#204080' },
+    { id: 'accent', label: 'Accent', type: 'color', default: '{color.semantic.primary}' },
   ],
 };
 
@@ -108,7 +109,7 @@ test('a programme manager publishes a catalog template into the programme, with 
   const before = await listed();
   assert.deepEqual(before.templates, []);
   assert.deepEqual(before.candidates.map((c: { id: string }) => c.id), [catalogTemplate]);
-  assert.deepEqual(before.candidates[0].inputs, [{ id: 'title', label: 'Product' }, { id: 'price', label: 'Price' }, { id: 'bg', label: 'Background' }]);
+  assert.deepEqual(before.candidates[0].inputs, [{ id: 'title', label: 'Product' }, { id: 'price', label: 'Price' }, { id: 'bg', label: 'Background' }, { id: 'accent', label: 'Accent' }]);
 
   const admin = await login('admin@test');
   const out = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], editable: ['price'] });
@@ -178,14 +179,35 @@ test('Preview says what each template lets a group change, and why the rest is f
   const admin = await login('admin@test');
   const preview = (await call(admin, 'GET', '/api/v1/org-config/preview?groups=programme-resellers,company-acme,partner')).body.preview;
   const t = preview.templates.find((x: { id: string }) => x.id === published);
-  assert.deepEqual(t.canChange, ['Product', 'Price']);
-  assert.deepEqual(t.fixed, ['Background']);
+  assert.deepEqual(t.canChange, ['Product', 'Price', 'Colourway and mode']);
+  assert.deepEqual(t.fixed, ['Background', 'Accent']);
   assert.ok(t.why.includes('Fixed by the template’s rules.'));
+  assert.ok(t.why.includes('Accent follows the colourway and mode partners pick.'), 'a fixed colour from the design system still moves with the colourway');
   assert.ok(t.why.some((line: string) => /can also open Price card on its own/.test(line)));
   // The member's own org-config never carries any of this.
   const rita = await login('rita@acme.test');
   const wire = JSON.stringify((await call(rita, 'GET', '/api/v1/org-config')).body);
   assert.ok(!wire.includes('Fixed by the template'));
+});
+
+test('a template can keep its colourway and mode, and Preview says so', async () => {
+  const admin = await login('admin@test');
+  const path = `/api/v1/programmes/resellers/templates/${bare(published)}`;
+  assert.equal((await call(admin, 'PUT', path, { fixedTheme: 'yes' })).status, 400);
+  const kept = await call(admin, 'PUT', path, { fixedTheme: true });
+  assert.equal(kept.status, 200);
+  assert.equal(kept.body.fixedTheme, true);
+  assert.deepEqual(kept.body.editable, ['price', 'title'], 'the input rules stay as they were');
+  assert.equal((await ritaEntry(published))?.meta?.fixedTheme, true);
+  assert.equal((await listed()).templates.find((t: { id: string }) => t.id === published).fixedTheme, true);
+  const preview = (await call(admin, 'GET', '/api/v1/org-config/preview?groups=programme-resellers,company-acme,partner')).body.preview;
+  const t = preview.templates.find((x: { id: string }) => x.id === published);
+  assert.deepEqual(t.fixed, ['Background', 'Accent', 'Colourway and mode']);
+  assert.ok(t.why.includes('Colourway and mode: fixed by the template’s rules.'));
+  assert.equal((await call(admin, 'PUT', path, { fixedTheme: false })).body.fixedTheme, false);
+  const fresh = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], editable: ['price'], fixedTheme: true });
+  assert.equal(fresh.status, 201);
+  assert.equal((await ritaEntry(fresh.body.id))?.meta?.fixedTheme, true);
 });
 
 test('only someone who manages programmes may publish', async () => {

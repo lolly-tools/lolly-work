@@ -274,6 +274,8 @@ test('someone who manages programmes previews a programme, and nothing else', as
   const preview = await call(pat, 'GET', '/api/v1/org-config/preview?groups=programme-resellers,partner');
   assert.equal(preview.status, 200, preview.text);
   assert.ok(Array.isArray(preview.body.preview.templates));
+  const sheet = preview.body.preview.templates.find((t: { kind: string }) => t.kind === 'rules-tool');
+  if (sheet) assert.ok(sheet.canChange.includes('Colourway and mode'), 'Design\u2019s rules leave colourway and mode open, as the app offers them');
   assert.equal((await call(pat, 'GET', '/api/v1/org-config/preview?groups=marketing')).status, 403);
   assert.equal((await call(pat, 'GET', '/api/v1/org-config/preview?groups=programme-resellers,admin')).status, 403);
 });
