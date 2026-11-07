@@ -327,8 +327,9 @@ export interface ScimTokenRecord {
 
 /** A service token (plans/35 wave 2) - automation identity, the SCIM-token
  *  pattern generalized. Presenting the secret resolves to a synthetic
- *  principal carrying `role` (no groups), so CI drives the action-gated API
- *  without a person's session cookie in a secret store. */
+ *  principal carrying `role` (and `groups` when an owner placed it in a partner
+ *  programme), so CI drives the action-gated API without a person's session
+ *  cookie in a secret store. */
 export interface ApiTokenRecord {
   id: string;
   /** Operator label ("ci", "governance-sync") - names the automation, never a person. */
@@ -339,6 +340,11 @@ export interface ApiTokenRecord {
   scopes?: string[];
   /** The only tools it may name. Absent means any tool its role and grants allow. */
   tools?: string[];
+  /** The partner groups it carries (plans/82 M3, migrations/0090): a programme's
+   *  group, optionally one company's group in it, and the partner marker. The
+   *  principal it resolves to holds these, so the token is scoped exactly like a
+   *  person in that programme. Absent means no groups, as before. */
+  groups?: string[];
   /** sha256 hex of the opaque secret - never the secret itself. */
   tokenHash: string;
   /** 'user:<id>' who minted it. */
