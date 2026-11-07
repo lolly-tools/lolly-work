@@ -3,8 +3,9 @@
  * A partner's agent uses a published Share with rules tool over the
  * organisation MCP (plans/82 M7, W-M7-3a): list_tools lists it, describe_tool
  * reads it from the caller's own feed, and render_tool accepts it under its own
- * rules, refusing at once what the designer fixed or ruled out. A token outside
- * the audience gets nothing.
+ * rules, refusing at once what the designer fixed or ruled out. validate refuses
+ * the same things with the same codes, image framing given as one object reads
+ * as framing, and a token outside the audience gets nothing.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,10 +21,13 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { ZipBuilder } from '../server/src/links/zip.ts';
 import type { RenderRunner } from '../server/src/renders/runner.ts';
+import { vectorFieldParams } from '../server/src/render/pipeline.ts';
+import { queryFromInputs } from '../server/src/automation/verbs.ts';
 
 const ENGINE: string = '@lolly/engine';
-const { compileDesignTool } = await import(ENGINE) as {
+const { compileDesignTool, parseUrlState } = await import(ENGINE) as {
   compileDesignTool(d: Record<string, unknown>, r: { source: string; styles: string }, a: Record<string, Uint8Array>): { files: Record<string, string | Uint8Array> };
+  parseUrlState(query: string, manifest: unknown): { values: Record<string, unknown> };
 };
 
 const AUTHOR_RENDERER = '/* the author\'s own Design renderer */ var LollyDesignRules = {};';
@@ -42,6 +46,23 @@ function definition(overrides: Record<string, unknown> = {}): Record<string, unk
     compilerVersion: 1, rendererDigest: sha256(AUTHOR_RENDERER), css: '.lolly-locked-design{--brand:#0c322c}', dependencies: [],
     ...overrides,
   };
+}
+
+/** A rules tool with image framing (a vector input) and one designer-approved colour. */
+function heroDefinition(): Record<string, unknown> {
+  return definition({
+    id: 'partner-hero', name: 'Partner hero', description: 'Frame your photo.', version: '1.0.0', formats: ['png', 'svg'],
+    inputs: [
+      { input: { id: 'shade', label: 'Shade', type: 'color', default: '#ffffff' }, approved: ['#ffffff'], targets: [{ variantId: 'wide', layerId: 'band', property: 'fill' }] },
+      { input: { id: 'frame', label: 'Framing', type: 'vector', default: { x: 50, y: 50, zoom: 100 }, fields: [
+        { id: 'x', label: 'X', min: 0, max: 100, step: 1 }, { id: 'y', label: 'Y', min: 0, max: 100, step: 1 }, { id: 'zoom', label: 'Zoom', min: 100, max: 400, step: 1 },
+      ] }, targets: [{ variantId: 'wide', layerId: 'photo', property: 'imageFraming' }] },
+    ],
+    variants: [{ id: 'wide', label: 'Wide', width: 1200, height: 600, background: '#ffffff', boxes: [
+      { id: 'band', kind: 'rect', fill: '#ffffff' }, { id: 'photo', kind: 'image', src: '' },
+    ] }],
+    defaultVariant: 'wide',
+  });
 }
 
 /** A Share with rules file the way Lolly writes one: the compiled tool under tool/. */
@@ -109,6 +130,8 @@ before(async () => {
   await store.putGrant({ principal: 'group:programme-distributors', action: 'export.server', resource: '*', effect: 'allow' });
   const published = await call('POST', '/api/v1/catalog/submit?type=rules-tool&groups=programme-resellers', undefined, lollyFile(definition()));
   assert.equal(published.status, 201, JSON.stringify(published.body));
+  const hero = await call('POST', '/api/v1/catalog/submit?type=rules-tool&groups=programme-resellers', undefined, lollyFile(heroDefinition()));
+  assert.equal(hero.status, 201, JSON.stringify(hero.body));
   for (const [key, programme, body] of [['northwind', 'resellers', { company: 'northwind' }], ['outsider', 'distributors', {}]] as const) {
     const made = await call('POST', `/api/v1/programmes/${programme}/tokens`, { label: `${key} agent`, scopes: ['render', 'catalog.read'], ...body });
     assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -151,6 +174,53 @@ test('the rules tool\'s own rules refuse at once: what the designer fixed, and v
   assert.equal(outside.value.code, 'INPUT_NOT_ALLOWED');
   const renders = await store.listRenders((await store.listApiTokens()).filter((t) => t.label === 'northwind agent').map((t) => `service:svc_${t.id}`)[0]!, 100, 0);
   assert.equal(renders.length, 1, 'only the render within the rules was accepted');
+});
+
+test('image framing given as one object reads as framing and renders over render_tool, the same as per field', async () => {
+  const framing = { x: 30, y: 40, zoom: 120 };
+  // The object form becomes URL mode's per-field params before the query is read.
+  const manifest = JSON.parse(String(compileDesignTool(heroDefinition(), { source: AUTHOR_RENDERER, styles: '' }, {}).files['tool.json']));
+  const query = vectorFieldParams(queryFromInputs({ frame: framing }), manifest);
+  assert.equal(query, 'frame.x=30&frame.y=40&frame.zoom=120');
+  assert.deepEqual(parseUrlState(query, manifest).values.frame, framing);
+  const perField = await fetch(`${base}/api/v1/validate`, { method: 'POST', headers: { authorization: `Bearer ${tokens.northwind}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ toolId: 'partner-hero', format: 'svg', recipe: 'frame.x=30&frame.y=40&frame.zoom=120' }) });
+  const perFieldBody = await perField.json() as { ok?: boolean };
+  assert.equal(perFieldBody.ok, true, JSON.stringify(perFieldBody));
+  const asObject = await tool('northwind', 'render_tool', { toolId: 'partner-hero', format: 'svg', inputs: { frame: framing } });
+  assert.equal(asObject.isError, false, JSON.stringify(asObject.value));
+  assert.match(asObject.value.id, /^rnd_/);
+  const valid = await tool('northwind', 'validate', { toolId: 'partner-hero', format: 'svg', inputs: { frame: framing } });
+  assert.equal(valid.value.ok, true, JSON.stringify(valid.value));
+  const outside = await tool('northwind', 'render_tool', { toolId: 'partner-hero', format: 'svg', inputs: { frame: { x: 30, y: 40, zoom: 900 } } });
+  assert.equal(outside.isError, true);
+  assert.equal(outside.value.code, 'INPUT_NOT_ALLOWED');
+  assert.equal(outside.value.input, 'frame');
+});
+
+test('validate refuses what render refuses under the tool\'s own rules, with the same codes', async () => {
+  const cases: Array<[Record<string, unknown>, string | undefined, string, string]> = [
+    [{ shade: '#ff0000' }, 'svg', 'INPUT_NOT_ALLOWED', '/shade'],
+    [{ shade: '#ffffff', headline: 'Cheaper' }, 'svg', 'INPUT_LOCKED', '/headline'],
+  ];
+  for (const [inputs, format, code, path] of cases) {
+    const valid = await tool('northwind', 'validate', { toolId: 'partner-hero', inputs, ...(format ? { format } : {}) });
+    assert.equal(valid.value.ok, false, JSON.stringify(valid.value));
+    const error = valid.value.errors.find((e: { code?: string }) => e.code === code);
+    assert.ok(error, `${code} in ${JSON.stringify(valid.value.errors)}`);
+    assert.equal(error.path, path);
+    const made = await tool('northwind', 'render_tool', { toolId: 'partner-hero', format: format ?? 'svg', inputs });
+    assert.equal(made.isError, true, `render refuses ${JSON.stringify(inputs)} as ${format}`);
+    assert.equal(made.value.code, code);
+  }
+  // A format the designer did not enable is not one the compiled tool declares,
+  // so both refuse it before the rules are read.
+  const pdfValid = await tool('northwind', 'validate', { toolId: 'partner-hero', format: 'pdf', inputs: { shade: '#ffffff' } });
+  const pdfRender = await tool('northwind', 'render_tool', { toolId: 'partner-hero', format: 'pdf', inputs: { shade: '#ffffff' } });
+  assert.equal(pdfValid.isError, true, JSON.stringify(pdfValid.value));
+  assert.equal(pdfRender.isError, true, JSON.stringify(pdfRender.value));
+  const allowed = await tool('northwind', 'validate', { toolId: 'partner-hero', format: 'png', inputs: { shade: '#ffffff' } });
+  assert.equal(allowed.value.ok, true, JSON.stringify(allowed.value));
 });
 
 test('a token outside the audience gets nothing', async () => {

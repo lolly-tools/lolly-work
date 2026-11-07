@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts';
 import { loadToolOrRefuse } from '../render/tool-load.ts';
 import { withRenderHost } from '../render/host.ts';
+import { designRuleIssues, vectorFieldParams } from '../render/pipeline.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { isSvgTemplate, toolServerFormats, type RenderCapabilities, type ToolServerFormats } from '../render/capabilities.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
@@ -92,12 +93,24 @@ export async function validateVerb(ctx: AutomationContext, body: Record<string, 
   if (typeof body.toolId === 'string') {
     const { engine, tool } = await load(ctx, body.toolId);
     requireDeclaredFormat(tool, body.format);
+    const format = typeof body.format === 'string' ? body.format : undefined;
+    // A rules tool's own rules (plans/82 M2) refuse here what the render refuses:
+    // a param the designer fixed, a format not enabled and a value outside the
+    // designer's choices, each with the code the render answers.
+    const designed = async <T extends { ok: boolean; errors: unknown[] }>(result: T, query: string): Promise<T> => {
+      if (!(tool.manifest as { designTool?: unknown }).designTool) return result;
+      const expanded = vectorFieldParams(await engine.expandQuery(query), tool.manifest);
+      const issues = designRuleIssues(engine, tool.manifest, expanded, engine.parseUrlState(expanded, tool.manifest).values as Record<string, unknown>, format);
+      if (!issues.length) return result;
+      const errors = [...result.errors, ...issues.map((issue) => ({ path: issue.param ? `/${issue.param}` : '/format', message: issue.message, code: issue.code }))];
+      return { ...result, ok: false, errors };
+    };
     const governed = (result: { ok: boolean; errors: unknown[]; warnings: unknown[] }, values: () => Record<string, unknown>) =>
       ctx.policy ? effectiveValidation(result, values(), ctx.policy.overlays.get(body.toolId as string), ctx.policy.groups) : result;
     if (typeof body.recipe === 'string') {
       const recipe = body.recipe;
       const result = engine.validateDocument({ kind: 'recipe', manifest: tool.manifest, value: recipe });
-      return result.ok ? governed(result, () => engine.parseUrlState(recipe, tool.manifest).values) : result;
+      return result.ok ? designed(governed(result, () => engine.parseUrlState(recipe, tool.manifest).values), recipe) : result;
     }
     const raw = (body.inputs && typeof body.inputs === 'object' ? body.inputs : {}) as Record<string, unknown>;
     // A published template the render starts from (plans/82 M2) rides in the inputs
@@ -105,7 +118,7 @@ export async function validateVerb(ctx: AutomationContext, body: Record<string, 
     // checks it and applies its rules; the schema check here is for the inputs.
     const { template, ...rest } = raw;
     const value = isPublishedTemplateRef(template) ? rest : raw;
-    return governed(engine.validateDocument({ kind: 'inputs', manifest: tool.manifest, value }), () => value);
+    return designed(governed(engine.validateDocument({ kind: 'inputs', manifest: tool.manifest, value }), () => value), queryFromInputs(value));
   }
   const engine = await loadEngine();
   if (body.document !== undefined) return engine.validateDocument({ kind: 'document', value: body.document });
