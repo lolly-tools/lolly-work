@@ -37,6 +37,7 @@ import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
+import type { InstanceDefaultRecord } from '../catalog/rights-mode.ts';
 import type { CompanyProfile, CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
@@ -2388,6 +2389,20 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async deleteRightsChoice(key) {
       await pool.query('delete from programme_rights_choices where asset_id = $1 and audience_group = $2', [key.assetId, key.group]);
+    },
+    // Defaults an instance decides once (migrations/0093): insert once, never update.
+    async getInstanceDefault(key) {
+      const { rows } = await pool.query('select record from instance_defaults where key = $1', [key]);
+      return rows[0] ? rows[0].record as InstanceDefaultRecord : null;
+    },
+    async recordInstanceDefault(rec) {
+      await pool.query('insert into instance_defaults (key, record) values ($1, $2::jsonb) on conflict (key) do nothing', [rec.key, JSON.stringify(rec)]);
+      const { rows } = await pool.query('select record from instance_defaults where key = $1', [rec.key]);
+      return rows[0]!.record as InstanceDefaultRecord;
+    },
+    async hasAccounts() {
+      const { rows } = await pool.query('select exists (select 1 from users) as found');
+      return rows[0]?.found === true;
     },
 
     // Partner company profiles (migrations/0089). The current row and one

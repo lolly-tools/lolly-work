@@ -34,7 +34,9 @@ import { applyCredentialsToIndex } from './credentials.ts';
 import { composeCollections } from './collections.ts';
 import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf } from '../programmes/types.ts';
 import { entryInFolders, foldersFor, nextFolderRuleEnd } from '../programmes/folders.ts';
-import { composeRightsRecords, loadRightsEngine } from './rights.ts';
+import { composeRightsRecords, loadRightsEngine, rightsAnswer, type RightsEngine } from './rights.ts';
+import type { PartnerRightsMode } from './rights-mode.ts';
+import { choiceFingerprint, factsOf, type RightsChoiceRecord } from '../programmes/rights.ts';
 
 export interface ServedProvider {
   id: string;
@@ -86,12 +88,15 @@ export interface ServedIndexDeps {
   /** The role a group set carries (rbac roleFromGroups with the deployment's
    *  mapping). An admin or owner in a partner programme is never scoped to it. */
   roleOf?: (groups: string[]) => string;
+  /** The licence gate's mode (plans/82 M4). Absent, nothing is gated. */
+  partnerRights?: () => Promise<PartnerRightsMode>;
 }
 
 export interface ServedIndexer {
   /** The feed for one caller. `paged` leaves large providers out of `assets`
-   *  and lists them under `pagedProviders`. */
-  forCaller(opts: { groups: string[]; paged?: boolean; background?: boolean }): Promise<ServedIndex>;
+   *  and lists them under `pagedProviders`. `ungated` leaves the licence gate
+   *  out, for the admin's report and Preview, never for a caller's own feed. */
+  forCaller(opts: { groups: string[]; paged?: boolean; background?: boolean; ungated?: boolean }): Promise<ServedIndex>;
   /** Full compositions run since creation (tests read this to prove the memo). */
   compositions(): number;
 }
@@ -143,6 +148,8 @@ export function applyProgrammeScope(
     /** Provider folders given to these groups (plans/82 M1 part 2c): provider
      *  id to the folder paths, each covering everything below it. */
     folders?: ReadonlyMap<string, string[]>;
+    /** The licence gate (plans/82 M4): false holds an entry back. Absent, nothing is held. */
+    rights?: (entry: AssetIndexEntry) => boolean;
   },
 ): AssetIndex {
   const granted = sources.collections.filter((c) => namesProgrammeGroup(c.groups, programmeGroups));
@@ -150,7 +157,7 @@ export function applyProgrammeScope(
   const members = new Set(granted.flatMap((c) => c.members));
   const inst = new Set(sources.instAssets.filter((a) => namesProgrammeGroup(a.groups, programmeGroups)).map((a) => a.id));
   const providers = new Set(sources.providerRecs.filter((p) => namesProgrammeGroup(p.exposure.groups, programmeGroups)).map((p) => p.id));
-  const keep = (entry: AssetIndexEntry): boolean => {
+  const included = (entry: AssetIndexEntry): boolean => {
     if (typeof entry.type === 'string' && ESSENTIAL_ASSET_TYPES.has(entry.type)) return true;
     if (members.has(entry.id) || inst.has(entry.id)) return true;
     const ext = /^ext\/([^/]+)\//.exec(entry.id);
@@ -159,6 +166,8 @@ export function applyProgrammeScope(
     const meta = entry.meta as { providerFolder?: unknown } | undefined;
     return entryInFolders(meta?.providerFolder, sources.folders?.get(ext[1]!));
   };
+  const rights = sources.rights;
+  const keep = rights ? (entry: AssetIndexEntry): boolean => included(entry) && rights(entry) : included;
   const assets = (index.assets ?? []).filter(keep);
   const served = new Set(assets.map((a) => a.id));
   const out: AssetIndex = { ...index, assets };
@@ -169,6 +178,23 @@ export function applyProgrammeScope(
     if (!(out.collections as unknown[]).length) delete out.collections;
   }
   return out;
+}
+
+/**
+ * The licence gate for one partner caller (plans/82 M4): an entry stays when
+ * its rights answer lets the bytes travel, when it is exempt (the company-own
+ * rule reads the caller's companies), or when a share anyway choice names one
+ * of the caller's programme or company groups and the facts it was made about
+ * still hold.
+ */
+export function licenceGate(engine: RightsEngine, partnerGroups: ReadonlySet<string>, choices: readonly RightsChoiceRecord[]): (entry: AssetIndexEntry) => boolean {
+  const companies = new Set([...partnerGroups].filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
+  const byAsset = new Map<string, RightsChoiceRecord[]>();
+  for (const c of choices) if (partnerGroups.has(c.group)) byAsset.set(c.assetId, [...(byAsset.get(c.assetId) ?? []), c]);
+  return (entry) => {
+    if (rightsAnswer(engine, entry, companies).state !== 'held') return true;
+    return (byAsset.get(entry.id) ?? []).some((c) => choiceFingerprint(factsOf(engine, entry, c.group)) === c.fingerprint);
+  };
 }
 
 /** The earliest instant after `now` at which any lifecycle row or availability
@@ -238,9 +264,9 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       f.rec.id, f.fragment.hash, f.stale ? 1 : 0, f.fragment.assets.length, f.rec.label, JSON.stringify(f.rec.exposure.groups ?? '*'),
     ].join(':')).join('|');
 
-  const full = async (groups: string[], background = false): Promise<ServedIndex> => {
+  const full = async (groups: string[], background = false, ungated = false): Promise<ServedIndex> => {
     await deps.ready;
-    const key = groups.join('\n');
+    const key = `${groups.join('\n')}${ungated ? '\n(ungated)' : ''}`;
     const packFile = join(deps.pack(), 'catalog', 'assets', 'index.json');
     let packStamp = `${packFile}:missing`;
     try {
@@ -263,6 +289,9 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       deps.store.listCatalogTagRules(), deps.store.listProviders({ includeFragment: false }), deps.store.listPartnerFolders(),
       deps.store.listAssetRightsMarks(), deps.store.listAssetLicences(),
     ]);
+    // The licence gate (plans/82 M4): its mode and the share anyway choices are inputs too.
+    const rightsMode = deps.partnerRights ? await deps.partnerRights() : 'report';
+    const rightsChoices = rightsMode === 'gate' ? await deps.store.listRightsChoices() : [];
     // Hidden tags (catalog/tag-rules.ts) are an input too: hiding or showing one
     // moves the fingerprint, so the next read composes afresh with no re-sync.
     const tagRules = compileTagRules(tagRuleRows, providerRecs);
@@ -273,7 +302,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       JSON.stringify(tagRuleRows), JSON.stringify(providerRecs.map((p) => [p.id, p.mapping?.hiddenTags ?? []])),
       JSON.stringify(folderRules),
       // Marks and licence records (plans/82 M4): a memo never outlives one.
-      JSON.stringify(rightsMarks), JSON.stringify(assetLicences),
+      JSON.stringify(rightsMarks), JSON.stringify(assetLicences), rightsMode, JSON.stringify(rightsChoices),
       JSON.stringify(rows.map(row => [row.assetId, assetState(row, t)])),
       JSON.stringify([...input.entries, ...instAssets.map(asset => asset.entry), ...frags.flatMap(fragment => fragment.fragment.assets)].map(entry => [entry.id,
         typeof entry.availableFrom === 'string' ? Date.parse(entry.availableFrom) <= t : true,
@@ -291,7 +320,9 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       compositions += 1;
       // The engine reads each entry's own declaration; an instance with no mark
       // and no licence record never loads it, and its feed keeps its bytes.
-      const rightsEngine = rightsMarks.length || assetLicences.length ? await loadRightsEngine() : null;
+      const scopedNow = isProgrammeScoped(groups, deps.roleOf?.(groups));
+      const gating = rightsMode === 'gate' && scopedNow && !ungated;
+      const rightsEngine = rightsMarks.length || assetLicences.length || gating ? await loadRightsEngine() : null;
       // A partner programme member (plans/82 M1) is composed as if they could
       // see every group's assets, then narrowed to what their programmes
       // include: essentials, granted collections' members, and instance assets
@@ -330,7 +361,8 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
         // Hidden tags come off last, so a label an admin hid is neither shown nor
         // matched by search or the paged browse, which all read this feed.
         const composed = applyTagRules(composeCollections(applyCredentialsToIndex(gated, creds), collections, composeGroups), tagRules);
-        return { composed: scoped ? applyProgrammeScope(composed, programmeGroups, { instAssets, providerRecs, collections, folders }) : composed, staleAt };
+        const rights = gating && rightsEngine ? licenceGate(rightsEngine, programmeGroups, rightsChoices) : undefined;
+        return { composed: scoped ? applyProgrammeScope(composed, programmeGroups, { instAssets, providerRecs, collections, folders, ...(rights ? { rights } : {}) }) : composed, staleAt };
       };
       let raw: Buffer | null = null;
       try {
@@ -406,9 +438,9 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
   };
 
   return {
-    async forCaller({ groups, paged: wantPaged, background }) {
+    async forCaller({ groups, paged: wantPaged, background, ungated }) {
       const key = [...new Set(groups)].sort();
-      const base = await full(key, background);
+      const base = await full(key, background, ungated === true);
       if (!wantPaged) return base;
       const represented = new Set(base.providers.map(provider => provider.id));
       // The same provider rule the feed applies: a partner programme member
@@ -420,7 +452,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       const pending = background ? (await deps.store.listProviders({ includeFragment: false }))
         .filter(provider => provider.enabled && sees(provider) && !represented.has(provider.id))
         .map(provider => provider.id).sort() : [];
-      return pagedFrom(base, key.join('\n'), pending);
+      return pagedFrom(base, `${key.join('\n')}${ungated ? '\n(ungated)' : ''}`, pending);
     },
     compositions: () => compositions,
   };

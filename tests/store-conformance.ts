@@ -1461,6 +1461,15 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteRightsChoice({ assetId: 'ext/dam/IMG_2231', group: 'company-northwind-it' });
   assert.deepEqual(await store.listRightsChoices(), []);
 
+  // Defaults an instance decides once (plans/82 M4, migrations/0093): insert
+  // once, and a second record keeps the first.
+  assert.equal(await store.getInstanceDefault('conformance.default'), null);
+  const decided = { key: 'conformance.default', value: 'gate', why: 'fresh-install', decidedAt: '2026-11-07T00:00:00.000Z' };
+  assert.deepEqual(await store.recordInstanceDefault(decided), decided);
+  assert.deepEqual(await store.recordInstanceDefault({ ...decided, value: 'report', why: 'upgrade-with-accounts' }), decided, 'never revisited');
+  assert.deepEqual(await store.getInstanceDefault('conformance.default'), decided);
+  assert.equal(typeof await store.hasAccounts(), 'boolean');
+
   // Partner company profiles (plans/82 M3, migrations/0089): a save writes the
   // row and its history copy together and refuses a stale revision; settings
   // are never a revision; delete takes the history too.

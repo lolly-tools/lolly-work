@@ -20,6 +20,7 @@ import { entryCompany, HELD_LABEL, LICENCE_ATTRIBUTION_MAX, LICENCE_DECLARATION_
 import { markCoverage, markStatement } from '../catalog/rights-routes.ts';
 import { entryInFolders, folderRuleGroup, liveFolderRules, type PartnerFolderRecord } from './folders.ts';
 import { companyGroup } from './people.ts';
+import type { PartnerRightsState } from '../catalog/rights-mode.ts';
 import { CHOICE_NOTE_MAX, CHOICES_PER_REQUEST, choiceFingerprint, choiceStanding, factsOf, type ChoiceStanding, type RightsChoiceRecord } from './rights.ts';
 import { isProgrammeScoped, namesProgrammeGroup, PARTNER_GROUP, programmeGroup } from './types.ts';
 
@@ -35,6 +36,10 @@ export interface RightsRouteDeps {
   feedFor(groups: string[]): Promise<AssetIndex>;
   /** Every catalog entry as its source records it, before any mark. */
   catalogEntries(): Promise<AssetIndexEntry[]>;
+  /** The licence gate's mode and why. */
+  rightsMode?(): Promise<PartnerRightsState>;
+  /** Bounds enforced elsewhere (the collection ZIP), read from their own constants. */
+  extraLimits?(): Record<string, number>;
 }
 
 /** Held files listed per source row; the rest are counted. */
@@ -131,7 +136,7 @@ function sourceOf(entry: AssetIndexEntry, answer: RightsAnswer, groups: Readonly
     }
     return answer.why === 'design-system'
       ? { key: 'design-system', row: { kind: 'design-system', label: 'Design system: tokens, fonts and palettes' } }
-      : { key: 'published-by-brand-team', row: { kind: 'published-by-brand-team', label: 'Templates and rules files the brand team published' } };
+      : { key: 'published-by-brand-team', row: { kind: 'published-by-brand-team', label: 'Templates, rules files and brand skills the brand team published' } };
   }
   const collection = sources.collections.find((c) => namesProgrammeGroup(c.groups, groups) && c.members.includes(entry.id));
   if (collection) return { key: `collection:${collection.id}`, row: { kind: 'collection', label: collection.name, collection: { id: collection.id, name: collection.name } } };
@@ -282,7 +287,11 @@ export async function linksThatWouldLose(engine: RightsEngine, store: Store, fee
       const entry = entries.get(raw) ?? entries.get((await store.getAlias(raw)) ?? raw);
       if (!entry) continue;
       firstName ||= nameOf(entry);
-      if (rightsAnswer(engine, entry).state === 'held') held++;
+      if (rightsAnswer(engine, entry).state !== 'held') continue;
+      // A file the minter chose to send at mint, still on the facts it was chosen against, stays.
+      const chosen = target.includeHeld?.find((h) => h.id === raw);
+      if (chosen && chosen.fingerprint === choiceFingerprint(factsOf(engine, entry, 'link'))) continue;
+      held++;
     }
     if (!held) continue;
     files += held;
@@ -359,13 +368,16 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     const users = new Map((await store.listUsers()).map((u) => [u.id, u]));
     const entries = new Map((feed.assets ?? []).map((e) => [e.id, e]));
     const views = choices.map((c) => choiceView(engine, c, entries.get(c.assetId), users, companies));
+    const mode = deps.rightsMode ? await deps.rightsMode() : null;
     sendJson(res, 200, {
-      programme: { id: programme.id, name: programme.name }, ...report,
+      programme: { id: programme.id, name: programme.name },
+      ...(mode ? { mode: { mode: mode.mode, source: mode.source, line: mode.line, ...(mode.decidedAt ? { decidedAt: mode.decidedAt } : {}) } } : {}),
+      ...report,
       // For the admin only: what was shared anyway, to whom, by whom and why.
       choices: views,
       links,
       inForce: { marks: (await store.listAssetRightsMarks()).length, choices: views.filter((v) => v.standing === 'live').length },
-      limits: RIGHTS_LIMITS,
+      limits: { ...RIGHTS_LIMITS, ...(deps.extraLimits?.() ?? {}) },
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 

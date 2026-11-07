@@ -44,6 +44,7 @@ import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
+import type { InstanceDefaultRecord } from '../catalog/rights-mode.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -201,6 +202,9 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const rightsMarks = new Map<string, AssetRightsMarkRecord>();
   const assetLicences = new Map<string, AssetLicenceRecord>();
   const rightsChoices = new Map<string, RightsChoiceRecord>();
+  // A memory store keeps nothing across starts, so the licence gate's default
+  // is fixed at 'report' here (plans/82 M4); a test sets the mode in config.
+  const instanceDefaults = new Map<string, InstanceDefaultRecord>([['catalog.partnerRights', { key: 'catalog.partnerRights', value: 'report', why: 'memory-store', decidedAt: new Date(0).toISOString() }]]);
   const companyProfileHistory = new Map<string, CompanyProfileRevision[]>();
   const folderKey = (k: { provider: string; path: string; programmeId: string; companyId?: string }) => [k.provider, k.path, k.programmeId, k.companyId ?? ''].join('\n');
   /** `${assetId} ${version}` (space-joined) - the composite key migration 0020 makes a
@@ -1483,6 +1487,17 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deleteRightsChoice(key) {
       rightsChoices.delete(`${key.assetId}\n${key.group}`);
+    },
+    async getInstanceDefault(key) {
+      const rec = instanceDefaults.get(key);
+      return rec ? { ...rec } : null;
+    },
+    async recordInstanceDefault(rec) {
+      if (!instanceDefaults.has(rec.key)) instanceDefaults.set(rec.key, { ...rec });
+      return { ...instanceDefaults.get(rec.key)! };
+    },
+    async hasAccounts() {
+      return users.size > 0;
     },
     async getCompanyProfile(companyId) {
       const rec = companyProfiles.get(companyId);

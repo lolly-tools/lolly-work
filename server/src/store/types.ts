@@ -5,6 +5,7 @@ import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
+import type { InstanceDefaultRecord } from '../catalog/rights-mode.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
 import type { SubjectStore } from '../privacy/subject.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
@@ -1843,6 +1844,13 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putRightsChoice(rec: RightsChoiceRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deleteRightsChoice(key: { assetId: string; group: string }): Promise<void>;
+  // Defaults an instance decides once (plans/82 M4, migrations/0093). A memory
+  // store records nothing and answers the partner rights default as 'report'.
+  getInstanceDefault(key: string): Promise<InstanceDefaultRecord | null>;
+  /** Insert once: when the key already has a row, that row is kept and returned. */
+  recordInstanceDefault(rec: InstanceDefaultRecord): Promise<InstanceDefaultRecord>;
+  /** Whether any account exists, service accounts included. */
+  hasAccounts(): Promise<boolean>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
   // cumulative for everything that was KEPT - a returned submission still spent
