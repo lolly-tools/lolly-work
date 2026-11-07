@@ -20,7 +20,7 @@ const consoleSource = readFileSync(new URL('../console/app.js', import.meta.url)
 const pause = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** Use the console's real DOM/label helpers and router without booting a session. */
-function page(overlay: object = {}, api?: (path: string, options: any) => Promise<unknown>, inputs = [{ id: 'title', label: 'Title', default: 'Hello' }]) {
+function page(overlay: object = {}, api?: (path: string, options: any) => Promise<unknown>, inputs: Array<{ id: string; label: string; type?: string; default?: unknown }> = [{ id: 'title', label: 'Title', default: 'Hello' }]) {
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', {
     url: 'https://work.example/admin#/tools', runScripts: 'outside-only',
   });
@@ -284,6 +284,17 @@ test('stored fields unsupported by the policy writer block saves instead of bein
   } finally { p.cleanup(); }
 });
 
+test('a console save keeps the variant-approval switch set through the API (plans/82 M7)', async () => {
+  const original: ToolOverlay = { toolId: 'card', version: 3, enforce: { watermark: 'until-approved', escalation: 'legal', approvalCovers: 'template-variants' } };
+  const p = page(original);
+  try {
+    p.input('input', 'Renamed'); await p.save();
+    assert.equal(p.calls.length, 1, 'the save is not blocked');
+    assert.equal((p.calls[0]?.body as { enforce?: { approvalCovers?: string } }).enforce?.approvalCovers, 'template-variants', 'the switch stays as it was');
+    assert.equal(normalizeOverlay('card', p.calls[0]?.body, 3)?.enforce?.approvalCovers, 'template-variants');
+  } finally { p.cleanup(); }
+});
+
 test('undeclared inputs and prototype-named inputs retain their rules when the manifest is incomplete', async () => {
   const p = page({ inputAccess: { toString: [{ groups: ['*'], level: 'locked', value: 'Safe' }] } }, undefined,
     [{ id: 'toString', label: 'Text', default: '' }, { id: 'constructor', label: 'Other', default: '' }]);
@@ -387,4 +398,19 @@ test('a real HTTP form save retains defaults and SVG-only enforcement, member re
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(pack, { recursive: true, force: true });
   }
+});
+
+test('Takes from the company offers a picture input the logos and the mark, and a text input the details', () => {
+  const view = page({ bindings: { heading: 'logo' } }, undefined, [
+    { id: 'company', label: 'Issued by', type: 'text', default: '' },
+    { id: 'logo', label: 'Event logo', type: 'asset', default: '' },
+    { id: 'heading', label: 'Title', type: 'text', default: '' },
+    { id: 'seal', label: 'Seal', type: 'boolean', default: true },
+  ]);
+  const choices = (label: string) => [...view.find(`select[aria-label="What ${label} takes from the company"]`).options].map((o: { value: string }) => o.value);
+  assert.deepEqual(choices('Event logo'), ['', 'logo', 'logoLight', 'logoDark', 'mark']);
+  assert.deepEqual(choices('Issued by'), ['', 'name', 'website', 'contact', 'contactEmail', 'contactPhone', 'address', 'currency', 'taxNote']);
+  assert.ok(choices('Title').includes('logo'), 'a choice saved earlier stays listed so it can be kept or cleared');
+  assert.equal(view.find('select[aria-label="What Seal takes from the company"]'), null, 'a switch holds no company detail');
+  view.dom.window.close();
 });

@@ -109,7 +109,9 @@ test('a programme manager publishes a catalog template into the programme, with 
   const before = await listed();
   assert.deepEqual(before.templates, []);
   assert.deepEqual(before.candidates.map((c: { id: string }) => c.id), [catalogTemplate]);
-  assert.deepEqual(before.candidates[0].inputs, [{ id: 'title', label: 'Product' }, { id: 'price', label: 'Price' }, { id: 'bg', label: 'Background' }, { id: 'accent', label: 'Accent' }]);
+  assert.deepEqual(before.companyFields.filter((f: { kind: string }) => f.kind === 'logo').map((f: { id: string }) => f.id), ['logo', 'logoLight', 'logoDark', 'mark'],
+    'a picture input is offered the logos and the mark, a text input the details');
+  assert.deepEqual(before.candidates[0].inputs, [{ id: 'title', label: 'Product', type: 'text' }, { id: 'price', label: 'Price', type: 'text' }, { id: 'bg', label: 'Background', type: 'color' }, { id: 'accent', label: 'Accent', type: 'color' }]);
 
   const admin = await login('admin@test');
   const out = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], editable: ['price'] });

@@ -6,6 +6,43 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.333.0
+
+- `url-mode.ts`: a reserved link parameter in the `_` namespace, `_text`, read into `UrlState.text` by `parseTextSetting` (new, exported with its type `TextSetting`). Only `outline` (any case, trimmed) does anything: an EMF export draws its text as outlines, the export panel's Outline fonts box, and a run no font can outline goes in as a picture. Absent, or any other value, keeps live EMF text records. Added to `RESERVED`. The CLI's browser tier sends it for `--export=emf --text=outline`.
+- `emfLiveTextRecords(bytes)` (new, `emf.ts`, not on the barrel): how many `EMR_EXTTEXTOUTW` records an EMF holds, walking the records by their own sizes; 0 for outlined or pictured text and for bytes that are not an EMF. The CLI reads it to warn only when a browser tier that predates `_text` wrote live text.
+- No other module changes, and no file's bytes change without `_text=outline`.
+
+## 1.332.0
+
+- `preflight.ts`: the CMYK TIFF (`cmyk-tiff`) and EPS (CMYK) (`eps-cmyk`) write the four process plates and nothing else, since a spot ink goes in as its process build and a finish as its black mask (`buildCmykPaletteMap`). For those two formats `plates.spot-ceiling`, `plates.finish-ceiling` and `plates.no-spots-declared` are no longer emitted, so no `spotPlates` or `finishPlates` count is taken, with spot inks as process or not. `plates.process` says where the inks went ("This format has no named plates, so the 3 spot inks print as process and add no plates.") and lists them in its evidence. A finish keeps its `print.finish-flattened-into-process` error. `pdf-cmyk` is unchanged in every finding and count.
+
+## 1.331.0
+
+- The intent vocabulary gains one role, `partnerMark` (accepts `asset`): the partner's mark in a co-branded piece, the guest's logo and never the lead brand's. `INTENT_VOCABULARY_VERSION` moves from 1 to 2, as it does for any new role, so a resolution and an intent record made from now on state `vocabularyVersion: 2`. The SDK (`@lolly-tools/core` 1.6.0) carries the role in `INTENT_ROLES`, `schemas/canonical-inputs.json` lists it, and the request, sidecar and resolution schemas (and their copies in the SDK) accept it. `resolveIntent` needs no change: it reads `INTENT_ROLES`. No community tool maps the role yet and no tool gains an input; a published template or a brand pack's co-brand tool declares it in its own `intents.json` (Lolly Work plan 82 M7).
+- `writeDesignMd` and its input type `DesignMdWriteInputV1` are exported from the barrel, so a server with no published brand page writes the same DESIGN.md a brand page holds, with the engine's own writer. Nothing about the writer changes.
+
+## 1.330.0
+
+- The barrel exports the asset rights reader from `asset-rights.ts`: `redistribution`, `ownerPublished`, `OWNER_PUBLISHED`, `assetLicenceDeclaration`, `assetRightsNotices` and `readAssetRightsRecord`, with their types, and `checkCompanionReadback` from `rights-companion.ts`. A Lolly Work server can now ask the same question the `.lolly` builder asks ("may these bytes be passed on?") and get the same answer and reason, and read a package's credits back.
+- `packCreditsText`, with `PackCreditEntry` and `PackHoldEntry`, moves into `asset-rights.ts` from the web shell's `lib/lolly-pack.ts`, unchanged, so a `.lolly` pack and a Work collection ZIP print one text. The shell imports it back; every `.lolly` keeps its bytes.
+- No behaviour changes: nothing is added to any rule, and no output changes.
+
+## 1.329.0
+
+- A picture placed on a page is a component of the export, not its parent. `runtime.export` marks every credentialed asset it gathers from the input model (uploads and library assets, top-level or in a `blocks` field) as `relationship: 'componentOf'`, so the embedder records each one with a `c2pa.placed` step, after the head step, carrying the picture's AI source type. C2PA 2.2 section 18.15.3 says `parentOf` means the export is a rendition of that one asset, and a manifest may hold one `parentOf` ingredient. Before this, a page with two placed credentialed pictures made the web shell's stamp refuse the whole credential (`manifest.multipleParents`), so the file left with no Content Credential at all.
+- A page with one placed credentialed picture now records it as `componentOf` and `c2pa.placed` where it used to record `parentOf` and `c2pa.opened`. Nothing else in the ingredient changes: the picture's own manifests, verbatim, its hash and its AI source type. `parentOf` stays for a real parent: an approval update over a reviewed file, and the derived assets the shells sign (a resize, a crop, a background removal, an upscale, a frame taken from a clip).
+- The web shell's PDF walker and its still raster routes (PNG, JPEG, WebP, AVIF, TIFF) now record each credentialed bitmap they draw from an `<img>`, `data:` pictures included, as the SVG walker already did, through one shared rule (`shells/web/src/bridge/export-picture-credentials.ts`). An SVG source is left out on every route, as the SVG walker leaves it out. The MCP server's and the CLI's carry-over (1.325.0) read the browser credential, so they keep these pictures too.
+- Doc comments only in `c2pa.ts` (`exportActionSteps`' `textAdded` says "placed asset") and in the SDK's `IngredientCredential`. No API changes.
+
+## 1.328.0
+
+- `emitEmf` draws the vector IR's `stencil` prim (1.326) as WMF does: a pair of 1-bit `EMR_STRETCHDIBITS` blits, OR then AND, bottom-up rows, so the page under the words keeps its colour. A file with no stencil prim keeps its bytes.
+- No other module changes. The vector walk (`packages/node-shell/src/svg-ir.ts`) makes a stencil for EMF too, for a run no font can draw that it outlines: every such run with Outline fonts on, and with live text only a run that GDI text cannot carry. A plain run in live text stays a live record, as before.
+
+## 1.327.0
+
+- `PreflightSettings.spotsAsProcess` (new, optional, `preflight.ts`): the "Print spot inks as process" choice (`_spots=process`, 1.324). With it on, `plates.spot-ceiling` is not emitted and no `spotPlates` count is taken, because every declared spot ink prints in the four process plates; `plates.process` says so ("The 3 spot inks print as process and add no plates.") and lists the inks in its evidence. Finish plates are counted as before. Absent or false, every finding and count is unchanged.
+
 ## 1.326.0
 
 - The vector IR gains a `stencil` prim (`VectorStencilPrim` in `emf.ts`): words as one bit per pixel, painted in one ink, so whatever lies under them shows through. `emitEps` paints it with `imagemask` in the ink (RGB or the CMYK mapping), and `emitWmf` with a pair of 1-bit `META_STRETCHDIB` blits, OR then AND, which leaves the page under the words as it was. `emitDxf` counts one as a dropped picture. `emitEmf` draws none.

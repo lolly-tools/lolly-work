@@ -1,6 +1,6 @@
 import { randomId } from '../lib/crypto.ts';
 import type { AutomationCallbackSummary } from '../store/types.ts';
-import type { RenderBatchRecord, RenderOutputExpiry, RenderRecord, RenderStore } from './types.ts';
+import type { RenderBatchRecord, RenderBatchUsageRow, RenderOutputExpiry, RenderRecord, RenderStore, RenderUsageRow } from './types.ts';
 
 /** The render store's two touch points with the rest of the memory store. */
 export interface MemoryRenderStoreLinks {
@@ -75,6 +75,30 @@ export function createMemoryRenderStore(links?: MemoryRenderStoreLinks): RenderS
       const batch = [...batches.values()].find((b) => b.principal === principal && b.idempotencyKey === key);
       return batch ? snapshot(batch) : null;
     },
+    async renderUsage(principals, fromIso, toIso) {
+      const wanted = new Set(principals);
+      const counts = new Map<string, RenderUsageRow>();
+      for (const r of records.values()) {
+        if (!wanted.has(r.principal) || r.createdAt < fromIso || r.createdAt >= toIso) continue;
+        const row = { principal: r.principal, day: r.createdAt.slice(0, 10), toolId: r.request.toolId, format: r.request.format, state: r.state, company: r.output?.partner?.company ?? null };
+        const key = JSON.stringify(row);
+        const seen = counts.get(key);
+        if (seen) seen.count++; else counts.set(key, { ...row, count: 1 });
+      }
+      return [...counts.values()];
+    },
+    async renderBatchUsage(principals, fromIso, toIso) {
+      const wanted = new Set(principals);
+      const counts = new Map<string, RenderBatchUsageRow>();
+      for (const b of batches.values()) {
+        if (!wanted.has(b.principal) || b.createdAt < fromIso || b.createdAt >= toIso) continue;
+        const key = `${b.principal} ${b.createdAt.slice(0, 10)}`;
+        const seen = counts.get(key) ?? { principal: b.principal, day: b.createdAt.slice(0, 10), batches: 0, rows: 0 };
+        seen.batches++; seen.rows += b.rows.length;
+        counts.set(key, seen);
+      }
+      return [...counts.values()];
+    },
     async listRenderBatches(principal, limit, offset) {
       return [...batches.values()].filter((b) => b.principal === principal)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
@@ -102,6 +126,10 @@ export function createMemoryRenderStore(links?: MemoryRenderStoreLinks): RenderS
       if (records.has(record.id)) throw new Error('duplicate render id');
       records.set(record.id, clone(record));
       return { record: clone(record), reused: false };
+    },
+    async findRenderByKey(principal, key) {
+      const existing = [...records.values()].find((r) => r.principal === principal && r.idempotencyKey === key);
+      return existing ? clone(existing) : null;
     },
     async getRender(id, principal) {
       const r = records.get(id);
