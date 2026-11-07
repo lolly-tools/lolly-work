@@ -217,3 +217,43 @@ test('only someone who manages programmes may publish', async () => {
   assert.equal((await call(bruno, 'GET', '/api/v1/programmes/resellers/templates')).status, 403);
   assert.equal((await call(bruno, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate })).status, 403);
 });
+
+test('publishing records the workspace\'s own mark, stated by the publisher, and the card\'s tick leaves it off or takes it away', async () => {
+  const admin = await login('admin@test');
+  const adminId = (await store.getUserBySub('dev:admin@test'))!.id;
+  const marked = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+  assert.equal(marked.status, 201);
+  const id = marked.body.id as string;
+  assert.equal(marked.body.ownerMark.holder, 'Partner Hub', 'the workspace is the holder');
+  assert.match(marked.body.ownerMark.terms, /^Published by Partner Hub .*Not an open licence\.$/);
+  const mark = (await store.listAssetRightsMarks()).find((m) => m.scope === `asset:${id}`);
+  assert.equal(mark?.statedBy, adminId, 'the publisher stated it');
+  const audited = (await store.listAudit()).filter((a) => a.action === 'catalog.rights.mark' && a.subject === `rights-mark:asset:${id}`);
+  assert.equal(audited.length, 1);
+  assert.equal(audited[0]!.actor, `user:${adminId}`);
+  assert.equal((audited[0]!.payload as { via?: string }).via, 'programme-template');
+  // The partner's served entry carries the composed owner-published record, never who stated it.
+  const entry = await ritaEntry(id) as { rights?: { works?: Array<{ creators?: Array<{ name: string; role: string }>; grants?: Array<{ kind: string }> }> } } | undefined;
+  assert.deepEqual(entry?.rights?.works?.[0]?.creators, [{ name: 'Partner Hub', role: 'owner' }]);
+  assert.equal(entry?.rights?.works?.[0]?.grants?.[0]?.kind, 'own-work');
+  assert.ok(!JSON.stringify(entry).includes(adminId), 'no statedBy on the wire');
+  const row = (await listed()).templates.find((t: { id: string }) => t.id === id);
+  assert.equal(row.ownerMark.holder, 'Partner Hub');
+
+  // Left off at publish.
+  const plain = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  assert.equal(plain.status, 201);
+  assert.equal(plain.body.ownerMark, null);
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${plain.body.id}`));
+  assert.equal((await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, ownerMark: 'yes' })).status, 400);
+
+  // The tick on the card, later: off withdraws it, audited; on records it again.
+  const off = await call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(id)}`, { ownerMark: false });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.ownerMark, null);
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${id}`));
+  assert.equal((await store.listAudit()).filter((a) => a.action === 'catalog.rights.unmark' && a.subject === `rights-mark:asset:${id}`).length, 1);
+  const on = await call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(plain.body.id)}`, { ownerMark: true });
+  assert.equal(on.body.ownerMark.holder, 'Partner Hub');
+  assert.equal((await call(admin, 'POST', `/api/v1/programmes/resellers/templates/rules-file?ownerMark=maybe`)).status, 400);
+});

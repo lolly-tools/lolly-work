@@ -6300,7 +6300,7 @@ export function buildApp(deps: AppDeps): App {
 
   // Templates published to a programme (plans/82 M2).
   registerTemplateRoutes(router, {
-    store, blobs, requireAction, audit,
+    store, blobs, requireAction, audit, workspaceName: () => config.instance.name,
     toolFacts: async (toolId) => {
       if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
       try {
