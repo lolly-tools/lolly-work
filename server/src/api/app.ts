@@ -91,12 +91,13 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
+import { PARTNER_GROUP, isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
+import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
 import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
@@ -773,7 +774,8 @@ export function buildApp(deps: AppDeps): App {
         id: built.toolId, assetId: rec.id, files: built.files, digests,
         entry: {
           id: built.toolId, name: manifest.name ?? entry.name, ...(manifest.description ? { description: manifest.description } : {}),
-          version: manifest.version, status: 'community', category: 'designer', tags: ['template'],
+          // Published by this workspace, so it reads as the workspace's own, not as a community tool.
+          version: manifest.version, status: 'official', category: 'designer', tags: ['template'],
           formats: manifest.render?.formats ?? [], width: manifest.render?.width, height: manifest.render?.height,
           exportable: true, templateId: rec.id,
           // A retired rules tool still opens for a saved copy, but leaves the gallery.
@@ -2840,9 +2842,17 @@ export function buildApp(deps: AppDeps): App {
   // collide with a real user id, so only group:/`*` grants apply - never some
   // specific person's user: grants (correct for a group projection).
   router.add('GET', '/api/v1/org-config/preview', async (req, res, ctx) => {
-    if (!(await requireAction(req, res, 'policy.edit'))) return;
     const groups = (ctx.url.searchParams.get('groups') ?? '')
       .split(',').map((g) => g.trim()).filter(Boolean);
+    // Someone who manages partner programmes sees what a programme gets, without
+    // policy.edit (plans/82 M2): for a group set made only of programme and company
+    // groups and the partner marker. Anything else is the policy editor's Preview.
+    const partnerOnly = groups.length > 0 && groups.every((g) => isPartnerGroup(g) || g === PARTNER_GROUP);
+    const viewer = (await memberOf(req)) ?? (await serviceAccountOf(req));
+    const grantsNow = await store.listGrants();
+    const managesProgrammes = !!viewer && partnerOnly
+      && evaluate({ userId: viewer.id, groups: viewer.groups, role: viewer.role as Role }, 'programme.manage', ['*'], grantsNow);
+    if (!managesProgrammes && !(await requireAction(req, res, 'policy.edit'))) return;
     const now = new Date().toISOString();
     const subject: UserRecord = {
       id: '(preview)',
@@ -2906,7 +2916,41 @@ export function buildApp(deps: AppDeps): App {
         if (by || reason) (attribution[toolId] ??= {})[inputId] = { ...(by ? { by } : {}), ...(reason ? { reason } : {}) };
       }
     }
-    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, ...(Object.keys(why).length ? { why } : {}), ...(Object.keys(attribution).length ? { attribution } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
+    // The templates these groups get (plans/82 M2): what each lets them change,
+    // what it fixes, and for the admin reading this, why. The app is told only
+    // which inputs it may offer.
+    const templates: Array<Record<string, unknown>> = [];
+    for (const entry of feedAssets.filter((a) => a.type === 'template' || a.type === RULES_TOOL_TYPE)) {
+      const meta = (entry.meta ?? {}) as { toolId?: string; version?: number; toolVersion?: string; editable?: string[]; inputs?: Array<{ id: string; label: string }>; rebuilt?: boolean; retired?: boolean; replacedBy?: string };
+      const replacement = meta.replacedBy ? feedAssets.find((a) => a.id === meta.replacedBy) ?? await store.getInstanceAsset(meta.replacedBy).then((r) => r?.entry ?? null) : null;
+      const base = {
+        id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, kind: entry.type, version: meta.version ?? 1,
+        ...(meta.toolVersion ? { toolVersion: meta.toolVersion } : {}),
+        ...(meta.retired ? { retired: true, ...(meta.replacedBy ? { replacedBy: { id: meta.replacedBy, name: String(replacement?.name ?? meta.replacedBy) } } : {}) } : {}),
+      };
+      if (entry.type === RULES_TOOL_TYPE) {
+        templates.push({ ...base, canChange: (meta.inputs ?? []).map((i) => i.label), fixed: ['Everything else in the design'],
+          why: ['The Share with rules file\u2019s own rules.', ...(meta.rebuilt ? ['Rebuilt with this workspace\u2019s Design.'] : [])] });
+        continue;
+      }
+      const toolId = String(meta.toolId ?? '');
+      const inputs = (await readToolManifestInputs(toolId) ?? []).map((i) => ({ id: String(i.id), label: typeof i.label === 'string' && i.label ? i.label : String(i.id) }));
+      const toolName = await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8').then((t) => String((JSON.parse(t) as { name?: unknown }).name ?? toolId)).catch(() => toolId);
+      const canChange: string[] = [], fixed: string[] = [], whyLines: string[] = [];
+      whyLines.push(meta.editable ? 'Fixed by the template\u2019s rules.' : 'No rules: every input stays editable unless the tool\u2019s own rules say otherwise.');
+      for (const input of inputs) {
+        const theirs = !meta.editable || meta.editable.includes(input.id);
+        const own = resolveInputAccess(projected.get(toolId), input.id, groups);
+        if (theirs && (own.level === 'editable' || own.level === 'choice')) canChange.push(input.label);
+        else fixed.push(input.label);
+        if (theirs && own.level !== 'editable') {
+          whyLines.push(`${input.label}: ${own.level === 'choice' ? 'a choice only' : own.level} for these groups by the ${toolName} rule${own.by ? ` \u201c${own.by}\u201d` : ''}, which is stricter.`);
+        }
+      }
+      if (visibleTools.includes(toolId)) whyLines.push(`These groups can also open ${toolName} on its own, outside these rules.`);
+      templates.push({ ...base, toolId, toolName, canChange, fixed, why: whyLines });
+    }
+    sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, templates, ...(Object.keys(why).length ? { why } : {}), ...(Object.keys(attribution).length ? { attribution } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
   });
 
   // ── telemetry ─────────────────────────────────────────────────────────────
@@ -5742,6 +5786,43 @@ export function buildApp(deps: AppDeps): App {
     },
     signIn: () => ({ workspace: config.instance.name, url: config.instance.baseUrl, providers: inviteProviders(), note: config.instance.inviteNote ?? null }),
     resolveTxt,
+  });
+
+  // Templates published to a programme (plans/82 M2).
+  registerTemplateRoutes(router, {
+    store, blobs, requireAction, audit,
+    toolFacts: async (toolId) => {
+      if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
+      try {
+        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown; inputs?: Array<{ id?: unknown; label?: unknown }> };
+        return {
+          name: typeof manifest.name === 'string' ? manifest.name : toolId,
+          inputs: (manifest.inputs ?? []).flatMap((i) => typeof i?.id === 'string' ? [{ id: i.id, label: typeof i.label === 'string' && i.label ? i.label : i.id }] : []),
+        };
+      } catch { return null; }
+    },
+    toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
+    submitVersion: async (actor, target, bytes) => {
+      const outcome = await submitAsset(submitDeps(), {
+        bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups },
+      });
+      if (!outcome.ok) {
+        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : 422;
+        return { ok: false, status, code: outcome.code, detail: outcome.detail };
+      }
+      await trimVersionHistory(outcome.record).catch(() => 0);
+      return { ok: true, ...(outcome.version ? { version: outcome.version } : {}) };
+    },
+    submitRulesFile: async (actor, bytes, groups) => {
+      const outcome = await submitAsset(submitDeps(), {
+        bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups },
+      });
+      if (!outcome.ok) {
+        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' || outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 422;
+        return { ok: false, status, code: outcome.code, detail: outcome.detail };
+      }
+      return { ok: true, id: outcome.record.id, state: outcome.record.submission?.state ?? 'live' };
+    },
   });
 
   registerFolderRoutes(router, {
