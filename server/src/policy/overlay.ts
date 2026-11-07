@@ -24,6 +24,11 @@ export interface InputRule {
    *  org-config and into the 422 body, so the shell and an agent can both say
    *  WHY, not just that something is locked. */
   reason?: string;
+  /** Who decided this one rule, when it is not the overlay itself: a published
+   *  template's name on the overlay a template-scoped render builds
+   *  (catalog/templates.ts). Never read from an admin's edit: normalizeOverlay
+   *  copies fields by name and leaves this out. */
+  by?: string;
 }
 
 export interface ToolOverlay {
@@ -128,7 +133,8 @@ export function resolveInputAccess(
   // answered by the same resolution that locked it and the two can never
   // disagree. Both stay absent when the overlay is unnamed / the rule
   // carries no reason.
-  if (overlay.name) out.by = overlay.name;
+  if (rule.by) out.by = rule.by;
+  else if (overlay.name) out.by = overlay.name;
   if (rule.reason) out.reason = rule.reason;
   return out;
 }

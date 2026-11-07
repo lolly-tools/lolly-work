@@ -48,6 +48,7 @@ import {
 export { RENDER_TIER, WORKER_RASTER_FORMATS, renderCapabilities, type RenderFormat, type RenderCapabilities } from './capabilities.ts';
 import { isSvgTemplate, renderCapabilities } from './capabilities.ts';
 import { loadToolOrRefuse, ToolLoadRefusal } from './tool-load.ts';
+import { isPublishedTemplateRef, templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
  *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
@@ -70,12 +71,15 @@ export class RenderError extends Error {
   /** Seconds the caller should back off - set when a saturated worker answered
    *  503 RENDER_BUSY (plans/23 §3.C); app.ts surfaces it as `Retry-After`. */
   retryAfter?: number;
-  constructor(code: string, status: number, message: string, violations?: ParamViolation[]) {
+  /** Extra fields for the error body, such as a retired template's `replacedBy`. */
+  details?: Record<string, unknown>;
+  constructor(code: string, status: number, message: string, violations?: ParamViolation[], details?: Record<string, unknown>) {
     super(message);
     this.name = 'RenderError';
     this.code = code;
     this.status = status;
     if (violations) this.violations = violations;
+    if (details) this.details = details;
   }
 }
 
@@ -125,6 +129,11 @@ export interface RenderDeps {
    * cache key and before worker dispatch so both render tiers see identical,
    * content-addressed values. */
   hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>;
+  /** A published template the caller may use (plans/82 M2), looked up in the
+   *  caller's own served feed: null when they cannot see it. Absent means this
+   *  render path takes no published templates, and a render that names one is
+   *  refused rather than run without its rules. */
+  templateFor?: (id: string) => Promise<RenderTemplate | null>;
 }
 
 export interface RenderRequest {
@@ -176,6 +185,29 @@ async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedR
     return Object.fromEntries(entries);
   }
   return value;
+}
+
+/**
+ * The published template a render names (`template=inst/<id>`, plans/82 M2),
+ * checked before anything is rendered: the caller must see it in their own
+ * feed, it must start this tool, and a retired one answers 410 with what
+ * replaced it. A bare `template=<id>` is a tool's own shipped template and is
+ * left as it always was.
+ */
+async function renderTemplateFor(deps: RenderDeps, query: string, toolId: string): Promise<RenderTemplate | null> {
+  const ref = new URLSearchParams(query).get('template');
+  if (!ref || !ref.startsWith('inst/')) return null;
+  if (!isPublishedTemplateRef(ref)) throw new RenderError('TEMPLATE_NOT_FOUND', 404, 'No such template.');
+  if (!deps.templateFor) throw new RenderError('TEMPLATE_UNAVAILABLE', 422, 'This render cannot start from a published template.');
+  const template = await deps.templateFor(ref);
+  if (!template) throw new RenderError('TEMPLATE_NOT_FOUND', 404, 'No such template.');
+  if (template.retired) {
+    throw new RenderError('TEMPLATE_RETIRED', 410, template.retired.replacedBy
+      ? `This template was retired. Use ${template.retired.replacedBy} instead.` : 'This template was retired.',
+    undefined, template.retired.replacedBy ? { replacedBy: template.retired.replacedBy } : undefined);
+  }
+  if (template.toolId !== toolId) throw new RenderError('TEMPLATE_TOOL_MISMATCH', 422, `This template starts ${template.toolId}, not ${toolId}.`);
+  return template;
 }
 
 /** A failed tool load, as the render error the routes already answer. */
@@ -283,12 +315,19 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // Parse the shared URL-mode query (unpacking a packed z= first).
   const expanded = await engine.expandQuery(req.query);
   const st = engine.parseUrlState(expanded, tool.manifest);
+  const template = await renderTemplateFor(deps, expanded, req.toolId);
+  const declaredIds = (tool.manifest.inputs as { id: string }[]).map((input) => input.id);
 
   // Policy BEFORE render. A caller that supplies a locked/hidden/not-allowed
   // param is refused (422); then the overlay's locked values are baked over the
   // caller's - so a locked input renders its policy value regardless of input.
   const groups = req.principal?.groups ?? [];
-  const overlay = deps.managedRules ? projectRuleOverlay(req.overlays.get(req.toolId), deps.managedRules, groups) : req.overlays.get(req.toolId);
+  const toolOverlay = deps.managedRules ? projectRuleOverlay(req.overlays.get(req.toolId), deps.managedRules, groups) : req.overlays.get(req.toolId);
+  // A template's rules join the tool's own, stricter wins (catalog/templates.ts).
+  const overlay = template ? templateOverlay(toolOverlay, template, groups, declaredIds) : toolOverlay;
+  // The template's values are where the render starts; the caller's own values
+  // land on top, and the fixed ones are baked over both below.
+  const seed = template ? templateSeed(template.values, declaredIds) : {};
   // Per-tool format policy (overlay enforce.formats - plans/23 §3.A): a format
   // the deployment CAN produce may still be disallowed for this tool. A policy
   // 403, deliberately distinct from the capability 400 at the top: absent (400)
@@ -305,7 +344,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       `Policy forbids these params for your access: ${params}`, violations);
   }
   const bakedValues = await resolveHostedValues(
-    { ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
+    { ...seed, ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
   ) as Record<string, unknown>;
   const initialValues = deps.managedRules ? Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues }).map(i => [i.id, i.value])) : {};
   requireRuleValues(deps.managedRules, { ...initialValues, ...bakedValues });
@@ -326,7 +365,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // effect on the next one. A lookup that fails leaves the mark on.
   const watermarkRule = overlay?.enforce?.watermark;
   const inputsDigest = watermarkRule === 'until-approved'
-    ? renderInputsDigest(engine, tool.manifest, st.values as Record<string, unknown>, overlay, groups, req.profile) : null;
+    ? renderInputsDigest(engine, tool.manifest, { ...seed, ...st.values } as Record<string, unknown>, overlay, groups, req.profile) : null;
   const approval = inputsDigest
     ? await deps.approvedExportReview?.({ toolId: req.toolId, toolVersion: String(tool.manifest.version), format, inputsDigest }).catch(() => null) ?? null
     : null;
@@ -352,7 +391,8 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     policyVersion,
     format,
     params: bakedValues,
-    context: { ...context, sourceHash, ...(untilApproved ? { untilApproved: untilApproved.approvalId } : {}), brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
+    context: { ...context, sourceHash, ...(untilApproved ? { untilApproved: untilApproved.approvalId } : {}),
+      ...(template ? { template: { id: template.id, version: template.version, editable: template.editable ?? null } } : {}), brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
       worker: deps.worker ? evidenceHash(deps.worker.url) : null,
       signer: deps.signer ? evidenceHash({ chain: deps.signer.chain.map((cert) => sha256Hex(cert)), claimGenerator: deps.signer.claimGenerator }) : null },
   });
