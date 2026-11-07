@@ -18,6 +18,7 @@ import {
   PARTNER_GROUP, PROGRAMME_ID, programmeGroup, readProgrammeBody, type ProgrammeRecord,
 } from './types.ts';
 import { withdrawDomainRules } from './domain-routes.ts';
+import { withdrawFolderRules } from './folder-routes.ts';
 
 type Router = ReturnType<typeof createRouter>;
 
@@ -182,6 +183,7 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     }
     // Its partner domains stop admitting anyone (plans/82 M1 part 2b).
     await withdrawDomainRules(store, deps.audit, `user:${actor.id}`, { programmeId: id }, now, 'programme-delete');
+    await withdrawFolderRules(store, deps.audit, `user:${actor.id}`, { programmeId: id }, 'programme-delete');
     // Members keep the partner marker, so they see only the essentials until an
     // admin adds them to another programme or makes them internal on purpose.
     await store.deleteLocalGroup(group);

@@ -136,6 +136,7 @@ const OPTIONS = {
     apply: { type: 'boolean' },
     projects: { type: 'string' },
     'move-staff': { type: 'string' },
+    whole: { type: 'boolean' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -760,6 +761,38 @@ switch (cmd) {
     if (!values.json) {
       if (!r.domains.length) console.log('no partner domains');
       for (const d of r.domains) show(d);
+    }
+    break;
+  }
+
+  case 'folders': {
+    // Provider folders per programme or company (plans/82 M1 part 2c).
+    type Rule = { provider: { id: string; label: string }; path: string; company?: { name: string }; endsAt?: string; assets: number };
+    const programme = values.programme ?? fail('usage: lw folders [ls] | add <provider> <path>|--whole | rm <provider> <path> --programme <id> [--company <id>] [--ends YYYY-MM-DD]');
+    const at = `/api/v1/programmes/${encodeURIComponent(programme)}/folders`;
+    if (sub === 'add') {
+      const provider = positionals[2] ?? fail('usage: lw folders add <provider> <path> --programme <id> [--company <id>] [--ends YYYY-MM-DD]');
+      // A folder is required: the whole source only with --whole, said on purpose.
+      const path = values.whole ? '' : positionals[3] ?? fail('lw folders add needs a folder, such as Partners/EMEA; to give the whole source, add --whole instead');
+      if (values.whole && positionals[3]) fail('give a folder or --whole, not both');
+      const r = await call(at, { method: 'PUT', body: { provider, path, ...(values.whole ? { whole: true } : {}), ...(values.company ? { company: values.company } : {}), ...(values.ends ? { endsAt: values.ends } : {}) } });
+      out(r);
+      if (!values.json) console.log(`gave ${provider}:${path || '(all of it)'} to ${values.company ?? programme}`);
+      break;
+    }
+    if (sub === 'rm') {
+      const provider = positionals[2] ?? fail('usage: lw folders rm <provider> <path> --programme <id> [--company <id>]');
+      const query = new URLSearchParams({ provider, path: positionals[3] ?? '', ...(values.company ? { company: values.company } : {}) });
+      out(await call(`${at}?${query}`, { method: 'DELETE' }));
+      if (!values.json) console.log(`removed ${provider}:${positionals[3] || '(all of it)'}`);
+      break;
+    }
+    if (sub !== undefined && sub !== 'ls' && sub !== 'list') fail('usage: lw folders [ls] | add <provider> <path> | rm <provider> <path> --programme <id>');
+    const r = await call(at) as { folders: Rule[]; providers: Array<{ id: string; label: string; folders: Array<{ path: string; assets: number }> }> };
+    out(r);
+    if (!values.json) {
+      if (!r.folders.length) console.log('no folders given to this programme');
+      for (const f of r.folders) console.log(`${f.provider.id}:${f.path || '(all of it)'}  ${f.company ? f.company.name : 'whole programme'}  ${f.assets} asset(s)${f.endsAt ? `  ends ${f.endsAt.slice(0, 10)}` : ''}`);
     }
     break;
   }
@@ -1988,6 +2021,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]   end a partnership in one audited step
   domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--move-staff <id,...>] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited); staff move only by name
   domains check <domain> · domains rm <domain> [--programme <id>]   look the DNS record up now; stop new people joining through a domain
+  folders [ls] --programme <id> · folders add <provider> <path>|--whole · folders rm <provider> <path> --programme <id> [--company <id>] [--ends YYYY-MM-DD]   give one provider folder to a programme or company
   retention run              apply the stated retention policy (including the deleted-document purge) and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
   users subject-export <id>  bounded partial metadata page (owner; --category, --cursor, --limit)

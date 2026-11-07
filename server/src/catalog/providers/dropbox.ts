@@ -61,6 +61,7 @@ export function createDropboxProvider(
       name: stripExt(e.name),
       nativeType: ext,
       sections: parts.length > 1 ? [parts[0] as string] : [],
+      folder: parts.slice(0, -1).join('/'),
       tags: [],
       ...(e.server_modified ? { updatedAt: e.server_modified } : {}),
       formats: [{ format: ext, remoteRef: 'file', filename: e.name, ...(e.size !== undefined ? { size: e.size } : {}) }],

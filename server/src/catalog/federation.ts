@@ -78,6 +78,7 @@ export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): 
     meta: {
       providerLabel: rec.label,
       providerSections: asset.sections,
+      ...(typeof asset.folder === 'string' ? { providerFolder: asset.folder } : {}),
       providerCollections: asset.collections ?? [],
       ...(asset.taxonomy ? { providerTaxonomy: asset.taxonomy } : {}),
       providerTags: asset.tags,

@@ -95,6 +95,7 @@ test('listAssets maps the recorded shape: section names, attachment formats, pag
   assert.equal(a?.remoteId, '255hvp7s4xkbqb9rbncsfqp3');
   assert.equal(a?.name, 'program-logo-positive');
   assert.deepEqual(a?.sections, ['Standard Logos']);
+  assert.equal(a?.folder, 'Standard Logos', 'a Brandfolder section is its folder');
   assert.deepEqual(a?.tags, ['SUSE Virtualization']);
   assert.deepEqual(a?.collections, ['Logo Kit']);
   assert.equal(a?.approved, true);
