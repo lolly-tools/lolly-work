@@ -4779,7 +4779,7 @@ export function buildApp(deps: AppDeps): App {
       const links = await linksThatWouldLose(engine, store, async (groups) => (await servedIndex.forCaller({ groups, ungated: true })).index, Date.now());
       return partnerRightsCheck(state, { programmes: counts, linksLosing: links.count });
     } catch {
-      return { id: 'partner-rights', status: 'not-tested' as const, message: `Licence gate: ${state.line} The counts could not be read now.` };
+      return { id: 'partner-rights', status: 'not-tested' as const, message: `${state.line} The counts could not be read now.` };
     }
   };
 

@@ -92,11 +92,11 @@ export function partnerRightsCheck(
   state: { mode: 'report' | 'gate'; line: string },
   wouldHold: { programmes: ReadonlyArray<{ name: string; held: number }>; linksLosing: number },
 ): SetupCheck {
-  if (state.mode === 'gate') return { id: 'partner-rights', status: 'pass', message: `Licence gate: ${state.line}` };
+  if (state.mode === 'gate') return { id: 'partner-rights', status: 'pass', message: state.line };
   const losing = wouldHold.programmes.filter((p) => p.held > 0);
   const held = losing.reduce((n, p) => n + p.held, 0);
   if (!held && !wouldHold.linksLosing) {
-    return { id: 'partner-rights', status: 'pass', message: `Licence gate: ${state.line} Turning the gate on would hold nothing back.` };
+    return { id: 'partner-rights', status: 'pass', message: `${state.line} Turning the gate on would hold nothing back.` };
   }
   const parts = [
     ...(held ? [`${held} asset${held === 1 ? '' : 's'} in ${losing.length} programme${losing.length === 1 ? '' : 's'} would be held back`] : []),
@@ -104,6 +104,6 @@ export function partnerRightsCheck(
   ];
   return {
     id: 'partner-rights', status: 'warning',
-    message: `Licence gate: ${state.line} ${parts.join(', and ')}. Mark the folders that are yours, then set policy.catalog.partnerRights to gate.`,
+    message: `${state.line} ${parts.join(', and ')}. Mark the folders that are yours, then set policy.catalog.partnerRights to gate.`,
   };
 }
