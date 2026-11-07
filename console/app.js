@@ -5698,8 +5698,8 @@ async function programmeLicences(p, host) {
   const gate = r.mode?.mode === 'gate';
   const t = r.totals;
   const summary = gate
-    ? `Gate on. ${t.held} of ${files(t.assets)} held back from ${p.name}.`
-    : `Reporting only. ${t.held} of ${files(t.assets)} would be held back from ${p.name} once the gate is on.`;
+    ? `${t.held} of ${files(t.assets)} held back from ${p.name}.`
+    : `${t.held} of ${files(t.assets)} would be held back from ${p.name} once the gate is on.`;
   const companies = new Map();
   for (const c of r.choices ?? []) if (c.company) companies.set(c.company.id, c.company.name);
   let companyList = [];
@@ -5792,7 +5792,7 @@ async function programmeLicences(p, host) {
     });
     const standing = { live: 'In force', 'needs-choosing': 'Needs choosing again', 'not-needed': 'Not needed now: the file travels', gone: 'The file is no longer in the feed' }[c.standing] ?? c.standing;
     return el('tr', {}, el('td', {}, c.name), el('td', {}, c.licence || 'Licence not recorded'), el('td', {}, c.company ? c.company.name : `Everyone in ${p.name}`),
-      el('td', {}, `${c.chosenBy.name}, ${day(c.chosenAt)}`, c.note ? el('div', { class: 'muted' }, c.note) : null), el('td', {}, standing), el('td', {}, withdraw, err));
+      el('td', {}, `${c.chosenBy.name}, ${c.chosenOn ?? day(c.chosenAt)}`, c.note ? el('div', { class: 'muted' }, c.note) : null), el('td', {}, standing), el('td', {}, withdraw, err));
   };
 
   const L = r.limits;
