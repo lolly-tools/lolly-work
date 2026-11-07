@@ -297,9 +297,9 @@ test('staff receive the same feed bytes with the gate on or off', async () => {
 
 test('the setup check gives the mode, why, and in report mode what the gate would hold', async () => {
   const gated = (await call(gate, await login(gate, 'owner@test'), 'GET', '/api/v1/system/setup')).body.checks.find((c: { id: string }) => c.id === 'partner-rights');
-  assert.deepEqual(gated, { id: 'partner-rights', status: 'pass', message: 'Licence gate: Gate: set in configuration (policy.catalog.partnerRights).' });
+  assert.deepEqual(gated, { id: 'partner-rights', status: 'pass', message: 'Gate: set in configuration (policy.catalog.partnerRights).' });
   const reporting = (await call(report, await login(report, 'owner@test'), 'GET', '/api/v1/system/setup')).body.checks.find((c: { id: string }) => c.id === 'partner-rights');
   assert.equal(reporting.status, 'warning');
-  assert.match(reporting.message, /^Licence gate: Report only: this instance keeps no database, so nothing was decided\. Set policy\.catalog\.partnerRights to change it\. \d+ assets? in 1 programme would be held back/);
+  assert.match(reporting.message, /^Report only: this instance keeps no database, so nothing was decided\. Set policy\.catalog\.partnerRights to change it\. \d+ assets? in 1 programme would be held back/);
   assert.match(reporting.message, /Mark the folders that are yours, then set policy\.catalog\.partnerRights to gate\.$/);
 });
