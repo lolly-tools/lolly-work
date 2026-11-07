@@ -96,7 +96,7 @@ import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, 
 import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
-import { createViewAs, VIEW_AS_HEADER } from '../programmes/view-as.ts';
+import { createViewAs, VIEW_AS_HEADER, ViewAsEndedError } from '../programmes/view-as.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { accessEndsFor } from '../programmes/exit-schedule.ts';
@@ -611,7 +611,7 @@ export function buildApp(deps: AppDeps): App {
   // the disabled-account and pre-epoch-token refusals.
   const memberOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
     // A view-as read answers as the partner it names (programmes/view-as.ts).
-    const viewed = await viewAs.member(req); if (viewed !== undefined) return viewed;
+    const viewed = await viewAs.member(req); if (viewed) return viewed;
     const delegated = agentRequests.principal(req);
     if (!delegated) return resolveMember(store, req.headers.cookie, sessionVerify);
     const user = await store.getUser(delegated.userId);
@@ -12874,6 +12874,11 @@ export function buildApp(deps: AppDeps): App {
     } catch (err) {
       if ((err as Error).message === 'collab-active') {
         if (!res.headersSent) sendCollabActive(res);
+        return;
+      }
+      // A view that ended mid-request ends the request (programmes/view-as.ts).
+      if (err instanceof ViewAsEndedError) {
+        if (!res.headersSent) sendError(res, 403, err.code, err.message);
         return;
       }
       // Too many password checks waiting (lib/crypto.ts): try again shortly.

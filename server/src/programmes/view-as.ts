@@ -53,6 +53,22 @@ export function isViewAsUpgrade(req: IncomingMessage): boolean {
   try { return new URL(req.url ?? '/', 'http://local').searchParams.has('view-as'); } catch { return true; }
 }
 
+/** The sign-in plumbing a viewing tab still needs as the admin: its session, the
+ *  boot probe, and signing out. Every other /api/auth/ route is refused with a view. */
+const ADMIN_AUTH_KEPT: ReadonlyArray<readonly [string, string]> = [
+  ['GET', '/api/auth/session'], ['HEAD', '/api/auth/session'],
+  ['GET', '/api/auth/config'], ['HEAD', '/api/auth/config'],
+  ['POST', '/api/auth/logout'],
+];
+
+/** Thrown when a request that carried a view fails its recheck: the request ends with
+ *  403 VIEWING_AS_ENDED and never carries on as anonymous or as the admin. */
+export class ViewAsEndedError extends Error {
+  readonly status = 403;
+  readonly code = 'VIEWING_AS_ENDED';
+  constructor() { super('This view as a partner has ended. Stop viewing and start again.'); }
+}
+
 /** What a token says. Short keys: the token travels on every request of the tab. */
 export interface ViewAsClaim {
   v: 1;
@@ -164,7 +180,7 @@ export interface ViewAsDeps {
 }
 
 /** One request's view: who answers, and who asked. */
-interface ActiveView { member: UserRecord; admin: UserRecord; viewingAs: ViewingAs; claim: ViewAsClaim }
+interface ActiveView { member: UserRecord; admin: UserRecord; viewingAs: ViewingAs; claim: ViewAsClaim; ended?: boolean }
 
 export function createViewAs(deps: ViewAsDeps) {
   const now = () => (deps.now ? deps.now() : Date.now());
@@ -214,8 +230,13 @@ export function createViewAs(deps: ViewAsDeps) {
     const partnerRead = (method === 'GET' || method === 'HEAD') && VIEW_AS_READS.some((re) => re.test(pathname));
     const header = req.headers[VIEW_AS_HEADER];
     if (header === undefined) { if (partnerRead) partitionCache(res, false); return false; }
-    // The admin's own sign-in plumbing (session, sign-out) stays theirs.
-    if (pathname.startsWith('/api/auth/')) return false;
+    // The admin's own session, boot probe and sign-out stay theirs; no other
+    // sign-in route (passkeys, passwords, invitations) is reachable from a view.
+    if (pathname.startsWith('/api/auth/')) {
+      if (ADMIN_AUTH_KEPT.some(([m, path]) => m === method && path === pathname)) return false;
+      sendError(res, 403, 'VIEWING_AS', 'Not while viewing as a partner.');
+      return true;
+    }
     const claim = readViewAs(Array.isArray(header) ? header[0] : header, deps.verifySecrets, now());
     if (!claim) return ended(res);
     const result = await check(req, claim);
@@ -237,14 +258,16 @@ export function createViewAs(deps: ViewAsDeps) {
    * Who a request authenticates as, when it is a view: the partner, after the same
    * check the gate ran, so a route that authenticates again after slow work (a file
    * conversion, say) sees an admin who was disabled, signed out everywhere or lost the
-   * programme in between. `undefined` when the request is not a view, `null` when the
-   * view has ended.
+   * programme in between. `undefined` when the request is not a view. A view whose
+   * check now fails throws ViewAsEndedError, here and at every later authentication in
+   * the request, so it ends with 403 and never carries on as anonymous or as the admin.
    */
-  async function member(req: IncomingMessage): Promise<UserRecord | null | undefined> {
+  async function member(req: IncomingMessage): Promise<UserRecord | undefined> {
     const view = active.get(req);
     if (!view) return undefined;
+    if (view.ended) throw new ViewAsEndedError();
     const result = await check(req, view.claim);
-    if ('fail' in result) { active.delete(req); return null; }
+    if ('fail' in result) { view.ended = true; throw new ViewAsEndedError(); }
     active.set(req, result.view);
     return result.view.member;
   }

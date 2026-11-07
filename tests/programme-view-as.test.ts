@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { VIEW_AS_HEADER, VIEW_AS_TTL_SEC, createViewAs, readViewAs, signViewAs } from '../server/src/programmes/view-as.ts';
+import { VIEW_AS_HEADER, VIEW_AS_TTL_SEC, ViewAsEndedError, createViewAs, readViewAs, signViewAs } from '../server/src/programmes/view-as.ts';
 import { createCollabGateway, COLLAB_WS_PREFIX, type CollabGateway } from '../server/src/collab/gateway.ts';
 import { WebSocket } from 'ws';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -217,21 +217,62 @@ test('a later authentication in the same request checks the admin again, so a vi
   const headers: Record<string, unknown> = {};
   const res = { setHeader(n: string, v: unknown) { headers[n] = v; }, getHeader(n: string) { return headers[n]; }, writeHead() { return this; }, end() { return this; } } as unknown as ServerResponse;
   const request = () => ({ method: 'GET', url: '/catalog/x.png', headers: { cookie: 'lw_session=x', [VIEW_AS_HEADER]: token } }) as unknown as IncomingMessage;
-  // Passed at the gate, then the admin loses the programme before the route checks again.
+  // Passed at the gate, then the admin loses the programme before the route checks again:
+  // the request ends, at this check and at any later one, and never falls back.
   let req = request();
   assert.equal(await view.gate(req, res, '/catalog/x.png'), false);
   assert.ok((await view.member(req))?.groups.includes('company-northwind'));
   manages = false;
-  assert.equal(await view.member(req), null, 'no longer managing the programme');
+  await assert.rejects(view.member(req), ViewAsEndedError, 'no longer managing the programme');
+  manages = true;
+  await assert.rejects(view.member(req), ViewAsEndedError, 'an ended view stays ended for the rest of the request');
   // The same for an admin disabled or signed out everywhere in between.
-  manages = true; req = request();
+  req = request();
   assert.equal(await view.gate(req, res, '/catalog/x.png'), false);
   session = { ...admin, sessionEpoch: 3 } as UserRecord;
-  assert.equal(await view.member(req), null, 'signed out everywhere');
+  await assert.rejects(view.member(req), ViewAsEndedError, 'signed out everywhere');
   session = admin; req = request();
   assert.equal(await view.gate(req, res, '/catalog/x.png'), false);
   session = null;
-  assert.equal(await view.member(req), null, 'disabled');
+  await assert.rejects(view.member(req), ViewAsEndedError, 'disabled');
   // A request that is not a view is not this module's to answer.
   assert.equal(await view.member({ method: 'GET', url: '/', headers: {} } as unknown as IncomingMessage), undefined);
+});
+
+test('a view that ends between the gate and the route answers 403, never as anonymous or as the admin', async () => {
+  const admin = await login('admin@test');
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', {});
+  const adminId = (await store.getUserBySub('dev:admin@test'))!.id;
+  const original = store.listGrants.bind(store);
+  // The gate asks once; from the route's own authentication on, programme.manage is denied.
+  let calls = 0;
+  store.listGrants = async () => {
+    calls++;
+    const grants = await original();
+    return calls > 1 ? [...grants, { principal: `user:${adminId}`, action: 'programme.manage', resource: 'programme:resellers', effect: 'deny' } as never] : grants;
+  };
+  try {
+    for (const path of ['/api/v1/org-config', '/catalog/tools/index.json', '/tools/price-sheet/tool.json']) {
+      calls = 0;
+      const res = await call(admin, 'GET', path, undefined, body.token);
+      assert.equal(res.status, 403, path);
+      assert.equal(res.body?.error?.code, 'VIEWING_AS_ENDED', path);
+    }
+  } finally { store.listGrants = original; }
+});
+
+test('no sign-in route but the session, the boot probe and sign-out is reachable from a view', async () => {
+  const admin = await login('admin@test');
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', {});
+  // A recently signed-in admin's real passkey cannot be removed from a viewing tab.
+  const removed = await call(admin, 'POST', '/api/auth/passkeys/pk-1/remove', {}, body.token);
+  assert.equal(removed.status, 403);
+  assert.equal(removed.body.error.code, 'VIEWING_AS');
+  for (const [method, path] of [['POST', '/api/auth/password/set'], ['POST', '/api/auth/invite'], ['POST', '/api/auth/passkeys/register/options'], ['GET', '/api/auth/security']] as const) {
+    const res = await call(admin, method, path, method === 'GET' ? undefined : {}, body.token);
+    assert.equal(res.status, 403, `${method} ${path}`);
+    assert.equal(res.body.error.code, 'VIEWING_AS', `${method} ${path}`);
+  }
+  assert.equal((await call(admin, 'GET', '/api/auth/config', undefined, body.token)).status, 200);
+  assert.notEqual((await call(admin, 'GET', '/api/auth/session', undefined, body.token)).status, 403);
 });
