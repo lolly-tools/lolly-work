@@ -40,9 +40,28 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
     }
     return [...new Set(groups.map((group) => group.trim()).filter(Boolean))];
   };
+  // Inputs that take a partner company's values (plans/82 M3), one select per input.
+  const COMPANY_FIELDS = [['name', 'Company name'], ['logo', 'Logo (by mode)'], ['logoLight', 'Logo for light surfaces'],
+    ['logoDark', 'Logo for dark surfaces'], ['mark', 'Mark'], ['website', 'Website'], ['contact', 'Contact'], ['contactEmail', 'Contact email'],
+    ['contactPhone', 'Contact phone'], ['address', 'Address'], ['currency', 'Currency'], ['taxNote', 'Tax note']];
+  const LOGO_FIELDS = new Set(['logo', 'logoLight', 'logoDark', 'mark']);
+  // Only inputs that can hold a company detail: text, a link or a picture. One
+  // already bound stays listed whatever its type, so it can be cleared.
+  const bindable = (input) => !input.type || ['text', 'longtext', 'url', 'asset'].includes(input.type) || !!original.bindings?.[input.id];
+  // A picture input takes a logo or the mark, a text input takes a detail. The
+  // current choice stays listed so it can be kept or cleared.
+  const choicesFor = (input) => COMPANY_FIELDS.filter(([value]) => !input.type || value === original.bindings?.[input.id]
+    || (input.type === 'asset' ? LOGO_FIELDS.has(value) : !LOGO_FIELDS.has(value)));
+  const bindingSelects = new Map((tool.inputs ?? []).filter(bindable).map((input) => [input.id, el('select', { 'aria-label': `What ${input.label ?? input.id} takes from the company` },
+    ...[['', 'Not from the company'], ...choicesFor(input)].map(([value, label]) => el('option', { value, selected: value === (original.bindings?.[input.id] ?? '') ? '' : null }, label)))]));
+  // Defaults saved before they applied are kept and change nothing until the
+  // person editing chooses to apply them.
+  const legacyDefaults = !!original.defaults && !Array.isArray(original.defaults) && Object.keys(original.defaults).length > 0;
+  const applyLegacy = el('input', { type: 'checkbox' });
   let busy = false;
   let disposed = false;
   const snapshot = () => JSON.stringify({ name: nameInput.value, visibility: visibilityInput.value, watermark: watermarkSel.value, chain: chainSel.value,
+    bindings: [...bindingSelects].map(([id, sel]) => [id, sel.value]), applyLegacy: applyLegacy.checked,
     inputs: Object.entries(model).map(([id, rules]) => [id, rules.map(({ groups, level, value, allow, reason }) => ({ groups, level, value, allow, reason }))]) });
   let baseline = snapshot();
   const isDirty = () => !disposed && snapshot() !== baseline;
@@ -67,6 +86,8 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
     }
   };
   for (const control of [nameInput, visibilityInput, watermarkSel]) control.addEventListener('input', update);
+  for (const sel of bindingSelects.values()) sel.addEventListener('change', update);
+  applyLegacy.addEventListener('change', update);
   watermarkSel.addEventListener('change', update);
   chainSel.addEventListener('change', update);
   // The list comes later; until then the saved chain stays selected and saves as it was.
@@ -128,6 +149,11 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
     delete enforce.escalation;
     if (chainSel.value) enforce.escalation = chainSel.value;
     if (Object.keys(enforce).length) body.enforce = enforce;
+    // An input the tool no longer declares keeps its binding as it was.
+    const bindings = Object.fromEntries(Object.entries(original.bindings ?? {}).filter(([id]) => !bindingSelects.has(id)));
+    for (const [id, sel] of bindingSelects) if (sel.value) bindings[id] = sel.value;
+    if (Object.keys(bindings).length) body.bindings = bindings; else delete body.bindings;
+    if (legacyDefaults && applyLegacy.checked) body.defaults = [{ groups: ['*'], values: structuredClone(original.defaults) }];
     return body;
   };
   const focusRule = (id, index) => {
@@ -236,8 +262,16 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
     el('p', { class: 'sub' }, 'Unchanged presets and choices keep their saved types. Use a JSON array for choices containing commas or typed values. A new blank preset locks to an empty string.'),
     el('p', { class: 'sub' }, 'Use a JSON array of group names when a name contains a comma, for example ["Sales, EMEA", "brand"].'),
     original.enforce?.formats?.length ? el('p', { class: 'sub' }, `Saved format restriction retained: ${original.enforce.formats.join(', ')}.`) : null,
-    original.defaults ? el('p', { class: 'sub' }, 'Saved input defaults are retained. These defaults are not applied to tools yet; use a locked preset to enforce a value.') : null,
+    legacyDefaults ? el('div', { class: 'stack policy-defaults' },
+      el('p', { class: 'sub flush' }, `This policy holds input defaults saved before defaults applied (${Object.keys(original.defaults).join(', ')}). They are kept and change nothing.`),
+      el('label', { class: 'chk' }, applyLegacy, el('span', {}, 'Apply them for everyone when I save'))) : null,
+    Array.isArray(original.defaults) && original.defaults.length
+      ? el('p', { class: 'sub' }, `Input defaults apply: ${original.defaults.length} ${original.defaults.length === 1 ? 'rule' : 'rules'}, each for the groups it names. Saving keeps them.`) : null,
     fields,
+    bindingSelects.size ? el('div', { class: 'stack policy-bindings' },
+      el('h3', { class: 'flush' }, 'Takes from the company'),
+      el('p', { class: 'sub flush' }, 'For partners, these inputs start from their company’s details. Where a rule locks the input for them, it is fixed to their company’s value.'),
+      el('div', { class: 'formrow' }, ...[...bindingSelects].map(([id, sel]) => field((tool.inputs ?? []).find((i) => i.id === id)?.label ?? id, sel)))) : null,
     el('p', { class: 'policy-rule-actions' }, saveBtn, closeBtn, draft,
       el('a', { href: '#/preview' }, 'Preview what a group sees'), el('a', { href: '#/docs?doc=governance' }, 'How rules are ordered')),
     error, discardPanel);

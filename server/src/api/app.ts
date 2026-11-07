@@ -3176,6 +3176,34 @@ export function buildApp(deps: AppDeps): App {
     sendJson(res, 200, { preview: { groups, role: subject.role, scoped: isProgrammeScoped(groups, subject.role), hiddenTools, visibleTools, assets, templates, templatesOnly, ...(Object.keys(why).length ? { why } : {}), ...(Object.keys(attribution).length ? { attribution } : {}) }, orgConfig }, { 'cache-control': 'no-store' });
   });
 
+  // Preview draws a template as these groups get it (plans/82 M3): the same
+  // render path and the same company resolver a partner's render takes, with
+  // the preview mark on and no credential signed. Same gate as Preview.
+  router.add('POST', '/api/v1/org-config/preview/render', async (req, res) => {
+    const body = (await readJson(req)) as { groups?: unknown; template?: unknown } | null;
+    const groups = Array.isArray(body?.groups) ? body!.groups.filter((g): g is string => typeof g === 'string').map((g) => g.trim()).filter(Boolean) : [];
+    const partnerOnly = groups.length > 0 && groups.every((g) => isPartnerGroup(g) || g === PARTNER_GROUP);
+    const viewer = (await memberOf(req)) ?? (await serviceAccountOf(req));
+    const managesProgrammes = !!viewer && partnerOnly
+      && evaluate({ userId: viewer.id, groups: viewer.groups, role: viewer.role as Role }, 'programme.manage', ['*'], await store.listGrants());
+    if (!managesProgrammes && !(await requireAction(req, res, 'policy.edit'))) return;
+    const id = typeof body?.template === 'string' ? body.template : '';
+    const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((a) => a.id === id && (a.type === 'template' || a.type === RULES_TOOL_TYPE));
+    const toolId = (entry?.meta as { toolId?: unknown } | undefined)?.toolId;
+    if (!entry || typeof toolId !== 'string') return sendError(res, 404, 'NOT_FOUND', 'these groups do not get that template');
+    try {
+      const out = await renderTool({ config, instanceCatalogVersion, worker: renderWorker, signer: null, hostedResolver: hostedAssetResolverFor(groups) }, {
+        toolId, format: 'svg', query: entry.type === 'template' ? queryFromInputs({ template: id }) : '',
+        principal: { groups, role: roleFromGroups(groups, config.idp.roleGroups) }, profile: {}, overlays: await store.listOverlays(), watermarkPreview: true,
+      });
+      res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': out.mime, 'cache-control': 'no-store' });
+      res.end(Buffer.from(out.bytes));
+    } catch (e) {
+      if (!(e instanceof RenderError)) throw e;
+      sendError(res, e.status, e.code, e.message);
+    }
+  });
+
   // ── telemetry ─────────────────────────────────────────────────────────────
   router.add('POST', '/api/v1/telemetry', async (req, res) => {
     if (config.policy.telemetry === 'off') return sendJson(res, 202, { accepted: 0 });
@@ -6071,10 +6099,11 @@ export function buildApp(deps: AppDeps): App {
     toolFacts: async (toolId) => {
       if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
       try {
-        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown; inputs?: Array<{ id?: unknown; label?: unknown }> };
+        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown; inputs?: Array<{ id?: unknown; label?: unknown; type?: unknown }> };
         return {
           name: typeof manifest.name === 'string' ? manifest.name : toolId,
-          inputs: (manifest.inputs ?? []).flatMap((i) => typeof i?.id === 'string' ? [{ id: i.id, label: typeof i.label === 'string' && i.label ? i.label : i.id }] : []),
+          inputs: (manifest.inputs ?? []).flatMap((i) => typeof i?.id === 'string'
+            ? [{ id: i.id, label: typeof i.label === 'string' && i.label ? i.label : i.id, ...(typeof i.type === 'string' ? { type: i.type } : {}) }] : []),
         };
       } catch { return null; }
     },

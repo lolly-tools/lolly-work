@@ -31,6 +31,8 @@ import { sniffBytes } from '../catalog/submit.ts';
 export type LogoSurface = 'light' | 'dark' | 'mark';
 export const LOGO_SURFACES: readonly LogoSurface[] = ['light', 'dark', 'mark'];
 
+/** The file types a logo may be, as the console offers them. */
+export const LOGO_TYPES = ['image/svg+xml', 'image/png'] as const;
 export const SVG_MAX_BYTES = 512 * 1024;
 export const PNG_MAX_BYTES = 2 * 1024 * 1024;
 export const PNG_MIN_LONG_SIDE = 400;
