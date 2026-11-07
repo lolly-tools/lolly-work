@@ -98,6 +98,7 @@ import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
+import { accessEndsFor } from '../programmes/exit-schedule.ts';
 import { registerProgrammeTokenRoutes } from '../programmes/token-routes.ts';
 import { registerUsageRoutes } from '../programmes/usage-routes.ts';
 import { createCompanyProfiles } from '../programmes/profile-routes.ts';
@@ -2962,7 +2963,11 @@ export function buildApp(deps: AppDeps): App {
         toolStarts.set(meta.toolId, { defaults: bound.defaults, ...(bound.bindings ? { bindings: bound.bindings } : {}) });
       }
     }
-    const partner = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
+    const partnerBase = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
+    // When their access through a programme ends (plans/82 M5): the earliest
+    // membership end date or scheduled end they would be told about.
+    const ends = scoped ? await accessEndsFor(store, subject) : null;
+    const partner = partnerBase || ends ? { ...partnerBase, ...(ends ? { accessEndsAt: ends.at, accessEndsThrough: ends.programme } : {}) } : undefined;
     const grants = await store.listGrants();
     // The inbox's own count for the same client (its shell and engine
     // selectors): the messages it shows and the comment notices that pass
@@ -6082,7 +6087,7 @@ export function buildApp(deps: AppDeps): App {
   });
   companyProfiles.register(router);
   registerProgrammePeopleRoutes(router, {
-    store, requireAction, audit,
+    store, requireAction, audit, people, noticeContext: (now) => noticeContext(config, now),
     forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
     invite: async (actor, email, groups, endsAt) => {
       // The invitation can be accepted until the membership ends, and never for

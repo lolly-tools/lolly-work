@@ -29,7 +29,10 @@ import { programmeTokenGroups, tokenGroupsWithout, tokenPlacement } from '../iam
 import type { TxtLookup } from './domains.ts';
 import { forgetDomainCompany, recheckDomains, sweepDomainRules } from './domain-routes.ts';
 import { sweepFolderRules, withdrawFolderRules } from './folder-routes.ts';
-import { applyExit, exitDone, exitPreview, planExit, readExitSelection, type ExitRightsChoices } from './exit.ts';
+import { endOfDay, exitLimits, registerScheduleRoutes, sweepScheduledExits } from './exit-schedule.ts';
+import type { NoticeContext } from '../access/messages.ts';
+import type { PeopleNotifier } from '../notify/people.ts';
+import { applyExit, exitDone, exitId, exitPreview, planExit, readExitSelection, type ExitRightsChoices, type ProgrammeExitRecord } from './exit.ts';
 import { registerExitRoutes } from './exit-routes.ts';
 import {
   COMPANY_ID, companyGroup, membershipEnded, parsePeopleList, planRows,
@@ -55,6 +58,10 @@ export interface PeopleRouteDeps {
   /** The share-anyway choices an exit withdraws (plans/82 M4). Absent until
    *  that store exists; the exit then lists and withdraws none. */
   rightsChoices?: ExitRightsChoices;
+  /** Where the notice before an end is sent (plans/82 M5), and what it says
+   *  about this workspace. Absent, scheduled ends still run and tell nobody. */
+  people?: PeopleNotifier;
+  noticeContext?(nowMs: number): NoticeContext;
 }
 
 /** One message an admin can send to everyone a list invited, instead of one
@@ -150,6 +157,10 @@ export async function forgetGroupReach(store: Store, audit: PeopleRouteDeps['aud
 
 export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteDeps): void {
   const { store } = deps;
+  const scheduleDeps = () => ({
+    store, audit: deps.audit, ...(deps.people ? { people: deps.people } : {}), ...(deps.rightsChoices ? { rights: deps.rightsChoices } : {}),
+    context: deps.noticeContext ?? ((now: number) => ({ workspace: '', baseUrl: '', appBase: '', at: new Date(now).toISOString() })),
+  });
   const manager = (req: IncomingMessage, res: ServerResponse) => deps.requireAction(req, res, 'programme.manage');
   const programmeOr404 = async (res: ServerResponse, id: string) => {
     const rec = await store.getProgramme(id);
@@ -320,7 +331,8 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     const rulesEnded = await sweepDomainRules(store, deps.audit);
     const foldersEnded = await sweepFolderRules(store, deps.audit);
     const ended = await sweepProgrammeEnds(store, deps.audit);
-    sendJson(res, 200, { ended, rulesEnded, foldersEnded, domainsChecked: await recheckDomains(store, deps.audit, deps.resolveTxt) });
+    const exitsRun = await sweepScheduledExits(scheduleDeps());
+    sendJson(res, 200, { ended, rulesEnded, foldersEnded, exitsRun, domainsChecked: await recheckDomains(store, deps.audit, deps.resolveTxt) });
   });
 
   // ── ending a partnership ───────────────────────────────────────────────────
@@ -334,9 +346,40 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     const body = (await readJson(req, 512 * 1024)) as Record<string, unknown> | null;
     const selection = readExitSelection(body);
     if ('error' in selection) return sendError(res, 400, selection.code ?? 'INVALID_INPUT', selection.error);
+    // A date ends a programme or a company at the end of that day in UTC
+    // (programmes/exit-schedule.ts); without one the end is now.
+    const at = body?.at === undefined || body?.at === null || body?.at === '' ? undefined : endOfDay(body.at);
+    if (at && typeof at === 'object') return sendError(res, 400, 'INVALID_INPUT', at.error);
+    if (at && selection.programme === undefined && selection.company === undefined) {
+      return sendError(res, 400, 'INVALID_INPUT', 'a date ends a programme or a company; give people their own end dates in a list instead');
+    }
+    if (body?.notice !== undefined && typeof body.notice !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'notice must be true or false');
+    const notice = body?.notice !== false;
     const planned = await planExit(store, selection, actor, { projects: body?.projects, transferTo: body?.transferTo, ...(deps.rightsChoices ? { rights: deps.rightsChoices } : {}) });
     if (!planned.ok) return sendError(res, planned.status, planned.code, planned.detail);
-    if (body?.apply !== true) return sendJson(res, 200, exitPreview(planned.plan), { 'cache-control': 'no-store' });
+    if (body?.apply !== true) {
+      return sendJson(res, 200, { ...exitPreview(planned.plan), ...(at ? { endsAt: at, notice } : {}), limits: exitLimits(!!deps.people?.emailOn) }, { 'cache-control': 'no-store' });
+    }
+    if (at) {
+      const { plan } = planned;
+      const target = plan.company ?? plan.programme;
+      if (target && isEnded(target)) return sendError(res, 409, 'PROGRAMME_ENDED', `${target.name} has ended already`);
+      const waiting = (await store.listProgrammeExits({ state: 'scheduled' }))
+        .find((r) => (selection.company ? r.selection.company === selection.company : r.selection.programme === selection.programme));
+      if (waiting) return sendError(res, 409, 'EXIT_SCHEDULED', `this end is set for ${waiting.endsAt?.slice(0, 10)} already; change that date instead`);
+      const createdAt = new Date().toISOString();
+      const rec: ProgrammeExitRecord = {
+        id: exitId(), state: 'scheduled', selection,
+        ...(plan.programme ? { programmeId: plan.programme.id } : {}), ...(plan.company ? { companyId: plan.company.id } : {}),
+        projects: plan.projectsMode, transferTo: plan.transferTo.id, ...(plan.team ? { team: plan.team } : {}),
+        createdBy: actor.id, createdAt, endsAt: at, notice,
+      };
+      await store.putProgrammeExit(rec);
+      await deps.audit(`user:${actor.id}`, 'programme.exit.schedule', plan.programme ? `programme:${plan.programme.id}` : 'programme:list', {
+        exit: rec.id, endsAt: at, notice, projects: plan.projectsMode, ...(plan.company ? { company: plan.company.id } : {}),
+      });
+      return sendJson(res, 201, { scheduled: true, exit: rec.id, endsAt: at, notice }, { 'cache-control': 'no-store' });
+    }
     const record = await applyExit(store, deps.audit, planned.plan, {
       actorRef: `user:${actor.id}`, actorId: actor.id, ...(deps.rightsChoices ? { rights: deps.rightsChoices } : {}),
     });
@@ -344,7 +387,9 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
   });
 
   // Exit receipts and Reopen (plans/82 M5).
-  registerExitRoutes(router, { store, requireAction: deps.requireAction, audit: deps.audit, resolveTxt: deps.resolveTxt });
+  registerExitRoutes(router, { store, requireAction: deps.requireAction, audit: deps.audit, resolveTxt: deps.resolveTxt, emailOn: () => !!deps.people?.emailOn });
+
+  registerScheduleRoutes(router, { ...scheduleDeps(), requireAction: deps.requireAction });
 
   // ── service tokens in a programme (plans/82 M3) ────────────────────────────
   /** Place a service token in a programme, and optionally one company in it,

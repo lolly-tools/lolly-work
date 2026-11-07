@@ -20,7 +20,7 @@ import type { Store } from '../store/types.ts';
 import type { Notifier } from './notify.ts';
 
 /** Which notice a mail belongs to, for the per-kind caps email will bring. */
-export type MailKind = 'invitation' | 'request' | 'answer' | 'accepted' | 'join-approved' | 'mention' | 'reply';
+export type MailKind = 'invitation' | 'request' | 'answer' | 'accepted' | 'join-approved' | 'mention' | 'reply' | 'access-ends';
 export interface MailParts { subject: string; text: string; fromName?: string }
 export type MailResult = 'off' | 'sent' | 'held' | 'failed';
 

@@ -38,6 +38,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { grantNeverMatches } from './rbac/grant-shape.ts';
 import { sweepProgrammeEnds } from './programmes/people-routes.ts';
+import { PROGRAMME_SWEEP_MS, sweepScheduledExits } from './programmes/exit-schedule.ts';
+import { createPeopleNotifier } from './notify/people.ts';
+import { noticeContext } from './access/messages.ts';
 import { recheckDomains, sweepDomainRules } from './programmes/domain-routes.ts';
 import { sweepFolderRules } from './programmes/folder-routes.ts';
 import { setCompanyProgrammes } from './programmes/types.ts';
@@ -273,17 +276,21 @@ if (config.audit.headLog.intervalMinutes > 0) {
 // the record, daily once found; plans/82 M1 part 2b).
 const sweepAudit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
   store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
+// Scheduled ends of a programme or company and the notice before them
+// (plans/82 M5) run in the same pass.
+const sweepPeople = createPeopleNotifier({ store, config, notifier: createNotifier({ config, secrets }) });
 const sweepEnds = async (): Promise<number> => {
   // Each replica reloads which programme each company is in (input rules).
   setCompanyProgrammes(await store.listCompanies());
   await sweepDomainRules(store, sweepAudit);
   await sweepFolderRules(store, sweepAudit);
   const ended = await sweepProgrammeEnds(store, sweepAudit);
+  await sweepScheduledExits({ store, audit: sweepAudit, people: sweepPeople, context: (now) => noticeContext(config, now) });
   await recheckDomains(store, sweepAudit, resolveTxt);
   return ended;
 };
 await sweepEnds().catch((e: Error) => console.error(`[lolly-work] programme end sweep failed: ${e.message}`));
-setInterval(() => void sweepEnds().catch((e: Error) => console.error(`[lolly-work] programme end sweep failed: ${e.message}`)), 60_000).unref();
+setInterval(() => void sweepEnds().catch((e: Error) => console.error(`[lolly-work] programme end sweep failed: ${e.message}`)), PROGRAMME_SWEEP_MS).unref();
 
 // Retention (plans/35 wave 3): boot + daily, only when a policy is stated.
 // The same runRetention the POST /api/v1/retention/run route calls, so a

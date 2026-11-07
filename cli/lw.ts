@@ -132,6 +132,8 @@ const OPTIONS = {
     company: { type: 'string' },
     domain: { type: 'string' },
     ends: { type: 'string' },
+    at: { type: 'string' },
+    'no-notice': { type: 'boolean' },
     assert: { type: 'boolean' },
     apply: { type: 'boolean' },
     projects: { type: 'string' },
@@ -867,8 +869,12 @@ switch (cmd) {
       const list = positionals[2];
       const pick = values.programme ? { programme: values.programme } : values.company ? { company: values.company } : values.domain ? { domain: values.domain }
         : list ? { emails: readFileSync(list === '-' ? 0 : list, 'utf8').split(/[\s,;]+/).filter(Boolean) } : null;
-      if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]');
-      const r = await call('/api/v1/programmes/exit', { method: 'POST', body: { ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
+      if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--at YYYY-MM-DD [--no-notice]] [--apply]');
+      const r = await call('/api/v1/programmes/exit', { method: 'POST', body: {
+        ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.at ? { at: values.at } : {}), ...(values['no-notice'] ? { notice: false } : {}),
+        ...(values.apply ? { apply: true } : {}),
+      } }) as {
+        scheduled?: boolean; endsAt?: string; notice?: boolean;
         dryRun: boolean; exit?: string; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
         stays?: Array<{ email: string; stays: string[] }>; cannotEnd?: Array<{ email: string; reason: string }>; notEnded?: Array<{ email: string; reason: string }>;
         pendingInvitations?: unknown[]; invitationsRevoked?: number; domainRules?: Array<{ domain: string; programme: { name: string } }>;
@@ -879,8 +885,13 @@ switch (cmd) {
         alreadyEnded?: { at: string }; ended?: { programme?: string; companies: string[] };
       };
       out(r);
+      if (!values.json && r.scheduled) {
+        console.log(`scheduled ${r.exit}: ends ${r.endsAt}${r.notice ? '; they are told 14 days and 1 day before' : '; nobody is told before'}`);
+        break;
+      }
       if (!values.json) {
         const verb = (now: string, then: string) => (r.dryRun ? now : then).padEnd(9);
+        if (r.dryRun && r.endsAt) console.log(`ends on ${r.endsAt.slice(0, 10)} at the end of the day (UTC)${r.notice ? ', told 14 days and 1 day before' : ''}`);
         if (r.alreadyEnded) console.log(`already ended on ${r.alreadyEnded.at.slice(0, 10)}; this ends what is left`);
         for (const a of r.accounts) console.log(`${verb('ends', 'ended')} ${a.email ?? a.id}`);
         for (const a of r.stays ?? []) console.log(`${verb('stays', 'stays')} ${a.email}  leaves this one, also in ${a.stays.join(', ')}`);
@@ -2353,7 +2364,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   people import <programme> <file.csv|-> [--apply]   add a list to a partner programme: email, name, company, end date (preview unless --apply)
-  people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]   end a partnership in one audited step
+  people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--at YYYY-MM-DD [--no-notice]] [--apply]   end a partnership in one audited step, now or at the end of a day
   people exits <programme>   a programme's ends, newest first, with whether Reopen is offered
   people reopen <exit> [--keep-projects] [--apply]   undo an end within 30 days: people, groups, templates, folders, domain rules and projects come back
   domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--move-staff <id,...>] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited); staff move only by name

@@ -1487,6 +1487,12 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual((await store.listProgrammeExits({ companyId: 'northwind' })).map((r) => r.id), ['pex_a']);
   assert.deepEqual((await store.listProgrammeExits({ state: 'scheduled' })).map((r) => r.id), ['pex_b']);
   assert.deepEqual((await store.getProgrammeExit('pex_a'))?.result?.ended, { companies: ['northwind'] });
+  const readB = (await store.getProgrammeExit('pex_b'))!;
+  assert.equal(await store.replaceProgrammeExit({ ...readB, state: 'running' }, readB), true, 'a replace against the record as read succeeds');
+  assert.equal(await store.replaceProgrammeExit({ ...readB, state: 'done' }, readB), false, 'a second replace against the same old record fails');
+  assert.equal(await store.replaceProgrammeExit({ ...readB, id: 'nope' }, { ...readB, id: 'nope' }), false, 'an unknown id is never written');
+  assert.equal((await store.getProgrammeExit('pex_b'))?.state, 'running');
+  assert.deepEqual((await store.listProgrammeExits({ state: 'running' })).map((r) => r.id), ['pex_b']);
   await store.putProgrammeExit({ ...(await store.getProgrammeExit('pex_b'))!, state: 'cancelled' });
   assert.equal((await store.getProgrammeExit('pex_b'))?.state, 'cancelled', 'put is an upsert');
   assert.deepEqual((await store.listProgrammeExits({ state: 'scheduled' })), []);
