@@ -67,6 +67,7 @@ test('listAssets maps XML: folder placeholders dropped, sections from prefix fol
   const logo = page.assets[0];
   assert.equal(logo?.name, 'summit 2026');
   assert.deepEqual(logo?.sections, ['logos']);
+  assert.equal(logo?.folder, 'logos', 'the folder below the prefix, for partner folder rules');
   assert.deepEqual(logo?.formats, [{ format: 'svg', remoteRef: 'orig', filename: 'summit 2026.svg', size: 9025 }]);
   assert.equal(Buffer.from(logo?.remoteId ?? '', 'base64url').toString(), 'brand/logos/summit 2026.svg', 'remoteId is the b64url key');
   assert.ok(!logo?.remoteId.includes('/'), 'remoteId is slash-free for the ext/* path contract');

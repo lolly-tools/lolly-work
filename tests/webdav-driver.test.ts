@@ -175,6 +175,7 @@ test('nextcloud: the files root is /remote.php/dav/files/<username>, and a file 
   assert.equal(a?.name, 'Summit Banner & Logo', 'the href is percent-decoded and its entities resolved');
   assert.equal(a?.nativeType, 'png');
   assert.deepEqual(a?.sections, [], 'a file at the root sits in no section');
+  assert.equal(a?.folder, '', 'and in the root folder');
   assert.deepEqual(a?.tags, ['event', '2026'], 'oc:tags children become tags');
   assert.equal(a?.updatedAt, '2026-06-01T09:30:00.000Z', 'the RFC 1123 stamp is normalised to ISO');
   assert.deepEqual(a?.formats, [{ format: 'png', remoteRef: 'file', filename: 'Summit Banner & Logo.png', size: 2048 }]);

@@ -67,11 +67,16 @@ export function createO365Provider(
     // Section: last folder name in the parent path (after the drive root marker).
     const parentPath = item.parentReference?.path?.split('/root:/')[1];
     const section = parentPath?.split('/').pop();
+    // The folder below the federated item, segment by segment.
+    const rootSegments = (options.itemPath ?? '').split('/').filter(Boolean);
+    const segments = (parentPath ?? '').split('/').filter(Boolean).map((s) => decodeURIComponent(s));
+    const folder = segments.slice(rootSegments.length).join('/');
     return {
       remoteId: item.id,
       name: stripExt(item.name),
       nativeType: ext,
       sections: section ? [decodeURIComponent(section)] : [],
+      folder,
       tags: [],
       ...(item.lastModifiedDateTime ? { updatedAt: item.lastModifiedDateTime } : {}),
       formats: [{ format: ext, remoteRef: 'content', filename: item.name, ...(item.size !== undefined ? { size: item.size } : {}) }],
