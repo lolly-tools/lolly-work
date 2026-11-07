@@ -6,6 +6,43 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.324.0
+
+- Spots as process, an opt-in export choice for the CMYK formats. `ExportOpts.spotsAsProcess` (host-v1, optional) and `buildCmykPaletteMap(palette, separate, { spotsAsProcess })` (new `CmykPaletteOptions`) write every declared spot ink as its process alternate: the swatch's own CMYK lock, or the press conversion of its colour, which is the value the ink's /Separation already named as its alternate. A Print PDF then has the four process plates and nothing more. A declared finish (foil, emboss, deboss, spot varnish, soft touch, die cut, crease, perforation) is not an ink and keeps its own named plate, because converting it would print its black mask.
+- New reserved URL param `_spots`, read by `parseUrlState` into `spots` and written by `serializeUrlState` from `spots`; `parseSpots` is exported. Only `_spots=process` turns the choice on: absence and every other value keep the spot plates. Minted in the `_` namespace, so no tool input can collide with it.
+- Off by default. With the option absent, `buildCmykPaletteMap` returns the same map as before and every CMYK file keeps its bytes. The Print TIFF and EPS (CMYK) already write each ink as its process build, since they have no named plates, so the choice changes only the Print PDF today. Nothing is recorded about the choice: no metadata, no content credential entry and no export card line.
+
+## 1.323.0
+
+- `host.tokens.inspect()` answers with `colourRoles`, the document's colour roles as `readColourRoles` reads them: the declared roles in the design system's own order and words, then any undeclared ones, with the slots each fills. Every shell gets it, the isolated hook worker too, because they all inspect through `inspectTokenDocument`. A tool reads a role's colour with `resolve('{' + role.path + '}')`, so it follows the piece's colourway and look.
+- Additive and optional: a tool feature-detects the field, and an older host leaves it out. `diffTokenDocuments` compares values only and does not read the roles.
+- Lolly Chart's **Colour roles first** palette is the first reader. Nothing new goes into an exported file.
+
+## 1.322.0
+
+- `writeDocx` takes an optional `page` (width, height and margins in twips) and writes it as the section's `w:pgSz` and `w:pgMar`, marking a landscape page as such and holding every value to Word's range. New `snapDocxPage` turns a measured size into the standard paper size it stands for (A4 is 11906 x 16838 twips, US Letter 12240 x 15840), so a page laid out in whole pixels reads as A4, not a custom size. Picture widths and table columns follow the page's text width.
+- `writeDocx` takes optional `styles`: the body face and text colour go into the document defaults, the heading face and colour into Heading 1 to 6. A face is named in `ascii`, `hAnsi`, `eastAsia` and `cs`, and only a plain family name or a six-digit colour is written. Runs carry no font or colour of their own.
+- `DocxMedia.fallback`: for an SVG picture, PNG bytes of the same artwork. The picture is written the way Word writes one, the PNG as the blip and the SVG through the `asvg:svgBlip` extension, so a reader with no SVG support shows the PNG.
+- A document with no `page`, no `styles` and no `fallback` is byte-identical to before. New exports: `snapDocxPage`, and the types `DocxPage` and `DocxStyles`. The web shell's Word export (`shells/web/src/bridge/export-docx.ts`) fills all three from the rendered page. The PNG is drawn from the SVG's own bytes, so the file gains no new information, and a .docx still has no Content Credentials container.
+
+## 1.321.0
+
+- `buildPptxParts`: a run, a table cell or a layout placeholder style with a face now writes the face in all three of DrawingML's slots, `latin`, `ea` and `cs`, where it wrote `latin` and `cs`. The theme's font scheme already carries the face in all three, so PowerPoint resolves the same face it inherited before. LibreOffice does not follow the theme for a text box, so there a run now carries the face for East Asian text as well. A run with no face writes nothing, as before.
+- No API change. The Design deck model now gives every run a face (the brand, headings or mono face the canvas draws the slot in, resolved by the shell against the exported node), and the master-bound lowering in `packages/node-shell/src/design-pptx.ts` writes a circle or an ellipse as the ellipse preset and a pill as a full rounded rectangle, where it wrote a plain rectangle. Exported files gain no new data.
+
+## 1.320.0
+
+- An SVG's Content Credential goes in a `<metadata>` child of the root `<svg>`, the place the C2PA SVG binding defines and c2patool reads. When the page inlined artwork that carries its own manifest, such as a catalog logo, `embedC2pa` used to write the export's manifest over the logo's, inside the logo, and c2patool reported "No claim found" for the file. The logo now keeps its own manifest in its own markup, where the export's hard binding covers those bytes like any others, and the export's claim validates at the root.
+- New leaf module `c2pa-svg.ts`: `locateSvgCredential` finds the root `<svg>`, its first direct `<metadata>` and the manifest in a direct `<metadata>`, reading past comments, CDATA, quoted attribute values and nested artwork in one linear pass. The SVG placer and reader both use it.
+- The reader takes the root's credential first. A file with none there falls back to the first manifest anywhere, which is where exports written before this version put theirs, so a credential someone already holds reads as it did.
+- Default SVG exports that inline credentialed artwork change bytes: the file now holds the export's manifest at the root and the artwork's own in the artwork. Nothing else goes into the file. An SVG with no nested manifest is placed exactly as before. The MCP server no longer strips the inlined artwork's manifest before it stamps, so its files match the web shell's and the CLI's.
+
+## 1.319.0
+
+- `host.text.toPath`: a `fallbackFonts` entry may carry `fill: true`, a face that draws only what every face before it cannot, the way a browser falls back to a later family in a `font-family` list. With one in the chain, the run is split by grapheme cluster and each cluster goes to the first face that maps all of it, so an earlier face keeps every character it can draw; a space goes to the first face that maps it, as in Chrome. A chain with no `fill` face splits exactly as before, so every existing outline keeps its bytes.
+- No engine module changes. The web and Node shells use it for the on-demand fallback fonts in `community/fallback-fonts` (`docs/fallback-fonts.md`): a run the design system's fonts do not cover is outlined with the later families of its own stack, then an OFL Noto font for the missing script. A run the design system covers takes no fill face and keeps its chain.
+- Exported files gain nothing but the glyph outlines a fallback font drew: no font program, no credit line and no content credential entry.
+
 ## 1.318.0
 
 - Colour roles through other formats and back (new module `colour-role-portable.ts`, plan 352). `adoptColourRoles` brings a file's colours in as roles, in words someone confirmed, through the same edits the studio uses. `withColourwayKindRestored` gives a group called `colourway` its kind back after a format that dropped the kind.
