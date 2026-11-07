@@ -5602,9 +5602,230 @@ function programmeEditor(p, tools, collections, groups = []) {
       collectionList),
     el('p', {}, save, ' ', el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(p.group)}` }, 'See what they get'), ' ', el('a', { class: 'btn', href: '#/programmes' }, 'Back')),
     err);
+  const templatesHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading templates…'));
+  void programmeTemplates(p, templatesHost);
   const peopleHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading people…'));
   void programmePeople(p, peopleHost);
-  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form, peopleHost);
+  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form, templatesHost, peopleHost);
+}
+
+// Templates published to a programme (plans/82 M2): a template of one of your
+// tools with the inputs partners may change, or a Share with rules file, which
+// brings its own rules. Partners find them on their home and in each tool.
+async function programmeTemplates(p, host) {
+  let data, programmes;
+  try {
+    [data, programmes] = await Promise.all([
+      api(`/api/v1/programmes/${encodeURIComponent(p.id)}/templates`),
+      api('/api/v1/programmes').then((r) => r.programmes ?? []).catch(() => []),
+    ]);
+  } catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
+  const reload = () => programmeTemplates(p, host);
+  const base = `/api/v1/programmes/${encodeURIComponent(p.id)}/templates`;
+  const bare = (id) => encodeURIComponent(id.replace(/^inst\//, ''));
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  // Who can get a template from here: this programme and its companies, then
+  // the other programmes, so one template can reach several.
+  const audienceChoices = [
+    ...data.reach,
+    ...programmes.filter((o) => o.id !== p.id).map((o) => ({ group: o.group, label: `Everyone in ${o.name}` })),
+  ];
+  // A ticked company says which programme it is in, so a company ticked on its
+  // own reads plainly as "only them", and ticked with its programme as no change.
+  const audiencePicker = (chosen) => {
+    const picked = new Set(chosen);
+    const note = el('p', { class: 'sub flush template-audience-note' });
+    const sync = () => {
+      const companies = audienceChoices.filter((a) => a.group.startsWith('company-') && picked.has(a.group)).map((a) => a.label);
+      const whole = picked.has(`programme-${p.id}`);
+      note.textContent = !companies.length ? ''
+        : `${companies.join(' and ')} ${companies.length === 1 ? 'is' : 'are'} in ${p.name}. ${whole ? `Everyone in ${p.name} gets it.` : `Only ${companies.length === 1 ? companies[0] : 'they'} ${companies.length === 1 ? 'gets' : 'get'} it, not everyone in ${p.name}.`}`;
+      note.hidden = !companies.length;
+    };
+    const list = el('div', { class: 'chk-list template-audience' }, ...audienceChoices.map((a) => {
+      const cb = el('input', { type: 'checkbox', ...(picked.has(a.group) ? { checked: 'checked' } : {}) });
+      cb.addEventListener('change', () => { if (cb.checked) picked.add(a.group); else picked.delete(a.group); sync(); });
+      return el('label', { class: 'chk' }, cb, el('span', {}, a.label));
+    }));
+    sync();
+    return { list: el('div', { class: 'stack' }, list, note), value: () => audienceChoices.map((a) => a.group).filter((g) => picked.has(g)) };
+  };
+  // Which inputs partners may change, with the count always in view, so a
+  // template is never published with everything open by accident.
+  // Colourway and mode sit below the inputs, ticked unless the template keeps
+  // its own: they are the brand's approved choices, and they move every colour
+  // the tool takes from the design system.
+  const rulesPicker = (inputs, editable, fixedTheme = false) => {
+    const open = new Set(editable ?? inputs.map((i) => i.id));
+    const theme = el('input', { type: 'checkbox', ...(fixedTheme ? {} : { checked: 'checked' }) });
+    const count = el('strong', { class: 'template-count' });
+    const sync = () => { count.textContent = `Partners can change ${open.size} of ${inputs.length} input${inputs.length === 1 ? '' : 's'}`; };
+    const list = el('div', { class: 'chk-list template-inputs' }, ...inputs.map((i) => {
+      const cb = el('input', { type: 'checkbox', ...(open.has(i.id) ? { checked: 'checked' } : {}) });
+      cb.addEventListener('change', () => { if (cb.checked) open.add(i.id); else open.delete(i.id); sync(); });
+      return el('label', { class: 'chk' }, cb, el('span', {}, i.label));
+    }));
+    sync();
+    return {
+      el: el('div', { class: 'stack template-rules' }, count, el('p', { class: 'sub flush' }, 'Untick what stays as the template has it.'), list,
+        el('div', { class: 'chk-list template-theme' }, el('label', { class: 'chk' }, theme, el('span', {}, 'Colourway and mode')))),
+      // Every input open is the same as no rules at all.
+      value: () => (open.size === inputs.length ? null : inputs.map((i) => i.id).filter((id) => open.has(id))),
+      fixedTheme: () => !theme.checked,
+    };
+  };
+  const openNote = (toolName, programmesWithTool) => el('p', { class: 'policy-warning template-open-note' },
+    `People in ${programmesWithTool.join(' and ')} can also open ${toolName} on its own, outside these rules. To keep them inside the rules, publish a Share with rules file instead.`);
+  const uploadRules = async (file, path) => {
+    const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
+    const out = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(out?.error?.message ?? res.statusText);
+    return out;
+  };
+
+  const row = (t) => {
+    const err = errSpan();
+    const panel = el('div', { class: 'stack template-panel', hidden: 'hidden' });
+    const showPanel = (...nodes) => { panel.replaceChildren(...nodes); panel.hidden = !nodes.length; };
+    const kindLine = t.kind === 'rules-tool' ? 'Share with rules file, made in Design' : `${t.toolName} template`;
+    const canChange = t.kind === 'rules-tool' || t.editable
+      ? (t.inputs.filter((i) => (t.editable ?? []).includes(i.id)).map((i) => i.label).join(', ') || 'Nothing')
+      : `Everything (${t.inputs.length} input${t.inputs.length === 1 ? '' : 's'})`;
+    const change = el('button', { onclick: () => {
+      const who = audiencePicker(t.groups);
+      const rules = t.kind === 'template' ? rulesPicker(t.inputs, t.editable, t.fixedTheme) : null;
+      const saveErr = errSpan();
+      showPanel(
+        field('Who gets it', who.list),
+        rules ? rules.el : el('p', { class: 'sub flush' }, 'A Share with rules file brings its own rules. Change them in Lolly, then upload a new version.'),
+        el('p', { class: 'programme-actions' },
+          el('button', { class: 'primary', onclick: async () => {
+            saveErr.textContent = '';
+            try {
+              await api(`${base}/${bare(t.id)}`, { method: 'PUT', body: { groups: who.value(), ...(rules ? { editable: rules.value(), fixedTheme: rules.fixedTheme() } : {}) } });
+              toast(`Saved ${t.name}`); reload();
+            } catch (ex) { saveErr.textContent = ex.message; }
+          } }, 'Save'),
+          el('button', { onclick: () => showPanel() }, 'Cancel')),
+        saveErr);
+    } }, 'Change');
+    const fileInput = el('input', { type: 'file', accept: '.lolly', hidden: 'hidden' });
+    fileInput.addEventListener('change', async () => {
+      const f = fileInput.files?.[0];
+      if (!f) return;
+      err.textContent = '';
+      try { const out = await uploadRules(f, `${base}/${bare(t.id)}/versions`); toast(`Version ${out.version} of ${t.name} published`); reload(); }
+      catch (ex) { err.textContent = ex.message; fileInput.value = ''; }
+    });
+    const newVersion = el('button', { onclick: () => {
+      if (t.kind === 'rules-tool') { fileInput.click(); return; }
+      const same = data.candidates.filter((c) => c.toolId === t.toolId);
+      if (!same.length) { showPanel(el('p', { class: 'muted' }, `Save the changed ${t.toolName} template in Lolly and submit it to the catalog, then come back here.`)); return; }
+      const pick = el('select', { 'aria-label': 'New version from' }, ...same.map((c) => el('option', { value: c.id }, c.name)));
+      const vErr = errSpan();
+      showPanel(field('New version from', pick),
+        el('p', { class: 'sub flush' }, 'Partners keep what they changed in their saved copies and are told a new version is ready.'),
+        el('p', { class: 'programme-actions' },
+          el('button', { class: 'primary', onclick: async () => {
+            vErr.textContent = '';
+            try { const out = await api(`${base}/${bare(t.id)}/versions`, { method: 'POST', body: { from: pick.value } }); toast(`Version ${out.version} of ${t.name} published`); reload(); }
+            catch (ex) { vErr.textContent = ex.message; }
+          } }, 'Publish this version'),
+          el('button', { onclick: () => showPanel() }, 'Cancel')),
+        vErr);
+    } }, 'New version');
+    const retire = el('button', { class: 'danger', onclick: () => {
+      const others = data.templates.filter((o) => o.id !== t.id && !o.retired);
+      const pick = el('select', { 'aria-label': 'Replaced by' }, el('option', { value: '' }, 'Nothing'), ...others.map((o) => el('option', { value: o.id }, o.name)));
+      const rErr = errSpan();
+      showPanel(
+        el('p', { class: 'flush' }, el('strong', {}, `Retire ${t.name}?`)),
+        el('p', { class: 'sub flush' }, 'It leaves partners’ homes and tool choosers now. Saved copies keep working and say it was retired.'),
+        others.length ? field('Replaced by (optional)', pick) : null,
+        el('p', { class: 'programme-actions' },
+          el('button', { class: 'danger', onclick: async () => {
+            rErr.textContent = '';
+            try { await api(`${base}/${bare(t.id)}/retire`, { method: 'POST', body: { ...(pick.value ? { replacedBy: pick.value } : {}) } }); toast(`Retired ${t.name}`); reload(); }
+            catch (ex) { rErr.textContent = ex.message; }
+          } }, 'Retire'),
+          el('button', { onclick: () => showPanel() }, 'Cancel')),
+        rErr);
+    } }, 'Retire');
+    const restore = el('button', { onclick: async () => {
+      err.textContent = '';
+      try { await api(`${base}/${bare(t.id)}/restore`, { method: 'POST' }); toast(`Published ${t.name} again`); reload(); }
+      catch (ex) { err.textContent = ex.message; }
+    } }, 'Publish again');
+    const version = t.kind === 'rules-tool' ? (t.toolVersion ?? String(t.version)) : String(t.version);
+    return el('div', { class: 'template-row' },
+      el('div', { class: 'template-cells' },
+        el('div', { class: 'template-name' },
+          el('strong', {}, t.name),
+          el('div', { class: 'muted' }, kindLine),
+          t.rebuilt ? el('div', { class: 'muted' }, 'Rebuilt with this workspace’s Design') : null,
+          t.state === 'submitted' ? el('span', { class: 'status review' }, 'Waiting for review') : null,
+          t.retired ? el('span', { class: 'status revoked' }, `Retired ${day(t.retired.at)}${t.retired.replacedByName ? `, replaced by ${t.retired.replacedByName}` : ''}`) : null),
+        el('div', {}, el('div', { class: 'template-label' }, 'Who gets it'), t.audience.map((a) => a.label).join(', ')),
+        el('div', {}, el('div', { class: 'template-label' }, 'Partners can change'), canChange),
+        el('div', {}, el('div', { class: 'template-label' }, 'Version'), version, el('div', { class: 'muted' }, `Published ${day(t.publishedAt)}`)),
+        el('div', { class: 'programme-actions template-actions' }, ...(t.retired ? [restore] : [change, newVersion, retire]), fileInput)),
+      t.toolOpenTo?.length && !t.retired ? openNote(t.toolName, t.toolOpenTo) : null,
+      panel, err);
+  };
+
+  // Publishing: a catalog template, or a Share with rules file.
+  const UPLOAD = 'upload';
+  const source = el('select', { 'aria-label': 'Template' },
+    el('option', { value: '', selected: 'selected' }, 'Choose a template'),
+    ...data.candidates.map((c) => el('option', { value: c.id }, `${c.name} (${c.toolName})`)),
+    el('option', { value: UPLOAD }, 'Upload a Share with rules file (.lolly)'));
+  const file = el('input', { type: 'file', accept: '.lolly', 'aria-label': 'Share with rules file' });
+  const fileField = field('Share with rules file', file, { class: 'template-file' });
+  const who = audiencePicker([`programme-${p.id}`]);
+  const rulesHost = el('div', { class: 'stack' });
+  const pubErr = errSpan();
+  const publish = el('button', { class: 'primary', disabled: 'disabled' }, 'Publish');
+  let rules = null;
+  const sync = () => {
+    const chosen = data.candidates.find((c) => c.id === source.value);
+    fileField.hidden = source.value !== UPLOAD;
+    rules = chosen ? rulesPicker(chosen.inputs, null) : null;
+    rulesHost.replaceChildren(...(rules ? [rules.el, ...(p.tools.includes(chosen.toolId) ? [openNote(chosen.toolName, [p.name])] : [])]
+      : source.value === UPLOAD ? [el('p', { class: 'sub flush' }, 'A Share with rules file brings its own rules: partners change only what its designer chose.')] : []));
+    publish.disabled = !source.value;
+  };
+  source.addEventListener('change', sync);
+  sync();
+  publish.addEventListener('click', async () => {
+    pubErr.textContent = '';
+    const groups = who.value();
+    if (!groups.length) { pubErr.textContent = 'Choose who gets it.'; return; }
+    publish.disabled = true;
+    try {
+      if (source.value === UPLOAD) {
+        const f = file.files?.[0];
+        if (!f) { pubErr.textContent = 'Choose the .lolly file Share with rules downloaded.'; publish.disabled = false; return; }
+        const out = await uploadRules(f, `${base}/rules-file?${new URLSearchParams({ groups: groups.join(',') })}`);
+        toast(out.state === 'submitted' ? 'Sent. It is waiting for review.' : 'Published');
+      } else {
+        await api(base, { method: 'POST', body: { from: source.value, groups, editable: rules?.value() ?? null, fixedTheme: rules?.fixedTheme() ?? false } });
+        toast('Published');
+      }
+      reload();
+    } catch (ex) { pubErr.textContent = ex.message; publish.disabled = false; }
+  });
+
+  const current = data.templates;
+  host.replaceChildren(el('div', { class: 'card stack' },
+    el('h2', {}, 'Templates'),
+    el('p', { class: 'sub flush' }, `Starting points people in ${p.name} see on their home and in each tool. They change only what the template allows.`),
+    current.length ? el('div', { class: 'template-list' }, ...current.map(row)) : el('p', { class: 'muted' }, 'No templates yet.'),
+    el('h3', {}, 'Publish a template'),
+    el('div', { class: 'grant-fields' }, field('Template', source), fileField),
+    field('Who gets it', who.list),
+    rulesHost,
+    el('p', {}, publish),
+    pubErr));
 }
 
 // People, companies and ending a partnership (plans/82 M1 part 2). Every step
@@ -6550,6 +6771,17 @@ function renderPreview(data) {
     assets.sample?.length
       ? el('p', { class: 'chips' }, ...assets.sample.map((a) => el('span', { class: 'chip', title: a.id }, a.name)))
       : null) : null;
+  // The templates these groups get (plans/82 M2). The app is told only which
+  // inputs it may offer; the lines under each template are for the admin.
+  const templates = preview.templates ?? [];
+  const templatesCard = templates.length ? el('div', { class: 'card stack' },
+    el('h2', {}, 'Templates'),
+    el('p', { class: 'sub' }, 'What each template lets these groups change. The notes under each are for you; the app is told only what it may offer.'),
+    dataTable(['Template', 'Can change', 'Fixed'], templates.map((t) => el('tr', {},
+      el('td', {}, el('strong', {}, t.name), ' ', el('span', { class: 'muted' }, t.toolVersion ?? `version ${t.version}`),
+        t.retired ? el('div', { class: 'muted' }, `Retired${t.replacedBy ? `. Replaced by ${t.replacedBy.name}` : ''}.`) : null),
+      el('td', {}, t.canChange.join(', ') || 'Nothing'),
+      el('td', {}, t.fixed.join(', ') || 'Nothing', ...t.why.map((line) => el('div', { class: 'muted' }, line))))), { sortable: false })) : null;
   return el('div', {},
     el('div', { class: 'card stack' },
       el('h2', {}, `As ${heading}`),
@@ -6559,6 +6791,7 @@ function renderPreview(data) {
         `uses ${preview.visibleTools?.length ?? 0} tool${preview.visibleTools?.length === 1 ? '' : 's'}: `,
         el('span', { class: 'mono' }, (preview.visibleTools ?? []).join(', ') || 'none yet')) : null,
       el('p', { class: 'sub' }, `${orgConfig.inboxUnread} unread inbox message${orgConfig.inboxUnread === 1 ? '' : 's'} would target this group.`)),
+    templatesCard,
     assetCard,
     el('div', { class: 'card stack' }, el('h2', {}, 'Permissions'), dataTable(['Action', 'Effective'], canRows)),
     el('div', { class: 'card stack' },
@@ -6612,7 +6845,9 @@ async function viewPreview(main, params) {
     // A member who lands on this admin-only view degrades the way every other
     // view does: let the 403 reach the router, which renders the role message.
     // Anything else stays best-effort, since the free-text field always works.
-    if (e.status === 403) throw e;
+    // Someone who manages programmes may preview a programme's groups without
+    // policy.edit; they get the page without the rule-group suggestions.
+    if (e.status === 403 && !params?.get?.('groups')) throw e;
   }
 
   main.append(

@@ -210,6 +210,14 @@ async function renderTemplateFor(deps: RenderDeps, query: string, toolId: string
     undefined, template.retired.replacedBy ? { replacedBy: template.retired.replacedBy } : undefined);
   }
   if (template.toolId !== toolId) throw new RenderError('TEMPLATE_TOOL_MISMATCH', 422, `This template starts ${template.toolId}, not ${toolId}.`);
+  // A template that keeps its colourway and mode refuses a request to change
+  // them, the same way it refuses a fixed input.
+  const params = new URLSearchParams(query);
+  const theme = template.fixedTheme ? ['ds', '_themes'].filter((key) => params.has(key)) : [];
+  if (theme.length) {
+    throw new RenderError('INPUT_LOCKED', 422, `The template fixes the colourway and mode: ${theme.join(', ')}`,
+      theme.map((param) => ({ param, code: 'INPUT_LOCKED' as const })));
+  }
   return template;
 }
 

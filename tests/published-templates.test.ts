@@ -192,6 +192,21 @@ test('with rules, the caller changes only what the template leaves editable', as
   assert.ok(!JSON.stringify(entry).includes('Fixed by the template'), 'the feed names no rule');
 });
 
+test('a template that keeps its colourway and mode refuses a request to change them', async () => {
+  await setPublication({ editable: ['price'], fixedTheme: true });
+  const rita = await login('rita@acme.test');
+  assert.equal((await feedEntry(rita))?.meta?.fixedTheme, true);
+  for (const param of ['_themes', 'ds']) {
+    const refused = await render(rita, { template: templateId, price: '€ 99', [param]: param === 'ds' ? 'lolly-demo' : '{"":"dark"}' });
+    assert.equal(refused.status, 422, `${param}: ${refused.text}`);
+    assert.equal(refused.body.error.code, 'INPUT_LOCKED');
+    assert.equal(refused.body.error.input, param);
+  }
+  assert.equal((await render(rita, { template: templateId, price: '€ 99' })).status, 200);
+  await setPublication({ editable: ['price'] });
+  assert.equal((await feedEntry(rita))?.meta?.fixedTheme, undefined, 'open unless the template keeps them');
+});
+
 test('the tool\'s own rule still holds inside a template', async () => {
   await setPublication({ editable: ['price'] });
   await store.putOverlay({ toolId: 'price-card', version: 1, name: 'Brand guardrails', inputAccess: { price: [{ groups: ['programme-resellers'], level: 'locked', value: '€ 1,000' }] } });

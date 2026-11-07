@@ -1528,3 +1528,20 @@ html.account-inspector-open { overflow: hidden; }
   .domain-record-fields dt { font-weight: 600; }
 }
 @media (max-width: 640px) { .programme-tools { grid-template-columns: 1fr; max-height: none; } }
+
+/* Templates on a partner programme (plans/82 M2): one row per template, with
+   what it does opening in a panel underneath rather than in a dialog. */
+.template-list { display: flex; flex-direction: column; gap: var(--sp-6); margin-top: var(--sp-4); }
+.template-row { display: flex; flex-direction: column; gap: var(--sp-4); padding-bottom: var(--sp-6); border-bottom: 1px solid var(--grid); }
+.template-cells { display: grid; grid-template-columns: minmax(12rem, 1.4fr) 1fr 1fr minmax(7rem, .6fr) auto; gap: var(--sp-4) var(--sp-7); align-items: start; }
+.template-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ui-color-text-muted); margin-bottom: 2px; }
+.template-name { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.template-count { font-size: 14px; }
+.template-inputs, .template-audience { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
+.template-panel { padding: var(--sp-6); background: var(--plane); border-radius: var(--radius); }
+.template-panel[hidden], .template-file[hidden] { display: none; }
+@media (max-width: 760px) {
+  .template-cells { grid-template-columns: 1fr 1fr; }
+  .template-name, .template-actions { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) { .template-cells { grid-template-columns: 1fr; } }

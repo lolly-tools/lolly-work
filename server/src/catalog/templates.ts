@@ -11,12 +11,15 @@
  * - `editable` lists the inputs the people it is published to may change. Every
  *   other input is fixed to the template's value. Absent means no rules: every
  *   input stays editable, as a template always was (decision D3, 2026-11-07).
+ * - `fixedTheme` keeps the colourway and mode the template was made in. Absent
+ *   means people may pick another colourway or mode from the brand's own, which
+ *   moves every colour the tool takes from the design system.
  * - `retiredAt`, `retiredBy` and `replacedBy` retire it: new starts stop, saved
  *   copies keep working, and a server render that names it answers 410 with
  *   the replacement (decision D2). Lifecycle revoke stays the hard stop.
  *
- * The served feed carries `meta.version`, `meta.editable`, `meta.retired` and
- * `meta.replacedBy`, never a rule's name or reason: the app offers what may
+ * The served feed carries `meta.version`, `meta.editable`, `meta.fixedTheme`,
+ * `meta.retired` and `meta.replacedBy`, never a rule's name or reason: the app offers what may
  * change and nothing else (Andy, 2026-10-19).
  *
  * On a server render that names a template (`template=inst/<id>`), its rules
@@ -33,6 +36,8 @@ import type { InstanceAssetRecord } from './instance-assets.ts';
 export interface TemplatePublication {
   /** Input ids the people it reaches may change; absent means every input. */
   editable?: string[];
+  /** True when people may not change the colourway or mode. */
+  fixedTheme?: boolean;
   /** When and by whom it was retired ('user:<id>'). */
   retiredAt?: string;
   retiredBy?: string;
@@ -50,6 +55,7 @@ export interface RenderTemplate {
   version: number;
   values: Record<string, unknown>;
   editable?: string[];
+  fixedTheme?: boolean;
   retired?: { replacedBy?: string };
 }
 
@@ -97,6 +103,7 @@ export function servedTemplateEntry(rec: InstanceAssetRecord): AssetIndexEntry {
     ...((rec.entry.meta ?? {}) as Record<string, unknown>),
     version: rec.headVersion ?? 1,
     ...(pub?.editable ? { editable: [...pub.editable] } : {}),
+    ...(pub?.fixedTheme ? { fixedTheme: true } : {}),
     ...(pub?.retiredAt ? { retired: true } : {}),
     ...(pub?.replacedBy ? { replacedBy: pub.replacedBy } : {}),
   };
