@@ -7261,6 +7261,7 @@ export function buildApp(deps: AppDeps): App {
         if (cacheKey) body.pipe(extCache.tee(cacheKey, servedType)).pipe(res);
         else body.pipe(res);
       } catch (error) {
+        if (error instanceof ViewAsEndedError) throw error;
         if (error instanceof RangeNotSatisfiableError) return unsatisfiable(error.size);
         return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
       }

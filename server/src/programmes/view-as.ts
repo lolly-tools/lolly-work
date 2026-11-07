@@ -180,7 +180,7 @@ export interface ViewAsDeps {
 }
 
 /** One request's view: who answers, and who asked. */
-interface ActiveView { member: UserRecord; admin: UserRecord; viewingAs: ViewingAs; claim: ViewAsClaim; ended?: boolean }
+interface ActiveView { member: UserRecord; admin: UserRecord; viewingAs: ViewingAs; claim: ViewAsClaim; ended?: boolean; res?: ServerResponse }
 
 export function createViewAs(deps: ViewAsDeps) {
   const now = () => (deps.now ? deps.now() : Date.now());
@@ -249,26 +249,37 @@ export function createViewAs(deps: ViewAsDeps) {
     }
     if (!partnerRead) { sendError(res, 403, 'VIEWING_AS', 'Not while viewing as a partner.'); return true; }
     if ('fail' in result) return ended(res);
-    active.set(req, result.view);
+    active.set(req, { ...result.view, res });
     partitionCache(res, true);
     return false;
   }
+
+  /** End a view's request: the 403 goes out at once, so no route's own error handling
+   *  (a catch that would answer 502, say) can turn the end into anything else. */
+  const endRequest = (view: ActiveView): never => {
+    view.ended = true;
+    if (view.res && !view.res.headersSent) {
+      try { sendError(view.res, 403, 'VIEWING_AS_ENDED', new ViewAsEndedError().message); } catch { /* the request ends below regardless */ }
+    }
+    throw new ViewAsEndedError();
+  };
 
   /**
    * Who a request authenticates as, when it is a view: the partner, after the same
    * check the gate ran, so a route that authenticates again after slow work (a file
    * conversion, say) sees an admin who was disabled, signed out everywhere or lost the
    * programme in between. `undefined` when the request is not a view. A view whose
-   * check now fails throws ViewAsEndedError, here and at every later authentication in
-   * the request, so it ends with 403 and never carries on as anonymous or as the admin.
+   * check now fails answers 403 VIEWING_AS_ENDED at once and throws ViewAsEndedError,
+   * here and at every later authentication in the request, so it never carries on as
+   * anonymous or as the admin, and no route's catch can answer anything else.
    */
   async function member(req: IncomingMessage): Promise<UserRecord | undefined> {
     const view = active.get(req);
     if (!view) return undefined;
-    if (view.ended) throw new ViewAsEndedError();
+    if (view.ended) return endRequest(view);
     const result = await check(req, view.claim);
-    if ('fail' in result) { view.ended = true; throw new ViewAsEndedError(); }
-    active.set(req, result.view);
+    if ('fail' in result) return endRequest(view);
+    active.set(req, { ...result.view, ...(view.res ? { res: view.res } : {}) });
     return result.view.member;
   }
 

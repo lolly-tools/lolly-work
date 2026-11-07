@@ -276,3 +276,30 @@ test('no sign-in route but the session, the boot probe and sign-out is reachable
   assert.equal((await call(admin, 'GET', '/api/auth/config', undefined, body.token)).status, 200);
   assert.notEqual((await call(admin, 'GET', '/api/auth/session', undefined, body.token)).status, 403);
 });
+
+test('a view that ends answers 403 VIEWING_AS_ENDED itself, so a route catch that would answer 502 cannot change it', async () => {
+  const admin = { id: 'u-admin', sessionEpoch: 2, groups: ['admin'], role: 'admin' } as unknown as UserRecord;
+  let manages = true;
+  const view = createViewAs({
+    sessionMember: async () => admin, delegated: () => false, mayManage: async () => manages,
+    programme: async (id) => ({ id, name: 'Resellers' }), company: async () => null,
+    roleOf: () => 'member', secret: SECRET, verifySecrets: SECRET, audit: async () => undefined,
+  });
+  const token = signViewAs({ v: 1, u: 'u-admin', e: 2, p: 'resellers', exp: Math.floor(Date.now() / 1000) + 60 }, SECRET);
+  const sent: Array<{ status: number; body: string }> = [];
+  let headersSent = false;
+  const res = {
+    get headersSent() { return headersSent; },
+    setHeader() {}, getHeader() { return undefined; },
+    writeHead(status: number) { if (headersSent) throw new Error('ERR_HTTP_HEADERS_SENT'); headersSent = true; sent.push({ status, body: '' }); return this; },
+    end(body?: string) { if (body) sent.at(-1)!.body += body; return this; },
+  } as unknown as ServerResponse;
+  const req = { method: 'GET', url: '/catalog/ext/dam/a1/att1?view=1', headers: { cookie: 'lw_session=x', [VIEW_AS_HEADER]: token } } as unknown as IncomingMessage;
+  assert.equal(await view.gate(req, res, '/catalog/ext/dam/a1/att1'), false);
+  manages = false;
+  // A route that catches everything and answers 502, as the conversion path did.
+  try { await view.member(req); } catch { try { res.writeHead(502); } catch { /* headers already out */ } }
+  assert.equal(sent.length, 1, 'one answer only');
+  assert.equal(sent[0]!.status, 403);
+  assert.match(sent[0]!.body, /VIEWING_AS_ENDED/);
+});
