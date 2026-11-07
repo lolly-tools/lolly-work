@@ -1,4 +1,5 @@
 import { parseProductionRequest, verifyProductionReport, ProductionError } from '../render/production.ts';
+import { partnerLine } from '../render/record.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 import { RenderResourceError, type RenderRecord, type RenderStore } from './types.ts';
@@ -6,7 +7,7 @@ import { evidenceHash, renderIdentity, type RenderEvidence, type RenderIdentity 
 import { outputVerificationProblems, OutputVerificationError, verificationTarget, parseOutputVerification } from '../render/output-inspection.ts';
 import { withoutServerPaths } from '../render/tool-load.ts';
 
-export interface RenderExecution { bytes: Uint8Array; mime: string; cacheKey: string; evidence?: RenderEvidence }
+export interface RenderExecution { bytes: Uint8Array; mime: string; cacheKey: string; evidence?: RenderEvidence; partner?: import('../render/record.ts').RenderPartner }
 
 /** setInterval/setTimeout fire at once for a delay above this. */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -240,6 +241,11 @@ export class RenderRunner {
           sha256, cacheKey: output.cacheKey,
           ...(output.evidence ? { evidence: output.evidence } : {}),
           ...(identity ? { identity } : {}),
+          ...(output.partner ? { partner: {
+            ...(output.partner.company ? { company: output.partner.company.id } : {}),
+            ...(output.partner.programme ? { programme: output.partner.programme.id } : {}),
+            ...(partnerLine(output.partner) ? { line: partnerLine(output.partner)! } : {}),
+          } } : {}),
         } });
       } finally {
         // Runs even when a timed-out put eventually finishes. A failed cleanup

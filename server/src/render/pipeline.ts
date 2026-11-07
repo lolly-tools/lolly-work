@@ -50,6 +50,7 @@ import { isSvgTemplate, renderCapabilities } from './capabilities.ts';
 import { loadToolOrRefuse, ToolLoadRefusal } from './tool-load.ts';
 import { isPublishedTemplateRef, templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
 import { bindOverlay, defaultsFor, LOGO_FIELDS, themeOf, type BindingPlan, type Theme } from '../programmes/company-values.ts';
+import { recordEnvironment, recordedThemes, type RenderPartner } from './record.ts';
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
  *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
@@ -145,6 +146,11 @@ export interface RenderDeps {
    *  programmes/company-values.ts): null when nothing binds the tool or the
    *  caller is in no company. Absent means this render path binds nothing. */
   companyFor?: (args: { toolId: string; template: RenderTemplate | null; theme: Theme; toolOverlay: ToolOverlay | undefined; groups: string[] }) => Promise<RenderCompany | null>;
+  /** The partner company and programme a render is for (plans/82 M3, section 6):
+   *  recorded in its Content Credential. Null for anyone outside a programme. */
+  partnerFor?: (args: { toolId: string; template: RenderTemplate | null; groups: string[]; role?: string }) => Promise<RenderPartner | null>;
+  /** The design system that drew the render and its tokens, for the record. */
+  designSystem?: () => Promise<{ id: string; label: string; tokens: unknown } | null>;
 }
 
 /** What a render takes from the caller's partner company (plans/82 M3). */
@@ -187,6 +193,8 @@ export interface RenderOutput {
   evidence?: RenderEvidence;
   /** Present under `until-approved`: plain words for how this render came out. */
   watermarkNote?: string;
+  /** The partner the render was made for, as its credential records it (plans/82 M3). */
+  partner?: RenderPartner;
 }
 
 async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedResolver']): Promise<unknown> {
@@ -407,6 +415,8 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     } else companyValues[id] = raw;
   }
   const plan = company ? { ...company.plan, locked: company.plan.locked.filter((id) => Object.hasOwn(companyValues, id)) } : null;
+  // Who the piece is for, as its credential records it (plans/82 M3, section 6).
+  const partner = await deps.partnerFor?.({ toolId: req.toolId, template, groups, ...(req.principal?.role ? { role: req.principal.role } : {}) }) ?? null;
   // A template's rules join the tool's own, stricter wins (catalog/templates.ts),
   // and a bound input they fix is fixed to the company's value.
   const templated = template ? templateOverlay(toolOverlay, template, groups, declaredIds) : toolOverlay;
@@ -484,6 +494,8 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     params: bakedValues,
     context: { ...context, sourceHash, ...(untilApproved ? { untilApproved: untilApproved.approvalId } : {}),
       ...(template ? { template: { id: template.id, version: template.version, editable: template.editable ?? null } } : {}), brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
+      // A signed file records the partner, so a profile revision moves the bytes.
+      ...(partner && deps.signer ? { partner } : {}),
       worker: deps.worker ? evidenceHash(deps.worker.url) : null,
       signer: deps.signer ? evidenceHash({ chain: deps.signer.chain.map((cert) => sha256Hex(cert)), claimGenerator: deps.signer.claimGenerator }) : null },
   });
@@ -493,7 +505,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const cacheable = !observer && !tool.manifest.hooks;
   const cached = cacheable ? cacheGet(cacheKey) : undefined;
   if (cached) return { bytes: cached.bytes, mime: cached.mime, cacheKey, ...(cached.provenance ? { provenance: cached.provenance } : {}),
-    ...(untilApproved ? { watermarkNote: untilApproved.note } : {}) };
+    ...(untilApproved ? { watermarkNote: untilApproved.note } : {}), ...(partner ? { partner } : {}) };
 
   // Render path: hooked or HTML-layout tool → Chromium worker (or 501 when none);
   // otherwise the in-process jsdom fast path. Both converge on an SVG string post-processed
@@ -660,10 +672,20 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // still ship), matching how provenance degrades. Cache the signed bytes.
   if (deps.signer) {
     try {
+      // The Lolly record (plans/82 M3, section 6): the design system and its theme
+      // choices, as the app writes them, and the partner. Nothing else.
+      const system = await deps.designSystem?.().catch(() => null) ?? null;
+      const tokenEngine = engine as unknown as Parameters<typeof recordedThemes>[0] & { designRecordEnvironment(meta: unknown): Record<string, string> };
+      const environment = recordEnvironment({
+        designSystem: system ? { id: system.id, label: system.label } : null,
+        themes: system ? recordedThemes(tokenEngine, system.tokens, st.tokenSelection as Record<string, string> | null) : [],
+        partner, designRecordEnvironment: (meta) => tokenEngine.designRecordEnvironment(meta),
+      });
       out.bytes = await engine.embedC2pa(out.bytes, format, {
         signer: { privateKey: deps.signer.privateKey, certDer: deps.signer.certDer, chain: deps.signer.chain },
         title: req.toolId,
         ...(deps.signer.claimGenerator ? { claimGenerator: deps.signer.claimGenerator } : {}),
+        ...(Object.keys(environment).length ? { environment } : {}),
       });
     } catch (e) {
       // Log to stderr (container stream); ship the unsigned bytes rather than 500.
@@ -707,7 +729,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       ...(format !== 'svg' ? ['rasterizer-fonts-unattested'] : []),
       ...observation.limitations].sort(),
   }, out.bytes) : undefined;
-  return { ...out, cacheKey, ...(evidence ? { evidence } : {}), ...(untilApproved ? { watermarkNote: untilApproved.note } : {}) };
+  return { ...out, cacheKey, ...(evidence ? { evidence } : {}), ...(untilApproved ? { watermarkNote: untilApproved.note } : {}), ...(partner ? { partner } : {}) };
 }
 
 /** Rasterise an SVG string to PNG via resvg, longest edge bounded by the cap. */
