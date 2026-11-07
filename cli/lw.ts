@@ -133,17 +133,35 @@ const OPTIONS = {
     origin: { type: 'string' },
     // Partner programmes (plans/82 M1 part 2): lw domains, lw people.
     programme: { type: 'string' },
+    description: { type: 'string' },
+    team: { type: 'string' },
+    editable: { type: 'string' },
+    bindings: { type: 'string' },
     company: { type: 'string' },
     domain: { type: 'string' },
     ends: { type: 'string' },
+    at: { type: 'string' },
+    'no-notice': { type: 'boolean' },
     assert: { type: 'boolean' },
     apply: { type: 'boolean' },
     projects: { type: 'string' },
+    'keep-projects': { type: 'boolean' },
     'move-staff': { type: 'string' },
     whole: { type: 'boolean' },
     // `lw companies profile settings`: contacts who may edit, and the chain they wait for.
     editors: { type: 'string' },
     chain: { type: 'string' },
+    // `lw programmes limits` and `lw tokens limits` (plans/82 M7): a whole number,
+    // `none` for no cap, or `default` to take the next level's figure.
+    'calls-per-minute': { type: 'string' },
+    'renders-per-day': { type: 'string' },
+    'renders-per-month': { type: 'string' },
+    // `lw tokens add --programme <id> --ttl-days 90`: a partner agent's lifetime in days.
+    'ttl-days': { type: 'string' },
+    // `lw programmes usage <id> --from YYYY-MM-DD --to YYYY-MM-DD --by day|week [--csv]` (plans/82 M7).
+    to: { type: 'string' },
+    by: { type: 'string' },
+    csv: { type: 'boolean' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -172,17 +190,18 @@ async function response(path: string, opts: { method?: string; body?: unknown; h
   // passing --token or LW_TOKEN means "act as the automation", never as
   // whoever last signed in on this machine.
   const bearer = values.token ?? process.env.LW_TOKEN;
+  const rawBody = opts.body instanceof Uint8Array ? new Uint8Array(opts.body) : undefined;
   let res: Response;
   try {
     res = await fetch(`${base}${path}`, {
       method: opts.method ?? 'GET',
       headers: {
         ...(bearer ? { authorization: `Bearer ${bearer}` } : cookie ? { cookie } : {}),
-        ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...(opts.body !== undefined ? { 'content-type': rawBody ? 'application/octet-stream' : 'application/json' } : {}),
         ...opts.headers,
         'x-lolly-client': 'lw-cli engine/0',
       },
-      ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+      ...(opts.body !== undefined ? { body: rawBody ?? JSON.stringify(opts.body) } : {}),
     });
   } catch {
     // A stack trace out of node:net tells a first-time operator nothing. The
@@ -216,6 +235,36 @@ function fail(msg: string): never {
 
 function out(value: unknown): void {
   if (values.json) console.log(JSON.stringify(value, null, 2));
+}
+
+type LimitFigures = { callsPerMinute?: number | null; rendersPerDay?: number | null; rendersPerMonth?: number | null };
+const LIMIT_FLAGS = [['calls-per-minute', 'callsPerMinute'], ['renders-per-day', 'rendersPerDay'], ['renders-per-month', 'rendersPerMonth']] as const;
+
+/** What the limit flags say, laid over what is stated now: a number caps, `none`
+ *  is no cap, `default` drops the figure so the next level's applies. Null when no flag is set. */
+function limitFlags(current: LimitFigures): LimitFigures | null {
+  if (!LIMIT_FLAGS.some(([flag]) => values[flag] !== undefined)) return null;
+  const next: LimitFigures = { ...current };
+  for (const [flag, key] of LIMIT_FLAGS) {
+    const raw = values[flag];
+    if (raw === undefined) continue;
+    if (raw === 'default') delete next[key];
+    else if (raw === 'none') next[key] = null;
+    else if (/^\d+$/.test(raw)) next[key] = Number(raw);
+    else fail(`--${flag} takes a whole number, none or default`);
+  }
+  return next;
+}
+
+/** One line per limit: the figure, and where it comes from when the server says. */
+function printLimits(limits: Record<string, number | null>, sources?: Record<string, string>, used?: Record<string, number>): void {
+  const words: Record<string, string> = { callsPerMinute: 'calls a minute', rendersPerDay: 'renders a day', rendersPerMonth: 'renders a month' };
+  for (const key of Object.keys(words)) {
+    const value = limits[key];
+    const from = sources?.[key] ? `  (${sources[key] === 'none' ? 'internal token: no limit unless set' : `from the ${sources[key]}`})` : '';
+    const use = used?.[key] !== undefined ? `  used ${used[key]}` : '';
+    console.log(`  ${words[key]!.padEnd(16)} ${value === null || value === undefined ? 'no cap' : value.toLocaleString('en-US')}${use}${from}`);
+  }
 }
 
 interface IntentAnswer {
@@ -804,41 +853,6 @@ switch (cmd) {
     break;
   }
 
-  case 'programmes': {
-    // The licence report for one programme (plans/82 M4): what the licence gate
-    // would let through and hold back, by source, and the links made by staff
-    // that would lose files. Read-only.
-    if (sub !== 'rights-report') fail('usage: lw programmes rights-report <programme> [--json]');
-    const programme = positionals[2] ?? fail('usage: lw programmes rights-report <programme> [--json]');
-    type Row = { label: string; assets: number; exempt: number; sharedAnyway?: number; travel: { count: number; byLicence: Array<{ licence: string; count: number }> };
-      held: { count: number; byReason: Array<{ label: string; count: number }> } };
-    const r = await call(`/api/v1/programmes/${encodeURIComponent(programme)}/rights-report`) as {
-      programme: { name: string }; rules: string; mode?: { mode: string; line: string };
-      totals: { assets: number; travel: number; held: number; exempt: number; sharedAnyway?: number; needsChoosing?: number }; sources: Row[];
-      links: { count: number; files: number; links: Array<{ id: string; target: { name: string }; createdBy: { name: string }; held: number; files: number }>; more: number };
-    };
-    out(r);
-    if (!values.json) {
-      const t = r.totals;
-      if (r.mode) console.log(r.mode.line);
-      const held = r.mode?.mode === 'gate' ? 'held back' : 'would be held back';
-      console.log(`${r.programme.name}: ${t.assets} file(s); ${t.travel} travel, ${t.held} ${held}, ${t.sharedAnyway ?? 0} shared anyway, ${t.needsChoosing ?? 0} need choosing again, ${t.exempt} exempt (${r.rules})`);
-      for (const row of r.sources) {
-        const parts = [
-          ...row.travel.byLicence.map((l) => `travel ${l.count}: ${l.licence}`),
-          ...(row.sharedAnyway ? [`shared anyway ${row.sharedAnyway}`] : []),
-          ...row.held.byReason.map((h) => `held ${h.count}: ${h.label}`),
-          ...(row.exempt ? [`exempt ${row.exempt}`] : []),
-        ];
-        console.log(`  ${row.label}  ${row.assets}  ${parts.join('; ')}`);
-      }
-      console.log(`links made by staff that would lose files: ${r.links.count}${r.links.count ? ` (${r.links.files} file(s))` : ''}`);
-      for (const l of r.links.links) console.log(`  ${l.id}  ${l.target.name}  by ${l.createdBy.name}  loses ${l.held} of ${l.files}`);
-      if (r.links.more) console.log(`  and ${r.links.more} more`);
-    }
-    break;
-  }
-
   case 'people': {
     // Adding and ending partner programme people in bulk (plans/82 M1 part 2).
     // Both preview unless --apply is given.
@@ -864,8 +878,12 @@ switch (cmd) {
       const list = positionals[2];
       const pick = values.programme ? { programme: values.programme } : values.company ? { company: values.company } : values.domain ? { domain: values.domain }
         : list ? { emails: readFileSync(list === '-' ? 0 : list, 'utf8').split(/[\s,;]+/).filter(Boolean) } : null;
-      if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]');
-      const r = await call('/api/v1/programmes/exit', { method: 'POST', body: { ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
+      if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--at YYYY-MM-DD [--no-notice]] [--apply]');
+      const r = await call('/api/v1/programmes/exit', { method: 'POST', body: {
+        ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.at ? { at: values.at } : {}), ...(values['no-notice'] ? { notice: false } : {}),
+        ...(values.apply ? { apply: true } : {}),
+      } }) as {
+        scheduled?: boolean; endsAt?: string; notice?: boolean;
         dryRun: boolean; exit?: string; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
         stays?: Array<{ email: string; stays: string[] }>; cannotEnd?: Array<{ email: string; reason: string }>; notEnded?: Array<{ email: string; reason: string }>;
         pendingInvitations?: unknown[]; invitationsRevoked?: number; domainRules?: Array<{ domain: string; programme: { name: string } }>;
@@ -876,8 +894,13 @@ switch (cmd) {
         alreadyEnded?: { at: string }; ended?: { programme?: string; companies: string[] };
       };
       out(r);
+      if (!values.json && r.scheduled) {
+        console.log(`scheduled ${r.exit}: ends ${r.endsAt}${r.notice ? '; they are told 14 days and 1 day before' : '; nobody is told before'}`);
+        break;
+      }
       if (!values.json) {
         const verb = (now: string, then: string) => (r.dryRun ? now : then).padEnd(9);
+        if (r.dryRun && r.endsAt) console.log(`ends on ${r.endsAt.slice(0, 10)} at the end of the day (UTC)${r.notice ? ', told 14 days and 1 day before' : ''}`);
         if (r.alreadyEnded) console.log(`already ended on ${r.alreadyEnded.at.slice(0, 10)}; this ends what is left`);
         for (const a of r.accounts) console.log(`${verb('ends', 'ended')} ${a.email ?? a.id}`);
         for (const a of r.stays ?? []) console.log(`${verb('stays', 'stays')} ${a.email}  leaves this one, also in ${a.stays.join(', ')}`);
@@ -896,7 +919,45 @@ switch (cmd) {
       }
       break;
     }
-    fail('usage: lw people import <programme> <file> [--apply] | exit --programme|--company|--domain … [--apply]');
+    if (sub === 'exits') {
+      const programme = positionals[2];
+      if (!programme) fail('usage: lw people exits <programme>');
+      const r = await call(`/api/v1/programmes/${encodeURIComponent(programme)}/exits`) as {
+        exits: Array<{ id: string; state: string; selection: Record<string, unknown>; doneAt?: string; createdAt: string; counts?: Record<string, number>; reopen: { offered: boolean; until?: string } }>;
+      };
+      out(r);
+      if (!values.json) {
+        for (const e of r.exits) {
+          const what = Object.entries(e.selection).map(([k, v]) => `${k} ${Array.isArray(v) ? `${v.length} addresses` : v}`).join(', ');
+          const when = (e.doneAt ?? e.createdAt).slice(0, 10);
+          const reopen = e.reopen.offered ? `reopen until ${e.reopen.until?.slice(0, 10)}` : '';
+          console.log(`${e.id}  ${e.state.padEnd(9)} ${when}  ${what}${e.counts ? `  ${e.counts.ended} ended, ${e.counts.stays} stayed` : ''}  ${reopen}`);
+        }
+      }
+      break;
+    }
+    if (sub === 'reopen') {
+      const id = positionals[2];
+      if (!id) fail('usage: lw people reopen <exit> [--keep-projects] [--apply]');
+      const r = await call(`/api/v1/programmes/exits/${encodeURIComponent(id)}/reopen`, { method: 'POST', body: { ...(values['keep-projects'] ? { projects: false } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
+        dryRun: boolean; accounts: Array<{ email: string; result: string; reason?: string }>; projects: Array<{ name: string; result: string }>;
+        templates: Array<{ name: string; result: string }>; folders: Array<{ provider: string; path: string; result: string }>;
+        domainRules: Array<{ domain: string; result: string }>; reopened: { programme?: string; companies: string[] };
+        stayEnded: { tokens: number; links: number; rightsChoices: unknown[] };
+      };
+      out(r);
+      if (!values.json) {
+        for (const a of r.accounts) console.log(`${a.result.padEnd(13)} ${a.email}${a.reason ? `  ${a.reason}` : ''}`);
+        for (const p of r.projects) console.log(`${p.result.padEnd(13)} project ${p.name}`);
+        for (const t of r.templates) console.log(`${t.result.padEnd(13)} template ${t.name}`);
+        for (const f of r.folders) console.log(`${f.result.padEnd(13)} folder ${f.provider}/${f.path || '(all of it)'}`);
+        for (const d of r.domainRules) console.log(`${d.result.padEnd(13)} domain ${d.domain}`);
+        console.log(`stays ended: ${r.stayEnded.tokens} token(s), ${r.stayEnded.links} link(s), ${r.stayEnded.rightsChoices.length} share-anyway choice(s), every session`);
+        console.log(r.dryRun ? 'preview only: run again with --apply to reopen' : `reopened ${[r.reopened.programme, ...r.reopened.companies].filter(Boolean).join(', ') || 'the people'}`);
+      }
+      break;
+    }
+    fail('usage: lw people import <programme> <file> [--apply] | exit --programme|--company|--domain … [--apply] | exits <programme> | reopen <exit> [--apply]');
   }
 
   case 'brand-pages': {
@@ -949,10 +1010,35 @@ switch (cmd) {
   }
 
   case 'companies': {
+    if (sub !== 'profile') {
+      const usage = 'usage: lw companies [ls] <programme> | add <programme> <company> --name "…" | rm <programme> <company>';
+      const editing = sub === 'add' || sub === 'rm';
+      const programme = editing || sub === 'ls' || sub === 'list' ? positionals[2] : sub;
+      if (!programme || positionals.length !== (editing ? 4 : sub === 'ls' || sub === 'list' ? 3 : 2)) fail(usage);
+      const at = `/api/v1/programmes/${encodeURIComponent(programme)}`;
+      type Company = { id: string; name: string; endedAt?: string };
+      if (editing) {
+        const company = positionals[3] ?? fail(usage);
+        if (sub === 'add' && !values.name) fail(usage);
+        const r = await call(`${at}/companies/${encodeURIComponent(company)}`, {
+          method: sub === 'add' ? 'PUT' : 'DELETE',
+          ...(sub === 'add' ? { body: { name: values.name } } : {}),
+        }) as Company;
+        out(r);
+        if (!values.json) console.log(sub === 'add' ? `${r.id}  ${r.name}` : `removed ${company} from ${programme}`);
+      } else {
+        const r = await call(`${at}/people`) as { companies: Company[] };
+        out(r.companies);
+        if (!values.json) {
+          if (!r.companies.length) console.log('no companies in this programme');
+          for (const c of r.companies) console.log(`${c.id}  ${c.name}${c.endedAt ? `  ended ${c.endedAt.slice(0, 10)}` : ''}`);
+        }
+      }
+      break;
+    }
     // A partner company's profile (plans/82 M3): the logos and details every
     // piece made for it carries, set up once by the brand team.
     const usage = 'usage: lw companies profile show|history|set|logo|settings <programme> <company> …';
-    if (sub !== 'profile') fail(usage);
     const verb = positionals[2];
     const programme = positionals[3];
     const company = positionals[4];
@@ -1046,15 +1132,256 @@ switch (cmd) {
     fail(usage);
   }
 
+  case 'programmes': {
+    // Partner programmes (plans/82). `limits` is what every token placed in one
+    // takes unless it states its own (M7): with no flag, the figures and sources.
+    const usage = 'usage: lw programmes [ls] | show <id> | create <id> --name "…" | set <id> [--name "…"] [--description "…"] [--team <group>] [--tools a,b] | rm <id> | limits <id> | usage <id> | rights-report <id>';
+    if (sub === 'rights-report') {
+      // The licence report for one programme (plans/82 M4): what the licence gate
+      // would let through and hold back, by source, and the links made by staff
+      // that would lose files. Read-only.
+      const programme = positionals[2] ?? fail('usage: lw programmes rights-report <programme> [--json]');
+      type Row = { label: string; assets: number; exempt: number; sharedAnyway?: number; travel: { count: number; byLicence: Array<{ licence: string; count: number }> };
+        held: { count: number; byReason: Array<{ label: string; count: number }> } };
+      const r = await call(`/api/v1/programmes/${encodeURIComponent(programme)}/rights-report`) as {
+        programme: { name: string }; rules: string; mode?: { mode: string; line: string };
+        totals: { assets: number; travel: number; held: number; exempt: number; sharedAnyway?: number; needsChoosing?: number }; sources: Row[];
+        links: { count: number; files: number; links: Array<{ id: string; target: { name: string }; createdBy: { name: string }; held: number; files: number }>; more: number };
+      };
+      out(r);
+      if (!values.json) {
+        const t = r.totals;
+        if (r.mode) console.log(r.mode.line);
+        const held = r.mode?.mode === 'gate' ? 'held back' : 'would be held back';
+        console.log(`${r.programme.name}: ${t.assets} file(s); ${t.travel} travel, ${t.held} ${held}, ${t.sharedAnyway ?? 0} shared anyway, ${t.needsChoosing ?? 0} need choosing again, ${t.exempt} exempt (${r.rules})`);
+        for (const row of r.sources) {
+          const parts = [
+            ...row.travel.byLicence.map((l) => `travel ${l.count}: ${l.licence}`),
+            ...(row.sharedAnyway ? [`shared anyway ${row.sharedAnyway}`] : []),
+            ...row.held.byReason.map((h) => `held ${h.count}: ${h.label}`),
+            ...(row.exempt ? [`exempt ${row.exempt}`] : []),
+          ];
+          console.log(`  ${row.label}  ${row.assets}  ${parts.join('; ')}`);
+        }
+        console.log(`links made by staff that would lose files: ${r.links.count}${r.links.count ? ` (${r.links.files} file(s))` : ''}`);
+        for (const l of r.links.links) console.log(`  ${l.id}  ${l.target.name}  by ${l.createdBy.name}  loses ${l.held} of ${l.files}`);
+        if (r.links.more) console.log(`  and ${r.links.more} more`);
+      }
+      break;
+    }
+    type Programme = { id: string; name: string; description?: string; group: string; team?: string; tools: string[]; collections: unknown[]; members: unknown[]; endedAt?: string };
+    const show = (p: Programme): void => {
+      if (values.json) return;
+      console.log(`${p.id}  ${p.name}  ${p.group}${p.endedAt ? `  ended ${p.endedAt.slice(0, 10)}` : ''}`);
+      if (p.description) console.log(`  ${p.description}`);
+      console.log(`  team ${p.team ?? '-'}  tools ${p.tools.join(', ') || '-'}  ${p.collections.length} collection(s)  ${p.members.length} member(s)`);
+    };
+    if (sub === undefined || sub === 'ls' || sub === 'list') {
+      if (positionals.length > (sub ? 2 : 1)) fail(usage);
+      const r = await call('/api/v1/programmes') as { programmes: Programme[] };
+      out(r);
+      if (!values.json) {
+        if (!r.programmes.length) console.log('no partner programmes');
+        for (const p of r.programmes) console.log(`${p.id}  ${p.name}  ${p.tools.length} tool(s)  ${p.members.length} member(s)${p.endedAt ? '  ended' : ''}`);
+      }
+      break;
+    }
+    if (sub === 'show' || sub === 'create' || sub === 'set' || sub === 'rm') {
+      const id = positionals[2];
+      if (!id || positionals.length !== 3) fail(usage);
+      const at = `/api/v1/programmes/${encodeURIComponent(id)}`;
+      if (sub === 'rm') {
+        out(await call(at, { method: 'DELETE' }));
+        if (!values.json) console.log(`removed programme ${id}`);
+        break;
+      }
+      if (sub === 'show') {
+        const r = await call(at) as Programme;
+        out(r); show(r);
+        break;
+      }
+      if (sub === 'create' && !values.name) fail('usage: lw programmes create <id> --name "…" [--description "…"] [--team <group>] [--tools a,b]');
+      if (sub === 'set' && !(['name', 'description', 'team', 'tools'] as const).some((key) => values[key] !== undefined)) fail('nothing to change: name --name, --description, --team or --tools');
+      // The route requires a name and replaces the description on every save.
+      const current = sub === 'set' ? await call(at) as Programme : undefined;
+      const body: Record<string, unknown> = current ? { name: current.name, description: current.description } : {};
+      for (const key of ['name', 'description', 'team'] as const) if (values[key] !== undefined) body[key] = values[key];
+      if (values.tools !== undefined) body.tools = values.tools.split(',').map((t) => t.trim()).filter(Boolean);
+      const r = await call(at, { method: 'PUT', body }) as Programme;
+      out(r); show(r);
+      break;
+    }
+    if (sub === 'usage') {
+      // What the programme's tokens did, counted (M7): counts only, never an input or a prompt.
+      const id = positionals[2] ?? fail(usage);
+      const q = new URLSearchParams();
+      for (const key of ['from', 'to', 'by'] as const) if (values[key]) q.set(key, String(values[key]));
+      if (positionals[3]) q.set('token', positionals[3]);
+      if (values.csv) q.set('format', 'csv');
+      const at = `/api/v1/programmes/${encodeURIComponent(id)}/usage${q.size ? `?${q}` : ''}`;
+      if (values.csv) { process.stdout.write(await (await response(at)).text()); break; }
+      type Cells = { calls: number; renders: number; batches: { count: number; rows: number }; approvals: { open: number; approved: number; rejected: number }; refusals: Record<string, number> };
+      const r = await call(at) as { from: string; to: string; by: string; tokens: Array<{ id: string; label: string; company: string | null; totals: Cells; periods: Array<{ period: string } & Cells> }>; totals: Cells };
+      out(r);
+      if (!values.json) {
+        const refused = (c: Cells) => Object.values(c.refusals).reduce((n, v) => n + v, 0);
+        const line = (c: Cells) => `${c.calls} calls, ${c.renders} renders, ${c.batches.count} batches (${c.batches.rows} rows), ${c.approvals.open + c.approvals.approved + c.approvals.rejected} approval requests, ${refused(c)} refused`;
+        console.log(`${id}, ${r.from} to ${r.to} by ${r.by}: ${line(r.totals)}`);
+        for (const t of r.tokens) {
+          console.log(`  ${t.id}  ${t.label}${t.company ? `  company ${t.company}` : ''}: ${line(t.totals)}`);
+          for (const p of t.periods) console.log(`    ${p.period}  ${line(p)}`);
+        }
+      }
+      break;
+    }
+    if (sub !== 'limits') fail(usage);
+    const id = positionals[2] ?? fail(usage);
+    type ProgrammeLimitView = { id: string; name: string; tokenLimits?: LimitFigures; tokenLimitDefaults?: { limits: Record<string, number | null>; sources: Record<string, string> } };
+    const at = `/api/v1/programmes/${encodeURIComponent(id)}`;
+    const current = await call(at) as ProgrammeLimitView;
+    const next = limitFlags(current.tokenLimits ?? {});
+    const shown = next ? await call(at, { method: 'PUT', body: { name: current.name, tokenLimits: next } }) as ProgrammeLimitView : current;
+    out(shown);
+    if (!values.json) {
+      console.log(`${shown.id}  ${shown.name}: every token placed here takes these unless it states its own`);
+      if (shown.tokenLimitDefaults) printLimits(shown.tokenLimitDefaults.limits, shown.tokenLimitDefaults.sources);
+    }
+    break;
+  }
+
+  case 'templates': {
+    const usage = 'usage: lw templates [ls] <programme> | publish <programme> --from <inst/id> --groups g1,g2 | upload <programme> <file.lolly> --groups g1,g2 | set <programme> <asset> [--groups …] [--editable …|all] [--bindings …] | retire <programme> <asset> [--replaced-by <asset>] | restore <programme> <asset> | only <programme> <tool> on|off';
+    const verbs = ['publish', 'upload', 'set', 'retire', 'restore', 'only'];
+    const editing = sub !== undefined && verbs.includes(sub);
+    const programme = editing || sub === 'ls' || sub === 'list' ? positionals[2] : sub;
+    if (!programme) fail(usage);
+    const at = `/api/v1/programmes/${encodeURIComponent(programme)}`;
+    const list = (raw: string) => raw.split(',').map((s) => s.trim()).filter(Boolean);
+    const rules = (): Record<string, unknown> => {
+      const body: Record<string, unknown> = {};
+      if (values.groups !== undefined) body.groups = list(values.groups);
+      if (values.editable !== undefined) body.editable = values.editable === 'all' ? null : list(values.editable);
+      if (values.bindings !== undefined) {
+        body.bindings = Object.fromEntries(list(values.bindings).map((pair) => {
+          const eq = pair.indexOf('=');
+          const input = pair.slice(0, eq).trim();
+          const field = pair.slice(eq + 1).trim();
+          if (eq < 1 || !input || !field) fail(`--bindings takes input=field pairs, got ${pair}`);
+          return [input, field];
+        }));
+      }
+      return body;
+    };
+    if (!editing) {
+      if (positionals.length !== (sub === 'ls' || sub === 'list' ? 3 : 2)) fail(usage);
+      const r = await call(`${at}/templates`) as { templatesOnly: string[]; templates: Array<{ id: string; name: string; toolName: string; groups: string[]; editable: string[] | null; version: number; state: string; retired?: { replacedBy?: string } }> };
+      out(r);
+      if (!values.json) {
+        if (r.templatesOnly.length) console.log(`templates only: ${r.templatesOnly.join(', ')}`);
+        if (!r.templates.length) console.log('no templates published to this programme');
+        for (const t of r.templates) console.log(`${t.id}  ${t.name}  ${t.toolName}  v${t.version}  [${t.retired ? 'retired' : t.state}]  ${t.groups.join(', ')}  editable ${t.editable === null ? 'all' : t.editable.join(', ') || 'none'}`);
+      }
+      break;
+    }
+    if (sub === 'only') {
+      const tool = positionals[3];
+      const state = positionals[4];
+      if (!tool || (state !== 'on' && state !== 'off') || positionals.length !== 5) fail(usage);
+      const r = await call(`${at}/templates-only/${encodeURIComponent(tool)}`, { method: 'PUT', body: { on: state === 'on' } }) as { programme: string; toolId: string; on: boolean };
+      out(r);
+      if (!values.json) console.log(`${r.programme}  ${r.toolId}  templates only ${r.on ? 'on' : 'off'}`);
+      break;
+    }
+    let r: { id: string; groups?: string[]; state?: string; replacedBy?: string };
+    if (sub === 'publish') {
+      if (positionals.length !== 3 || !values.from || !values.groups) fail(usage);
+      r = await call(`${at}/templates`, { method: 'POST', body: { from: values.from, ...rules() } }) as typeof r;
+    } else if (sub === 'upload') {
+      const file = positionals[3];
+      if (!file || positionals.length !== 4 || !values.groups) fail(usage);
+      let bytes: Buffer;
+      try { bytes = readFileSync(file); } catch { fail(`cannot read ${file}`); }
+      const q = new URLSearchParams({ groups: list(values.groups).join(',') });
+      r = await call(`${at}/templates/rules-file?${q}`, { method: 'POST', body: bytes }) as typeof r;
+    } else {
+      const asset = positionals[3];
+      if (!asset || positionals.length !== 4) fail(usage);
+      const assetAt = `${at}/templates/${encodeURIComponent(asset.replace(/^inst\//, ''))}`;
+      if (sub === 'set') {
+        const body = rules();
+        if (!Object.keys(body).length) fail('nothing to change: name --groups, --editable or --bindings');
+        r = await call(assetAt, { method: 'PUT', body }) as typeof r;
+      } else if (sub === 'retire') {
+        r = await call(`${assetAt}/retire`, { method: 'POST', body: { ...(values['replaced-by'] !== undefined ? { replacedBy: values['replaced-by'] } : {}) } }) as typeof r;
+      } else {
+        r = await call(`${assetAt}/restore`, { method: 'POST' }) as typeof r;
+      }
+    }
+    out(r);
+    if (!values.json) console.log(`${r.id}  ${sub === 'publish' ? 'published' : sub === 'upload' ? 'uploaded' : sub === 'set' ? 'updated' : sub === 'retire' ? 'retired' : 'restored'}${r.state ? `  [${r.state}]` : ''}${r.groups ? `  ${r.groups.join(', ')}` : ''}${r.replacedBy ? `  replaced by ${r.replacedBy}` : ''}`);
+    break;
+  }
+
   case 'tokens': {
     // Service tokens (plans/35 wave 2): automation identity, owner-minted.
+    // With --programme, the same verbs act through that programme's manager
+    // routes (plans/82 M7): a partner agent's token, issued and revoked there.
+    const programmeAt = values.programme ? `/api/v1/programmes/${encodeURIComponent(values.programme)}/tokens` : null;
+    type ProgrammeTokenRow = { id: string; label: string; company: string | null; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null;
+      lastUsedAt: string | null; revokedAt: string | null; live: boolean; expired: boolean; expiring: boolean; limits: Record<string, number | null>; limitSources: Record<string, string>;
+      limitOverrides: LimitFigures; usage: { today: { calls: number; renders: number; busiestMinute: number }; month: { renders: number }; week: { rateLimited: number; budgetRefused: number }; lastRefusal: { at: string; code: string } | null } };
+    if (programmeAt && (sub === 'add' || sub === 'create')) {
+      const label = values.label ?? fail('usage: lw tokens add --programme <id> [--company <id>] --label "…" [--scopes render,catalog.read] [--tools a,b] [--ttl-days 90]');
+      const list = (raw: string | undefined) => raw?.split(',').map((item) => item.trim()).filter(Boolean);
+      const scopes = list(values.scopes), tools = list(values.tools), limits = limitFlags({});
+      const ttl = values['ttl-days'] ?? values.days;
+      const t = await call(programmeAt, { method: 'POST', body: { label, ...(values.company ? { company: values.company } : {}), ...(scopes ? { scopes } : {}), ...(tools ? { tools } : {}),
+        ...(ttl ? { ttlDays: Number(ttl) } : {}), ...(limits ? { limits } : {}) } }) as ProgrammeTokenRow & { token: string; programme: string };
+      out(t);
+      if (!values.json) {
+        console.log(`${t.id}  ${t.label}  programme ${t.programme}${t.company ? `/${t.company}` : ''}  scopes ${(t.scopes ?? []).join(',')}${t.tools ? `  tools ${t.tools.join(',')}` : ''}  expires ${t.expiresAt}`);
+        printLimits(t.limits, t.limitSources);
+        console.log(`token (shown once, hand it to the partner now): ${t.token}`);
+      }
+      break;
+    }
+    if (programmeAt && sub === 'revoke') {
+      const id = positionals[2] ?? fail('usage: lw tokens revoke <id> --programme <id>');
+      await call(`${programmeAt}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      console.log(`revoked ${id}`);
+      break;
+    }
+    if (programmeAt && sub === 'limits') {
+      const id = positionals[2] ?? fail('usage: lw tokens limits <id> --programme <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]');
+      const { tokens } = await call(values.company ? `${programmeAt}?company=${encodeURIComponent(values.company)}` : programmeAt) as { tokens: ProgrammeTokenRow[] };
+      const current = tokens.find((t) => t.id === id) ?? fail(`no token ${id} in programme ${values.programme}`);
+      const next = limitFlags(current.limitOverrides ?? {});
+      const shown = next ? await call(`${programmeAt}/${encodeURIComponent(id)}`, { method: 'PUT', body: { limits: next } }) as ProgrammeTokenRow : current;
+      out(shown);
+      if (!values.json) {
+        console.log(`${shown.id}  ${shown.label}`);
+        printLimits(shown.limits, shown.limitSources, { rendersPerDay: shown.usage.today.renders, rendersPerMonth: shown.usage.month.renders });
+      }
+      break;
+    }
+    if (programmeAt && (sub === undefined || sub === 'list')) {
+      const { tokens } = await call(values.company ? `${programmeAt}?company=${encodeURIComponent(values.company)}` : programmeAt) as { tokens: ProgrammeTokenRow[] };
+      out(tokens);
+      if (!values.json) for (const t of tokens) {
+        const state = t.revokedAt ? `REVOKED ${t.revokedAt}` : t.expired ? `EXPIRED ${t.expiresAt}` : `${t.expiring ? 'EXPIRING ' : ''}expires ${t.expiresAt}`;
+        const cap = (n: number | null | undefined) => (n === null || n === undefined ? 'no cap' : n.toLocaleString('en-US'));
+        console.log(`${t.id}  ${t.label}${t.company ? `  company ${t.company}` : ''}  scopes ${(t.scopes ?? []).join(',')}  today ${t.usage.today.calls} calls, ${t.usage.today.renders}/${cap(t.limits.rendersPerDay)} renders  last used ${t.lastUsedAt ?? 'never'}  ${state}`);
+      }
+      break;
+    }
     if (sub === 'create') {
       const label = values.label ?? fail('usage: lw tokens create --label ci --scopes render[,documents,...] [--tools a,b] [--role r] [--days n]');
       const list = (raw: string | undefined) => raw?.split(',').map((item) => item.trim()).filter(Boolean);
       const scopes = list(values.scopes);
       if (!scopes && !values.role) fail('--scopes or --role required: scopes render, documents, files, delivery, catalog.read, audit.read; roles viewer, member, author, approver, admin, owner');
       const tools = list(values.tools);
-      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, ...(values.role ? { role: values.role } : {}), ...(scopes ? { scopes } : {}), ...(tools ? { tools } : {}), ...(values.days ? { ttlDays: Number(values.days) } : {}) } }) as { id: string; token: string; role: string; scopes: string[] | null; tools: string[] | null; expiresAt: string };
+      const limits = limitFlags({});
+      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, ...(values.role ? { role: values.role } : {}), ...(scopes ? { scopes } : {}), ...(tools ? { tools } : {}), ...(values.days ? { ttlDays: Number(values.days) } : {}), ...(limits ? { limits } : {}) } }) as { id: string; token: string; role: string; scopes: string[] | null; tools: string[] | null; expiresAt: string };
       out(t);
       if (!values.json) {
         console.log(`${t.id}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}` : 'all that role can reach'}${t.tools ? `  tools ${t.tools.join(',')}` : ''}  expires ${t.expiresAt}`);
@@ -1067,6 +1394,24 @@ switch (cmd) {
       const id = positionals[2] ?? fail('usage: lw tokens revoke <id>');
       await call(`/api/v1/tokens/${id}`, { method: 'DELETE' });
       console.log(`revoked ${id}`);
+      break;
+    }
+    if (sub === 'limits') {
+      // A token's own limits (plans/82 M7): with no flag, what applies and where it comes from.
+      const usage = 'usage: lw tokens limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day <n>|none|default] [--renders-per-month <n>|none|default]';
+      const id = positionals[2] ?? fail(usage);
+      type TokenLimitView = { id: string; label: string; limits: Record<string, number | null>; limitSources: Record<string, string>; limitOverrides: LimitFigures;
+        usage: { today: { calls: number; renders: number; busiestMinute: number }; month: { renders: number }; week: { rateLimited: number; budgetRefused: number }; lastRefusal: { at: string; code: string } | null } };
+      const { tokens } = await call('/api/v1/tokens') as { tokens: TokenLimitView[] };
+      const current = tokens.find((t) => t.id === id) ?? fail(`no token ${id}`);
+      const next = limitFlags(current.limitOverrides ?? {});
+      const shown = next ? await call(`/api/v1/tokens/${encodeURIComponent(id)}/limits`, { method: 'PUT', body: { limits: next } }) as TokenLimitView : current;
+      out(shown);
+      if (!values.json) {
+        console.log(`${shown.id}  ${shown.label}`);
+        printLimits(shown.limits, shown.limitSources, { rendersPerDay: shown.usage.today.renders, rendersPerMonth: shown.usage.month.renders });
+        console.log(`  today: ${shown.usage.today.calls} calls, busiest minute ${shown.usage.today.busiestMinute}; last 7 days: ${shown.usage.week.rateLimited} calls and ${shown.usage.week.budgetRefused} requests turned away${shown.usage.lastRefusal ? `; last ${shown.usage.lastRefusal.code} at ${shown.usage.lastRefusal.at}` : ''}`);
+      }
       break;
     }
     if (sub === 'programme') {
@@ -1083,12 +1428,15 @@ switch (cmd) {
       break;
     }
     const { tokens } = await call('/api/v1/tokens') as {
-      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null; programme?: string | null; company?: string | null }>;
+      tokens: Array<{ id: string; label: string; role: string; scopes: string[] | null; tools: string[] | null; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null; programme?: string | null; company?: string | null;
+        limits?: Record<string, number | null>; usage?: { today: { calls: number; renders: number } } }>;
     };
     out(tokens);
     if (!values.json) for (const t of tokens) {
       const placed = t.programme ? `programme ${t.programme}${t.company ? `/${t.company}` : ''}  ` : '';
-      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${placed}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
+      const cap = (n: number | null | undefined) => (n === null || n === undefined ? 'no cap' : n.toLocaleString('en-US'));
+      const limits = t.limits && t.usage && !t.revokedAt ? `today ${t.usage.today.calls} calls, ${t.usage.today.renders}/${cap(t.limits.rendersPerDay)} renders, ${cap(t.limits.callsPerMinute)} calls a minute  ` : '';
+      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.scopes ? `scopes ${t.scopes.join(',')}  ` : ''}${t.tools ? `tools ${t.tools.join(',')}  ` : ''}${placed}${limits}${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
     }
     break;
   }
@@ -2227,7 +2575,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
     const unknown = cmd !== undefined && !values.help;
     const write = unknown ? console.error : console.log;
     if (unknown) write(`lw: unknown command "${cmd}"`);
-    write(`lw — lolly-work admin CLI (base: ${base})
+    write(`lw - lolly-work admin CLI (base: ${base})
 
   login                      device-code sign-in: confirm the short code in a signed-in browser
   login --email <dev-user>   sign in via the dev provider
@@ -2235,13 +2583,35 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   whoami · summary · fleet · fleet installs · audit verify|head
   tokens [create --label <l> --scopes <s,...> [--tools <id,...>] [--role <r>] | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
   tokens programme <id> <programme> [--company <id>] · tokens programme <id> none   place a token in a partner programme, so a partner's agent is scoped like its people
+  tokens limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]   a token's limits, where each comes from, and today's use
+  tokens add --programme <id> [--company <id>] --label "…" [--scopes render,catalog.read] [--tools a,b] [--ttl-days 90]   a partner agent's token, issued by the programme's manager
+  tokens list|revoke <id>|limits <id> --programme <id> [--company <id>]   that programme's tokens, through its manager's routes
+  programmes [ls]   list partner programmes with tool and member counts
+  programmes show <id>   show a programme's name, team, tools and member counts
+  programmes create <id> --name "…" [--description "…"] [--team <group>] [--tools a,b,…]   create a partner programme
+  programmes set <id> [--name "…"] [--description "…"] [--team <group>] [--tools a,b,…]   change the named fields of a partner programme
+  programmes rm <id>   remove a partner programme
+  programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]   the limits every token placed in a programme takes
+  programmes usage <id> [<tokenId>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--by day|week] [--csv]   what the programme's tokens did, counted
+  companies [ls] <programme>   list the companies in a partner programme
+  companies add <programme> <company> --name "…"   add or rename a partner company
+  companies rm <programme> <company>   remove a company from a partner programme
   companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
   companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
+  templates [ls] <programme>   list the templates published to a programme and its companies
+  templates publish <programme> --from <inst/id> --groups g1,g2 [--editable a,b|all] [--bindings input=field,…]   publish a catalog template with audience and input rules
+  templates upload <programme> <file.lolly> --groups g1,g2   publish a Share with rules file to partner groups
+  templates set <programme> <asset> [--groups …] [--editable …|all] [--bindings …]   change a template's audience or input rules
+  templates retire <programme> <asset> [--replaced-by <asset>]   stop new starts from a template and name an optional replacement
+  templates restore <programme> <asset>   make a retired template available again
+  templates only <programme> <tool> on|off   choose whether partners use a tool only through published templates
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   people import <programme> <file.csv|-> [--apply]   add a list to a partner programme: email, name, company, end date (preview unless --apply)
-  people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]   end a partnership in one audited step
+  people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--at YYYY-MM-DD [--no-notice]] [--apply]   end a partnership in one audited step, now or at the end of a day
+  people exits <programme>   a programme's ends, newest first, with whether Reopen is offered
+  people reopen <exit> [--keep-projects] [--apply]   undo an end within 30 days: people, groups, templates, folders, domain rules and projects come back
   domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--move-staff <id,...>] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited); staff move only by name
   domains check <domain> · domains rm <domain> [--programme <id>]   look the DNS record up now; stop new people joining through a domain
   folders [ls] --programme <id> · folders add <provider> <path>|--whole · folders rm <provider> <path> --programme <id> [--company <id>] [--ends YYYY-MM-DD]   give one provider folder to a programme or company
@@ -2308,7 +2678,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   edge purge [--tag t]... [--url u]... [--path p]...   queue a purge on every configured provider (owner)
   edge credential <id> [--rm]   seal a provider API key or token (prompts; never argv)
 
-  --base <url> or LW_BASE — instance to talk to · --json for machine output`);
+  --base <url> or LW_BASE   instance to talk to · --json for machine output`);
     if (unknown) process.exit(1);
     break;
   }

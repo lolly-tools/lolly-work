@@ -354,7 +354,15 @@ test('every registered route is declared on purpose or refuses a scoped token be
 
   for (const key of scopedRouteKeys()) assert.ok(registered.has(key), `the table names a route the app no longer has: ${key}`);
 
+  // Asking for approval is the one approvals reach a token has, and only under its own
+  // scope (plans/82 M7). Acting, approvers and the file stay with people.
+  const asking = new Set(['POST /api/v1/approvals', 'GET /api/v1/approvals', 'GET /api/v1/approvals/:id', 'POST /api/v1/approvals/:id/withdraw']);
   for (const key of scopedRouteKeys()) {
+    if (asking.has(key)) {
+      const [method, path] = key.split(' ') as [string, string];
+      assert.deepEqual(routeScopes(method, path), ['approvals.request'], key);
+      continue;
+    }
     for (const forbidden of ['/api/v1/tokens', '/api/v1/approvals', '/api/v1/grants', '/api/v1/users', '/api/v1/catalog/providers', '/api/v1/scim', '/scim/', '/api/internal', '/metrics', '/api/workspace', '/admin']) {
       assert.ok(!key.includes(forbidden), `${key} must stay out of reach of a scoped token`);
     }

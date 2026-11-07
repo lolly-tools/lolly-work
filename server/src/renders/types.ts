@@ -38,6 +38,9 @@ export interface RenderResult {
   expiredAt?: string;
   /** When output retention removed the bytes. */
   purgedAt?: string;
+  /** The partner the file was made for, as its credential records it (plans/82 M3):
+   *  ids for the per-company counts, and the line an agent reads back. */
+  partner?: { company?: string; programme?: string; line?: string };
 }
 
 export interface RenderFailure { code: string; message: string; inspection?: OutputInspection; production?: ProductionReport; productionAttempts?: ProductionReport[] }
@@ -74,8 +77,16 @@ export interface RenderStore {
   findRenderBatchByKey(principal: string, key: string): Promise<RenderBatchRecord | null>;
   /** Atomically cancel unfinished children, preserving every terminal child. */
   cancelRenderBatch(id: string, principal: string): Promise<RenderBatchRecord | null>;
+  /** Counts of renders made by these principals from `fromIso` (inclusive) to `toIso`
+   *  (exclusive), by UTC day, tool, format, state and the company the output was made
+   *  for (plans/82 M7). Counts only: never an input, a title or a file name. */
+  renderUsage(principals: readonly string[], fromIso: string, toIso: string): Promise<RenderUsageRow[]>;
+  /** Batches and their rows by principal and UTC day, in the same window. */
+  renderBatchUsage(principals: readonly string[], fromIso: string, toIso: string): Promise<RenderBatchUsageRow[]>;
   /** Atomic insert; a principal/key collision returns the original immutable request. */
   insertRender(record: RenderRecord): Promise<{ record: RenderRecord; reused: boolean }>;
+  /** The render an idempotency key already names, so a replay is known before it is counted. */
+  findRenderByKey(principal: string, key: string): Promise<RenderRecord | null>;
   getRender(id: string, principal: string): Promise<RenderRecord | null>;
   listRenders(principal: string, limit: number, offset: number): Promise<RenderRecord[]>;
   /** Claim queued/expired work, incrementing the fencing token/attempt atomically.
@@ -103,6 +114,9 @@ export interface RenderStore {
 }
 
 export interface RenderOutputExpiry { id: string; ref: string; toolId: string; format: string }
+
+export interface RenderUsageRow { principal: string; day: string; toolId: string; format: string; state: RenderRecord['state']; company: string | null; count: number }
+export interface RenderBatchUsageRow { principal: string; day: string; batches: number; rows: number }
 
 export interface RenderQueueEntry { toolId: string; queued: number; oldestClaimableAt: string | null }
 
@@ -136,10 +150,16 @@ export interface RenderBatchRecord {
 export class RenderResourceError extends Error {
   readonly code: string;
   readonly status: number;
-  constructor(code: string, status: number, message: string) {
+  /** Fields the error body carries beside code and message, such as a budget's figures. */
+  readonly detail?: Record<string, unknown>;
+  /** Sent as Retry-After, for a refusal that a wait undoes. */
+  readonly retryAfterSec?: number;
+  constructor(code: string, status: number, message: string, detail?: Record<string, unknown>, retryAfterSec?: number) {
     super(message);
     this.code = code;
     this.status = status;
     this.name = 'RenderResourceError';
+    if (detail) this.detail = detail;
+    if (retryAfterSec !== undefined) this.retryAfterSec = retryAfterSec;
   }
 }

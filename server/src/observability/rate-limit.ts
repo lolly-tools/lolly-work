@@ -5,11 +5,13 @@
  * across the many servers the suite spins up.
  */
 import type { IncomingMessage } from 'node:http';
-import type { RateLimitConfig } from '../config/instance.ts';
+import type { RateLimitConfig, RateLimitSurfaceConfig } from '../config/instance.ts';
 
-export type Surface = 'auth' | 'telemetry' | 'link' | 'automation' | 'brandPage';
+/** `token` is the per-token minute bucket (plans/82 M7, iam/token-limits.ts): its
+ *  key is a token id and each take passes that token's own capacity and refill. */
+export type Surface = 'auth' | 'telemetry' | 'link' | 'automation' | 'brandPage' | 'token';
 export interface RateLimiter {
-  take(surface: Surface, ip: string): { ok: boolean; retryAfterSec: number };
+  take(surface: Surface, key: string, limit?: RateLimitSurfaceConfig): { ok: boolean; retryAfterSec: number };
   size(): number;
 }
 
@@ -26,9 +28,10 @@ export function createRateLimiter(cfg: RateLimitConfig, now: () => number = Date
     }
   };
   return {
-    take(surface, ip) {
+    take(surface, ip, limit) {
       if (!cfg.enabled) return { ok: true, retryAfterSec: 0 };
-      const lim = cfg[surface];
+      const lim = limit ?? (surface === 'token' ? null : cfg[surface]);
+      if (!lim) return { ok: true, retryAfterSec: 0 };
       const key = `${surface} ${ip}`;
       const t = now();
       let b = buckets.get(key);
@@ -109,7 +112,7 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
   // the public deployment record is unauthenticated, so neither is free to hammer.
   // The record rides this bucket rather than auth so reading it never costs a
   // sign-in attempt.
-  if (/^\/api\/v1\/(?:discovery(?:\/me|\/tools)?$|schema\/|intents\/resolve$|compile$|validate$|inspect$|diff$|measure$|optimize$|package$|render$|renders(?:\/|$)|render-batches(?:\/|$)|batch$|jobs(?:\/|$))/.test(pathname)) return 'automation';
+  if (/^\/api\/v1\/(?:context(?:\/|$)|discovery(?:\/me|\/tools)?$|schema\/|intents\/resolve$|compile$|validate$|inspect$|diff$|measure$|optimize$|package$|render$|renders(?:\/|$)|render-batches(?:\/|$)|batch$|jobs(?:\/|$))/.test(pathname)) return 'automation';
   return null;
 }
 
