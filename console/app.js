@@ -5835,6 +5835,16 @@ async function programmeLicences(p, host) {
       pr.markScope && canMark ? markForm({ markScope: pr.markScope, label: pr.prefix }) : null)),
     r.choices?.length ? el('h3', {}, `Shared anyway (${r.choices.length})`) : null,
     r.choices?.length ? dataTable(['File', 'Licence', 'For', 'Chosen by', 'Status', { label: '', sort: false }], r.choices.map(choiceRow), { filter: false, paginate: false }) : null,
+    // Published templates that start with files one of the programme's
+    // audiences will not receive (W-M4-8): the API and lw say so too.
+    r.templates?.length ? el('h3', {}, `Templates that start with files an audience will not receive (${r.templates.length})`) : null,
+    r.templates?.length ? el('p', { class: 'sub flush' }, gate
+      ? 'A render from one of these is refused for that audience until the file reaches them.'
+      : 'Once the gate is on, a render from one of these is refused for that audience until the file reaches them.') : null,
+    r.templates?.length ? dataTable(['Template', 'Audience', 'Files they will not receive'], r.templates.flatMap((t) => t.audiences.map((a) => el('tr', {},
+      el('td', {}, t.name), el('td', {}, a.name),
+      el('td', {}, el('div', {}, ...a.files.map((f) => el('div', {}, `${f.name}: ${f.why === 'licence' ? f.reason ?? 'held back by its licence' : 'not shared with them'}`))))))),
+    { filter: false, paginate: false }) : null,
     r.links.count ? el('h3', {}, `Links made by your people that would lose files (${r.links.count})`) : null,
     r.links.count ? el('p', { class: 'sub flush' }, gate ? 'These links leave the held files out now.' : 'Once the gate is on, these links leave the held files out unless their maker chose to include them.') : null,
     r.links.count ? dataTable(['Link', 'Made by', { label: 'Loses', num: true }], r.links.links.map((l) => el('tr', {}, el('td', {}, l.target.name), el('td', {}, l.createdBy.name), el('td', { class: 'num' }, `${l.held} of ${l.files}`))), { filter: false, paginate: false }) : null,

@@ -115,3 +115,11 @@ test('the console says a record is the admin\'s own and never claims a clearance
   assert.match(source, /Lolly keeps your text and reads the licence with the same rules as everywhere else/);
   assert.doesNotMatch(source, /rights cleared|legally safe|fully cleared|copyright verified/i);
 });
+
+test('the Licences card shows what the report says: pack prefixes, then templates that seed held files', async () => {
+  const source = await readFile(new URL('../console/app.js', import.meta.url), 'utf8');
+  // What clears held pack files leads, ahead of These are ours, so it is not read as part of the mark.
+  assert.match(source, /pr\.clearedBy \? el\('p', \{ class: 'sub flush' \}, pr\.clearedBy\) : null,\s*pr\.markScope && canMark \? markForm/);
+  assert.match(source, /Templates that start with files an audience will not receive/);
+  assert.match(source, /r\.templates\?\.length \? dataTable\(\['Template', 'Audience', 'Files they will not receive'\]/);
+});
