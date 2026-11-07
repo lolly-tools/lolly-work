@@ -744,6 +744,14 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(scoped?.scopes, ['render', 'files']);
   assert.deepEqual(scoped?.tools, ['card']);
   assert.deepEqual((await store.getApiToken('tok_scoped'))?.scopes, ['render', 'files']);
+  // Partner groups (plans/82 M3, migrations/0090): absent reads back absent, and
+  // a put replaces them, which is how an owner places or moves a token.
+  assert.equal((await store.getApiToken('tok_scoped'))?.groups, undefined);
+  const scopedToken = (await store.getApiToken('tok_scoped'))!;
+  await store.putApiToken({ ...scopedToken, groups: ['programme-resellers', 'company-northwind', 'partner'] });
+  assert.deepEqual((await store.findApiTokenByHash('hash-scoped'))?.groups, ['programme-resellers', 'company-northwind', 'partner']);
+  await store.putApiToken({ ...scopedToken, groups: ['partner'] });
+  assert.deepEqual((await store.getApiToken('tok_scoped'))?.groups, ['partner']);
   await store.touchApiToken('tok_1', '2026-08-24T12:00:00.000Z');
   assert.equal((await store.listApiTokens()).find((t) => t.id === 'tok_1')?.lastUsedAt, '2026-08-24T12:00:00.000Z');
   assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), true);
