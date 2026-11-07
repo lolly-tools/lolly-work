@@ -628,7 +628,8 @@ export function buildApp(deps: AppDeps): App {
   };
   const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
     store.appendAudit(auditBody(actor, action, subject, payload));
-  // View as a partner (plans/82 M6): read-only, one tab, the admin's session required.
+  // View as a partner (plans/82 M6): one tab, the admin's session required, and
+  // while viewing, changes are not saved to the partner's account.
   const viewAs = createViewAs({
     sessionMember: (req) => resolveMember(store, req.headers.cookie, sessionVerify),
     delegated: (req) => !!agentRequests.principal(req),

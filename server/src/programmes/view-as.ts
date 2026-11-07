@@ -1,6 +1,7 @@
 /**
  * View as a partner (plans/82 M6): someone who manages a programme sees the app
- * exactly as one of its partners would, read-only, without becoming that partner.
+ * exactly as one of its partners would, without becoming that partner. While
+ * viewing, changes are not saved to the partner's account.
  *
  * The start route checks `programme.manage` for that programme, audits
  * `programme.view-as` and returns a token. The app keeps the token in the one tab
@@ -22,7 +23,9 @@
  *   - every other request is refused with VIEWING_AS, "not while viewing as a
  *     partner": no write happens as the partner or as the admin, and no other read
  *     answers as the admin inside a partner's view.
- * The admin's session, groups and grants never change.
+ * The admin's session, groups and grants never change. The claim is versioned
+ * (`v`) and the audit names the view (`via: 'view-as'`), so acting for a person with
+ * their permission can be added later as a new version beside this one.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';

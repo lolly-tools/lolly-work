@@ -1902,8 +1902,8 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         return true;
       }
       if (sessionId === null) return false;
-      // A tab viewing as a partner (programmes/view-as.ts) is read-only: it never joins
-      // a room, as the partner or as the admin.
+      // A tab viewing as a partner (programmes/view-as.ts) never joins a room, as the
+      // partner or as the admin.
       if (isViewAsUpgrade(req)) {
         try { refuse(socket, 403, 'VIEWING_AS', 'Not while viewing as a partner.'); } catch { socket.destroy(); }
         return true;

@@ -1,8 +1,8 @@
 /**
  * View as a partner (plans/82 M6, W-M6-3).
  *
- * Someone who manages a programme sees what a member of it gets, read-only, in one
- * tab: the start route returns a token, the tab sends it in `x-lw-view-as`, and the
+ * Someone who manages a programme sees what a member of it gets, in one tab, and
+ * while viewing, changes are not saved to the partner's account: the start route returns a token, the tab sends it in `x-lw-view-as`, and the
  * partner's reads answer as the partner. The token never works alone: the request
  * must be signed in as the admin it names, at the same session epoch. Every write,
  * and every read a partner's view does not need, is refused.
