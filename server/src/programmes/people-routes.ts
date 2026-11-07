@@ -12,7 +12,11 @@
  *   what they own, then one audited step that transfers their projects,
  *   disables their accounts, ends their sessions and revokes their links,
  *   tokens and pending invitations. Only partner accounts are touched; an
- *   internal account in the selection is listed and left alone.
+ *   internal account in the selection is listed and left alone. Ending a
+ *   programme or a company also revokes the service tokens placed in it.
+ * - Placing a service token in a programme, and optionally in one company in
+ *   it (plans/82 M3), so an agent is scoped exactly like the people there.
+ *   An owner act (`token.manage`), like minting the token.
  *
  * Previews and one confirmation, no approval chain: an admin acting alone can
  * do all of this (Andy, 2026-11-06).
@@ -21,6 +25,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import { isProgrammeScoped, noteCompanyProgramme, programmeGroup, PARTNER_GROUP } from './types.ts';
+import { programmeTokenGroups, tokenGroupsWithout, tokenPlacement } from '../iam/service-tokens.ts';
 import { domainOfEmail, normaliseDomain, type TxtLookup } from './domains.ts';
 import { forgetDomainCompany, recheckDomains, sweepDomainRules, withdrawDomainRules } from './domain-routes.ts';
 import { sweepFolderRules, withdrawFolderRules } from './folder-routes.ts';
@@ -99,6 +104,23 @@ export async function sweepProgrammeEnds(store: Store, audit: PeopleRouteDeps['a
   return memberships.length;
 }
 
+/**
+ * Take groups off every live token that carries one of them, keeping the
+ * partner marker: what deleting a company or a programme does to the tokens
+ * placed in it. Audited per token.
+ */
+export async function dropTokenGroups(store: Store, audit: PeopleRouteDeps['audit'], actor: string, drop: ReadonlySet<string>, via: string): Promise<number> {
+  let changed = 0;
+  for (const t of await store.listApiTokens()) {
+    if (t.revokedAt || !(t.groups ?? []).some((g) => drop.has(g))) continue;
+    const groups = tokenGroupsWithout(t, drop)!;
+    await store.putApiToken({ ...t, groups });
+    await audit(actor, 'token.programme', `token:${t.id}`, { removed: (t.groups ?? []).filter((g) => drop.has(g)), via });
+    changed++;
+  }
+  return changed;
+}
+
 export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteDeps): void {
   const { store } = deps;
   const manager = (req: IncomingMessage, res: ServerResponse) => deps.requireAction(req, res, 'programme.manage');
@@ -143,6 +165,9 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
       const { companyId: _drop, ...rest } = m;
       await store.putMembership(rest);
     }
+    // Tokens placed in the company stay in its programme: the company group
+    // goes, so a company made later with the same id never inherits them.
+    await dropTokenGroups(store, deps.audit, `user:${actor.id}`, new Set([companyGroup(id)]), 'company-delete');
     await deps.audit(`user:${actor.id}`, 'programme.company.delete', `programme:${programme.id}`, { company: id, name: rec.name });
     sendJson(res, 200, { ok: true });
   });
@@ -327,6 +352,9 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     const partners = selected.filter((u) => isProgrammeScoped(u.groups, u.role) && u.id !== actor.id);
     const skipped = selected.filter((u) => !partners.includes(u)).map((u) => ({ id: u.id, email: u.email, reason: u.id === actor.id ? 'your own account' : 'not a partner account' }));
     const pending = invitations.filter((i) => !i.acceptedAt && !i.revokedAt && picks(i.email, i.groups));
+    // Service tokens placed in the programme or company end with it (plans/82
+    // M3). A token has no address, so a domain or list exit never selects one.
+    const tokens = selectGroup ? (await store.listApiTokens()).filter((t) => !t.revokedAt && (t.groups ?? []).includes(selectGroup!)) : [];
     const programmeNames = new Map((await store.listProgrammes()).map((x) => [x.id, x.name]));
     const rulesEnding = withdraw ? partnerDomains.flatMap((d) => d.rules
       .filter((r) => d.domain === withdraw!.domain || r.programmeId === withdraw!.programmeId || (!!withdraw!.companyId && r.companyId === withdraw!.companyId))
@@ -344,7 +372,8 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     })));
     if (body?.apply !== true) {
       return sendJson(res, 200, { dryRun: true, projects: projectsMode, transferTo: { id: transferTo.id, email: transferTo.email }, ...(team ? { team } : {}),
-        accounts, skipped, pendingInvitations: pending.map((i) => ({ id: i.id, email: i.email })), domainRules: rulesEnding }, { 'cache-control': 'no-store' });
+        accounts, skipped, pendingInvitations: pending.map((i) => ({ id: i.id, email: i.email })), domainRules: rulesEnding,
+        tokens: tokens.map((t) => ({ id: t.id, label: t.label })) }, { 'cache-control': 'no-store' });
     }
     const at = now();
     // First, so nobody new joins through a domain while the rest runs.
@@ -376,11 +405,60 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
       await store.revokeInvitation(inv.id, at, { pendingOnly: true });
       await deps.audit(`user:${actor.id}`, 'invite.revoke', `invitation:${inv.id}`, { was: 'pending', via: 'programme-exit' });
     }
+    let tokensRevoked = 0;
+    for (const t of tokens) {
+      if (!(await store.revokeApiToken(t.id, at))) continue;
+      tokensRevoked++;
+      await deps.audit(`user:${actor.id}`, 'token.revoke', `token:${t.id}`, { via: 'programme-exit', group: selectGroup });
+    }
     await deps.audit(`user:${actor.id}`, 'programme.exit', selectGroup ? `group:${selectGroup}` : selectDomain ? `domain:${selectDomain}` : 'programme:list', {
       accounts: done.length, invitationsRevoked: pending.length, skipped: skipped.length, projects: projectsMode, transferTo: transferTo.id, ...(team ? { team } : {}),
-      ...(rulesWithdrawn.length ? { domainRules: rulesWithdrawn.length } : {}),
+      ...(rulesWithdrawn.length ? { domainRules: rulesWithdrawn.length } : {}), ...(tokensRevoked ? { tokensRevoked } : {}),
     });
     // The same shape as the preview; the store calls returned what was removed.
-    sendJson(res, 200, { dryRun: false, accounts: done, skipped, invitationsRevoked: pending.length, domainRules: rulesWithdrawn.length ? rulesEnding : [] }, { 'cache-control': 'no-store' });
+    sendJson(res, 200, { dryRun: false, accounts: done, skipped, invitationsRevoked: pending.length, domainRules: rulesWithdrawn.length ? rulesEnding : [], tokensRevoked }, { 'cache-control': 'no-store' });
+  });
+
+  // ── service tokens in a programme (plans/82 M3) ────────────────────────────
+  /** Place a service token in a programme, and optionally one company in it,
+   *  with `{ programme, company? }`, or take it out with `{ programme: null }`.
+   *  The token then resolves to a principal carrying those groups, so it reaches
+   *  what a person in that company reaches, through the same code. Taking a
+   *  token out keeps the partner marker, so it keeps only the essentials and
+   *  never becomes an internal token; mint a new one for internal work. Admin
+   *  and owner tokens are never placed: those roles are never scoped. */
+  router.add('PUT', '/api/v1/tokens/:id/programme', async (req, res, ctx) => {
+    const actor = await deps.requireAction(req, res, 'token.manage'); if (!actor) return;
+    const token = await store.getApiToken(String(ctx.params.id));
+    if (!token || token.revokedAt) return sendError(res, 404, 'NOT_FOUND', 'no such live token');
+    if (token.role === 'admin' || token.role === 'owner') {
+      return sendError(res, 400, 'TOKEN_NOT_SCOPED', 'an admin or owner token is never scoped to a programme; mint one with scopes for the partner agent');
+    }
+    const body = (await readJson(req)) as { programme?: unknown; company?: unknown } | null;
+    const before = tokenPlacement(token);
+    let groups: string[] | undefined;
+    let programmeId: string | undefined, companyId: string | undefined;
+    if (body?.programme === null) {
+      groups = before.partner ? [PARTNER_GROUP] : undefined;
+    } else if (typeof body?.programme === 'string') {
+      const programme = await store.getProgramme(body.programme);
+      if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
+      programmeId = programme.id;
+      if (body.company !== undefined && body.company !== null) {
+        const company = typeof body.company === 'string' ? (await store.listCompanies()).find((c) => c.id === body.company) : undefined;
+        if (!company || company.programmeId !== programme.id) return sendError(res, 404, 'NOT_FOUND', 'no such company in this programme');
+        companyId = company.id;
+      }
+      groups = programmeTokenGroups(programmeId, companyId);
+    } else return sendError(res, 400, 'INVALID_INPUT', 'send a programme id, with an optional company id, or programme null');
+    const next = { ...token };
+    if (groups) next.groups = groups; else delete next.groups;
+    await store.putApiToken(next);
+    await deps.audit(`user:${actor.id}`, 'token.programme', `token:${token.id}`, {
+      before: { ...(before.programmeId ? { programme: before.programmeId } : {}), ...(before.companyId ? { company: before.companyId } : {}) },
+      after: { ...(programmeId ? { programme: programmeId } : {}), ...(companyId ? { company: companyId } : {}) },
+    });
+    sendJson(res, 200, { id: token.id, label: token.label, groups: next.groups ?? null,
+      ...(programmeId ? { programme: programmeId } : {}), ...(companyId ? { company: companyId } : {}) }, { 'cache-control': 'no-store' });
   });
 }

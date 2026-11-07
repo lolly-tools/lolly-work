@@ -19,6 +19,8 @@ import {
 } from './types.ts';
 import { withdrawDomainRules } from './domain-routes.ts';
 import { withdrawFolderRules } from './folder-routes.ts';
+import { dropTokenGroups } from './people-routes.ts';
+import { companyGroup } from './people.ts';
 
 type Router = ReturnType<typeof createRouter>;
 
@@ -184,6 +186,9 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     // Its partner domains stop admitting anyone (plans/82 M1 part 2b).
     await withdrawDomainRules(store, deps.audit, `user:${actor.id}`, { programmeId: id }, now, 'programme-delete');
     await withdrawFolderRules(store, deps.audit, `user:${actor.id}`, { programmeId: id }, 'programme-delete');
+    // Tokens placed in it keep the partner marker, like its people (plans/82 M3).
+    const companyGroups = (await store.listCompanies()).filter((c) => c.programmeId === id).map((c) => companyGroup(c.id));
+    await dropTokenGroups(store, deps.audit, `user:${actor.id}`, new Set([group, ...companyGroups]), 'programme-delete');
     // Members keep the partner marker, so they see only the essentials until an
     // admin adds them to another programme or makes them internal on purpose.
     await store.deleteLocalGroup(group);

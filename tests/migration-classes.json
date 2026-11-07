@@ -77,5 +77,6 @@
   "0085_partner_programmes.sql": "additive",
   "0086_programme_people.sql": "additive",
   "0087_partner_domains.sql": "additive",
-  "0088_partner_folders.sql": "additive"
+  "0088_partner_folders.sql": "additive",
+  "0090_token_groups.sql": "additive"
 }
