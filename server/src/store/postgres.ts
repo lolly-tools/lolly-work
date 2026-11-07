@@ -38,6 +38,7 @@ import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
 import type { InstanceDefaultRecord } from '../catalog/rights-mode.ts';
+import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfile, CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
@@ -2346,7 +2347,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         [key.provider, key.path, key.programmeId, key.companyId ?? '']);
     },
 
-    // Owner-published marks and licence records (migrations/0091), each kept
+    // Owner-published marks and licence records (migrations/0095), each kept
     // whole as JSON under its key.
     async listAssetRightsMarks() {
       const { rows } = await pool.query('select record from asset_rights_marks order by scope');
@@ -2376,7 +2377,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteAssetLicence(assetId) {
       await pool.query('delete from asset_licence_records where asset_id = $1', [assetId]);
     },
-    // Share anyway choices (migrations/0092).
+    // Share anyway choices (migrations/0096).
     async listRightsChoices() {
       const { rows } = await pool.query('select record from programme_rights_choices order by asset_id, audience_group');
       return rows.map((r) => r.record as RightsChoiceRecord);
@@ -2391,7 +2392,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteRightsChoice(key) {
       await pool.query('delete from programme_rights_choices where asset_id = $1 and audience_group = $2', [key.assetId, key.group]);
     },
-    // Defaults an instance decides once (migrations/0093): insert once, never update.
+    // Defaults an instance decides once (migrations/0097): insert once, never update.
     async getInstanceDefault(key) {
       const { rows } = await pool.query('select record from instance_defaults where key = $1', [key]);
       return rows[0] ? rows[0].record as InstanceDefaultRecord : null;
@@ -2404,6 +2405,34 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async hasAccounts() {
       const { rows } = await pool.query('select exists (select 1 from users) as found');
       return rows[0]?.found === true;
+    },
+    // Partnership exit receipts (migrations/0093): one jsonb record per exit.
+    async listProgrammeExits(filter) {
+      const where: string[] = [];
+      const values: unknown[] = [];
+      if (filter?.programmeId) { values.push(filter.programmeId); where.push(`programme_id = $${values.length}`); }
+      if (filter?.companyId) { values.push(filter.companyId); where.push(`company_id = $${values.length}`); }
+      if (filter?.state) { values.push(filter.state); where.push(`state = $${values.length}`); }
+      const { rows } = await pool.query(
+        `select record from programme_exits${where.length ? ` where ${where.join(' and ')}` : ''} order by created_at desc, id desc`, values);
+      return rows.map((r) => r.record as ProgrammeExitRecord);
+    },
+    async getProgrammeExit(id) {
+      const { rows } = await pool.query('select record from programme_exits where id = $1', [id]);
+      return rows[0] ? (rows[0].record as ProgrammeExitRecord) : null;
+    },
+    async putProgrammeExit(rec) {
+      await pool.query(
+        `insert into programme_exits (id, programme_id, company_id, state, record, created_at, updated_at) values ($1, $2, $3, $4, $5::jsonb, $6, now())
+         on conflict (id) do update set programme_id = excluded.programme_id, company_id = excluded.company_id, state = excluded.state,
+           record = excluded.record, updated_at = now()`,
+        [rec.id, rec.programmeId ?? '', rec.companyId ?? '', rec.state, JSON.stringify(rec), rec.createdAt],
+      );
+    },
+    async deleteProgrammeExits(pick) {
+      if (pick.companyId) return (await pool.query('delete from programme_exits where company_id = $1', [pick.companyId])).rowCount ?? 0;
+      if (pick.programmeId) return (await pool.query('delete from programme_exits where programme_id = $1', [pick.programmeId])).rowCount ?? 0;
+      return 0;
     },
 
     // Partner company profiles (migrations/0089). The current row and one

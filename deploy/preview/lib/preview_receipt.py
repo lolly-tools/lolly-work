@@ -176,7 +176,8 @@ def verify_frontend_receipt(raw, jwk, source, target="web", profile=None):
     require(isinstance(receipt["source"], str) and SHA.fullmatch(receipt["source"]), "RECEIPT_INVALID", "receipt source is not a commit")
     require(receipt["source"] == source, "RECEIPT_SOURCE", "served receipt names a different source commit")
     require(receipt["target"] == target, "RECEIPT_INVALID", "receipt target differs")
-    require(profile is None or receipt["profile"] == profile, "RECEIPT_PROFILE", "served receipt names a different profile")
+    accepted = profile if isinstance(profile, tuple) else (profile,)
+    require(profile is None or receipt["profile"] in accepted, "RECEIPT_PROFILE", "served receipt names a different profile")
     files = receipt["files"]
     require(isinstance(files, dict) and 0 < len(files) <= MAX_RECEIPT_FILES, "RECEIPT_INVALID", "receipt file map is empty or too large")
     for path, digest in files.items():

@@ -2,6 +2,7 @@ import type { ProgrammeRecord } from '../programmes/types.ts';
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
@@ -1819,6 +1820,14 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putPartnerFolder(rec: PartnerFolderRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deletePartnerFolder(key: { provider: string; path: string; programmeId: string; companyId?: string }): Promise<void>;
+  // Partnership exit receipts (plans/82 M5, migrations/0097): one record per
+  // exit, scheduled, done, cancelled or reopened, upserted whole.
+  /** Newest first. `programmeId` lists a programme's exits and its companies'. */
+  listProgrammeExits(filter?: { programmeId?: string; companyId?: string; state?: ProgrammeExitRecord['state'] }): Promise<ProgrammeExitRecord[]>;
+  getProgrammeExit(id: string): Promise<ProgrammeExitRecord | null>;
+  putProgrammeExit(rec: ProgrammeExitRecord): Promise<void>;
+  /** A deleted programme's receipts, or a deleted company's. Returns how many went. */
+  deleteProgrammeExits(pick: { programmeId?: string; companyId?: string }): Promise<number>;
   // Partner company profiles (plans/82 M3, migrations/0089). One current row
   // per company plus a history row per revision.
   getCompanyProfile(companyId: string): Promise<CompanyProfileRecord | null>;
@@ -1834,7 +1843,7 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   listCompanyProfileHistory(companyId: string): Promise<CompanyProfileRevision[]>;
   /** The profile and its whole history. Unknown id is a no-op. */
   deleteCompanyProfile(companyId: string): Promise<void>;
-  // Owner-published marks and licence records (plans/82 M4, migrations/0091).
+  // Owner-published marks and licence records (plans/82 M4, migrations/0095).
   // A mark is keyed by its scope string, a licence record by the asset id.
   listAssetRightsMarks(): Promise<AssetRightsMarkRecord[]>;
   putAssetRightsMark(rec: AssetRightsMarkRecord): Promise<void>;
@@ -1844,13 +1853,13 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putAssetLicence(rec: AssetLicenceRecord): Promise<void>;
   /** Unknown asset id is a no-op. */
   deleteAssetLicence(assetId: string): Promise<void>;
-  // Share anyway choices (plans/82 M4, migrations/0092): one per asset per
+  // Share anyway choices (plans/82 M4, migrations/0096): one per asset per
   // audience group, `programme-<id>` or `company-<id>`.
   listRightsChoices(): Promise<RightsChoiceRecord[]>;
   putRightsChoice(rec: RightsChoiceRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deleteRightsChoice(key: { assetId: string; group: string }): Promise<void>;
-  // Defaults an instance decides once (plans/82 M4, migrations/0093). A memory
+  // Defaults an instance decides once (plans/82 M4, migrations/0097). A memory
   // store records nothing and answers the partner rights default as 'report'.
   getInstanceDefault(key: string): Promise<InstanceDefaultRecord | null>;
   /** Insert once: when the key already has a row, that row is kept and returned. */

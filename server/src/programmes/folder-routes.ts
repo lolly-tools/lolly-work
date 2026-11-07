@@ -74,6 +74,20 @@ export async function withdrawFolderRules(store: Store, audit: Audit, actor: str
   return gone.length;
 }
 
+/** End a programme's rules, or one company's, when its partnership ends
+ *  (plans/82 M5), auditing each as `programme.folder.end` with `via`. Returns
+ *  the rules whole, for the exit's receipt and Reopen. */
+export async function endFolderRules(store: Store, audit: Audit, actor: string, pick: { programmeId?: string; companyId?: string }, via: string): Promise<PartnerFolderRecord[]> {
+  const gone = (await store.listPartnerFolders()).filter((r) => (pick.companyId ? r.companyId === pick.companyId : !!pick.programmeId && r.programmeId === pick.programmeId));
+  for (const r of gone) {
+    await store.deletePartnerFolder(r);
+    await audit(actor, 'programme.folder.end', `programme:${r.programmeId}`, {
+      provider: r.provider, path: r.path, ...(r.companyId ? { company: r.companyId } : {}), ...(r.endsAt ? { endsAt: r.endsAt } : {}), via,
+    });
+  }
+  return gone;
+}
+
 export function registerFolderRoutes(router: Router, deps: FolderRouteDeps): void {
   const { store, audit } = deps;
   const manager = (req: IncomingMessage, res: ServerResponse) => deps.requireAction(req, res, 'programme.manage');
