@@ -197,18 +197,17 @@ export function createViewAs(deps: ViewAsDeps) {
   };
 
   /**
-   * Run before any route. Returns true when it answered the request itself (a refusal).
-   * A request with no header passes untouched.
-   */
-  /**
    * The check every view-as request passes, at the gate and again at every later
    * authentication in the same request: the admin behind the request's own session,
-   * at the epoch the token names, still managing a programme and company that are
-   * still there. Returns what failed, or the view.
+   * at the epoch the token names, before the token's expiry, still managing a
+   * programme and company that are still there. Returns what failed, or the view.
    */
   async function check(req: IncomingMessage, claim: ViewAsClaim): Promise<{ fail: 'mismatch'; admin: UserRecord | null } | { fail: 'ended' } | { view: ActiveView }> {
     const admin = deps.delegated(req) || req.headers.authorization !== undefined ? null : await deps.sessionMember(req);
     if (!admin || admin.id !== claim.u || admin.sessionEpoch !== claim.e) return { fail: 'mismatch', admin };
+    // The gate read an unexpired token, but slow work (a file conversion, say) can
+    // carry a request past the expiry, and a later authentication must see that.
+    if (claim.exp * 1000 <= now()) return { fail: 'ended' };
     const viewingAs = (await deps.mayManage(admin, claim.p)) ? await scope(claim) : null;
     if (!viewingAs) return { fail: 'ended' };
     const groups = viewAsGroups(claim);

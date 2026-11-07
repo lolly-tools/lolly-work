@@ -239,6 +239,26 @@ test('a later authentication in the same request checks the admin again, so a vi
   assert.equal(await view.member({ method: 'GET', url: '/', headers: {} } as unknown as IncomingMessage), undefined);
 });
 
+test('a request that runs past the token\'s expiry ends at its next authentication, never answering 200', async () => {
+  const admin = { id: 'u-admin', sessionEpoch: 2, groups: ['admin'], role: 'admin' } as unknown as UserRecord;
+  let clock = Date.now();
+  const view = createViewAs({
+    sessionMember: async () => admin, delegated: () => false, mayManage: async () => true,
+    programme: async (id) => ({ id, name: 'Resellers' }), company: async () => null,
+    roleOf: () => 'member', secret: SECRET, verifySecrets: SECRET, audit: async () => undefined, now: () => clock,
+  });
+  const exp = Math.floor(clock / 1000) + 2;
+  const token = signViewAs({ v: 1, u: 'u-admin', e: 2, p: 'resellers', exp }, SECRET);
+  const headers: Record<string, unknown> = {};
+  const res = { setHeader(n: string, v: unknown) { headers[n] = v; }, getHeader(n: string) { return headers[n]; }, writeHead() { return this; }, end() { return this; } } as unknown as ServerResponse;
+  const req = { method: 'GET', url: '/catalog/ext/dam/a1/att1', headers: { cookie: 'lw_session=x', [VIEW_AS_HEADER]: token } } as unknown as IncomingMessage;
+  assert.equal(await view.gate(req, res, '/catalog/ext/dam/a1/att1'), false, 'unexpired at the gate');
+  assert.ok(await view.member(req), 'and at the route\'s first authentication');
+  // A conversion starts just before the expiry and finishes after it.
+  clock = exp * 1000;
+  await assert.rejects(view.member(req), ViewAsEndedError, 'expired by the time the route authenticates again');
+});
+
 test('a view that ends between the gate and the route answers 403, never as anonymous or as the admin', async () => {
   const admin = await login('admin@test');
   const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', {});
