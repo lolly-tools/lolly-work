@@ -33,7 +33,7 @@ before(async () => {
   await writeFile(join(pack, 'catalog', 'fonts', 'OFL.txt'), 'SIL Open Font License');
   await writeFile(join(pack, 'catalog', 'delivery-manifest.json'), JSON.stringify({ version: 1, files: [{ path: 'catalog/secret-roadmap.png' }] }));
   await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [
-    { id: 'acme/font', name: 'Acme Sans', type: 'font', formats: [{ format: 'woff2', url: '/catalog/fonts/sans.woff2' }], meta: { licenseUrl: '/catalog/fonts/OFL.txt' } },
+    { id: 'acme/font', name: 'Acme Sans', type: 'font', formats: [{ format: 'woff2', url: '/catalog/fonts/sans.woff2' }], meta: { licenceFile: '/catalog/fonts/OFL.txt', notes: 'Release list: /catalog/delivery-manifest.json' } },
   ] }));
   const config = parseConfig(JSON.stringify({
     instance: { name: 'Bytes Hub', baseUrl: 'http://localhost', pack },
@@ -64,6 +64,16 @@ before(async () => {
   await fetch(`${base}/api/v1/programmes/resellers`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Resellers', tools: [], collections: ['emea-kit'] }) });
   await login('rita@reseller.test');
   const ritaId = (await store.getUserBySub('dev:rita@reseller.test'))!.id;
+  // Two of Rita's own submissions, shared with everyone inside the workspace but not
+  // in her programme: one still waiting for its decision, one already live.
+  for (const [id, state] of [['inst/rita-pending', 'submitted'], ['inst/rita-live', 'live']] as const) {
+    const stat = await blobs.put(`${id}/png`, Buffer.from(`png:${id}`), 'image/png');
+    await store.putInstanceAsset({
+      id, entry: instanceAssetEntry(id, { name: id, type: 'image' }, [{ format: 'png', size: stat.size, checksum: stat.checksum }]),
+      blobs: { png: `${id}/png` }, groups: '*' as never, createdAt: new Date().toISOString(),
+      submission: { state, by: `user:${ritaId}`, at: new Date().toISOString(), checksum: stat.checksum, size: stat.size, contentType: 'image/png' },
+    } as never);
+  }
   await fetch(`${base}/api/v1/users/${ritaId}/local-groups`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ groups: ['programme-resellers'] }) });
   // A partner trusted to edit catalog metadata, and staff who may too.
   await store.putGrant({ principal: 'group:programme-resellers', action: 'catalog.edit', resource: '*', effect: 'allow' } as never);
@@ -98,6 +108,16 @@ test('a live internal submission shared with everyone is not a partner\'s to dow
   assert.equal((await fetch(`${base}/api/v1/catalog/submissions/sub1/bytes`, { headers: { cookie: staff } })).status, 200);
 });
 
+test('a submitter reads their own upload while it waits, and only what their feed holds once it is live', async () => {
+  const rita = await login('rita@reseller.test');
+  const staff = await login('staff@test');
+  const preview = (cookie: string, id: string) => fetch(`${base}/api/v1/catalog/submissions/${id}/bytes`, { headers: { cookie } });
+  assert.equal((await preview(rita, 'rita-pending')).status, 200, 'their own upload, before the decision');
+  assert.equal((await preview(staff, 'rita-pending')).status, 403, 'not staff\'s while it waits');
+  assert.equal((await preview(rita, 'rita-live')).status, 403, 'live and shared with everyone, but not in their programme');
+  assert.equal((await preview(staff, 'rita-live')).status, 200, 'live: the ordinary rule');
+});
+
 test('a partner allowed to edit catalog metadata still sees only the records their feed holds', async () => {
   const rita = await login('rita@reseller.test');
   const staff = await login('staff@test');
@@ -114,11 +134,32 @@ test('a pack file no asset owns answers a partner only when their own feed names
   assert.equal((await fetch(`${base}/catalog/delivery-manifest.json`, { headers: { cookie: staff } })).status, 200, 'staff unchanged');
 });
 
-test('answers that depend on who asks vary on the cookie, so a shared browser cache keeps people apart', async () => {
+test('free text never opens a pack file, even text a partner wrote into their own feed', async () => {
+  const rita = await login('rita@reseller.test');
+  const edit = await fetch(`${base}/api/v1/catalog/assets/inst/kit/meta`, {
+    method: 'PUT', headers: { cookie: rita, 'content-type': 'application/json' },
+    body: JSON.stringify({ description: '/catalog/delivery-manifest.json', tags: ['/catalog/delivery-manifest.json'] }),
+  });
+  assert.equal(edit.status, 200, 'their programme includes the kit and they may edit its metadata');
+  assert.equal((await fetch(`${base}/catalog/delivery-manifest.json`, { headers: { cookie: rita } })).status, 404,
+    'a description, a tag or a free-text meta field is not a file reference');
+  assert.equal((await fetch(`${base}/catalog/fonts/OFL.txt`, { headers: { cookie: rita } })).status, 200, 'meta.licenceFile is one');
+});
+
+test('answers that depend on who asks make the browser ask again, and the check runs before any 304', async () => {
   const staff = await login('staff@test');
+  const rita = await login('rita@reseller.test');
   for (const path of ['/catalog/inst/internal/png', '/catalog/fonts/sans.woff2', '/tools/qr-code/tool.json']) {
     const res = await fetch(`${base}${path}`, { headers: { cookie: staff } });
     assert.equal(res.status, 200, path);
-    assert.match(res.headers.get('vary') ?? '', /cookie/i, path);
+    assert.equal(res.headers.get('cache-control'), 'private, no-cache, no-transform', path);
+    assert.doesNotMatch(res.headers.get('vary') ?? '', /cookie/i, `${path}: a private answer is never keyed on a cookie`);
   }
+  const first = await fetch(`${base}/catalog/inst/internal/png`, { headers: { cookie: staff } });
+  const etag = first.headers.get('etag')!;
+  const again = await fetch(`${base}/catalog/inst/internal/png`, { headers: { cookie: staff, 'if-none-match': etag } });
+  assert.equal(again.status, 304);
+  assert.equal(again.headers.get('cache-control'), 'private, no-cache, no-transform');
+  const borrowed = await fetch(`${base}/catalog/inst/internal/png`, { headers: { cookie: rita, 'if-none-match': etag } });
+  assert.equal(borrowed.status, 403, 'a copy cached for someone else is never confirmed for a partner');
 });

@@ -6903,9 +6903,6 @@ export function buildApp(deps: AppDeps): App {
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
-    // A tool's files answer for this caller's visibility, so a shared browser cache
-    // keys them by the signed-in person.
-    res.setHeader('vary', 'Cookie');
     const rel = normalize(ctx.params['*'] ?? '').replace(/^(\.\.[/\\])+/, '');
     if (!rel || rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
     const rawId = rel.split(/[/\\]/, 1)[0] ?? '';
@@ -7003,10 +7000,6 @@ export function buildApp(deps: AppDeps): App {
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
-    // Everything past the public cards answers for this caller, so a browser cache
-    // shared by two people (one profile, one signed out, the other signed in) never
-    // hands one person's answer to the other. Staff keep their cache.
-    res.setHeader('vary', 'Cookie');
     if ((ctx.params['*'] ?? '').includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
     let rel = normalize(ctx.params['*'] ?? '').replace(/^(\.\.[/\\])+/, '');
     if (rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
@@ -7080,8 +7073,13 @@ export function buildApp(deps: AppDeps): App {
       const stat = blobId ? await blobs.head(blobId) : null;
       if (!stat) return sendError(res, 404, 'NOT_FOUND', 'no such format');
       const etag = `"${stat.checksum}"`;
+      // Who may read these bytes depends on the caller (their groups, or their feed
+      // for a partner), and a browser cache is not keyed by person. So the browser
+      // asks again on every use: the checks above run for whoever is signed in now,
+      // by cookie or by Authorization, before a 304 hands back a cached copy.
+      const instBytesCache = cachePolicy('instance-private').cacheControl;
       if (req.headers['if-none-match'] === etag) {
-        res.writeHead(304, { etag, 'cache-control': 'private, max-age=300', vary: 'Cookie' });
+        res.writeHead(304, { etag, 'cache-control': instBytesCache });
         res.end();
         return;
       }
@@ -7090,8 +7088,7 @@ export function buildApp(deps: AppDeps): App {
       res.writeHead(200, {
         'content-type': blob.stat.contentType,
         ...INERT_BYTES,
-        'cache-control': 'private, max-age=300',
-        vary: 'Cookie',
+        'cache-control': instBytesCache,
         etag,
         'content-length': String(blob.stat.size),
       });
@@ -7397,21 +7394,26 @@ export function buildApp(deps: AppDeps): App {
    * consulted here on purpose: a scheduled asset is a legitimate thing to mint a
    * link for, and an expired one is refused at resolve rather than at mint.
    */
-  /** Every /catalog/ address a served feed names anywhere in its entries (formats,
-   *  renditions, previews, licence texts), kept per feed object, which the served index
-   *  memoises until an input changes. */
+  /** Every /catalog/ file a served feed points at through a field that is a file
+   *  reference by definition: a format's url, a locale's format url, and a font's
+   *  licence text (`meta.licenceFile`). Names, descriptions, tags and any other free
+   *  text never count, so an edited description cannot open a pack file. Kept per
+   *  feed object, which the served index memoises until an input changes. */
   const feedAddresses = new WeakMap<object, Set<string>>();
   const feedNamesFile = async (groups: string[], rel: string): Promise<boolean> => {
     const { index } = await servedIndex.forCaller({ groups });
     let names = feedAddresses.get(index);
     if (!names) {
       const found = new Set<string>();
-      const walk = (value: unknown): void => {
-        if (typeof value === 'string') { if (value.startsWith('/catalog/')) found.add(value.split(/[?#]/, 1)[0]!); }
-        else if (Array.isArray(value)) value.forEach(walk);
-        else if (value && typeof value === 'object') Object.values(value).forEach(walk);
+      const add = (value: unknown): void => {
+        if (typeof value === 'string' && value.startsWith('/catalog/')) found.add(value.split(/[?#]/, 1)[0]!);
       };
-      walk(index.assets ?? []);
+      for (const entry of index.assets ?? []) {
+        for (const format of entry.formats ?? []) add(format?.url);
+        for (const formats of Object.values(entry.locales ?? {})) if (Array.isArray(formats)) for (const format of formats) add(format?.url);
+        const meta = (entry as { meta?: unknown }).meta;
+        if (meta && typeof meta === 'object') add((meta as { licenceFile?: unknown }).licenceFile);
+      }
       feedAddresses.set(index, found);
       names = found;
     }
@@ -9084,9 +9086,12 @@ export function buildApp(deps: AppDeps): App {
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     // Only the submitter and whoever may act on the step see a PENDING
-    // submission's bytes. Once it is live the ordinary exposure rule takes
-    // over, so this route keeps working for an already-published asset.
-    if (!(await submissionRelation(rec, user)) && !(submissionServable(rec) && await instanceAssetReadable(user, rec))) {
+    // submission's bytes, which are the submitter's own upload: nothing can
+    // replace them before the decision. Once it is live the ordinary rule
+    // takes over for everyone, the submitter included, so this route keeps
+    // working for an already-published asset and a partner reads it only
+    // while their feed holds it (plans/82 M1).
+    if (submissionServable(rec) ? !(await instanceAssetReadable(user, rec)) : !(await submissionRelation(rec, user))) {
       return sendError(res, 403, 'FORBIDDEN', 'not yours to review');
     }
     // Once it is published this row is an ordinary catalog asset, so it answers
