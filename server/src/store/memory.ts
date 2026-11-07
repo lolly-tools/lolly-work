@@ -43,6 +43,7 @@ import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
+import type { RightsChoiceRecord } from '../programmes/rights.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
@@ -199,6 +200,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const companyProfiles = new Map<string, CompanyProfileRecord>();
   const rightsMarks = new Map<string, AssetRightsMarkRecord>();
   const assetLicences = new Map<string, AssetLicenceRecord>();
+  const rightsChoices = new Map<string, RightsChoiceRecord>();
   const companyProfileHistory = new Map<string, CompanyProfileRevision[]>();
   const folderKey = (k: { provider: string; path: string; programmeId: string; companyId?: string }) => [k.provider, k.path, k.programmeId, k.companyId ?? ''].join('\n');
   /** `${assetId} ${version}` (space-joined) - the composite key migration 0020 makes a
@@ -1472,6 +1474,15 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deleteAssetLicence(assetId) {
       assetLicences.delete(assetId);
+    },
+    async listRightsChoices() {
+      return [...rightsChoices.values()].map((r) => structuredClone(r)).sort((a, b) => a.assetId.localeCompare(b.assetId) || a.group.localeCompare(b.group));
+    },
+    async putRightsChoice(rec) {
+      rightsChoices.set(`${rec.assetId}\n${rec.group}`, structuredClone(rec));
+    },
+    async deleteRightsChoice(key) {
+      rightsChoices.delete(`${key.assetId}\n${key.group}`);
     },
     async getCompanyProfile(companyId) {
       const rec = companyProfiles.get(companyId);

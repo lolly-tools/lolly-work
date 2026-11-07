@@ -50,6 +50,15 @@ export interface LinkTarget {
    * so editing the URL cannot switch it on.
    */
   open?: boolean;
+  /**
+   * Files the licence gate holds back that the minter, a member of staff,
+   * chose to send anyway after a dry run (plans/82 M4). Each names one file
+   * and the fingerprint of the facts it was chosen against, so a file added
+   * to a collection later, or a new version of one, is never covered. Set by
+   * the server at mint, never taken from the request, and covered by the
+   * signature with the rest of the target.
+   */
+  includeHeld?: Array<{ id: string; fingerprint: string }>;
 }
 
 export interface LinkRecord {

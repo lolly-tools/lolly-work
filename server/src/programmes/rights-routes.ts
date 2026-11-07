@@ -13,20 +13,24 @@
  * a partner receives.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { sendError, sendJson, type createRouter } from '../api/router.ts';
+import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import type { AssetIndex, AssetIndexEntry } from '../catalog/lifecycle.ts';
-import { entryCompany, HELD_LABEL, loadRightsEngine, parseMarkScope, rightsAnswer, type AssetRightsMarkRecord, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
+import { entryCompany, HELD_LABEL, LICENCE_ATTRIBUTION_MAX, LICENCE_DECLARATION_MAX, loadRightsEngine, MARK_HOLDER_MAX, MARK_TERMS_MAX, parseMarkScope, RIGHTS_NOTE_MAX, rightsAnswer, type AssetRightsMarkRecord, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
 import { markCoverage, markStatement } from '../catalog/rights-routes.ts';
 import { entryInFolders, folderRuleGroup, liveFolderRules, type PartnerFolderRecord } from './folders.ts';
 import { companyGroup } from './people.ts';
+import { CHOICE_NOTE_MAX, CHOICES_PER_REQUEST, choiceFingerprint, choiceStanding, factsOf, type ChoiceStanding, type RightsChoiceRecord } from './rights.ts';
 import { isProgrammeScoped, namesProgrammeGroup, PARTNER_GROUP, programmeGroup } from './types.ts';
 
 type Router = ReturnType<typeof createRouter>;
 
+type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
+
 export interface RightsRouteDeps {
   store: Store;
   requireAction(req: IncomingMessage, res: ServerResponse, action: string): Promise<UserRecord | null>;
+  audit: Audit;
   /** The composed feed a caller with these groups receives. */
   feedFor(groups: string[]): Promise<AssetIndex>;
   /** Every catalog entry as its source records it, before any mark. */
@@ -58,6 +62,8 @@ export interface HeldFile {
   reason: string;
   conditions?: string[];
   detail?: string;
+  /** A share anyway choice was made for this file and the facts have moved since. */
+  needsChoosing?: true;
 }
 
 export interface SourceRow {
@@ -75,6 +81,10 @@ export interface SourceRow {
   travel: { count: number; byLicence: Array<{ licence: string; count: number }> };
   held: { count: number; byReason: Array<{ category: HeldCategory; label: string; count: number }> };
   exempt: number;
+  /** Held files a live share anyway choice sends to one of the programme's audiences. */
+  sharedAnyway: number;
+  /** Held files whose choice no longer counts, because the facts moved. */
+  needsChoosing: number;
   heldFiles: HeldFile[];
   /** Held files past the listed ones. */
   heldMore: number;
@@ -94,7 +104,7 @@ export interface RowMark {
 
 export interface ProgrammeRightsReport {
   rules: string;
-  totals: { assets: number; travel: number; held: number; exempt: number };
+  totals: { assets: number; travel: number; held: number; exempt: number; sharedAnyway: number; needsChoosing: number };
   sources: SourceRow[];
 }
 
@@ -112,7 +122,7 @@ const folderOfEntry = (entry: AssetIndexEntry): unknown => (entry.meta as { prov
  * narrowest provider folder given to them, then the whole provider.
  */
 function sourceOf(entry: AssetIndexEntry, answer: RightsAnswer, groups: ReadonlySet<string>, sources: ReportSources, now: number):
-  { key: string; row: Omit<SourceRow, 'assets' | 'travel' | 'held' | 'exempt' | 'heldFiles' | 'heldMore'> } {
+  { key: string; row: Omit<SourceRow, 'assets' | 'travel' | 'held' | 'exempt' | 'sharedAnyway' | 'needsChoosing' | 'heldFiles' | 'heldMore'> } {
   if (answer.state === 'exempt') {
     if (answer.why === 'company-own') {
       const id = entryCompany(entry) ?? '';
@@ -158,17 +168,26 @@ const ROW_ORDER: Record<SourceKind, number> = {
  * exempt.
  */
 export function programmeRightsReport(
-  engine: RightsEngine, feed: AssetIndex, groups: ReadonlySet<string>, sources: ReportSources, now: number,
+  engine: RightsEngine, feed: AssetIndex, groups: ReadonlySet<string>, sources: ReportSources, now: number, choices: readonly RightsChoiceRecord[] = [],
 ): ProgrammeRightsReport {
   const companies = new Set(sources.companies.map((c) => c.id));
   const rows = new Map<string, SourceRow & { licences: Map<string, number>; reasons: Map<HeldCategory, number> }>();
-  const totals = { assets: 0, travel: 0, held: 0, exempt: 0 };
+  const totals = { assets: 0, travel: 0, held: 0, exempt: 0, sharedAnyway: 0, needsChoosing: 0 };
+  const entries = new Map((feed.assets ?? []).map((e) => [e.id, e]));
+  const live = new Set<string>();
+  const retired = new Set<string>();
+  for (const choice of choices) {
+    if (!groups.has(choice.group)) continue;
+    const standing = choiceStanding(engine, choice, entries.get(choice.assetId));
+    if (standing === 'live') live.add(choice.assetId);
+    else if (standing === 'needs-choosing') retired.add(choice.assetId);
+  }
   for (const entry of feed.assets ?? []) {
     const answer = rightsAnswer(engine, entry, companies);
     const { key, row: shape } = sourceOf(entry, answer, groups, sources, now);
     let row = rows.get(key);
     if (!row) {
-      row = { ...shape, assets: 0, travel: { count: 0, byLicence: [] }, held: { count: 0, byReason: [] }, exempt: 0, heldFiles: [], heldMore: 0, licences: new Map(), reasons: new Map() };
+      row = { ...shape, assets: 0, travel: { count: 0, byLicence: [] }, held: { count: 0, byReason: [] }, exempt: 0, sharedAnyway: 0, needsChoosing: 0, heldFiles: [], heldMore: 0, licences: new Map(), reasons: new Map() };
       rows.set(key, row);
     }
     row.assets++;
@@ -180,14 +199,20 @@ export function programmeRightsReport(
       row.travel.count++;
       totals.travel++;
       row.licences.set(answer.licence, (row.licences.get(answer.licence) ?? 0) + 1);
+    } else if (live.has(entry.id)) {
+      row.sharedAnyway++;
+      totals.sharedAnyway++;
     } else {
       row.held.count++;
       totals.held++;
+      const stale = retired.has(entry.id);
+      if (stale) { row.needsChoosing++; totals.needsChoosing++; }
       row.reasons.set(answer.category, (row.reasons.get(answer.category) ?? 0) + 1);
       if (row.heldFiles.length < HELD_LISTED) {
         row.heldFiles.push({
           id: entry.id, name: nameOf(entry), licence: answer.licence, declared: answer.declared, category: answer.category, reason: answer.reason,
           ...(answer.conditions?.length ? { conditions: answer.conditions } : {}), ...(answer.detail ? { detail: answer.detail } : {}),
+          ...(stale ? { needsChoosing: true as const } : {}),
         });
       } else row.heldMore++;
     }
@@ -273,6 +298,22 @@ export async function linksThatWouldLose(engine: RightsEngine, store: Store, fee
   return { count: losing.length, files, links: losing.slice(0, LINKS_LISTED), more: Math.max(0, losing.length - LINKS_LISTED) };
 }
 
+/**
+ * Every bound these routes enforce, read from the constants that enforce
+ * them, so the console can show an admin the limits as they are.
+ */
+export const RIGHTS_LIMITS = {
+  heldFilesListedPerSource: HELD_LISTED,
+  linksListed: LINKS_LISTED,
+  choicesPerRequest: CHOICES_PER_REQUEST,
+  choiceNote: CHOICE_NOTE_MAX,
+  markHolder: MARK_HOLDER_MAX,
+  markTerms: MARK_TERMS_MAX,
+  markNote: RIGHTS_NOTE_MAX,
+  licenceDeclaration: LICENCE_DECLARATION_MAX,
+  licenceAttribution: LICENCE_ATTRIBUTION_MAX,
+} as const;
+
 /** Put the mark stated on each row's own scope beside the row, with what it covers now. */
 async function attachMarks(engine: RightsEngine, store: Store, report: ProgrammeRightsReport, catalogEntries: () => Promise<AssetIndexEntry[]>): Promise<void> {
   const marks = await store.listAssetRightsMarks();
@@ -303,17 +344,120 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
     const companies = (await store.listCompanies()).filter((c) => c.programmeId === programme.id);
     const groups = [programmeGroup(programme.id), ...companies.map((c) => companyGroup(c.id))];
-    const [engine, feed, collections, instAssets, providers, folderRules] = await Promise.all([
+    const [engine, feed, collections, instAssets, providers, folderRules, allChoices] = await Promise.all([
       loadRightsEngine(), deps.feedFor([...groups, PARTNER_GROUP]), store.listCollections(), store.listInstanceAssets(),
-      store.listProviders({ includeFragment: false }), store.listPartnerFolders(),
+      store.listProviders({ includeFragment: false }), store.listPartnerFolders(), store.listRightsChoices(),
     ]);
     const now = Date.now();
+    const choices = allChoices.filter((c) => c.programmeId === programme.id);
     const report = programmeRightsReport(engine, feed, new Set(groups), {
       collections, instAssets, providers, folderRules: folderRules.filter((r) => r.programmeId === programme.id),
       companies: companies.map((c) => ({ id: c.id, name: c.name })),
-    }, now);
+    }, now, choices);
     await attachMarks(engine, store, report, deps.catalogEntries);
     const links = await linksThatWouldLose(engine, store, deps.feedFor, now);
-    sendJson(res, 200, { programme: { id: programme.id, name: programme.name }, ...report, links }, { 'cache-control': 'no-store' });
+    const users = new Map((await store.listUsers()).map((u) => [u.id, u]));
+    const entries = new Map((feed.assets ?? []).map((e) => [e.id, e]));
+    const views = choices.map((c) => choiceView(engine, c, entries.get(c.assetId), users, companies));
+    sendJson(res, 200, {
+      programme: { id: programme.id, name: programme.name }, ...report,
+      // For the admin only: what was shared anyway, to whom, by whom and why.
+      choices: views,
+      links,
+      inForce: { marks: (await store.listAssetRightsMarks()).length, choices: views.filter((v) => v.standing === 'live').length },
+      limits: RIGHTS_LIMITS,
+    }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
+
+  /**
+   * Share anyway: send held files to one audience, the programme or one of
+   * its companies. Body: `{ assetIds: [...], company?, note? }`. Each file must
+   * be in that audience's feed and held back now; one audited row per file.
+   * Nothing is written unless every file qualifies.
+   */
+  router.add('PUT', '/api/v1/programmes/:id/rights/choices', async (req, res, ctx) => {
+    const actor = await deps.requireAction(req, res, 'programme.manage'); if (!actor) return;
+    const programme = await store.getProgramme(String(ctx.params.id));
+    if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
+    const body = ((await readJson(req)) ?? {}) as { assetIds?: unknown; assetId?: unknown; company?: unknown; note?: unknown };
+    const ids = Array.isArray(body.assetIds) ? body.assetIds : typeof body.assetId === 'string' ? [body.assetId] : [];
+    if (!ids.length || ids.length > CHOICES_PER_REQUEST || !ids.every((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 512)) {
+      return sendError(res, 400, 'INVALID_INPUT', `assetIds is a list of 1 to ${CHOICES_PER_REQUEST} catalog asset ids`);
+    }
+    if (body.note !== undefined && (typeof body.note !== 'string' || body.note.trim().length > CHOICE_NOTE_MAX)) {
+      return sendError(res, 400, 'INVALID_INPUT', `note is text, at most ${CHOICE_NOTE_MAX} characters`);
+    }
+    const note = typeof body.note === 'string' ? body.note.trim() : '';
+    let companyId: string | undefined;
+    if (body.company !== undefined && body.company !== null && body.company !== '') {
+      const company = (await store.listCompanies()).find((c) => c.id === body.company && c.programmeId === programme.id);
+      if (!company) return sendError(res, 404, 'NOT_FOUND', 'no such company in this programme');
+      companyId = company.id;
+    }
+    const group = companyId ? companyGroup(companyId) : programmeGroup(programme.id);
+    const audience = [programmeGroup(programme.id), ...(companyId ? [companyGroup(companyId)] : []), PARTNER_GROUP];
+    const [engine, feed] = await Promise.all([loadRightsEngine(), deps.feedFor(audience)]);
+    const entries = new Map((feed.assets ?? []).map((e) => [e.id, e]));
+    const companies = new Set(companyId ? [companyId] : []);
+    const notInFeed = [...new Set(ids)].filter((id) => !entries.has(id));
+    if (notInFeed.length) return sendError(res, 404, 'NOT_IN_FEED', `${notInFeed.length} of these files ${notInFeed.length === 1 ? 'is' : 'are'} not in this audience's feed`);
+    const notHeld = [...new Set(ids)].filter((id) => rightsAnswer(engine, entries.get(id)!, companies).state !== 'held');
+    if (notHeld.length) return sendError(res, 409, 'NOT_HELD', `${notHeld.length} of these files already reach this audience; share anyway is for files held back`);
+    const at = new Date().toISOString();
+    const made: RightsChoiceRecord[] = [];
+    for (const id of new Set(ids)) {
+      const entry = entries.get(id)!;
+      const answer = rightsAnswer(engine, entry, companies);
+      if (answer.state !== 'held') continue;
+      const facts = factsOf(engine, entry, group);
+      const rec: RightsChoiceRecord = {
+        assetId: id, group, programmeId: programme.id, ...(companyId ? { companyId } : {}),
+        declared: answer.declared, licence: answer.licence, reason: answer.reason, checksum: facts.checksum, rulesVersion: facts.rulesVersion,
+        fingerprint: choiceFingerprint(facts), ...(note ? { note } : {}), chosenBy: actor.id, chosenAt: at,
+      };
+      await store.putRightsChoice(rec);
+      await deps.audit(`user:${actor.id}`, 'programme.rights.share-anyway', `programme:${programme.id}`, {
+        assetId: id, group, licence: rec.declared, reason: rec.reason, ...(note ? { note } : {}), fingerprint: rec.fingerprint,
+      });
+      made.push(rec);
+    }
+    const users = new Map([[actor.id, actor]]);
+    const named = companyId ? (await store.listCompanies()).filter((x) => x.id === companyId) : [];
+    sendJson(res, 200, { choices: made.map((c) => choiceView(engine, c, entries.get(c.assetId), users, named)) });
+  });
+
+  /** Withdraw one choice: `?assetId=&company=`. The file is held again. */
+  router.add('DELETE', '/api/v1/programmes/:id/rights/choices', async (req, res, ctx) => {
+    const actor = await deps.requireAction(req, res, 'programme.manage'); if (!actor) return;
+    const programme = await store.getProgramme(String(ctx.params.id));
+    if (!programme) return sendError(res, 404, 'NOT_FOUND', 'no such programme');
+    const assetId = ctx.url.searchParams.get('assetId') ?? '';
+    const companyId = ctx.url.searchParams.get('company') || undefined;
+    const group = companyId ? companyGroup(companyId) : programmeGroup(programme.id);
+    const prior = (await store.listRightsChoices()).find((c) => c.assetId === assetId && c.group === group && c.programmeId === programme.id);
+    if (!prior) return sendError(res, 404, 'NOT_FOUND', 'no such choice in this programme');
+    await store.deleteRightsChoice({ assetId, group });
+    await deps.audit(`user:${actor.id}`, 'programme.rights.withdraw', `programme:${programme.id}`, {
+      assetId, group, licence: prior.declared, fingerprint: prior.fingerprint, via: 'console',
+    });
+    sendJson(res, 200, { ok: true });
+  });
+}
+
+const DATE = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+
+/** One choice as the admin reads it: the file, the audience, who chose and when, and whether it still counts. */
+function choiceView(
+  engine: RightsEngine, c: RightsChoiceRecord, entry: AssetIndexEntry | undefined, users: ReadonlyMap<string, UserRecord>, companies: ReadonlyArray<{ id: string; name: string }>,
+): Record<string, unknown> {
+  const who = users.get(c.chosenBy);
+  const standing: ChoiceStanding = choiceStanding(engine, c, entry);
+  const company = c.companyId ? companies.find((x) => x.id === c.companyId) : undefined;
+  return {
+    assetId: c.assetId, name: entry ? nameOf(entry) : c.assetId, group: c.group,
+    ...(c.companyId ? { company: { id: c.companyId, name: company?.name ?? c.companyId } } : {}),
+    licence: c.licence, declared: c.declared, reason: c.reason, ...(c.note ? { note: c.note } : {}),
+    chosenBy: { id: c.chosenBy, name: who ? personName(who) : c.chosenBy }, chosenAt: c.chosenAt, chosenOn: DATE.format(Date.parse(c.chosenAt)),
+    standing, fingerprint: c.fingerprint,
+  };
 }
