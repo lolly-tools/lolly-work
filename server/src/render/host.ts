@@ -27,6 +27,25 @@ import type { HostedAssetResult, HostedProviderRef } from '../catalog/providers/
 /** Called only for bytes actually read by the catalog bridge. */
 export type ObserveCatalogAsset = (asset: AssetRef, bytes: Uint8Array) => void;
 
+/**
+ * The licence gate on a server render (plans/82 M4): for a programme-scoped
+ * caller, the catalog files their own feed holds. A file it leaves out is
+ * not drawn: `get` throws this, and `held` lists it so the render can say
+ * which file it was.
+ */
+export interface RenderAssetGate {
+  allows(id: string): boolean;
+  held: Set<string>;
+}
+
+/** A catalog file the caller's licence gate holds back. */
+export class AssetHeldError extends Error {
+  constructor(readonly assetId: string) {
+    super(`${assetId} is not available to this render`);
+    this.name = 'AssetHeldError';
+  }
+}
+
 // One catalog-asset record as it appears in <pack>/catalog/assets/index.json.
 interface CatalogAssetFormat { format: string; url: string; checksum?: string; width?: number; height?: number }
 interface CatalogAsset {
@@ -67,7 +86,7 @@ function matchesFilter(meta: CatalogAsset, filter: AssetQuery): boolean {
  * `get` returns referenced files as data: URLs (jsdom has no createObjectURL),
  * `pick` throws (no picker chrome server-side).
  */
-async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>, observe?: ObserveCatalogAsset): Promise<AssetsAPI> {
+async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>, observe?: ObserveCatalogAsset, gate?: RenderAssetGate): Promise<AssetsAPI> {
   const catalogDir = join(pack, 'catalog');
   const byId = new Map<string, CatalogAsset>();
   try {
@@ -78,6 +97,10 @@ async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRe
     /* no asset catalog in this pack — leave the map empty */
   }
   const get = async (id: string): Promise<AssetRef> => {
+    if (gate && !gate.allows(id)) {
+      gate.held.add(id);
+      throw new AssetHeldError(id);
+    }
     const meta = byId.get(id);
     if (!meta) throw new Error(`Asset not in catalog: ${id}`);
     const fmt = meta.formats[0];
@@ -94,13 +117,13 @@ async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRe
       // no egress and therefore work even when the instance has no DAM driver.
       if (ref.provider === 'catalog' || ref.provider === 'library') {
         const id = [ref.scope, ref.path].filter(Boolean).join('/');
-        try { return await get(id); } catch { return null; }
+        try { return await get(id); } catch (err) { if (err instanceof AssetHeldError) throw err; return null; }
       }
       if (ref.provider === 'image' && ref.scope === 'brand') {
         const wanted = ref.path || 'logo';
-        const asset = [...byId.values()].find((item) => item.id === wanted || item.tags?.includes(wanted) || (wanted === 'logo' && item.tags?.includes('logo')));
+        const asset = [...byId.values()].find((item) => (!gate || gate.allows(item.id)) && (item.id === wanted || item.tags?.includes(wanted) || (wanted === 'logo' && item.tags?.includes('logo'))));
         if (!asset) return null;
-        try { return await get(asset.id); } catch { return null; }
+        try { return await get(asset.id); } catch (err) { if (err instanceof AssetHeldError) throw err; return null; }
       }
       if (hostedResolver && (ref.provider === 'cms' || ref.provider === 'net')) return (await hostedResolver(ref))?.asset ?? null;
       // cms:// and net:// deliberately fail closed until an instance-configured
@@ -109,7 +132,7 @@ async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRe
     },
     get,
     async query(filter: AssetQuery = {}): Promise<AssetRef[]> {
-      return [...byId.values()].filter((m) => matchesFilter(m, filter)).map((m): AssetRef => ({
+      return [...byId.values()].filter((m) => (!gate || gate.allows(m.id)) && matchesFilter(m, filter)).map((m): AssetRef => ({
         source: 'library', id: m.id, type: m.type, format: m.formats[0]?.format ?? 'svg', url: '',
         version: m.version, meta: { name: m.name, tags: m.tags, _placeholder: true },
       }));
@@ -118,7 +141,7 @@ async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRe
       throw new Error('Asset picker is not available server-side');
     },
     async isAvailable(id: string): Promise<boolean> {
-      return byId.has(id);
+      return byId.has(id) && (!gate || gate.allows(id));
     },
     // v1.183: bytes behind a ref. This host hands tools data: urls only.
     async bytes(target: AssetRef | string): Promise<Uint8Array> {
@@ -175,10 +198,10 @@ function safeJson(v: unknown): string {
  * `pack`. Produces SVG only (the render plane rasterises to PNG downstream via
  * resvg); every other format throws so a mis-wired caller fails honestly.
  */
-async function buildHost(dom: RenderDom, pack: string, profile: Profile, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>, observe?: ObserveCatalogAsset): Promise<WorkHost> {
+async function buildHost(dom: RenderDom, pack: string, profile: Profile, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>, observe?: ObserveCatalogAsset, gate?: RenderAssetGate): Promise<WorkHost> {
   const w = dom.window;
   const state = new Map<string, object>();
-  const assets = await buildAssets(pack, hostedResolver, observe);
+  const assets = await buildAssets(pack, hostedResolver, observe, gate);
   const engine = await loadEngine();
   const tokens = await buildTokens(pack, engine);
 
@@ -257,7 +280,7 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
  * afterward; serialized process-wide via the mutex above.
  */
 export function withRenderHost<T>(
-  opts: { pack: string; profile: Profile; hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>; observeCatalogAsset?: ObserveCatalogAsset },
+  opts: { pack: string; profile: Profile; hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>; observeCatalogAsset?: ObserveCatalogAsset; assetGate?: RenderAssetGate },
   fn: (dom: RenderDom, host: WorkHost) => Promise<T>,
 ): Promise<T> {
   return enqueue(async () => {
@@ -269,7 +292,7 @@ export function withRenderHost<T>(
     g['document'] = dom.window.document;
     g['Element'] = dom.window.Element;
     try {
-      const host = await buildHost(dom, opts.pack, opts.profile, opts.hostedResolver, opts.observeCatalogAsset);
+      const host = await buildHost(dom, opts.pack, opts.profile, opts.hostedResolver, opts.observeCatalogAsset, opts.assetGate);
       return await fn(dom, host);
     } finally {
       g['window'] = prev.window;
