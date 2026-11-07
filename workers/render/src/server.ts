@@ -45,6 +45,7 @@ import { workerBrowserOptions } from './browser-launch.ts';
 import { createBrowserLifecycle } from './browser-lifecycle.ts';
 import { RequestLifecycle } from './request-lifecycle.ts';
 import { deliverResponse, ResponseBudget } from './request-delivery.ts';
+import { createShellBudget } from './request-budget.ts';
 import { pullBase, startPull, type JobReply } from './pull.ts';
 
 const PORT = Number(process.env.PORT ?? 8791);
@@ -96,6 +97,10 @@ try {
 // hide saturation from the HPA, so the plane owns retry policy instead.
 const sem = createSemaphore(MAX_CONCURRENT);
 const previewSem = createSemaphore(1);
+// The request budget follows the shell this worker renders with (./request-budget.ts).
+const shellBudget = createShellBudget(WEB_BASE, {
+  onFallback: (reason) => console.warn(`[render-worker] request budget: ${reason}; using the last good or fallback budget`),
+});
 
 // ── HMAC (identical scheme to lib/crypto.ts hmac/macEquals) ────────────────────
 const hmac = (data: string): string => createHmac('sha256', SECRET).update(data).digest('base64url');
@@ -194,7 +199,7 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
     signal.throwIfAborted();
     let confirmedBrand = false;
     const egress = egressChecker(DECLARED_ORIGINS);
-    const budget = new ResponseBudget();
+    const budget = new ResponseBudget(undefined, undefined, await shellBudget.current());
     await ctx.route('**/*', route => requests.track(async () => {
       const raw = route.request().url();
       const verdict = await egress(raw);
