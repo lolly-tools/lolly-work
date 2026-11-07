@@ -7159,7 +7159,11 @@ export function buildApp(deps: AppDeps): App {
       const id = `${INST_PREFIX}${sid}`;
       const rec = await store.getInstanceAsset(id);
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
-      if (!instanceAssetVisible(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
+      // A partner programme member reads exactly what their feed holds (plans/82 M1),
+      // the same rule as their federated bytes, links and asset records: an internal
+      // asset shared with everyone (`*`) is not theirs unless their programme includes
+      // it, and one their programme includes through a collection is.
+      if (!(await instanceAssetReadable(user, rec))) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       // A submission under review (or returned) has no public bytes: the feed
       // does not carry it and this route does not serve it. Reviewers preview
       // it through /api/v1/catalog/submissions/:id/bytes instead (plans/31 §3).
@@ -7195,8 +7199,13 @@ export function buildApp(deps: AppDeps): App {
       const stat = blobId ? await blobs.head(blobId) : null;
       if (!stat) return sendError(res, 404, 'NOT_FOUND', 'no such format');
       const etag = `"${stat.checksum}"`;
+      // Who may read these bytes depends on the caller (their groups, or their feed
+      // for a partner), and a browser cache is not keyed by person. So the browser
+      // asks again on every use: the checks above run for whoever is signed in now,
+      // by cookie or by Authorization, before a 304 hands back a cached copy.
+      const instBytesCache = cachePolicy('instance-private').cacheControl;
       if (req.headers['if-none-match'] === etag) {
-        res.writeHead(304, { etag, 'cache-control': 'private, max-age=300' });
+        res.writeHead(304, { etag, 'cache-control': instBytesCache });
         res.end();
         return;
       }
@@ -7205,7 +7214,7 @@ export function buildApp(deps: AppDeps): App {
       res.writeHead(200, {
         'content-type': blob.stat.contentType,
         ...INERT_BYTES,
-        'cache-control': 'private, max-age=300',
+        'cache-control': instBytesCache,
         etag,
         'content-length': String(blob.stat.size),
       });
@@ -7465,6 +7474,11 @@ export function buildApp(deps: AppDeps): App {
       }
       const current = await servedIndex.forCaller({ groups: user?.groups ?? [] });
       if (!current.index.assets?.some(entry => entry.id === assetId)) return sendError(res, 404, 'NOT_FOUND', 'no currently accessible asset');
+    } else if (user && isProgrammeScoped(user.groups, user.role) && !(await feedNamesFile(user.groups, rel)) && !(await feedNamesFile(user.groups, actualRel))) {
+      // A partner programme member reads only what their feed names: a pack file no
+      // asset owns (a release inventory, a rendition, a licence text) answers only when
+      // an entry in their own feed points at it (plans/82 M1).
+      return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
     }
     sendBytes(req, res, bytes, { contentType: contentType(rel), ranges: true,
       modified: file!.modified, headers: { ...INERT_BYTES, 'cache-control': cachePolicy('instance-private').cacheControl } });
@@ -7506,6 +7520,36 @@ export function buildApp(deps: AppDeps): App {
    * consulted here on purpose: a scheduled asset is a legitimate thing to mint a
    * link for, and an expired one is refused at resolve rather than at mint.
    */
+  /** Every /catalog/ file a served feed points at through a field that is a file
+   *  reference by definition: a format's url, a locale's format url, and a font's
+   *  licence text (`meta.licenceFile`). Names, descriptions, tags and any other free
+   *  text never count, so an edited description cannot open a pack file. Kept per
+   *  feed object, which the served index memoises until an input changes. */
+  const feedAddresses = new WeakMap<object, Set<string>>();
+  const feedNamesFile = async (groups: string[], rel: string): Promise<boolean> => {
+    const { index } = await servedIndex.forCaller({ groups });
+    let names = feedAddresses.get(index);
+    if (!names) {
+      const found = new Set<string>();
+      const add = (value: unknown): void => {
+        if (typeof value === 'string' && value.startsWith('/catalog/')) found.add(value.split(/[?#]/, 1)[0]!);
+      };
+      for (const entry of index.assets ?? []) {
+        for (const format of entry.formats ?? []) add(format?.url);
+        for (const formats of Object.values(entry.locales ?? {})) if (Array.isArray(formats)) for (const format of formats) add(format?.url);
+        const meta = (entry as { meta?: unknown }).meta;
+        if (meta && typeof meta === 'object') add((meta as { licenceFile?: unknown }).licenceFile);
+      }
+      feedAddresses.set(index, found);
+      names = found;
+    }
+    return names.has(`/catalog/${rel}`);
+  };
+  /** Whether a caller may read an instance asset's bytes or record: a partner programme
+   *  member exactly what their feed holds (callerSeesAsset, plans/82 M1), anyone else by
+   *  the asset's own groups. One rule for every instance-asset route. */
+  const instanceAssetReadable = async (user: UserRecord | null | undefined, rec: InstanceAssetRecord): Promise<boolean> =>
+    user && isProgrammeScoped(user.groups, user.role) ? callerSeesAsset(user, rec.id) : instanceAssetVisible(rec, user?.groups ?? []);
   const callerSeesAsset = async (user: UserRecord, rawId: string): Promise<boolean> => {
     const assetId = await resolveAssetAlias(rawId);
     // A partner programme member sees exactly what their feed holds (plans/82
@@ -8077,7 +8121,7 @@ export function buildApp(deps: AppDeps): App {
     // Inspect keeps lifecycle diagnostics and local pins readable to callers
     // with source access, even when lifecycle removes the asset from browse.
     const canInspect = !!user && (await callerSeesAsset(user, id)
-      || !!(canEdit && instAsset && instanceAssetVisible(instAsset, user.groups)));
+      || !!(canEdit && instAsset && await instanceAssetReadable(user, instAsset)));
     if (!canInspect) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
     const entry = (await servedIndex.forCaller({ groups: user?.groups ?? [] })).index.assets?.find(asset => asset.id === id)
       ?? instAsset?.entry ?? (id.startsWith(EXT_PREFIX) ? await federation.entry(id) : (await loadAssetIndexById(config.instance.pack)).get(id));
@@ -9241,9 +9285,16 @@ export function buildApp(deps: AppDeps): App {
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     // Only the submitter and whoever may act on the step see a PENDING
-    // submission's bytes. Once it is live the ordinary exposure rule takes
-    // over, so this route keeps working for an already-published asset.
-    if (!(await submissionRelation(rec, user)) && !(submissionServable(rec) && instanceAssetVisible(rec, user.groups))) {
+    // submission's bytes, which are the submitter's own upload: nothing can
+    // replace them before the decision. Once it is live, staff keep that
+    // relationship beside the ordinary exposure rule, so this route keeps
+    // working for an already-published asset. A partner programme member
+    // reads a live one only while their feed holds it, their own included
+    // (plans/82 M1).
+    const allowed = !submissionServable(rec) ? !!(await submissionRelation(rec, user))
+      : isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
+        : !!(await submissionRelation(rec, user)) || instanceAssetVisible(rec, user.groups);
+    if (!allowed) {
       return sendError(res, 403, 'FORBIDDEN', 'not yours to review');
     }
     // Once it is published this row is an ordinary catalog asset, so it answers
