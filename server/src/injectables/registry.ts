@@ -10,7 +10,7 @@
  */
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { KIND_HANDLERS } from './kinds.ts';
-import { isProgrammeGroup } from '../programmes/types.ts';
+import { isPartnerGroup } from '../programmes/types.ts';
 import { INJECTABLE_KINDS, type InjectableKind, type InjectableRecord } from './types.ts';
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
@@ -62,7 +62,7 @@ export function visibleTo(rec: InjectableRecord, groups: string[], programmeScop
   const set = new Set(groups);
   // Everyone (`*`) does not include a partner programme member: an injectable
   // reaches them only when its groups name one of theirs (plans/82 M1).
-  if (programmeScoped) return rec.groups.some((g) => g !== '*' && isProgrammeGroup(g) && set.has(g));
+  if (programmeScoped) return rec.groups.some((g) => g !== '*' && isPartnerGroup(g) && set.has(g));
   if (rec.groups.includes('*')) return true;
   return rec.groups.some((g) => set.has(g));
 }

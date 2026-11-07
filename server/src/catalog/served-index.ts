@@ -32,7 +32,7 @@ import { applyTagRules, compileTagRules } from './tag-rules.ts';
 import { composeAssetMeta } from './asset-meta.ts';
 import { applyCredentialsToIndex } from './credentials.ts';
 import { composeCollections } from './collections.ts';
-import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, programmeGroupsOf } from '../programmes/types.ts';
+import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf } from '../programmes/types.ts';
 
 export interface ServedProvider {
   id: string;
@@ -282,7 +282,8 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       // include: essentials, granted collections' members, and instance assets
       // or providers whose groups name a programme group. `*` never counts.
       const scoped = isProgrammeScoped(groups, deps.roleOf?.(groups));
-      const programmeGroups = new Set(programmeGroupsOf(groups));
+      // Programme and company groups both count (company-<id>, plans/82 M1 part 2).
+      const programmeGroups = new Set(partnerGroupsOf(groups));
       const composeGroups = scoped ? everyGroup(groups, providerRecs, instAssets, collections) : groups;
       const providers: ServedProvider[] = frags
         .filter(({ rec }) => scoped ? namesProgrammeGroup(rec.exposure.groups, programmeGroups) : callerSeesProvider(rec, groups))
@@ -389,7 +390,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       // The same provider rule the feed applies: a partner programme member
       // waits only on providers whose groups name one of their programmes.
       const scoped = isProgrammeScoped(key, deps.roleOf?.(key));
-      const programmeGroups = new Set(programmeGroupsOf(key));
+      const programmeGroups = new Set(partnerGroupsOf(key));
       const sees = (provider: ProviderRecordLike): boolean => scoped ? namesProgrammeGroup(provider.exposure.groups, programmeGroups) : callerSeesProvider(provider as never, key);
       const pending = background ? (await deps.store.listProviders({ includeFragment: false }))
         .filter(provider => provider.enabled && sees(provider) && !represented.has(provider.id))
