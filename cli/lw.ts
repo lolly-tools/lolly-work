@@ -1131,7 +1131,36 @@ switch (cmd) {
   case 'programmes': {
     // Partner programmes (plans/82). `limits` is what every token placed in one
     // takes unless it states its own (M7): with no flag, the figures and sources.
-    const usage = 'usage: lw programmes [ls] | show <id> | create <id> --name "…" | set <id> [--name "…"] [--description "…"] [--team <group>] [--tools a,b] | rm <id> | limits <id> | usage <id>';
+    const usage = 'usage: lw programmes [ls] | show <id> | create <id> --name "…" | set <id> [--name "…"] [--description "…"] [--team <group>] [--tools a,b] | rm <id> | limits <id> | usage <id> | rights-report <id>';
+    if (sub === 'rights-report') {
+      // The licence report for one programme (plans/82 M4): what the licence gate
+      // would let through and hold back, by source, and the links made by staff
+      // that would lose files. Read-only.
+      const programme = positionals[2] ?? fail('usage: lw programmes rights-report <programme> [--json]');
+      type Row = { label: string; assets: number; exempt: number; travel: { count: number; byLicence: Array<{ licence: string; count: number }> };
+        held: { count: number; byReason: Array<{ label: string; count: number }> } };
+      const r = await call(`/api/v1/programmes/${encodeURIComponent(programme)}/rights-report`) as {
+        programme: { name: string }; rules: string; totals: { assets: number; travel: number; held: number; exempt: number }; sources: Row[];
+        links: { count: number; files: number; links: Array<{ id: string; target: { name: string }; createdBy: { name: string }; held: number; files: number }>; more: number };
+      };
+      out(r);
+      if (!values.json) {
+        const t = r.totals;
+        console.log(`${r.programme.name}: ${t.assets} file(s); ${t.travel} travel, ${t.held} would be held back, ${t.exempt} exempt (${r.rules})`);
+        for (const row of r.sources) {
+          const parts = [
+            ...row.travel.byLicence.map((l) => `travel ${l.count}: ${l.licence}`),
+            ...row.held.byReason.map((h) => `held ${h.count}: ${h.label}`),
+            ...(row.exempt ? [`exempt ${row.exempt}`] : []),
+          ];
+          console.log(`  ${row.label}  ${row.assets}  ${parts.join('; ')}`);
+        }
+        console.log(`links made by staff that would lose files: ${r.links.count}${r.links.count ? ` (${r.links.files} file(s))` : ''}`);
+        for (const l of r.links.links) console.log(`  ${l.id}  ${l.target.name}  by ${l.createdBy.name}  loses ${l.held} of ${l.files}`);
+        if (r.links.more) console.log(`  and ${r.links.more} more`);
+      }
+      break;
+    }
     type Programme = { id: string; name: string; description?: string; group: string; team?: string; tools: string[]; collections: unknown[]; members: unknown[]; endedAt?: string };
     const show = (p: Programme): void => {
       if (values.json) return;
@@ -2530,6 +2559,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--move-staff <id,...>] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited); staff move only by name
   domains check <domain> · domains rm <domain> [--programme <id>]   look the DNS record up now; stop new people joining through a domain
   folders [ls] --programme <id> · folders add <provider> <path>|--whole · folders rm <provider> <path> --programme <id> [--company <id>] [--ends YYYY-MM-DD]   give one provider folder to a programme or company
+  programmes rights-report <programme>   what the licence gate lets through and holds back, by source, and the staff links that would lose files
   retention run              apply the stated retention policy (including the deleted-document purge) and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
   users subject-export <id>  bounded partial metadata page (owner; --category, --cursor, --limit)
