@@ -71,6 +71,8 @@ export interface RightsEngine {
   licenceProfile(id: string | null): { name: string; reviewed: boolean; conditions: string[] } | null;
   readLicenceExpression(text: string): { operator: 'single' | 'or' | 'and'; terms: Array<{ id: string | null }> };
   RIGHTS_RULES_VERSION: string;
+  /** The `.lolly` credits text, for a collection ZIP. */
+  packCreditsText(carried: ReadonlyArray<{ label: string; id: string; path: string; licence?: string; credit?: string; notices?: string[]; includedByChoice?: true }>, heldBack: readonly never[]): string;
 }
 
 // A non-literal specifier keeps tsc from pulling the engine's browser-lib .ts

@@ -101,6 +101,8 @@ import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
 import { registerRightsRoutes } from '../programmes/rights-routes.ts';
 import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
+import { loadRightsEngine } from '../catalog/rights.ts';
+import { collectionCredits } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
@@ -7281,6 +7283,15 @@ export function buildApp(deps: AppDeps): App {
     };
   };
 
+  /** Each catalog entry a link names, as the link's maker sees it: the
+   *  licence and credit a collection ZIP's credits print come from here. */
+  const linkMakerEntries = async (link: LinkRecord): Promise<Map<string, AssetIndexEntry>> => {
+    const maker = await store.getUser(link.createdBy);
+    await providersReady;
+    const feed = (await servedIndex.forCaller({ groups: maker?.groups ?? [] })).index;
+    return new Map((feed.assets ?? []).map((entry) => [entry.id, entry]));
+  };
+
   const serveLinkedCollection = async (
     req: IncomingMessage, res: ServerResponse, link: LinkRecord, url: URL,
   ): Promise<void> => {
@@ -7313,21 +7324,36 @@ export function buildApp(deps: AppDeps): App {
           'this collection is too large to zip; download the assets individually');
       }
       const zip = new ZipBuilder();
-      const used = new Set<string>();
+      // The two credits entries keep their names, so a file called CREDITS.txt
+      // is renamed rather than shadowed (plans/82 M4).
+      const used = new Set<string>(['CREDITS.txt', 'credits.json']);
+      const named = members.map((member) => ({ member, path: safeEntryName(member.source.filename, used) }));
+      const [engine, entries] = await Promise.all([loadRightsEngine(), linkMakerEntries(link)]);
+      const credits = collectionCredits(engine, named.map(({ member, path }) => {
+        const entry = entries.get(member.assetId);
+        return { id: member.assetId, path, fallbackLabel: member.source.filename, ...(entry ? { entry } : {}) };
+      }));
       res.writeHead(200, {
         'content-type': 'application/zip',
         'content-disposition': `attachment; filename="${safeFilename(rec.name)}.zip"`,
         'cache-control': 'private, no-store',
         'x-content-type-options': 'nosniff',
       });
-      for (const member of members) {
+      // Written first, so a download cut short still holds them.
+      for (const file of credits.files) res.write(zip.add(file.name, file.bytes));
+      let written = 0;
+      for (const { member, path } of named) {
         const bytes = await readLinkedSource(member.source);
         if (!bytes) continue;
-        res.write(zip.add(safeEntryName(member.source.filename, used), bytes));
+        res.write(zip.add(path, bytes));
+        written++;
       }
       res.end(zip.end());
+      // The archive streamed, so nothing read it back: the companion is
+      // recorded as written, never as included.
       await audit(guestActor(link.id), 'catalog.collection.download', `collection:${rec.id}`, {
-        linkId: link.id, entries: zip.count, withheld,
+        linkId: link.id, entries: written, withheld,
+        ...(credits.files.length ? { credits: { state: 'written', files: Object.fromEntries(credits.files.map((f) => [f.name, f.sha256])) } } : {}),
       });
       return;
     }
