@@ -5,8 +5,8 @@
  *
  * Reopen puts back what the exit took and the receipt recorded:
  * - the accounts the exit disabled, and only those: one disabled before the
- *   exit stays disabled, one disabled again since stays so, and one erased
- *   since is listed as gone;
+ *   exit or disabled again since stays disabled; one erased since is listed
+ *   as gone;
  * - their programme and company groups and the memberships the exit ended;
  * - the templates it retired, and the audiences it took off the others;
  * - the folder rules it ended, with their own end dates, where still ahead;
