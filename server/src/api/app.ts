@@ -6176,6 +6176,11 @@ export function buildApp(deps: AppDeps): App {
     // so a held file is still there to count and to choose.
     feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups, ungated: true })).index; },
     extraLimits: () => ({ collectionZipBytes: COLLECTION_ZIP_MAX_BYTES, collectionMembers: COLLECTION_MAX_MEMBERS }),
+    templateValues: async (id) => {
+      const rec = await store.getInstanceAsset(id);
+      const blob = rec?.blobs.json ? await blobs.get(rec.blobs.json) : null;
+      return blob ? templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES)) : null;
+    },
   });
   registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights });
 
