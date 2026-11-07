@@ -106,7 +106,8 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
   const bodyOf = () => {
     const unknown = [
       ...Object.keys(original).filter((key) => !['toolId', 'version', 'name', 'inputAccess', 'visibility', 'enforce', 'defaults', 'bindings'].includes(key)),
-      ...Object.keys(original.enforce ?? {}).filter((key) => !['watermark', 'formats', 'escalation'].includes(key)).map((key) => `enforce.${key}`),
+      // approvalCovers is set through the API until the console offers it (plans/82 M7): kept as it was.
+      ...Object.keys(original.enforce ?? {}).filter((key) => !['watermark', 'formats', 'escalation', 'approvalCovers'].includes(key)).map((key) => `enforce.${key}`),
     ];
     if (unknown.length) invalid(`This policy contains settings the policy writer cannot save: ${unknown.join(', ')}. Saving is blocked to avoid removing them.`);
     const body = structuredClone(original);
