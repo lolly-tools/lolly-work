@@ -91,6 +91,12 @@ export interface ExportReviewSubject {
   toolVersion: string | null;
   /** Digest of the reported inputs under the render path's own normalisation, or null. */
   inputsDigest: string | null;
+  /** `template-variants`: the request covers every file made from one version of a
+   *  published template (plans/82 M7), so `inputsDigest` is the template's fixed
+   *  inputs' and this file is one example. Absent: it covers this file's inputs. */
+  covers?: 'template-variants';
+  /** The template and version a template-variants request covers. */
+  templateRef?: { id: string; version: number };
   inputsGap?: 'values-not-sent' | 'values-unreadable' | 'tool-not-in-pack';
   sessionId?: string;
   /** What the requesting app reports about the file. */
@@ -206,7 +212,7 @@ export function exportReviewFingerprint(facts: Frozen): string {
  *  opening bytes contradict the format named for it. */
 export async function describeExportReview(
   blobs: BlobStore, upload: UploadRecord, request: ExportReviewRequest,
-  inputs: { toolVersion: string | null; inputsDigest: string | null; inputsGap?: ExportReviewSubject['inputsGap'] },
+  inputs: { toolVersion: string | null; inputsDigest: string | null; inputsGap?: ExportReviewSubject['inputsGap']; covers?: 'template-variants'; templateRef?: { id: string; version: number } },
   origin: ExportReviewSubject['origin'], now: string,
 ): Promise<ExportReviewSubject | null> {
   const first = await blobs.get(uploadPartId(upload, 0));
@@ -218,6 +224,7 @@ export async function describeExportReview(
     sha256: upload.checksum, size: upload.size, name: request.name ?? upload.name, format: request.format, ...media,
     toolId: request.toolId, toolVersion: inputs.toolVersion, inputsDigest: inputs.inputsDigest,
     ...(inputs.inputsGap ? { inputsGap: inputs.inputsGap } : {}),
+    ...(inputs.covers && inputs.templateRef ? { covers: inputs.covers, templateRef: inputs.templateRef } : {}),
     ...(request.sessionId ? { sessionId: request.sessionId } : {}),
     ...(request.widthPx ? { widthPx: request.widthPx } : {}), ...(request.heightPx ? { heightPx: request.heightPx } : {}),
     ...(request.recordInCredentials !== undefined ? { recordInCredentials: request.recordInCredentials } : {}),

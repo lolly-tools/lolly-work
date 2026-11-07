@@ -17,6 +17,24 @@ import { readJson, sendError, sendJson, type createRouter } from '../api/router.
 import { evaluate, type Grant, type Role } from '../rbac/evaluate.ts';
 import { artifactRelation } from './export-review.ts';
 import { isTerminal, type Approval } from './engine.ts';
+import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
+
+/** What a template-variants approval names: the template and its version. */
+export interface TemplateCovered { id: string; version: number }
+
+/**
+ * The key one approval of a template's variants matches (plans/82 M7): the
+ * template's fixed inputs only, which are its own values minus the inputs the
+ * programme may edit and minus those its company bindings fill. A partner cannot
+ * change a fixed value (422 INPUT_LOCKED), so the key reduces to the template and
+ * its version, and a new template version needs a new approval. Prices, headings,
+ * logos and contacts vary freely under one decision.
+ */
+export function templateVariantDigest(template: TemplateCovered & { values: Record<string, unknown>; editable?: string[]; bindings?: Record<string, unknown> }): string {
+  const open = new Set([...(template.editable ?? []), ...Object.keys(template.bindings ?? {})]);
+  const fixed = Object.fromEntries(Object.entries(template.values).filter(([key]) => !open.has(key)));
+  return sha256Hex(canonicalJson({ covers: 'template-variants', template: template.id, version: template.version, fixed }));
+}
 
 export interface ExportReviewKey { toolId: string; format: string; inputsDigest: string }
 

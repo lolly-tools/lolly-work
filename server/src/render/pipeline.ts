@@ -34,7 +34,7 @@ import { createAssetObserver, effectivePolicySha256, evidenceHash, finishRenderE
 import { inspectOutput, outputVerificationProblems, OutputVerificationError, parseOutputVerification, verificationTarget, type OutputVerification } from './output-inspection.ts';
 import { applyPreviewWatermark, shouldWatermark, untilApprovedNote } from './watermark.ts';
 import { renderInputsDigest } from './inputs-digest.ts';
-import type { ExportReviewKey } from '../approvals/export-review-match.ts';
+import { templateVariantDigest, type ExportReviewKey } from '../approvals/export-review-match.ts';
 import { withRenderHost } from './host.ts';
 import { createVmHookExecutor } from './vm-hooks.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
@@ -465,14 +465,19 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   // `until-approved` reads the approval record on every render, so a decision takes
   // effect on the next one. A lookup that fails leaves the mark on.
   const watermarkRule = overlay?.enforce?.watermark;
-  const inputsDigest = watermarkRule === 'until-approved'
-    ? renderInputsDigest(engine, tool.manifest, { ...seed, ...st.values } as Record<string, unknown>, overlay, groups, req.profile) : null;
+  // One approval can cover a template's variants (plans/82 M7): then the key is the
+  // template's fixed inputs only, so a partner's price or logo changes nothing.
+  const coversVariants = overlay?.enforce?.approvalCovers === 'template-variants' && !!template;
+  const inputsDigest = watermarkRule !== 'until-approved' ? null
+    : coversVariants ? templateVariantDigest(template!)
+    : renderInputsDigest(engine, tool.manifest, { ...seed, ...st.values } as Record<string, unknown>, overlay, groups, req.profile);
   const approval = inputsDigest
     ? await deps.approvedExportReview?.({ toolId: req.toolId, toolVersion: String(tool.manifest.version), format, inputsDigest }).catch(() => null) ?? null
     : null;
   const watermark = shouldWatermark(watermarkRule, req.watermarkPreview === true, !!approval);
   const untilApproved = inputsDigest
-    ? { marked: watermark, note: untilApprovedNote(watermark), approvalId: approval?.id ?? null, inputsDigest } : undefined;
+    ? { marked: watermark, note: untilApprovedNote(watermark), approvalId: approval?.id ?? null, inputsDigest,
+      ...(coversVariants ? { covers: 'template-variants' as const, template: { id: template!.id, version: template!.version } } : {}) } : undefined;
   const pxW = toPx(engine, st.width, st.unit, st.dpi);
   const pxH = toPx(engine, st.height, st.unit, st.dpi);
   const context: RenderEvidence['context'] = {
