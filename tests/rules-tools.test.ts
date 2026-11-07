@@ -268,3 +268,12 @@ test('someone who manages programmes publishes a rules file and its new version 
   assert.equal(next.body.version, 2);
   assert.equal((await call(pat, 'POST', '/api/v1/programmes/resellers/templates/rules-file?groups=marketing', undefined, lollyFile(definition({ id: 'other-card' })))).status, 400);
 });
+
+test('someone who manages programmes previews a programme, and nothing else', async () => {
+  const pat = await login('pat@test');
+  const preview = await call(pat, 'GET', '/api/v1/org-config/preview?groups=programme-resellers,partner');
+  assert.equal(preview.status, 200, preview.text);
+  assert.ok(Array.isArray(preview.body.preview.templates));
+  assert.equal((await call(pat, 'GET', '/api/v1/org-config/preview?groups=marketing')).status, 403);
+  assert.equal((await call(pat, 'GET', '/api/v1/org-config/preview?groups=programme-resellers,admin')).status, 403);
+});

@@ -6828,7 +6828,9 @@ async function viewPreview(main, params) {
     // A member who lands on this admin-only view degrades the way every other
     // view does: let the 403 reach the router, which renders the role message.
     // Anything else stays best-effort, since the free-text field always works.
-    if (e.status === 403) throw e;
+    // Someone who manages programmes may preview a programme's groups without
+    // policy.edit; they get the page without the rule-group suggestions.
+    if (e.status === 403 && !params?.get?.('groups')) throw e;
   }
 
   main.append(

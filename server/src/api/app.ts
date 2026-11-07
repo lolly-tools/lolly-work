@@ -2841,9 +2841,17 @@ export function buildApp(deps: AppDeps): App {
   // collide with a real user id, so only group:/`*` grants apply - never some
   // specific person's user: grants (correct for a group projection).
   router.add('GET', '/api/v1/org-config/preview', async (req, res, ctx) => {
-    if (!(await requireAction(req, res, 'policy.edit'))) return;
     const groups = (ctx.url.searchParams.get('groups') ?? '')
       .split(',').map((g) => g.trim()).filter(Boolean);
+    // Someone who manages partner programmes sees what a programme gets, without
+    // policy.edit (plans/82 M2): for a group set made only of programme and company
+    // groups and the partner marker. Anything else is the policy editor's Preview.
+    const partnerOnly = groups.length > 0 && groups.every((g) => isPartnerGroup(g) || g === PARTNER_GROUP);
+    const viewer = (await memberOf(req)) ?? (await serviceAccountOf(req));
+    const grantsNow = await store.listGrants();
+    const managesProgrammes = !!viewer && partnerOnly
+      && evaluate({ userId: viewer.id, groups: viewer.groups, role: viewer.role as Role }, 'programme.manage', ['*'], grantsNow);
+    if (!managesProgrammes && !(await requireAction(req, res, 'policy.edit'))) return;
     const now = new Date().toISOString();
     const subject: UserRecord = {
       id: '(preview)',
