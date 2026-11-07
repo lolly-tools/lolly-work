@@ -2,6 +2,7 @@ import type { ProgrammeRecord } from '../programmes/types.ts';
 import type { CompanyRecord, MembershipRecord } from '../programmes/people.ts';
 import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
+import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { TokenLimitOverrides } from '../iam/token-limits.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
@@ -1861,6 +1862,14 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   putPartnerFolder(rec: PartnerFolderRecord): Promise<void>;
   /** Unknown key is a no-op. */
   deletePartnerFolder(key: { provider: string; path: string; programmeId: string; companyId?: string }): Promise<void>;
+  // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
+  // exit, scheduled, done, cancelled or reopened, upserted whole.
+  /** Newest first. `programmeId` lists a programme's exits and its companies'. */
+  listProgrammeExits(filter?: { programmeId?: string; companyId?: string; state?: ProgrammeExitRecord['state'] }): Promise<ProgrammeExitRecord[]>;
+  getProgrammeExit(id: string): Promise<ProgrammeExitRecord | null>;
+  putProgrammeExit(rec: ProgrammeExitRecord): Promise<void>;
+  /** A deleted programme's receipts, or a deleted company's. Returns how many went. */
+  deleteProgrammeExits(pick: { programmeId?: string; companyId?: string }): Promise<number>;
   // Partner company profiles (plans/82 M3, migrations/0089). One current row
   // per company plus a history row per revision.
   getCompanyProfile(companyId: string): Promise<CompanyProfileRecord | null>;

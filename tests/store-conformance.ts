@@ -1467,6 +1467,31 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deletePartnerFolder({ provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers' });
   assert.deepEqual(await store.listPartnerFolders(), []);
 
+  // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
+  // exit, newest first, filtered by programme, company or state, upserted
+  // whole; deleting a programme's receipts takes its companies' too.
+  assert.deepEqual(await store.listProgrammeExits(), []);
+  const exitBase = { selection: { company: 'northwind' }, programmeId: 'resellers', companyId: 'northwind', projects: 'team-readonly' as const,
+    transferTo: 'usr_1', createdBy: 'usr_1' };
+  await store.putProgrammeExit({ ...exitBase, id: 'pex_a', state: 'done', createdAt: '2026-11-01T00:00:00.000Z', doneAt: '2026-11-01T00:00:00.000Z',
+    result: { accounts: [], skipped: [], invitations: [], tokens: [], templates: [], folders: [], domainRules: [], domainsRemoved: [], rightsChoices: [], ended: { companies: ['northwind'] } } });
+  await store.putProgrammeExit({ ...exitBase, id: 'pex_b', state: 'scheduled', createdAt: '2026-11-02T00:00:00.000Z', selection: { programme: 'resellers' }, companyId: undefined });
+  await store.putProgrammeExit({ ...exitBase, id: 'pex_c', state: 'done', createdAt: '2026-11-03T00:00:00.000Z', programmeId: 'isv', companyId: undefined, selection: { programme: 'isv' } });
+  assert.deepEqual((await store.listProgrammeExits()).map((r) => r.id), ['pex_c', 'pex_b', 'pex_a'], 'newest first');
+  assert.deepEqual((await store.listProgrammeExits({ programmeId: 'resellers' })).map((r) => r.id), ['pex_b', 'pex_a']);
+  assert.deepEqual((await store.listProgrammeExits({ companyId: 'northwind' })).map((r) => r.id), ['pex_a']);
+  assert.deepEqual((await store.listProgrammeExits({ state: 'scheduled' })).map((r) => r.id), ['pex_b']);
+  assert.deepEqual((await store.getProgrammeExit('pex_a'))?.result?.ended, { companies: ['northwind'] });
+  await store.putProgrammeExit({ ...(await store.getProgrammeExit('pex_b'))!, state: 'cancelled' });
+  assert.equal((await store.getProgrammeExit('pex_b'))?.state, 'cancelled', 'put is an upsert');
+  assert.deepEqual((await store.listProgrammeExits({ state: 'scheduled' })), []);
+  assert.equal(await store.getProgrammeExit('nope'), null);
+  assert.equal(await store.deleteProgrammeExits({ companyId: 'northwind' }), 1);
+  assert.equal(await store.deleteProgrammeExits({ programmeId: 'resellers' }), 1);
+  assert.equal(await store.deleteProgrammeExits({}), 0, 'an empty pick deletes nothing');
+  assert.deepEqual((await store.listProgrammeExits()).map((r) => r.id), ['pex_c']);
+  await store.deleteProgrammeExits({ programmeId: 'isv' });
+
   // Partner company profiles (plans/82 M3, migrations/0089): a save writes the
   // row and its history copy together and refuses a stale revision; settings
   // are never a revision; delete takes the history too.

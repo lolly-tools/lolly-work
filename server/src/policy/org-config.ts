@@ -379,6 +379,9 @@ export function assembleOrgConfig(opts: {
   partner?: OrgConfigPartner;
   /** Per tool, the values it starts from and the inputs bound to company fields. */
   toolStarts?: Map<string, { defaults: Record<string, unknown>; bindings?: Record<string, string> }>;
+  /** Published rules tools the caller's feed carries (plans/82 M3): listed for
+   *  them whatever the tool grants say, since a grant never names one. */
+  publishedTools?: ReadonlySet<string>;
   inboxUnread: number;
 }): OrgConfigPayload {
   const { config, user, overlays, inboxUnread } = opts;
@@ -397,7 +400,7 @@ export function assembleOrgConfig(opts: {
     // wins over both, and over the role default. The tool feed and the tool
     // files ask the same toolVisibleWithGrants, so a tool absent here is absent
     // there too. Genuinely-hidden tools stay ABSENT - the caller never learns.
-    if (!toolVisibleWithGrants(overlay, toolId, principal, grants)) continue;
+    if (!opts.publishedTools?.has(toolId) && !toolVisibleWithGrants(overlay, toolId, principal, grants)) continue;
     // Without a readable manifest the overlay's own rule keys stand in for the
     // declared list: a lock or a hide the operator wrote by id still reaches
     // the shell. Only a '*' rule needs the manifest to expand, and that miss is
