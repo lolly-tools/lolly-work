@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Thin hosted adapters over @lolly/engine's document API. */
+import { isPublishedTemplateRef } from '../catalog/templates.ts';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts';
@@ -87,7 +88,12 @@ export async function validateVerb(ctx: AutomationContext, body: Record<string, 
       const result = engine.validateDocument({ kind: 'recipe', manifest: tool.manifest, value: recipe });
       return result.ok ? governed(result, () => engine.parseUrlState(recipe, tool.manifest).values) : result;
     }
-    const value = (body.inputs && typeof body.inputs === 'object' ? body.inputs : {}) as Record<string, unknown>;
+    const raw = (body.inputs && typeof body.inputs === 'object' ? body.inputs : {}) as Record<string, unknown>;
+    // A published template the render starts from (plans/82 M2) rides in the inputs
+    // as `template`, a reserved URL-mode name rather than an input. The render
+    // checks it and applies its rules; the schema check here is for the inputs.
+    const { template, ...rest } = raw;
+    const value = isPublishedTemplateRef(template) ? rest : raw;
     return governed(engine.validateDocument({ kind: 'inputs', manifest: tool.manifest, value }), () => value);
   }
   const engine = await loadEngine();
