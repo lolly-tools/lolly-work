@@ -633,9 +633,14 @@ export function buildApp(deps: AppDeps): App {
     store.appendAudit(auditBody(actor, action, subject, payload));
   // View as a partner (plans/82 M6): one tab, the admin's session required, and
   // while viewing, changes are not saved to the partner's account.
+  const viewEndKey = (viewId: string): string => sha256Hex(JSON.stringify(['view-as', 'ended', viewId]));
   const viewAs = createViewAs({
     sessionMember: (req) => resolveMember(store, req.headers.cookie, sessionVerify),
     delegated: (req) => !!agentRequests.principal(req),
+    sessionKey: (req) => { const p = readPrincipal(req.headers.cookie, sessionVerify); return p?.kind === 'member' ? localSessionKey(p) : null; },
+    // An ended view is kept with the sign-out records (31 days, past any token's hour).
+    viewEnded: (viewId) => store.localSessionRevoked(viewEndKey(viewId)),
+    endView: async (viewId) => { const key = viewEndKey(viewId); await store.recordOidcLogout({ replayKey: key, targetKey: key, iat: Math.floor(Date.now() / 1000) }); },
     mayManage: async (user, programmeId) => evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', [`programme:${programmeId}`, '*'], await store.listGrants()),
     programme: (id) => store.getProgramme(id),
     company: async (id) => (await store.listCompanies()).find((c) => c.id === id) ?? null,
@@ -7164,6 +7169,9 @@ export function buildApp(deps: AppDeps): App {
       if ((await catalogBytesGate(assetId, true)).blocked) {
         return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
       }
+      // A converted preview is made on request; a view never starts that work, and
+      // none is kept to serve instead, so the app can say the preview is not ready.
+      if (convertedPreview && viewAs.viewing(req)) return sendError(res, 409, 'PREVIEW_NOT_READY', 'This preview is not ready. Previews are not made while viewing as a partner.');
       if (convertedPreview && !renderWorker) return sendError(res, 501, 'PREVIEW_UNAVAILABLE', 'This instance has no preview service.');
       // hold-implies-pin (plans/27 §3, §5): when this asset's bytes have been
       // materialized into the instance's own store, prefer the local copy - the
@@ -12864,7 +12872,9 @@ export function buildApp(deps: AppDeps): App {
     }
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
-    const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
+    // A tab viewing as a partner (programmes/view-as.ts) writes no fleet record, as the
+    // admin or as anyone: the request is refused or answered as the partner below.
+    const client = req.headers[VIEW_AS_HEADER] === undefined ? parseClientHeader(req.headers['x-lolly-client'] as string | undefined) : null;
     // Histogram writes must not terminate the server when the store is unavailable.
     if (client) void store.recordClient(client).catch(() => log('warn', 'fleet observation failed'));
     // Install identity (plans/34 wave 3): a shell may add `install/<id>` to its

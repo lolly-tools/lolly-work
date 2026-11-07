@@ -27,10 +27,11 @@
  * (`v`) and the audit names the view (`via: 'view-as'`), so acting for a person with
  * their permission can be added later as a new version beside this one.
  */
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { UserRecord } from '../store/types.ts';
+import { setViewAsViewer } from '../rbac/evaluate.ts';
 import { COMPANY_GROUP_PREFIX, programmeGroup, withPartnerMarker } from './types.ts';
 
 /** The request header that carries the token. */
@@ -41,6 +42,8 @@ export const VIEW_AS_TTL_SEC = 3600;
 /** The reads a partner's view makes, answered as the partner. Nothing else is. */
 export const VIEW_AS_READS: readonly RegExp[] = [
   /^\/api\/v1\/org-config$/,
+  // The shell renews its AI lease here; a partner's answer keeps the view's AI as theirs.
+  /^\/api\/v1\/policy\/ai$/,
   /^\/api\/v1\/inbox$/,
   /^\/catalog\//,
   /^\/tools\//,
@@ -79,6 +82,11 @@ export interface ViewAsClaim {
   u: string;
   /** The admin's session epoch when the view started. */
   e: number;
+  /** The session the view started in: a hash of the stable id sign-out revokes, so the
+   *  token works in that session only, never in another of the same admin's. */
+  s: string;
+  /** This view's own id. Ending the view records it, so the token stops for good. */
+  i: string;
   /** The programme id. */
   p: string;
   /** The company id, when the view is of one company. */
@@ -110,8 +118,14 @@ export function readViewAs(token: unknown, secrets: string | readonly string[], 
   let claim: ViewAsClaim;
   try { claim = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as ViewAsClaim; } catch { return null; }
   if (claim?.v !== 1 || typeof claim.u !== 'string' || typeof claim.e !== 'number' || typeof claim.p !== 'string'
+    || typeof claim.s !== 'string' || typeof claim.i !== 'string'
     || (claim.c !== undefined && typeof claim.c !== 'string') || typeof claim.exp !== 'number') return null;
   return claim.exp * 1000 > now ? claim : null;
+}
+
+/** What a token carries for a session: never the session's own id, a labelled hash of it. */
+export function viewAsSessionBinding(sessionKey: string): string {
+  return createHash('sha256').update(JSON.stringify(['view-as-session', sessionKey])).digest('base64url').slice(0, 32);
 }
 
 /** The groups a partner in the claimed programme (and company) holds. */
@@ -172,6 +186,11 @@ export interface ViewAsDeps {
   sessionMember(req: IncomingMessage): Promise<UserRecord | null>;
   /** True when the request is an agent's or a service token's, which never views as anyone. */
   delegated(req: IncomingMessage): boolean;
+  /** The stable id of the request's own cookie session, the one sign-out revokes, or null. */
+  sessionKey(req: IncomingMessage): string | null;
+  /** Whether a view was ended (POST /api/v1/view-as/end), and recording that it was. */
+  viewEnded(viewId: string): Promise<boolean>;
+  endView(viewId: string): Promise<void>;
   mayManage(user: UserRecord, programmeId: string): Promise<boolean>;
   programme(id: string): Promise<{ id: string; name: string; endedAt?: string } | null>;
   company(id: string): Promise<{ id: string; programmeId: string; name: string; endedAt?: string } | null>;
@@ -208,6 +227,9 @@ export function createViewAs(deps: ViewAsDeps) {
   async function check(req: IncomingMessage, claim: ViewAsClaim): Promise<{ fail: 'mismatch'; admin: UserRecord | null } | { fail: 'ended' } | { view: ActiveView }> {
     const admin = deps.delegated(req) || req.headers.authorization !== undefined ? null : await deps.sessionMember(req);
     if (!admin || admin.id !== claim.u || admin.sessionEpoch !== claim.e) return { fail: 'mismatch', admin };
+    const sessionKey = deps.sessionKey(req);
+    if (!sessionKey || viewAsSessionBinding(sessionKey) !== claim.s) return { fail: 'mismatch', admin };
+    if (await deps.viewEnded(claim.i)) return { fail: 'ended' };
     // The gate read an unexpired token, but slow work (a file conversion, say) can
     // carry a request past the expiry, and a later authentication must see that.
     if (claim.exp * 1000 <= now()) return { fail: 'ended' };
@@ -215,7 +237,10 @@ export function createViewAs(deps: ViewAsDeps) {
     if (!viewingAs) return { fail: 'ended' };
     const groups = viewAsGroups(claim);
     const label = viewingAs.company ? viewingAs.company.name : viewingAs.programme.name;
-    return { view: { member: viewAsSubject(claim, deps.roleOf(groups), label), admin, viewingAs, claim } };
+    const member = viewAsSubject(claim, deps.roleOf(groups), label);
+    // The admin's own denies follow them into the view (rbac/evaluate.ts).
+    setViewAsViewer(member.id, { userId: admin.id, groups: admin.groups });
+    return { view: { member, admin, viewingAs, claim } };
   }
 
   const ended = (res: ServerResponse): true => {
@@ -244,7 +269,7 @@ export function createViewAs(deps: ViewAsDeps) {
     const result = await check(req, claim);
     if ('fail' in result && result.fail === 'mismatch') {
       await deps.audit(result.admin ? `user:${result.admin.id}` : 'anonymous', 'programme.view-as.mismatch', `programme:${claim.p}`, {
-        via: 'view-as', claimedUser: claim.u, path: pathname, ...(claim.c ? { company: claim.c } : {}),
+        via: 'view-as', view: claim.i, claimedUser: claim.u, path: pathname, ...(claim.c ? { company: claim.c } : {}),
       });
       sendError(res, 403, 'VIEWING_AS_MISMATCH', 'This view as a partner belongs to another session.');
       return true;
@@ -304,26 +329,34 @@ export function createViewAs(deps: ViewAsDeps) {
       const c = typeof body.company === 'string' && body.company ? body.company : undefined;
       const viewingAs = await scope({ p, ...(c ? { c } : {}) });
       if (!viewingAs) return sendError(res, 404, 'NOT_FOUND', c ? 'no such company in this programme' : 'no such programme');
-      const claim: ViewAsClaim = { v: 1, u: admin.id, e: admin.sessionEpoch, p, ...(c ? { c } : {}), exp: Math.floor(now() / 1000) + VIEW_AS_TTL_SEC };
-      await deps.audit(`user:${admin.id}`, 'programme.view-as', `programme:${p}`, { via: 'view-as', ...(c ? { company: c } : {}), expiresAt: new Date(claim.exp * 1000).toISOString() });
+      const sessionKey = deps.sessionKey(req);
+      if (!sessionKey) return sendError(res, 401, 'UNAUTHORIZED', 'sign in again first');
+      const claim: ViewAsClaim = { v: 1, u: admin.id, e: admin.sessionEpoch, s: viewAsSessionBinding(sessionKey), i: randomBytes(12).toString('base64url'),
+        p, ...(c ? { c } : {}), exp: Math.floor(now() / 1000) + VIEW_AS_TTL_SEC };
+      await deps.audit(`user:${admin.id}`, 'programme.view-as', `programme:${p}`, { via: 'view-as', view: claim.i, ...(c ? { company: c } : {}), expiresAt: new Date(claim.exp * 1000).toISOString() });
       sendJson(res, 201, { token: signViewAs(claim, deps.secret), expiresAt: new Date(claim.exp * 1000).toISOString(), ...viewingAs }, { 'cache-control': 'no-store' });
     }, { delivery: 'person-private' });
 
-    /** Stop viewing: audited for the record. The token simply stops being sent. */
+    /** Stop viewing: the view's id is recorded as ended, so the token answers 403
+     *  VIEWING_AS_ENDED from then on, wherever it is replayed; audited for the record. */
     router.add('POST', '/api/v1/view-as/end', async (req, res) => {
       const admin = deps.delegated(req) ? null : await deps.sessionMember(req);
       if (!admin) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
       const body = ((await readJson(req)) ?? {}) as { token?: unknown };
       const claim = readViewAs(body.token, deps.verifySecrets, now());
       if (claim && claim.u === admin.id) {
-        await deps.audit(`user:${admin.id}`, 'programme.view-as.end', `programme:${claim.p}`, { via: 'view-as', ...(claim.c ? { company: claim.c } : {}) });
+        await deps.endView(claim.i);
+        await deps.audit(`user:${admin.id}`, 'programme.view-as.end', `programme:${claim.p}`, { via: 'view-as', view: claim.i, ...(claim.c ? { company: claim.c } : {}) });
       }
       res.writeHead(204, { 'cache-control': 'no-store' });
       res.end();
     }, { delivery: 'person-private' });
   }
 
-  return { gate, member, decorate, register };
+  /** Whether this request is an admitted view, for routes that would start work on a read. */
+  const viewing = (req: IncomingMessage): boolean => active.has(req);
+
+  return { gate, member, decorate, register, viewing };
 }
 
 export type ViewAs = ReturnType<typeof createViewAs>;

@@ -153,6 +153,18 @@ export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role
   return 'member';
 }
 
+/**
+ * A view as a partner (programmes/view-as.ts) answers as a synthetic member whose id
+ * names the real admin (`view-as:<admin id>`). The admin's own explicit denies still
+ * apply to that member, so a viewed request is allowed only when the partner AND the
+ * admin both are: a view never shows the admin something their own access excludes.
+ * view-as.ts records the admin behind each subject id on every request it admits.
+ */
+const viewers = new Map<string, Pick<PrincipalCtx, 'userId' | 'groups'>>();
+export function setViewAsViewer(subjectId: string, viewer: { userId: string; groups: string[] }): void {
+  viewers.set(subjectId, { userId: viewer.userId, groups: [...viewer.groups] });
+}
+
 function principalMatches(selector: string, ctx: Pick<PrincipalCtx, 'userId' | 'groups'>): boolean {
   if (selector === '*') return true;
   if (selector.startsWith('group:')) return ctx.groups.includes(selector.slice(6));
@@ -175,11 +187,13 @@ export function grantDecision(
   grants: Grant[],
 ): 'allow' | 'deny' | 'none' {
   let allowed = false;
+  const viewer = ctx.userId ? viewers.get(ctx.userId) : undefined;
   for (const g of grants) {
     if (g.action !== action) continue;
-    if (!principalMatches(g.principal, ctx)) continue;
     if (g.resource !== '*' && !resourceSelectors.includes(g.resource)) continue;
-    if (g.effect === 'deny') return 'deny';
+    const own = principalMatches(g.principal, ctx);
+    if (g.effect === 'deny' && (own || (viewer !== undefined && principalMatches(g.principal, viewer)))) return 'deny';
+    if (!own) continue;
     allowed = true;
   }
   return allowed ? 'allow' : 'none';

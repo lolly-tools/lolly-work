@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { VIEW_AS_HEADER, VIEW_AS_TTL_SEC, ViewAsEndedError, createViewAs, readViewAs, signViewAs } from '../server/src/programmes/view-as.ts';
+import { VIEW_AS_HEADER, VIEW_AS_TTL_SEC, ViewAsEndedError, createViewAs, readViewAs, signViewAs, viewAsSessionBinding } from '../server/src/programmes/view-as.ts';
 import { createCollabGateway, COLLAB_WS_PREFIX, type CollabGateway } from '../server/src/collab/gateway.ts';
 import { WebSocket } from 'ws';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -27,6 +27,8 @@ let server: Server;
 let base = '';
 let store: ReturnType<typeof createMemoryStore>;
 let collab: CollabGateway;
+let worker: Server;
+let workerHits = 0;
 const SECRET = 'view-as-session-secret';
 const TOOLS = ['price-sheet', 'qr-code', 'internal-deck'];
 
@@ -40,8 +42,18 @@ before(async () => {
     await writeFile(join(pack, 'tools', id, 'tool.json'), JSON.stringify({ id, inputs: [{ id: 'title' }] }));
   }
   await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
+  // A preview service that only counts: a view must never ask it for anything.
+  worker = createServer((_req, res) => { workerHits++; res.writeHead(500); res.end(); });
+  await new Promise<void>((r) => worker.listen(0, () => r()));
+  const workerAddr = worker.address();
   const config = parseConfig(JSON.stringify({
     instance: { name: 'Partner Hub', baseUrl: 'http://localhost', pack },
+    render: { worker: { url: `http://127.0.0.1:${typeof workerAddr === 'object' && workerAddr ? workerAddr.port : 0}` } },
+    catalogProviders: [{
+      id: 'dam', kind: 'mock', label: 'DAM', enabled: true, exposure: { groups: ['programme-resellers'] },
+      options: { assets: [{ remoteId: 'd1', name: 'Northwind deck', nativeType: 'file', sections: [], tags: [], approved: true, updatedAt: '2026-05-01T00:00:00.000Z', formats: [{ format: 'pptx', remoteRef: 'f1', filename: 'deck.pptx' }] }] },
+      mapping: { defaultType: 'document' },
+    }],
     rateLimit: { enabled: false },
     dev: { enabled: true, users: [
       { email: 'admin@test', groups: ['admin'] },
@@ -49,7 +61,7 @@ before(async () => {
     ] },
   }));
   store = createMemoryStore();
-  const app = buildApp({ config, store, secrets: { session: SECRET, link: 'lv' } });
+  const app = buildApp({ config, store, secrets: { session: SECRET, link: 'lv', renderWorker: 'rw' } });
   collab = createCollabGateway({ config, store, secrets: { session: SECRET, link: 'lv' } });
   server = createServer((req, res) => void app(req, res));
   server.on('upgrade', (req, socket, head) => { if (!collab.handleUpgrade(req, socket, head)) socket.destroy(); });
@@ -63,7 +75,7 @@ before(async () => {
   await call(admin, 'PUT', '/api/v1/programmes/isv/companies/contoso', { name: 'Contoso' });
 });
 
-after(() => { collab.close(); server.close(); });
+after(() => { collab.close(); server.close(); worker.close(); });
 
 async function login(email: string): Promise<string> {
   const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
@@ -80,6 +92,9 @@ async function call(cookie: string | null, method: string, path: string, body?: 
   return { status: res.status, body: json };
 }
 const audits = async (action: string) => (await store.listAudit()).filter((a) => a.action === action);
+/** The session a unit test's fake request belongs to, and the views it ended. */
+const unitSession = { sessionKey: () => 'unit-session', viewEnded: async () => false, endView: async () => undefined };
+const UNIT = { s: viewAsSessionBinding('unit-session'), i: 'unit-view' };
 
 test('an admin who manages the programme starts a view, audited, and gets a token for one company', async () => {
   const admin = await login('admin@test');
@@ -208,12 +223,12 @@ test('a later authentication in the same request checks the admin again, so a vi
   let session: UserRecord | null = admin;
   let manages = true;
   const audits: string[] = [];
-  const view = createViewAs({
+  const view = createViewAs({ ...unitSession,
     sessionMember: async () => session, delegated: () => false, mayManage: async () => manages,
     programme: async (id) => ({ id, name: 'Resellers' }), company: async (id) => ({ id, programmeId: 'resellers', name: 'Northwind IT' }),
     roleOf: () => 'member', secret: SECRET, verifySecrets: SECRET, audit: async (_a, action) => { audits.push(action); },
   });
-  const token = signViewAs({ v: 1, u: 'u-admin', e: 2, p: 'resellers', c: 'northwind', exp: Math.floor(Date.now() / 1000) + 60 }, SECRET);
+  const token = signViewAs({ ...UNIT, v: 1, u: 'u-admin', e: 2, p: 'resellers', c: 'northwind', exp: Math.floor(Date.now() / 1000) + 60 }, SECRET);
   const headers: Record<string, unknown> = {};
   const res = { setHeader(n: string, v: unknown) { headers[n] = v; }, getHeader(n: string) { return headers[n]; }, writeHead() { return this; }, end() { return this; } } as unknown as ServerResponse;
   const request = () => ({ method: 'GET', url: '/catalog/x.png', headers: { cookie: 'lw_session=x', [VIEW_AS_HEADER]: token } }) as unknown as IncomingMessage;
@@ -242,13 +257,13 @@ test('a later authentication in the same request checks the admin again, so a vi
 test('a request that runs past the token\'s expiry ends at its next authentication, never answering 200', async () => {
   const admin = { id: 'u-admin', sessionEpoch: 2, groups: ['admin'], role: 'admin' } as unknown as UserRecord;
   let clock = Date.now();
-  const view = createViewAs({
+  const view = createViewAs({ ...unitSession,
     sessionMember: async () => admin, delegated: () => false, mayManage: async () => true,
     programme: async (id) => ({ id, name: 'Resellers' }), company: async () => null,
     roleOf: () => 'member', secret: SECRET, verifySecrets: SECRET, audit: async () => undefined, now: () => clock,
   });
   const exp = Math.floor(clock / 1000) + 2;
-  const token = signViewAs({ v: 1, u: 'u-admin', e: 2, p: 'resellers', exp }, SECRET);
+  const token = signViewAs({ ...UNIT, v: 1, u: 'u-admin', e: 2, p: 'resellers', exp }, SECRET);
   const headers: Record<string, unknown> = {};
   const res = { setHeader(n: string, v: unknown) { headers[n] = v; }, getHeader(n: string) { return headers[n]; }, writeHead() { return this; }, end() { return this; } } as unknown as ServerResponse;
   const req = { method: 'GET', url: '/catalog/ext/dam/a1/att1', headers: { cookie: 'lw_session=x', [VIEW_AS_HEADER]: token } } as unknown as IncomingMessage;
@@ -300,12 +315,12 @@ test('no sign-in route but the session, the boot probe and sign-out is reachable
 test('a view that ends answers 403 VIEWING_AS_ENDED itself, so a route catch that would answer 502 cannot change it', async () => {
   const admin = { id: 'u-admin', sessionEpoch: 2, groups: ['admin'], role: 'admin' } as unknown as UserRecord;
   let manages = true;
-  const view = createViewAs({
+  const view = createViewAs({ ...unitSession,
     sessionMember: async () => admin, delegated: () => false, mayManage: async () => manages,
     programme: async (id) => ({ id, name: 'Resellers' }), company: async () => null,
     roleOf: () => 'member', secret: SECRET, verifySecrets: SECRET, audit: async () => undefined,
   });
-  const token = signViewAs({ v: 1, u: 'u-admin', e: 2, p: 'resellers', exp: Math.floor(Date.now() / 1000) + 60 }, SECRET);
+  const token = signViewAs({ ...UNIT, v: 1, u: 'u-admin', e: 2, p: 'resellers', exp: Math.floor(Date.now() / 1000) + 60 }, SECRET);
   const sent: Array<{ status: number; body: string }> = [];
   let headersSent = false;
   const res = {
@@ -322,4 +337,75 @@ test('a view that ends answers 403 VIEWING_AS_ENDED itself, so a route catch tha
   assert.equal(sent.length, 1, 'one answer only');
   assert.equal(sent[0]!.status, 403);
   assert.match(sent[0]!.body, /VIEWING_AS_ENDED/);
+});
+
+test('the admin\'s own denies follow them into a view: a tool they may not use stays hidden while viewing', async () => {
+  const admin = await login('admin@test');
+  const adminId = (await store.getUserBySub('dev:admin@test'))!.id;
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', { company: 'northwind' });
+  const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: body.token } });
+  assert.equal((await viewed('/tools/price-sheet/tool.json')).status, 200, 'the partner\'s tool, before the deny');
+  const deny = { principal: `user:${adminId}`, action: 'tool.use', resource: 'tool:price-sheet', effect: 'deny' };
+  await store.putGrant(deny as never);
+  try {
+    assert.equal((await viewed('/tools/price-sheet/tool.json')).status, 404, 'the partner may, the admin may not: refused');
+    const feed = (await (await viewed('/catalog/tools/index.json')).json()) as { tools: Array<{ id: string }> };
+    assert.ok(!feed.tools.some((t) => t.id === 'price-sheet'), 'nor listed in the view\'s tool index');
+    const config = await call(admin, 'GET', '/api/v1/org-config', undefined, body.token);
+    assert.ok(!('price-sheet' in config.body.tools), 'nor in the view\'s org-config');
+  } finally { await store.deleteGrant(deny as never); }
+});
+
+test('a token works only in the session it started in, and ending the view stops it for good', async () => {
+  const admin = await login('admin@test');
+  const other = await login('admin@test');
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', {});
+  assert.equal((await call(admin, 'GET', '/api/v1/org-config', undefined, body.token)).status, 200);
+  const moved = await call(other, 'GET', '/api/v1/org-config', undefined, body.token);
+  assert.equal(moved.status, 403, 'the same admin and epoch, another session');
+  assert.equal(moved.body.error.code, 'VIEWING_AS_MISMATCH');
+  assert.equal((await fetch(`${base}/api/v1/view-as/end`, { method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ token: body.token }) })).status, 204);
+  const replay = await call(admin, 'GET', '/api/v1/org-config', undefined, body.token);
+  assert.equal(replay.status, 403, 'replayed after the end');
+  assert.equal(replay.body.error.code, 'VIEWING_AS_ENDED');
+  const viewId = readViewAs(body.token, SECRET)!.i;
+  assert.equal(((await audits('programme.view-as.end')).at(-1)?.payload as { view?: string })?.view, viewId);
+  assert.equal(((await audits('programme.view-as')).find((a) => (a.payload as { view?: string }).view === viewId))?.subject, 'programme:resellers');
+});
+
+test('a tab viewing as a partner writes no fleet record, as the admin or as anyone', async () => {
+  const admin = await login('admin@test');
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', {});
+  const before = JSON.stringify(await store.fleetSummary());
+  const tag = 'web/9.9.9 install/view-as-probe';
+  const refused = await fetch(`${base}/api/v1/telemetry`, { method: 'POST', headers: { cookie: admin, 'content-type': 'application/json', 'x-lolly-client': tag, [VIEW_AS_HEADER]: body.token }, body: '{}' });
+  assert.equal(refused.status, 403);
+  assert.equal((await fetch(`${base}/api/v1/org-config`, { headers: { cookie: admin, 'x-lolly-client': tag, [VIEW_AS_HEADER]: body.token } })).status, 200);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(JSON.stringify(await store.fleetSummary()), before, 'the version histogram is unchanged');
+  assert.ok(!(await store.listInstalls()).some((row) => row.installId === 'view-as-probe'), 'no installation record');
+});
+
+test('a view never starts a preview conversion, and says the preview is not ready', async () => {
+  const admin = await login('admin@test');
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', {});
+  const headers = { cookie: admin, [VIEW_AS_HEADER]: body.token };
+  const feed = (await (await fetch(`${base}/catalog/assets/index.json`, { headers })).json()) as { assets: Array<{ id: string; formats?: Array<{ url: string }> }> };
+  const url = feed.assets.find((a) => a.id === 'ext/dam/d1')?.formats?.[0]?.url;
+  assert.ok(url, 'the partner\'s feed holds the deck');
+  const hits = workerHits;
+  for (const method of ['GET', 'HEAD']) {
+    const res = await fetch(`${base}${url}?view=1`, { method, headers });
+    assert.equal(res.status, 409, method);
+    if (method === 'GET') assert.equal(((await res.json()) as { error: { code: string } }).error.code, 'PREVIEW_NOT_READY');
+  }
+  assert.equal(workerHits, hits, 'the preview service was never asked');
+});
+
+test('the AI lease answers a view as it answers the partner, so the view keeps the partner\'s AI', async () => {
+  const admin = await login('admin@test');
+  const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', {});
+  const viewed = await call(admin, 'GET', '/api/v1/policy/ai', undefined, body.token);
+  assert.equal(viewed.status, 200);
+  assert.deepEqual(viewed.body, (await call(admin, 'GET', '/api/v1/policy/ai')).body, 'the same deployment policy');
 });
