@@ -1485,6 +1485,13 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(await store.listAssetRightsMarks(), [{ ...mark, note: 'the photo team shot these' }]);
   await store.deleteAssetRightsMark('folder:dam/event-photos');
   assert.deepEqual(await store.listAssetRightsMarks(), []);
+  // Insert-if-absent: the first statement on a scope is recorded, a second leaves it as it was.
+  const own = { ...mark, scope: 'asset:inst/sheet', holder: 'Acme', terms: 'Published by Acme. Not an open licence.' };
+  assert.equal(await store.addAssetRightsMark(own), true);
+  assert.equal(await store.addAssetRightsMark({ ...own, terms: 'Another statement.' }), false);
+  assert.deepEqual(await store.listAssetRightsMarks(), [own], 'the first statement stands');
+  await store.deleteAssetRightsMark('asset:inst/sheet');
+  assert.deepEqual(await store.listAssetRightsMarks(), []);
   assert.deepEqual(await store.listAssetLicences(), []);
   const licence = { assetId: 'ext/dam/IMG_2231', declaration: 'CC-BY-NC-4.0', attribution: 'Photo by A. Person', recordedBy: 'usr_1', recordedAt: '2026-11-07T00:00:00.000Z' };
   await store.putAssetLicence(licence);

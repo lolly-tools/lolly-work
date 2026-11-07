@@ -24,8 +24,11 @@
  * holder, the default terms and the publisher as the person who stated it,
  * audited `catalog.rights.mark` (catalog/rights.ts composes it into the served
  * entry, as for any mark). `ownerMark: false` leaves it off at publish, and the
- * update route turns it on or off later. A file whose own record declares a
- * licence keeps that licence: no mark is recorded on it.
+ * update route turns it on or off later. Only staff who may edit the catalog
+ * (`catalog.edit`) state or withdraw it. It is stated only on the workspace's own
+ * work: never when the file it came from declares a licence, has a licence
+ * record, came from a provider or was submitted by a partner, and a new version
+ * from such a file withdraws it.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, readRaw, sendError, sendJson, type createRouter } from '../api/router.ts';
@@ -37,10 +40,11 @@ import { normalizeEditable, templateRetired } from '../catalog/templates.ts';
 import { MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
 import { MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE } from '../catalog/rules-tools.ts';
 import { randomId } from '../lib/crypto.ts';
-import { COMPANY_GROUP_PREFIX, isPartnerGroup, programmeGroup, type ProgrammeRecord } from './types.ts';
+import { COMPANY_GROUP_PREFIX, isPartnerGroup, isProgrammeScoped, programmeGroup, type ProgrammeRecord } from './types.ts';
 import { isTemplatesOnlyToolId, withTemplatesOnly } from './templates-only.ts';
 import { COMPANY_FIELDS, FIELD_LABELS, LOGO_FIELDS, normalizeBindings } from './company-values.ts';
-import { defaultMarkTerms, loadRightsEngine, markScopeKey, type AssetRightsMarkRecord } from '../catalog/rights.ts';
+import { defaultMarkTerms, loadRightsEngine, markScopeKey, rightsSourceOf, type AssetRightsMarkRecord } from '../catalog/rights.ts';
+import type { AssetIndexEntry } from '../catalog/lifecycle.ts';
 
 type Router = ReturnType<typeof createRouter>;
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
@@ -62,9 +66,11 @@ export interface TemplateRouteDeps {
   submitVersion(actor: UserRecord, target: InstanceAssetRecord, bytes: Buffer): Promise<{ ok: true; version?: number } | { ok: false; status: number; code: string; detail: string }>;
   /** A Share with rules file, through the submit pipeline (catalog/rules-tools.ts),
    *  published to these groups by someone who manages programmes. */
-  submitRulesFile(actor: UserRecord, bytes: Buffer, groups: string[]): Promise<{ ok: true; id: string; state: string } | { ok: false; status: number; code: string; detail: string }>;
+  submitRulesFile(actor: UserRecord, bytes: Buffer, groups: string[]): Promise<{ ok: true; id: string; state: string; duplicate?: boolean } | { ok: false; status: number; code: string; detail: string }>;
   /** The workspace name: the holder of the mark on what it publishes. */
   workspaceName(): string;
+  /** Whether this person may state or withdraw the workspace's mark: staff with `catalog.edit`. */
+  mayStateMark(actor: UserRecord): Promise<boolean>;
   now?: () => Date;
 }
 
@@ -140,28 +146,42 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     (await store.listAssetRightsMarks()).find((m) => m.scope === markScope(assetId));
   const markView = async (mark: AssetRightsMarkRecord | undefined): Promise<OwnerMarkView | null> =>
     mark ? { holder: mark.holder, terms: mark.terms, statedBy: await nameOf(mark.statedBy) ?? mark.statedBy, statedAt: mark.statedAt } : null;
-  /** Record the workspace's mark on one published file, stated by the publisher. A
-   *  mark already there stays as it is; a file that declares its own licence gets none. */
+  /**
+   * Whether the workspace may state a published file as its own work, judged on the
+   * file it came from (`basis`): no declared licence and no licence record of its
+   * own, not a provider's file, and not submitted by a partner programme member.
+   */
+  const ownWork = async (basis: InstanceAssetRecord | null): Promise<boolean> => {
+    if (!basis || basis.origin || basis.exited) return false;
+    const [engine, marks, licences] = await Promise.all([loadRightsEngine(), store.listAssetRightsMarks(), store.listAssetLicences()]);
+    const { source } = rightsSourceOf(engine, basis.entry as AssetIndexEntry, marks, licences);
+    if (source === 'own' || source === 'licence-record') return false;
+    const by = basis.submission?.by?.replace(/^user:/, '');
+    const submitter = by ? await store.getUser(by) : null;
+    return !submitter || !isProgrammeScoped(submitter.groups, submitter.role);
+  };
+  /** The file a published template's current version came from, or the file itself. */
+  const basisOf = async (rec: InstanceAssetRecord): Promise<InstanceAssetRecord | null> =>
+    rec.publication?.from ? store.getInstanceAsset(rec.publication.from) : rec;
+  /** Record the workspace's mark on one published file, stated by the publisher, in
+   *  one step: a mark already there stays as it was, and only a recorded one is audited. */
   const markPublished = async (actor: UserRecord, assetId: string, template: string): Promise<AssetRightsMarkRecord | undefined> => {
-    const prior = await markOn(assetId);
-    if (prior) return prior;
-    const rec = await store.getInstanceAsset(assetId);
-    if (!rec || (await loadRightsEngine()).assetLicenceDeclaration(rec.entry as Record<string, unknown>)) return undefined;
     const holder = deps.workspaceName();
     const mark: AssetRightsMarkRecord = { scope: markScope(assetId), holder, terms: defaultMarkTerms(holder), statedBy: actor.id, statedAt: now(), coveredAtStatement: 1 };
-    await store.putAssetRightsMark(mark);
+    if (!(await store.addAssetRightsMark(mark))) return markOn(assetId);
     await audit(`user:${actor.id}`, 'catalog.rights.mark', `rights-mark:${mark.scope}`, {
       scope: mark.scope, holder, terms: mark.terms, covered: 1, via: 'programme-template', template,
     });
     return mark;
   };
-  /** Withdraw the mark on one published file, when the card's tick is taken off. */
-  const unmarkPublished = async (actor: UserRecord, assetId: string, template: string): Promise<void> => {
+  /** Withdraw the mark on one published file: the card's tick taken off, or a new
+   *  version that is not the workspace's own work. */
+  const unmarkPublished = async (actor: UserRecord, assetId: string, template: string, why: 'untick' | 'not-own'): Promise<void> => {
     const prior = await markOn(assetId);
     if (!prior) return;
     await store.deleteAssetRightsMark(prior.scope);
     await audit(`user:${actor.id}`, 'catalog.rights.unmark', `rights-mark:${prior.scope}`, {
-      scope: prior.scope, before: { holder: prior.holder, terms: prior.terms, statedBy: prior.statedBy, statedAt: prior.statedAt }, via: 'programme-template', template,
+      scope: prior.scope, before: { holder: prior.holder, terms: prior.terms, statedBy: prior.statedBy, statedAt: prior.statedAt }, via: 'programme-template', template, why,
     });
   };
   const ownerMarkFlag = (raw: unknown): boolean | { error: string } =>
@@ -289,6 +309,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     if (body.fixedTheme !== undefined && typeof body.fixedTheme !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'fixedTheme must be true or false');
     const ownerMark = ownerMarkFlag(body.ownerMark);
     if (typeof ownerMark !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', ownerMark.error);
+    const mayMark = await deps.mayStateMark(actor);
+    if (body.ownerMark === true && !mayMark) return sendError(res, 403, 'FORBIDDEN', 'stating the workspace\'s own mark needs catalog.edit');
     const source = await catalogTemplate(body.from);
     if (!source) return sendError(res, 404, 'NOT_FOUND', 'no such template in the catalog');
     const groups = audienceOf(body.groups ?? [programmeGroup(programme.id)]);
@@ -321,10 +343,10 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
         state: 'live', by: `user:${actor.id}`, at, checksum: stat.checksum, size: stat.size, contentType: 'application/json',
         ...(source.submission?.data ? { data: source.submission.data } : {}), note: `Published from ${source.id}`,
       },
-      ...(editable.editable || body.fixedTheme || bindings.bindings ? { publication: {
+      publication: {
         ...(editable.editable ? { editable: editable.editable } : {}), ...(body.fixedTheme ? { fixedTheme: true } : {}),
-        ...(bindings.bindings ? { bindings: bindings.bindings } : {}),
-      } } : {}),
+        ...(bindings.bindings ? { bindings: bindings.bindings } : {}), from: source.id,
+      },
       createdAt: at,
     };
     await store.putInstanceAsset(record);
@@ -333,7 +355,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     await audit(`user:${actor.id}`, 'programme.template.publish', `programme:${programme.id}`, {
       template: id, from: source.id, toolId, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true, bindings: bindings.bindings ?? null, ownerMark,
     });
-    const mark = ownerMark ? await markPublished(actor, id, id) : undefined;
+    // The copy carries no licence of its own, so the file it came from decides.
+    const mark = ownerMark && mayMark && await ownWork(source) ? await markPublished(actor, id, id) : undefined;
     sendJson(res, 201, { id, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true, bindings: bindings.bindings ?? null, ownerMark: await markView(mark) });
   });
 
@@ -349,6 +372,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const markParam = ctx.url.searchParams.get('ownerMark');
     if (markParam !== null && markParam !== 'true' && markParam !== 'false') return sendError(res, 400, 'INVALID_INPUT', 'ownerMark must be true or false');
     const ownerMark = markParam !== 'false';
+    const mayMark = await deps.mayStateMark(actor);
+    if (markParam === 'true' && !mayMark) return sendError(res, 403, 'FORBIDDEN', 'stating the workspace\'s own mark needs catalog.edit');
     let bytes: Buffer;
     try { bytes = await readRaw(req, MAX_RULES_FILE_BYTES); }
     catch { return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `a Share with rules file is at most ${MAX_RULES_FILE_BYTES} bytes`); }
@@ -356,7 +381,12 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const out = await deps.submitRulesFile(actor, bytes, groups);
     if (!out.ok) return sendError(res, out.status, out.code, out.detail);
     await audit(`user:${actor.id}`, 'programme.template.publish', `programme:${programme.id}`, { template: out.id, kind: RULES_TOOL_TYPE, groups, ownerMark });
-    const mark = ownerMark ? await markPublished(actor, out.id, out.id) : undefined;
+    // The same bytes held already come back as that asset: it is marked only when it
+    // is a rules tool for exactly this audience, this publisher's own, and own work.
+    const published = await store.getInstanceAsset(out.id);
+    const thisOne = !!published && published.entry.type === RULES_TOOL_TYPE && published.submission?.by === `user:${actor.id}`
+      && [...groupsOf(published)].sort().join('\n') === [...groups].sort().join('\n');
+    const mark = ownerMark && mayMark && thisOne && await ownWork(published) ? await markPublished(actor, out.id, out.id) : undefined;
     sendJson(res, 201, { id: out.id, state: out.state, groups, ownerMark: await markView(mark) });
   });
 
@@ -371,6 +401,10 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const body = ((await readJson(req)) ?? {}) as { groups?: unknown; editable?: unknown; fixedTheme?: unknown; bindings?: unknown; ownerMark?: unknown };
     if (body.fixedTheme !== undefined && typeof body.fixedTheme !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'fixedTheme must be true or false');
     if (body.ownerMark !== undefined && typeof body.ownerMark !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'ownerMark must be true or false');
+    if (body.ownerMark !== undefined && !(await deps.mayStateMark(actor))) return sendError(res, 403, 'FORBIDDEN', 'stating or withdrawing the workspace\'s own mark needs catalog.edit');
+    if (body.ownerMark === true && !(await ownWork(await basisOf(rec)))) {
+      return sendError(res, 409, 'NOT_OWN_WORK', 'the file this template came from records a licence, came from a provider or a partner, so the workspace does not state it as its own');
+    }
     if ((body.editable !== undefined || body.fixedTheme !== undefined) && rec.entry.type !== 'template') {
       return sendError(res, 400, 'INVALID_INPUT', 'a Share with rules file brings its own rules; change them in Lolly and publish a new version');
     }
@@ -414,7 +448,7 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     });
     // The card's tick: on records the mark (stated by whoever ticks it), off withdraws it.
     if (body.ownerMark === true) await markPublished(actor, rec.id, rec.id);
-    if (body.ownerMark === false) await unmarkPublished(actor, rec.id, rec.id);
+    if (body.ownerMark === false) await unmarkPublished(actor, rec.id, rec.id, 'untick');
     sendJson(res, 200, { id: rec.id, groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme, bindings: next.publication?.bindings ?? null,
       ownerMark: await markView(await markOn(rec.id)) });
   });
@@ -436,6 +470,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       const out = await deps.submitVersion(actor, rec, file);
       if (!out.ok) return sendError(res, out.status, out.code, out.detail);
       await audit(`user:${actor.id}`, 'programme.template.version', `programme:${programme.id}`, { template: rec.id, version: out.version ?? null });
+      // Every new head is checked again: a file that is not the workspace's own loses the mark.
+      if (!(await ownWork(await store.getInstanceAsset(rec.id)))) await unmarkPublished(actor, rec.id, rec.id, 'not-own');
       return sendJson(res, 201, { id: rec.id, version: out.version ?? rec.headVersion ?? 1 });
     }
     const body = ((await readJson(req)) ?? {}) as { from?: unknown };
@@ -448,6 +484,10 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const out = await deps.submitVersion(actor, rec, bytes);
     if (!out.ok) return sendError(res, out.status, out.code, out.detail);
     await audit(`user:${actor.id}`, 'programme.template.version', `programme:${programme.id}`, { template: rec.id, from: source.id, version: out.version ?? null });
+    // The new head comes from `source`: record that, and withdraw the mark when it is not the workspace's own work.
+    const head = await store.getInstanceAsset(rec.id);
+    if (head) await store.putInstanceAsset({ ...head, publication: { ...head.publication, from: source.id } });
+    if (!(await ownWork(source))) await unmarkPublished(actor, rec.id, rec.id, 'not-own');
     sendJson(res, 201, { id: rec.id, version: out.version ?? rec.headVersion ?? 1 });
   });
 

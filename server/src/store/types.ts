@@ -1900,6 +1900,9 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   // A mark is keyed by its scope string, a licence record by the asset id.
   listAssetRightsMarks(): Promise<AssetRightsMarkRecord[]>;
   putAssetRightsMark(rec: AssetRightsMarkRecord): Promise<void>;
+  /** Record a mark only when its scope has none yet, in one step. True when this
+   *  call recorded it, false when a mark was already there (it is left as it was). */
+  addAssetRightsMark(rec: AssetRightsMarkRecord): Promise<boolean>;
   /** Unknown scope is a no-op. */
   deleteAssetRightsMark(scope: string): Promise<void>;
   listAssetLicences(): Promise<AssetLicenceRecord[]>;

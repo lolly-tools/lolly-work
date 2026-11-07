@@ -1517,6 +1517,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async putAssetRightsMark(rec) {
       rightsMarks.set(rec.scope, structuredClone(rec));
     },
+    async addAssetRightsMark(rec) {
+      if (rightsMarks.has(rec.scope)) return false;
+      rightsMarks.set(rec.scope, structuredClone(rec));
+      return true;
+    },
     async deleteAssetRightsMark(scope) {
       rightsMarks.delete(scope);
     },

@@ -6301,6 +6301,8 @@ export function buildApp(deps: AppDeps): App {
   // Templates published to a programme (plans/82 M2).
   registerTemplateRoutes(router, {
     store, blobs, requireAction, audit, workspaceName: () => config.instance.name,
+    mayStateMark: async (user) => !isProgrammeScoped(user.groups, user.role)
+      && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.edit', ['*'], await store.listGrants()),
     toolFacts: async (toolId) => {
       if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
       try {
@@ -6332,7 +6334,7 @@ export function buildApp(deps: AppDeps): App {
         const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' || outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 422;
         return { ok: false, status, code: outcome.code, detail: outcome.detail };
       }
-      return { ok: true, id: outcome.record.id, state: outcome.record.submission?.state ?? 'live' };
+      return { ok: true, id: outcome.record.id, state: outcome.record.submission?.state ?? 'live', duplicate: outcome.duplicate };
     },
   });
 
