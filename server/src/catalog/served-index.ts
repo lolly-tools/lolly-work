@@ -216,6 +216,13 @@ export function intersectServed(theirs: ServedIndex, mine: ServedIndex): ServedI
     index, providers: theirs.providers.filter((provider) => providerIds.has(provider.id)) });
 }
 
+/** What a paged feed is built from: the base feed's content, its providers (ids,
+ *  labels and sizes, which decide what is paged and what is named) and the pending
+ *  ones. The paged memo reuses a result only while all three are the same. */
+export function pagedBasis(base: Pick<ServedIndex, 'version' | 'providers'>, pending: readonly string[]): string {
+  return `${base.version}\n${JSON.stringify(base.providers.map((p) => [p.id, p.label, p.size]))}\n${JSON.stringify(pending)}`;
+}
+
 function withSort(result: Omit<ServedIndex, 'sorted'>): ServedIndex {
   let sorted: AssetIndexEntry[] | null = null;
   return {
@@ -401,7 +408,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     if (base.status !== 'composed') return base;
     const large = new Map(base.providers.filter((p) => p.size > threshold).map((p) => [p.id, p]));
     if (!large.size && !pending.length) return base;
-    const basedOn = `${base.version}\n${JSON.stringify(pending)}`;
+    const basedOn = pagedBasis(base, pending);
     const hit = paged.get(key);
     if (hit && hit.basedOn === basedOn) {
       remember(paged, key, hit);

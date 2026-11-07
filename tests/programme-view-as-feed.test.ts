@@ -17,7 +17,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { instanceAssetEntry } from '../server/src/catalog/instance-assets.ts';
 import { VIEW_AS_HEADER } from '../server/src/programmes/view-as.ts';
-import { intersectServed, type ServedIndex } from '../server/src/catalog/served-index.ts';
+import { intersectServed, pagedBasis, type ServedIndex } from '../server/src/catalog/served-index.ts';
 
 interface Hub { base: string; store: ReturnType<typeof createMemoryStore>; server: Server }
 const hubs: Hub[] = [];
@@ -152,4 +152,19 @@ test('the intersection holds in every state of the pack index, raw and missing i
     assert.deepEqual(both.providers.map((p) => p.id), ['dam'], status);
     assert.ok(!both.bytes.toString().includes('file on disk'), `${status}: never the partner's own bytes`);
   }
+});
+
+test('the browse route lists in a view only the sources both the partner and the admin see', async () => {
+  const rita = await login(raw, 'rita@reseller.test');
+  const ids = async (res: Response) => ((await res.json()) as { sources: Array<{ id: string }> }).sources.map((s) => s.id);
+  assert.ok((await ids(await fetch(`${raw.base}/api/v1/catalog/assets`, { headers: { cookie: rita } }))).includes('big'), 'the partner\'s own browse names the provider');
+  const { get } = await view(raw);
+  assert.ok(!(await ids(await get('/api/v1/catalog/assets'))).includes('big'), 'not a provider the admin cannot see');
+});
+
+test('a paged feed is reused only while its providers are the same', () => {
+  const base = { version: 'same-assets', providers: [{ id: 'big', label: 'Big DAM', size: 3 }] } as unknown as ServedIndex;
+  assert.notEqual(pagedBasis(base, []), pagedBasis({ ...base, providers: [] }, []), 'a provider gone from the base is a new paged feed');
+  assert.notEqual(pagedBasis(base, []), pagedBasis({ ...base, providers: [{ id: 'big', label: 'Renamed', size: 3 }] } as unknown as ServedIndex, []));
+  assert.equal(pagedBasis(base, ['x']), pagedBasis({ ...base }, ['x']));
 });

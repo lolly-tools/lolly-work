@@ -97,7 +97,7 @@ import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planB
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
 import { createViewAs, VIEW_AS_HEADER, ViewAsEndedError } from '../programmes/view-as.ts';
-import { withRequestView } from '../rbac/view-context.ts';
+import { currentView, withRequestView } from '../rbac/view-context.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { accessEndsFor } from '../programmes/exit-schedule.ts';
@@ -7965,7 +7965,11 @@ export function buildApp(deps: AppDeps): App {
     await providersReady;
     const served = await servedIndex.forCaller({ groups: user?.groups ?? [], background: true });
     const represented = new Set(served.providers.map(provider => provider.id));
-    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)), providerVisibleTo)
+    // In a view as a partner, a source is listed only when the admin behind the view
+    // sees it too (rbac/view-context.ts), pending ones included.
+    const viewer = currentView()?.viewer;
+    const seesSource = (rec: ProviderRecord, groups: string[]): boolean => providerVisibleTo(rec, groups) && (!viewer || providerVisibleTo(rec, viewer.groups));
+    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)), seesSource)
       .map(source => !represented.has(source.id) && source.status === 'current' ? { ...source, status: 'pending', count: undefined } : source);
     const sources = query.source ? sourceStatuses.filter(source => source.id === query.source) : sourceStatuses;
     const complete = sources.every(source => source.status === 'current' && !source.truncated && !source.incomplete);
