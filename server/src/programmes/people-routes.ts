@@ -30,6 +30,7 @@ import type { TxtLookup } from './domains.ts';
 import { forgetDomainCompany, recheckDomains, sweepDomainRules } from './domain-routes.ts';
 import { sweepFolderRules, withdrawFolderRules } from './folder-routes.ts';
 import { applyExit, exitDone, exitPreview, planExit, readExitSelection, type ExitRightsChoices } from './exit.ts';
+import { registerExitRoutes } from './exit-routes.ts';
 import {
   COMPANY_ID, companyGroup, membershipEnded, parsePeopleList, planRows,
   type CompanyRecord, type MembershipRecord, type PersonRow, type RowPlan,
@@ -341,6 +342,9 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     });
     sendJson(res, 200, exitDone(record, planned.plan), { 'cache-control': 'no-store' });
   });
+
+  // Exit receipts and Reopen (plans/82 M5).
+  registerExitRoutes(router, { store, requireAction: deps.requireAction, audit: deps.audit, resolveTxt: deps.resolveTxt });
 
   // ── service tokens in a programme (plans/82 M3) ────────────────────────────
   /** Place a service token in a programme, and optionally one company in it,
