@@ -28,6 +28,9 @@ export interface AutomationContext {
    *  `source` when the input was one, and answer what the files routes show. */
   saveFile?: (output: Uint8Array, made: { source?: VerbFile; input: Uint8Array; opts?: Record<string, unknown>; stages: string[] }) => Promise<unknown>;
   policy?: { overlays: Map<string, ToolOverlay>; groups: string[] };
+  /** A published rules tool's own files, from the caller's served feed (plans/82
+   *  M2), or null for a tool the pack holds. Tool-relative path to bytes. */
+  toolFiles?: (toolId: string) => Promise<ReadonlyMap<string, Buffer> | null>;
 }
 /** What a verb knows of a file reference it read. */
 export interface VerbFile { id: string; checksum: string; name: string; contentType: string }
@@ -41,14 +44,22 @@ function requireDeclaredFormat(tool: LoadedTool, format: unknown): void {
   if (typeof format !== 'string' || !tool.manifest.render.formats.map(formatKey).includes(formatKey(format))) throw new Error('format is not one this tool declares');
 }
 
-async function load(pack: string, toolId: string): Promise<{ engine: Awaited<ReturnType<typeof loadEngine>>; tool: LoadedTool }> {
+async function load(ctx: Pick<AutomationContext, 'pack' | 'toolFiles'>, toolId: string): Promise<{ engine: Awaited<ReturnType<typeof loadEngine>>; tool: LoadedTool }> {
   const engine = await loadEngine();
-  const tool = await loadToolOrRefuse(toolId, (id) => engine.loadTool(id, (path) => readFile(join(pack, 'tools', path), 'utf8')));
+  // A published rules tool reads its own files, built for this caller, and nothing from the pack.
+  const own = await ctx.toolFiles?.(toolId) ?? null;
+  const read = async (path: string): Promise<string> => {
+    if (!own) return readFile(join(ctx.pack, 'tools', path), 'utf8');
+    const file = own.get(path.slice(path.indexOf('/') + 1));
+    if (!file) throw Object.assign(new Error(`no such file: ${path}`), { code: 'ENOENT' });
+    return file.toString('utf8');
+  };
+  const tool = await loadToolOrRefuse(toolId, (id) => engine.loadTool(id, read));
   return { engine, tool };
 }
 
 export async function schemaVerb(ctx: AutomationContext, toolId: string): Promise<unknown> {
-  const { engine, tool } = await load(ctx.pack, toolId);
+  const { engine, tool } = await load(ctx, toolId);
   return { apiVersion: engine.DOCUMENT_API_VERSION, schema: engine.documentSchema(tool) };
 }
 
@@ -60,7 +71,7 @@ export interface ToolDescription {
   raw: Record<string, unknown>; server: ToolServerFormats; manifest: LoadedTool['manifest'];
 }
 export async function describeTool(ctx: AutomationContext, toolId: string, deployment: { caps: RenderCapabilities; allowHooksInFastPath: boolean; tokens: boolean }): Promise<ToolDescription> {
-  const { engine, tool } = await load(ctx.pack, toolId);
+  const { engine, tool } = await load(ctx, toolId);
   const template = tool.template;
   return {
     toolId, name: typeof tool.manifest.name === 'string' ? tool.manifest.name : toolId, version: tool.manifest.version,
@@ -71,7 +82,7 @@ export async function describeTool(ctx: AutomationContext, toolId: string, deplo
 }
 
 export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Promise<unknown> {
-  const { engine, tool } = await load(ctx.pack, req.toolId);
+  const { engine, tool } = await load(ctx, req.toolId);
   requireDeclaredFormat(tool, req.format);
   const inputs = ctx.policy ? applyInputPolicy(req.inputs ?? {}, ctx.policy.overlays.get(req.toolId), ctx.policy.groups) : req.inputs ?? {};
   return withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
@@ -79,7 +90,7 @@ export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Pro
 
 export async function validateVerb(ctx: AutomationContext, body: Record<string, unknown>): Promise<unknown> {
   if (typeof body.toolId === 'string') {
-    const { engine, tool } = await load(ctx.pack, body.toolId);
+    const { engine, tool } = await load(ctx, body.toolId);
     requireDeclaredFormat(tool, body.format);
     const governed = (result: { ok: boolean; errors: unknown[]; warnings: unknown[] }, values: () => Record<string, unknown>) =>
       ctx.policy ? effectiveValidation(result, values(), ctx.policy.overlays.get(body.toolId as string), ctx.policy.groups) : result;

@@ -248,6 +248,14 @@ async function renderTemplateFor(deps: RenderDeps, query: string, toolId: string
   return template;
 }
 
+/** A rules tool's own rules, checked before a durable render is accepted, so a
+ *  refused input answers at once rather than as a failed render (plans/82 M7). */
+export async function checkDesignRules(engine: EngineApi, tool: LoadedTool, query: string, format: string): Promise<void> {
+  const expanded = await engine.expandQuery(query);
+  const st = engine.parseUrlState(expanded, tool.manifest);
+  requireDesignRules(engine, tool.manifest, expanded, st.values as Record<string, unknown>, (tool.manifest.inputs as { id: string }[]).map((input) => input.id), format);
+}
+
 /**
  * A rules tool's own rules (plans/82 M2): a tool whose manifest carries a
  * `designTool` policy was made with Share with rules, and the designer fixed
