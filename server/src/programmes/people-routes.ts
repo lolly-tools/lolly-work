@@ -23,6 +23,7 @@ import type { Store, UserRecord } from '../store/types.ts';
 import { isProgrammeScoped, programmeGroup, PARTNER_GROUP } from './types.ts';
 import { domainOfEmail, normaliseDomain, type TxtLookup } from './domains.ts';
 import { forgetDomainCompany, recheckDomains, sweepDomainRules, withdrawDomainRules } from './domain-routes.ts';
+import { sweepFolderRules, withdrawFolderRules } from './folder-routes.ts';
 import {
   COMPANY_ID, companyGroup, membershipEnded, parsePeopleList, planRows,
   type CompanyRecord, type MembershipRecord, type PersonRow, type RowPlan,
@@ -135,6 +136,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     await store.deleteLocalGroup(companyGroup(id));
     await store.deleteCompany(id);
     await forgetDomainCompany(store, id, now());
+    await withdrawFolderRules(store, deps.audit, `user:${actor.id}`, { companyId: id }, 'company-delete');
     for (const m of (await store.listMemberships()).filter((x) => x.companyId === id)) {
       const { companyId: _drop, ...rest } = m;
       await store.putMembership(rest);
@@ -251,8 +253,9 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
   router.add('POST', '/api/v1/programmes/sweep', async (req, res) => {
     const actor = await manager(req, res); if (!actor) return;
     const rulesEnded = await sweepDomainRules(store, deps.audit);
+    const foldersEnded = await sweepFolderRules(store, deps.audit);
     const ended = await sweepProgrammeEnds(store, deps.audit);
-    sendJson(res, 200, { ended, rulesEnded, domainsChecked: await recheckDomains(store, deps.audit, deps.resolveTxt) });
+    sendJson(res, 200, { ended, rulesEnded, foldersEnded, domainsChecked: await recheckDomains(store, deps.audit, deps.resolveTxt) });
   });
 
   // ── ending a partnership ───────────────────────────────────────────────────

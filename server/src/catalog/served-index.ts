@@ -33,6 +33,7 @@ import { composeAssetMeta } from './asset-meta.ts';
 import { applyCredentialsToIndex } from './credentials.ts';
 import { composeCollections } from './collections.ts';
 import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf } from '../programmes/types.ts';
+import { entryInFolders, foldersFor, nextFolderRuleEnd } from '../programmes/folders.ts';
 
 export interface ServedProvider {
   id: string;
@@ -108,7 +109,7 @@ export function compareKeys(a: [string, string], b: [string, string]): number {
 
 const quoted = (version: string): string => `"${version}"`;
 
-type ProviderRecordLike = { exposure: { groups?: string[] | '*' } };
+type ProviderRecordLike = { id: string; exposure: { groups?: string[] | '*' } };
 
 /** Every group any asset source names, plus the caller's own: composing with
  *  this set sees every asset, so a programme scope can then keep exactly what
@@ -138,6 +139,9 @@ export function applyProgrammeScope(
     instAssets: Array<{ id: string; groups?: string[] | '*' }>;
     providerRecs: Array<{ id: string; exposure: { groups?: string[] | '*' } }>;
     collections: Array<{ id: string; members: string[]; groups?: string[] | '*' }>;
+    /** Provider folders given to these groups (plans/82 M1 part 2c): provider
+     *  id to the folder paths, each covering everything below it. */
+    folders?: ReadonlyMap<string, string[]>;
   },
 ): AssetIndex {
   const granted = sources.collections.filter((c) => namesProgrammeGroup(c.groups, programmeGroups));
@@ -149,7 +153,10 @@ export function applyProgrammeScope(
     if (typeof entry.type === 'string' && ESSENTIAL_ASSET_TYPES.has(entry.type)) return true;
     if (members.has(entry.id) || inst.has(entry.id)) return true;
     const ext = /^ext\/([^/]+)\//.exec(entry.id);
-    return !!ext && providers.has(ext[1]!);
+    if (!ext) return false;
+    if (providers.has(ext[1]!)) return true;
+    const meta = entry.meta as { providerFolder?: unknown } | undefined;
+    return entryInFolders(meta?.providerFolder, sources.folders?.get(ext[1]!));
   };
   const assets = (index.assets ?? []).filter(keep);
   const served = new Set(assets.map((a) => a.id));
@@ -249,10 +256,10 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       input = { stamp: packStamp, bytes, entries }; packInputs.set(packFile, input);
     }
     const frags = await deps.federation.fragments({ background });
-    const [rows, creds, instAssets, metas, fieldDefs, collections, tagRuleRows, providerRecs] = await Promise.all([
+    const [rows, creds, instAssets, metas, fieldDefs, collections, tagRuleRows, providerRecs, folderRules] = await Promise.all([
       deps.store.listLifecycle(), deps.store.listCredentials(), deps.store.listInstanceAssets(),
       deps.store.listAssetMeta(), deps.store.listCatalogFields(), deps.store.listCollections(),
-      deps.store.listCatalogTagRules(), deps.store.listProviders({ includeFragment: false }),
+      deps.store.listCatalogTagRules(), deps.store.listProviders({ includeFragment: false }), deps.store.listPartnerFolders(),
     ]);
     // Hidden tags (catalog/tag-rules.ts) are an input too: hiding or showing one
     // moves the fingerprint, so the next read composes afresh with no re-sync.
@@ -262,6 +269,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       sha256Hex(input.bytes ?? Buffer.alloc(0)), providerStamp(frags), JSON.stringify(rows), JSON.stringify(creds), JSON.stringify(instAssets),
       JSON.stringify(metas), JSON.stringify(fieldDefs), JSON.stringify(collections),
       JSON.stringify(tagRuleRows), JSON.stringify(providerRecs.map((p) => [p.id, p.mapping?.hiddenTags ?? []])),
+      JSON.stringify(folderRules),
       JSON.stringify(rows.map(row => [row.assetId, assetState(row, t)])),
       JSON.stringify([...input.entries, ...instAssets.map(asset => asset.entry), ...frags.flatMap(fragment => fragment.fragment.assets)].map(entry => [entry.id,
         typeof entry.availableFrom === 'string' ? Date.parse(entry.availableFrom) <= t : true,
@@ -284,9 +292,11 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       const scoped = isProgrammeScoped(groups, deps.roleOf?.(groups));
       // Programme and company groups both count (company-<id>, plans/82 M1 part 2).
       const programmeGroups = new Set(partnerGroupsOf(groups));
+      // Provider folders given to their programmes or companies (part 2c).
+      const folders = scoped ? foldersFor(folderRules, programmeGroups, t) : new Map<string, string[]>();
       const composeGroups = scoped ? everyGroup(groups, providerRecs, instAssets, collections) : groups;
       const providers: ServedProvider[] = frags
-        .filter(({ rec }) => scoped ? namesProgrammeGroup(rec.exposure.groups, programmeGroups) : callerSeesProvider(rec, groups))
+        .filter(({ rec }) => scoped ? namesProgrammeGroup(rec.exposure.groups, programmeGroups) || folders.has(rec.id) : callerSeesProvider(rec, groups))
         .map(({ rec, fragment }) => ({ id: rec.id, label: rec.label, size: fragment.assets.length }));
       const composeOver = (index: AssetIndex): { composed: AssetIndex; staleAt: number } => {
         // Federate before lifecycle so expire/revoke rows on ext/* ids gate
@@ -297,7 +307,8 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
         // federated and instance entries alike, because the overlay is keyed by
         // catalog id rather than by which of the three produced the entry.
         const withInstance = composeAssetMeta(composeInstanceAssets(federated, instAssets, composeGroups), metas, fieldDefs);
-        const staleAt = nextLifecycleFlip(withInstance.assets ?? [], rows, t);
+        // A folder rule's end date is a flip too: the feed recomposes then.
+        const staleAt = Math.min(nextLifecycleFlip(withInstance.assets ?? [], rows, t), scoped ? nextFolderRuleEnd(folderRules, t) : Infinity);
         const gated = applyLifecycleToIndex(withInstance, rows, t);
         // Collections ride the SAME feed as an additive `collections` key
         // (plans/31 section 5), folded last so a member that lifecycle just
@@ -306,7 +317,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
         // Hidden tags come off last, so a label an admin hid is neither shown nor
         // matched by search or the paged browse, which all read this feed.
         const composed = applyTagRules(composeCollections(applyCredentialsToIndex(gated, creds), collections, composeGroups), tagRules);
-        return { composed: scoped ? applyProgrammeScope(composed, programmeGroups, { instAssets, providerRecs, collections }) : composed, staleAt };
+        return { composed: scoped ? applyProgrammeScope(composed, programmeGroups, { instAssets, providerRecs, collections, folders }) : composed, staleAt };
       };
       let raw: Buffer | null = null;
       try {
@@ -391,7 +402,8 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       // waits only on providers whose groups name one of their programmes.
       const scoped = isProgrammeScoped(key, deps.roleOf?.(key));
       const programmeGroups = new Set(partnerGroupsOf(key));
-      const sees = (provider: ProviderRecordLike): boolean => scoped ? namesProgrammeGroup(provider.exposure.groups, programmeGroups) : callerSeesProvider(provider as never, key);
+      const folders = scoped ? foldersFor(await deps.store.listPartnerFolders(), programmeGroups, Date.now()) : new Map<string, string[]>();
+      const sees = (provider: ProviderRecordLike): boolean => scoped ? namesProgrammeGroup(provider.exposure.groups, programmeGroups) || folders.has(provider.id) : callerSeesProvider(provider as never, key);
       const pending = background ? (await deps.store.listProviders({ includeFragment: false }))
         .filter(provider => provider.enabled && sees(provider) && !represented.has(provider.id))
         .map(provider => provider.id).sort() : [];

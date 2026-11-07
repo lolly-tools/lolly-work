@@ -95,6 +95,8 @@ import { isPartnerGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
+import { entryInFolders, foldersFor } from '../programmes/folders.ts';
+import { registerFolderRoutes } from '../programmes/folder-routes.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
 import { evaluate, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
@@ -714,6 +716,19 @@ export function buildApp(deps: AppDeps): App {
     isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups))
       ? namesProgrammeGroup(rec.exposure.groups, new Set(partnerGroupsOf(groups)))
       : callerSeesProvider(rec, groups);
+  /** What of a provider a group set may reach: all of it, some folders (a
+   *  partner given provider folders, plans/82 M1 part 2c), or nothing. Paths
+   *  that fetch from a provider directly (live search, a tool's cms ref) ask
+   *  this; the feed and the file routes read the composed feed instead. */
+  type ProviderReach = 'all' | { folders: string[] } | null;
+  const providerReach = async (rec: ProviderRecord, groups: string[]): Promise<ProviderReach> => {
+    if (providerVisibleTo(rec, groups)) return 'all';
+    if (!isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups))) return null;
+    const paths = foldersFor(await store.listPartnerFolders(), new Set(partnerGroupsOf(groups)), Date.now()).get(rec.id);
+    return paths?.length ? { folders: paths } : null;
+  };
+  const reachesAsset = (reach: ProviderReach, asset: { folder?: string }): boolean =>
+    reach === 'all' || (!!reach && entryInFolders(asset.folder, reach.folders));
   const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning, requireGeneration: productionMode(config),
     shellDirectories: () => shellDirectories(config.instance),
     activePack: async () => (await brand.snapshot()).source.root,
@@ -774,11 +789,12 @@ export function buildApp(deps: AppDeps): App {
   const cmsBytes = (groups: string[]) => async (ref: HostedProviderRef): Promise<{ bytes: Uint8Array; mime: string; id?: string } | null> => {
     await providersReady;
     const rec = await store.getProvider(ref.scope, { includeFragment: false });
-    if (!rec || !rec.enabled || !providerVisibleTo(rec, groups)) return null;
+    const reach = rec?.enabled ? await providerReach(rec, groups) : null;
+    if (!rec || !reach) return null;
     if (!ref.path) throw new Error('cms provider refs require a remote asset id');
     const provider = federation.instantiate(rec);
     const asset = await findProviderAsset(provider, ref.path);
-    if (!asset || !passesExposure(rec, asset)) return null;
+    if (!asset || !passesExposure(rec, asset) || !reachesAsset(reach, asset)) return null;
     const local = await store.getLifecycle(extAssetId(rec.id, asset.remoteId));
     const { state, upstreamExpired } = combinedState(local ?? undefined, entryWindow(mapProviderAsset(rec, asset)), Date.now());
     if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || local?.onExpiry !== 'warn'))) {
@@ -5619,6 +5635,11 @@ export function buildApp(deps: AppDeps): App {
     resolveTxt,
   });
 
+  registerFolderRoutes(router, {
+    store, requireAction, audit,
+    fragments: async () => { await providersReady; return federation.fragments({ background: true }); },
+  });
+
   registerDomainRoutes(router, {
     store, requireAction, audit, resolveTxt,
     // The workspace's own domains, which never feed a programme: its own
@@ -9401,8 +9422,9 @@ export function buildApp(deps: AppDeps): App {
     // fragment hasn't picked up yet. Bounded per provider; failures reported,
     // never fatal.
     const missed: string[] = [];
-    const live = (await store.listProviders({ includeFragment: false })).filter((rec) =>
-      rec.enabled && (!source || rec.id === source) && providerVisibleTo(rec, user.groups));
+    const candidates = (await store.listProviders({ includeFragment: false })).filter((rec) => rec.enabled && (!source || rec.id === source));
+    const reaches = new Map(await Promise.all(candidates.map(async (rec) => [rec.id, await providerReach(rec, user.groups)] as const)));
+    const live = candidates.filter((rec) => reaches.get(rec.id));
     // Live results lose hidden tags the same way the feed's entries do.
     const tagRules = await loadTagRules(store);
     await Promise.all(live.map(async (rec) => {
@@ -9415,6 +9437,8 @@ export function buildApp(deps: AppDeps): App {
           // Live results pass the SAME gates as synced fragments: the admin's
           // exposure slice, then this instance's lifecycle overlays.
           if (!passesExposure(rec, a)) continue;
+          // A partner given only some folders of this provider gets results from those folders only.
+          if (!reachesAsset(reaches.get(rec.id) ?? null, a)) continue;
           const entry = hideEntryTags(mapProviderAsset(rec, a), tagRules);
           const row = lifecycleById.get(entry.id);
           const { state, upstreamExpired } = combinedState(row, entryWindow(entry), Date.now());
@@ -10952,7 +10976,8 @@ export function buildApp(deps: AppDeps): App {
     liveCollab: deps.liveCollab !== false, documentAgents: !!deps.agentRooms, exportReview: approvalArtifactPolicy(config).enabled, brandPages: brandPagesConfig(config).enabled, fileReferences: uploadPolicy(config).enabled, durableRenders: !!deps.onRenderRunner,
     providerRefs: async (groups) => {
       await providersReady;
-      return { cms: (await store.listProviders()).some(provider => provider.enabled && providerVisibleTo(provider, groups)), net: configuredAssetOrigins.length > 0 };
+      const enabled = (await store.listProviders()).filter(provider => provider.enabled);
+      return { cms: (await Promise.all(enabled.map(provider => providerReach(provider, groups)))).some(Boolean), net: configuredAssetOrigins.length > 0 };
     },
   };
   registerDiscoveryRoutes(router, discoveryDeps);

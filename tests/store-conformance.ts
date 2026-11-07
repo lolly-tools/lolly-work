@@ -1406,6 +1406,23 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deletePartnerDomain('acme.example');
   assert.deepEqual(await store.listPartnerDomains(), []);
 
+  // Provider folders per programme or company (plans/82 M1 part 2c,
+  // migrations/0088): keyed by provider, path, programme and company.
+  assert.deepEqual(await store.listPartnerFolders(), []);
+  const emea = { provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers', addedBy: 'usr_1', addedAt: '2026-11-07T00:00:00.000Z' };
+  await store.putPartnerFolder(emea);
+  await store.putPartnerFolder({ ...emea, companyId: 'acme', endsAt: '2027-06-30T23:59:59.999Z' });
+  await store.putPartnerFolder({ ...emea, path: '' });
+  assert.deepEqual((await store.listPartnerFolders()).map((r) => [r.path, r.companyId ?? '']), [['', ''], ['Partners/EMEA', ''], ['Partners/EMEA', 'acme']]);
+  await store.putPartnerFolder({ ...emea, endsAt: '2027-01-01T00:00:00.000Z' });
+  assert.equal((await store.listPartnerFolders()).find((r) => r.path === 'Partners/EMEA' && !r.companyId)?.endsAt, '2027-01-01T00:00:00.000Z', 'put is an upsert');
+  await store.deletePartnerFolder({ provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers', companyId: 'acme' });
+  await store.deletePartnerFolder({ provider: 'nope', path: '', programmeId: 'x' });
+  assert.deepEqual((await store.listPartnerFolders()).map((r) => [r.path, r.companyId ?? '']), [['', ''], ['Partners/EMEA', '']]);
+  await store.deletePartnerFolder({ provider: 'dam', path: '', programmeId: 'resellers' });
+  await store.deletePartnerFolder({ provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers' });
+  assert.deepEqual(await store.listPartnerFolders(), []);
+
   // Asset versions (plans/31 section 6, migrations/0020). Keyed (assetId,
   // version), listed oldest-first, and an upsert replaces the snapshot whole -
   // the format SET is what a head move and a rollback swap, so a driver that

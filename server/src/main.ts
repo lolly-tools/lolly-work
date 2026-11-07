@@ -39,6 +39,7 @@ import { join, resolve } from 'node:path';
 import { grantNeverMatches } from './rbac/grant-shape.ts';
 import { sweepProgrammeEnds } from './programmes/people-routes.ts';
 import { recheckDomains, sweepDomainRules } from './programmes/domain-routes.ts';
+import { sweepFolderRules } from './programmes/folder-routes.ts';
 import { resolveTxt } from 'node:dns/promises';
 import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
 
@@ -273,6 +274,7 @@ const sweepAudit = (actor: string, action: string, subject: string, payload?: Re
   store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
 const sweepEnds = async (): Promise<number> => {
   await sweepDomainRules(store, sweepAudit);
+  await sweepFolderRules(store, sweepAudit);
   const ended = await sweepProgrammeEnds(store, sweepAudit);
   await recheckDomains(store, sweepAudit, resolveTxt);
   return ended;
