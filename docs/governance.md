@@ -25,6 +25,11 @@ the audit log and clears the render cache for exactly the affected renders.
 `inputAccess` maps an input id (or `*` as the default) to an ordered list of rules. The first
 rule whose groups match the person wins, and no match means `editable`.
 
+People in a partner programme are the exception: for them, order never decides. A rule for their
+company overrides their programme's rule, the stricter result wins across programmes, and a
+programme or company rule beats a rule for everyone. See
+[Partner programmes](partner-programmes.md#input-rules-for-partners).
+
 [Figure: Lolly Work reads one input's rules from the top and stops at the first group that matches](https://lolly.tools/info/figures/work-governance-rule-order.html)
 
 | Level | Effect |
@@ -52,12 +57,13 @@ Enforcement happens on the server, before rendering. A locked input supplied by 
 functions filter the schema the shell sees, so the interface and the enforcement cannot
 disagree.
 
-Give the overlay a `name` and a rule an optional `reason`, and a person meets an answer instead
-of a dead control. The resolved access carries `by` (the overlay name) and `reason` into
-`org-config`, where the shell prints them under the input, and into the `422` body as
+A person never reads policy notes in Lolly: a locked input shows its value with no line naming
+the rule, and a hidden input is simply absent. Give the overlay a `name` and a rule an optional
+`reason` for the people who govern and the agents that render. The console's policy editor and
+Preview show both, and the `422` body carries them as
 `{ "error": { "code": "INPUT_LOCKED", "input": "bg", "by": "...", "reason": "..." } }`, so an
-agent driving a render reads the same explanation. Both are optional, and an unnamed overlay
-attributes nothing.
+agent driving a render reads the explanation. `org-config` never carries them. Both are
+optional, and an unnamed overlay attributes nothing.
 
 Guests are a special case: governing an input at all locks it for them
 ([guest write authority](permissions.md#guest-write-authority)).
@@ -70,6 +76,13 @@ Guests are a special case: governing an input at all locks it for them
 
 A tool with a `visibility` block is **absent** from the catalog feed for anyone outside those
 groups: not greyed out, not hidden in the client. `*` means everyone.
+
+A `tool.use` grant changes the same list. A deny removes the tool for that group or person,
+whether or not the tool has an overlay, and an allow adds it for someone outside the
+`visibility` groups ([explicit allow and the role
+default](permissions.md#explicit-allow-and-the-role-default)). The catalog feed, the tool's
+files, org-config, Preview, server renders and the organisation MCP all apply the same rule,
+and Preview lists every tool a set of groups would not see.
 
 ### The enforce block
 
