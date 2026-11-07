@@ -5789,9 +5789,10 @@ async function programmeLicences(p, host) {
   const sourceRow = (row) => el('tr', {},
     el('td', {}, el('strong', {}, row.label)),
     numCell(row.assets),
-    el('td', {}, ...row.travel.byLicence.map((l) => el('div', {}, `${l.count} ${l.licence}`)), row.exempt ? el('div', { class: 'muted' }, `${row.exempt} exempt`) : null,
-      row.sharedAnyway ? el('div', {}, `${row.sharedAnyway} shared anyway`) : null),
-    el('td', {}, ...row.held.byReason.map((h) => el('div', {}, `${h.count} ${h.label}`)), heldList(row)),
+    // One block per cell, so each line stacks in the phone's card layout too.
+    el('td', {}, el('div', {}, ...row.travel.byLicence.map((l) => el('div', {}, `${l.count} ${l.licence}`)), row.exempt ? el('div', { class: 'muted' }, `${row.exempt} exempt`) : null,
+      row.sharedAnyway ? el('div', {}, `${row.sharedAnyway} shared anyway`) : null)),
+    el('td', {}, el('div', {}, ...row.held.byReason.map((h) => el('div', {}, `${h.label[0].toUpperCase()}${h.label.slice(1)}: ${h.count}`)), heldList(row))),
     el('td', {}, row.mark ? markLine(row) : row.markScope && canMark && row.held.count ? markForm(row) : null));
 
   const choiceRow = (c) => {
@@ -5803,7 +5804,7 @@ async function programmeLicences(p, host) {
     });
     const standing = { live: 'In force', 'needs-choosing': 'Needs choosing again', 'not-needed': 'Not needed now: the file travels', gone: 'The file is no longer in the feed' }[c.standing] ?? c.standing;
     return el('tr', {}, el('td', {}, c.name), el('td', {}, c.licence || 'Licence not recorded'), el('td', {}, c.company ? c.company.name : `Everyone in ${p.name}`),
-      el('td', {}, `${c.chosenBy.name}, ${c.chosenOn ?? day(c.chosenAt)}`, c.note ? el('div', { class: 'muted' }, c.note) : null), el('td', {}, standing), el('td', {}, withdraw, err));
+      el('td', {}, el('div', {}, `${c.chosenBy.name}, ${c.chosenOn ?? day(c.chosenAt)}`, c.note ? el('div', { class: 'muted' }, c.note) : null)), el('td', {}, standing), el('td', {}, withdraw, err));
   };
 
   const L = r.limits;
