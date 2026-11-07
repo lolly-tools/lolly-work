@@ -39,6 +39,7 @@ import { join, resolve } from 'node:path';
 import { grantNeverMatches } from './rbac/grant-shape.ts';
 import { sweepProgrammeEnds } from './programmes/people-routes.ts';
 import { PROGRAMME_SWEEP_MS, sweepScheduledExits } from './programmes/exit-schedule.ts';
+import { exitRightsChoices } from './programmes/rights.ts';
 import { createPeopleNotifier } from './notify/people.ts';
 import { noticeContext } from './access/messages.ts';
 import { recheckDomains, sweepDomainRules } from './programmes/domain-routes.ts';
@@ -285,7 +286,9 @@ const sweepEnds = async (): Promise<number> => {
   await sweepDomainRules(store, sweepAudit);
   await sweepFolderRules(store, sweepAudit);
   const ended = await sweepProgrammeEnds(store, sweepAudit);
-  await sweepScheduledExits({ store, audit: sweepAudit, people: sweepPeople, context: (now) => noticeContext(config, now) });
+  // A scheduled exit withdraws the partnership's share anyway choices, as one
+  // run by hand does (plans/82 M4 and M5).
+  await sweepScheduledExits({ store, audit: sweepAudit, people: sweepPeople, context: (now) => noticeContext(config, now), rights: exitRightsChoices(store, sweepAudit) });
   await recheckDomains(store, sweepAudit, resolveTxt);
   return ended;
 };

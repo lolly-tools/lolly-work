@@ -167,7 +167,7 @@ test('the report counts the programme\'s feed by source, every company in it inc
   const report = r.body;
   assert.equal(report.programme.name, 'Resellers, EMEA');
   assert.match(report.rules, /^rights-rules-/);
-  assert.deepEqual(report.totals, { assets: 9, travel: 1, held: 6, exempt: 2 });
+  assert.deepEqual(report.totals, { assets: 9, travel: 1, held: 6, exempt: 2, sharedAnyway: 0, needsChoosing: 0 });
 
   const row = (label: string) => report.sources.find((s: { label: string }) => s.label === label);
   const events = row('Brandfolder / event-photos');
