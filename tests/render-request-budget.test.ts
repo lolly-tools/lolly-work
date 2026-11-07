@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createShellBudget, requestBudgetFor, shellAppFiles,
+  createShellBudget, requestBudgetFor, shellAppFiles, REQUEST_CONCURRENCY,
   REQUEST_BUDGET_CEILING, REQUEST_BUDGET_FALLBACK, REQUEST_BUDGET_FLOOR, REQUEST_BUDGET_HEADROOM, REQUEST_BUDGET_REFRESH_MS,
 } from '../workers/render/src/request-budget.ts';
 import { ResponseBudget } from '../workers/render/src/request-delivery.ts';
@@ -87,4 +87,9 @@ test('a response budget refuses the request past its count', () => {
   assert.throws(() => budget.begin(), /request count exceeds/);
   const rasterise = new ResponseBudget();
   assert.equal(rasterise.requestCount, REQUEST_BUDGET_FLOOR, 'a rasterise runs no app code and keeps the floor');
+});
+
+test('one render fetches a bounded number of requests at a time', () => {
+  // About 500 at once before; a browser on its own opens 6 per host.
+  assert.ok(Number.isInteger(REQUEST_CONCURRENCY) && REQUEST_CONCURRENCY >= 6 && REQUEST_CONCURRENCY < REQUEST_BUDGET_FLOOR);
 });

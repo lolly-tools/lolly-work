@@ -45,7 +45,7 @@ import { workerBrowserOptions } from './browser-launch.ts';
 import { createBrowserLifecycle } from './browser-lifecycle.ts';
 import { RequestLifecycle } from './request-lifecycle.ts';
 import { deliverResponse, ResponseBudget } from './request-delivery.ts';
-import { createShellBudget } from './request-budget.ts';
+import { createShellBudget, REQUEST_CONCURRENCY } from './request-budget.ts';
 import { pullBase, startPull, type JobReply } from './pull.ts';
 
 const PORT = Number(process.env.PORT ?? 8791);
@@ -200,6 +200,8 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
     let confirmedBrand = false;
     const egress = egressChecker(DECLARED_ORIGINS);
     const budget = new ResponseBudget(undefined, undefined, await shellBudget.current());
+    // One render opens at most REQUEST_CONCURRENCY connections to the instance at once.
+    const fetches = createSemaphore(REQUEST_CONCURRENCY);
     await ctx.route('**/*', route => requests.track(async () => {
       const raw = route.request().url();
       const verdict = await egress(raw);
@@ -211,7 +213,8 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
       const sameOrigin = url.origin === new URL(WEB_BASE).origin;
       const revisionPath = sameOrigin && job.brandRevision && /^\/(catalog|tools|api\/brand)(\/|$)/.test(url.pathname);
       const credentialPath = sameOrigin && job.readToken && (readPath || projectFileRead(route.request().method(), url.pathname));
-      await deliverResponse(route, budget, signal, {
+      const release = await fetches.acquire();
+      try { await deliverResponse(route, budget, signal, {
         timeout: Math.min(NAV_TIMEOUT_MS, EXPORT_TIMEOUT_MS),
         headers: { ...route.request().headers(), ...(credentialPath ? { 'x-lw-render-read': job.readToken! } : {}),
           ...(revisionPath ? { 'x-lolly-brand-revision': job.brandRevision! } : {}) },
@@ -221,7 +224,7 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
           }
           confirmedBrand = true;
         } } : {}),
-      });
+      }); } finally { release(); }
     }, () => route.abort('failed')));
     signal.throwIfAborted();
     const page = await ctx.newPage();

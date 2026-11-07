@@ -17,6 +17,13 @@
  * the same numbers.
  */
 
+/**
+ * The most requests one render fetches at a time. Each fetch the page makes
+ * goes through the worker, which would otherwise open about 500 connections
+ * to the instance at once while the shell loads; queued, they open 32 at a
+ * time, still well above the 6 per host a browser opens on its own.
+ */
+export const REQUEST_CONCURRENCY = 32;
 /** Never below the budget the worker had before it followed the shell. */
 export const REQUEST_BUDGET_FLOOR = 512;
 /** Requests on top of the shell's own files: catalog, fonts, tool files, API. */
