@@ -44,6 +44,7 @@ import { withdrawDomainRules } from './domain-routes.ts';
 import { endFolderRules } from './folder-routes.ts';
 import type { PartnerFolderRecord } from './folders.ts';
 import { PUBLISHED_TYPES, retireTemplate } from './template-routes.ts';
+import type { ReopenResult } from './reopen.ts';
 
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
 
@@ -144,6 +145,17 @@ export interface ProgrammeExitRecord {
   doneBy?: string;
   via?: 'scheduled';
   result?: ExitResult;
+  /** A scheduled end: the instant it runs, whether the people it ends are
+   *  told before (on unless unticked), and the reminders sent so far. */
+  endsAt?: string;
+  notice?: boolean;
+  notices?: { d14?: string; d1?: string };
+  /** Who last changed or cancelled a scheduled end, and when. */
+  changedBy?: string;
+  changedAt?: string;
+  /** Set when the end was reopened (programmes/reopen.ts): who, when,
+   *  whether projects went back, and what was put back. */
+  reopened?: { at: string; by: string; projects: boolean; result: ReopenResult };
 }
 
 export const exitId = (): string => `pex_${randomId(12)}`;
@@ -470,7 +482,11 @@ async function dropGroups(store: Store, userId: string, drop: readonly string[])
  */
 export async function applyExit(
   store: Store, audit: Audit, plan: ExitPlan,
-  opts: { actorRef: string; actorId: string; createdBy?: string; createdAt?: string; id?: string; via?: 'scheduled'; rights?: ExitRightsChoices },
+  opts: {
+    actorRef: string; actorId: string; createdBy?: string; createdAt?: string; id?: string; via?: 'scheduled'; rights?: ExitRightsChoices;
+    /** The scheduled receipt this run completes; its schedule fields are kept. */
+    prior?: ProgrammeExitRecord;
+  },
 ): Promise<ProgrammeExitRecord> {
   const at = new Date().toISOString();
   const { actorRef } = opts;
@@ -582,7 +598,7 @@ export async function applyExit(
   }
 
   const record: ProgrammeExitRecord = {
-    id, state: 'done', selection: plan.selection,
+    ...opts.prior, id, state: 'done', selection: plan.selection,
     ...(plan.programme ? { programmeId: plan.programme.id } : {}), ...(plan.company ? { companyId: plan.company.id } : {}),
     projects: plan.projectsMode, transferTo: plan.transferTo.id, ...(plan.team ? { team: plan.team } : {}),
     createdBy: opts.createdBy ?? opts.actorId, createdAt: opts.createdAt ?? at, doneAt: at, doneBy: opts.via === 'scheduled' ? 'system' : opts.actorId,
