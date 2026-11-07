@@ -20,7 +20,7 @@ import type { ProjectUserStateRecord, ShareGroupRecord } from './types.ts';
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
  */
-import { randomId } from '../lib/crypto.ts';
+import { canonicalJson, randomId } from '../lib/crypto.ts';
 import { nextEvent, type AuditAnchor, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
 import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
@@ -1519,6 +1519,12 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async putProgrammeExit(rec) {
       programmeExits.set(rec.id, structuredClone(rec));
+    },
+    async replaceProgrammeExit(next, prev) {
+      const stored = programmeExits.get(prev.id);
+      if (!stored || next.id !== prev.id || canonicalJson(stored) !== canonicalJson(prev)) return false;
+      programmeExits.set(next.id, structuredClone(next));
+      return true;
     },
     async deleteProgrammeExits(pick) {
       let n = 0;

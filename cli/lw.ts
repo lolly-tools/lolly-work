@@ -132,6 +132,8 @@ const OPTIONS = {
     company: { type: 'string' },
     domain: { type: 'string' },
     ends: { type: 'string' },
+    at: { type: 'string' },
+    'no-notice': { type: 'boolean' },
     assert: { type: 'boolean' },
     apply: { type: 'boolean' },
     projects: { type: 'string' },
@@ -148,6 +150,10 @@ const OPTIONS = {
     'renders-per-month': { type: 'string' },
     // `lw tokens add --programme <id> --ttl-days 90`: a partner agent's lifetime in days.
     'ttl-days': { type: 'string' },
+    // `lw programmes usage <id> --from YYYY-MM-DD --to YYYY-MM-DD --by day|week [--csv]` (plans/82 M7).
+    to: { type: 'string' },
+    by: { type: 'string' },
+    csv: { type: 'boolean' },
 } as const;
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
@@ -863,8 +869,12 @@ switch (cmd) {
       const list = positionals[2];
       const pick = values.programme ? { programme: values.programme } : values.company ? { company: values.company } : values.domain ? { domain: values.domain }
         : list ? { emails: readFileSync(list === '-' ? 0 : list, 'utf8').split(/[\s,;]+/).filter(Boolean) } : null;
-      if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]');
-      const r = await call('/api/v1/programmes/exit', { method: 'POST', body: { ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
+      if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--at YYYY-MM-DD [--no-notice]] [--apply]');
+      const r = await call('/api/v1/programmes/exit', { method: 'POST', body: {
+        ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.at ? { at: values.at } : {}), ...(values['no-notice'] ? { notice: false } : {}),
+        ...(values.apply ? { apply: true } : {}),
+      } }) as {
+        scheduled?: boolean; endsAt?: string; notice?: boolean;
         dryRun: boolean; exit?: string; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
         stays?: Array<{ email: string; stays: string[] }>; cannotEnd?: Array<{ email: string; reason: string }>; notEnded?: Array<{ email: string; reason: string }>;
         pendingInvitations?: unknown[]; invitationsRevoked?: number; domainRules?: Array<{ domain: string; programme: { name: string } }>;
@@ -875,8 +885,13 @@ switch (cmd) {
         alreadyEnded?: { at: string }; ended?: { programme?: string; companies: string[] };
       };
       out(r);
+      if (!values.json && r.scheduled) {
+        console.log(`scheduled ${r.exit}: ends ${r.endsAt}${r.notice ? '; they are told 14 days and 1 day before' : '; nobody is told before'}`);
+        break;
+      }
       if (!values.json) {
         const verb = (now: string, then: string) => (r.dryRun ? now : then).padEnd(9);
+        if (r.dryRun && r.endsAt) console.log(`ends on ${r.endsAt.slice(0, 10)} at the end of the day (UTC)${r.notice ? ', told 14 days and 1 day before' : ''}`);
         if (r.alreadyEnded) console.log(`already ended on ${r.alreadyEnded.at.slice(0, 10)}; this ends what is left`);
         for (const a of r.accounts) console.log(`${verb('ends', 'ended')} ${a.email ?? a.id}`);
         for (const a of r.stays ?? []) console.log(`${verb('stays', 'stays')} ${a.email}  leaves this one, also in ${a.stays.join(', ')}`);
@@ -1086,7 +1101,30 @@ switch (cmd) {
   case 'programmes': {
     // Partner programmes (plans/82). `limits` is what every token placed in one
     // takes unless it states its own (M7): with no flag, the figures and sources.
-    const usage = 'usage: lw programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day <n>|none|default] [--renders-per-month <n>|none|default]';
+    const usage = 'usage: lw programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day <n>|none|default] [--renders-per-month <n>|none|default] | lw programmes usage <id> [<tokenId>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--by day|week] [--csv]';
+    if (sub === 'usage') {
+      // What the programme's tokens did, counted (M7): counts only, never an input or a prompt.
+      const id = positionals[2] ?? fail(usage);
+      const q = new URLSearchParams();
+      for (const key of ['from', 'to', 'by'] as const) if (values[key]) q.set(key, String(values[key]));
+      if (positionals[3]) q.set('token', positionals[3]);
+      if (values.csv) q.set('format', 'csv');
+      const at = `/api/v1/programmes/${encodeURIComponent(id)}/usage${q.size ? `?${q}` : ''}`;
+      if (values.csv) { process.stdout.write(await (await response(at)).text()); break; }
+      type Cells = { calls: number; renders: number; batches: { count: number; rows: number }; approvals: { open: number; approved: number; rejected: number }; refusals: Record<string, number> };
+      const r = await call(at) as { from: string; to: string; by: string; tokens: Array<{ id: string; label: string; company: string | null; totals: Cells; periods: Array<{ period: string } & Cells> }>; totals: Cells };
+      out(r);
+      if (!values.json) {
+        const refused = (c: Cells) => Object.values(c.refusals).reduce((n, v) => n + v, 0);
+        const line = (c: Cells) => `${c.calls} calls, ${c.renders} renders, ${c.batches.count} batches (${c.batches.rows} rows), ${c.approvals.open + c.approvals.approved + c.approvals.rejected} approval requests, ${refused(c)} refused`;
+        console.log(`${id}, ${r.from} to ${r.to} by ${r.by}: ${line(r.totals)}`);
+        for (const t of r.tokens) {
+          console.log(`  ${t.id}  ${t.label}${t.company ? `  company ${t.company}` : ''}: ${line(t.totals)}`);
+          for (const p of t.periods) console.log(`    ${p.period}  ${line(p)}`);
+        }
+      }
+      break;
+    }
     if (sub !== 'limits') fail(usage);
     const id = positionals[2] ?? fail(usage);
     type ProgrammeLimitView = { id: string; name: string; tokenLimits?: LimitFigures; tokenLimitDefaults?: { limits: Record<string, number | null>; sources: Record<string, string> } };
@@ -2319,13 +2357,14 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   tokens add --programme <id> [--company <id>] --label "…" [--scopes render,catalog.read] [--tools a,b] [--ttl-days 90]   a partner agent's token, issued by the programme's manager
   tokens list|revoke <id>|limits <id> --programme <id> [--company <id>]   that programme's tokens, through its manager's routes
   programmes limits <id> [--calls-per-minute <n>|none|default] [--renders-per-day …] [--renders-per-month …]   the limits every token placed in a programme takes
+  programmes usage <id> [<tokenId>] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--by day|week] [--csv]   what the programme's tokens did, counted
   companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
   companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
   mcp config [--name <n>] [--token-env <VAR>] [--json]   paste-ready settings for the organisation MCP endpoint
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   people import <programme> <file.csv|-> [--apply]   add a list to a partner programme: email, name, company, end date (preview unless --apply)
-  people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]   end a partnership in one audited step
+  people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--at YYYY-MM-DD [--no-notice]] [--apply]   end a partnership in one audited step, now or at the end of a day
   people exits <programme>   a programme's ends, newest first, with whether Reopen is offered
   people reopen <exit> [--keep-projects] [--apply]   undo an end within 30 days: people, groups, templates, folders, domain rules and projects come back
   domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--move-staff <id,...>] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited); staff move only by name

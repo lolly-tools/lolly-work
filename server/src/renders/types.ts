@@ -77,6 +77,12 @@ export interface RenderStore {
   findRenderBatchByKey(principal: string, key: string): Promise<RenderBatchRecord | null>;
   /** Atomically cancel unfinished children, preserving every terminal child. */
   cancelRenderBatch(id: string, principal: string): Promise<RenderBatchRecord | null>;
+  /** Counts of renders made by these principals from `fromIso` (inclusive) to `toIso`
+   *  (exclusive), by UTC day, tool, format, state and the company the output was made
+   *  for (plans/82 M7). Counts only: never an input, a title or a file name. */
+  renderUsage(principals: readonly string[], fromIso: string, toIso: string): Promise<RenderUsageRow[]>;
+  /** Batches and their rows by principal and UTC day, in the same window. */
+  renderBatchUsage(principals: readonly string[], fromIso: string, toIso: string): Promise<RenderBatchUsageRow[]>;
   /** Atomic insert; a principal/key collision returns the original immutable request. */
   insertRender(record: RenderRecord): Promise<{ record: RenderRecord; reused: boolean }>;
   /** The render an idempotency key already names, so a replay is known before it is counted. */
@@ -108,6 +114,9 @@ export interface RenderStore {
 }
 
 export interface RenderOutputExpiry { id: string; ref: string; toolId: string; format: string }
+
+export interface RenderUsageRow { principal: string; day: string; toolId: string; format: string; state: RenderRecord['state']; company: string | null; count: number }
+export interface RenderBatchUsageRow { principal: string; day: string; batches: number; rows: number }
 
 export interface RenderQueueEntry { toolId: string; queued: number; oldestClaimableAt: string | null }
 

@@ -1872,6 +1872,11 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   listProgrammeExits(filter?: { programmeId?: string; companyId?: string; state?: ProgrammeExitRecord['state'] }): Promise<ProgrammeExitRecord[]>;
   getProgrammeExit(id: string): Promise<ProgrammeExitRecord | null>;
   putProgrammeExit(rec: ProgrammeExitRecord): Promise<void>;
+  /** Write `next` only while the stored record still equals `prev`: how a
+   *  replica claims a scheduled end before running it, and how a change, a
+   *  cancel, a reminder or a reopen never overwrites another one. False when
+   *  the record changed or is gone. */
+  replaceProgrammeExit(next: ProgrammeExitRecord, prev: ProgrammeExitRecord): Promise<boolean>;
   /** A deleted programme's receipts, or a deleted company's. Returns how many went. */
   deleteProgrammeExits(pick: { programmeId?: string; companyId?: string }): Promise<number>;
   // Partner company profiles (plans/82 M3, migrations/0089). One current row
