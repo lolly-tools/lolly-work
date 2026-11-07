@@ -198,6 +198,11 @@ export interface OrgConfigPartner {
     address?: string; currency?: string; taxNote?: string;
   };
   programme?: { id: string; name: string };
+  /** When this partner's access through a programme ends (plans/82 M5): the
+   *  earliest of their membership end dates and the scheduled ends they are
+   *  told about, and the programme it ends through. */
+  accessEndsAt?: string;
+  accessEndsThrough?: { id: string; name: string };
 }
 
 /** SUSE-decided default profile policy: identity fields lock to the IdP (plans/04 §2). */

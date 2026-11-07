@@ -2457,6 +2457,17 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         [rec.id, rec.programmeId ?? '', rec.companyId ?? '', rec.state, JSON.stringify(rec), rec.createdAt],
       );
     },
+    async replaceProgrammeExit(next, prev) {
+      if (next.id !== prev.id) return false;
+      // jsonb equality ignores key order, so the record read back compares
+      // equal to the one stored.
+      const r = await pool.query(
+        `update programme_exits set programme_id = $2, company_id = $3, state = $4, record = $5::jsonb, updated_at = now()
+         where id = $1 and record = $6::jsonb`,
+        [next.id, next.programmeId ?? '', next.companyId ?? '', next.state, JSON.stringify(next), JSON.stringify(prev)],
+      );
+      return (r.rowCount ?? 0) === 1;
+    },
     async deleteProgrammeExits(pick) {
       if (pick.companyId) return (await pool.query('delete from programme_exits where company_id = $1', [pick.companyId])).rowCount ?? 0;
       if (pick.programmeId) return (await pool.query('delete from programme_exits where programme_id = $1', [pick.programmeId])).rowCount ?? 0;
