@@ -136,7 +136,13 @@ export async function cleanSvg(markup: string): Promise<{ svg: string; active: s
   });
   let dom: DomElement;
   try {
-    dom = purify.sanitize(markup, { ...SHELL_SVG_PROFILE }) as DomElement;
+    // DOMPurify lowercases ADD_ATTR in place, so it gets fresh arrays: the
+    // exported profile stays the shell's, verbatim, for every later call.
+    dom = purify.sanitize(markup, {
+      USE_PROFILES: { ...SHELL_SVG_PROFILE.USE_PROFILES },
+      ADD_ATTR: [...SHELL_SVG_PROFILE.ADD_ATTR],
+      RETURN_DOM: SHELL_SVG_PROFILE.RETURN_DOM,
+    }) as DomElement;
   } finally {
     purify.removeAllHooks();
   }
