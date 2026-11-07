@@ -36,7 +36,7 @@ import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, partnerG
 import { entryInFolders, foldersFor, nextFolderRuleEnd } from '../programmes/folders.ts';
 import { composeRightsRecords, loadRightsEngine, rightsAnswer, type RightsEngine } from './rights.ts';
 import type { PartnerRightsMode } from './rights-mode.ts';
-import { choiceFingerprint, factsOf, type RightsChoiceRecord } from '../programmes/rights.ts';
+import { currentFingerprint, type RightsChoiceRecord } from '../programmes/rights.ts';
 
 export interface ServedProvider {
   id: string;
@@ -193,7 +193,7 @@ export function licenceGate(engine: RightsEngine, partnerGroups: ReadonlySet<str
   for (const c of choices) if (partnerGroups.has(c.group)) byAsset.set(c.assetId, [...(byAsset.get(c.assetId) ?? []), c]);
   return (entry) => {
     if (rightsAnswer(engine, entry, companies).state !== 'held') return true;
-    return (byAsset.get(entry.id) ?? []).some((c) => choiceFingerprint(factsOf(engine, entry, c.group)) === c.fingerprint);
+    return (byAsset.get(entry.id) ?? []).some((c) => currentFingerprint(engine, entry, c.group) === c.fingerprint);
   };
 }
 

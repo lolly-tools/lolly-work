@@ -13,6 +13,7 @@ import type { IncomingMessage } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Grant } from '../rbac/evaluate.ts';
 import type { Store, UserRecord } from '../store/types.ts';
+import type { ExitRightsChoices } from './exit.ts';
 import type { CollectionRecord } from '../catalog/collections.ts';
 import {
   PARTNER_GROUP, PROGRAMME_ID, programmeGroup, readProgrammeBody, type ProgrammeRecord,
@@ -33,6 +34,8 @@ export interface ProgrammeRouteDeps {
   toolIds(): Promise<string[]>;
   /** `automation.tokenLimits`, the figures a programme's tokens take unless it states its own. */
   instanceTokenLimits?: Readonly<TokenLimits>;
+  /** Share anyway choices (plans/82 M4): deleting a programme withdraws its own and its companies'. */
+  rightsChoices?: ExitRightsChoices;
 }
 
 /** What the console and the CLI read for one programme. */
@@ -248,6 +251,11 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     // admin adds them to another programme or makes them internal on purpose.
     await store.deleteLocalGroup(group);
     await store.deleteProgramme(id);
+    // Its share anyway choices, its companies' included, go after the record:
+    // a choice racing this delete is either written first and withdrawn here, or finds
+    // no programme and is refused. A programme made later with this id starts
+    // with none.
+    await deps.rightsChoices?.withdraw(`user:${actor.id}`, { programmeId: id }, 'programme-delete');
     await deps.audit(`user:${actor.id}`, 'programme.delete', `programme:${id}`, { before: summary(before) });
     sendJson(res, 200, { ok: true });
   });

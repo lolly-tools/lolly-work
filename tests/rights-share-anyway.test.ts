@@ -25,7 +25,7 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { canonicalJson, sha256Hex } from '../server/src/lib/crypto.ts';
-import { assetChecksum, choiceFingerprint, withdrawRightsChoices } from '../server/src/programmes/rights.ts';
+import { assetIdentity, choiceFingerprint, withdrawRightsChoices } from '../server/src/programmes/rights.ts';
 
 test('the fingerprint is sha256 over the canonical facts, and moves with any one of them', () => {
   const facts = { assetId: 'ext/dam/a', checksum: 'v1', declaration: 'CC-BY-NC-4.0', group: 'company-northwind-it', rulesVersion: 'rights-rules-x' };
@@ -34,8 +34,20 @@ test('the fingerprint is sha256 over the canonical facts, and moves with any one
   for (const key of Object.keys(facts) as Array<keyof typeof facts>) {
     assert.notEqual(choiceFingerprint({ ...facts, [key]: `${facts[key]}-changed` }), choiceFingerprint(facts), key);
   }
-  assert.equal(assetChecksum({ id: 'x', formats: [{ format: 'thumb', checksum: 't' } as never, { format: 'png', checksum: 'sha256-abc' } as never] }), 'sha256-abc');
-  assert.equal(assetChecksum({ id: 'x', version: 'abcd', formats: [{ format: 'jpg', url: '/x' } as never] }), 'abcd', 'a federated file binds its version');
+});
+
+test('a choice binds every rendition the file serves, and no file without an identity', () => {
+  const f = (format: string, checksum?: string, url = `/x.${format}`) => ({ format, url, ...(checksum ? { checksum } : {}) }) as never;
+  const base = { id: 'acme/x', formats: [f('png', 'sha256-a'), f('svg', 'sha256-b')] };
+  const id = assetIdentity(base);
+  assert.match(id ?? '', /^sha256:[0-9a-f]{64}$/);
+  assert.notEqual(assetIdentity({ ...base, formats: [f('png', 'sha256-a'), f('svg', 'sha256-CHANGED')] }), id, 'a second format moving moves the identity');
+  assert.notEqual(assetIdentity({ ...base, locales: { fr: [f('png', 'sha256-fr')] } } as never), id, 'so does a localised rendition');
+  assert.notEqual(assetIdentity({ ...base, locales: { fr: [f('png', 'sha256-fr')] } } as never), assetIdentity({ ...base, locales: { fr: [f('png', 'sha256-fr2')] } } as never));
+  assert.equal(assetIdentity({ id: 'acme/x', formats: [f('png', 'sha256-a'), f('svg')] }), null, 'a pack rendition with no checksum: no identity');
+  assert.equal(assetIdentity({ id: 'acme/x', version: '3', formats: [f('png')] }), null, 'a pack version alone does not move with the bytes');
+  assert.ok(assetIdentity({ id: 'ext/dam/x', version: 'abcd', formats: [f('jpg')] }), 'a federated version hashes the upstream date and formats');
+  assert.notEqual(assetIdentity({ id: 'ext/dam/x', version: 'abcd', formats: [f('jpg')] }), assetIdentity({ id: 'ext/dam/x', version: 'abce', formats: [f('jpg')] }));
 });
 
 let server: Server;
@@ -178,11 +190,12 @@ test('withdrawing: one choice from the console, and every choice of a company in
   assert.equal((await call(bruno, 'DELETE', '/api/v1/programmes/resellers-emea/rights/choices?assetId=ext/dam/e2')).status, 404);
   assert.equal((await lastAudit('programme.rights.withdraw'))!.payload!.via, 'console');
 
-  const gone = await withdrawRightsChoices(store, (actor, action, subject, payload) => store.appendAudit({ actor, action, subject, payload, at: new Date().toISOString() } as never), 'user:bruno', { companyId: 'northwind-it' }, 'programme-exit');
+  const bodyOf = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => ({ actor, action, subject, ...(payload ? { payload } : {}), at: new Date().toISOString() });
+  const gone = await withdrawRightsChoices(store, bodyOf, 'user:bruno', { companyId: 'northwind-it' }, 'programme-exit');
   assert.deepEqual(gone.map((c) => c.assetId), ['acme/photo/sponsored']);
   assert.equal((await lastAudit('programme.rights.withdraw'))!.payload!.via, 'programme-exit');
   assert.deepEqual((await store.listRightsChoices()).map((c) => c.assetId), ['ext/dam/e1'], 'the programme\'s own choice stays');
-  assert.equal((await withdrawRightsChoices(store, async () => undefined, 'system', { programmeId: 'resellers-emea' }, 'programme-exit')).length, 1);
+  assert.equal((await withdrawRightsChoices(store, bodyOf, 'system', { programmeId: 'resellers-emea' }, 'programme-exit')).length, 1);
   assert.deepEqual(await store.listRightsChoices(), []);
 });
 
@@ -238,4 +251,65 @@ test('ending a company lists its share anyway choices in the dry run and withdra
   assert.deepEqual((await store.listRightsChoices()).map((c) => c.group), ['programme-resellers-emea']);
   const row = (await store.listAudit()).filter((e) => e.action === 'programme.rights.withdraw').at(-1)!;
   assert.deepEqual([row.payload!.assetId, row.payload!.group, row.payload!.via], ['acme/photo/sponsored', 'company-globex', 'programme-exit']);
+});
+
+const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+test('a choice and its audit row commit together: when the write fails, neither is kept', async () => {
+  const bruno = await login('bruno@test');
+  const before = (await store.listAudit()).filter((e) => e.action === 'programme.rights.share-anyway').length;
+  const original = store.putRightsChoicesAudited;
+  store.putRightsChoicesAudited = async () => { throw new Error('the database went away'); };
+  const res = await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/rights/choices', { assetIds: ['ext/dam/e1'], company: 'northwind-it' });
+  store.putRightsChoicesAudited = original;
+  assert.equal(res.status, 500);
+  assert.ok(!(await store.listRightsChoices()).some((c) => c.assetId === 'ext/dam/e1' && c.group === 'company-northwind-it'), 'no choice');
+  assert.equal((await store.listAudit()).filter((e) => e.action === 'programme.rights.share-anyway').length, before, 'and no row');
+});
+
+test('an ended company takes no new choice, and a choice racing its exit does not outlive the exit', async () => {
+  const bruno = await login('bruno@test');
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/companies/hooli', { name: 'Hooli' })).status, 201);
+  // The PUT reaches its write, then waits while the exit ends the company.
+  const original = store.putRightsChoicesAudited;
+  let release!: () => void, reached!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
+  const atWrite = new Promise<void>((r) => { reached = r; });
+  store.putRightsChoicesAudited = async (...args) => { reached(); await held; return original(...args); };
+  const racing = call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/rights/choices', { assetIds: ['ext/dam/e1'], company: 'hooli' });
+  await Promise.race([atWrite, pause(3000)]);
+  store.putRightsChoicesAudited = original;
+  const exit = await call(bruno, 'POST', '/api/v1/programmes/exit', { company: 'hooli', apply: true });
+  assert.equal(exit.status, 200, JSON.stringify(exit.body));
+  release();
+  const res = await racing;
+  assert.equal(res.status, 409, JSON.stringify(res.body));
+  assert.equal(res.body.error.code, 'AUDIENCE_ENDED');
+  assert.ok(!(await store.listRightsChoices()).some((c) => c.group === 'company-hooli'), 'nothing for the ended company');
+  const after = await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/rights/choices', { assetIds: ['ext/dam/e1'], company: 'hooli' });
+  assert.equal(after.status, 409);
+  assert.equal(after.body.error.code, 'AUDIENCE_ENDED', 'an ended audience is refused outright');
+});
+
+test('deleting a company or a programme withdraws its choices, audited, and the same id made again starts with none', async () => {
+  const bruno = await login('bruno@test');
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/partners-apac', { name: 'Partners, APAC' })).status, 201);
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/partners-apac/companies/initech', { name: 'Initech' })).status, 201);
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/partners-apac/folders', { provider: 'dam', path: 'event-photos' })).status, 201);
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/partners-apac/rights/choices', { assetIds: ['ext/dam/e1'], company: 'initech' })).status, 200);
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/partners-apac/rights/choices', { assetIds: ['ext/dam/e2'] })).status, 200);
+  const of = async (group: string) => (await store.listRightsChoices()).filter((c) => c.group === group);
+
+  assert.equal((await call(bruno, 'DELETE', '/api/v1/programmes/partners-apac/companies/initech')).status, 200);
+  assert.deepEqual(await of('company-initech'), []);
+  assert.equal((await lastAudit('programme.rights.withdraw'))!.payload!.via, 'company-delete');
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/partners-apac/companies/initech', { name: 'Initech' })).status, 201);
+  assert.deepEqual(await of('company-initech'), [], 'a company made again with the same id inherits nothing');
+
+  assert.equal((await of('programme-partners-apac')).length, 1);
+  assert.equal((await call(bruno, 'DELETE', '/api/v1/programmes/partners-apac')).status, 200);
+  assert.deepEqual(await of('programme-partners-apac'), []);
+  assert.equal((await lastAudit('programme.rights.withdraw'))!.payload!.via, 'programme-delete');
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/partners-apac', { name: 'Partners, APAC' })).status, 201);
+  assert.deepEqual(await of('programme-partners-apac'), [], 'nor does a programme');
 });

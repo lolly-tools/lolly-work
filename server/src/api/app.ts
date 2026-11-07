@@ -111,7 +111,7 @@ import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
 import { composeRightsRecords, loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
 import { decidePartnerRightsDefault, partnerRightsState, type PartnerRightsState } from '../catalog/rights-mode.ts';
 import { partnerRightsCheck } from '../setup/checks.ts';
-import { CHOICE_NOTE_MAX, choiceFingerprint, exitRightsChoices, factsOf } from '../programmes/rights.ts';
+import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices } from '../programmes/rights.ts';
 import { collectionCredits } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
@@ -431,6 +431,12 @@ export function appRouteDescriptions(app: App): ReturnType<DescribeRoutes> {
 const COLOURWAY_ROW = 'Colourway and mode';
 /** A value taken from the design system: a token reference such as `{color.semantic.primary}`. */
 const isTokenRef = (value: unknown): boolean => typeof value === 'string' && /^\{[^{}]+\}$/.test(value);
+
+/** The licence gate's mode is read again after a failure, backing off to this. */
+const PARTNER_RIGHTS_RETRY_MS = 250;
+const PARTNER_RIGHTS_RETRY_MAX_MS = 15_000;
+/** How long a request waits for the mode before answering 503 STARTING. */
+const PARTNER_RIGHTS_WAIT_MS = 5_000;
 
 export function buildApp(deps: AppDeps): App {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
@@ -755,9 +761,24 @@ export function buildApp(deps: AppDeps): App {
   // The licence gate's mode (plans/82 M4): configuration first, else the
   // default this instance recorded once on its first start of a release that
   // knows the gate. A store that cannot answer leaves the gate reporting only.
-  const partnerRightsReady: Promise<PartnerRightsState> = decidePartnerRightsDefault(store)
-    .catch((err: Error) => { log('warn', 'the licence gate default could not be read or recorded; reporting only', { error: err.message }); return null; })
-    .then((recorded) => partnerRightsState(config, recorded));
+  // The licence gate's mode (plans/82 M4) is decided once, before anything
+  // can create an account, and never guessed: a failed read or write is tried
+  // again, and until the mode is known every request but health and
+  // readiness waits, then answers 503 (the handler below). Report mode is
+  // never a fallback, so a recorded gate cannot open for the life of a process.
+  let partnerRightsKnown: PartnerRightsState | null = null;
+  const partnerRightsReady: Promise<PartnerRightsState> = (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        partnerRightsKnown = partnerRightsState(config, await decidePartnerRightsDefault(store));
+        return partnerRightsKnown;
+      } catch (err) {
+        console.warn(`[lolly-work] the licence gate default could not be read or recorded (attempt ${attempt + 1}); trying again: ${(err as Error).message}`);
+        // Unreferenced: a retry never keeps a stopping process alive.
+        await new Promise((r) => setTimeout(r, Math.min(PARTNER_RIGHTS_RETRY_MAX_MS, PARTNER_RIGHTS_RETRY_MS * 2 ** Math.min(attempt, 6))).unref());
+      }
+    }
+  })();
   const servedIndex = createServedIndex({
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
     roleOf: (groups) => roleFromGroups(groups, config.idp.roleGroups),
@@ -1181,6 +1202,7 @@ export function buildApp(deps: AppDeps): App {
         : await setupReport().then(report => report.ready ? 'ok' : 'incomplete').catch(() => 'unknown');
     }
     checks.catalog = catalogCheck;
+    checks.licenceGate = partnerRightsKnown ? 'ok' : 'deciding';
     const ok = Object.values(checks).every(value => value === 'ok');
     sendJson(res, ok ? 200 : 503, { ok, store: store.storageKind, checks });
   });
@@ -3073,7 +3095,7 @@ export function buildApp(deps: AppDeps): App {
       const mine = choices.filter((c) => c.assetId === entry.id);
       if (keep(entry)) {
         sharedAnyway++;
-        const c = mine.find((x) => choiceFingerprint(factsOf(engine, entry, x.group)) === x.fingerprint)!;
+        const c = mine.find((x) => currentFingerprint(engine, entry, x.group) === x.fingerprint)!;
         const who = users.get(c.chosenBy);
         shared.push({ id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, licence: answer.licence || 'licence not recorded', group: c.group,
           chosenBy: who ? [who.firstname, who.lastname].filter(Boolean).join(' ') || who.email : c.chosenBy, chosenAt: c.chosenAt });
@@ -3551,8 +3573,12 @@ export function buildApp(deps: AppDeps): App {
           })),
         }, { 'cache-control': 'no-store' });
       }
-      const held = files.flatMap((f) => (f.entry && f.answer?.state === 'held' ? [{ id: f.id, fingerprint: choiceFingerprint(factsOf(engine, f.entry, 'link')) }] : []));
-      if (held.length) body.target = { ...body.target, includeHeld: held };
+      const held = files.flatMap((f) => (f.entry && f.answer?.state === 'held' ? [{ id: f.id, fingerprint: currentFingerprint(engine, f.entry, 'link') }] : []));
+      // A file whose bytes carry no checksum cannot be remembered by its facts,
+      // so it is never sent anyway: the link is made without it, or not at all.
+      const unnamed = held.filter((h) => h.fingerprint === null).length;
+      if (unnamed) return sendError(res, 409, 'NO_FILE_IDENTITY', `Held files with no checksum cannot be sent anyway (${unnamed} here). Make the link without the held files.`);
+      if (held.length) body.target = { ...body.target, includeHeld: held.map((h) => ({ id: h.id, fingerprint: h.fingerprint! })) };
     }
     const maxTtl = kind === 'guest-edit' ? config.policy.guestLinks.maxTtlHours : 24 * 365;
     const defTtl = kind === 'guest-edit' ? config.policy.guestLinks.defaultTtlHours : DEFAULT_TTL_SEC[kind] / 3600;
@@ -6329,7 +6355,7 @@ export function buildApp(deps: AppDeps): App {
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
   registerProgrammeRoutes(router, {
-    store, requireAction, audit, instanceTokenLimits: config.automation.tokenLimits,
+    store, requireAction, audit, instanceTokenLimits: config.automation.tokenLimits, rightsChoices: exitRightsChoices(store, auditBody),
     toolIds: async () => {
       try {
         const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
@@ -6363,8 +6389,9 @@ export function buildApp(deps: AppDeps): App {
   companyProfiles.register(router);
   registerProgrammePeopleRoutes(router, {
     store, requireAction, audit, people, noticeContext: (now) => noticeContext(config, now),
-    // Ending a partnership withdraws its share anyway choices (plans/82 M4 and M5).
-    rightsChoices: exitRightsChoices(store, audit),
+    // Ending a partnership, or deleting a company, withdraws its share anyway
+    // choices (plans/82 M4 and M5), each with its audit row in one transaction.
+    rightsChoices: exitRightsChoices(store, auditBody),
     forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
     invite: async (actor, email, groups, endsAt) => {
       // The invitation can be accepted until the membership ends, and never for
@@ -6435,7 +6462,7 @@ export function buildApp(deps: AppDeps): App {
     return [...(await loadAssetIndexById(config.instance.pack)).values(), ...frags.flatMap((f) => f.fragment.assets), ...(await store.listInstanceAssets()).map((r) => r.entry)];
   };
   registerRightsRoutes(router, {
-    store, requireAction, audit, catalogEntries: catalogEntriesForRights, rightsMode: () => partnerRightsReady,
+    store, requireAction, audit, auditBody, catalogEntries: catalogEntriesForRights, rightsMode: () => partnerRightsReady,
     // The report and a choice read what the audience would get with no gate,
     // so a held file is still there to count and to choose.
     feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups, ungated: true })).index; },
@@ -6918,6 +6945,26 @@ export function buildApp(deps: AppDeps): App {
   };
 
   /**
+   * Which stored versions of an instance file a partner may read with the
+   * licence gate on (plans/82 M4), or null for everyone else. A file their
+   * feed holds on its own licence: every version, since the licence names the
+   * asset. A file it holds only through a share anyway choice: the versions
+   * whose bytes are the head's, the bytes the choice was made against.
+   */
+  const versionsAllowedFor = async (user: UserRecord | null | undefined, id: string): Promise<((row: AssetVersionRecord) => boolean) | null> => {
+    if (!user || !isProgrammeScoped(user.groups, user.role) || (await partnerRightsReady).mode !== 'gate') return null;
+    await providersReady;
+    const entry = (await servedIndex.forCaller({ groups: user.groups })).index.assets?.find((e) => e.id === id);
+    if (!entry) return () => false;
+    const companies = new Set(user.groups.filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
+    if (rightsAnswer(await loadRightsEngine(), entry, companies).state !== 'held') return () => true;
+    // The feed states a checksum as `sha256-<base64>`, a version row as hex.
+    const sri = (c: string | undefined): string => (c && /^[0-9a-f]{64}$/i.test(c) ? `sha256-${Buffer.from(c, 'hex').toString('base64')}` : c ?? '');
+    const head = new Map((entry.formats ?? []).map((f) => [f.format, sri((f as { checksum?: string }).checksum)]));
+    return (row) => row.formats.length === head.size && row.formats.every((f) => !!f.checksum && head.get(f.format) === sri(f.checksum));
+  };
+
+  /**
    * Apply `policy.catalog.versionKeep` to one asset, returning how many
    * versions it dropped. Two things are never trimmed: the HEAD (a rollback
    * deliberately makes an old version current, and retention must not delete
@@ -7215,6 +7262,10 @@ export function buildApp(deps: AppDeps): App {
         const row = (await assetVersionRows(rec)).find((r) => r.version === n);
         const fmt = row?.formats.find((f) => f.format === formatRef);
         if (!fmt) return sendError(res, 404, 'NOT_FOUND', `no version ${n} of this asset in ${formatRef}`);
+        // A partner sent this file anyway receives the bytes it was chosen
+        // against, never an older version of it (plans/82 M4).
+        const allowed = await versionsAllowedFor(user, id);
+        if (allowed && !allowed(row!)) return sendError(res, 403, 'FORBIDDEN', 'this version was not shared with you');
         blobId = fmt.blobId;
       }
       const stat = blobId ? await blobs.head(blobId) : null;
@@ -7820,11 +7871,15 @@ export function buildApp(deps: AppDeps): App {
     if ((await partnerRightsReady).mode !== 'gate') return null;
     const maker = await store.getUser(link.createdBy);
     const engine = await loadRightsEngine();
+    // Each file is judged as the bytes route serves it: through its alias, so a
+    // cutover to an instance file is judged by the instance file's record.
+    const targets = link.target.collectionId ? (await store.getCollection(link.target.collectionId))?.members ?? [] : [link.target.assetId ?? ''];
+    const resolved = new Map(await Promise.all(targets.map(async (id) => [id, await resolveAssetAlias(id)] as const)));
     if (maker && isProgrammeScoped(maker.groups, maker.role)) {
       const gated = await entriesSeenBy(maker.groups);
       const companies = new Set(maker.groups.filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
       return (assetId) => {
-        const entry = gated.get(assetId);
+        const entry = gated.get(resolved.get(assetId) ?? assetId);
         return entry ? { serve: true, byChoice: rightsAnswer(engine, entry, companies).state === 'held' } : { serve: false, byChoice: false };
       };
     }
@@ -7832,19 +7887,21 @@ export function buildApp(deps: AppDeps): App {
     const [marks, licences] = await Promise.all([store.listAssetRightsMarks(), store.listAssetLicences()]);
     const chosen = new Map((link.target.includeHeld ?? []).map((h) => [h.id, h.fingerprint]));
     const answers = new Map<string, { serve: boolean; byChoice: boolean }>();
-    for (const assetId of link.target.collectionId ? (await store.getCollection(link.target.collectionId))?.members ?? [] : [link.target.assetId ?? '']) {
+    for (const assetId of targets) {
       // The maker's own feed first; a file it no longer lists is read from its
       // source with the marks and licence records composed, as the feed would.
-      let entry = seen.get(assetId);
+      // A file with no record to judge is not served.
+      const id = resolved.get(assetId) ?? assetId;
+      let entry = seen.get(id);
       if (!entry) {
-        const raw = assetId.startsWith(EXT_PREFIX) ? await federation.entry(assetId)
-          : assetId.startsWith(INST_PREFIX) ? (await store.getInstanceAsset(assetId))?.entry : (await loadAssetIndexById(config.instance.pack)).get(assetId);
+        const raw = id.startsWith(EXT_PREFIX) ? await federation.entry(id)
+          : id.startsWith(INST_PREFIX) ? (await store.getInstanceAsset(id))?.entry : (await loadAssetIndexById(config.instance.pack)).get(id);
         entry = raw ? composeRightsRecords(engine, [raw], marks, licences)[0] : undefined;
       }
-      if (!entry) { answers.set(assetId, { serve: true, byChoice: false }); continue; }
+      if (!entry) { answers.set(assetId, { serve: false, byChoice: false }); continue; }
       if (rightsAnswer(engine, entry).state !== 'held') { answers.set(assetId, { serve: true, byChoice: false }); continue; }
       const fingerprint = chosen.get(assetId);
-      const byChoice = !!fingerprint && fingerprint === choiceFingerprint(factsOf(engine, entry, 'link'));
+      const byChoice = !!fingerprint && fingerprint === currentFingerprint(engine, entry, 'link');
       answers.set(assetId, { serve: byChoice, byChoice });
     }
     return (assetId) => answers.get(assetId) ?? { serve: false, byChoice: false };
@@ -8123,6 +8180,7 @@ export function buildApp(deps: AppDeps): App {
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       const head = headVersionOf(instAsset);
       const rows = await assetVersionRows(instAsset);
+      const allowedVersion = await versionsAllowedFor(user, id);
       const sourceReviews = [];
       const reviewGrants = await store.listGrants();
       for (const approval of await store.listApprovals({})) if (approval.sourceReview?.files.some(file => file.assetId === id)
@@ -8134,7 +8192,7 @@ export function buildApp(deps: AppDeps): App {
         metadataHistory: 'not-recorded', sourceReviews,
         sourceReviewCapability: instAsset.origin ? null : { kind: 'frozen-instance-originals-v1', maxFiles: 32, maxFileBytes: 64 * 1024 * 1024, maxTotalBytes: 128 * 1024 * 1024 },
         keep: config.policy.catalog.versionKeep,
-        versions: [...rows].sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
+        versions: [...rows].filter(allowedVersion ?? (() => true)).sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
       }, { 'cache-control': 'private, no-store' });
     }
     await providersReady;
@@ -13038,6 +13096,17 @@ export function buildApp(deps: AppDeps): App {
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse, span: RequestSpan | undefined): Promise<void> => {
+    // Nothing runs before the licence gate's mode is known (plans/82 M4): a
+    // sign-in that created the first account first would decide an empty
+    // instance as an upgrade. Health and readiness answer meanwhile.
+    if (!partnerRightsKnown && !/^\/(healthz|readyz)(\/|$|\?)/.test(req.url ?? '/')) {
+      const known = await Promise.race([partnerRightsReady, new Promise<null>((r) => setTimeout(() => r(null), PARTNER_RIGHTS_WAIT_MS).unref())]);
+      if (!known) {
+        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '5', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ error: { code: 'STARTING', message: 'This instance is still starting. Try again in a few seconds.' } }));
+        return;
+      }
+    }
     guardDelivery(req, res, edgeDelivery);
     // A public-only edge hostname (edge/config.ts) answers reads of public classes and nothing else.
     if (servesPublicOnly(res) && req.method !== 'GET' && req.method !== 'HEAD') {
