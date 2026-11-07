@@ -139,12 +139,15 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     if (team && !(await store.listLocalGroups()).some((g) => g.name === team) && !(await store.listUsers()).some((u) => u.idpGroups.includes(team))) {
       return sendError(res, 400, 'UNKNOWN_GROUP', `no group called ${team}`);
     }
+    // An edit keeps what other routes own on the record: the templates-only
+    // switch (M2) and the ended state (M5). Token limits (M7) change only when
+    // the body names them.
     const limits = extra.tokenLimits === undefined ? prior?.tokenLimits : tokenLimits;
     const rec: ProgrammeRecord = {
       id, name: body.name, ...(body.description ? { description: body.description } : {}), ...(team ? { team } : {}),
       createdBy: prior?.createdBy ?? actor.id, createdAt: prior?.createdAt ?? now, updatedAt: now, version: (prior?.version ?? 0) + 1,
-      // Kept from the stored record: this body edits neither switch unless it names one.
       ...(prior?.templatesOnly?.length ? { templatesOnly: prior.templatesOnly } : {}),
+      ...(prior?.endedAt ? { endedAt: prior.endedAt, ...(prior.endedBy ? { endedBy: prior.endedBy } : {}), ...(prior.endedExit ? { endedExit: prior.endedExit } : {}) } : {}),
       ...(limits && Object.keys(limits).length ? { tokenLimits: limits } : {}),
     };
     const group = programmeGroup(id);
@@ -225,6 +228,8 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     // Tokens placed in it keep the partner marker, like its people (plans/82 M3).
     const companyGroups = (await store.listCompanies()).filter((c) => c.programmeId === id).map((c) => companyGroup(c.id));
     await dropTokenGroups(store, deps.audit, `user:${actor.id}`, new Set([group, ...companyGroups]), 'programme-delete');
+    // Its exit receipts go with it, and its companies' (plans/82 M5).
+    await store.deleteProgrammeExits({ programmeId: id });
     // Members keep the partner marker, so they see only the essentials until an
     // admin adds them to another programme or makes them internal on purpose.
     await store.deleteLocalGroup(group);

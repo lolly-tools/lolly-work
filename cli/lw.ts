@@ -135,6 +135,7 @@ const OPTIONS = {
     assert: { type: 'boolean' },
     apply: { type: 'boolean' },
     projects: { type: 'string' },
+    'keep-projects': { type: 'boolean' },
     'move-staff': { type: 'string' },
     whole: { type: 'boolean' },
     // `lw companies profile settings`: contacts who may edit, and the chain they wait for.
@@ -864,22 +865,75 @@ switch (cmd) {
         : list ? { emails: readFileSync(list === '-' ? 0 : list, 'utf8').split(/[\s,;]+/).filter(Boolean) } : null;
       if (!pick) fail('usage: lw people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]');
       const r = await call('/api/v1/programmes/exit', { method: 'POST', body: { ...pick, ...(values.projects ? { projects: values.projects } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
-        dryRun: boolean; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
+        dryRun: boolean; exit?: string; accounts: Array<{ email?: string; id: string; projects: unknown; links?: number }>; skipped: Array<{ email: string; reason: string }>;
+        stays?: Array<{ email: string; stays: string[] }>; cannotEnd?: Array<{ email: string; reason: string }>; notEnded?: Array<{ email: string; reason: string }>;
         pendingInvitations?: unknown[]; invitationsRevoked?: number; domainRules?: Array<{ domain: string; programme: { name: string } }>;
         tokens?: Array<{ id: string; label: string }>; tokensRevoked?: number;
+        templates?: Array<{ id: string; name: string; action: 'retire' | 'narrow' }>;
+        folders?: Array<{ provider: string; path: string }>; foldersEnded?: number;
+        rightsChoices?: Array<{ assetId: string; group: string }>; rightsChoicesWithdrawn?: number;
+        alreadyEnded?: { at: string }; ended?: { programme?: string; companies: string[] };
       };
       out(r);
       if (!values.json) {
-        for (const a of r.accounts) console.log(`${r.dryRun ? 'ends    ' : 'ended   '}  ${a.email ?? a.id}`);
-        for (const s2 of r.skipped) console.log(`left      ${s2.email}  ${s2.reason}`);
-        for (const d of r.domainRules ?? []) console.log(`${r.dryRun ? 'withdraws' : 'withdrew '} ${d.domain} (${d.programme.name})`);
-        for (const t of r.tokens ?? []) console.log(`revokes   token ${t.id} (${t.label})`);
+        const verb = (now: string, then: string) => (r.dryRun ? now : then).padEnd(9);
+        if (r.alreadyEnded) console.log(`already ended on ${r.alreadyEnded.at.slice(0, 10)}; this ends what is left`);
+        for (const a of r.accounts) console.log(`${verb('ends', 'ended')} ${a.email ?? a.id}`);
+        for (const a of r.stays ?? []) console.log(`${verb('stays', 'stays')} ${a.email}  leaves this one, also in ${a.stays.join(', ')}`);
+        for (const a of [...(r.cannotEnd ?? []), ...(r.notEnded ?? [])]) console.log(`${verb('not ended', 'not ended')} ${a.email}  ${a.reason}`);
+        for (const s2 of r.skipped) console.log(`${'left'.padEnd(9)} ${s2.email}  ${s2.reason}`);
+        for (const d of r.domainRules ?? []) console.log(`${verb('withdraws', 'withdrew')} ${d.domain} (${d.programme.name})`);
+        for (const t of r.tokens ?? []) console.log(`${verb('revokes', 'revoked')} token ${t.id} (${t.label})`);
+        for (const t of r.templates ?? []) console.log(`${t.action === 'retire' ? verb('retires', 'retired') : verb('narrows', 'narrowed')} template ${t.name}`);
+        for (const f of r.folders ?? []) console.log(`${verb('ends', 'ended')} folder ${f.provider}/${f.path || '(all of it)'}`);
+        for (const c of r.rightsChoices ?? []) console.log(`${verb('withdraws', 'withdrew')} share anyway ${c.assetId} for ${c.group}`);
         if (!r.dryRun && r.tokensRevoked) console.log(`${r.tokensRevoked} service token(s) revoked`);
-        console.log(r.dryRun ? `${r.pendingInvitations?.length ?? 0} open invitation(s) would be revoked; run again with --apply to do it` : `${r.invitationsRevoked ?? 0} open invitation(s) revoked`);
+        if (!r.dryRun && r.foldersEnded) console.log(`${r.foldersEnded} folder rule(s) ended`);
+        if (!r.dryRun && r.rightsChoicesWithdrawn) console.log(`${r.rightsChoicesWithdrawn} share-anyway choice(s) withdrawn`);
+        if (!r.dryRun && r.ended && (r.ended.programme || r.ended.companies.length)) console.log(`ended: ${[r.ended.programme, ...r.ended.companies].filter(Boolean).join(', ')}`);
+        console.log(r.dryRun ? `${r.pendingInvitations?.length ?? 0} open invitation(s) would be revoked; run again with --apply to end access` : `${r.invitationsRevoked ?? 0} open invitation(s) revoked; receipt ${r.exit}`);
       }
       break;
     }
-    fail('usage: lw people import <programme> <file> [--apply] | exit --programme|--company|--domain … [--apply]');
+    if (sub === 'exits') {
+      const programme = positionals[2];
+      if (!programme) fail('usage: lw people exits <programme>');
+      const r = await call(`/api/v1/programmes/${encodeURIComponent(programme)}/exits`) as {
+        exits: Array<{ id: string; state: string; selection: Record<string, unknown>; doneAt?: string; createdAt: string; counts?: Record<string, number>; reopen: { offered: boolean; until?: string } }>;
+      };
+      out(r);
+      if (!values.json) {
+        for (const e of r.exits) {
+          const what = Object.entries(e.selection).map(([k, v]) => `${k} ${Array.isArray(v) ? `${v.length} addresses` : v}`).join(', ');
+          const when = (e.doneAt ?? e.createdAt).slice(0, 10);
+          const reopen = e.reopen.offered ? `reopen until ${e.reopen.until?.slice(0, 10)}` : '';
+          console.log(`${e.id}  ${e.state.padEnd(9)} ${when}  ${what}${e.counts ? `  ${e.counts.ended} ended, ${e.counts.stays} stayed` : ''}  ${reopen}`);
+        }
+      }
+      break;
+    }
+    if (sub === 'reopen') {
+      const id = positionals[2];
+      if (!id) fail('usage: lw people reopen <exit> [--keep-projects] [--apply]');
+      const r = await call(`/api/v1/programmes/exits/${encodeURIComponent(id)}/reopen`, { method: 'POST', body: { ...(values['keep-projects'] ? { projects: false } : {}), ...(values.apply ? { apply: true } : {}) } }) as {
+        dryRun: boolean; accounts: Array<{ email: string; result: string; reason?: string }>; projects: Array<{ name: string; result: string }>;
+        templates: Array<{ name: string; result: string }>; folders: Array<{ provider: string; path: string; result: string }>;
+        domainRules: Array<{ domain: string; result: string }>; reopened: { programme?: string; companies: string[] };
+        stayEnded: { tokens: number; links: number; rightsChoices: unknown[] };
+      };
+      out(r);
+      if (!values.json) {
+        for (const a of r.accounts) console.log(`${a.result.padEnd(13)} ${a.email}${a.reason ? `  ${a.reason}` : ''}`);
+        for (const p of r.projects) console.log(`${p.result.padEnd(13)} project ${p.name}`);
+        for (const t of r.templates) console.log(`${t.result.padEnd(13)} template ${t.name}`);
+        for (const f of r.folders) console.log(`${f.result.padEnd(13)} folder ${f.provider}/${f.path || '(all of it)'}`);
+        for (const d of r.domainRules) console.log(`${d.result.padEnd(13)} domain ${d.domain}`);
+        console.log(`stays ended: ${r.stayEnded.tokens} token(s), ${r.stayEnded.links} link(s), ${r.stayEnded.rightsChoices.length} share-anyway choice(s), every session`);
+        console.log(r.dryRun ? 'preview only: run again with --apply to reopen' : `reopened ${[r.reopened.programme, ...r.reopened.companies].filter(Boolean).join(', ') || 'the people'}`);
+      }
+      break;
+    }
+    fail('usage: lw people import <programme> <file> [--apply] | exit --programme|--company|--domain … [--apply] | exits <programme> | reopen <exit> [--apply]');
   }
 
   case 'brand-pages': {
@@ -2272,6 +2326,8 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   people import <programme> <file.csv|-> [--apply]   add a list to a partner programme: email, name, company, end date (preview unless --apply)
   people exit --programme <id> | --company <id> | --domain <d> | <emails-file> [--projects team-readonly|me-readonly|me|keep] [--apply]   end a partnership in one audited step
+  people exits <programme>   a programme's ends, newest first, with whether Reopen is offered
+  people reopen <exit> [--keep-projects] [--apply]   undo an end within 30 days: people, groups, templates, folders, domain rules and projects come back
   domains [ls] [--programme <id>] · domains add <domain> --programme <id> [--company <id>] [--ends YYYY-MM-DD] [--assert [--reason "…"]] [--move-staff <id,...>] [--dry-run]   partner domains: proved by DNS, or by your say-so (audited); staff move only by name
   domains check <domain> · domains rm <domain> [--programme <id>]   look the DNS record up now; stop new people joining through a domain
   folders [ls] --programme <id> · folders add <provider> <path>|--whole · folders rm <provider> <path> --programme <id> [--company <id>] [--ends YYYY-MM-DD]   give one provider folder to a programme or company
