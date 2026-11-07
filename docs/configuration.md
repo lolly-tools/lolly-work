@@ -414,9 +414,8 @@ with the existing non-root, seccomp and container permissions before rollout, an
 that refuses the sandbox out of service until its runtime is qualified.
 
 At capacity the worker answers `503 RENDER_BUSY` with `Retry-After` at once, with no internal
-queue, so saturation stays visible to the autoscaler. It stays ready while full: `/readyz`
-reports `atCapacity: true`, and a job already under way can still make its next call (the
-raster of the SVG it has just rendered). Its concurrency, timeouts and startup budget are set in its own environment (see
+queue, so saturation stays visible to the autoscaler, and it drops out of readiness until a slot
+frees. Its concurrency, timeouts and startup budget are set in its own environment (see
 [Render worker](#render-worker)); on Helm, `renderWorker.maxConcurrent` and
 `renderWorker.browserStartupTimeoutMs` set the first and the last. The worker HMAC key and the C2PA private key are secrets; see
 [Secrets](#secrets) and [c2pa](c2pa.md).
