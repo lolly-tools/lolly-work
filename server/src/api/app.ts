@@ -6175,7 +6175,15 @@ export function buildApp(deps: AppDeps): App {
     feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups, ungated: true })).index; },
     extraLimits: () => ({ collectionZipBytes: COLLECTION_ZIP_MAX_BYTES, collectionMembers: COLLECTION_MAX_MEMBERS }),
   });
-  registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights });
+  registerCatalogRightsRoutes(router, {
+    store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights,
+    holdsAny: async (req, actions) => {
+      const user = (await memberOf(req)) ?? (await serviceAccountOf(req));
+      if (!user) return null;
+      const grants = await store.listGrants();
+      return actions.some((action) => evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], grants)) ? user : null;
+    },
+  });
 
   registerDomainRoutes(router, {
     store, requireAction, audit, resolveTxt,

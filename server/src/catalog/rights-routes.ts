@@ -21,8 +21,8 @@ import { readJson, sendError, sendJson, type createRouter } from '../api/router.
 import type { Store, UserRecord } from '../store/types.ts';
 import type { AssetIndexEntry } from './lifecycle.ts';
 import {
-  defaultMarkTerms, LICENCE_ATTRIBUTION_MAX, LICENCE_DECLARATION_MAX, loadRightsEngine, MARK_HOLDER_MAX, MARK_TERMS_MAX, markCovers, markScopeKey,
-  parseMarkScope, RIGHTS_NOTE_MAX, rightsAnswer, type AssetLicenceRecord, type AssetRightsMarkRecord, type MarkScope, type RightsAnswer, type RightsEngine,
+  composeRightsRecords, defaultMarkTerms, LICENCE_ATTRIBUTION_MAX, LICENCE_DECLARATION_MAX, loadRightsEngine, MARK_HOLDER_MAX, MARK_TERMS_MAX, markCovers, markScopeKey,
+  parseMarkScope, RIGHTS_NOTE_MAX, rightsAnswer, rightsSourceOf, type AssetLicenceRecord, type AssetRightsMarkRecord, type MarkScope, type RightsAnswer, type RightsEngine,
 } from './rights.ts';
 
 type Router = ReturnType<typeof createRouter>;
@@ -36,6 +36,8 @@ export interface CatalogRightsDeps {
   workspaceName(): string;
   /** Every catalog entry as its source records it (pack, providers, instance), before any mark. */
   catalogEntries(): Promise<AssetIndexEntry[]>;
+  /** The caller when they hold any of these actions, else null; sends nothing. */
+  holdsAny?(req: IncomingMessage, actions: string[]): Promise<UserRecord | null>;
 }
 
 const DATE = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
@@ -81,6 +83,21 @@ const text = (raw: unknown, max: number): string | null | undefined => {
   const t = raw.trim();
   return t.length <= max ? t : null;
 };
+
+/** The scopes "These are ours" could record for one file, narrowest first. */
+export function markScopesFor(entry: AssetIndexEntry): string[] {
+  const out = [`asset:${entry.id}`];
+  const ext = /^ext\/([^/]+)\//.exec(entry.id);
+  if (ext) {
+    const folder = (entry.meta as { providerFolder?: unknown } | undefined)?.providerFolder;
+    if (typeof folder === 'string' && folder) out.push(`folder:${ext[1]}/${folder}`);
+    out.push(`provider:${ext[1]}`);
+  } else if (!entry.id.startsWith('inst/')) {
+    const cut = entry.id.lastIndexOf('/');
+    if (cut > 0) out.push(`prefix:${entry.id.slice(0, cut + 1)}`);
+  }
+  return out;
+}
 
 export function registerCatalogRightsRoutes(router: Router, deps: CatalogRightsDeps): void {
   const { store, audit } = deps;
@@ -155,6 +172,71 @@ export function registerCatalogRightsRoutes(router: Router, deps: CatalogRightsD
     });
     sendJson(res, 200, { ok: true });
   });
+
+  /**
+   * One file's licence as the console's asset page shows it: what it records,
+   * where the answer comes from (its own record, a licence record or a mark,
+   * with who stated it and when), what Lolly reads in it, and the scopes a
+   * mark could take.
+   */
+  router.add('GET', '/api/v1/catalog/rights/asset', async (req, res, ctx) => {
+    if (!(await editor(req, res))) return;
+    const id = ctx.url.searchParams.get('id') ?? '';
+    const [engine, entries, marks, licences, users] = await Promise.all([loadRightsEngine(), deps.catalogEntries(), store.listAssetRightsMarks(), store.listAssetLicences(), people()]);
+    const raw = entries.find((e) => e.id === id);
+    if (!raw) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+    const composed = composeRightsRecords(engine, [raw], marks, licences)[0]!;
+    const from = rightsSourceOf(engine, raw, marks, licences);
+    const answer = rightsAnswer(engine, composed);
+    sendJson(res, 200, {
+      assetId: id, declared: engine.assetLicenceDeclaration(composed as Record<string, unknown>), source: from.source, reads: readingOf(answer),
+      ...(from.mark ? { mark: { scope: from.mark.scope, holder: from.mark.holder, terms: from.mark.terms, statedBy: { id: from.mark.statedBy, name: personName(users.get(from.mark.statedBy), from.mark.statedBy) },
+        statedAt: from.mark.statedAt, statement: markStatement(from.mark, personName(users.get(from.mark.statedBy), from.mark.statedBy)) } } : {}),
+      ...(from.licence ? { licence: { declaration: from.licence.declaration, ...(from.licence.attribution ? { attribution: from.licence.attribution } : {}), recordedBy: { id: from.licence.recordedBy, name: personName(users.get(from.licence.recordedBy), from.licence.recordedBy) },
+        recordedAt: from.licence.recordedAt, statement: licenceStatement(from.licence, personName(users.get(from.licence.recordedBy), from.licence.recordedBy)) } } : {}),
+      markScopes: markScopesFor(raw),
+    }, { 'cache-control': 'no-store' });
+  }, { delivery: 'person-private' });
+
+  /**
+   * How many files a scope covers and how many of those record nothing, for
+   * the Provider folders form: "142 of 180 files here have no licence record".
+   * Readable by catalog.edit or programme.manage, because that form lives on
+   * the programme page.
+   */
+  router.add('GET', '/api/v1/catalog/rights/coverage', async (req, res, ctx) => {
+    const caller = deps.holdsAny ? await deps.holdsAny(req, ['catalog.edit', 'programme.manage']) : await editor(req, res);
+    if (!caller) { if (!res.headersSent) sendError(res, 403, 'FORBIDDEN', 'catalog.edit or programme.manage required'); return; }
+    const scope = parseMarkScope(ctx.url.searchParams.get('scope') ?? '');
+    if (!scope) return sendError(res, 400, 'INVALID_INPUT', 'scope is asset:<id>, folder:<provider>/<path>, provider:<id> or prefix:<id prefix>');
+    const [engine, entries, licences, marks] = await Promise.all([loadRightsEngine(), deps.catalogEntries(), store.listAssetLicences(), store.listAssetRightsMarks()]);
+    const covered = entries.filter((e) => markCovers(scope, e));
+    const key = markScopeKey(scope);
+    sendJson(res, 200, {
+      scope: key, files: covered.length, unrecorded: markCoverage(engine, scope, covered, licences),
+      ...(marks.some((m) => m.scope === key) ? { marked: true } : {}),
+    }, { 'cache-control': 'no-store' });
+  }, { delivery: 'person-private' });
+
+  /**
+   * For the Collections card: how many of each collection's files a partner
+   * or a link holder would receive with the licence gate on ("12 of 14
+   * travel"). Share anyway choices are per audience and a link's own choices
+   * per link, so neither is counted here.
+   */
+  router.add('GET', '/api/v1/catalog/rights/collections', async (req, res) => {
+    const caller = deps.holdsAny ? await deps.holdsAny(req, ['catalog.edit', 'catalog.collection.manage', 'programme.manage']) : await editor(req, res);
+    if (!caller) { if (!res.headersSent) sendError(res, 403, 'FORBIDDEN', 'catalog.edit, catalog.collection.manage or programme.manage required'); return; }
+    const [engine, entries, marks, licences, collections] = await Promise.all([loadRightsEngine(), deps.catalogEntries(), store.listAssetRightsMarks(), store.listAssetLicences(), store.listCollections()]);
+    const byId = new Map(composeRightsRecords(engine, entries, marks, licences).map((e) => [e.id, e]));
+    sendJson(res, 200, {
+      collections: collections.map((c) => {
+        const known = c.members.map((id) => byId.get(id)).filter((e): e is AssetIndexEntry => !!e);
+        const travel = known.filter((e) => rightsAnswer(engine, e).state !== 'held').length;
+        return { id: c.id, files: c.members.length, travel, held: known.length - travel };
+      }),
+    }, { 'cache-control': 'no-store' });
+  }, { delivery: 'person-private' });
 
   router.add('GET', '/api/v1/catalog/rights/licences', async (req, res) => {
     if (!(await editor(req, res))) return;

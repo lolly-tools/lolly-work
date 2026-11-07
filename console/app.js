@@ -2819,6 +2819,64 @@ function catalogMetaEditor(detail, entry, host) {
     err);
 }
 
+// The asset page's Licence row (plans/82 M4): the licence this file records,
+// where the answer comes from (its own record, your licence record or a mark,
+// with who stated it and when), and the controls to record a licence or mark
+// the file. Shown to catalog.edit only; the record is your own statement and
+// Lolly does not check it.
+function catalogLicenceSection(id) {
+  if (!(session?.console?.actions ?? []).includes('catalog.edit')) return null;
+  const host = el('div', { class: 'stack' }, el('h3', { class: 'detail-h' }, 'Licence'), el('p', { class: 'muted' }, 'Loading…'));
+  const draw = async () => {
+    let a;
+    try { a = await api(`/api/v1/catalog/rights/asset?${new URLSearchParams({ id })}`); }
+    catch (e) { host.replaceChildren(el('h3', { class: 'detail-h' }, 'Licence'), el('p', { class: 'form-err' }, e.message)); return; }
+    const err = errSpan();
+    const reads = a.reads;
+    const readsLine = reads.exempt ? 'Always reaches partners: part of the design system or published by your team.'
+      : reads.travels ? `${reads.licence}. May reach partners.`
+      : `${reads.licence || 'Licence not recorded'}. Held back from partners once the gate is on: ${reads.conditions?.length ? `conditions recorded, not yet interpreted (${reads.conditions.join(', ')})` : reads.detail ?? reads.reason}.`;
+    const from = a.source === 'own' ? `Recorded on the file itself: ${a.declared}.`
+      : a.source === 'licence-record' ? a.licence.statement
+      : a.source === 'mark' ? `${a.mark.statement} Inherited from ${a.mark.scope.startsWith('asset:') ? 'this file' : a.mark.scope.replace(/^folder:/, 'folder ').replace(/^provider:/, 'source ').replace(/^prefix:/, 'ids starting ')}.`
+      : 'Nothing recorded.';
+    const controls = [];
+    if (a.source === 'none' || a.source === 'licence-record') {
+      const decl = el('input', { value: a.licence?.declaration ?? '', placeholder: 'CC-BY-NC-4.0', 'aria-label': 'Licence' });
+      const credit = el('input', { value: a.licence?.attribution ?? '', placeholder: 'Photo by A. Person', 'aria-label': 'Credit' });
+      const save = armConfirmButton({}, a.licence ? 'Change licence record' : 'Record licence', 'Record it as your own record of the licence?', async (disarm) => {
+        try { await api('/api/v1/catalog/rights/licences', { method: 'PUT', body: { assetId: id, declaration: decl.value.trim(), ...(credit.value.trim() ? { attribution: credit.value.trim() } : {}) } }); toast('Licence recorded'); draw(); }
+        catch (ex) { err.textContent = ex.message; disarm(); }
+      });
+      controls.push(el('details', { class: 'tbl' }, el('summary', {}, a.licence ? 'Change the licence record' : 'Record its licence'),
+        el('div', { class: 'stack' }, el('div', { class: 'grant-fields' }, field('Licence', decl), field('Credit (optional)', credit)),
+          el('p', { class: 'sub flush' }, 'Write the licence as the rights holder gave it. Lolly keeps your text and reads it with the same rules as everywhere else.'), el('p', {}, save))));
+      if (a.licence) {
+        controls.push(armConfirmButton({ class: 'danger' }, 'Remove licence record', 'Remove the record?', async (disarm) => {
+          try { await api(`/api/v1/catalog/rights/licences?${new URLSearchParams({ assetId: id })}`, { method: 'DELETE' }); toast('Licence record removed'); draw(); }
+          catch (ex) { err.textContent = ex.message; disarm(); }
+        }));
+      }
+    }
+    if (a.source === 'none') {
+      const scope = el('select', { 'aria-label': 'Mark' }, ...a.markScopes.map((sc) => el('option', { value: sc }, sc.startsWith('asset:') ? 'This file' : sc.replace(/^folder:/, 'Its folder: ').replace(/^provider:/, 'Its whole source: ').replace(/^prefix:/, 'Every id starting '))));
+      controls.push(el('div', { class: 'grant-fields' }, field('Mark as your own', scope), el('div', {}, armConfirmButton({}, 'Mark', 'Record it as your own statement?', async (disarm) => {
+        try { await api('/api/v1/catalog/rights/marks', { method: 'PUT', body: { scope: scope.value } }); toast('Marked as your own'); draw(); }
+        catch (ex) { err.textContent = ex.message; disarm(); }
+      }))));
+    }
+    if (a.source === 'mark') {
+      controls.push(armConfirmButton({ class: 'danger' }, 'Unmark', `Withdraw the mark on ${a.mark.scope}?`, async (disarm) => {
+        try { await api(`/api/v1/catalog/rights/marks?${new URLSearchParams({ scope: a.mark.scope })}`, { method: 'DELETE' }); toast('Mark withdrawn'); draw(); }
+        catch (ex) { err.textContent = ex.message; disarm(); }
+      }));
+    }
+    host.replaceChildren(el('h3', { class: 'detail-h' }, 'Licence'), el('p', {}, readsLine), el('p', { class: 'sub flush' }, from), ...controls, err);
+  };
+  void draw();
+  return host;
+}
+
 function renderCatalogDetail(detail, entry, host, opener, history) {
   const state = detail.state ?? entry.state;
   const lc = detail.lifecycle;
@@ -2866,6 +2924,7 @@ function renderCatalogDetail(detail, entry, host, opener, history) {
       el('h3', { class: 'detail-h' }, 'Tags'),
       tags.length ? el('div', { class: 'chips' }, ...tags.map((t) => el('span', { class: 'chip' }, t))) : el('span', { class: 'muted' }, 'none')),
     metaSection,
+    catalogLicenceSection(detail.id ?? entry.id),
     detail.replacedBy
       ? el('p', { class: 'sub flush' }, 'Replaced by ', el('span', { class: 'mono' }, detail.replacedBy))
       : null,
@@ -2902,6 +2961,8 @@ async function collectionsCard(assetIndex) {
   try {
     collections = (await api('/api/v1/catalog/collections')).collections ?? [];
   } catch { return null; }
+  // How many files of each a partner or a link holder gets with the licence gate on (plans/82 M4).
+  const travel = new Map(((await api('/api/v1/catalog/rights/collections').catch(() => null))?.collections ?? []).map((c) => [c.id, c]));
 
   const known = (assetIndex.assets ?? []).map((a) => ({ id: a.id, name: a.name ?? a.id }));
   const nameOf = new Map(known.map((a) => [a.id, a.name]));
@@ -2914,6 +2975,7 @@ async function collectionsCard(assetIndex) {
     return el('tr', {},
       el('td', {}, c.name, el('div', { class: 'muted mono' }, c.id)),
       numCell(c.members.length),
+      el('td', {}, travel.has(c.id) ? `${travel.get(c.id).travel} of ${travel.get(c.id).files}` : ''),
       el('td', {}, groupsText(c)),
       el('td', { class: 'muted mono' }, (c.curator ?? '').replace(/^user:/, '')),
       whenCell(c.updatedAt),
@@ -2933,7 +2995,7 @@ async function collectionsCard(assetIndex) {
       'Named, ordered sets of assets, visible to the groups you name. A collection link gives someone outside the org a page listing that set and a download-all, and nothing else: no search, no browsing past the set, no sign-up. Every asset is re-checked against its lifecycle each time the link is opened.'),
     collections.length
       ? dataTable(
-          ['Collection', { label: 'Assets', num: true }, 'Visible to', 'Curator', { label: 'Updated', sort: 'date' }, { label: '', w: '1%', sort: false }],
+          ['Collection', { label: 'Assets', num: true }, { label: 'Travel', sort: false }, 'Visible to', 'Curator', { label: 'Updated', sort: 'date' }, { label: '', w: '1%', sort: false }],
           collections.map(rowFor), { csvName: 'collections' })
       : el('p', { class: 'empty' }, 'No collections yet. Assemble one to share a set of assets as a single link.'),
     panelHost);
@@ -2984,32 +3046,41 @@ function renderCollectionEditor(existing, known, nameOf, host, opener) {
   };
 
   const linkHost = el('div', { class: 'stack' });
-  const shareBtn = el('button', { onclick: async () => {
+  const showLink = (link, sentence) => linkHost.replaceChildren(
+    el('p', { class: 'sub', style: 'margin:0 0 6px' }, sentence(link)),
+    el('div', { class: 'lc-actions' },
+      el('span', { class: 'mono url-cell', title: link.url }, link.url),
+      copyButton(() => link.url, 'Copy')));
+  // Licences (plans/82 M4): a dry run first. With nothing held the link is
+  // made at once; otherwise the held files are listed with their reasons and
+  // the maker chooses to leave them out or to include them anyway, with a note.
+  const mintLink = async (btn, kind, sentence) => {
     err.textContent = '';
-    shareBtn.disabled = true;
+    btn.disabled = true;
+    const body = { kind, target: { collectionId: existing.id } };
     try {
-      const link = await api('/api/v1/links', { method: 'POST', body: { kind: 'share', target: { collectionId: existing.id } } });
+      const dry = await api('/api/v1/links?dryRun=1', { method: 'POST', body });
+      if (!dry.held) { showLink(await api('/api/v1/links', { method: 'POST', body }), sentence); btn.disabled = false; return; }
+      const note = el('input', { maxlength: '500', placeholder: 'The sponsor asked for the full set', 'aria-label': 'Note' });
+      const without = el('button', { onclick: async () => {
+        try { showLink(await api('/api/v1/links', { method: 'POST', body }), sentence); } catch (e) { err.textContent = e.message; }
+      } }, 'Make the link without them');
+      const include = armConfirmButton({}, 'Include them anyway', 'Send the held files with this link?', async (disarm) => {
+        try { showLink(await api('/api/v1/links', { method: 'POST', body: { ...body, includeHeld: true, ...(note.value.trim() ? { note: note.value.trim() } : {}) } }), sentence); }
+        catch (e) { err.textContent = e.message; disarm(); }
+      });
+      const held = dry.files.filter((f) => f.travels === false);
       linkHost.replaceChildren(
-        el('p', { class: 'sub', style: 'margin:0 0 6px' }, `Anyone with this link sees this collection until ${when(link.expiresAt)}.`),
-        el('div', { class: 'lc-actions' },
-          el('span', { class: 'mono url-cell', title: link.url }, link.url),
-          copyButton(() => link.url, 'Copy')));
+        el('p', {}, `${dry.travel} of ${dry.files.length} files travel. ${held.length === 1 ? 'This one is' : `These ${held.length} are`} held back by the licence gate, when it is on:`),
+        el('ul', {}, ...held.map((f) => el('li', {}, `${f.name}: ${f.licence || 'licence not recorded'}${f.conditions?.length ? ` (conditions recorded, not yet interpreted: ${f.conditions.join(', ')})` : ''}`))),
+        el('p', { class: 'sub flush' }, 'Including them is your choice for this link only, remembered against each file as it is now. A file added to the collection later, or a new version, is not included. The ZIP\u2019s credits say the sender chose to carry them.'),
+        field('Note (optional)', note),
+        el('div', { class: 'lc-actions' }, without, include));
     } catch (e) { err.textContent = e.message; }
-    shareBtn.disabled = false;
-  } }, 'Create a share link');
-  const zipBtn = el('button', { onclick: async () => {
-    err.textContent = '';
-    zipBtn.disabled = true;
-    try {
-      const link = await api('/api/v1/links', { method: 'POST', body: { kind: 'download', target: { collectionId: existing.id } } });
-      linkHost.replaceChildren(
-        el('p', { class: 'sub', style: 'margin:0 0 6px' }, `This link downloads the whole set as a zip, until ${when(link.expiresAt)}.`),
-        el('div', { class: 'lc-actions' },
-          el('span', { class: 'mono url-cell', title: link.url }, link.url),
-          copyButton(() => link.url, 'Copy')));
-    } catch (e) { err.textContent = e.message; }
-    zipBtn.disabled = false;
-  } }, 'Create a download-all link');
+    btn.disabled = false;
+  };
+  const shareBtn = el('button', { onclick: () => mintLink(shareBtn, 'share', (link) => `Anyone with this link sees this collection until ${when(link.expiresAt)}.`) }, 'Create a share link');
+  const zipBtn = el('button', { onclick: () => mintLink(zipBtn, 'download', (link) => `This link downloads the whole set as a zip, until ${when(link.expiresAt)}.`) }, 'Create a download-all link');
 
   const saveBtn = el('button', { class: 'primary', onclick: async () => {
     err.textContent = '';
@@ -5606,7 +5677,148 @@ function programmeEditor(p, tools, collections, groups = []) {
   void programmeTemplates(p, templatesHost);
   const peopleHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading people…'));
   void programmePeople(p, peopleHost);
-  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form, templatesHost, peopleHost);
+  const licencesHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading licences…'));
+  void programmeLicences(p, licencesHost);
+  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form, templatesHost, licencesHost, peopleHost);
+}
+
+// Licences (plans/82 M4): what reaches the programme by the licence each file
+// records. The admin reads the report, marks the folders that are the
+// workspace's own and chooses, file by file, to share a held file anyway.
+// Every count, limit and line here comes from the report route, which reads
+// the constants the server enforces.
+async function programmeLicences(p, host) {
+  let r;
+  try { r = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/rights-report`); }
+  catch (e) { host.replaceChildren(el('div', { class: 'card stack' }, el('h2', {}, 'Licences'), el('p', { class: 'form-err' }, e.message))); return; }
+  const reload = () => programmeLicences(p, host);
+  const canMark = (session?.console?.actions ?? []).includes('catalog.edit');
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const files = (n) => `${n} ${n === 1 ? 'file' : 'files'}`;
+  const gate = r.mode?.mode === 'gate';
+  const t = r.totals;
+  const summary = gate
+    ? `Gate on. ${t.held} of ${files(t.assets)} held back from ${p.name}.`
+    : `Reporting only. ${t.held} of ${files(t.assets)} would be held back from ${p.name} once the gate is on.`;
+  const companies = new Map();
+  for (const c of r.choices ?? []) if (c.company) companies.set(c.company.id, c.company.name);
+  let companyList = [];
+  try { companyList = (await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`)).companies ?? []; } catch { /* the programme itself is still an audience */ }
+
+  const markForm = (row) => {
+    const holder = el('input', { value: '', placeholder: 'Your organisation', 'aria-label': 'Holder' });
+    const terms = el('textarea', { rows: '3', maxlength: String(r.limits.markTerms), 'aria-label': 'Terms' });
+    const note = el('input', { maxlength: String(r.limits.markNote), placeholder: 'Shot by our photo team', 'aria-label': 'Note' });
+    const sentence = el('p', { class: 'sub flush' });
+    const err = errSpan();
+    let defaults = null;
+    const describe = () => { sentence.textContent = `Recorded as ${holder.value.trim() || defaults?.holder || 'your organisation'}'s own statement by you, today. Lolly does not check ownership.`; };
+    holder.addEventListener('input', describe);
+    api('/api/v1/catalog/rights/marks').then((m) => {
+      defaults = m.defaults;
+      holder.value = m.defaults.holder;
+      terms.value = m.defaults.terms;
+      describe();
+    }).catch((ex) => { err.textContent = ex.message; });
+    describe();
+    const save = armConfirmButton({ class: 'primary' }, 'Record the mark', 'Record it as your own statement?', async (disarm) => {
+      err.textContent = '';
+      try {
+        await api('/api/v1/catalog/rights/marks', { method: 'PUT', body: { scope: row.markScope, holder: holder.value.trim(), terms: terms.value.trim(), ...(note.value.trim() ? { note: note.value.trim() } : {}) } });
+        toast(`Marked ${row.label} as your own`); reload();
+      } catch (ex) { err.textContent = ex.message; disarm(); }
+    });
+    return el('details', { class: 'tbl' }, el('summary', {}, 'These are ours'),
+      el('div', { class: 'stack' }, field('Holder', holder), field('Terms', terms), field('Note (optional)', note), sentence, el('p', {}, save), err));
+  };
+
+  const markLine = (row) => {
+    const m = row.mark;
+    const err = errSpan();
+    const added = m.covered.atStatement !== undefined && m.covered.now > m.covered.atStatement ? ` ${m.covered.now - m.covered.atStatement} added since the mark.` : '';
+    const withdraw = canMark ? armConfirmButton({ class: 'danger' }, 'Withdraw mark', 'Withdraw the mark?', async (disarm) => {
+      try { await api(`/api/v1/catalog/rights/marks?${new URLSearchParams({ scope: m.scope })}`, { method: 'DELETE' }); toast('Mark withdrawn'); reload(); }
+      catch (ex) { err.textContent = ex.message; disarm(); }
+    }) : null;
+    return el('div', { class: 'stack' }, el('p', { class: 'sub flush' }, `${m.statement} Covers ${files(m.covered.now)} with no licence record of their own.${added}`), withdraw ? el('p', {}, withdraw) : null, err);
+  };
+
+  const heldList = (row) => {
+    if (!row.heldFiles.length) return null;
+    const ticks = new Map();
+    const audience = el('select', { 'aria-label': 'For' }, el('option', { value: '' }, `Everyone in ${p.name}`),
+      ...companyList.map((c) => el('option', { value: c.id }, c.name)));
+    const note = el('input', { maxlength: String(r.limits.choiceNote), placeholder: 'The photographer agreed by email, ref 2026-114', 'aria-label': 'Note' });
+    const err = errSpan();
+    const count = () => [...ticks.values()].filter((cb) => cb.checked).length;
+    const share = armConfirmButton({}, () => `Share anyway (${count()})`, 'Send these held files to this audience?', async (disarm) => {
+      const assetIds = [...ticks].filter(([, cb]) => cb.checked).map(([id]) => id);
+      if (!assetIds.length) { err.textContent = 'Tick the files to share.'; disarm(); return; }
+      try {
+        await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/rights/choices`, { method: 'PUT', body: { assetIds, ...(audience.value ? { company: audience.value } : {}), ...(note.value.trim() ? { note: note.value.trim() } : {}) } });
+        toast(`Shared ${files(assetIds.length)} anyway`); reload();
+      } catch (ex) { err.textContent = ex.message; disarm(); }
+    });
+    const rows = row.heldFiles.map((f) => {
+      const cb = el('input', { type: 'checkbox', 'aria-label': `Choose ${f.name}` });
+      cb.addEventListener('change', () => { share.textContent = `Share anyway (${count()})`; });
+      ticks.set(f.id, cb);
+      const why = [f.licence || 'Licence not recorded', f.conditions?.length ? `Conditions recorded, not yet interpreted: ${f.conditions.join(', ')}` : f.detail ?? f.reason].filter(Boolean).join(' · ');
+      return el('tr', {}, el('td', {}, cb), el('td', {}, f.name, f.needsChoosing ? el('div', { class: 'muted' }, 'Needs choosing again: the file or its licence changed') : null), el('td', {}, why));
+    });
+    return el('details', { class: 'tbl' }, el('summary', {}, `Held files (${row.heldFiles.length}${row.heldMore ? ` of ${row.heldFiles.length + row.heldMore}` : ''})`),
+      el('div', { class: 'stack' },
+        dataTable([{ label: '', sort: false, w: '1%' }, 'File', 'Licence'], rows, { filter: false, paginate: false, csv: false }),
+        row.heldMore ? el('p', { class: 'muted' }, `The report lists ${r.limits.heldFilesListedPerSource} held files per source; ${row.heldMore} more are counted above.`) : null,
+        el('div', { class: 'grant-fields' }, field('For', audience), field('Note (optional)', note)),
+        el('p', { class: 'sub flush' }, 'A choice names each file and is remembered against its licence record and version. A new version or a changed record needs a new choice. Partners see the file, never the choice.'),
+        el('p', {}, share), err));
+  };
+
+  const sourceRow = (row) => el('tr', {},
+    el('td', {}, el('strong', {}, row.label)),
+    numCell(row.assets),
+    el('td', {}, ...row.travel.byLicence.map((l) => el('div', {}, `${l.count} ${l.licence}`)), row.exempt ? el('div', { class: 'muted' }, `${row.exempt} exempt`) : null,
+      row.sharedAnyway ? el('div', {}, `${row.sharedAnyway} shared anyway`) : null),
+    el('td', {}, ...row.held.byReason.map((h) => el('div', {}, `${h.count} ${h.label}`)), heldList(row)),
+    el('td', {}, row.mark ? markLine(row) : row.markScope && canMark && row.held.count ? markForm(row) : null));
+
+  const choiceRow = (c) => {
+    const err = errSpan();
+    const q = new URLSearchParams({ assetId: c.assetId, ...(c.company ? { company: c.company.id } : {}) });
+    const withdraw = armConfirmButton({ class: 'danger' }, 'Withdraw', 'Withdraw the choice?', async (disarm) => {
+      try { await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/rights/choices?${q}`, { method: 'DELETE' }); toast('Choice withdrawn'); reload(); }
+      catch (ex) { err.textContent = ex.message; disarm(); }
+    });
+    const standing = { live: 'In force', 'needs-choosing': 'Needs choosing again', 'not-needed': 'Not needed now: the file travels', gone: 'The file is no longer in the feed' }[c.standing] ?? c.standing;
+    return el('tr', {}, el('td', {}, c.name), el('td', {}, c.licence || 'Licence not recorded'), el('td', {}, c.company ? c.company.name : `Everyone in ${p.name}`),
+      el('td', {}, `${c.chosenBy.name}, ${day(c.chosenAt)}`, c.note ? el('div', { class: 'muted' }, c.note) : null), el('td', {}, standing), el('td', {}, withdraw, err));
+  };
+
+  const L = r.limits;
+  const limits = el('details', { class: 'tbl' }, el('summary', {}, 'Limits'),
+    el('ul', {},
+      el('li', {}, `The report lists up to ${L.heldFilesListedPerSource} held files per source and ${L.linksListed} links.`),
+      el('li', {}, `Share anyway takes up to ${L.choicesPerRequest} files at once, with a note of up to ${L.choiceNote} characters.`),
+      el('li', {}, `A mark's holder takes up to ${L.markHolder} characters, its terms ${L.markTerms} and its note ${L.markNote}.`),
+      el('li', {}, `A licence record takes up to ${L.licenceDeclaration} characters, its credit ${L.licenceAttribution}.`),
+      L.collectionZipBytes ? el('li', {}, `A collection holds up to ${L.collectionMembers} files and its ZIP up to ${Math.round(L.collectionZipBytes / 1024 ** 3)} GB.`) : null));
+
+  host.replaceChildren(el('div', { class: 'card stack' },
+    el('h2', {}, 'Licences'),
+    el('p', { class: 'sub flush' }, `What reaches people in ${p.name}, file by file, by the licence each file records. Your design system, published templates and brand skills always reach them.`),
+    el('p', {}, el('strong', {}, r.mode?.line ?? '')),
+    el('p', {}, summary),
+    el('p', { class: 'muted' }, `Shared anyway: ${t.sharedAnyway}. Needs choosing again: ${t.needsChoosing}. Marks in force: ${r.inForce?.marks ?? 0}. Choices in force: ${r.inForce?.choices ?? 0}.`),
+    r.sources.length
+      ? dataTable(['Source', { label: 'Files', num: true }, 'Travel', 'Held back', { label: '', sort: false }], r.sources.map(sourceRow), { filter: false, paginate: false })
+      : el('p', { class: 'muted' }, 'Nothing reaches this programme yet.'),
+    r.choices?.length ? el('h3', {}, `Shared anyway (${r.choices.length})`) : null,
+    r.choices?.length ? dataTable(['File', 'Licence', 'For', 'Chosen by', 'Status', { label: '', sort: false }], r.choices.map(choiceRow), { filter: false, paginate: false }) : null,
+    r.links.count ? el('h3', {}, `Links made by your people that would lose files (${r.links.count})`) : null,
+    r.links.count ? el('p', { class: 'sub flush' }, gate ? 'These links leave the held files out now.' : 'Once the gate is on, these links leave the held files out unless their maker chose to include them.') : null,
+    r.links.count ? dataTable(['Link', 'Made by', { label: 'Loses', num: true }], r.links.links.map((l) => el('tr', {}, el('td', {}, l.target.name), el('td', {}, l.createdBy.name), el('td', { class: 'num' }, `${l.held} of ${l.files}`))), { filter: false, paginate: false }) : null,
+    limits));
 }
 
 // Templates published to a programme (plans/82 M2): a template of one of your
@@ -6172,11 +6384,33 @@ async function programmePeople(p, host, lastResult = null) {
   // button without looking must never give partners the whole source.
   // Option values: '' is no choice, 'whole' the whole source, 'path:<p>' a folder.
   const folderNote = el('p', { class: 'sub flush' });
+  // Licences (plans/82 M4): how many files here record no licence, and a tick
+  // that records the folder as the workspace's own in the same save.
+  const canMark = (session?.console?.actions ?? []).includes('catalog.edit');
+  const licenceNote = el('p', { class: 'sub flush' });
+  const oursTick = el('input', { type: 'checkbox', 'aria-label': 'These files are ours' });
+  const oursLabel = el('label', { class: 'chk', hidden: 'hidden' }, oursTick, el('span', {}, 'These files are ours: record the folder as our own statement when I give it. Lolly does not check ownership.'));
+  let coverageAsk = 0;
+  const describeLicences = async (source, path) => {
+    const ask = ++coverageAsk;
+    licenceNote.textContent = ''; oursLabel.hidden = true; oursTick.checked = false;
+    if (!source || path === null) return;
+    const scope = path ? `folder:${source.id}/${path}` : `provider:${source.id}`;
+    try {
+      const c = await api(`/api/v1/catalog/rights/coverage?${new URLSearchParams({ scope })}`);
+      if (ask !== coverageAsk) return;
+      if (c.marked) { licenceNote.textContent = 'This folder is already marked as your own.'; return; }
+      if (!c.unrecorded) return;
+      licenceNote.textContent = `${c.unrecorded} of ${c.files} files here have no licence record and will not reach partners once the licence gate is on, until they are marked or their licence is recorded.`;
+      oursLabel.hidden = !canMark;
+    } catch { /* the count is a help, not a step */ }
+  };
   const chosenPath = () => (folderSel.value === 'whole' ? '' : folderSel.value.startsWith('path:') ? folderSel.value.slice(5) : null);
   const describeChoice = () => {
     const source = sources.find((s) => s.id === sourceSel.value);
     const path = chosenPath();
     addFolder.disabled = path === null;
+    void describeLicences(source, path);
     if (path === null || !source) { folderNote.textContent = ''; return; }
     const inside = source.folders.filter((f) => f.path && f.path !== path && (path === '' || f.path.startsWith(`${path}/`)));
     const names = inside.slice(0, 8).map((f) => `${f.path} (${f.assets})`);
@@ -6211,7 +6445,10 @@ async function programmePeople(p, host, lastResult = null) {
         provider: sourceSel.value, path, ...(path === '' ? { whole: true } : {}),
         ...(folderCompany.value ? { company: folderCompany.value } : {}), ...(folderEnds.value ? { endsAt: folderEnds.value } : {}),
       } });
-      toast(`Added ${folderName(path)}`); reload();
+      if (oursTick.checked && !oursLabel.hidden) {
+        await api('/api/v1/catalog/rights/marks', { method: 'PUT', body: { scope: path ? `folder:${sourceSel.value}/${path}` : `provider:${sourceSel.value}` } });
+      }
+      toast(`Added ${folderName(path)}${oursTick.checked && !oursLabel.hidden ? ', marked as your own' : ''}`); reload();
     } catch (ex) { folderErr.textContent = ex.message; addFolder.disabled = false; }
   } }, 'Give this folder');
   fillFolders();
@@ -6226,6 +6463,8 @@ async function programmePeople(p, host, lastResult = null) {
       ? el('div', { class: 'grant-fields' }, field('Source', sourceSel), field('Folder', folderSel), field('Who gets it', folderCompany), field('End date (optional)', folderEnds))
       : el('p', { class: 'muted' }, 'No connected sources yet. Connect one under Catalog, then come back to give a folder.'),
     sources.length ? folderNote : null,
+    sources.length ? licenceNote : null,
+    sources.length ? oursLabel : null,
     sources.length ? el('p', {}, addFolder) : null,
     folderErr);
 
@@ -6822,7 +7061,8 @@ function renderPreview(data) {
       : el('p', { class: 'muted' }, 'No collections.'),
     assets.sample?.length
       ? el('p', { class: 'chips' }, ...assets.sample.map((a) => el('span', { class: 'chip', title: a.id }, a.name)))
-      : null) : null;
+      : null,
+    assets.licence ? previewLicence(assets.licence) : null) : null;
   // The templates these groups get (plans/82 M2). The app is told only which
   // inputs it may offer; the lines under each template are for the admin.
   const templates = preview.templates ?? [];
@@ -6859,6 +7099,23 @@ function renderPreview(data) {
     el('div', { class: 'card stack' },
       el('h2', {}, 'Profile fields'), dataTable(['Field', 'Access', 'Locked to'], profileRows)),
   );
+}
+
+// Licences in Preview (plans/82 M4), for the admin: what the gate holds back
+// from these groups, in either mode, and what was shared anyway and by whom.
+function previewLicence(l) {
+  const files = (n) => `${n} ${n === 1 ? 'file' : 'files'}`;
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  return el('div', { class: 'stack' },
+    el('h3', {}, 'Licences'),
+    el('p', { class: 'sub flush' }, l.line),
+    el('p', {}, l.mode === 'gate'
+      ? `${files(l.onceGated)} reach them. Held back (licence): ${l.heldBack}.`
+      : `${files(l.onceGated)} once the gate is on (${l.total} today). Held back (licence): ${l.heldBack}.`),
+    el('p', { class: 'muted' }, `Shared anyway: ${l.sharedAnyway}. Needs choosing again: ${l.needsChoosing}.`),
+    l.shared?.length
+      ? el('ul', {}, ...l.shared.map((f) => el('li', {}, `${f.name}, ${f.licence}, chosen by ${f.chosenBy}, ${day(f.chosenAt)}`)))
+      : null);
 }
 
 async function viewPreview(main, params) {
