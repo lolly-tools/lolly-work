@@ -4,6 +4,7 @@ import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
+import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { TokenLimitOverrides } from '../iam/token-limits.ts';
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
 import type { SubjectStore } from '../privacy/subject.ts';
@@ -1894,6 +1895,16 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   listCompanyProfileHistory(companyId: string): Promise<CompanyProfileRevision[]>;
   /** The profile and its whole history. Unknown id is a no-op. */
   deleteCompanyProfile(companyId: string): Promise<void>;
+  // Owner-published marks and licence records (plans/82 M4, migrations/0096).
+  // A mark is keyed by its scope string, a licence record by the asset id.
+  listAssetRightsMarks(): Promise<AssetRightsMarkRecord[]>;
+  putAssetRightsMark(rec: AssetRightsMarkRecord): Promise<void>;
+  /** Unknown scope is a no-op. */
+  deleteAssetRightsMark(scope: string): Promise<void>;
+  listAssetLicences(): Promise<AssetLicenceRecord[]>;
+  putAssetLicence(rec: AssetLicenceRecord): Promise<void>;
+  /** Unknown asset id is a no-op. */
+  deleteAssetLicence(assetId: string): Promise<void>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
   // cumulative for everything that was KEPT - a returned submission still spent

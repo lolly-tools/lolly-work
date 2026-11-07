@@ -34,6 +34,7 @@ import { applyCredentialsToIndex } from './credentials.ts';
 import { composeCollections } from './collections.ts';
 import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf } from '../programmes/types.ts';
 import { entryInFolders, foldersFor, nextFolderRuleEnd } from '../programmes/folders.ts';
+import { composeRightsRecords, loadRightsEngine } from './rights.ts';
 
 export interface ServedProvider {
   id: string;
@@ -256,10 +257,11 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       input = { stamp: packStamp, bytes, entries }; packInputs.set(packFile, input);
     }
     const frags = await deps.federation.fragments({ background });
-    const [rows, creds, instAssets, metas, fieldDefs, collections, tagRuleRows, providerRecs, folderRules] = await Promise.all([
+    const [rows, creds, instAssets, metas, fieldDefs, collections, tagRuleRows, providerRecs, folderRules, rightsMarks, assetLicences] = await Promise.all([
       deps.store.listLifecycle(), deps.store.listCredentials(), deps.store.listInstanceAssets(),
       deps.store.listAssetMeta(), deps.store.listCatalogFields(), deps.store.listCollections(),
       deps.store.listCatalogTagRules(), deps.store.listProviders({ includeFragment: false }), deps.store.listPartnerFolders(),
+      deps.store.listAssetRightsMarks(), deps.store.listAssetLicences(),
     ]);
     // Hidden tags (catalog/tag-rules.ts) are an input too: hiding or showing one
     // moves the fingerprint, so the next read composes afresh with no re-sync.
@@ -270,6 +272,8 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       JSON.stringify(metas), JSON.stringify(fieldDefs), JSON.stringify(collections),
       JSON.stringify(tagRuleRows), JSON.stringify(providerRecs.map((p) => [p.id, p.mapping?.hiddenTags ?? []])),
       JSON.stringify(folderRules),
+      // Marks and licence records (plans/82 M4): a memo never outlives one.
+      JSON.stringify(rightsMarks), JSON.stringify(assetLicences),
       JSON.stringify(rows.map(row => [row.assetId, assetState(row, t)])),
       JSON.stringify([...input.entries, ...instAssets.map(asset => asset.entry), ...frags.flatMap(fragment => fragment.fragment.assets)].map(entry => [entry.id,
         typeof entry.availableFrom === 'string' ? Date.parse(entry.availableFrom) <= t : true,
@@ -285,6 +289,9 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     if (running) return running;
     const work = (async (): Promise<ServedIndex> => {
       compositions += 1;
+      // The engine reads each entry's own declaration; an instance with no mark
+      // and no licence record never loads it, and its feed keeps its bytes.
+      const rightsEngine = rightsMarks.length || assetLicences.length ? await loadRightsEngine() : null;
       // A partner programme member (plans/82 M1) is composed as if they could
       // see every group's assets, then narrowed to what their programmes
       // include: essentials, granted collections' members, and instance assets
@@ -306,7 +313,13 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
         // entries that carry any (plans/31 section 4). It folds over pack,
         // federated and instance entries alike, because the overlay is keyed by
         // catalog id rather than by which of the three produced the entry.
-        const withInstance = composeAssetMeta(composeInstanceAssets(federated, instAssets, composeGroups), metas, fieldDefs);
+        const withMeta = composeAssetMeta(composeInstanceAssets(federated, instAssets, composeGroups), metas, fieldDefs);
+        // A licence record or the narrowest mark reaches every entry that records
+        // nothing of its own (plans/82 M4), for every caller, so the app's details
+        // sheet and its .lolly builder read the same record the server gates on.
+        const withInstance = rightsEngine && Array.isArray(withMeta.assets)
+          ? { ...withMeta, assets: composeRightsRecords(rightsEngine, withMeta.assets, rightsMarks, assetLicences) }
+          : withMeta;
         // A folder rule's end date is a flip too: the feed recomposes then.
         const staleAt = Math.min(nextLifecycleFlip(withInstance.assets ?? [], rows, t), scoped ? nextFolderRuleEnd(folderRules, t) : Infinity);
         const gated = applyLifecycleToIndex(withInstance, rows, t);
