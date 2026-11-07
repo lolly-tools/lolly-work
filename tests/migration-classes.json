@@ -82,5 +82,6 @@
   "0090_token_groups.sql": "additive",
   "0093_programme_exits.sql": "additive",
   "0094_token_usage.sql": "additive",
-  "0095_programme_tokens.sql": "additive"
+  "0095_programme_tokens.sql": "additive",
+  "0096_asset_rights_marks.sql": "additive"
 }

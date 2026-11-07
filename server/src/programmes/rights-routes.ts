@@ -16,7 +16,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import type { AssetIndex, AssetIndexEntry } from '../catalog/lifecycle.ts';
-import { entryCompany, HELD_LABEL, loadRightsEngine, rightsAnswer, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
+import { entryCompany, HELD_LABEL, loadRightsEngine, parseMarkScope, rightsAnswer, type AssetRightsMarkRecord, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
+import { markCoverage, markStatement } from '../catalog/rights-routes.ts';
 import { entryInFolders, folderRuleGroup, liveFolderRules, type PartnerFolderRecord } from './folders.ts';
 import { companyGroup } from './people.ts';
 import { isProgrammeScoped, namesProgrammeGroup, PARTNER_GROUP, programmeGroup } from './types.ts';
@@ -28,6 +29,8 @@ export interface RightsRouteDeps {
   requireAction(req: IncomingMessage, res: ServerResponse, action: string): Promise<UserRecord | null>;
   /** The composed feed a caller with these groups receives. */
   feedFor(groups: string[]): Promise<AssetIndex>;
+  /** Every catalog entry as its source records it, before any mark. */
+  catalogEntries(): Promise<AssetIndexEntry[]>;
 }
 
 /** Held files listed per source row; the rest are counted. */
@@ -64,6 +67,10 @@ export interface SourceRow {
   path?: string;
   collection?: { id: string; name: string };
   company?: { id: string; name: string };
+  /** The scope "These are ours" records for this row: a folder or a whole provider. */
+  markScope?: string;
+  /** The mark already stated on exactly that scope. */
+  mark?: RowMark;
   assets: number;
   travel: { count: number; byLicence: Array<{ licence: string; count: number }> };
   held: { count: number; byReason: Array<{ category: HeldCategory; label: string; count: number }> };
@@ -73,10 +80,79 @@ export interface SourceRow {
   heldMore: number;
 }
 
+/** A mark as the report shows it to the admin: who stated it and when, and what it covers now. */
+export interface RowMark {
+  scope: string;
+  holder: string;
+  terms: string;
+  note?: string;
+  statedBy: { id: string; name: string };
+  statedAt: string;
+  statement: string;
+  covered: { now: number; atStatement?: number };
+}
+
+/**
+ * Held pack files under one top-level id prefix (`suse/`), by the
+ * declaration they carry. A pack file reaches a programme through a
+ * collection, so its row has no folder to mark; this is where the brand team
+ * sees, for example, that every file under suse/ declares an identifier
+ * these rules do not carry.
+ */
+export interface PrefixRow {
+  prefix: string;
+  held: number;
+  byDeclaration: Array<{ declared: string; category: HeldCategory; label: string; count: number }>;
+  /** One sentence per declaration, such as "210 files under suse/ declare LicenseRef-SUSE-Proprietary, an identifier these rules do not carry." */
+  sentences: string[];
+  /** Held files here that declare nothing: a mark at this prefix would reach them. */
+  unrecorded: number;
+  /** The scope "These are ours" records, offered only when a mark can act on some of these files. */
+  markScope?: string;
+  /** What would clear the files a mark cannot reach, when some declare an identifier these rules do not carry. */
+  clearedBy?: string;
+}
+
+/** What clears pack files that declare an identifier these rules do not carry. */
+export const IDENTIFIER_CLEARED_BY = 'The owner can record these as owner-published in the pack, or the rules can be widened. Ask your Lolly administrator.';
+
 export interface ProgrammeRightsReport {
   rules: string;
   totals: { assets: number; travel: number; held: number; exempt: number };
   sources: SourceRow[];
+  prefixes: PrefixRow[];
+}
+
+/** Group held pack files (not `ext/*` or `inst/*`) by top-level id prefix. */
+export function packPrefixRows(held: ReadonlyArray<{ id: string; declared: string; category: HeldCategory }>): PrefixRow[] {
+  const by = new Map<string, Map<string, { category: HeldCategory; count: number }>>();
+  for (const f of held) {
+    if (f.id.startsWith('ext/') || f.id.startsWith('inst/')) continue;
+    const cut = f.id.indexOf('/');
+    if (cut < 1) continue;
+    const prefix = f.id.slice(0, cut + 1);
+    const decls = by.get(prefix) ?? new Map();
+    const key = f.declared;
+    const row = decls.get(key) ?? { category: f.category, count: 0 };
+    row.count++;
+    decls.set(key, row);
+    by.set(prefix, decls);
+  }
+  return [...by].map(([prefix, decls]) => {
+    const byDeclaration = [...decls].map(([declared, d]) => ({ declared, category: d.category, label: HELD_LABEL[d.category], count: d.count }))
+      .sort((a, b) => b.count - a.count || a.declared.localeCompare(b.declared));
+    const held = byDeclaration.reduce((n, d) => n + d.count, 0);
+    const unrecorded = byDeclaration.filter((d) => !d.declared).reduce((n, d) => n + d.count, 0);
+    const sentences = byDeclaration.map((d) => {
+      const files = `${d.count} ${d.count === 1 ? 'file' : 'files'} under ${prefix}`;
+      return d.declared ? `${files} ${d.count === 1 ? 'declares' : 'declare'} ${d.declared}, ${d.label}.` : `${files} ${d.count === 1 ? 'records' : 'record'} no licence.`;
+    });
+    return {
+      prefix, held, byDeclaration, sentences, unrecorded,
+      ...(unrecorded ? { markScope: `prefix:${prefix}` } : {}),
+      ...(byDeclaration.some((d) => d.category === 'identifier') ? { clearedBy: IDENTIFIER_CLEARED_BY } : {}),
+    };
+  }).sort((a, b) => b.held - a.held || a.prefix.localeCompare(b.prefix));
 }
 
 const nameOf = (entry: AssetIndexEntry): string => (typeof entry.name === 'string' && entry.name ? entry.name : entry.id);
@@ -119,9 +195,12 @@ function sourceOf(entry: AssetIndexEntry, answer: RightsAnswer, groups: Readonly
       .sort((a, b) => b.length - a.length);
     if (paths.length) {
       const path = paths[0]!;
-      return { key: `folder:${providerId}/${path}`, row: { kind: 'folder', label: `${label} / ${path || 'all of it'}`, provider: { id: providerId, label }, path } };
+      return {
+        key: `folder:${providerId}/${path}`,
+        row: { kind: 'folder', label: `${label} / ${path || 'all of it'}`, provider: { id: providerId, label }, path, markScope: path ? `folder:${providerId}/${path}` : `provider:${providerId}` },
+      };
     }
-    return { key: `provider:${providerId}`, row: { kind: 'provider', label, provider: { id: providerId, label } } };
+    return { key: `provider:${providerId}`, row: { kind: 'provider', label, provider: { id: providerId, label }, markScope: `provider:${providerId}` } };
   }
   return { key: 'direct', row: { kind: 'direct', label: 'Shared with the programme directly' } };
 }
@@ -141,6 +220,7 @@ export function programmeRightsReport(
   const companies = new Set(sources.companies.map((c) => c.id));
   const rows = new Map<string, SourceRow & { licences: Map<string, number>; reasons: Map<HeldCategory, number> }>();
   const totals = { assets: 0, travel: 0, held: 0, exempt: 0 };
+  const heldAll: Array<{ id: string; declared: string; category: HeldCategory }> = [];
   for (const entry of feed.assets ?? []) {
     const answer = rightsAnswer(engine, entry, companies);
     const { key, row: shape } = sourceOf(entry, answer, groups, sources, now);
@@ -162,6 +242,7 @@ export function programmeRightsReport(
       row.held.count++;
       totals.held++;
       row.reasons.set(answer.category, (row.reasons.get(answer.category) ?? 0) + 1);
+      heldAll.push({ id: entry.id, declared: answer.declared, category: answer.category });
       if (row.heldFiles.length < HELD_LISTED) {
         row.heldFiles.push({
           id: entry.id, name: nameOf(entry), licence: answer.licence, declared: answer.declared, category: answer.category, reason: answer.reason,
@@ -174,6 +255,7 @@ export function programmeRightsReport(
   return {
     rules: engine.RIGHTS_RULES_VERSION,
     totals,
+    prefixes: packPrefixRows(heldAll),
     sources: sorted.map(({ licences, reasons, ...row }) => ({
       ...row,
       travel: { count: row.travel.count, byLicence: [...licences].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([licence, count]) => ({ licence, count })) },
@@ -251,6 +333,27 @@ export async function linksThatWouldLose(engine: RightsEngine, store: Store, fee
   return { count: losing.length, files, links: losing.slice(0, LINKS_LISTED), more: Math.max(0, losing.length - LINKS_LISTED) };
 }
 
+/** Put the mark stated on each row's own scope beside the row, with what it covers now. */
+async function attachMarks(engine: RightsEngine, store: Store, report: ProgrammeRightsReport, catalogEntries: () => Promise<AssetIndexEntry[]>): Promise<void> {
+  const marks = await store.listAssetRightsMarks();
+  if (!marks.length) return;
+  const byScope = new Map(marks.map((m) => [m.scope, m]));
+  const wanted = report.sources.filter((row) => row.markScope && byScope.has(row.markScope));
+  if (!wanted.length) return;
+  const [entries, licences, users] = await Promise.all([catalogEntries(), store.listAssetLicences(), store.listUsers()]);
+  const nameOf = (id: string): string => { const u = users.find((x) => x.id === id); return u ? personName(u) : id; };
+  for (const row of wanted) {
+    const mark = byScope.get(row.markScope!) as AssetRightsMarkRecord;
+    const scope = parseMarkScope(mark.scope);
+    const name = nameOf(mark.statedBy);
+    row.mark = {
+      scope: mark.scope, holder: mark.holder, terms: mark.terms, ...(mark.note ? { note: mark.note } : {}),
+      statedBy: { id: mark.statedBy, name }, statedAt: mark.statedAt, statement: markStatement(mark, name),
+      covered: { now: scope ? markCoverage(engine, scope, entries, licences) : 0, ...(mark.coveredAtStatement !== undefined ? { atStatement: mark.coveredAtStatement } : {}) },
+    };
+  }
+}
+
 export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): void {
   const { store } = deps;
 
@@ -269,6 +372,7 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
       collections, instAssets, providers, folderRules: folderRules.filter((r) => r.programmeId === programme.id),
       companies: companies.map((c) => ({ id: c.id, name: c.name })),
     }, now);
+    await attachMarks(engine, store, report, deps.catalogEntries);
     const links = await linksThatWouldLose(engine, store, deps.feedFor, now);
     sendJson(res, 200, { programme: { id: programme.id, name: programme.name }, ...report, links }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });

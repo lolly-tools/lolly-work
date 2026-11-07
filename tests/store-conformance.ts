@@ -1472,6 +1472,28 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deletePartnerFolder({ provider: 'dam', path: 'Partners/EMEA', programmeId: 'resellers' });
   assert.deepEqual(await store.listPartnerFolders(), []);
 
+  // Owner-published marks and licence records (plans/82 M4, migrations/0096):
+  // a mark keyed by its scope, a licence record by its asset id, each upserted whole.
+  assert.deepEqual(await store.listAssetRightsMarks(), []);
+  const mark = { scope: 'folder:dam/event-photos', holder: 'SUSE', terms: 'Published by SUSE. Not an open licence.', statedBy: 'usr_1', statedAt: '2026-11-07T00:00:00.000Z', coveredAtStatement: 180 };
+  await store.putAssetRightsMark(mark);
+  await store.putAssetRightsMark({ ...mark, scope: 'prefix:suse/logo/' });
+  await store.putAssetRightsMark({ ...mark, note: 'the photo team shot these' });
+  assert.deepEqual((await store.listAssetRightsMarks()).map((m) => [m.scope, m.note ?? '']), [['folder:dam/event-photos', 'the photo team shot these'], ['prefix:suse/logo/', '']], 'put is an upsert');
+  await store.deleteAssetRightsMark('provider:nope');
+  await store.deleteAssetRightsMark('prefix:suse/logo/');
+  assert.deepEqual(await store.listAssetRightsMarks(), [{ ...mark, note: 'the photo team shot these' }]);
+  await store.deleteAssetRightsMark('folder:dam/event-photos');
+  assert.deepEqual(await store.listAssetRightsMarks(), []);
+  assert.deepEqual(await store.listAssetLicences(), []);
+  const licence = { assetId: 'ext/dam/IMG_2231', declaration: 'CC-BY-NC-4.0', attribution: 'Photo by A. Person', recordedBy: 'usr_1', recordedAt: '2026-11-07T00:00:00.000Z' };
+  await store.putAssetLicence(licence);
+  await store.putAssetLicence({ ...licence, declaration: 'CC BY-NC 4.0' });
+  assert.deepEqual(await store.listAssetLicences(), [{ ...licence, declaration: 'CC BY-NC 4.0' }], 'put is an upsert, the text kept as typed');
+  await store.deleteAssetLicence('nope');
+  await store.deleteAssetLicence('ext/dam/IMG_2231');
+  assert.deepEqual(await store.listAssetLicences(), []);
+
   // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
   // exit, newest first, filtered by programme, company or state, upserted
   // whole; deleting a programme's receipts takes its companies' too.
