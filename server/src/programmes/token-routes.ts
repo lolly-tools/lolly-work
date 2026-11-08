@@ -21,9 +21,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import { randomId } from '../lib/crypto.ts';
-import { credentialExpiry, CREDENTIAL_DEFAULT_DAYS } from '../iam/credential-expiry.ts';
+import { credentialExpiry, CREDENTIAL_DEFAULT_DAYS, CREDENTIAL_MAX_DAYS } from '../iam/credential-expiry.ts';
 import { mintServiceSecret, programmeTokenGroups, tokenPlacement } from '../iam/service-tokens.ts';
-import { parseProgrammeTokenScopes } from '../iam/token-scopes.ts';
+import { parseProgrammeTokenScopes, PROGRAMME_TOKEN_DEFAULT_SCOPES, PROGRAMME_TOKEN_SCOPES, tokenScopeVocabulary } from '../iam/token-scopes.ts';
 import { parseLimitOverrides, type createTokenLimits } from '../iam/token-limits.ts';
 import { AUTOMATION_ROLE } from '../rbac/evaluate.ts';
 import type { ApiTokenRecord, Store, UserRecord } from '../store/types.ts';
@@ -141,7 +141,13 @@ export function registerProgrammeTokenRoutes(router: Router, deps: ProgrammeToke
       const placed = tokenPlacement(t);
       return placed.programmeId === programmeId && (company === null || placed.companyId === company);
     });
-    sendJson(res, 200, { programme: programmeId, tokens: await rows(tokens), expiringWithinDays: EXPIRING_WITHIN_DAYS }, { 'cache-control': 'no-store' });
+    // What Mint may choose, read from the constants the mint route enforces.
+    const words = new Map(tokenScopeVocabulary().scopes.map((s) => [s.id, s]));
+    const caps = {
+      scopes: PROGRAMME_TOKEN_SCOPES.map((id) => ({ id, label: words.get(id)?.label ?? id, description: words.get(id)?.description ?? '' })),
+      defaultScopes: [...PROGRAMME_TOKEN_DEFAULT_SCOPES], ttlDays: { default: CREDENTIAL_DEFAULT_DAYS, min: 1, max: CREDENTIAL_MAX_DAYS }, maxTools: MAX_TOKEN_TOOLS,
+    };
+    sendJson(res, 200, { programme: programmeId, tokens: await rows(tokens), expiringWithinDays: EXPIRING_WITHIN_DAYS, caps }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 
   // ── limits on one token ────────────────────────────────────────────────────

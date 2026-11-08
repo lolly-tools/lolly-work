@@ -295,6 +295,26 @@ test('a console save keeps the variant-approval switch set through the API (plan
   } finally { p.cleanup(); }
 });
 
+test('the console sets and clears what one approval covers, beside the chain (plans/82 M7)', async () => {
+  const p = page({ toolId: 'card', version: 3, enforce: { watermark: 'until-approved', escalation: 'legal' } });
+  try {
+    const covers = [...p.editor.element.querySelectorAll('select')].find((s: any) => [...s.options].some((o: any) => o.value === 'template-variants')) as any;
+    assert.ok(covers, 'the switch is on the policy page');
+    assert.equal(covers.value, '', 'off by default: one file');
+    covers.value = 'template-variants'; covers.dispatchEvent(new p.w.Event('change'));
+    assert.match(p.editor.element.textContent, /every file made from one version of a published template/);
+    await p.save();
+    assert.equal((p.calls[0]?.body as { enforce?: { approvalCovers?: string } }).enforce?.approvalCovers, 'template-variants');
+  } finally { p.cleanup(); }
+  const q = page({ toolId: 'card', version: 3, enforce: { watermark: 'until-approved', escalation: 'legal', approvalCovers: 'template-variants' } });
+  try {
+    const covers = [...q.editor.element.querySelectorAll('select')].find((s: any) => [...s.options].some((o: any) => o.value === 'template-variants')) as any;
+    covers.value = ''; covers.dispatchEvent(new q.w.Event('change'));
+    await q.save();
+    assert.equal((q.calls[0]?.body as { enforce?: { approvalCovers?: string } }).enforce?.approvalCovers, undefined, 'turned off, the key goes');
+  } finally { q.cleanup(); }
+});
+
 test('undeclared inputs and prototype-named inputs retain their rules when the manifest is incomplete', async () => {
   const p = page({ inputAccess: { toString: [{ groups: ['*'], level: 'locked', value: 'Safe' }] } }, undefined,
     [{ id: 'toString', label: 'Text', default: '' }, { id: 'constructor', label: 'Other', default: '' }]);

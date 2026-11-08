@@ -25,7 +25,7 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { createMetrics } from '../server/src/observability/metrics.ts';
-import { parseProgrammeTokenScopes } from '../server/src/iam/token-scopes.ts';
+import { parseProgrammeTokenScopes, PROGRAMME_TOKEN_DEFAULT_SCOPES, PROGRAMME_TOKEN_SCOPES } from '../server/src/iam/token-scopes.ts';
 
 const CLI = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'cli', 'lw.ts');
 let pack = '';
@@ -149,6 +149,12 @@ test('the list shows each token\'s limits, use and expiry, and filters by compan
   const listed = await as('bruno', 'GET', '/api/v1/programmes/resellers/tokens');
   assert.equal(listed.status, 200);
   assert.equal(listed.body.expiringWithinDays, 14);
+  // What Mint may choose, from the constants the mint route enforces (plans/82 M7, the console).
+  assert.deepEqual(listed.body.caps.scopes.map((s: { id: string }) => s.id), [...PROGRAMME_TOKEN_SCOPES]);
+  assert.ok(listed.body.caps.scopes.every((s: { label: string; description: string }) => s.label && s.description));
+  assert.deepEqual(listed.body.caps.defaultScopes, [...PROGRAMME_TOKEN_DEFAULT_SCOPES]);
+  assert.deepEqual(listed.body.caps.ttlDays, { default: 90, min: 1, max: 365 });
+  assert.equal(listed.body.caps.maxTools, 64);
   const row = listed.body.tokens.find((t: { id: string }) => t.id === soon.body.id);
   assert.equal(row.expiring, true);
   assert.equal(row.live, true);

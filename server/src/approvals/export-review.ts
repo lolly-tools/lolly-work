@@ -244,7 +244,8 @@ export async function describeExportReview(
  */
 export function describeRenderReview(
   bytes: Uint8Array,
-  facts: { toolId: string; format: string; name: string; toolVersion: string | null; inputsDigest: string | null },
+  facts: { toolId: string; format: string; name: string; toolVersion: string | null; inputsDigest: string | null;
+    covers?: 'template-variants'; templateRef?: ExportReviewSubject['templateRef'] },
   now: string,
 ): ExportReviewSubject | null {
   const media = artifactMedia(facts.format, bytes.subarray(0, TRANSFER_PART_BYTES));
@@ -257,6 +258,9 @@ export function describeRenderReview(
   const frozen: Frozen = {
     sha256: sha256Bytes(bytes), size: bytes.length, name: facts.name, format: facts.format, ...media,
     toolId: facts.toolId, toolVersion: facts.toolVersion, inputsDigest: facts.inputsDigest,
+    // A render keyed on its template's variants says so, as a person's request does,
+    // so the card tells the reviewer the decision covers every variant.
+    ...(facts.covers && facts.templateRef ? { covers: facts.covers, templateRef: facts.templateRef } : {}),
   };
   return { apiVersion: 'work/export-review-v1', ...frozen, fingerprint: exportReviewFingerprint(frozen), origin: 'service-token', frozenAt: now, parts };
 }

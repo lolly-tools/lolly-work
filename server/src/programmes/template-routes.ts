@@ -45,7 +45,7 @@ import { COMPANY_FIELDS, FIELD_LABELS, LOGO_FIELDS, normalizeBindings } from './
 import { markScopeKey, type AssetRightsMarkRecord } from '../catalog/rights.ts';
 import { recordedScope, type OwnerMarks } from './owner-mark.ts';
 import { headVersionOf, type CopiedFrom } from '../catalog/versions.ts';
-import type { ToolIntentV1 } from '@lolly-tools/core/intent-v1';
+import { INTENT_PURPOSE_MEANINGS, INTENT_PURPOSES, INTENT_ROLES, INTENT_SURFACES, type ToolIntentV1 } from '@lolly-tools/core/intent-v1';
 
 type Router = ReturnType<typeof createRouter>;
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
@@ -225,6 +225,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
         fixedTheme: type === 'template' && !!rec.publication?.fixedTheme,
         // Inputs that take the partner company's values (plans/82 M3).
         bindings: rec.publication?.bindings ?? null,
+        // The purposes it is for (plans/82 M7), for the card's "This template is for" line.
+        intents: type === 'template' ? rec.publication?.intents ?? null : null,
         // The workspace's mark, for the card's line and tick (plans/82 M6).
         ownerMark: await markView(marked.get(markScopeKey({ kind: 'asset', id: rec.id }))),
         version: rec.headVersion ?? 1,
@@ -260,6 +262,12 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       templates: rows, candidates,
       // What a binding may name, for the "Takes from the company" picker.
       companyFields: COMPANY_FIELDS.map((id) => ({ id, label: FIELD_LABELS[id], kind: LOGO_FIELDS.has(id) ? 'logo' : 'text' })),
+      // The words "This template is for" offers (plans/82 M7): the engine's own lists.
+      intentVocabulary: {
+        purposes: INTENT_PURPOSES.map((id) => ({ id, meaning: INTENT_PURPOSE_MEANINGS[id] })),
+        surfaces: INTENT_SURFACES.map((s) => s.id),
+        roles: Object.entries(INTENT_ROLES).map(([id, types]) => ({ id, types: [...types] })),
+      },
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 
