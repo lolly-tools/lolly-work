@@ -1490,6 +1490,9 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(await store.addAssetRightsMark(own), true);
   assert.equal(await store.addAssetRightsMark({ ...own, terms: 'Another statement.' }), false);
   assert.deepEqual(await store.listAssetRightsMarks(), [own], 'the first statement stands');
+  // Take: one step that removes and returns, so a second take finds nothing.
+  assert.deepEqual(await store.takeAssetRightsMark('asset:inst/sheet'), own);
+  assert.equal(await store.takeAssetRightsMark('asset:inst/sheet'), null);
   await store.deleteAssetRightsMark('asset:inst/sheet');
   assert.deepEqual(await store.listAssetRightsMarks(), []);
   assert.deepEqual(await store.listAssetLicences(), []);

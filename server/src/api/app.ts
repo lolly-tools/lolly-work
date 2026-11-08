@@ -112,6 +112,7 @@ import { loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
 import { CHOICE_NOTE_MAX, choiceFingerprint, exitRightsChoices, factsOf } from '../programmes/rights.ts';
 import { collectionCredits } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
+import { createOwnerMarks } from '../programmes/owner-mark.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
@@ -6298,11 +6299,15 @@ export function buildApp(deps: AppDeps): App {
     resolveTxt,
   });
 
+  // The workspace's own mark on what it publishes (plans/82 M6, programmes/owner-mark.ts).
+  const ownerMarks = createOwnerMarks({ store, audit, workspaceName: () => config.instance.name });
+  /** Staff who may edit the catalog state or withdraw that mark; never a partner. */
+  const mayStateMark = async (user: UserRecord): Promise<boolean> => !isProgrammeScoped(user.groups, user.role)
+    && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.edit', ['*'], await store.listGrants());
+
   // Templates published to a programme (plans/82 M2).
   registerTemplateRoutes(router, {
-    store, blobs, requireAction, audit, workspaceName: () => config.instance.name,
-    mayStateMark: async (user) => !isProgrammeScoped(user.groups, user.role)
-      && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.edit', ['*'], await store.listGrants()),
+    store, blobs, requireAction, audit, ownerMarks, mayStateMark,
     toolFacts: async (toolId) => {
       if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
       try {
@@ -6315,9 +6320,10 @@ export function buildApp(deps: AppDeps): App {
       } catch { return null; }
     },
     toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
-    submitVersion: async (actor, target, bytes) => {
+    submitVersion: async (actor, target, bytes, from) => {
       const outcome = await submitAsset(submitDeps(), {
-        bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups },
+        bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups, role: actor.role },
+        ...(from ? { from } : {}),
       });
       if (!outcome.ok) {
         const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : 422;
@@ -6328,7 +6334,7 @@ export function buildApp(deps: AppDeps): App {
     },
     submitRulesFile: async (actor, bytes, groups) => {
       const outcome = await submitAsset(submitDeps(), {
-        bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups },
+        bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups, role: actor.role },
       });
       if (!outcome.ok) {
         const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' || outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 422;
@@ -8307,6 +8313,8 @@ export function buildApp(deps: AppDeps): App {
         return sendJson(res, 200, { ok: true, id, version: wanted, changed: false }, { 'cache-control': 'no-store' });
       }
       await store.putInstanceAsset(applyVersionToRecord(rec, row));
+      // A rollback is a head change too: the workspace's own mark answers to the head it restored.
+      await ownerMarks.recheck(user, id);
       // The bytes behind a stable id just changed, so every cached render that
       // could have consumed them has to miss (plans/31 §6).
       bustInstanceCatalog();
@@ -8831,6 +8839,8 @@ export function buildApp(deps: AppDeps): App {
 
   const submitDeps = () => ({
     store, blobs, policy: config.policy.submit,
+    // Every head change checks the workspace's own mark against the new head.
+    onHeadMoved: (rec: InstanceAssetRecord, submitter: { id: string }) => ownerMarks.recheck(submitter, rec.id),
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     // A template or user tool must seed a tool this pack has (plan 299). The
@@ -8984,6 +8994,10 @@ export function buildApp(deps: AppDeps): App {
       if (target.origin && !target.exited) {
         return sendError(res, 409, 'ASSET_IS_PINNED',
           `these bytes are a local copy of ${target.origin.provider}'s asset and still carry its identity; cut the provider over before versioning them here`);
+      }
+      // A file carrying the workspace's own mark changes head only for someone who may withdraw it.
+      if (await ownerMarks.markOn(target.id) && !(await mayStateMark(user))) {
+        return sendError(res, 403, 'FORBIDDEN', 'this file carries the workspace\'s own mark: a new version needs catalog.edit');
       }
       // Descriptive metadata and exposure have their own doors, and quietly
       // ignoring them here would let a caller believe they had moved.

@@ -49,6 +49,11 @@ export interface AssetVersionRecord {
   formats: AssetVersionFormat[];
   /** 'user:<id>' who put these bytes here. */
   by: string;
+  /** Whether `by` was a partner programme member when they did (programmes/owner-mark.ts). */
+  byScoped?: boolean;
+  /** The catalog file these bytes were copied from, when they were (a programme
+   *  template's new version from a catalog template). */
+  from?: string;
   at: string;
   /** Why these bytes replaced the last - the changelog line a curator reads. */
   note?: string;

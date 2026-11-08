@@ -56,6 +56,7 @@ import { MAX_MEMBERS } from './collections.ts';
 import type { SubmitPolicy, SubmitScanHook } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
+import { isProgrammeScoped } from '../programmes/types.ts';
 import { randomId, sha256Hex } from '../lib/crypto.ts';
 
 // ── byte sniffing ───────────────────────────────────────────────────────────
@@ -294,6 +295,8 @@ export interface SubmitDeps {
   /** Reads, checks and rebuilds a Share with rules file (catalog/rules-tools.ts,
    *  plans/82 M2). Absent means this instance takes no rules tools. */
   rulesTools?: RulesToolSubmitter;
+  /** Called once a new version became an asset's head (programmes/owner-mark.ts). */
+  onHeadMoved?: (rec: InstanceAssetRecord, submitter: SubmitInput['submitter']) => Promise<void>;
 }
 
 /** What a rules tool submission becomes before it is hashed or stored. */
@@ -323,6 +326,8 @@ export interface SubmitInput {
   target?: InstanceAssetRecord;
   /** Why these bytes replaced the last - kept on the version row. */
   note?: string;
+  /** The catalog file these bytes were copied from - kept on the version row. */
+  from?: string;
   /** Declared display name; also the filename hint for sniffing and the hook. */
   name: string;
   description?: string;
@@ -332,7 +337,7 @@ export interface SubmitInput {
   /** Exposure groups for the new asset. Absent means every member sees it. */
   groups?: string[];
   contentType?: string;
-  submitter: { id: string; groups: string[] };
+  submitter: { id: string; groups: string[]; role?: string };
   /** The tool a template seeds, when its JSON does not say (the shell's
    *  exported template file carries the tool id in its filename only). */
   toolId?: string;
@@ -620,6 +625,8 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       version: next,
       formats: [{ format: sniffed.format, blobId, size: vstat.size, checksum: vstat.checksum, contentType: sniffed.contentType }],
       by: `user:${input.submitter.id}`,
+      byScoped: isProgrammeScoped(input.submitter.groups, input.submitter.role),
+      ...(input.from ? { from: input.from } : {}),
       at: nowIso,
       ...(input.note ? { note: input.note.slice(0, 500) } : {}),
       ...(sniffed.width && sniffed.height ? { width: sniffed.width, height: sniffed.height } : {}),
@@ -647,6 +654,9 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       await release();
       throw err;
     }
+    // Every head change, whichever route made it, is checked against the marks that
+    // depend on the head (programmes/owner-mark.ts).
+    await deps.onHeadMoved?.(moved, input.submitter);
     // Bytes changed, so the credential detection for this id is re-run rather
     // than inherited: a new version may have gained or lost a manifest.
     const detectedNew = await detectCredential(input.bytes);
@@ -676,6 +686,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     state: 'submitted',
     ...(input.projectSource ? { projectSource: input.projectSource } : {}),
     by: `user:${input.submitter.id}`,
+    byScoped: isProgrammeScoped(input.submitter.groups, input.submitter.role),
     at: nowIso,
     checksum: stat.checksum,
     size: stat.size,

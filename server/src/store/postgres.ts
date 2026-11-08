@@ -2449,6 +2449,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         [rec.scope, JSON.stringify(rec)],
       );
     },
+    async takeAssetRightsMark(scope) {
+      const { rows } = await pool.query('delete from asset_rights_marks where scope = $1 returning record', [scope]);
+      return (rows[0]?.record as AssetRightsMarkRecord | undefined) ?? null;
+    },
     async addAssetRightsMark(rec) {
       const { rowCount } = await pool.query(
         `insert into asset_rights_marks (scope, record, updated_at) values ($1, $2::jsonb, now())

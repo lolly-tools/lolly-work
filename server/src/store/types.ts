@@ -1903,6 +1903,9 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   /** Record a mark only when its scope has none yet, in one step. True when this
    *  call recorded it, false when a mark was already there (it is left as it was). */
   addAssetRightsMark(rec: AssetRightsMarkRecord): Promise<boolean>;
+  /** Remove a mark in one step and return what was removed, or null when the scope
+   *  had none, so only the call that removed it acts on it. */
+  takeAssetRightsMark(scope: string): Promise<AssetRightsMarkRecord | null>;
   /** Unknown scope is a no-op. */
   deleteAssetRightsMark(scope: string): Promise<void>;
   listAssetLicences(): Promise<AssetLicenceRecord[]>;
