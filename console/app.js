@@ -5690,7 +5690,10 @@ function programmeEditor(p, tools, collections, groups = []) {
   void programmePeople(p, peopleHost);
   const licencesHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading licences…'));
   void programmeLicences(p, licencesHost);
-  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form, templatesHost, licencesHost, peopleHost);
+  // A scheduled end with Change and Cancel, or the ended notice with Reopen (plans/82 M5).
+  const stateHost = el('div', { class: 'stack' });
+  void partnershipState(p, stateHost, { reload: () => route() });
+  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), stateHost, form, templatesHost, licencesHost, peopleHost);
 }
 
 // Licences (plans/82 M4): what reaches the programme by the licence each file
@@ -6037,14 +6040,20 @@ async function companyPage(p, companyId, main) {
     } }, 'Save')),
     settingsErr);
 
+  // Its scheduled end or ended notice, and its own End card (plans/82 M5).
+  const record = (people.companies ?? []).find((c) => c.id === companyId) ?? company;
+  const stateHost = el('div', { class: 'stack' });
+  void partnershipState(p, stateHost, { company: { ...record, name: company.name }, reload });
+  const endCard = record.endedAt ? null : endPartnershipCard(p, { company: { id: companyId, name: company.name }, reload });
   main.append(
     el('p', { class: 'muted flush' }, el('a', { href: `#/programmes?id=${encodeURIComponent(p.id)}` }, p.name), ' / Companies'),
     el('h1', {}, company.name),
+    stateHost,
     el('p', { class: 'sub' }, `Set up once: these logos and details are on every piece ${company.name}’s people and agents make from a template that takes them.`),
     el('p', { class: 'programme-actions' },
       el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(`programme-${p.id},company-${companyId}`)}` }, 'See what they get'),
       el('a', { class: 'btn', href: `#/programmes?id=${encodeURIComponent(p.id)}` }, 'Back')),
-    detailsCard, logosCard, contactsCard);
+    ...[detailsCard, logosCard, contactsCard, endCard].filter(Boolean));
 }
 
 // Templates published to a programme (plans/82 M2): a template of one of your
@@ -6566,52 +6575,9 @@ async function programmePeople(p, host, lastResult = null) {
     el('p', { class: 'sub flush' }, 'Paste a list or a CSV: one address per line, optionally followed by a name, a company and an end date (YYYY-MM-DD), separated by commas. You see what will happen before anything does, and adding the same list again changes nothing.'),
     list, el('p', {}, el('button', { onclick: preview }, 'Preview')), addErr, out);
 
-  // Ending the partnership.
-  const projectsSel = el('select', { 'aria-label': 'Their projects' },
-    ...(p.team ? [el('option', { value: 'team-readonly' }, `Move their projects to ${p.team}, read-only (the team that owns this programme)`)] : []),
-    el('option', { value: 'me-readonly' }, 'Move their projects to me, read-only'),
-    el('option', { value: 'me' }, 'Move their projects to me, editable'),
-    el('option', { value: 'keep' }, 'Leave their projects where they are'));
-  const noTeam = p.team ? null : el('p', { class: 'sub flush' }, 'This programme has no owning team, so their projects move to you. Set an owning team above to send them to that team instead.');
-  const whoSel = el('select', { 'aria-label': 'Whose access ends' },
-    el('option', { value: '' }, `Everyone in ${p.name}`),
-    ...data.companies.map((c) => el('option', { value: `company:${c.id}` }, `Everyone at ${c.name}`)),
-    ...domains.map((d) => el('option', { value: `domain:${d.domain}` }, `Everyone with an address at ${d.domain}`)));
-  const who = () => {
-    const [kind, id] = whoSel.value.split(/:(.*)/);
-    return kind === 'company' ? { company: id } : kind === 'domain' ? { domain: id } : { programme: p.id };
-  };
-  const endOut = el('div', { class: 'stack' });
-  const endErr = errSpan();
-  const exitPreview = async () => {
-    endErr.textContent = ''; endOut.replaceChildren();
-    try {
-      const dry = await api('/api/v1/programmes/exit', { method: 'POST', body: { ...who(), projects: projectsSel.value } });
-      const projectCount = dry.accounts.reduce((n, a) => n + a.projects.length, 0);
-      const links = dry.accounts.reduce((n, a) => n + a.links, 0);
-      const goLabel = dry.accounts.length ? `End access for ${dry.accounts.length} ${dry.accounts.length === 1 ? 'person' : 'people'}` : 'End the partnership';
-      const go = armConfirmButton({ class: 'danger' }, goLabel, 'Really end it?', async (disarm) => {
-        try {
-          const done = await api('/api/v1/programmes/exit', { method: 'POST', body: { ...who(), projects: projectsSel.value, apply: true } });
-          toast(`Ended access for ${done.accounts.length}`); reload();
-        } catch (ex) { endErr.textContent = ex.message; disarm(); }
-      });
-      endOut.replaceChildren(...[
-        el('p', {}, `${dry.accounts.length} ${dry.accounts.length === 1 ? 'account' : 'accounts'}, ${projectCount} project${projectCount === 1 ? '' : 's'}, ${links} link${links === 1 ? '' : 's'}, ${dry.pendingInvitations.length} open invitation${dry.pendingInvitations.length === 1 ? '' : 's'}.`),
-        dry.accounts.length ? dataTable(['Person', 'Projects', 'Links'], dry.accounts.map((a) => el('tr', {}, el('td', {}, a.name, el('div', { class: 'muted' }, a.email)),
-          el('td', {}, a.projects.map((x) => x.name).join(', ') || '—'), el('td', {}, String(a.links))))) : null,
-        dry.skipped.length ? el('p', { class: 'muted' }, `Left alone: ${dry.skipped.map((s) => `${s.email} (${s.reason})`).join(', ')}.`) : null,
-        dry.domainRules?.length ? el('p', {}, 'First, nobody new joins through ',
-          dry.domainRules.map((r) => `${r.domain} (${r.programme.name}${r.company ? `, ${r.company.name}` : ''})`).join(', '), ' any more.') : null,
-        el('p', { class: 'sub flush' }, 'Their accounts are disabled and signed out, and their links, agent tokens and open invitations stop working. Everything is recorded in Audit.'),
-        dry.accounts.length || dry.pendingInvitations.length || dry.domainRules?.length ? el('p', {}, go) : null].filter(Boolean));
-    } catch (ex) { endErr.textContent = ex.message; }
-  };
-  const endCard = el('div', { class: 'card stack' },
-    el('h2', {}, 'End this partnership'),
-    el('p', { class: 'sub flush' }, 'See who has access and what they own, then end it in one step.'),
-    field('Whose access ends', whoSel), field('Their projects', projectsSel), noTeam,
-    el('p', {}, el('button', { onclick: exitPreview }, 'See what ending it does')), endErr, endOut);
+  // Ending the partnership (plans/82 M5): who, when, a notice before the end and
+  // their projects; the dry run shows everything it ends, one table per kind.
+  const endCard = p.endedAt ? null : endPartnershipCard(p, { companies: data.companies, domains, reload });
 
   // Provider folders (plans/82 M1 part 2c): one folder of a connected source,
   // and everything in it, for the whole programme or one company in it.
@@ -6723,7 +6689,224 @@ async function programmePeople(p, host, lastResult = null) {
     sources.length ? el('p', {}, addFolder) : null,
     folderErr);
 
-  host.replaceChildren(companiesCard, foldersCard, domainsCard, peopleCard, endCard);
+  host.replaceChildren(...[companiesCard, foldersCard, domainsCard, peopleCard, endCard].filter(Boolean));
+}
+
+// ── ending a partnership (plans/82 M5) ──────────────────────────────────────
+// A whole day in UTC: an end date ends at 23:59:59 UTC, so it reads back as the
+// same day wherever the admin is.
+const utcDay = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' }) : '');
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const PROJECT_CHOICES = (p) => [
+  ...(p.team ? [['team-readonly', `Move their projects to ${p.team}, read-only (the team that owns this programme)`]] : []),
+  ['me-readonly', 'Move their projects to me, read-only'],
+  ['me', 'Move their projects to me, editable'],
+  ['keep', 'Leave their projects where they are'],
+];
+const projectsWord = { 'team-readonly': 'moved to the owning team, read-only', 'me-readonly': 'moved to whoever ended it, read-only', me: 'moved to whoever ended it, editable', keep: 'left where they are' };
+
+/** What ending it does, one table per kind. Kinds with nothing in them are named in one line. */
+function exitDryRunTables(dry, p, companies = []) {
+  const companyName = (id) => companies.find((c) => c.id === id)?.name ?? id;
+  const out = [];
+  const empty = [];
+  const table = (title, count, cols, rows) => {
+    if (!count) { empty.push(title.toLowerCase()); return; }
+    out.push(el('div', { class: 'stack exit-kind' }, el('h4', { class: 'flush' }, `${title} (${count})`), dataTable(cols, rows, { filter: false })));
+  };
+  const person = (a) => el('td', {}, a.name || a.email, a.name && a.name !== a.email ? el('div', { class: 'muted' }, a.email) : null);
+  const people = [
+    ...dry.accounts.map((a) => el('tr', {}, person(a), el('td', {}, 'Access ends'))),
+    ...(dry.stays ?? []).map((a) => el('tr', {}, person(a), el('td', {}, 'Stays', el('div', { class: 'muted' }, `Still in ${a.stays.map((x) => x.name ?? x).join(', ')}`)))),
+    ...(dry.cannotEnd ?? []).map((a) => el('tr', {}, person(a), el('td', {}, el('span', { class: 'status revoked' }, 'Cannot be ended'), a.reason ? el('div', { class: 'muted' }, a.reason) : null))),
+    ...(dry.skipped ?? []).map((sk) => el('tr', {}, el('td', {}, sk.email), el('td', {}, 'Left alone', el('div', { class: 'muted' }, sk.reason)))),
+  ];
+  table('People', people.length, ['Person', 'What happens'], people);
+  const projects = dry.accounts.flatMap((a) => a.projects.map((x) => el('tr', {}, el('td', {}, x.name), el('td', {}, a.name || a.email))));
+  table('Projects', projects.length, ['Project', 'Owner now'], projects);
+  if (projects.length) out.push(el('p', { class: 'sub flush' }, `Their projects are ${projectsWord[dry.projects] ?? dry.projects}.`));
+  const links = dry.accounts.filter((a) => a.links).map((a) => el('tr', {}, person(a), numCell(a.links)));
+  table('Share links', links.length, ['Person', { label: 'Links', num: true }], links);
+  table('Agent tokens', (dry.tokens ?? []).length, ['Token'], (dry.tokens ?? []).map((t) => el('tr', {}, el('td', {}, t.label))));
+  table('Templates to retire', (dry.templates ?? []).length, ['Template', 'What happens'], (dry.templates ?? []).map((t) => el('tr', {}, el('td', {}, t.name),
+    el('td', {}, t.action === 'narrow' ? `Stays published to ${(t.keeps ?? []).join(', ')} only` : 'Retired: new starts stop, saved copies keep working'))));
+  table('Folders', (dry.folders ?? []).length, ['Folder', 'For'], (dry.folders ?? []).map((f) => el('tr', {}, el('td', {}, f.path || 'All of it', el('div', { class: 'muted' }, f.provider)),
+    el('td', {}, f.company ? `Everyone at ${companyName(f.company)}` : `Everyone in ${p.name}`))));
+  table('Domain rules', (dry.domainRules ?? []).length, ['Domain', 'Joins'], (dry.domainRules ?? []).map((r) => el('tr', {}, el('td', {}, r.domain),
+    el('td', {}, `${r.programme?.name ?? p.name}${r.company ? `, ${r.company.name}` : ''}`))));
+  table('Licence choices to withdraw', (dry.rightsChoices ?? []).length, ['Asset', 'Shared with'], (dry.rightsChoices ?? []).map((c) => el('tr', {}, el('td', {}, c.assetId, c.licence ? el('div', { class: 'muted' }, c.licence) : null), el('td', {}, c.group))));
+  table('Open invitations', (dry.pendingInvitations ?? []).length, ['Email'], (dry.pendingInvitations ?? []).map((i) => el('tr', {}, el('td', {}, i.email))));
+  if (empty.length) out.push(el('p', { class: 'muted flush' }, `Nothing to end among ${empty.join(', ')}.`));
+  return out;
+}
+
+/** The End card: whose access ends, when, a notice before the end, their projects. */
+function endPartnershipCard(p, { companies = [], domains = [], company = null, reload }) {
+  const projectsSel = el('select', { 'aria-label': 'Their projects' }, ...PROJECT_CHOICES(p).map(([value, label]) => el('option', { value }, label)));
+  const noTeam = p.team ? null : el('p', { class: 'sub flush' }, 'This programme has no owning team, so their projects move to you. Set an owning team on the programme to send them to that team instead.');
+  const whoSel = company
+    ? el('select', { 'aria-label': 'Whose access ends', disabled: 'disabled' }, el('option', { value: `company:${company.id}` }, `Everyone at ${company.name}`))
+    : el('select', { 'aria-label': 'Whose access ends' },
+      el('option', { value: '' }, `Everyone in ${p.name}`),
+      ...companies.filter((c) => !c.endedAt).map((c) => el('option', { value: `company:${c.id}` }, `Everyone at ${c.name}`)),
+      ...domains.map((d) => el('option', { value: `domain:${d.domain}` }, `Everyone with an address at ${d.domain}`)));
+  const who = () => {
+    const [kind, id] = whoSel.value.split(/:(.*)/);
+    return kind === 'company' ? { company: id } : kind === 'domain' ? { domain: id } : { programme: p.id };
+  };
+  // When: now, or at the end of a chosen day in UTC. A date ends a programme or a company, never a domain.
+  const nowRadio = el('input', { type: 'radio', name: `exit-when-${p.id}-${company?.id ?? ''}`, value: 'now', checked: 'checked' });
+  const dateRadio = el('input', { type: 'radio', name: `exit-when-${p.id}-${company?.id ?? ''}`, value: 'date' });
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  const dateIn = el('input', { type: 'date', min: tomorrow, 'aria-label': 'End date', disabled: 'disabled' });
+  const noticeBox = el('input', { type: 'checkbox', checked: 'checked', disabled: 'disabled' });
+  const noticeLine = el('span', { class: 'muted' });
+  const out = el('div', { class: 'stack' });
+  const err = errSpan();
+  const dated = () => dateRadio.checked;
+  const sync = () => {
+    const byDomain = who().domain !== undefined;
+    dateRadio.disabled = byDomain;
+    if (byDomain && dated()) nowRadio.checked = true;
+    dateIn.disabled = !dated();
+    noticeBox.disabled = !dated();
+    noticeLine.textContent = byDomain ? 'A date ends a programme or a company; access through a domain ends now.' : '';
+    out.replaceChildren();
+  };
+  for (const c of [nowRadio, dateRadio, whoSel, projectsSel, dateIn, noticeBox]) c.addEventListener('change', sync);
+  const body = (extra = {}) => ({ ...who(), projects: projectsSel.value,
+    ...(dated() && dateIn.value ? { at: dateIn.value, notice: noticeBox.checked } : {}), ...extra });
+  const preview = async () => {
+    err.textContent = ''; out.replaceChildren();
+    if (dated() && !dateIn.value) { err.textContent = 'Choose the day it ends.'; dateIn.focus(); return; }
+    try {
+      const dry = await api('/api/v1/programmes/exit', { method: 'POST', body: body() });
+      if (dry.alreadyEnded) { out.replaceChildren(el('p', {}, `This ended on ${utcDay(dry.alreadyEnded.at)}. Reopen it from the ended notice above.`)); return; }
+      const ending = dry.accounts.length || dry.pendingInvitations.length || dry.domainRules?.length || dry.tokens?.length || dry.templates?.length || dry.folders?.length || dry.rightsChoices?.length;
+      const label = dry.endsAt ? `Schedule the end for ${utcDay(dry.endsAt)}` : dry.accounts.length ? `End access for ${plural(dry.accounts.length, 'person', 'people')} now` : 'End it now';
+      const go = armConfirmButton({ class: 'danger' }, label, dry.endsAt ? 'Really schedule it?' : 'Really end it now?', async (disarm) => {
+        try {
+          const done = await api('/api/v1/programmes/exit', { method: 'POST', body: body({ apply: true }) });
+          toast(done.scheduled ? `Ends on ${utcDay(done.endsAt)}` : `Ended access for ${plural(done.accounts.length, 'person', 'people')}`);
+          reload();
+        } catch (ex) { err.textContent = ex.message; disarm(); }
+      });
+      const limits = dry.limits ?? {};
+      out.replaceChildren(...[
+        el('p', {}, dry.endsAt ? `On ${utcDay(dry.endsAt)}, at the end of the day in UTC, as things then stand:` : 'Now:'),
+        ...exitDryRunTables(dry, p, company ? [company] : companies),
+        el('p', { class: 'sub flush' }, 'Accounts are disabled and signed out everywhere; their links, agent tokens and open invitations stop working. Everything is recorded in Audit, and a receipt keeps what ended so you can reopen it for '
+          + `${limits.reopenDays ?? 30} days.`),
+        dry.endsAt ? el('p', { class: 'sub flush' }, noticeBox.checked
+          ? `They are told ${(limits.noticeDaysBefore ?? [14, 1]).map((d) => plural(d, 'day')).join(' and ')} before the end, in their inbox${limits.email ? ' and by email' : ''}.`
+          : 'Nobody is told before the end.') : null,
+        ending ? el('p', {}, go) : el('p', { class: 'muted' }, 'Nothing to end.')].filter(Boolean));
+    } catch (ex) { err.textContent = ex.message; }
+  };
+  const whenField = el('div', { class: 'stack exit-when' },
+    el('span', { class: 'field-label' }, 'When'),
+    el('label', { class: 'chk' }, nowRadio, el('span', {}, 'Now')),
+    el('label', { class: 'chk' }, dateRadio, el('span', {}, 'At the end of a day'), ' ', dateIn),
+    el('label', { class: 'chk' }, noticeBox, el('span', {}, 'Tell them before the end')),
+    noticeLine);
+  return el('div', { class: 'card stack' },
+    el('h2', {}, company ? `End the partnership with ${company.name}` : 'End this partnership'),
+    el('p', { class: 'sub flush' }, 'See who has access and what they own, then end it now or on a date.'),
+    field('Whose access ends', whoSel), whenField, field('Their projects', projectsSel), noTeam,
+    el('p', {}, el('button', { onclick: preview }, 'See what ending it does')), err, out);
+}
+
+/** The receipt of one end, as counts. */
+function exitReceipt(e) {
+  const c = e.counts;
+  if (!c) return null;
+  const rows = [
+    ['Access ended', c.ended], ['Stayed, through another programme', c.stays], ['Could not be ended', c.notEnded], ['Projects moved', c.projects],
+    ['Open invitations revoked', c.invitations], ['Agent tokens revoked', c.tokens], ['Templates retired', c.templates], ['Folders ended', c.folders],
+    ['Domain rules withdrawn', c.domainRules], ['Licence choices withdrawn', c.rightsChoices],
+  ].filter(([, n]) => n);
+  return el('div', { class: 'stack' }, el('h3', { class: 'flush' }, 'Receipt'),
+    rows.length ? dataTable(['What', { label: 'Count', num: true }], rows.map(([what, n]) => el('tr', {}, el('td', {}, what), numCell(n))), { filter: false }) : el('p', { class: 'muted flush' }, 'Nothing was ended.'),
+    el('p', { class: 'sub flush' }, `Receipt ${e.id}${e.via === 'scheduled' ? ', run on its scheduled day' : ''}.`));
+}
+
+/**
+ * A scheduled end with Change and Cancel, and an ended programme or company with
+ * Reopen while it is offered and the receipt below. `company` limits it to one
+ * company's ends; without it, the programme's own.
+ */
+async function partnershipState(p, host, { company = null, reload } = {}) {
+  let data;
+  try { data = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/exits`); }
+  catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
+  const mine = (data.exits ?? []).filter((e) => (company ? e.company === company.id : !e.company && e.selection?.programme === p.id));
+  const target = company ?? p;
+  const blocks = [];
+  for (const e of mine.filter((x) => x.state === 'scheduled')) {
+    const err = errSpan();
+    const dateIn = el('input', { type: 'date', value: (e.endsAt ?? '').slice(0, 10), min: new Date(Date.now() + 86_400_000).toISOString().slice(0, 10), 'aria-label': 'New end date' });
+    const noticeBox = el('input', { type: 'checkbox', ...(e.notice !== false ? { checked: 'checked' } : {}) });
+    const change = el('div', { class: 'stack', hidden: 'hidden' },
+      el('div', { class: 'grant-fields' }, field('New end date', dateIn)),
+      el('label', { class: 'chk' }, noticeBox, el('span', {}, 'Tell them before the end')),
+      el('p', { class: 'programme-actions' }, el('button', { class: 'primary', onclick: async (ev) => {
+        err.textContent = ''; ev.currentTarget.disabled = true;
+        try { const r = await api(`/api/v1/programmes/exits/${encodeURIComponent(e.id)}`, { method: 'PUT', body: { at: dateIn.value, notice: noticeBox.checked } }); toast(`Ends on ${utcDay(r.endsAt)}`); reload(); }
+        catch (ex) { err.textContent = ex.message; ev.currentTarget.disabled = false; }
+      } }, 'Save the new date')));
+    const cancel = armConfirmButton({}, 'Cancel the end', 'Really cancel it?', async (disarm) => {
+      err.textContent = '';
+      try { await api(`/api/v1/programmes/exits/${encodeURIComponent(e.id)}`, { method: 'DELETE' }); toast('The end is called off'); reload(); }
+      catch (ex) { err.textContent = ex.message; disarm(); }
+    });
+    blocks.push(el('div', { class: 'card stack exit-state', 'data-exit-state': 'scheduled' },
+      el('h2', { class: 'flush' }, el('span', { class: 'status expired' }, 'Scheduled'), ` ${target.name} ends on ${utcDay(e.endsAt)}`),
+      el('p', { class: 'sub flush' }, `Set by ${e.createdBy?.name ?? 'an admin'}. Access ends at the end of that day in UTC. ${e.notice !== false ? 'They are told 14 days and 1 day before.' : 'Nobody is told before.'} Their projects are ${projectsWord[e.projects] ?? e.projects ?? 'moved as chosen'}.`),
+      el('p', { class: 'programme-actions' }, el('button', { onclick: () => { change.hidden = !change.hidden; } }, 'Change'), cancel),
+      change, err));
+  }
+  if (target.endedAt) {
+    const e = mine.find((x) => x.id === target.endedExit) ?? mine.find((x) => x.state === 'done');
+    const err = errSpan();
+    const review = el('div', { class: 'stack' });
+    const giveBack = el('input', { type: 'checkbox', checked: 'checked' });
+    const reopen = e?.reopen?.offered ? el('button', { class: 'primary', onclick: async () => {
+      err.textContent = ''; review.replaceChildren();
+      try {
+        const dry = await api(`/api/v1/programmes/exits/${encodeURIComponent(e.id)}/reopen`, { method: 'POST', body: { projects: giveBack.checked } });
+        const back = (dry.accounts ?? []).filter((a) => a.result === 'enabled' || a.result === 'rejoined').length;
+        const projectsBack = (dry.projects ?? []).filter((x) => x.result === 'returned').length;
+        const templatesBack = (dry.templates ?? []).filter((x) => x.result !== 'kept').length;
+        const foldersBack = (dry.folders ?? []).filter((x) => x.result === 'restored').length;
+        const comesBack = [templatesBack ? plural(templatesBack, 'template') : null, foldersBack ? plural(foldersBack, 'folder') : null].filter(Boolean);
+        const go = armConfirmButton({ class: 'primary' }, `Reopen ${target.name}`, 'Really reopen it?', async (disarm) => {
+          try { await api(`/api/v1/programmes/exits/${encodeURIComponent(e.id)}/reopen`, { method: 'POST', body: { projects: giveBack.checked, apply: true } }); toast(`Reopened ${target.name}`); reload(); }
+          catch (ex) { err.textContent = ex.message; disarm(); }
+        });
+        const people = (dry.accounts ?? []).map((a) => el('tr', {}, el('td', {}, a.email), el('td', {},
+          a.result === 'enabled' || a.result === 'rejoined' ? 'Signs in again' : a.result === 'gone' ? 'Account erased since' : 'Stays disabled', a.reason ? el('div', { class: 'muted' }, a.reason) : null)));
+        const st = dry.stayEnded ?? { tokens: 0, links: 0, rightsChoices: [] };
+        review.replaceChildren(...[
+          el('p', {}, [
+            `${plural(back, 'person', 'people')} ${back === 1 ? 'signs' : 'sign'} in again.`,
+            projectsBack ? `${plural(projectsBack, 'project')} ${projectsBack === 1 ? 'goes' : 'go'} back to ${projectsBack === 1 ? 'its owner' : 'their owners'}.` : null,
+            comesBack.length ? `${comesBack.join(' and ')} ${templatesBack + foldersBack === 1 ? 'comes' : 'come'} back.` : null,
+          ].filter(Boolean).join(' ')),
+          people.length ? dataTable(['Person', 'After reopening'], people, { filter: false }) : null,
+          el('p', { class: 'sub flush' }, `Staying ended: ${plural(st.tokens, 'agent token')}, ${plural(st.links, 'share link')}, ${plural((st.rightsChoices ?? []).length, 'licence choice')} and every session. Make new ones where they are needed.`),
+          el('p', {}, go)].filter(Boolean));
+      } catch (ex) { err.textContent = ex.message; }
+    } }, 'Reopen') : null;
+    blocks.push(el('div', { class: 'card stack exit-state', 'data-exit-state': 'ended' },
+      el('h2', { class: 'flush' }, el('span', { class: 'status revoked' }, 'Ended'), ` on ${utcDay(target.endedAt)}${e?.createdBy?.name ? ` by ${e.createdBy.name}` : ''}`),
+      el('p', { class: 'sub flush' }, `${target.name}’s record, profile and history stay here. Delete removes them.`),
+      e?.reopen?.offered ? el('div', { class: 'stack' },
+        el('p', { class: 'flush' }, `Reopen puts back what this end took, until ${utcDay(e.reopen.until)}.`),
+        el('label', { class: 'chk' }, giveBack, el('span', {}, 'Give their projects back')),
+        el('p', { class: 'programme-actions' }, reopen)) : el('p', { class: 'muted flush' }, `Reopen was offered for ${e?.reopen?.days ?? data.reopenDays ?? 30} days after the end. Add the people again by list.`),
+      review, err, e ? exitReceipt(e) : null));
+  }
+  host.replaceChildren(...blocks);
 }
 
 
