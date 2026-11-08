@@ -27,6 +27,7 @@ import { buildApp } from '../server/src/api/app.ts';
 import { instanceAssetEntry } from '../server/src/catalog/instance-assets.ts';
 import { seededAssetIds } from '../server/src/programmes/rights-routes.ts';
 import { renderTool, type RenderRequest } from '../server/src/render/pipeline.ts';
+import { compileVerb } from '../server/src/automation/verbs.ts';
 import { AssetHeldError, withRenderHost } from '../server/src/render/host.ts';
 import { ASSET_SCAN_MAX_NODES, AssetScanBoundExceeded, referencedAssetIds } from '../server/src/catalog/rights.ts';
 
@@ -56,6 +57,14 @@ const BAKED_CARD = {
   inputs: [{ id: 'photo', label: 'Photo', type: 'asset', default: { source: 'library', id: 'acme/photo/unrecorded', type: 'vector', format: 'svg',
     url: `data:image/svg+xml;base64,${Buffer.from(SVG('#a00')).toString('base64')}`, meta: { baked: true } } }, { id: 'title', label: 'Title', type: 'text', default: 'x' }],
 };
+// A saved reference to a file the catalog no longer lists, its bytes still inline.
+const GHOST_CARD = {
+  ...PHOTO_CARD, id: 'ghost-card', name: 'Ghost card',
+  inputs: [{ id: 'photo', label: 'Photo', type: 'asset', default: { source: 'library', id: 'acme/photo/gone', type: 'vector', format: 'svg',
+    url: `data:image/svg+xml;base64,${Buffer.from(SVG('#0f0')).toString('base64')}`, meta: { baked: true } } }, { id: 'title', label: 'Title', type: 'text', default: 'x' }],
+};
+// A tool whose default is a DAM ref no resolver can answer.
+const CMS_CARD = { ...PHOTO_CARD, id: 'cms-card', name: 'CMS card', inputs: [{ id: 'photo', label: 'Photo', type: 'asset', default: 'cms://dam/secret-default' }, { id: 'title', label: 'Title', type: 'text', default: 'x' }] };
 const PHOTO_TEMPLATE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" width="10" height="10"><image href="{{asset photo}}" width="10" height="10"/><text>{{title}}</text></svg>';
 
 before(async () => {
@@ -63,7 +72,12 @@ before(async () => {
   await mkdir(join(pack, 'catalog', 'tools'), { recursive: true });
   await mkdir(join(pack, 'catalog', 'assets', 'acme'), { recursive: true });
   packDir = pack;
-  await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({ tools: [{ id: 'photo-card' }, { id: 'baked-card' }] }));
+  await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({ tools: [{ id: 'photo-card' }, { id: 'baked-card' }, { id: 'ghost-card' }, { id: 'cms-card' }] }));
+  for (const tool of [GHOST_CARD, CMS_CARD]) {
+    await mkdir(join(pack, 'tools', tool.id), { recursive: true });
+    await writeFile(join(pack, 'tools', tool.id, 'tool.json'), JSON.stringify(tool));
+    await writeFile(join(pack, 'tools', tool.id, 'template.html'), PHOTO_TEMPLATE);
+  }
   await mkdir(join(pack, 'tools', 'photo-card'), { recursive: true });
   await writeFile(join(pack, 'tools', 'photo-card', 'tool.json'), JSON.stringify(PHOTO_CARD));
   await writeFile(join(pack, 'tools', 'photo-card', 'template.html'), PHOTO_TEMPLATE);
@@ -111,7 +125,7 @@ before(async () => {
   const gateAddr = gateServer.address();
   gateBase = `http://127.0.0.1:${typeof gateAddr === 'object' && gateAddr ? gateAddr.port : 0}`;
   const bruno = await login('bruno@test');
-  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea', { name: 'Resellers, EMEA', tools: ['photo-card', 'baked-card'] })).status, 201);
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea', { name: 'Resellers, EMEA', tools: ['photo-card', 'baked-card', 'ghost-card', 'cms-card'] })).status, 201);
   assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/companies/northwind-it', { name: 'Northwind IT' })).status, 201);
   await login('rita@northwind.test');
   assert.equal((await call(bruno, 'POST', '/api/v1/programmes/resellers-emea/people', { rows: [{ email: 'rita@northwind.test', company: 'northwind-it' }], apply: true })).status, 200);
@@ -136,9 +150,10 @@ test('the asset ids a template\'s values name: bare ids and references, known id
 
 test('the report names a template that seeds files an audience will not receive, and why', async () => {
   const r = (await call(await login('bruno@test'), 'GET', '/api/v1/programmes/resellers-emea/rights-report')).body;
-  assert.equal(r.templates.length, 1);
-  const [t] = r.templates;
-  assert.equal(t.name, 'Partner price sheet');
+  assert.deepEqual(r.templates.map((x: { name: string }) => x.name).sort(), ['Partner photo card', 'Partner price sheet']);
+  const cms = r.templates.find((x: { name: string }) => x.name === 'Partner photo card');
+  assert.deepEqual(cms.audiences[0].files.map((f: { id: string; why: string }) => [f.id, f.why]), [['ext/dam/secret-photo', 'not-shared']], 'a DAM file its audience cannot reach');
+  const t = r.templates.find((x: { name: string }) => x.name === 'Partner price sheet');
   assert.deepEqual(t.audiences.map((a: { kind: string; name: string }) => [a.kind, a.name]), [['programme', 'Resellers, EMEA'], ['company', 'Northwind IT']]);
   const files = t.audiences[1].files.map((f: { id: string; why: string }) => [f.id, f.why]).sort();
   assert.deepEqual(files, [['acme/photo/internal', 'not-shared'], ['acme/photo/unrecorded', 'licence']], 'the open photo reaches them and is not listed');
@@ -324,4 +339,24 @@ test('a template\'s DAM ref the partner cannot reach is refused without being na
   const text = await res.text();
   assert.equal(res.status, 422, text);
   assert.doesNotMatch(text, /secret-photo/, 'the template\'s file is not named to the partner');
+});
+
+test('an inline file a reference says is a catalog file is gated whether or not the catalog still lists it', async () => {
+  const rita = await login('rita@northwind.test', gateBase);
+  for (const path of ['/api/v1/compile', '/api/v1/package']) {
+    const res = await fetch(`${gateBase}${path}`, { method: 'POST', headers: { cookie: rita, 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'ghost-card', inputs: {} }) });
+    const text = await res.text();
+    assert.equal(res.status, 422, `${path}: ${text}`);
+    assert.doesNotMatch(text, /acme\/photo\/gone/, 'and the default she never named is not named');
+  }
+});
+
+test('a compile names a file it could not resolve only when the caller named it', async () => {
+  const gate = { allows: () => true, held: new Set<string>(), catalogIds: new Set<string>() };
+  const ctx = { pack: packDir, profile: {}, hostedResolver: async () => null, assetGate: gate };
+  const own = await compileVerb(ctx, { toolId: 'cms-card', inputs: {} }) as { warnings: string[] };
+  assert.ok(own.warnings.some((w) => w === 'a file for photo was not resolved'), JSON.stringify(own.warnings));
+  assert.ok(!own.warnings.some((w) => w.includes('secret-default')), 'a default\'s ref is described, not named');
+  const named = await compileVerb(ctx, { toolId: 'cms-card', inputs: { photo: 'cms://dam/mine' } }) as { warnings: string[] };
+  assert.ok(named.warnings.some((w) => w.includes('cms://dam/mine')), 'her own ref is named back');
 });

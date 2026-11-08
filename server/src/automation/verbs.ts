@@ -94,6 +94,16 @@ export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Pro
   const gate = ctx.assetGate;
   const known = gate?.catalogIds ?? new Set<string>();
   const supplied = new Set(referencedAssetIds(req.inputs ?? {}, known));
+  if (gate) {
+    // The files this compile will reach for, before anything resolves them:
+    // the caller's value where they gave one, the tool's default otherwise.
+    const effective: Record<string, unknown> = { ...(inputs as Record<string, unknown>) };
+    for (const input of tool.manifest.inputs as Array<{ id: string; default?: unknown }>) {
+      if (effective[input.id] === undefined || effective[input.id] === null) effective[input.id] = input.default;
+    }
+    const reached = referencedAssetIds(effective, known, { strict: true }).filter((id) => !gate.allows(id));
+    if (reached.length) throw new AssetHeldError(reached, supplied);
+  }
   let compiled: unknown;
   try {
     compiled = await withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
@@ -114,8 +124,32 @@ export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Pro
     // in the tool's manifest or model they chose something else for. The
     // document they receive names none of them.
     compiled = withoutRefusedRefs(compiled, known, (id) => gate.allows(id));
+    // A file the engine could not resolve is named in a warning only when the
+    // caller named it; one from a default or a policy is only described.
+    const result = compiled as { warnings?: unknown } | null;
+    if (result && Array.isArray(result.warnings)) {
+      const given = new Set(stringsIn(req.inputs ?? {}));
+      result.warnings = result.warnings.map((w) => {
+        const m = typeof w === 'string' ? /^asset (.+) for (.+) was not resolved$/.exec(w) : null;
+        return m && !given.has(m[1]!) ? `a file for ${m[2]} was not resolved` : w;
+      });
+    }
   }
   return compiled;
+}
+
+/** Every string inside some values, to the gate's scan bound (a lenient read: it stops there). */
+function stringsIn(values: unknown): string[] {
+  const out: string[] = [];
+  let budget = 200_000;
+  const walk = (v: unknown, depth: number): void => {
+    if (v === null || v === undefined || --budget < 0 || depth > 64) return;
+    if (typeof v === 'string') out.push(v);
+    else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1);
+    else if (typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) walk(x, depth + 1);
+  };
+  walk(values, 0);
+  return out;
 }
 
 export async function validateVerb(ctx: AutomationContext, body: Record<string, unknown>): Promise<unknown> {

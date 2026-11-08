@@ -388,6 +388,21 @@ export function catalogIdOf(value: string): string {
   return m[1]!.toLowerCase() === 'cms' ? `ext/${rest}` : rest;
 }
 
+/**
+ * The catalog id an explicit asset reference names: an object that says it is
+ * a catalog file (`source: 'library'` or `'catalog'`) with a string `id`. It
+ * counts whether or not the catalog still lists the id: a reference can carry
+ * a file's bytes inline long after the file left the catalog.
+ */
+export function explicitCatalogRef(value: Record<string, unknown>): string | null {
+  return (value.source === 'library' || value.source === 'catalog') && typeof value.id === 'string' && value.id ? catalogIdOf(value.id) : null;
+}
+
+/** Whether a string names a catalog file by its scheme (`catalog://`, `library://`, `cms://`): explicit, listed or not. */
+export function isCatalogScheme(value: string): boolean {
+  return /^(?:catalog|library|cms):\/\//i.test(value);
+}
+
 /** How far a gate check reads into values: past this, the values are refused, never half read. */
 export const ASSET_SCAN_MAX_NODES = 200_000;
 export const ASSET_SCAN_MAX_DEPTH = 64;
@@ -416,9 +431,13 @@ export function referencedAssetIds(values: unknown, known: ReadonlySet<string>, 
       stopped = true;
       return;
     }
-    if (typeof value === 'string') { const id = catalogIdOf(value); if (known.has(id)) out.add(id); return; }
+    if (typeof value === 'string') { const id = catalogIdOf(value); if (known.has(id) || isCatalogScheme(value)) out.add(id); return; }
     if (Array.isArray(value)) { for (const v of value) walk(v, depth + 1); return; }
-    if (typeof value === 'object') for (const v of Object.values(value as Record<string, unknown>)) walk(v, depth + 1);
+    if (typeof value === 'object') {
+      const explicit = explicitCatalogRef(value as Record<string, unknown>);
+      if (explicit) out.add(explicit);
+      for (const v of Object.values(value as Record<string, unknown>)) walk(v, depth + 1);
+    }
   };
   walk(values, 0);
   return [...out];
@@ -437,11 +456,12 @@ export function withoutRefusedRefs<T>(payload: T, known: ReadonlySet<string>, al
   const walk = (value: unknown, depth: number): unknown => {
     if (value === null || value === undefined) return value;
     if (--budget < 0 || depth > ASSET_SCAN_MAX_DEPTH) throw new AssetScanBoundExceeded();
-    if (typeof value === 'string') return refused(catalogIdOf(value)) ? null : value;
+    if (typeof value === 'string') { const id = catalogIdOf(value); return (isCatalogScheme(value) ? !allows(id) : refused(id)) ? null : value; }
     if (Array.isArray(value)) return value.map((v) => walk(v, depth + 1));
     if (typeof value === 'object') {
       const o = value as Record<string, unknown>;
-      if (typeof o.id === 'string' && refused(catalogIdOf(o.id))) return null;
+      const explicit = explicitCatalogRef(o);
+      if (explicit ? !allows(explicit) : typeof o.id === 'string' && refused(catalogIdOf(o.id))) return null;
       return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, walk(v, depth + 1)]));
     }
     return value;
@@ -451,7 +471,8 @@ export function withoutRefusedRefs<T>(payload: T, known: ReadonlySet<string>, al
 
 /**
  * The catalog files a payload carries the bytes of (plans/82 M4): an asset
- * reference whose `id` the catalog knows and that holds its bytes inline (a
+ * reference whose `id` the catalog knows, or that says it is a catalog file,
+ * and that holds its bytes inline (a
  * `data:` url) or marks them baked. A compiled document carries these in its
  * manifest's defaults and its values, whether or not a read happened, so the
  * gate checks them before the document leaves. Past the scan bound it
@@ -468,7 +489,8 @@ export function embeddedAssetIds(payload: unknown, known: ReadonlySet<string>): 
     const id = typeof o.id === 'string' ? catalogIdOf(o.id) : '';
     const inline = typeof o.url === 'string' && o.url.startsWith('data:');
     const baked = !!o.meta && typeof o.meta === 'object' && (o.meta as { baked?: unknown }).baked === true;
-    if (id && known.has(id) && (inline || baked)) out.add(id);
+    // An explicit catalog reference counts whether or not the catalog still lists it.
+    if (id && (known.has(id) || explicitCatalogRef(o)) && (inline || baked)) out.add(id);
     for (const v of Object.values(o)) walk(v, depth + 1);
   };
   walk(payload, 0);
