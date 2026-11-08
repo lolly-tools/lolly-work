@@ -31,6 +31,7 @@ import { sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { ApiTokenRecord, UserRecord } from '../store/types.ts';
 import { tokenPlacement } from '../iam/service-tokens.ts';
 import type { BrandPageManifest } from '../brand-pages/manifest.ts';
+import type { readCompanyKit } from '../programmes/kit.ts';
 
 export const CONTEXT_BASE = '/api/v1/context';
 /** Every JSON answer carries this, and every text file carries it beside the bytes. */
@@ -74,6 +75,10 @@ export interface ContextRouteDeps {
   company(groups: string[]): Promise<{ id: string; name: string; programme: { id: string; name: string } | null; revision: number; profile: Record<string, unknown> } | null>;
   /** One of the company's logos, only while the caller may see the asset. */
   companyLogo(groups: string[], assetId: string): Promise<{ bytes: Buffer; mediaType: string } | null>;
+  /** The placed company's kit, only while the caller's feed holds the asset. */
+  companyKit(groups: string[], companyId: string): ReturnType<typeof readCompanyKit>;
+  /** A company logo at the kit's pinned version, through the same feed and lifecycle gates. */
+  companyKitLogo(groups: string[], companyId: string, pin: { id: string; version: number }): Promise<{ bytes: Buffer; mediaType: string } | null>;
   templates(groups: string[]): Promise<ContextTemplate[]>;
   skills(groups: string[]): Promise<ContextSkill[]>;
 }
@@ -107,6 +112,10 @@ export function registerContextRoutes(router: ReturnType<typeof createRouter>, d
     return null;
   };
   const readsCatalog = (record: ApiTokenRecord): boolean => !record.scopes || record.scopes.includes('catalog.read');
+  const kitFor = (record: ApiTokenRecord, groups: string[]) => {
+    const companyId = tokenPlacement(record).companyId;
+    return companyId ? d.companyKit(groups, companyId) : null;
+  };
 
   /** What this token can read, and only that. */
   const resources = async (record: ApiTokenRecord, groups: string[]): Promise<ContextResource[]> => {
@@ -128,6 +137,9 @@ export function registerContextRoutes(router: ReturnType<typeof createRouter>, d
     if ((await d.skills(groups)).length) out.push({ uri: 'lolly-work://brand/skills', path: `${CONTEXT_BASE}/brand/skills`, name: 'Brand skills', description: 'The brand\'s standards per discipline, as Agent Skills.', mimeType: 'application/json' });
     if (tokenPlacement(record).companyId && await d.company(groups)) {
       out.push({ uri: 'lolly-work://partner/company', path: `${CONTEXT_BASE}/partner/company`, name: 'Your company', description: 'Your company\'s details as the brand team set them up: name, logos, website, contact and currency.', mimeType: 'application/json' });
+    }
+    if (await kitFor(record, groups)) {
+      out.push({ uri: 'lolly-work://partner/kit', path: `${CONTEXT_BASE}/partner/kit`, name: 'Your company\'s kit', description: 'Your company\'s partner kit, with its asset id and revision. Logo pins select exact versions.', mimeType: 'application/json' });
     }
     if (tokenPlacement(record).programmeId) {
       out.push({ uri: 'lolly-work://partner/templates', path: `${CONTEXT_BASE}/partner/templates`, name: 'Templates for you', description: 'The templates published to your programme: what each fixes and what you may change.', mimeType: 'application/json' });
@@ -251,6 +263,24 @@ export function registerContextRoutes(router: ReturnType<typeof createRouter>, d
     const id = surface === 'light' ? p.logoLight : surface === 'dark' ? p.logoDark : p.mark;
     const read = company && typeof id === 'string' ? await d.companyLogo(token.user.groups, id) : null;
     if (!read) return sendError(res, 404, 'NOT_FOUND', 'Your company has no logo for this surface, or it is not available to this token.');
+    file(res, read.bytes, read.mediaType);
+  }, PRIVATE);
+
+  router.add('GET', `${CONTEXT_BASE}/partner/kit`, async (req, res) => {
+    const token = await caller(req, res); if (!token) return;
+    const view = await kitFor(token.record, token.user.groups);
+    if (!view) return sendError(res, 404, 'NOT_FOUND', 'Your company has no kit available to this token.');
+    json(res, view);
+  }, PRIVATE);
+  router.add('GET', `${CONTEXT_BASE}/partner/kit/logo/:surface`, async (req, res, ctx) => {
+    const token = await caller(req, res); if (!token) return;
+    const surface = String(ctx.params.surface) as Surface;
+    if (!SURFACES.includes(surface)) return sendError(res, 400, 'INVALID_INPUT', 'The surface is light, dark or mark.');
+    const view = await kitFor(token.record, token.user.groups);
+    const pin = view?.kit.logos[surface];
+    const companyId = tokenPlacement(token.record).companyId;
+    const read = companyId && pin ? await d.companyKitLogo(token.user.groups, companyId, pin) : null;
+    if (!read) return sendError(res, 404, 'NOT_FOUND', 'Your company has no kit logo for this surface available to this token.');
     file(res, read.bytes, read.mediaType);
   }, PRIVATE);
 

@@ -159,6 +159,7 @@ export const RESOURCE_TEMPLATES = [
   { uriTemplate: 'lolly-work://brand/tokens/{colourway}.{mode}.json', name: 'Resolved tokens for one variant', description: 'One colourway and mode from lolly-work://brand. From a published brand page only.', mimeType: 'application/json' },
   { uriTemplate: 'lolly-work://brand/skills/{slug}/{path}', name: 'A brand skill file', description: 'SKILL.md or a reference file, named in lolly-work://brand/skills.', mimeType: 'text/markdown' },
   { uriTemplate: 'lolly-work://partner/company/logo/{surface}', name: 'Your company\'s logo', description: 'light, dark or mark, named in lolly-work://partner/company. An SVG comes back as text.', mimeType: 'image/svg+xml' },
+  { uriTemplate: 'lolly-work://partner/kit/logo/{surface}', name: 'Your kit\'s logo', description: 'light, dark or mark, pinned in lolly-work://partner/kit. The pinned version is served. An SVG comes back as text.', mimeType: 'image/svg+xml' },
 ];
 
 const SEGMENT = '[a-z0-9][a-z0-9-]{0,63}';
@@ -170,6 +171,7 @@ export function resourceRoute(uri: string): string | null {
     'lolly-work://brand/AGENTS.md': `${CONTEXT_BASE}/brand/agents-md`, 'lolly-work://brand/checks.json': `${CONTEXT_BASE}/brand/checks`,
     'lolly-work://brand/skills': `${CONTEXT_BASE}/brand/skills`,
     'lolly-work://partner/company': `${CONTEXT_BASE}/partner/company`, 'lolly-work://partner/templates': `${CONTEXT_BASE}/partner/templates`,
+    'lolly-work://partner/kit': `${CONTEXT_BASE}/partner/kit`,
   };
   if (Object.hasOwn(fixed, uri)) return fixed[uri]!;
   let m = new RegExp(`^lolly-work://brand/design/(${SEGMENT})\\.(${SEGMENT})\\.DESIGN\\.md$`).exec(uri);
@@ -180,6 +182,8 @@ export function resourceRoute(uri: string): string | null {
   if (m && !m[2]!.includes('..')) return `${CONTEXT_BASE}/brand/skills/${m[1]}/${m[2]}`;
   m = /^lolly-work:\/\/partner\/company\/logo\/(light|dark|mark)$/.exec(uri);
   if (m) return `${CONTEXT_BASE}/partner/company/logo/${m[1]}`;
+  m = /^lolly-work:\/\/partner\/kit\/logo\/(light|dark|mark)$/.exec(uri);
+  if (m) return `${CONTEXT_BASE}/partner/kit/logo/${m[1]}`;
   return null;
 }
 
