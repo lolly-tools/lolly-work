@@ -88,9 +88,12 @@ test('msg send --starts and --ends send the UTC instants the server stores', asy
 
 test('msg send refuses a time without a zone, an end in the past and an end before the start, before any request', async () => {
   for (const [args, message] of [
-    [['--ends', '2099-02-01'], /--ends wants a date and time with its zone/],
-    [['--starts', '2099-02-01T09:00:00'], /--starts wants a date and time with its zone/],
-    [['--ends', 'next week'], /--ends wants a date and time with its zone/],
+    [['--ends', '2099-02-01'], /--ends wants a real date and time with its zone/],
+    [['--starts', '2099-02-01T09:00:00'], /--starts wants a real date and time with its zone/],
+    [['--ends', 'next week'], /--ends wants a real date and time with its zone/],
+    [['--ends', '2099-02-31T09:00:00Z'], /--ends wants a real date and time with its zone/],
+    [['--ends', '2099-02-01T24:00:00Z'], /--ends wants a real date and time with its zone/],
+    [['--starts', '2099-02-01T09:00:00+25:00'], /--starts wants a real date and time with its zone/],
     [['--ends', '2000-01-01T00:00:00Z'], /--ends is in the past/],
     [['--starts', '2099-02-01T00:00:00Z', '--ends', '2099-01-01T00:00:00Z'], /--ends must be later than --starts/],
   ] as const) {

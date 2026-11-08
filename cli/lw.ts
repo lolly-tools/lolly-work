@@ -171,10 +171,14 @@ const OPTIONS = {
  *  lw runs. */
 function messageTime(flag: 'starts' | 'ends', raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(raw);
+  const [y, mo, d, h, mi, sec, oh, om] = (m ?? []).slice(1).map((v) => (v === undefined ? 0 : Number(v)));
+  // Date.parse rolls an impossible day forward (02-31 becomes 03-03), so each part is checked first.
+  const calendar = m ? new Date(Date.UTC(y!, mo! - 1, d!)) : null;
+  const real = !!calendar && calendar.getUTCFullYear() === y && calendar.getUTCMonth() === mo! - 1 && calendar.getUTCDate() === d
+    && h! <= 23 && mi! <= 59 && sec! <= 59 && oh! <= 23 && om! <= 59;
   const ms = Date.parse(raw);
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(raw) || Number.isNaN(ms)) {
-    fail(`--${flag} wants a date and time with its zone, such as 2026-12-07T09:00:00Z`);
-  }
+  if (!real || Number.isNaN(ms)) fail(`--${flag} wants a real date and time with its zone, such as 2026-12-07T09:00:00Z`);
   return new Date(ms).toISOString();
 }
 
