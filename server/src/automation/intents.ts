@@ -44,7 +44,7 @@ import { mayRenderTool, policyFormats } from './effective-contract.ts';
 import type { DiscoveryCaller, DiscoveryDeps } from './discovery.ts';
 
 export const INTENTS_RESOLVE_PATH = '/api/v1/intents/resolve';
-const MAX_BODY_BYTES = 512 * 1024;
+export const MAX_BODY_BYTES = 512 * 1024;
 
 /** A type no role takes, for an input this caller cannot set. The resolver cannot fill
  *  it or offer its options, and its value still decides which other inputs show. */

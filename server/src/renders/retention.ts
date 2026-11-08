@@ -19,7 +19,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const SWEEP_BATCH = 500;
 const SWEEP_ROUNDS = 20;
 /** A delivery that read an output before it was marked has long finished by then. */
-const PURGE_GRACE_MS = 60 * 60 * 1000;
+export const PURGE_GRACE_MS = 60 * 60 * 1000;
 
 export type RenderRetentionStore = Pick<Store, 'expireRenderOutputs' | 'renderOutputsToPurge' | 'markRenderOutputPurged' | 'appendAudit'>;
 

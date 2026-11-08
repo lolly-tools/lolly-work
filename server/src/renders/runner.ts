@@ -26,6 +26,8 @@ export function parseBackgroundPollMs(value: string | undefined): number | undef
 }
 /** The most durable renders one Work process may drive at once. */
 export const MAX_RENDER_CONCURRENCY = 128;
+/** What a runner uses when nothing sets it: renders at once, a claim's lease and an attempt's budget. */
+export const RENDER_RUNNER_DEFAULTS = { concurrency: 2, leaseMs: 30_000, timeoutMs: 120_000 } as const;
 
 /** `LW_RENDER_CONCURRENCY`, how many durable renders one Work process drives at
  *  once. Unset or blank keeps the runner's default of 2 (undefined). Size it to
@@ -79,9 +81,9 @@ export class RenderRunner {
   private readonly options: RenderRunnerOptions;
   constructor(options: RenderRunnerOptions) {
     this.options = options;
-    this.concurrency = options.concurrency ?? 2;
-    this.leaseMs = options.leaseMs ?? 30_000;
-    this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.concurrency = options.concurrency ?? RENDER_RUNNER_DEFAULTS.concurrency;
+    this.leaseMs = options.leaseMs ?? RENDER_RUNNER_DEFAULTS.leaseMs;
+    this.timeoutMs = options.timeoutMs ?? RENDER_RUNNER_DEFAULTS.timeoutMs;
     if (!Number.isInteger(this.concurrency) || this.concurrency < 1 || this.concurrency > MAX_RENDER_CONCURRENCY) throw new Error(`render concurrency must be 1 to ${MAX_RENDER_CONCURRENCY}`);
     if (!Number.isFinite(this.leaseMs) || this.leaseMs < 30 || !Number.isFinite(this.timeoutMs) || this.timeoutMs < 1) throw new Error('invalid render lease/timeout');
   }

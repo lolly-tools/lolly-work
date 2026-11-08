@@ -1434,7 +1434,51 @@ const INSTANCE_TABS = [
   { key: 'brand-pages', label: 'Brand pages', icon: 'brandPages', render: (h) => viewBrandPages(h) },
   { key: 'flags', label: 'Feature flags', icon: 'flags', render: (h) => viewFeatureFlags(h) },
   { key: 'injectables', label: 'Injectables', icon: 'injectables', render: (h) => viewInjectables(h) },
+  { key: 'limits', label: 'Limits and quotas', icon: 'limits', render: (h) => viewLimits(h) },
 ];
+// Limits and quotas (plans/82 M7; Andy, 2026-11-07): every limit Work enforces, with
+// its value and where it comes from. Each figure is read by the server from the
+// constant or the setting its own check reads, so this page cannot drift from the code.
+const LIMIT_SOURCE_WORDS = { configuration: 'Configuration', environment: 'Environment', 'built-in': 'Built-in default' };
+function limitValueText(entry) {
+  const v = entry.value;
+  if (v === null) return 'No cap';
+  if (typeof v === 'boolean') return v ? 'On' : 'Off';
+  if (typeof v === 'string') return entry.unit === 'mode' && /^[a-z]+$/.test(v) ? v.charAt(0).toUpperCase() + v.slice(1) : v;
+  const n = Number(v);
+  // Whole figures in full: a maximum such as 1,000,000 must not read as "1000K".
+  const full = (x) => Number(x).toLocaleString('en');
+  switch (entry.unit) {
+    case 'bytes': return fmtBytes(n);
+    case 'ms': return n >= 60_000 && n % 60_000 === 0 ? `${full(n / 60_000)} min` : n >= 1000 && n % 1000 === 0 ? `${full(n / 1000)} s` : `${full(n)} ms`;
+    case 'seconds': return n >= 86_400 && n % 86_400 === 0 ? `${full(n / 86_400)} ${n === 86_400 ? 'day' : 'days'}` : n >= 3600 && n % 3600 === 0 ? `${full(n / 3600)} h` : `${full(n)} s`;
+    case 'days': return n === 0 ? '0 (kept)' : `${full(n)} ${n === 1 ? 'day' : 'days'}`;
+    case 'per-minute': return `${full(n)} a minute`;
+    case 'per-second': return `${full(n)} a second`;
+    case 'rows': return `${full(n)} ${n === 1 ? 'row' : 'rows'}`;
+    default: return full(n);
+  }
+}
+async function viewLimits(main) {
+  let data;
+  try { data = await api('/api/v1/limits'); }
+  catch (e) { main.append(el('h1', {}, 'Limits and quotas'), el('p', { class: 'form-err' }, e.message)); return; }
+  const limits = data.limits ?? [];
+  const areas = [...new Set(limits.map((l) => l.area))];
+  const changed = limits.filter((l) => l.source !== 'built-in').length;
+  main.append(
+    el('h1', {}, 'Limits and quotas'),
+    el('p', { class: 'sub' }, `Every limit this deployment enforces, with its value now and where the value comes from: ${fmt(limits.length)} limits, ${fmt(changed)} set by configuration or the environment. Agent tokens show their own limits and use on each programme’s Agent tokens card.`),
+    ...areas.map((area) => el('div', { class: 'card stack limits-area' },
+      el('h2', {}, area),
+      // Two columns, so a phone keeps the value and its source beside the limit.
+      dataTable(['Limit', 'Value and source'], limits.filter((l) => l.area === area).map((l) => el('tr', { 'data-limit': l.id },
+        el('td', {}, el('div', { class: 'cell-lines' }, el('span', {}, l.label), l.note ? el('span', { class: 'muted' }, l.note) : null, el('span', { class: 'muted mono limit-id' }, l.id))),
+        el('td', {}, el('div', { class: 'cell-lines' }, el('strong', {}, limitValueText(l)),
+          l.source === 'built-in' ? el('span', { class: 'muted' }, LIMIT_SOURCE_WORDS[l.source]) : el('span', { class: 'status review' }, LIMIT_SOURCE_WORDS[l.source] ?? l.source))))),
+      { filter: false }))));
+}
+
 async function viewInstance(main, params) {
   const tabs = INSTANCE_TABS.filter(tab => canView(tab.key));
   if (!tabs.length || (params?.get?.('tab') && !tabs.some(tab => tab.key === params.get('tab')))) {
@@ -8334,6 +8378,7 @@ const NAV_ICONS = {
   flags: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
   brandPages: '<path d="M4 4h16v16H4z"/><path d="M4 9h16"/><path d="M9 14h6"/><path d="M9 17h3"/>',
   injectables: '<path d="M12 2v20"/><path d="M2 12h20"/><path d="M12 2l3 3-3 3-3-3z"/><circle cx="12" cy="12" r="2.5"/>',
+  limits: '<path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   docs: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8"/><path d="M8 11h6"/>',
 };
 function navIcon(id) {
