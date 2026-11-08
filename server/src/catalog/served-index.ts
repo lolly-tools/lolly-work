@@ -153,6 +153,9 @@ export function applyProgrammeScope(
   const providers = new Set(sources.providerRecs.filter((p) => namesProgrammeGroup(p.exposure.groups, programmeGroups)).map((p) => p.id));
   const keep = (entry: AssetIndexEntry): boolean => {
     if (typeof entry.type === 'string' && ESSENTIAL_ASSET_TYPES.has(entry.type)) return true;
+    // A partner kit (plans/82 M8) reaches its own company only: a collection a
+    // curator shares with the programme never carries it to another company.
+    if (entry.type === 'partner-kit') return inst.has(entry.id);
     if (members.has(entry.id) || inst.has(entry.id)) return true;
     const ext = /^ext\/([^/]+)\//.exec(entry.id);
     if (!ext) return false;

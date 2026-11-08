@@ -17,6 +17,7 @@ import { buildApp } from '../server/src/api/app.ts';
 import { submitAsset } from '../server/src/catalog/submit.ts';
 import { PACK_MAX_BYTES } from '../server/src/catalog/instance-pack.ts';
 import { ZipBuilder } from '../server/src/links/zip.ts';
+import { applyProgrammeScope } from '../server/src/catalog/served-index.ts';
 import { KIT_DESIGN_SYSTEM_MAX_BYTES, KIT_LOLLY_MAX_BYTES, KIT_MAX_BYTES, KIT_TOKENS_MAX_BYTES } from '../server/src/programmes/kit.ts';
 
 let server: Server;
@@ -251,7 +252,8 @@ test('feed, blob routes and org-config offer the kit only to the company member'
   assert.ok((await feed(rita)).some((r) => r.id === assetId && r.type === 'partner-kit'));
   for (const cookie of [gus, pat, await login('staff@brand.test')]) {
     assert.ok(!(await feed(cookie)).some((r) => r.id === assetId));
-    assert.equal((await fetch(`${base}/catalog/${assetId}/json`, { headers: { cookie } })).status, 403);
+    // Not served: refused, and a partner member is told nothing about a file outside their feed.
+    assert.ok([403, 404].includes((await fetch(`${base}/catalog/${assetId}/json`, { headers: { cookie } })).status));
     assert.equal((await call(cookie, 'GET', '/api/v1/org-config')).body.partner?.company?.kit, undefined);
   }
   assert.equal((await fetch(`${base}/catalog/${assetId}/json`, { headers: { cookie: rita } })).status, 200);
@@ -314,6 +316,11 @@ test('ending the company retires its kit and Reopen restores the same pointer', 
   assert.equal((await call(bruno, 'PUT', K, kit())).status, 409);
   assert.equal((await upload(bruno, `${K}/import?from=logos`)).status, 409);
   const reopen = `/api/v1/programmes/exits/${done.body.exit}/reopen`;
+  // A save that finished after the exit moved the head: Reopen keeps that kit retired.
+  const retired = (await store.getInstanceAsset(assetId))!;
+  await store.putInstanceAsset({ ...retired, headVersion: (retired.headVersion ?? 1) + 1 });
+  assert.equal((await call(bruno, 'POST', reopen, {})).body.companyKits[0].result, 'kept');
+  await store.putInstanceAsset(retired);
   const dry = await call(bruno, 'POST', reopen, {});
   assert.equal(dry.body.companyKits[0].result, 'restored');
   assert.equal((await store.getCompanyProfile('northwind'))?.kit, undefined);
@@ -385,4 +392,17 @@ test('kit audit payloads hold revision transitions and source lines only', async
     assert.deepEqual(Object.keys(row.payload!).sort(), ['revisionAfter', 'revisionBefore', 'source']);
     assert.doesNotMatch(JSON.stringify(row.payload), /colours|#0b3d91|<svg|schemaVersion/);
   }
+});
+
+test('a collection shared with the programme never carries one company\'s kit to another', () => {
+  const index = { assets: [{ id: 'inst/kit-a', type: 'partner-kit' }, { id: 'inst/photo', type: 'image' }] } as unknown as Parameters<typeof applyProgrammeScope>[0];
+  const sources = {
+    instAssets: [{ id: 'inst/kit-a', groups: ['company-a'] }, { id: 'inst/photo', groups: ['company-a'] }],
+    providerRecs: [],
+    collections: [{ id: 'shared', members: ['inst/kit-a', 'inst/photo'], groups: ['programme-resellers'] }],
+  };
+  const forB = applyProgrammeScope(index, new Set(['programme-resellers', 'company-b']), sources);
+  assert.deepEqual((forB.assets ?? []).map((a) => a.id), ['inst/photo'], 'the collection still shares the photo, never the kit');
+  const forA = applyProgrammeScope(index, new Set(['programme-resellers', 'company-a']), sources);
+  assert.ok((forA.assets ?? []).some((a) => a.id === 'inst/kit-a'));
 });

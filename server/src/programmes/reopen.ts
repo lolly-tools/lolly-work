@@ -227,7 +227,8 @@ export async function reopenExit(
     const life = await store.getLifecycle(kit.assetId);
     const profile = await store.getCompanyProfile(kit.companyId);
     let restored = false;
-    if (company?.endedExit === rec.id && current && life?.revokedAt === doneAt && !profile?.kit) {
+    // The kit comes back at the revision the exit retired, never a later one.
+    if (company?.endedExit === rec.id && current && (current.headVersion ?? 1) === kit.revision && life?.revokedAt === doneAt && !profile?.kit) {
       restored = !opts.apply || await store.putCompanyKit(kit.companyId, { assetId: kit.assetId }, null);
       if (opts.apply && restored) {
         const { revokedAt: _revoked, ...rest } = life;
