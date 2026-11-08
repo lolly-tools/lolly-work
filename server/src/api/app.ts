@@ -92,7 +92,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
+import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, programmeGroup, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
 import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
@@ -108,10 +108,12 @@ import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../prog
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
-import { registerRightsRoutes } from '../programmes/rights-routes.ts';
+import { linksThatWouldLose, registerRightsRoutes } from '../programmes/rights-routes.ts';
 import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
-import { loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
-import { CHOICE_NOTE_MAX, choiceFingerprint, exitRightsChoices, factsOf } from '../programmes/rights.ts';
+import { composeRightsRecords, loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
+import { decidePartnerRightsDefault, partnerRightsState, type PartnerRightsState } from '../catalog/rights-mode.ts';
+import { partnerRightsCheck } from '../setup/checks.ts';
+import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
 import { collectionCredits } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { createOwnerMarks } from '../programmes/owner-mark.ts';
@@ -163,7 +165,7 @@ import {
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
 } from '../catalog/lifecycle.ts';
 import { buildFragment, callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
-import { createServedIndex } from '../catalog/served-index.ts';
+import { createServedIndex, licenceGate } from '../catalog/served-index.ts';
 import { createCatalogDelivery, retainedToolBytes, type CatalogSnapshotKind } from '../catalog/delivery.ts';
 import { createExtCache, extCacheKey } from '../catalog/ext-cache.ts';
 import { contentRangeValue, parseByteRange, RangeNotSatisfiableError, satisfyByteRange } from '../catalog/byte-range.ts';
@@ -188,7 +190,7 @@ import {
 } from '../catalog/asset-meta.ts';
 import { textIndexFiles, textIndexRevision, textIndexView } from '../catalog/text-index.ts';
 import {
-  collectionVisible, composeCollections, normalizeCollection, sortCollections,
+  collectionVisible, composeCollections, MAX_MEMBERS as COLLECTION_MAX_MEMBERS, normalizeCollection, sortCollections,
   type CollectionRecord,
 } from '../catalog/collections.ts';
 import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
@@ -431,6 +433,12 @@ export function appRouteDescriptions(app: App): ReturnType<DescribeRoutes> {
 const COLOURWAY_ROW = 'Colourway and mode';
 /** A value taken from the design system: a token reference such as `{color.semantic.primary}`. */
 const isTokenRef = (value: unknown): boolean => typeof value === 'string' && /^\{[^{}]+\}$/.test(value);
+
+/** The licence gate's mode is read again after a failure, backing off to this. */
+const PARTNER_RIGHTS_RETRY_MS = 250;
+const PARTNER_RIGHTS_RETRY_MAX_MS = 15_000;
+/** How long a request waits for the mode before answering 503 STARTING. */
+const PARTNER_RIGHTS_WAIT_MS = 5_000;
 
 export function buildApp(deps: AppDeps): App {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
@@ -755,9 +763,31 @@ export function buildApp(deps: AppDeps): App {
   });
   // The composed asset feed, memoised per caller visibility (catalog/served-index.ts),
   // and the bounded cache of federated bytes (catalog/ext-cache.ts).
+  // The licence gate's mode (plans/82 M4): configuration first, else the
+  // default this instance recorded once on its first start of a release that
+  // knows the gate. A store that cannot answer leaves the gate reporting only.
+  // The licence gate's mode (plans/82 M4) is decided once, before anything
+  // can create an account, and never guessed: a failed read or write is tried
+  // again, and until the mode is known every request but health and
+  // readiness waits, then answers 503 (the handler below). Report mode is
+  // never a fallback, so a recorded gate cannot open for the life of a process.
+  let partnerRightsKnown: PartnerRightsState | null = null;
+  const partnerRightsReady: Promise<PartnerRightsState> = (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        partnerRightsKnown = partnerRightsState(config, await decidePartnerRightsDefault(store));
+        return partnerRightsKnown;
+      } catch (err) {
+        console.warn(`[lolly-work] the licence gate default could not be read or recorded (attempt ${attempt + 1}); trying again: ${(err as Error).message}`);
+        // Unreferenced: a retry never keeps a stopping process alive.
+        await new Promise((r) => setTimeout(r, Math.min(PARTNER_RIGHTS_RETRY_MAX_MS, PARTNER_RIGHTS_RETRY_MS * 2 ** Math.min(attempt, 6))).unref());
+      }
+    }
+  })();
   const servedIndex = createServedIndex({
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
     roleOf: (groups) => roleFromGroups(groups, config.idp.roleGroups),
+    partnerRights: async () => (await partnerRightsReady).mode,
   });
   /**
    * A published template as this group set's own feed serves it (plans/82 M2),
@@ -1052,6 +1082,10 @@ export function buildApp(deps: AppDeps): App {
     const reach = rec?.enabled ? await providerReach(rec, groups) : null;
     if (!rec || !reach) return null;
     if (!ref.path) throw new Error('cms provider refs require a remote asset id');
+    // A partner programme member reaches exactly what their feed holds, as on
+    // /catalog/ext: a remote id the feed leaves out (past sync.maxAssets, say) is
+    // not theirs, whichever verb names it (plans/82 M1). Asked before the provider is.
+    if (isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups)) && !(await feedHolds(groups, extAssetId(rec.id, ref.path)))) return null;
     const provider = federation.instantiate(rec);
     const asset = await findProviderAsset(provider, ref.path);
     if (!asset || !passesExposure(rec, asset) || !reachesAsset(reach, asset)) return null;
@@ -1177,6 +1211,7 @@ export function buildApp(deps: AppDeps): App {
         : await setupReport().then(report => report.ready ? 'ok' : 'incomplete').catch(() => 'unknown');
     }
     checks.catalog = catalogCheck;
+    checks.licenceGate = partnerRightsKnown ? 'ok' : 'deciding';
     const ok = Object.values(checks).every(value => value === 'ok');
     sendJson(res, ok ? 200 : 503, { ok, store: store.storageKind, checks });
   });
@@ -3051,6 +3086,37 @@ export function buildApp(deps: AppDeps): App {
   // `groups=admin` honestly shows admin escalation. The synthetic id can't
   // collide with a real user id, so only group:/`*` grants apply - never some
   // specific person's user: grants (correct for a group projection).
+  /** What the licence gate does to one partner group set (plans/82 M4), for Preview. */
+  const previewLicence = async (groups: string[]) => {
+    const state = await partnerRightsReady;
+    const engine = await loadRightsEngine();
+    const partner = new Set(partnerGroupsOf(groups));
+    const choices = (await store.listRightsChoices()).filter((c) => partner.has(c.group));
+    const pins = await pinsNow();
+    const keep = licenceGate(engine, partner, choices, pins);
+    const all = (await servedIndex.forCaller({ groups, ungated: true })).index.assets ?? [];
+    const companies = new Set([...partner].filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
+    const users = new Map((await store.listUsers()).map((u) => [u.id, u]));
+    let heldBack = 0, sharedAnyway = 0, needsChoosing = 0;
+    const shared: Array<Record<string, unknown>> = [];
+    for (const entry of all) {
+      const answer = rightsAnswer(engine, entry, companies);
+      if (answer.state !== 'held') continue;
+      const mine = choices.filter((c) => c.assetId === entry.id);
+      if (keep(entry)) {
+        sharedAnyway++;
+        const c = mine.find((x) => currentFingerprint(engine, entry, x.group, pins) === x.fingerprint)!;
+        const who = users.get(c.chosenBy);
+        shared.push({ id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, licence: answer.licence || 'licence not recorded', group: c.group,
+          chosenBy: who ? [who.firstname, who.lastname].filter(Boolean).join(' ') || who.email : c.chosenBy, chosenAt: c.chosenAt });
+      } else {
+        heldBack++;
+        if (mine.length) needsChoosing++;
+      }
+    }
+    return { mode: state.mode, line: state.line, total: all.length, onceGated: all.length - heldBack, heldBack, sharedAnyway, needsChoosing, shared: shared.slice(0, 50) };
+  };
+
   router.add('GET', '/api/v1/org-config/preview', async (req, res, ctx) => {
     const groups = (ctx.url.searchParams.get('groups') ?? '')
       .split(',').map((g) => g.trim()).filter(Boolean);
@@ -3105,6 +3171,10 @@ export function buildApp(deps: AppDeps): App {
       byType: Object.fromEntries([...feedAssets.reduce((m, a) => m.set(String(a.type ?? 'other'), (m.get(String(a.type ?? 'other')) ?? 0) + 1), new Map<string, number>())].sort()),
       sample: feedAssets.slice(0, 24).map((a) => ({ id: a.id, name: typeof a.name === 'string' ? a.name : a.id, type: a.type ?? null })),
       collections: ((feed.collections ?? []) as Array<{ id: string; name: string; members: string[] }>).map((c) => ({ id: c.id, name: c.name, members: c.members.length })),
+      // Licences (plans/82 M4), for the admin reading Preview only: what the
+      // gate holds back from these groups, in either mode, and what was shared
+      // anyway, by whom. Never on org-config.
+      ...(isProgrammeScoped(groups, subject.role) ? { licence: await previewLicence(groups) } : {}),
     };
     // Which partner rule decided each governed input, for the admin reading
     // this (plans/82): a company's rule over its programme's, or the stricter
@@ -3498,8 +3568,14 @@ export function buildApp(deps: AppDeps): App {
       if (!body.target.assetId && !body.target.collectionId) return sendError(res, 400, 'INVALID_INPUT', 'a dry run and includeHeld are for links to catalog files');
       if (!dryRun && isProgrammeScoped(user.groups, user.role)) return sendError(res, 403, 'FORBIDDEN', 'only staff can send files held back by their licence');
       const ids = body.target.collectionId ? (await store.getCollection(body.target.collectionId))?.members ?? [] : [body.target.assetId!.trim()];
-      const [engine, seen] = await Promise.all([loadRightsEngine(), entriesSeenBy(user.groups)]);
-      const files = ids.map((id) => ({ id, entry: seen.get(id), answer: seen.has(id) ? rightsAnswer(engine, seen.get(id)!) : null }));
+      const [engine, seen, pins] = await Promise.all([loadRightsEngine(), entriesSeenBy(user.groups), pinsNow()]);
+      // Each file is classified as the bytes route will serve it: through its
+      // alias, as the link is judged at every fetch.
+      const resolvedIds = await Promise.all(ids.map((id) => resolveAssetAlias(id)));
+      const files = ids.map((id, i) => {
+        const entry = seen.get(resolvedIds[i]!) ?? seen.get(id);
+        return { id, entry, answer: entry ? rightsAnswer(engine, entry) : null };
+      });
       if (dryRun) {
         return sendJson(res, 200, {
           dryRun: true,
@@ -3513,8 +3589,12 @@ export function buildApp(deps: AppDeps): App {
           })),
         }, { 'cache-control': 'no-store' });
       }
-      const held = files.flatMap((f) => (f.entry && f.answer?.state === 'held' ? [{ id: f.id, fingerprint: choiceFingerprint(factsOf(engine, f.entry, 'link')) }] : []));
-      if (held.length) body.target = { ...body.target, includeHeld: held };
+      const held = files.flatMap((f) => (f.entry && f.answer?.state === 'held' ? [{ id: f.id, fingerprint: currentFingerprint(engine, f.entry, 'link', pins) }] : []));
+      // A file whose bytes carry no checksum cannot be remembered by its facts,
+      // so it is never sent anyway: the link is made without it, or not at all.
+      const unnamed = held.filter((h) => h.fingerprint === null).length;
+      if (unnamed) return sendError(res, 409, 'NO_FILE_IDENTITY', `Held files with no checksum cannot be sent anyway (${unnamed} here). Make the link without the held files.`);
+      if (held.length) body.target = { ...body.target, includeHeld: held.map((h) => ({ id: h.id, fingerprint: h.fingerprint! })) };
     }
     const maxTtl = kind === 'guest-edit' ? config.policy.guestLinks.maxTtlHours : 24 * 365;
     const defTtl = kind === 'guest-edit' ? config.policy.guestLinks.defaultTtlHours : DEFAULT_TTL_SEC[kind] / 3600;
@@ -3530,12 +3610,13 @@ export function buildApp(deps: AppDeps): App {
       ...(body.password ? { pwHash: await hashPassword(body.password) } : {}),
       ...(body.projectId ? { projectId: body.projectId } : {}),
     };
-    await store.putLink(link);
-    await audit(`user:${user.id}`, 'link.create', `link:${link.id}`, {
+    // The link and its row commit together: a link carrying held files never
+    // exists without the audit that records the choice (plans/82 M4).
+    await store.putLinkAudited(link, auditBody(`user:${user.id}`, 'link.create', `link:${link.id}`, {
       kind, toolId: body.target.toolId ?? null, assetId: body.target.assetId ?? null,
       collectionId: body.target.collectionId ?? null, ...(link.target.open ? { open: true } : {}),
       ...(link.target.includeHeld ? { includeHeld: link.target.includeHeld.map((h) => h.id), ...(linkNote ? { note: linkNote } : {}) } : {}),
-    });
+    }));
     sendJson(res, 201, { id: link.id, kind, url: `${config.instance.baseUrl}${linkPath(link, secrets.link)}`, expiresAt: new Date(link.exp * 1000).toISOString(),
       ...(link.target.open ? { open: true } : {}), ...(link.target.includeHeld ? { includeHeld: link.target.includeHeld.length } : {}) });
   });
@@ -4771,10 +4852,12 @@ export function buildApp(deps: AppDeps): App {
     // anyway, so the honest answer there is to sign in on the instance and
     // export the pack, or use the desktop app.
     if (config.policy.defaultAccessMode === 'open') allowCrossOriginRead(res, 'ETag');
-    if (config.policy.defaultAccessMode !== 'open') {
-      const me = await resolveMember(store, req.headers.cookie, sessionVerify);
-      if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in to download the instance pack');
-    }
+    const me = req.headers.cookie ? await resolveMember(store, req.headers.cookie, sessionVerify) : null;
+    if (config.policy.defaultAccessMode !== 'open' && !me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in to download the instance pack');
+    // The pack is the whole hosted brand (its catalog, filenames and checksums), and
+    // a partner programme member reads only what their feed holds (plans/82 M1), so
+    // they are refused here, before the tag is read or any 304 or HEAD answers.
+    if (me && isProgrammeScoped(me.groups, me.role)) return sendError(res, 403, 'FORBIDDEN', 'the instance pack is not part of a partner programme');
     await ensureConnectPack();
     // The stored checksum IS the pack's cache identity - the same value the
     // meta route reports, since both come from the write's own stat. A client
@@ -4838,11 +4921,34 @@ export function buildApp(deps: AppDeps): App {
     sendJson(res, 200, { pending, current: pending.length === 0 });
   });
 
+  /** The licence gate's setup line (plans/82 M4): the mode, why, and in report mode what the gate would hold back. */
+  const licenceGateSetupCheck = async () => {
+    const state = await partnerRightsReady;
+    if (state.mode === 'gate') return partnerRightsCheck(state, { programmes: [], linksLosing: 0 });
+    try {
+      await providersReady;
+      const engine = await loadRightsEngine();
+      const [programmes, companies, choices, pins] = await Promise.all([store.listProgrammes(), store.listCompanies(), store.listRightsChoices(), pinsNow()]);
+      const counts = [];
+      for (const programme of programmes) {
+        const groups = [programmeGroup(programme.id), ...companies.filter((c) => c.programmeId === programme.id).map((c) => `company-${c.id}`)];
+        const keep = licenceGate(engine, new Set(groups), choices, pins);
+        const assets = (await servedIndex.forCaller({ groups: [...groups, PARTNER_GROUP], ungated: true })).index.assets ?? [];
+        counts.push({ name: programme.name, held: assets.filter((entry) => !keep(entry)).length });
+      }
+      const links = await linksThatWouldLose(engine, store, async (groups) => (await servedIndex.forCaller({ groups, ungated: true })).index, Date.now());
+      return partnerRightsCheck(state, { programmes: counts, linksLosing: links.count });
+    } catch {
+      return { id: 'partner-rights', status: 'not-tested' as const, message: `${state.line} The counts could not be read now.` };
+    }
+  };
+
   router.add('GET', '/api/v1/system/setup', async (req, res) => {
     if (!(await requireAction(req, res, 'instance.config'))) return;
     const report = await setupReport();
     const [reachable, pending] = await Promise.all([store.ping().catch(() => false), store.pendingMigrations().catch(() => null)]);
     const checks = [...report.checks,
+      await licenceGateSetupCheck(),
       { id: 'database-live', status: reachable ? 'pass' : 'fail', message: reachable ? 'The store answered this check.' : 'The store cannot answer. Check database availability.' },
       { id: 'schema', status: pending === null || pending.length ? 'fail' : 'pass', message: pending === null
         ? 'The schema check is unavailable. Check database availability.' : pending.length ? 'Apply pending migrations before acceptance.' : 'No pending migrations.' },
@@ -6268,7 +6374,7 @@ export function buildApp(deps: AppDeps): App {
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
   registerProgrammeRoutes(router, {
-    store, requireAction, audit, instanceTokenLimits: config.automation.tokenLimits,
+    store, requireAction, audit, instanceTokenLimits: config.automation.tokenLimits, rightsChoices: exitRightsChoices(store, auditBody),
     toolIds: async () => {
       try {
         const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
@@ -6302,8 +6408,9 @@ export function buildApp(deps: AppDeps): App {
   companyProfiles.register(router);
   registerProgrammePeopleRoutes(router, {
     store, requireAction, audit, people, noticeContext: (now) => noticeContext(config, now),
-    // Ending a partnership withdraws its share anyway choices (plans/82 M4 and M5).
-    rightsChoices: exitRightsChoices(store, audit),
+    // Ending a partnership, or deleting a company, withdraws its share anyway
+    // choices (plans/82 M4 and M5), each with its audit row in one transaction.
+    rightsChoices: exitRightsChoices(store, auditBody),
     forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
     invite: async (actor, email, groups, endsAt) => {
       // The invitation can be accepted until the membership ends, and never for
@@ -6381,7 +6488,13 @@ export function buildApp(deps: AppDeps): App {
     const frags = await federation.fragments({ background: true });
     return [...(await loadAssetIndexById(config.instance.pack)).values(), ...frags.flatMap((f) => f.fragment.assets), ...(await store.listInstanceAssets()).map((r) => r.entry)];
   };
-  registerRightsRoutes(router, { store, requireAction, audit, catalogEntries: catalogEntriesForRights, feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups })).index; } });
+  registerRightsRoutes(router, {
+    store, requireAction, audit, auditBody, catalogEntries: catalogEntriesForRights, rightsMode: () => partnerRightsReady,
+    // The report and a choice read what the audience would get with no gate,
+    // so a held file is still there to count and to choose.
+    feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups, ungated: true })).index; },
+    extraLimits: () => ({ collectionZipBytes: COLLECTION_ZIP_MAX_BYTES, collectionMembers: COLLECTION_MAX_MEMBERS }),
+  });
   registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark });
 
   registerDomainRoutes(router, {
@@ -6854,6 +6967,26 @@ export function buildApp(deps: AppDeps): App {
   };
 
   /**
+   * Which stored versions of an instance file a partner may read with the
+   * licence gate on (plans/82 M4), or null for everyone else. A file their
+   * feed holds on its own licence: every version, since the licence names the
+   * asset. A file it holds only through a share anyway choice: the versions
+   * whose bytes are the head's, the bytes the choice was made against.
+   */
+  const versionsAllowedFor = async (user: UserRecord | null | undefined, id: string): Promise<((row: AssetVersionRecord) => boolean) | null> => {
+    if (!user || !isProgrammeScoped(user.groups, user.role) || (await partnerRightsReady).mode !== 'gate') return null;
+    await providersReady;
+    const entry = (await servedIndex.forCaller({ groups: user.groups })).index.assets?.find((e) => e.id === id);
+    if (!entry) return () => false;
+    const companies = new Set(user.groups.filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
+    if (rightsAnswer(await loadRightsEngine(), entry, companies).state !== 'held') return () => true;
+    // The feed states a checksum as `sha256-<base64>`, a version row as hex.
+    const sri = (c: string | undefined): string => (c && /^[0-9a-f]{64}$/i.test(c) ? `sha256-${Buffer.from(c, 'hex').toString('base64')}` : c ?? '');
+    const head = new Map((entry.formats ?? []).map((f) => [f.format, sri((f as { checksum?: string }).checksum)]));
+    return (row) => row.formats.length === head.size && row.formats.every((f) => !!f.checksum && head.get(f.format) === sri(f.checksum));
+  };
+
+  /**
    * Apply `policy.catalog.versionKeep` to one asset, returning how many
    * versions it dropped. Two things are never trimmed: the HEAD (a rollback
    * deliberately makes an old version current, and retention must not delete
@@ -7115,6 +7248,7 @@ export function buildApp(deps: AppDeps): App {
       const [, sid, formatRef] = parts as [string, string, string];
       const id = `${INST_PREFIX}${sid}`;
       const rec = await store.getInstanceAsset(id);
+      if (scopedCaller(user) && (!rec || !(await instanceAssetReadable(user, rec)))) return notAvailable(res);
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
       // A partner programme member reads exactly what their feed holds (plans/82 M1),
       // the same rule as their federated bytes, links and asset records: an internal
@@ -7151,6 +7285,10 @@ export function buildApp(deps: AppDeps): App {
         const row = (await assetVersionRows(rec)).find((r) => r.version === n);
         const fmt = row?.formats.find((f) => f.format === formatRef);
         if (!fmt) return sendError(res, 404, 'NOT_FOUND', `no version ${n} of this asset in ${formatRef}`);
+        // A partner sent this file anyway receives the bytes it was chosen
+        // against, never an older version of it (plans/82 M4).
+        const allowed = await versionsAllowedFor(user, id);
+        if (allowed && !allowed(row!)) return notAvailable(res);
         blobId = fmt.blobId;
       }
       const stat = blobId ? await blobs.head(blobId) : null;
@@ -7193,6 +7331,12 @@ export function buildApp(deps: AppDeps): App {
       // holds: a granted collection can name one asset of a provider they do
       // not otherwise see (plans/82 M1).
       const scopedReader = !!user && isProgrammeScoped(user.groups, user.role);
+      // Staff keep the bytes for five minutes (plan 80 D6). A partner programme
+      // member, and an admin viewing as one, is answered no-cache instead (Andy,
+      // 2026-11-07, D6 changed for programme members only): what they may read
+      // follows their feed, and a browser cache is not keyed by person, so the
+      // browser asks again and the checks run for whoever asks.
+      const extBytesCache = scopedReader ? cachePolicy('instance-private').cacheControl : 'private, max-age=300';
       if (scopedReader
         ? !(await servedIndex.forCaller({ groups: user!.groups })).index.assets?.some((entry) => entry.id === assetId)
         : !callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
@@ -7237,7 +7381,7 @@ export function buildApp(deps: AppDeps): App {
         if (localStat) {
           const etag = `"${localStat.checksum}"`;
           if (req.headers['if-none-match'] === etag) {
-            res.writeHead(304, { etag, 'cache-control': 'private, max-age=300' });
+            res.writeHead(304, { etag, 'cache-control': extBytesCache });
             res.end();
             return;
           }
@@ -7248,7 +7392,7 @@ export function buildApp(deps: AppDeps): App {
             // whole read of the file, and parallel parts would multiply it.
             res.writeHead(200, {
               'content-type': local.stat.contentType, ...INERT_BYTES,
-              'cache-control': 'private, max-age=300', etag, 'content-length': String(local.stat.size),
+              'cache-control': extBytesCache, etag, 'content-length': String(local.stat.size),
             });
             Readable.fromWeb(local.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
             return;
@@ -7257,10 +7401,10 @@ export function buildApp(deps: AppDeps): App {
       }
       // The fragment entry names this file's format and the entry version.
       // The version keys the byte cache and the ETag, so a change in the DAM
-      // is a miss. The browser keeps the bytes for five minutes and then asks
-      // again, which the ETag answers with a 304: provider bytes sit behind
+      // is a miss. A staff browser keeps the bytes for five minutes and then
+      // asks again, which the ETag answers with a 304: provider bytes sit behind
       // access checks, so a person who loses access must not keep a cached copy
-      // that stays valid for longer (plan 80 D6).
+      // that stays valid for longer (plan 80 D6; partners: extBytesCache above).
       const fragEntry = await federation.entry(assetId);
       const entryVersion = typeof fragEntry?.version === 'string' && fragEntry.version ? fragEntry.version : '';
       const fileEntry = fragEntry?.formats?.find((f) => f.url === `/catalog/${assetId}/${formatRef}`);
@@ -7269,7 +7413,7 @@ export function buildApp(deps: AppDeps): App {
         ? extCacheKey({ provider: providerId, remoteId, formatRef, preview: filePreview, version: entryVersion })
         : '';
       const etag = cacheKey ? `"x${sha256Hex(cacheKey).slice(0, 32)}"` : '';
-      const bytesCache = 'private, max-age=300';
+      const bytesCache = extBytesCache;
       if (etag && etagMatches(req, etag)) {
         res.writeHead(304, { etag, 'cache-control': bytesCache });
         res.end();
@@ -7411,6 +7555,12 @@ export function buildApp(deps: AppDeps): App {
       if (!first?.hash || owners.size !== 1 || hashes.size !== 1 || first.hash.slice(0, 16) !== address[2]) return sendError(res, 404, 'NOT_FOUND', 'no currently accessible asset release');
       addressedAssetId = first.id; addressedAssetSha = first.hash;
     }
+    // A partner programme member: ownership and the feed are asked before the file system
+    // is, so neither the answer nor its timing says whether a file is there (plans/82 M1).
+    if (scopedCaller(user)) {
+      const owner = addressedAssetId ?? (await loadAssetPathMap(config.instance.pack)).get(actualRel);
+      if (!(owner ? await feedHolds(user!.groups, owner) : await feedNamesFile(user!.groups, rel))) return notAvailable(res);
+    }
     let file = await safeFile(join(config.instance.pack, 'catalog'), actualRel);
     if (!file && address) {
       actualRel = `${address[1]}${address[3]}`; file = await safeFile(join(config.instance.pack, 'catalog'), actualRel);
@@ -7427,6 +7577,9 @@ export function buildApp(deps: AppDeps): App {
     // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
     // the blob dies too - a guessed/cached URL doesn't bypass the feed.
     const assetId = addressedAssetId ?? (await loadAssetPathMap(config.instance.pack)).get(actualRel);
+    // A partner programme member is told nothing about a file their feed leaves out,
+    // its lifecycle included: the feed is asked first, and the denial is plain (plans/82 M1).
+    if (assetId && user && isProgrammeScoped(user.groups, user.role) && !(await feedHolds(user.groups, assetId))) return notAvailable(res);
     if (assetId) {
       const { state, blocked } = await catalogBytesGate(assetId, false);
       if (blocked) {
@@ -7439,7 +7592,7 @@ export function buildApp(deps: AppDeps): App {
       // A partner programme member reads only what their feed names: a pack file no
       // asset owns (a release inventory, a rendition, a licence text) answers only when
       // an entry in their own feed points at it (plans/82 M1).
-      return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      return notAvailable(res);
     }
     sendBytes(req, res, bytes, { contentType: contentType(rel), ranges: true,
       modified: file!.modified, headers: { ...INERT_BYTES, 'cache-control': cachePolicy('instance-private').cacheControl } });
@@ -7465,6 +7618,8 @@ export function buildApp(deps: AppDeps): App {
    *  /catalog/* route follows for blob paths (plans/27 §5). */
   const resolveAssetAlias = async (assetId: string): Promise<string> =>
     assetId.startsWith(EXT_PREFIX) ? (await store.getAlias(assetId)) ?? assetId : assetId;
+  /** The local pins of federated files (plans/27): a choice binds the bytes the pin serves. */
+  const pinsNow = async (): Promise<PinLookup> => pinLookup(await store.listInstanceAssets());
 
   /** The federated feed entry for an ext/* id, or undefined when the provider's
    *  exposure slice does not federate it. */
@@ -7511,15 +7666,23 @@ export function buildApp(deps: AppDeps): App {
    *  the asset's own groups. One rule for every instance-asset route. */
   const instanceAssetReadable = async (user: UserRecord | null | undefined, rec: InstanceAssetRecord): Promise<boolean> =>
     user && isProgrammeScoped(user.groups, user.role) ? callerSeesAsset(user, rec.id) : instanceAssetVisible(rec, user?.groups ?? []);
+  /** One answer for a partner programme member, whether a thing is missing or kept from
+   *  them, so a refusal never says that something exists (plans/82 M1). */
+  const notAvailable = (res: ServerResponse): void => sendError(res, 404, 'NOT_FOUND', 'not available');
+  const scopedCaller = (user: { groups: string[]; role?: string } | null | undefined): boolean => !!user && isProgrammeScoped(user.groups, user.role);
+  /** Whether a group set's served feed holds an asset, under its current id. The one
+   *  question every partner programme check asks (plans/82 M1). */
+  const feedHolds = async (groups: string[], rawId: string): Promise<boolean> => {
+    const assetId = await resolveAssetAlias(rawId);
+    await providersReady;
+    return !!(await servedIndex.forCaller({ groups })).index.assets?.some((entry) => entry.id === assetId);
+  };
   const callerSeesAsset = async (user: UserRecord, rawId: string): Promise<boolean> => {
     const assetId = await resolveAssetAlias(rawId);
     // A partner programme member sees exactly what their feed holds (plans/82
     // M1): essentials and what their programmes include, never the rest of the
     // pack. Their feed is lifecycle-gated, so they cannot link a scheduled asset.
-    if (isProgrammeScoped(user.groups, user.role)) {
-      await providersReady;
-      return !!(await servedIndex.forCaller({ groups: user.groups })).index.assets?.some((entry) => entry.id === assetId);
-    }
+    if (isProgrammeScoped(user.groups, user.role)) return feedHolds(user.groups, assetId);
     if (assetId.startsWith(INST_PREFIX)) {
       const rec = await store.getInstanceAsset(assetId);
       // A submission that is not live yet is not linkable: it is not in the
@@ -7745,10 +7908,62 @@ export function buildApp(deps: AppDeps): App {
     if (!maker || !isProgrammeScoped(maker.groups, maker.role)) return true;
     return check(maker);
   };
+  /**
+   * The licence gate on a bearer link (plans/82 M4), or null when the gate
+   * reports only. For each file the link names it answers whether the bytes
+   * may be served and whether they travel by someone's choice. A link a
+   * partner made carries what the partner's own gated feed holds, share
+   * anyway choices included. A link staff made carries a held file only when
+   * its minter chose it at mint and the facts it was chosen against still
+   * hold (target.includeHeld). A held file is left out, never counted as
+   * withdrawn: the bearer is told nothing about it.
+   */
+  type LinkRightsGate = (assetId: string) => { serve: boolean; byChoice: boolean };
+  const linkRightsGate = async (link: LinkRecord): Promise<LinkRightsGate | null> => {
+    if ((await partnerRightsReady).mode !== 'gate') return null;
+    const maker = await store.getUser(link.createdBy);
+    const engine = await loadRightsEngine();
+    // Each file is judged as the bytes route serves it: through its alias, so a
+    // cutover to an instance file is judged by the instance file's record.
+    const targets = link.target.collectionId ? (await store.getCollection(link.target.collectionId))?.members ?? [] : [link.target.assetId ?? ''];
+    const resolved = new Map(await Promise.all(targets.map(async (id) => [id, await resolveAssetAlias(id)] as const)));
+    if (maker && isProgrammeScoped(maker.groups, maker.role)) {
+      const gated = await entriesSeenBy(maker.groups);
+      const companies = new Set(maker.groups.filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
+      return (assetId) => {
+        const entry = gated.get(resolved.get(assetId) ?? assetId);
+        return entry ? { serve: true, byChoice: rightsAnswer(engine, entry, companies).state === 'held' } : { serve: false, byChoice: false };
+      };
+    }
+    const seen = await entriesSeenBy(maker?.groups ?? []);
+    const [marks, licences, pins] = await Promise.all([store.listAssetRightsMarks(), store.listAssetLicences(), pinsNow()]);
+    const chosen = new Map((link.target.includeHeld ?? []).map((h) => [h.id, h.fingerprint]));
+    const answers = new Map<string, { serve: boolean; byChoice: boolean }>();
+    for (const assetId of targets) {
+      // The maker's own feed first; a file it no longer lists is read from its
+      // source with the marks and licence records composed, as the feed would.
+      // A file with no record to judge is not served.
+      const id = resolved.get(assetId) ?? assetId;
+      let entry = seen.get(id);
+      if (!entry) {
+        const raw = id.startsWith(EXT_PREFIX) ? await federation.entry(id)
+          : id.startsWith(INST_PREFIX) ? (await store.getInstanceAsset(id))?.entry : (await loadAssetIndexById(config.instance.pack)).get(id);
+        entry = raw ? composeRightsRecords(engine, [raw], marks, licences)[0] : undefined;
+      }
+      if (!entry) { answers.set(assetId, { serve: false, byChoice: false }); continue; }
+      if (rightsAnswer(engine, entry).state !== 'held') { answers.set(assetId, { serve: true, byChoice: false }); continue; }
+      const fingerprint = chosen.get(assetId);
+      const byChoice = !!fingerprint && fingerprint === currentFingerprint(engine, entry, 'link', pins);
+      answers.set(assetId, { serve: byChoice, byChoice });
+    }
+    return (assetId) => answers.get(assetId) ?? { serve: false, byChoice: false };
+  };
   const serveLinkedAsset = async (req: IncomingMessage, res: ServerResponse, link: LinkRecord): Promise<void> => {
     if (!await programmeMakerStillSees(link, (maker) => callerSeesAsset(maker, link.target.assetId ?? ''))) {
       return sendError(res, 410, 'LINK_MAKER_NO_ACCESS', 'the person who made this link no longer has this asset');
     }
+    const gate = await linkRightsGate(link);
+    if (gate && !gate(link.target.assetId ?? '').serve) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
     const source = await resolveLinkedSource(link.target.assetId ?? '', link.target.format);
     await streamLinkedSource(req, res, source, link.kind === 'download');
   };
@@ -7777,11 +7992,13 @@ export function buildApp(deps: AppDeps): App {
    *  a list, because naming an asset they may not have would be a reach past
    *  the set. */
   const resolveCollectionMembers = async (
-    rec: CollectionRecord,
+    rec: CollectionRecord, gate: LinkRightsGate | null = null,
   ): Promise<{ members: ResolvedMember[]; withheld: number }> => {
     const members: ResolvedMember[] = [];
     let withheld = 0;
     for (const assetId of rec.members) {
+      // A file the licence gate holds is left out and not counted (plans/82 M4).
+      if (gate && !gate(assetId).serve) continue;
       const source = await resolveLinkedSource(assetId);
       if (source.kind === 'refused') {
         withheld++;
@@ -7848,11 +8065,14 @@ export function buildApp(deps: AppDeps): App {
       if (!rec.members.includes(wantAsset)) {
         return sendError(res, 404, 'NOT_IN_COLLECTION', 'this link reaches this collection only');
       }
+      const gate = await linkRightsGate(link);
+      if (gate && !gate(wantAsset).serve) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       const source = await resolveLinkedSource(wantAsset);
       return streamLinkedSource(req, res, source, url.searchParams.get('dl') === '1' || link.kind === 'download');
     }
 
-    const { members, withheld } = await resolveCollectionMembers(rec);
+    const gate = await linkRightsGate(link);
+    const { members, withheld } = await resolveCollectionMembers(rec, gate);
 
     // A `download` link IS the zip; a `share` link offers it from its page.
     if (link.kind === 'download' || url.searchParams.get('zip') === '1') {
@@ -7870,7 +8090,7 @@ export function buildApp(deps: AppDeps): App {
       const [engine, entries] = await Promise.all([loadRightsEngine(), linkMakerEntries(link)]);
       const credits = collectionCredits(engine, named.map(({ member, path }) => {
         const entry = entries.get(member.assetId);
-        return { id: member.assetId, path, fallbackLabel: member.source.filename, ...(entry ? { entry } : {}) };
+        return { id: member.assetId, path, fallbackLabel: member.source.filename, ...(entry ? { entry } : {}), ...(gate?.(member.assetId).byChoice ? { includedByChoice: true } : {}) };
       }));
       res.writeHead(200, {
         'content-type': 'application/zip',
@@ -7956,7 +8176,7 @@ export function buildApp(deps: AppDeps): App {
   // Metadata only - never bytes; the console links to the existing gated
   // /catalog/ preview path for the thumbnail. Merges the pack index entry with
   // the asset's lifecycle row + resolved state. 404 when the id is in neither.
-  // The id carries slashes (e.g. 'suse/tokens/brand'), so it rides the trailing
+  // The id carries slashes (e.g. 'lolly/tokens/demo'), so it rides the trailing
   // wildcard, same as the lifecycle admin route.
   // ── paged asset browse (catalog/asset-browse.ts) ──────────────────────────
   // One page of the caller's feed at a time, filtered and faceted, for a
@@ -8012,10 +8232,12 @@ export function buildApp(deps: AppDeps): App {
       // asset are versioned where they live, and claiming otherwise here would
       // invent a history this instance does not have.
       if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+      if (scopedCaller(user) && (!instAsset || !(await callerSeesAsset(user, id)))) return notAvailable(res);
       if (!instAsset) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       const head = headVersionOf(instAsset);
       const rows = await assetVersionRows(instAsset);
+      const allowedVersion = await versionsAllowedFor(user, id);
       const sourceReviews = [];
       const reviewGrants = await store.listGrants();
       for (const approval of await store.listApprovals({})) if (approval.sourceReview?.files.some(file => file.assetId === id)
@@ -8027,7 +8249,7 @@ export function buildApp(deps: AppDeps): App {
         metadataHistory: 'not-recorded', sourceReviews,
         sourceReviewCapability: instAsset.origin ? null : { kind: 'frozen-instance-originals-v1', maxFiles: 32, maxFileBytes: 64 * 1024 * 1024, maxTotalBytes: 128 * 1024 * 1024 },
         keep: config.policy.catalog.versionKeep,
-        versions: [...rows].sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
+        versions: [...rows].filter(allowedVersion ?? (() => true)).sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
       }, { 'cache-control': 'private, no-store' });
     }
     await providersReady;
@@ -8287,7 +8509,7 @@ export function buildApp(deps: AppDeps): App {
   /**
    * Edit one asset's metadata: `PUT /api/v1/catalog/assets/<id>/meta`.
    *
-   * The id carries slashes ('suse/tokens/brand'), so it rides the trailing
+   * The id carries slashes ('lolly/tokens/demo'), so it rides the trailing
    * wildcard with '/meta' as its last segment, the same shape the inspect and
    * lifecycle routes use.
    *
@@ -8538,17 +8760,22 @@ export function buildApp(deps: AppDeps): App {
   // collections their groups admit with members narrowed to what they are
   // already being served. Neither is derived from the other.
 
+  // A partner programme member trusted with collections curates only the ones
+  // their programme sees, never the workspace's own (plans/82 M1): the grant says
+  // what they may do, the programme says to what.
+  const curates = (user: UserRecord, rec: CollectionRecord): boolean => !isProgrammeScoped(user.groups, user.role) || callerSeesCollection(user, rec);
+
   router.add('GET', '/api/v1/catalog/collections', async (req, res) => {
     const user = await requireAction(req, res, 'catalog.collection.manage');
     if (!user) return;
-    sendJson(res, 200, { collections: sortCollections(await store.listCollections()) }, { 'cache-control': 'private, no-store' });
+    sendJson(res, 200, { collections: sortCollections((await store.listCollections()).filter((rec) => curates(user, rec))) }, { 'cache-control': 'private, no-store' });
   });
 
   router.add('GET', '/api/v1/catalog/collections/:id', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'catalog.collection.manage');
     if (!user) return;
     const rec = await store.getCollection(ctx.params.id as string);
-    if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+    if (!rec || !curates(user, rec)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
     sendJson(res, 200, rec, { 'cache-control': 'private, no-store' });
   });
 
@@ -8570,10 +8797,12 @@ export function buildApp(deps: AppDeps): App {
     if (!user) return;
     const id = ctx.params.id as string;
     const prior = await store.getCollection(id);
+    if (prior && !curates(user, prior)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
     const parsed = normalizeCollection(id, await readJson(req), {
       curator: `user:${user.id}`, now: new Date().toISOString(), prior,
     });
     if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
+    if (!curates(user, parsed)) return sendError(res, 403, 'FORBIDDEN', 'a collection you curate names your programme in its groups');
     await providersReady;
     const unseen: string[] = [];
     for (const memberId of parsed.members) {
@@ -8596,7 +8825,7 @@ export function buildApp(deps: AppDeps): App {
     if (!user) return;
     const id = ctx.params.id as string;
     const before = await store.getCollection(id);
-    if (!before) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+    if (!before || !curates(user, before)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
     await store.deleteCollection(id);
     await audit(`user:${user.id}`, 'catalog.collection.delete', `collection:${id}`, { before });
     sendJson(res, 200, { ok: true, id });
@@ -8616,6 +8845,8 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
     }
     await providersReady;
+    // A partner programme member trusted with scans scans only what their feed holds (plans/82 M1).
+    if (isProgrammeScoped(user.groups, user.role) && !(await feedHolds(user.groups, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
     let bytes: Uint8Array;
     let sourceUpdatedAt: string | undefined;
     try {
@@ -8778,14 +9009,19 @@ export function buildApp(deps: AppDeps): App {
 
   // ── catalog lifecycle admin (plans/06 §3: "stop sharing" as one action) ───
   router.add('GET', '/api/v1/catalog/lifecycle', async (req, res) => {
-    if (!(await requireAction(req, res, 'catalog.expire'))) return;
+    const user = await requireAction(req, res, 'catalog.expire');
+    if (!user) return;
     const now = Date.now();
-    const rows = await store.listLifecycle();
+    // A partner programme member trusted with dates sees the rows of what their feed
+    // holds, and nothing of the rest of the catalog's lifecycle (plans/82 M1).
+    const all = await store.listLifecycle();
+    const rows = isProgrammeScoped(user.groups, user.role)
+      ? (await Promise.all(all.map(async (row) => (await feedHolds(user.groups, row.assetId)) ? [row] : []))).flat() : all;
     sendJson(res, 200, { rows: await Promise.all(rows.map((r) => lifecycleView(r, now))) });
   });
 
   // The wildcard is the assetId, which itself contains slashes (e.g.
-  // 'suse/tokens/brand') - same trailing-wildcard support the catalog/admin
+  // 'lolly/tokens/demo') - same trailing-wildcard support the catalog/admin
   // static routes use. Body merges onto any existing row; `revoke: true`
   // stamps revokedAt=now and is audited under its own action so "stop
   // sharing" reads distinctly from an ordinary expiry-date edit.
@@ -8807,6 +9043,9 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, isHoldOp ? 'catalog.hold' : 'catalog.expire');
     if (!user) return;
     if (!assetId) return sendError(res, 400, 'INVALID_INPUT', 'assetId required');
+    // The same scope for a write: a partner programme member dates, holds or stops
+    // sharing only what their feed holds (plans/82 M1).
+    if (isProgrammeScoped(user.groups, user.role) && !(await feedHolds(user.groups, assetId))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
     if (body?.onExpiry && body.onExpiry !== 'hide' && body.onExpiry !== 'warn') {
       return sendError(res, 400, 'INVALID_INPUT', 'onExpiry must be hide or warn');
     }
@@ -8899,6 +9138,8 @@ export function buildApp(deps: AppDeps): App {
       const person = await store.getUser(submitter.id);
       return !!person && mayStateMark(person);
     },
+    duplicateVisible: async (submitter: { groups: string[]; role?: string }, rec: InstanceAssetRecord) =>
+      !isProgrammeScoped(submitter.groups, submitter.role ?? roleFromGroups(submitter.groups, config.idp.roleGroups)) || feedHolds(submitter.groups, rec.id),
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     // A template or user tool must seed a tool this pack has (plan 299). The
@@ -9139,7 +9380,7 @@ export function buildApp(deps: AppDeps): App {
       ...(declaredGroups.length ? { groups: declaredGroups } : {}),
       ...(projectInput ? { contentType: projectInput.contentType } : uploaded ? { contentType: uploaded.upload.contentType }
         : req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
-      submitter: { id: user.id, groups: user.groups },
+      submitter: { id: user.id, groups: user.groups, role: user.role },
       ...(toolIdParam ? { toolId: toolIdParam } : {}),
       ...(clientRef ? { clientRef } : {}),
     }); } finally { await release?.(); }
@@ -9220,9 +9461,14 @@ export function buildApp(deps: AppDeps): App {
     const [defs, metas] = await Promise.all([store.listCatalogFields(), store.listAssetMeta()]);
     const metaById = new Map(metas.map((m) => [m.assetId, m]));
     const rows: Array<Record<string, unknown>> = [];
+    // A partner programme member's live rows also follow their feed (plans/82 M1):
+    // once published, their own submission is theirs only while their programme
+    // includes it. Rows still waiting for a decision keep the relationship alone.
+    const scoped = isProgrammeScoped(user.groups, user.role);
     for (const rec of listSubmissions(await store.listInstanceAssets(), state)) {
       const relation = await submissionRelation(rec, user);
-      if (relation) rows.push({ ...submissionView(rec, actors, servedFields(defs, metaById.get(rec.id))), relation });
+      if (!relation || (scoped && submissionServable(rec) && !(await instanceAssetReadable(user, rec)))) continue;
+      rows.push({ ...submissionView(rec, actors, servedFields(defs, metaById.get(rec.id))), relation });
     }
     sendJson(res, 200, { submissions: rows }, { 'cache-control': 'no-store' });
   });
@@ -9234,7 +9480,7 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
-    if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
+    if (!rec?.submission) return scopedCaller(user) ? notAvailable(res) : sendError(res, 404, 'NOT_FOUND', 'no such submission');
     // Only the submitter and whoever may act on the step see a PENDING
     // submission's bytes, which are the submitter's own upload: nothing can
     // replace them before the decision. Once it is live, staff keep that
@@ -9246,7 +9492,7 @@ export function buildApp(deps: AppDeps): App {
       : isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
         : !!(await submissionRelation(rec, user)) || instanceAssetVisible(rec, user.groups);
     if (!allowed) {
-      return sendError(res, 403, 'FORBIDDEN', 'not yours to review');
+      return scopedCaller(user) ? notAvailable(res) : sendError(res, 403, 'FORBIDDEN', 'not yours to review');
     }
     // Once it is published this row is an ordinary catalog asset, so it answers
     // to the ordinary lifecycle gate: a revoked, expired or scheduled asset
@@ -9282,6 +9528,8 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
+    // A partner learns a submission's state only from one of their own.
+    if (scopedCaller(user) && (!rec?.submission || !(await submissionRelation(rec, user)))) return notAvailable(res);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     if (rec.submission.state !== 'submitted') {
       return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
@@ -9385,6 +9633,8 @@ export function buildApp(deps: AppDeps): App {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
+    // A partner never acts on a submission's review, so nothing about one is said to them.
+    if (scopedCaller(user)) return notAvailable(res);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     if (rec.submission.state !== 'submitted') return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
     const approvalId = rec.submission.approvalId;
@@ -10323,6 +10573,14 @@ export function buildApp(deps: AppDeps): App {
     finally { res.removeListener('close', disconnected); }
   });
 
+  /** The licence gate for a partner's live search results, or null when none applies (plans/82 M4). */
+  const liveSearchGate = async (user: UserRecord): Promise<((entry: AssetIndexEntry) => boolean) | null> => {
+    if ((await partnerRightsReady).mode !== 'gate' || !isProgrammeScoped(user.groups, user.role)) return null;
+    const [engine, marks, licences, choices, pins] = await Promise.all([loadRightsEngine(), store.listAssetRightsMarks(), store.listAssetLicences(), store.listRightsChoices(), pinsNow()]);
+    const keep = licenceGate(engine, new Set(partnerGroupsOf(user.groups)), choices, pins);
+    return (entry) => keep(composeRightsRecords(engine, [entry], marks, licences)[0]!);
+  };
+
   router.add('GET', '/api/v1/catalog/search', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
@@ -10350,6 +10608,10 @@ export function buildApp(deps: AppDeps): App {
     const metas = await store.listAssetMeta();
     const metaById = new Map(metas.map((m) => [m.assetId, m]));
     const composed = (await servedIndex.forCaller({ groups: user.groups })).index;
+    // A partner programme member gets live results only for what their feed holds
+    // (plans/82 M1): a provider asset sync left out (past sync.maxAssets, say) is
+    // not theirs, so its name, tags and files never reach them through search.
+    const feedIds = isProgrammeScoped(user.groups, user.role) ? new Set((composed.assets ?? []).map((entry) => entry.id)) : null;
     // The haystack folds the org's own field values (plans/31 section 4) and
     // the asset's on-device OCR text (section 7) alongside id, name, description
     // and tags: a value an org files an asset under, or a word printed on the
@@ -10374,6 +10636,9 @@ export function buildApp(deps: AppDeps): App {
     const live = candidates.filter((rec) => reaches.get(rec.id));
     // Live results lose hidden tags the same way the feed's entries do.
     const tagRules = await loadTagRules(store);
+    // And for a partner with the licence gate on, the gate the feed applies
+    // (plans/82 M4), over the entry with its marks and licence records composed.
+    const liveGate = await liveSearchGate(user);
     await Promise.all(live.map(async (rec) => {
       try {
         const provider = federation.instantiate(rec);
@@ -10387,6 +10652,8 @@ export function buildApp(deps: AppDeps): App {
           // A partner given only some folders of this provider gets results from those folders only.
           if (!reachesAsset(reaches.get(rec.id) ?? null, a)) continue;
           const entry = hideEntryTags(mapProviderAsset(rec, a), tagRules);
+          if (feedIds && !feedIds.has(entry.id)) continue;
+          if (liveGate && !liveGate(entry)) continue;
           const row = lifecycleById.get(entry.id);
           const { state, upstreamExpired } = combinedState(row, entryWindow(entry), Date.now());
           if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'))) continue;
@@ -11954,7 +12221,8 @@ export function buildApp(deps: AppDeps): App {
     caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
-    designRevision: () => brand.current()!.revision, catalogVersion: instanceCatalogVersion,
+    designRevision: () => brand.current()!.revision,
+    catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
@@ -12042,8 +12310,9 @@ export function buildApp(deps: AppDeps): App {
     },
     companyLogo: async (groups, id) => {
       const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
-      if (!rec || !submissionServable(rec) || !instanceAssetVisible(rec, groups)) return null;
-      if ((await store.getLifecycle(id))?.revokedAt) return null;
+      // The same answer as the logo's bytes route: what the caller's feed holds, through
+      // the lifecycle gate, so a scheduled, expired or revoked logo stays put.
+      if (!rec || !submissionServable(rec) || !(await feedHolds(groups, id)) || (await catalogBytesGate(id, false)).blocked) return null;
       const [format, blobId] = Object.entries(rec.blobs)[0] ?? [];
       const blob = blobId ? await blobs.get(blobId) : null;
       if (!format || !blob) return null;
@@ -12986,6 +13255,20 @@ export function buildApp(deps: AppDeps): App {
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse, span: RequestSpan | undefined): Promise<void> => {
+    // Nothing runs before the licence gate's mode is known (plans/82 M4): a
+    // sign-in that created the first account first would decide an empty
+    // instance as an upgrade. Health and readiness answer meanwhile.
+    // The path is read as the router reads it, so `/healthz/%2e%2e/...` is the
+    // route it normalises to, never the health check it starts with.
+    const startupPath = !partnerRightsKnown ? new URL(req.url ?? '/', 'http://local').pathname.split('/').filter(Boolean).join('/') : '';
+    if (!partnerRightsKnown && startupPath !== 'healthz' && startupPath !== 'readyz') {
+      const known = await Promise.race([partnerRightsReady, new Promise<null>((r) => setTimeout(() => r(null), PARTNER_RIGHTS_WAIT_MS).unref())]);
+      if (!known) {
+        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '5', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ error: { code: 'STARTING', message: 'This instance is still starting. Try again in a few seconds.' } }));
+        return;
+      }
+    }
     guardDelivery(req, res, edgeDelivery);
     // A public-only edge hostname (edge/config.ts) answers reads of public classes and nothing else.
     if (servesPublicOnly(res) && req.method !== 'GET' && req.method !== 'HEAD') {

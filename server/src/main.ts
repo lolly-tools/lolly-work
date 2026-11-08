@@ -288,7 +288,7 @@ const sweepEnds = async (): Promise<number> => {
   const ended = await sweepProgrammeEnds(store, sweepAudit);
   // A scheduled exit withdraws the partnership's share anyway choices, as one
   // run by hand does (plans/82 M4 and M5).
-  await sweepScheduledExits({ store, audit: sweepAudit, people: sweepPeople, context: (now) => noticeContext(config, now), rights: exitRightsChoices(store, sweepAudit) });
+  await sweepScheduledExits({ store, audit: sweepAudit, people: sweepPeople, context: (now) => noticeContext(config, now), rights: exitRightsChoices(store) });
   await recheckDomains(store, sweepAudit, resolveTxt);
   return ended;
 };

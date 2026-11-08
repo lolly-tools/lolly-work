@@ -80,3 +80,30 @@ export async function assessSetup(config: InstanceConfig, secrets: Secrets, dura
     message: pack.compatible ? 'The selected pack loads with the installed engine.' : ['The selected pack is missing or incompatible.', ...pack.diagnostics, 'Review the diagnostics before acceptance.'].join(' ') });
   return { version: 1, checkedAt: new Date().toISOString(), mode, ready: !checks.some(check => check.status === 'fail'), checks, pack };
 }
+
+/**
+ * The licence gate's setup line (plans/82 M4). `gate` passes. `report` passes
+ * too when turning the gate on would hold nothing back from any programme and
+ * take no file from any link; otherwise it warns with the counts and the one
+ * step that turns the gate on. Never a failure: reporting only is a
+ * supported state.
+ */
+export function partnerRightsCheck(
+  state: { mode: 'report' | 'gate'; line: string },
+  wouldHold: { programmes: ReadonlyArray<{ name: string; held: number }>; linksLosing: number },
+): SetupCheck {
+  if (state.mode === 'gate') return { id: 'partner-rights', status: 'pass', message: state.line };
+  const losing = wouldHold.programmes.filter((p) => p.held > 0);
+  const held = losing.reduce((n, p) => n + p.held, 0);
+  if (!held && !wouldHold.linksLosing) {
+    return { id: 'partner-rights', status: 'pass', message: `${state.line} Turning the gate on would hold nothing back.` };
+  }
+  const parts = [
+    ...(held ? [`${held} asset${held === 1 ? '' : 's'} in ${losing.length} programme${losing.length === 1 ? '' : 's'} would be held back`] : []),
+    ...(wouldHold.linksLosing ? [`${wouldHold.linksLosing} link${wouldHold.linksLosing === 1 ? '' : 's'} made by staff would lose files`] : []),
+  ];
+  return {
+    id: 'partner-rights', status: 'warning',
+    message: `${state.line} ${parts.join(', and ')}. Mark the folders that are yours, then set policy.catalog.partnerRights to gate.`,
+  };
+}

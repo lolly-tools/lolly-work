@@ -31,7 +31,7 @@ const ASSETS_PAGE = {
     },
   }],
   included: [
-    { id: 'tag1', type: 'tags', attributes: { name: ' SUSE Virtualization ' } },
+    { id: 'tag1', type: 'tags', attributes: { name: ' Acme Virtualization ' } },
     { id: 'tag2', type: 'tags', attributes: { name: 42 } },
     { id: 'col1', type: 'collections', attributes: { name: 'Logo Kit' } },
     { id: 'sec1', type: 'sections', attributes: { name: 'Standard Logos', default_asset_type: 'GenericFile', position: 0 } },
@@ -79,7 +79,7 @@ test('attachment formats discard preview context and fall back to the filename',
     const doc = structuredClone(ASSETS_PAGE);
     const attachment = doc.included.find(r => r.type === 'attachments')!;
     Object.assign(attachment.attributes, { extension, filename });
-    const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'key', fakeFetch([
+    const bf = createBrandfolderProvider('acme-bf', { brandfolderId: BF_ID }, 'key', fakeFetch([
       { match: u => u.includes(`/brandfolders/${BF_ID}/assets`), body: doc },
     ]));
     assert.equal((await bf.listAssets()).assets[0]?.formats[0]?.format, expected);
@@ -88,7 +88,7 @@ test('attachment formats discard preview context and fall back to the filename',
 
 test('listAssets maps the recorded shape: section names, attachment formats, pagination cursor', async () => {
   const fetchImpl = fakeFetch([{ match: (u) => u.includes(`/brandfolders/${BF_ID}/assets`), body: ASSETS_PAGE }]);
-  const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
+  const bf = createBrandfolderProvider('acme-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
   const page = await bf.listAssets();
   assert.equal(page.next, '2', 'meta.next_page becomes the cursor');
   const a = page.assets[0];
@@ -96,7 +96,7 @@ test('listAssets maps the recorded shape: section names, attachment formats, pag
   assert.equal(a?.name, 'program-logo-positive');
   assert.deepEqual(a?.sections, ['Standard Logos']);
   assert.equal(a?.folder, 'Standard Logos', 'a Brandfolder section is its folder');
-  assert.deepEqual(a?.tags, ['SUSE Virtualization']);
+  assert.deepEqual(a?.tags, ['Acme Virtualization']);
   assert.deepEqual(a?.collections, ['Logo Kit']);
   assert.equal(a?.approved, true);
   assert.equal(a?.hasThumbnail, true);
@@ -117,7 +117,7 @@ test('listAssets maps the recorded shape: section names, attachment formats, pag
 test('an asset with no availability attributes carries no window', async () => {
   const bare = { data: [{ id: 'z', type: 'generic_files', attributes: { name: 'bare', extension: 'png' }, relationships: {} }], meta: {} };
   const fetchImpl = fakeFetch([{ match: (u) => u.includes(`/brandfolders/${BF_ID}/assets`), body: bare }]);
-  const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
+  const bf = createBrandfolderProvider('acme-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
   const a = (await bf.listAssets()).assets[0];
   assert.equal(a?.availableFrom, undefined);
   assert.equal(a?.availableUntil, undefined);
@@ -131,7 +131,7 @@ test('searchAssets URL-encodes the query and bearer auth rides every call', asyn
     assert.equal(new URL(String(input)).searchParams.get('include'), 'section,attachments,tags,collections');
     return new Response(JSON.stringify({ data: [], included: [] }), { status: 200 });
   }) as typeof fetch;
-  const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'sekret', fetchImpl);
+  const bf = createBrandfolderProvider('acme-bf', { brandfolderId: BF_ID }, 'sekret', fetchImpl);
   await bf.searchAssets?.('summit & logo', 10);
   assert.equal(seenAuth, 'Bearer sekret');
 });
@@ -142,7 +142,7 @@ test('resolveBlob re-fetches a fresh signed URL per request and streams from bfl
     { match: (u) => u.includes('/attachments/njc8wh9647cjst8h55ff38'), body: ATTACHMENT_DOC },
     { match: (u) => u.startsWith('https://storage-us-gcs.bfldr.com/'), bytes: 'PNGBYTES' },
   ]);
-  const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
+  const bf = createBrandfolderProvider('acme-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
   const blob = await bf.resolveBlob('255hvp7s4xkbqb9rbncsfqp3', 'njc8wh9647cjst8h55ff38');
   assert.equal(blob.kind, 'stream');
   if (blob.kind === 'stream') {
@@ -161,7 +161,7 @@ test('an upstream URL outside Brandfolder-owned hosts is refused (no open proxy)
     { match: (u) => u.includes('/assets/a?'), body: { data: { id: 'a', attributes: {}, relationships: { attachments: { data: [{ id: 'x', type: 'attachments' }] } } } } },
     { match: (u) => u.includes('/attachments/'), body: evil },
   ]);
-  const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
+  const bf = createBrandfolderProvider('acme-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
   await assert.rejects(() => bf.resolveBlob('a', 'x'), /outside allowed hosts/);
 });
 

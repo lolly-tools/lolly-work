@@ -540,10 +540,10 @@ test('invitation wires: a personal link while pending, names and projects, passw
     dev: { enabled: true, users: [...DEV.users, { email: 'ada@test', name: 'Ada', groups: ['admin'] }] },
     idp: { additional: [PASSWORD] },
     instance: { name: 'lolly.ing', baseUrl: 'https://team.example', inviteNote: 'Use GitHub or email and password.' },
-    policy: { invites: { passwordDomains: ['suse.com'] } },
+    policy: { invites: { passwordDomains: ['lolly.example'] } },
   });
   const ada = await devLogin(base, 'ada@test');
-  const made = await invite(base, ada, { emails: ['sam@suse.com'], passwordSetup: true });
+  const made = await invite(base, ada, { emails: ['sam@lolly.example'], passwordSetup: true });
   assert.equal(made.status, 201);
   const body = await made.json() as { invitations: LinkWire[]; providers: string[]; passwordSignIn: boolean; passwordDomains: string[]; inviteNote: string | null };
   const sam = body.invitations[0]!;
@@ -553,12 +553,12 @@ test('invitation wires: a personal link while pending, names and projects, passw
   assert.deepEqual([sam.linkVersion, sam.openedAt, sam.passwordSetup, sam.password, sam.createdVia], [1, null, true, 'none', 'console']);
   assert.deepEqual(sam.inviter, { name: 'Ada' }, 'named, never by address');
   assert.deepEqual([body.providers, body.passwordSignIn, body.passwordDomains, body.inviteNote],
-    [['Email and password'], true, ['suse.com'], 'Use GitHub or email and password.']);
+    [['Email and password'], true, ['lolly.example'], 'Use GitHub or email and password.']);
   const create = (await store.listAudit()).find((e) => e.action === 'invite.create');
   assert.deepEqual(create?.payload, { email: '[email omitted]', groups: [], via: 'console', passwordSetup: true });
 
   // A password set since ends what the flag offers; the wire says so.
-  await store.putPasswordCredential({ id: 'pw_1', email: 'sam@suse.com', hash: 'x', at: new Date().toISOString(), ownerIssued: false });
+  await store.putPasswordCredential({ id: 'pw_1', email: 'sam@lolly.example', hash: 'x', at: new Date().toISOString(), ownerIssued: false });
   const listed = await (await fetch(`${base}/api/v1/invitations`, { headers: { cookie: ada } })).json() as { invitations: LinkWire[] };
   assert.equal(listed.invitations.find((i) => i.id === sam.id)?.password, 'set');
 
@@ -601,7 +601,7 @@ test('POST /api/v1/invitations: an account that holds the address is "already", 
   // A member who holds user.invite may invite, but not with a password link.
   await store.putGrant({ principal: `user:${memberId}`, action: 'user.invite', resource: '*', effect: 'allow' });
   const member = await devLogin(base, 'member@test');
-  const byMember = await (await invite(base, member, { emails: ['m@suse.com'], passwordSetup: true })).json() as { invitations: LinkWire[] };
+  const byMember = await (await invite(base, member, { emails: ['m@lolly.example'], passwordSetup: true })).json() as { invitations: LinkWire[] };
   assert.equal(byMember.invitations[0]?.passwordSetup, false, 'ignored, not refused');
 
   // Without password sign-in the tick means nothing, even for an admin.

@@ -246,7 +246,7 @@ function compute(args) {
   var key = JSON.stringify(args);
   if (key === _memoKey) return _memoResult;
 
-  var content = (typeof args.url === 'string' && args.url.trim()) ? args.url.trim() : 'https://www.suse.com';
+  var content = (typeof args.url === 'string' && args.url.trim()) ? args.url.trim() : 'https://lolly.tools';
 
   var result;
   try {

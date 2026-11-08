@@ -38,7 +38,7 @@ import type { AuditEvent } from '../server/src/audit/chain.ts';
 const servers: Server[] = [];
 after(() => { for (const s of servers) s.close(); });
 
-const PACK_ASSET = 'suse/tokens/brand';
+const PACK_ASSET = 'lolly/tokens/demo';
 const EXT_ASSET = 'ext/dam1/a1';
 const INST_ASSET = 'inst/aaaa1111';
 

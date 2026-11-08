@@ -6,7 +6,7 @@
  * A mark states that the files in one scope are the workspace's own, on its
  * own terms: one asset (`asset:<id>`), a provider folder and everything below
  * it (`folder:<provider>/<path>`), a whole provider (`provider:<id>`) or a
- * pack id prefix (`prefix:suse/logo/`). A licence record is the admin's own
+ * pack id prefix (`prefix:lolly/logo/`). A licence record is the admin's own
  * record of one file's licence. Both reach only files whose own record
  * declares nothing, both are the admin's statement and not proof, and neither
  * is written back to a provider.

@@ -299,6 +299,10 @@ export interface SubmitDeps {
   onHeadMoved?: (rec: InstanceAssetRecord, submitter: SubmitInput['submitter']) => Promise<void>;
   /** Asked under the asset's lock before a head moves: false refuses (MARKED_HEAD). */
   mayMoveHead?: (rec: InstanceAssetRecord, submitter: SubmitInput['submitter']) => Promise<boolean>;
+  /** Narrows the duplicate short-circuit beyond the submitter's groups: a partner
+   *  programme member is handed only an asset their feed holds (plans/82 M1).
+   *  Absent: the groups rule alone. */
+  duplicateVisible?: (submitter: SubmitInput['submitter'], rec: InstanceAssetRecord) => Promise<boolean>;
 }
 
 /** What a rules tool submission becomes before it is hashed or stored. */
@@ -432,6 +436,16 @@ export function findByChecksum(
       (r.entry.formats ?? []).some((f) => (f as { checksum?: string }).checksum === checksum)));
 }
 
+/** The first duplicate this submitter may be handed: findByChecksum's rule, then the
+ *  deployment's own narrowing (SubmitDeps.duplicateVisible), record by record. */
+async function firstDuplicate(deps: SubmitDeps, input: SubmitInput, records: InstanceAssetRecord[], checksum: string): Promise<InstanceAssetRecord | undefined> {
+  for (const rec of records) {
+    if (!findByChecksum([rec], checksum, input.submitter.groups)) continue;
+    if (!deps.duplicateVisible || await deps.duplicateVisible(input.submitter, rec)) return rec;
+  }
+  return undefined;
+}
+
 export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise<SubmitOutcome> {
   const { store, blobs, policy } = deps;
   // Retry only this person's own admission of this verified source and audience.
@@ -443,7 +457,11 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       r.submission.projectSource.fileId === source.fileId && r.submission.projectSource.checksum === source.checksum &&
       JSON.stringify([...(r.groups ?? [])].sort()) === JSON.stringify([...(input.groups ?? [])].sort()));
     if (prior?.submission?.state === 'submitted' && !prior.submission.approvalId) return { ok: false, code: 'SUBMISSION_INCOMPLETE', detail: 'The earlier admission did not finish. Ask a workspace administrator to inspect the pending submission before retrying.' };
-    if (prior) return { ok: true, duplicate: true, record: prior, checksum: source.checksum, scan: 'skipped', credential: (await store.getCredential(prior.id))?.status ?? 'none' };
+    // Their own pending admission answers the retry. A live one answers only while the
+    // submitter may still be handed it (duplicateVisible); otherwise the retry goes on
+    // as a new submission and says nothing about the earlier one.
+    const handable = prior && (!submissionServable(prior) || !deps.duplicateVisible || await deps.duplicateVisible(input.submitter, prior));
+    if (prior && handable) return { ok: true, duplicate: true, record: prior, checksum: source.checksum, scan: 'skipped', credential: (await store.getCredential(prior.id))?.status ?? 'none' };
   }
   const nowIso = new Date(deps.now?.() ?? Date.now()).toISOString();
   let size = input.bytes.length;
@@ -544,7 +562,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       };
     }
   }
-  const existing = input.target || input.companyLogo ? undefined : findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
+  const existing = input.target || input.companyLogo ? undefined : await firstDuplicate(deps, input, await store.listInstanceAssets(), checksum);
   if (existing) {
     return {
       ok: true, duplicate: true, record: existing, checksum, scan: 'skipped',

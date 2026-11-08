@@ -241,7 +241,7 @@ test('loaded brand resolves each theme independently and loads its own fonts', a
 test('the shipped pack supplies both accents through the shared resolver', async () => {
   const tokens = JSON.parse(
     readFileSync(
-      resolve('packs/demo/brands/suse/catalog/assets/suse/tokens/brand.json'),
+      resolve('packs/demo/brands/lolly-demo/catalog/assets/lolly/tokens/demo.json'),
       'utf8',
     ),
   );
@@ -288,6 +288,46 @@ test('names are escaped and brand metadata cannot inject an external logo', asyn
       d.querySelector('[data-brand-logo="light"]').getAttribute('src'),
       null,
     );
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('a colourway that lists the mode sets as disabled leaves the console accents in place', async () => {
+  const axis = (kind: string, canonical = false) => ({ $extensions: { 'com.suse.lolly': { axis: { kind, ...(canonical ? { canonical } : {}) } } } });
+  const tokens = {
+    $themes: [
+      { name: 'light', selectedTokenSets: { base: 'enabled', light: 'enabled' }, ...axis('mode') },
+      { name: 'dark', selectedTokenSets: { base: 'enabled', dark: 'enabled' }, ...axis('mode') },
+      { name: 'Spearmint', selectedTokenSets: { light: 'disabled', dark: 'disabled', 'colourway/spearmint': 'enabled' }, ...axis('colourway', true) },
+    ],
+    base: { color: { brand: { spearmint: { $value: '#033633' }, 'green-apple': { $value: '#50c369' } } } },
+    light: { color: { semantic: { primary: { $value: '{color.colourway.light.primary}' } } } },
+    dark: { color: { semantic: { primary: { $value: '{color.colourway.dark.primary}' } } } },
+    'colourway/spearmint': { color: { colourway: { light: { primary: { $value: '{color.brand.spearmint}' } }, dark: { primary: { $value: '{color.brand.green-apple}' } } } } },
+  };
+  const { dom, document: d } = page({ tokens });
+  try {
+    await pause();
+    await pause();
+    assert.equal(d.documentElement.style.getPropertyValue('--pack-accent-light'), '#033633');
+    assert.equal(d.documentElement.style.getPropertyValue('--pack-accent-dark'), '#50c369');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('the landing shows the revision-addressed logo routes /api/brand names', async () => {
+  const address = 'a'.repeat(64);
+  const { dom, document: d } = page({
+    tokens: {},
+    logos: { light: `/api/brand/r/${address}/logo/light`, dark: `/api/brand/r/${address}/logo/dark` },
+  });
+  try {
+    await pause();
+    assert.equal(d.querySelector('[data-brand-logo="light"]').getAttribute('src'), `/api/brand/r/${address}/logo/light`);
+    assert.equal(d.querySelector('[data-brand-logo="light"]').hidden, false);
+    assert.equal(d.querySelector('[data-brand-logo="dark"]').getAttribute('src'), `/api/brand/r/${address}/logo/dark`);
   } finally {
     dom.window.close();
   }

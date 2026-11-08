@@ -75,6 +75,8 @@ export interface ExitRightsChoice { assetId: string; group: string; licence?: st
 export interface ExitRightsChoices {
   list(pick: { programmeId?: string; companyId?: string }): Promise<ExitRightsChoice[]>;
   withdraw(actor: string, pick: { programmeId?: string; companyId?: string }, via: string): Promise<ExitRightsChoice[]>;
+  /** Delete the company or programme record and withdraw its choices, audited, in one transaction. */
+  deleteAudience?(actor: string, target: { companyId: string } | { programmeId: string }, via: string): Promise<ExitRightsChoice[]>;
 }
 
 /** One project as it was before the exit moved it, so Reopen can put it back. */
@@ -580,7 +582,6 @@ export async function applyExit(
   if (plan.inside.size && programmeId) {
     const pick = plan.company ? { companyId: plan.company.id } : { programmeId };
     result.folders = await endFolderRules(store, audit, actorRef, pick, 'programme-exit');
-    if (opts.rights) result.rightsChoices = await opts.rights.withdraw(actorRef, pick, 'programme-exit');
   }
 
   const id = opts.id ?? exitId();
@@ -599,6 +600,12 @@ export async function applyExit(
       await store.putCompany({ ...c, endedAt: at, endedBy, endedExit: id, updatedAt: at });
       result.ended.companies.push(c.id);
     }
+  }
+  // Share anyway choices go after the ended mark (plans/82 M4): a choice
+  // racing this exit is either written first and withdrawn here, or finds the audience
+  // ended and is refused, so none outlives the partnership.
+  if (plan.inside.size && programmeId && opts.rights) {
+    result.rightsChoices = await opts.rights.withdraw(actorRef, plan.company ? { companyId: plan.company.id } : { programmeId }, 'programme-exit');
   }
 
   const record: ProgrammeExitRecord = {

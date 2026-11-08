@@ -19,15 +19,10 @@
  * Pure once the engine is loaded: no store, no clock and no network.
  */
 import type { AssetIndexEntry } from './lifecycle.ts';
+import { ESSENTIAL_ASSET_TYPES, RIGHTS_EXEMPT_TYPES } from '../programmes/types.ts';
 
-/**
- * Asset types that reach a programme whatever their licence record says.
- * `tokens`, `font` and `palette` are the design system the programme exists to
- * apply (a font's licence is not read yet; recording font licences is a later
- * step). `template`, `rules-tool` and `user-tool` are JSON the brand team
- * authored and published to the programme.
- */
-export const RIGHTS_EXEMPT_TYPES: ReadonlySet<string> = new Set(['tokens', 'font', 'palette', 'template', 'rules-tool', 'user-tool']);
+/** The exempt types live beside the programme essentials (programmes/types.ts). */
+export { RIGHTS_EXEMPT_TYPES };
 
 /** Why a file is exempt from the licence question. */
 export type ExemptWhy = 'design-system' | 'published-by-brand-team' | 'company-own';
@@ -134,7 +129,7 @@ export function entryCompany(entry: AssetIndexEntry): string | undefined {
  */
 export function exemptWhy(entry: AssetIndexEntry, companies: ReadonlySet<string> = new Set()): ExemptWhy | null {
   const type = typeof entry.type === 'string' ? entry.type : '';
-  if (type === 'tokens' || type === 'font' || type === 'palette') return 'design-system';
+  if (ESSENTIAL_ASSET_TYPES.has(type)) return 'design-system';
   if (RIGHTS_EXEMPT_TYPES.has(type)) return 'published-by-brand-team';
   const company = entryCompany(entry);
   if (company && companies.has(company)) return 'company-own';

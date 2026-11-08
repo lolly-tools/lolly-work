@@ -96,7 +96,7 @@ pnpm run release:yunohost          # git archive HEAD, pin the manifest (main + 
 ../lolly/shells/tauri-desktop/release/lolli.py put ~/.cache/lolly-release/artifacts/lolly-work-<ver>.tar.gz
 ```
 
-`--publish` runs that upload when the `LOLLI_S3_*` keys are in the environment; `--oss <dir>` names the Lolly checkout, or `--shell-url` + `--shell-sha256` state the shell pin directly. The archive leaves out `packs/` (the demo pack carries proprietary SUSE brand assets), `tests/`, `plans/`, `deploy/` and `.github/`.
+`--publish` runs that upload when the `LOLLI_S3_*` keys are in the environment; `--oss <dir>` names the Lolly checkout, or `--shell-url` + `--shell-sha256` state the shell pin directly. The archive leaves out `packs/` (the YunoHost instance seeds its pack from the web shell), `tests/`, `plans/`, `deploy/` and `.github/`.
 
 Then mirror this directory and tag it:
 

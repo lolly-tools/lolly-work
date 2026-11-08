@@ -146,16 +146,16 @@ const openCfg = (over: Record<string, unknown>) => parseConfig(JSON.stringify({ 
 
 test("lolly.ing's invite and request settings parse as written (decisions D1 to D3)", () => {
   const cfg = parseConfig(JSON.stringify({
-    instance: { name: 'lolly.ing', inviteNote: 'If your organisation blocks Google sign-in (for example @suse.com), use GitHub or email and password.' },
+    instance: { name: 'lolly.ing', inviteNote: 'If your organisation blocks Google sign-in (for example @lolly.example), use GitHub or email and password.' },
     policy: {
       defaultAccessMode: 'open',
-      invites: { passwordDomains: ['suse.com'] },
+      invites: { passwordDomains: ['lolly.example'] },
       requests: { join: true, project: true, ttlDays: 14, joinOpenMax: 50 },
     },
   }));
   assert.equal(cfg.instance.name, 'lolly.ing');
   assert.match(cfg.instance.inviteNote ?? '', /^If your organisation blocks Google sign-in/);
-  assert.deepEqual(cfg.policy.invites?.passwordDomains, ['suse.com']);
+  assert.deepEqual(cfg.policy.invites?.passwordDomains, ['lolly.example']);
   assert.deepEqual(cfg.policy.requests, { join: true, project: true, ttlDays: 14, joinOpenMax: 50 });
 });
 
@@ -188,12 +188,12 @@ test('instance.inviteNote: one trimmed line of at most 240 characters; blank mea
 test('policy.invites.passwordDomains follows the domains rule and defaults to none', async () => {
   const { resolveInvitePolicy } = await import('../server/src/policy/invites.ts');
   assert.deepEqual(resolveInvitePolicy(undefined).passwordDomains, []);
-  const cfg = openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: [' @SUSE.com ', 'suse.com', 'partner.example'] } } });
-  assert.deepEqual(cfg.policy.invites?.passwordDomains, ['suse.com', 'partner.example'], 'lowercased, "@" dropped, de-duplicated');
-  assert.deepEqual(resolveInvitePolicy(cfg.policy.invites).passwordDomains, ['suse.com', 'partner.example']);
+  const cfg = openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: [' @Lolly.Example ', 'lolly.example', 'partner.example'] } } });
+  assert.deepEqual(cfg.policy.invites?.passwordDomains, ['lolly.example', 'partner.example'], 'lowercased, "@" dropped, de-duplicated');
+  assert.deepEqual(resolveInvitePolicy(cfg.policy.invites).passwordDomains, ['lolly.example', 'partner.example']);
   assert.deepEqual(resolveInvitePolicy(cfg.policy.invites).domains, [], 'the admission domains are a separate list');
   assert.throws(() => openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: ['not a domain'] } } }), /policy\.invites\.passwordDomains/);
-  assert.throws(() => openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: 'suse.com' } } }), /policy\.invites\.passwordDomains/);
+  assert.throws(() => openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: 'lolly.example' } } }), /policy\.invites\.passwordDomains/);
 });
 
 

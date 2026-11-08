@@ -18,7 +18,7 @@ import {
   boot, cookieOf, devLogin, fieldOf, invite, jar, openPage, postForm, project, startAndReturn, tokenFor, type Env,
 } from './invite-harness.ts';
 
-const INVITED = 'an.fitzsimon@suse.example';
+const INVITED = 'an.fitzsimon@lolly.example';
 const LAND = '/#/team/project/prj_brand';
 
 async function withInvite(o: { passwordSetup?: boolean; idp?: Record<string, unknown> } = {}): Promise<Env & { token: string }> {
@@ -102,7 +102,7 @@ test('another account is refused with the wrong-account page, and no user row is
   const html = await done.text();
   assert.ok(html.includes('<h1>This is not the invited account</h1>'));
   assert.ok(html.includes('<title>Invitation to lolly.ing</title>'));
-  assert.ok(html.includes("You signed in as <span class=\"tag addr\">sam.k@gmail.example</span> with Google. Andy Fitz's invitation was sent to <span class=\"tag addr\" aria-hidden=\"true\">an•••@suse.example</span>"));
+  assert.ok(html.includes("You signed in as <span class=\"tag addr\">sam.k@gmail.example</span> with Google. Andy Fitz's invitation was sent to <span class=\"tag addr\" aria-hidden=\"true\">an•••@lolly.example</span>"));
   assert.ok(!html.includes(INVITED), 'never the full invited address');
   assert.ok(!html.includes('GitHub shares every verified address'), 'the GitHub line is for GitHub sign-ins');
   // The way back: the same sign-in with the account picker, or the page.
@@ -143,7 +143,7 @@ test('GitHub: a second verified address that is the invited one is admitted from
   assert.equal(refused.done.status, 403);
   const html = await refused.done.text();
   assert.ok(html.includes('with GitHub.'));
-  assert.ok(html.includes('GitHub shares every verified address on your account with lolly.ing. If <span class="tag addr" aria-hidden="true">an•••@suse.example</span>'));
+  assert.ok(html.includes('GitHub shares every verified address on your account with lolly.ing. If <span class="tag addr" aria-hidden="true">an•••@lolly.example</span>'));
 });
 
 test('an account admitted another way is signed in and told whose invitation it was', async () => {
@@ -226,7 +226,7 @@ test('the password action is refused: flag off, a password already set, the issu
   await tryPassword(disabled);
 
   const owner = await boot();
-  await invite(owner, { id: 'inv_boss', email: 'boss@suse.example', groups: ['owner'], passwordSetup: true });
+  await invite(owner, { id: 'inv_boss', email: 'boss@lolly.example', groups: ['owner'], passwordSetup: true });
   await tryPassword({ ...owner, token: tokenFor('inv_boss', null) });
 });
 
@@ -238,7 +238,7 @@ test('with a password already set, the page signs in with it and shows which add
   const res = await postForm(env.base, '/api/auth/invite', { token: env.token, csrf: page.csrf, action: 'start', idp: 'email' }, page.form);
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.ok(html.includes('Use the address your invitation went to: <span class="tag addr" aria-hidden="true">an•••@suse.example</span><span class="sr-only">an address at suse.example that starts with an</span>'));
+  assert.ok(html.includes('Use the address your invitation went to: <span class="tag addr" aria-hidden="true">an•••@lolly.example</span><span class="sr-only">an address at lolly.example that starts with an</span>'));
   assert.ok(!html.includes(INVITED), 'the email is not filled in for them');
   assert.ok(html.includes(`name="returnTo" value="${LAND}"`));
 });
