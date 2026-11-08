@@ -249,7 +249,7 @@ import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, r
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
-import { registerIntentRoutes } from '../automation/intents.ts';
+import { NOT_THE_CALLERS, registerIntentRoutes } from '../automation/intents.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
 import { registerContextRoutes, type ContextSkill } from '../automation/context-routes.ts';
 import { servedType as brandPageFileType } from '../brand-pages/manifest.ts';
@@ -857,6 +857,7 @@ export function buildApp(deps: AppDeps): App {
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
       ...(rec.publication?.bindings ? { bindings: rec.publication.bindings } : {}),
       ...(Array.isArray(rec.groups) ? { groups: rec.groups } : {}),
+      ...(rec.publication?.intents?.length ? { intents: rec.publication.intents } : {}),
     };
   };
   // ── company values (plans/82 M3, programmes/company-values.ts) ──────────
@@ -6499,6 +6500,23 @@ export function buildApp(deps: AppDeps): App {
       } catch { return null; }
     },
     toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
+    // A template's purposes (plans/82 M7), held by the engine's own intents.json check
+    // against the base tool, with every input the template fixes set by its rules.
+    checkTemplateIntents: async (toolId, raw, rules) => {
+      const engine = await loadEngine();
+      const parsed = engine.parseToolIntents(JSON.stringify({ version: 1, intents: raw }));
+      if (!parsed.ok) return { errors: [...parsed.errors] };
+      let manifest: { inputs?: Array<{ id: string; type: string; default?: unknown }>; render?: Record<string, unknown> };
+      try { manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')); }
+      catch { return { errors: [{ path: '', message: `this workspace no longer has the tool "${toolId}"` }] }; }
+      const open = templateOpenInputs(rules, (await store.listOverlays()).get(toolId)?.bindings);
+      const inputs = (manifest.inputs ?? []).map((input) => !open || open.includes(input.id) ? input : {
+        id: input.id, type: NOT_THE_CALLERS,
+        ...(rules.values && Object.hasOwn(rules.values, input.id) ? { default: rules.values[input.id] } : input.default !== undefined ? { default: input.default } : {}),
+      });
+      const issues = engine.checkToolIntents({ id: toolId, inputs, render: manifest.render as never, intents: parsed.intents });
+      return issues.length ? { errors: issues } : { intents: parsed.intents };
+    },
     submitVersion: async (actor, target, bytes, from) => {
       const outcome = await submitAsset(submitDeps(actor), {
         bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups, role: actor.role },
@@ -12293,6 +12311,25 @@ export function buildApp(deps: AppDeps): App {
     catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
+    // Published templates as candidates for an intent (plans/82 M7), from the caller's own feed.
+    intentTemplates: async (groups) => {
+      const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+      const declaring = feed.filter((a) => a.type === 'template' && Array.isArray((a.meta as { intents?: unknown } | undefined)?.intents) && !(a.meta as { retired?: unknown }).retired);
+      return (await Promise.all(declaring.map((a) => publishedTemplateFor(groups, a.id)))).filter((t): t is RenderTemplate => !!t && !t.retired);
+    },
+    templateFor: (groups, id) => publishedTemplateFor(groups, id),
+    templateCompanyValues: async (template, groups) => {
+      const overlay = (await store.listOverlays()).get(template.toolId);
+      if (!template.bindings && !overlay?.bindings) return {};
+      const { ctx, ambiguous } = await companyContextFor(groups, template.groups);
+      const plan = planBindings({
+        ...(overlay?.bindings ? { overlayBindings: overlay.bindings } : {}), ...(template.bindings ? { templateBindings: template.bindings } : {}),
+        ...(template.editable ? { templateEditable: template.editable } : {}),
+        overlayLocks: (id) => resolveInputAccess(overlay, id, groups).level === 'locked', ctx, ambiguous, theme: 'light',
+      });
+      return { ...plan.values };
+    },
+    templatesOnly: async (groups, role) => new Set((await templatesOnlyOf(groups, role)).keys()),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
