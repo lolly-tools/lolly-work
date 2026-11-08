@@ -53,6 +53,8 @@ export interface CompanyProfileSettings {
   editors?: string[];
   /** An approval chain a contact's change goes through. Absent is off. */
   approvalChain?: string;
+  /** An approval chain every kit change goes through. Absent is off. */
+  kitApprovalChain?: string;
 }
 
 export interface CompanyProfileRecord {

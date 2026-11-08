@@ -117,7 +117,7 @@ test('the brand team fills the details in once, and each change is a revision th
   assert.equal(empty.status, 200);
   assert.equal(empty.body.revision, 0);
   assert.deepEqual(empty.body.profile, {});
-  assert.deepEqual(empty.body.settings, { editors: [], approvalChain: null }, 'contacts and approval are off by default');
+  assert.deepEqual(empty.body.settings, { editors: [], approvalChain: null, kitApprovalChain: null }, 'contacts and approval are off by default');
   assert.deepEqual(empty.body.surfaces, { light: '#ffffff', dark: '#000000', source: 'default' });
 
   const saved = await call(bruno, 'PUT', P, {
@@ -356,6 +356,33 @@ test('lw companies profile shows, sets, checks and stores a logo, and lists the 
   const history = await lw('companies', 'profile', 'history', 'resellers-emea', 'northwind-it');
   assert.equal(history.code, 0, history.err);
   assert.match(history.out, /mark/);
+  const settings = await lw('companies', 'profile', 'settings', 'resellers-emea', 'northwind-it', '--kit-chain', 'partner-details', '--chain', 'partner-details');
+  assert.equal(settings.code, 0, settings.err);
+  assert.match(settings.out, /kit changes wait for partner-details/);
+  assert.equal((await call(owner, 'GET', P)).body.settings.approvalChain, 'partner-details');
+  const kitFile = join(home, 'kit.json');
+  await writeFile(kitFile, JSON.stringify({ schemaVersion: 1, id: 'northwind-it', label: 'Northwind IT', logos: {}, colours: [] }));
+  const waitingKit = await lw('companies', 'kit', 'set', 'resellers-emea', 'northwind-it', kitFile);
+  assert.equal(waitingKit.code, 0, waitingKit.err);
+  assert.match(waitingKit.out, /kit change waiting for approval apr_/);
+  const waitingView = await lw('companies', 'kit', 'show', 'resellers-emea', 'northwind-it');
+  assert.equal(waitingView.code, 0, waitingView.err);
+  assert.match(waitingView.out, /kit change waiting for approval apr_/);
+  const kitRoute = '/api/v1/programmes/resellers-emea/companies/northwind-it/kit';
+  const kitApproval = (await call(owner, 'GET', kitRoute)).body.pending.approvalId;
+  const reviewer = await login('reviewer@brand.test');
+  assert.equal((await call(reviewer, 'POST', `/api/v1/approvals/${kitApproval}/act`, { action: 'approve' })).status, 200);
+  const waitingRemoval = await lw('companies', 'kit', 'remove', 'resellers-emea', 'northwind-it');
+  assert.equal(waitingRemoval.code, 0, waitingRemoval.err);
+  assert.match(waitingRemoval.out, /kit change waiting for approval apr_/);
+  assert.doesNotMatch(waitingRemoval.out, /removed the kit/);
+  const removalApproval = (await call(owner, 'GET', kitRoute)).body.pending.approvalId;
+  assert.equal((await call(reviewer, 'POST', `/api/v1/approvals/${removalApproval}/act`, { action: 'reject' })).status, 200);
+  const cleared = await lw('companies', 'profile', 'settings', 'resellers-emea', 'northwind-it', '--kit-chain', 'none', '--json');
+  assert.equal(cleared.code, 0, cleared.err);
+  assert.equal(JSON.parse(cleared.out).settings.kitApprovalChain, null);
+  assert.equal(JSON.parse(cleared.out).settings.approvalChain, 'partner-details');
+  await call(owner, 'PUT', `${P}/settings`, { approvalChain: null });
 });
 
 test('the profile view shows an admin the limits the server enforces, from the same constants', async () => {
