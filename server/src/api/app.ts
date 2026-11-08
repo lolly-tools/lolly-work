@@ -6390,8 +6390,14 @@ export function buildApp(deps: AppDeps): App {
     // older file cannot clear renders from a newer tool. A render made without
     // until-approved has no digest, and its approval is of this file alone.
     const evidence = render.output.evidence;
+    // A render keyed on its template's variants (plans/82 M7) asks for the template,
+    // and the request records it with the template's name, for the reviewer's card.
+    const variant = evidence?.untilApproved?.covers === 'template-variants' ? evidence.untilApproved.template : undefined;
+    const variantName = variant ? (await store.getInstanceAsset(variant.id))?.entry.name : undefined;
     const exportReview = describeRenderReview(bytes, { toolId, format, name: `${render.id}.${format}`,
-      toolVersion: evidence?.tool?.version ?? null, inputsDigest: evidence?.untilApproved?.inputsDigest ?? null }, new Date().toISOString());
+      toolVersion: evidence?.tool?.version ?? null, inputsDigest: evidence?.untilApproved?.inputsDigest ?? null,
+      ...(variant ? { covers: 'template-variants' as const, templateRef: { id: variant.id, version: variant.version, ...(typeof variantName === 'string' ? { name: variantName } : {}) } } : {}),
+    }, new Date().toISOString());
     if (!exportReview) return sendError(res, 422, 'ARTIFACT_FORMAT_MISMATCH', `That file is not a ${format} file.`);
     const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 200) : `${toolId} (${format})`;
     const approval = createApproval({ id: `apr_${randomId(8)}`, subjectType: 'export-review', subjectRef: `export-review:${exportReview.fingerprint}`, title, chain, nominees: [], createdBy: user.id, now: new Date().toISOString() });

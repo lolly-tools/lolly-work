@@ -19,6 +19,12 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
   const savedChain = original.enforce?.escalation ?? '';
   const chainSel = el('select', {}, el('option', { value: '' }, 'No chain'),
     ...(savedChain ? [el('option', { value: savedChain, selected: '' }, savedChain)] : []));
+  // What one approval covers (plans/82 M7): one file, the default, or every file
+  // made from one version of a published template of this tool.
+  const coversSel = el('select', {},
+    ...[['', 'This file only'], ['template-variants', 'Every file from one version of a published template']]
+      .map(([value, label]) => el('option', { value, selected: value === (original.enforce?.approvalCovers ?? '') ? '' : null }, label)));
+  const coversNote = el('p', { class: 'sub flush', role: 'status' });
   const watermarkWarning = el('p', { class: 'policy-warning', role: 'status' });
   const rulesHost = el('div');
   const error = el('p', { class: 'form-err', role: 'alert' });
@@ -60,7 +66,7 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
   const applyLegacy = el('input', { type: 'checkbox' });
   let busy = false;
   let disposed = false;
-  const snapshot = () => JSON.stringify({ name: nameInput.value, visibility: visibilityInput.value, watermark: watermarkSel.value, chain: chainSel.value,
+  const snapshot = () => JSON.stringify({ name: nameInput.value, visibility: visibilityInput.value, watermark: watermarkSel.value, chain: chainSel.value, covers: coversSel.value,
     bindings: [...bindingSelects].map(([id, sel]) => [id, sel.value]), applyLegacy: applyLegacy.checked,
     inputs: Object.entries(model).map(([id, rules]) => [id, rules.map(({ groups, level, value, allow, reason }) => ({ groups, level, value, allow, reason }))]) });
   let baseline = snapshot();
@@ -71,6 +77,9 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
       : chainSel.value ? 'Server renders show PREVIEW until a reviewer approves a file with the same inputs.'
       : 'No approval chain is set, so nobody can approve this tool and its server renders stay marked. Choose a chain.';
     watermarkWarning.hidden = !watermarkWarning.textContent;
+    coversNote.textContent = coversSel.value === 'template-variants'
+      ? 'One approval covers every file made from one version of a published template of this tool, whatever the inputs partners may change. The reviewer sees one file as the example. A new template version needs a new approval.'
+      : 'One approval covers one file’s exact inputs.';
     for (const [id, nodes] of warningNodes) {
       const rules = model[id];
       nodes.forEach((node, index) => {
@@ -90,6 +99,7 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
   applyLegacy.addEventListener('change', update);
   watermarkSel.addEventListener('change', update);
   chainSel.addEventListener('change', update);
+  coversSel.addEventListener('change', update);
   // The list comes later; until then the saved chain stays selected and saves as it was.
   if (chains) {
     chainSel.setAttribute('aria-busy', 'true');
@@ -106,7 +116,6 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
   const bodyOf = () => {
     const unknown = [
       ...Object.keys(original).filter((key) => !['toolId', 'version', 'name', 'inputAccess', 'visibility', 'enforce', 'defaults', 'bindings'].includes(key)),
-      // approvalCovers is set through the API until the console offers it (plans/82 M7): kept as it was.
       ...Object.keys(original.enforce ?? {}).filter((key) => !['watermark', 'formats', 'escalation', 'approvalCovers'].includes(key)).map((key) => `enforce.${key}`),
     ];
     if (unknown.length) invalid(`This policy contains settings the policy writer cannot save: ${unknown.join(', ')}. Saving is blocked to avoid removing them.`);
@@ -149,6 +158,8 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
     if (watermarkSel.value) enforce.watermark = watermarkSel.value;
     delete enforce.escalation;
     if (chainSel.value) enforce.escalation = chainSel.value;
+    delete enforce.approvalCovers;
+    if (coversSel.value) enforce.approvalCovers = coversSel.value;
     if (Object.keys(enforce).length) body.enforce = enforce;
     // An input the tool no longer declares keeps its binding as it was.
     const bindings = Object.fromEntries(Object.entries(original.bindings ?? {}).filter(([id]) => !bindingSelects.has(id)));
@@ -253,8 +264,9 @@ export function createToolPolicyEditor(tool, { el, field, api, chains, onSaved, 
   const fields = el('fieldset', { class: 'policy-fields' },
     el('legend', { class: 'sr-only' }, `Policy settings for ${tool.name}`),
     el('div', { class: 'formrow' }, field('Policy name (shown to members)', nameInput),
-      field('Visible to groups (empty = everyone)', visibilityInput), field('Watermark', watermarkSel), field('Approval chain for exports', chainSel)),
-    watermarkWarning,
+      field('Visible to groups (empty = everyone)', visibilityInput), field('Watermark', watermarkSel), field('Approval chain for exports', chainSel),
+      field('One approval covers', coversSel)),
+    watermarkWarning, coversNote,
     tool.inputs === null ? el('p', { class: 'empty' }, 'This tool’s input list is unavailable. Existing rules and the default rule remain editable.') : null,
     rulesHost);
   const root = el('div', { class: 'card stack tool-policy-editor' },
