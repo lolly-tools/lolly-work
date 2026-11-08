@@ -127,15 +127,14 @@ test('an admin whose own groups include a look-alike name still gets their view,
   } finally { await missing.store.setLocalGroups(adminId, []); }
 });
 
-test('paging in a view names only providers both the partner and the admin see', async () => {
+test('paging in a view names the providers the viewed programme is given, as the partner\'s own feed does', async () => {
   const rita = await login(raw, 'rita@reseller.test');
   const own = await (await fetch(`${raw.base}/catalog/assets/index.json?paged=1`, { headers: { cookie: rita } })).json() as { pagedProviders?: Array<{ id: string }> };
   assert.ok(own.pagedProviders?.some((p) => p.id === 'big'), 'the partner\'s own paged feed names the large provider');
   const { get } = await view(raw);
   const viewed = await (await get('/catalog/assets/index.json?paged=1')).json() as { assets: Array<{ id: string }>; pagedProviders?: Array<{ id: string }>; pendingProviders?: string[] };
-  assert.ok(!viewed.pagedProviders?.some((p) => p.id === 'big'), 'not a provider the admin cannot see');
-  assert.ok(!viewed.pendingProviders?.includes('big'));
-  assert.ok(!viewed.assets.some((a) => a.id.startsWith('ext/big/')));
+  // The admin manages the programme the provider is exposed to, so the view names it too.
+  assert.ok(viewed.pagedProviders?.some((p) => p.id === 'big'), 'the programme\'s provider, paged as for the partner');
 });
 
 test('the intersection holds in every state of the pack index, raw and missing included', () => {
@@ -154,12 +153,12 @@ test('the intersection holds in every state of the pack index, raw and missing i
   }
 });
 
-test('the browse route lists in a view only the sources both the partner and the admin see', async () => {
+test('the browse route lists in a view the sources the viewed programme is given', async () => {
   const rita = await login(raw, 'rita@reseller.test');
   const ids = async (res: Response) => ((await res.json()) as { sources: Array<{ id: string }> }).sources.map((s) => s.id);
   assert.ok((await ids(await fetch(`${raw.base}/api/v1/catalog/assets`, { headers: { cookie: rita } }))).includes('big'), 'the partner\'s own browse names the provider');
   const { get } = await view(raw);
-  assert.ok(!(await ids(await get('/api/v1/catalog/assets'))).includes('big'), 'not a provider the admin cannot see');
+  assert.ok((await ids(await get('/api/v1/catalog/assets'))).includes('big'), 'the programme\'s provider, listed as for the partner');
 });
 
 test('a paged feed is reused only while its providers are the same', () => {

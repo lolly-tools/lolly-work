@@ -240,7 +240,14 @@ export function createViewAs(deps: ViewAsDeps) {
     const label = viewingAs.company ? viewingAs.company.name : viewingAs.programme.name;
     const member = viewAsSubject(claim, deps.roleOf(groups), label);
     // The admin's own access bounds the view (rbac/evaluate.ts, rbac/view-context.ts).
-    const viewer = { userId: admin.id, groups: admin.groups, role: admin.role as Role };
+    // Their side counts the programme and company being viewed as well: they manage
+    // that programme (checked just above), and its console already shows them what
+    // it publishes there, so the partner's own material shows in the view. Anything
+    // outside the programme, and the admin's own denies, still bound it.
+    const viewer = {
+      userId: admin.id, role: admin.role as Role,
+      groups: [...new Set([...admin.groups, programmeGroup(claim.p), ...(claim.c ? [`${COMPANY_GROUP_PREFIX}${claim.c}`] : [])])],
+    };
     setViewAsViewer(member.id, viewer);
     enterView({ subjectGroups: member.groups, viewer });
     return { view: { member, admin, viewingAs, claim } };
