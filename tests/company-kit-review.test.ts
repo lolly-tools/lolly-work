@@ -29,6 +29,8 @@ let blobs: ReturnType<typeof createMemoryBlobStore>;
 let manager = '';
 let reviewer = '';
 let contact = '';
+let second = '';
+let submitPolicy: ReturnType<typeof parseConfig>['policy']['submit'];
 const AT = '/api/v1/programmes/partners/companies';
 const OWN = '/api/v1/me/company/kit';
 const kit = (id: string, label = id) => ({ schemaVersion: 1, id, label, logos: {},
@@ -85,6 +87,7 @@ before(async () => {
       { email: 'manager@brand.test', groups: ['admin'] }, { email: 'reviewer@brand.test', groups: ['approver', 'review'] },
       { email: 'owner@brand.test', groups: ['owner'] },
       { email: 'contact@partner.test', groups: [] },
+      { email: 'second@partner.test', groups: [] },
     ] },
   }));
   store = createMemoryStore();
@@ -94,6 +97,8 @@ before(async () => {
   manager = await login('manager@brand.test');
   reviewer = await login('reviewer@brand.test');
   contact = await login('contact@partner.test');
+  second = await login('second@partner.test');
+  submitPolicy = config.policy.submit;
   assert.equal((await call(manager, 'PUT', '/api/v1/programmes/partners', { name: 'Partners' })).status, 201);
 });
 after(async () => { await rm(pack, { recursive: true, force: true }); });
@@ -159,7 +164,8 @@ test('every manager save waits for approval and becomes the next revision on the
   const approval = (await store.getApproval(id))!;
   assert.equal(approval.subjectType, 'partner-kit');
   assert.equal(approval.subjectRef, 'revision');
-  assert.deepEqual(approval.partnerKit, { companyId: 'revision', companyCreatedAt: approval.partnerKit?.companyCreatedAt, action: 'save', blobId: approval.partnerKit?.blobId });
+  assert.deepEqual(approval.partnerKit, { companyId: 'revision', companyCreatedAt: approval.partnerKit?.companyCreatedAt, action: 'save', blobId: approval.partnerKit?.blobId,
+    base: { assetId: before.assetId, revision: before.revision } });
   assert.ok(approval.partnerKit?.companyCreatedAt, 'the request is tied to this company record');
   const held = (await blobs.get(approval.partnerKit!.blobId!))!;
   assert.equal(JSON.parse(await new Response(held.body).text()).colours[0].value, '#0b3d91');
@@ -232,7 +238,8 @@ test('removing a kit waits without retiring the live asset until approved', asyn
   assert.equal(asked.status, 202);
   const id = asked.body.pending.approvalId;
   const subject = (await store.getApproval(id))!.partnerKit!;
-  assert.deepEqual(subject, { companyId: 'remove', companyCreatedAt: subject.companyCreatedAt, action: 'remove' });
+  assert.deepEqual(subject, { companyId: 'remove', companyCreatedAt: subject.companyCreatedAt, action: 'remove', base: subject.base });
+  assert.equal(subject.base?.revision, 1);
   assert.deepEqual(await read('remove'), { ...before, pending: { approvalId: id, action: 'remove' } });
   assert.equal((await store.getLifecycle(before.assetId))?.revokedAt, undefined);
   assert.equal((await call(manager, 'PUT', at, kit('remove', 'Another'))).status, 409);
@@ -463,4 +470,93 @@ test('a decision applies only while the stored request still says approved', asy
   } as never);
   await kits.settleApproval({ ...filed, state: 'approved' });
   assert.equal((await read(id)).revision, before.revision);
+});
+
+/** A second copy of the kit routes, as another server process would hold, whose
+ *  submits wait at a gate the test opens: the scan of a real submit, paused. */
+async function pausedKitRoutes() {
+  const { registerCompanyKitRoutes } = await import('../server/src/programmes/kit-routes.ts');
+  const { submitAsset } = await import('../server/src/catalog/submit.ts');
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => { open = resolve; });
+  let waiting = 0;
+  const kits = registerCompanyKitRoutes({ add: () => undefined } as never, {
+    store, blobs, notifier: { email: () => undefined, event: () => undefined } as never, baseUrl: 'http://localhost',
+    requireAction: async () => null, memberOf: async () => null, audit: async () => undefined, kitVisible: async () => true,
+    submitKit: async (input: Parameters<typeof submitAsset>[1]) => { waiting++; await gate; return submitAsset({ store, blobs, policy: submitPolicy }, input); },
+  } as never);
+  const paused = async () => { while (!waiting) await new Promise((r) => setTimeout(r, 1)); };
+  return { kits, open, paused };
+}
+/** File a kit save for review and store it as approved, as the approvals engine does before settling. */
+async function approvedSave(id: string, live: boolean) {
+  const at = await company(id, live);
+  await settings(id, { kitApprovalChain: 'kit-review' });
+  const asked = await call(manager, 'PUT', at, kit(id, 'Proposed'));
+  assert.equal(asked.status, 202, JSON.stringify(asked.body));
+  const approved = { ...(await store.getApproval(asked.body.pending.approvalId))!, state: 'approved' as const };
+  await store.putApproval(approved);
+  return approved;
+}
+
+test('an approved first save paused in its scan never lands on a company made again with the id', async () => {
+  const id = 'reborn-scan';
+  const approved = await approvedSave(id, false);
+  const { kits, open, paused } = await pausedKitRoutes();
+  const settling = kits.settleApproval(approved);
+  await paused();
+  assert.equal((await call(manager, 'DELETE', `${AT}/${id}`)).status, 200);
+  await new Promise((r) => setTimeout(r, 5));
+  await company(id, false);
+  open();
+  await settling;
+  assert.equal((await store.getCompanyProfile(id))?.kit ?? null, null, 'the company made later has no kit');
+  assert.equal((await call(manager, 'GET', `${AT}/${id}/kit`)).status, 404);
+});
+
+test('an approval overturned by a stored rejection while its scan ran commits nothing and sends no second message', async () => {
+  const id = 'overturned';
+  const approved = await approvedSave(id, true);
+  const before = await read(id);
+  const { kits, open, paused } = await pausedKitRoutes();
+  const settling = kits.settleApproval(approved);
+  await paused();
+  await store.putApproval({ ...approved, state: 'rejected' });
+  const messages = (await store.listMessages?.() ?? []).length;
+  open();
+  await settling;
+  assert.equal((await read(id)).revision, before.revision);
+  assert.equal((await read(id)).kit.label, before.kit.label);
+  if (store.listMessages) assert.equal((await store.listMessages()).length, messages);
+});
+
+test('one approved request settled by two processes at once becomes one revision', async () => {
+  const id = 'twice';
+  const approved = await approvedSave(id, true);
+  const before = await read(id);
+  const a = await pausedKitRoutes();
+  const b = await pausedKitRoutes();
+  const first = a.kits.settleApproval(approved);
+  const again = b.kits.settleApproval(approved);
+  await a.paused(); await b.paused();
+  a.open(); b.open();
+  await Promise.all([first, again]);
+  assert.equal((await read(id)).revision, before.revision + 1);
+  assert.equal((await read(id)).kit.label, 'Proposed');
+  assert.equal((await store.listAssetVersions((await read(id)).assetId)).length, before.revision + 1);
+});
+
+test('a contact files a kit change for review while contact profile changes also need approval', async () => {
+  const id = 'both-chains';
+  await company(id);
+  assert.equal((await call(manager, 'POST', '/api/v1/programmes/partners/people', {
+    rows: [{ email: 'second@partner.test', company: id }], apply: true,
+  })).status, 200);
+  await settings(id, { editors: ['second@partner.test'], approvalChain: 'kit-review' });
+  assert.equal((await call(second, 'PUT', OWN, kit(id, 'Direct'))).status, 403, 'with the kit switch off the brand team edits the kit');
+  await settings(id, { kitApprovalChain: 'kit-review' });
+  const asked = await call(second, 'PUT', OWN, kit(id, 'Contact revision'));
+  assert.equal(asked.status, 202, JSON.stringify(asked.body));
+  await decide(asked.body.pending.approvalId, 'approve');
+  assert.equal((await read(id)).kit.label, 'Contact revision');
 });

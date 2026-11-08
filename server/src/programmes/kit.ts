@@ -82,11 +82,13 @@ export async function prepareCompanyKit(store: Store, companyId: string, bytes: 
   return read;
 }
 
-/** Whether a company still exists in a live programme, asked again when a save is about to publish. */
-export async function kitCompanyLive(store: Store, companyId: string): Promise<boolean> {
+/** Whether a company still exists in a live programme, asked again when a save is about to publish.
+ *  With `createdAt`, only that same company record counts, never one made later with its id. */
+export async function kitCompanyLive(store: Store, companyId: string, createdAt?: string): Promise<boolean> {
   const company = (await store.listCompanies()).find((c) => c.id === companyId);
   const programme = company ? await store.getProgramme(company.programmeId) : null;
-  return !!company && !!programme && !company.endedAt && !programme.endedAt;
+  return !!company && !!programme && !company.endedAt && !programme.endedAt
+    && (createdAt === undefined || company.createdAt === createdAt);
 }
 
 /** Read stored JSON with the format's own byte bound. */

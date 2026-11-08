@@ -362,8 +362,16 @@ export interface SubmitInput {
    * belong to someone else's audience, and the profile must point at its own.
    */
   companyLogo?: { companyId: string; surface: 'light' | 'dark' | 'mark' };
-  /** A kit saved through the company routes, with its own asset history. */
-  companyKit?: { companyId: string };
+  /** A kit saved through the company routes, with its own asset history.
+   *  `createdAt` holds the save to that company record. `stillValid` is asked
+   *  where the kit is committed, after the scan, so an approved change that was
+   *  rejected or applied meanwhile commits nothing. */
+  companyKit?: { companyId: string; createdAt?: string; stillValid?: () => Promise<boolean> };
+}
+
+/** The kit's company, the same record, still live, and the caller's own check, asked at the commit. */
+async function kitStillLive(store: Store, kit: NonNullable<SubmitInput['companyKit']>): Promise<boolean> {
+  return await kitCompanyLive(store, kit.companyId, kit.createdAt) && (!kit.stillValid || await kit.stillValid());
 }
 
 /** What a company logo's served entry carries (plans/82 M3). */
@@ -694,7 +702,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     }
     // A kit's company is asked again: one deleted or ended while the scan ran,
     // with its kit, gets no new revision and nothing comes back.
-    if (input.companyKit && (!await kitCompanyLive(store, input.companyKit.companyId) || !await store.getInstanceAsset(target.id))) {
+    if (input.companyKit && (!await kitStillLive(store, input.companyKit) || !await store.getInstanceAsset(target.id))) {
       await blobs.delete(blobId).catch(() => undefined);
       await release();
       return { ok: false, code: 'INVALID_SUBMISSION', detail: 'the company was removed or its partnership ended while the kit was being saved' };
@@ -782,7 +790,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   // Claim the company's pointer before publishing, so a losing first save
   // never appears as a second live kit in the company's feed. The company is
   // asked again first: one deleted or ended while the scan ran gets no kit.
-  if (input.companyKit && !await kitCompanyLive(store, input.companyKit.companyId)) {
+  if (input.companyKit && !await kitStillLive(store, input.companyKit)) {
     await deleteKitAsset(store, blobs, id);
     await release();
     return { ok: false, code: 'INVALID_SUBMISSION', detail: 'the company was removed or its partnership ended while the kit was being saved' };

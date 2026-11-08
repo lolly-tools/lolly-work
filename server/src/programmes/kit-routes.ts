@@ -35,11 +35,16 @@ export interface CompanyKitApproval {
   companyCreatedAt?: string;
   action: 'save' | 'remove';
   blobId?: string;
+  /** The kit as it stood when the request was filed (null: none yet). The change
+   *  applies only onto that, so a second application of one request finds the
+   *  kit already moved and commits nothing. */
+  base?: { assetId: string; revision: number } | null;
 }
 
 export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>, d: CompanyKitDeps) {
   const { store, blobs } = d;
   const filing = new Set<string>();
+  const settling = new Set<string>();
   const failure = (status: number, code: string, detail: string) => ({ error: [status, code, detail] as [number, string, string] });
   const pendingFailure = () => failure(409, 'KIT_CHANGE_PENDING', 'A kit change is waiting for approval. Withdraw the request or wait for the decision.');
   const pendingFor = async (companyId: string) => (await store.listApprovals()).find((a) =>
@@ -50,10 +55,12 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     return true;
   };
   /** The same company record (by its creation time, when known), still in a live programme. */
-  const sameLiveCompany = async (companyId: string, createdAt?: string): Promise<boolean> => {
-    if (!await kitCompanyLive(store, companyId)) return false;
-    if (createdAt === undefined) return true;
-    return (await store.listCompanies()).find((c) => c.id === companyId)?.createdAt === createdAt;
+  const sameLiveCompany = (companyId: string, createdAt?: string): Promise<boolean> => kitCompanyLive(store, companyId, createdAt);
+  /** The company's kit as it stands now: its asset and head revision, or null. */
+  const kitBase = async (companyId: string): Promise<{ assetId: string; revision: number } | null> => {
+    const pointer = (await store.getCompanyProfile(companyId))?.kit;
+    if (!pointer) return null;
+    return { assetId: pointer.assetId, revision: (await store.getInstanceAsset(pointer.assetId))?.headVersion ?? 1 };
   };
   const managed = async (req: IncomingMessage, res: ServerResponse, params: Record<string, string | undefined>) => {
     const actor = await d.requireAction(req, res, 'programme.manage'); if (!actor) return null;
@@ -75,9 +82,10 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     if (editing) {
       const profile = await store.getCompanyProfile(company.id);
       if (!profile?.settings.editors?.includes(actor.id)) { sendError(res, 403, 'FORBIDDEN', 'only a contact chosen by the brand team may edit the company kit'); return null; }
-      // Profile approvals carry profile changes only. Kit contacts may save
-      // directly only while the existing approval switch is off.
-      if (profile.settings.approvalChain) { sendError(res, 403, 'FORBIDDEN', 'the brand team must edit the kit while contact changes require approval'); return null; }
+      // Profile approvals carry profile changes only. With the kit switch on, a
+      // contact's kit change waits on that chain; with it off, a contact saves
+      // directly only while the contact approval switch is off too.
+      if (profile.settings.approvalChain && !profile.settings.kitApprovalChain) { sendError(res, 403, 'FORBIDDEN', 'the brand team must edit the kit while contact changes require approval'); return null; }
     }
     return { actor, company, programme };
   };
@@ -103,12 +111,12 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     sendJson(res, 200, { ...(view ?? { kit: null }), limits: KIT_LIMITS, ...(pending ? { pending: { approvalId: pending.id, action: pending.partnerKit!.action } } : {}) }, { 'cache-control': 'no-store' });
   };
   /** Direct saves and approved saves use the same validation and submit path. */
-  const publish = async (actor: Pick<UserRecord, 'id' | 'groups'>, company: CompanyRecord, bytes: Buffer, via?: { approval: string }) => {
+  const publish = async (actor: Pick<UserRecord, 'id' | 'groups'>, company: CompanyRecord, bytes: Buffer, via?: { approval: string }, stillValid?: () => Promise<boolean>) => {
     const pointer = (await store.getCompanyProfile(company.id))?.kit;
     const target = pointer ? await store.getInstanceAsset(pointer.assetId) : null;
     if (pointer && !target) return failure(409, 'KIT_MISSING', 'remove the missing kit before saving a new one');
     const outcome = await d.submitKit({ bytes, name: `${company.name} partner kit`, submitter: { id: actor.id, groups: actor.groups },
-      companyKit: { companyId: company.id }, ...(target ? { target } : {}) });
+      companyKit: { companyId: company.id, createdAt: company.createdAt, ...(stillValid ? { stillValid } : {}) }, ...(target ? { target } : {}) });
     if (!outcome.ok) return failure(outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : 422, outcome.code, outcome.detail);
     const revision = outcome.version ?? outcome.record.headVersion ?? 1;
     const kit = await storedKit(blobs, outcome.record);
@@ -118,9 +126,10 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     });
     return { view: { kit, assetId: outcome.record.id, revision, source: kit?.source ?? null, limits: KIT_LIMITS } };
   };
-  const remove = async (actorId: string, company: CompanyRecord, via?: { approval: string }) => {
+  const remove = async (actorId: string, company: CompanyRecord, via?: { approval: string }, stillValid?: () => Promise<boolean>) => {
     const pointer = (await store.getCompanyProfile(company.id))?.kit;
     if (!pointer) return failure(404, 'NOT_FOUND', 'this company has no kit');
+    if (stillValid && !await stillValid()) return failure(409, 'KIT_CHANGED', 'the request no longer applies');
     const prior = await read(company);
     const life = await store.getLifecycle(pointer.assetId);
     await store.putLifecycle({ ...(life ?? { assetId: pointer.assetId, onExpiry: 'hide' as const }), revokedAt: life?.revokedAt ?? new Date().toISOString() });
@@ -142,7 +151,7 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
       const title = `Partner kit: ${company.name}`;
       const approval: Approval = {
         ...createApproval({ id, subjectType: 'partner-kit', subjectRef: company.id, title, chain, nominees: [], createdBy: actor.id, now: new Date().toISOString() }),
-        partnerKit: { companyId: company.id, companyCreatedAt: company.createdAt, action, ...(blobId ? { blobId } : {}) },
+        partnerKit: { companyId: company.id, companyCreatedAt: company.createdAt, action, base: await kitBase(company.id), ...(blobId ? { blobId } : {}) },
       };
       if (blobId && bytes) await blobs.put(blobId, bytes, 'application/json');
       try { await store.putApproval(approval); }
@@ -237,27 +246,40 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
   /** Apply the decision only while the company and programme are live. */
   const settleApproval = async (approval: Approval): Promise<boolean> => {
     if (approval.subjectType !== 'partner-kit' || !approval.partnerKit) return false;
+    // One settlement per request at a time in this process; the base check below
+    // stops a second application from another process.
+    if (settling.has(approval.id)) return true;
+    settling.add(approval.id);
     const subject = approval.partnerKit;
     let applied = false;
     try {
-      // The decision is read back as stored, so a request rejected or withdrawn
-      // since this one was decided applies nothing; and only the same company,
-      // still live, takes the change.
-      const stored = await store.getApproval(approval.id);
-      if (approval.state === 'approved' && stored?.state === 'approved'
-        && await sameLiveCompany(subject.companyId, subject.companyCreatedAt)) {
+      // Asked before the change and again where it commits, after the scan: the
+      // stored decision still says approved, the same company record is live,
+      // and the kit is still the one the request was filed against.
+      const stillValid = async (): Promise<boolean> => {
+        if ((await store.getApproval(approval.id))?.state !== 'approved') return false;
+        if (!await sameLiveCompany(subject.companyId, subject.companyCreatedAt)) return false;
+        if (subject.base === undefined) return true;
+        const now = await kitBase(subject.companyId);
+        return subject.base === null ? now === null : now?.assetId === subject.base.assetId && now.revision === subject.base.revision;
+      };
+      if (approval.state === 'approved' && await stillValid()) {
         const company = (await store.listCompanies()).find((c) => c.id === subject.companyId)!;
         const via = { approval: approval.id };
-        if (subject.action === 'remove') applied = !('error' in await remove(approval.createdBy, company, via));
+        if (subject.action === 'remove') applied = !('error' in await remove(approval.createdBy, company, via, stillValid));
         else if (subject.blobId) {
           const held = await blobs.get(subject.blobId);
           const actor = await store.getUser(approval.createdBy);
-          if (held) applied = !('error' in await publish({ id: approval.createdBy, groups: actor?.groups ?? [] }, company, await readBlobBody(held.body, KIT_MAX_BYTES), via));
+          if (held) applied = !('error' in await publish({ id: approval.createdBy, groups: actor?.groups ?? [] }, company, await readBlobBody(held.body, KIT_MAX_BYTES), via, stillValid));
         }
       }
     } finally {
       if (subject.blobId) await blobs.delete(subject.blobId);
+      settling.delete(approval.id);
     }
+    // A decision overturned while this one ran (a rejection stored after an
+    // approval) is told to the requester by its own settlement.
+    if (!applied && approval.state === 'approved' && (await store.getApproval(approval.id))?.state !== 'approved') return true;
     await store.putMessage({
       id: `msg_${randomId(8)}`, kind: 'approval', severity: applied ? 'info' : 'action', audience: { users: [approval.createdBy] },
       title: applied ? 'Company kit updated' : 'Company kit not changed',
