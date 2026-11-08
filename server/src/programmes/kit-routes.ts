@@ -232,22 +232,26 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
   /** Apply the decision only while the company and programme are live. */
   const settleApproval = async (approval: Approval): Promise<boolean> => {
     if (approval.subjectType !== 'partner-kit' || !approval.partnerKit) return false;
-    // One settlement per request at a time in this process; the base check below
-    // stops a second application from another process.
-    if (settling.has(approval.id)) return true;
-    settling.add(approval.id);
+    // One settlement per request and decision at a time in this process. A
+    // rejection stored while an approval settles still settles and tells the
+    // requester; the base check below stops a second application anywhere.
+    const key = `${approval.id}:${approval.state}`;
+    if (settling.has(key)) return true;
+    settling.add(key);
     const subject = approval.partnerKit;
     let applied = false;
     try {
+      // The kit the change applies onto: the one the request was filed against,
+      // or, for a request filed without it, the kit as this settlement found it.
+      const base = subject.base !== undefined ? subject.base : await kitBase(subject.companyId);
       // Asked before the change and again where it commits, after the scan: the
       // stored decision still says approved, the same company record is live,
-      // and the kit is still the one the request was filed against.
+      // and the kit is still that base.
       const stillValid = async (): Promise<boolean> => {
         if ((await store.getApproval(approval.id))?.state !== 'approved') return false;
         if (!await sameLiveCompany(subject.companyId, subject.companyCreatedAt)) return false;
-        if (subject.base === undefined) return true;
         const now = await kitBase(subject.companyId);
-        return subject.base === null ? now === null : now?.assetId === subject.base.assetId && now.revision === subject.base.revision;
+        return base === null ? now === null : now?.assetId === base.assetId && now.revision === base.revision;
       };
       if (approval.state === 'approved' && await stillValid()) {
         const company = (await store.listCompanies()).find((c) => c.id === subject.companyId)!;
@@ -260,8 +264,8 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
         }
       }
     } finally {
+      settling.delete(key);
       if (subject.blobId) await blobs.delete(subject.blobId);
-      settling.delete(approval.id);
     }
     // A decision overturned while this one ran (a rejection stored after an
     // approval) is told to the requester by its own settlement.
