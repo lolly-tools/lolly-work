@@ -145,7 +145,7 @@ export function createCompanyProfiles(d: CompanyProfileDeps) {
       ...(rec.revision ? { updatedAt: rec.updatedAt } : {}),
       ...(opts.forManager ? {
         ...(rec.revision ? { updatedBy: rec.updatedBy } : {}),
-        settings: { editors: await editorsOf(rec.settings), approvalChain: rec.settings.approvalChain ?? null },
+        settings: { editors: await editorsOf(rec.settings), approvalChain: rec.settings.approvalChain ?? null, kitApprovalChain: rec.settings.kitApprovalChain ?? null },
       } : { mayEdit: !!opts.mayEdit, changesWait: !!opts.mayEdit && !!rec.settings.approvalChain }),
       limits: PROFILE_LIMITS,
       ...(pending ? { pending: { approvalId: pending.id, ...(pending.companyProfile?.logo ? { logo: pending.companyProfile.logo.surface } : {}),
@@ -372,12 +372,12 @@ export function createCompanyProfiles(d: CompanyProfileDeps) {
       sendJson(res, 200, await view(company, m.programme, saved, { forManager: true }), { 'cache-control': 'no-store' });
     });
 
-    /** Who besides the managers may edit (people in the company, by id or
-     *  address; an empty list turns contacts off) and the approval chain their
-     *  changes wait for (null turns approval off). Both off by default. */
+    /** Who besides the managers may edit, the chain for contact profile edits
+     *  and the separate chain for every kit change. All are off by default;
+     *  an empty editor list or a null chain clears the corresponding setting. */
     router.add('PUT', `${base}/settings`, async (req, res, ctx) => {
       const m = await managed(req, res, ctx.params); if (!m) return;
-      const body = (await readJson(req)) as { editors?: unknown; approvalChain?: unknown } | null;
+      const body = (await readJson(req)) as { editors?: unknown; approvalChain?: unknown; kitApprovalChain?: unknown } | null;
       const prior = await recordOf(m.company.id);
       const next: CompanyProfileSettings = { ...prior.settings };
       if (body?.editors !== undefined) {
@@ -393,16 +393,18 @@ export function createCompanyProfiles(d: CompanyProfileDeps) {
         }
         if (ids.length) next.editors = [...new Set(ids)]; else delete next.editors;
       }
-      if (body?.approvalChain !== undefined) {
-        if (body.approvalChain === null || body.approvalChain === '') delete next.approvalChain;
-        else if (typeof body.approvalChain !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'approvalChain is a chain id, or null for no approval');
-        else if (!(await store.getChain(body.approvalChain))?.steps.length) return sendError(res, 409, 'CHAIN_NOT_FOUND', 'That approval chain does not exist.');
-        else next.approvalChain = body.approvalChain;
+      for (const field of ['approvalChain', 'kitApprovalChain'] as const) {
+        const value = body?.[field];
+        if (value === undefined) continue;
+        if (value === null || value === '') delete next[field];
+        else if (typeof value !== 'string') return sendError(res, 400, 'INVALID_INPUT', `${field} is a chain id, or null for no approval`);
+        else if (!(await store.getChain(value))?.steps.length) return sendError(res, 409, 'CHAIN_NOT_FOUND', 'That approval chain does not exist.');
+        else next[field] = value;
       }
       await store.putCompanyProfileSettings(m.company.id, next);
       await d.audit(`user:${m.actor.id}`, 'programme.company.profile.settings', `company:${m.company.id}`, {
-        before: { editors: prior.settings.editors ?? [], approvalChain: prior.settings.approvalChain ?? null },
-        after: { editors: next.editors ?? [], approvalChain: next.approvalChain ?? null },
+        before: { editors: prior.settings.editors ?? [], approvalChain: prior.settings.approvalChain ?? null, kitApprovalChain: prior.settings.kitApprovalChain ?? null },
+        after: { editors: next.editors ?? [], approvalChain: next.approvalChain ?? null, kitApprovalChain: next.kitApprovalChain ?? null },
       });
       sendJson(res, 200, await view(m.company, m.programme, { ...prior, settings: next }, { forManager: true }), { 'cache-control': 'no-store' });
     });
