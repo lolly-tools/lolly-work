@@ -195,35 +195,25 @@ test('the submissions list shows a partner\'s live rows only while their feed ho
   assert.ok(!(await list(staff, 'live')).includes('inst/rita-live'), 'staff see only their own and their inbox, as before');
 });
 
-test('collections under a delegated grant keep to the partner\'s programme', async () => {
+test('collections, lifecycle and scans are refused to a partner even under a delegated grant; staff keep them', async () => {
   const rita = await login('rita@reseller.test');
   const admin = await login('admin@test');
-  const listed = ((await (await get(rita, '/api/v1/catalog/collections')).json()) as { collections: Array<{ id: string }> }).collections.map((c) => c.id);
-  assert.deepEqual(listed, ['emea-kit'], 'only the collection their programme sees');
-  assert.equal((await get(rita, '/api/v1/catalog/collections/internal-kit')).status, 404);
-  assert.equal((await send(rita, 'PUT', '/api/v1/catalog/collections/internal-kit', { name: 'Taken', members: [], groups: ['programme-resellers'] })).status, 404, 'not overwritten');
-  assert.equal((await send(rita, 'DELETE', '/api/v1/catalog/collections/internal-kit')).status, 404, 'not deleted');
-  assert.equal((await store.getCollection('internal-kit'))?.name, 'Internal kit');
-  assert.equal((await send(rita, 'PUT', '/api/v1/catalog/collections/partner-picks', { name: 'Picks', members: ['inst/kit'], groups: ['marketing'] })).status, 403, 'a new collection names their programme');
-  assert.equal((await send(rita, 'PUT', '/api/v1/catalog/collections/partner-picks', { name: 'Picks', members: ['inst/kit'], groups: ['programme-resellers'] })).status, 201);
-  assert.equal(((await (await get(admin, '/api/v1/catalog/collections')).json()) as { collections: unknown[] }).collections.length, 3, 'staff see every collection');
-});
-
-test('lifecycle under a delegated grant shows and changes only what the partner\'s feed holds', async () => {
-  const rita = await login('rita@reseller.test');
-  const admin = await login('admin@test');
-  const rows = ((await (await get(rita, '/api/v1/catalog/lifecycle')).json()) as { rows: Array<{ assetId: string }> }).rows.map((r) => r.assetId);
-  assert.ok(!rows.includes('acme/internal'), 'not the lifecycle of an asset outside the feed');
-  assert.ok(((await (await get(admin, '/api/v1/catalog/lifecycle')).json()) as { rows: Array<{ assetId: string }> }).rows.some((r) => r.assetId === 'acme/internal'));
-  assert.equal((await send(rita, 'PUT', '/api/v1/catalog/lifecycle/inst/internal', { revoke: true })).status, 404, 'cannot stop sharing what is not theirs');
-  assert.equal((await send(rita, 'PUT', '/api/v1/catalog/lifecycle/inst/internal', { hold: { note: 'x' } })).status, 404, 'nor hold it');
+  // The partner action allowlist (rbac/evaluate.ts) closes these actions to partners at
+  // the decision; the routes' own programme checks stay as a second layer.
+  for (const [method, path, body] of [
+    ['GET', '/api/v1/catalog/collections'], ['GET', '/api/v1/catalog/collections/internal-kit'],
+    ['PUT', '/api/v1/catalog/collections/internal-kit', { name: 'Taken', members: [], groups: ['programme-resellers'] }],
+    ['DELETE', '/api/v1/catalog/collections/internal-kit'],
+    ['GET', '/api/v1/catalog/lifecycle'], ['PUT', '/api/v1/catalog/lifecycle/inst/internal', { revoke: true }],
+    ['PUT', '/api/v1/catalog/lifecycle/inst/internal', { hold: { note: 'x' } }],
+    ['POST', '/api/v1/catalog/scan/acme/internal'],
+  ] as Array<[string, string, unknown?]>) {
+    assert.equal((await send(rita, method, path, body)).status, 403, `${method} ${path}`);
+  }
+  assert.equal((await store.getCollection('internal-kit'))?.name, 'Internal kit', 'nothing changed');
   assert.equal(await store.getLifecycle('inst/internal'), null);
-});
-
-test('a scan under a delegated grant reaches only what the partner\'s feed holds', async () => {
-  const rita = await login('rita@reseller.test');
-  const admin = await login('admin@test');
-  assert.equal((await send(rita, 'POST', '/api/v1/catalog/scan/acme/internal')).status, 404, 'no scan of an asset outside the feed');
+  assert.equal(((await (await get(admin, '/api/v1/catalog/collections')).json()) as { collections: unknown[] }).collections.length, 2, 'staff list every collection');
+  assert.ok(((await (await get(admin, '/api/v1/catalog/lifecycle')).json()) as { rows: Array<{ assetId: string }> }).rows.some((r) => r.assetId === 'acme/internal'));
   assert.equal((await send(admin, 'POST', '/api/v1/catalog/scan/acme/internal')).status, 200, 'staff scan as before');
 });
 
