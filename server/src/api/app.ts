@@ -462,7 +462,7 @@ export function buildApp(deps: AppDeps): App {
   // `submitter`: the person the render is for. The worker may then read the
   // project files its inputs name, while that person can see them (plan 76 M4j).
   const renderTool = (...args: [...Parameters<typeof renderToolUnscoped>, submitter?: UserRecord | null]) => {
-    const run = async (signal: AbortSignal) => {
+    const run = async (signal: AbortSignal, deadlineAt: number) => {
       await catalogPreparation;
       signal.throwIfAborted();
       const snap = brand.current()!;
@@ -480,7 +480,7 @@ export function buildApp(deps: AppDeps): App {
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
-        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
+        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal, deadlineAt });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;
@@ -544,7 +544,7 @@ export function buildApp(deps: AppDeps): App {
   // The Chromium render worker is active only when both the URL and the shared
   // HMAC key are present; otherwise hooked tools keep 501-ing (unchanged).
   const renderWorker: WorkerConfig | undefined = config.render.worker.url && secrets.renderWorker
-    ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs, requireHttps: productionMode(config) }
+    ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs, connectRetryMs: config.render.worker.connectRetryMs, requireHttps: productionMode(config) }
     : undefined;
   // Pull dispatch (render.worker.dispatch "pull", plan 324 M3): render and
   // raster jobs wait in this process until a worker leases one over
@@ -12124,6 +12124,7 @@ export function buildApp(deps: AppDeps): App {
       if (!(e instanceof RenderError)) throw e;
       // A request refused for what it asked never ran, so it counts nothing.
       if (e.status < 500) await giveBack?.();
+      if (e.retryAfter !== undefined) res.setHeader('retry-after', String(e.retryAfter));
       // Name the refused input, as the GET route does, so an agent knows which one.
       const v = e.violations?.[0];
       return sendError(res, e.status, e.code, e.message, v
