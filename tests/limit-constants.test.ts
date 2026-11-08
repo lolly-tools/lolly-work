@@ -67,6 +67,7 @@ import { POSTGRES_BLOB_MAX_BYTES } from '../server/src/blobs/limits.ts';
 import { POSTGRES_BLOB_MAX_BYTES as BLOB_VIA_STORE } from '../server/src/blobs/postgres.ts';
 import { RETIRE_REASON_MAX } from '../server/src/audit/limits.ts';
 import { RETIRE_REASON_MAX as RETIRE_VIA_MODULE } from '../server/src/audit/retire.ts';
+import { KIT_DESIGN_SYSTEM_MAX_BYTES, KIT_LOLLY_MAX_BYTES, KIT_MAX_BYTES, KIT_TOKENS_MAX_BYTES } from '../server/src/programmes/kit.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { limitsInventory } from '../server/src/observability/limits-inventory.ts';
 
@@ -189,6 +190,11 @@ const PINS: [name: string, actual: unknown, before: unknown, panelId: string | n
   ['PG_IDLE_TIMEOUT_MS', PG_IDLE_TIMEOUT_MS, 30_000, 'storage.databaseIdleMs'],
   ['POSTGRES_BLOB_MAX_BYTES', POSTGRES_BLOB_MAX_BYTES, 500 * MiB, 'storage.postgresBlobBytes'],
   ['RETIRE_REASON_MAX', RETIRE_REASON_MAX, 200, 'audit.retireReasonLength'],
+  // Partner kit limits from main, shown as they are.
+  ['KIT_MAX_BYTES', KIT_MAX_BYTES, KIT_MAX_BYTES, 'programmes.kitBytes'],
+  ['KIT_TOKENS_MAX_BYTES', KIT_TOKENS_MAX_BYTES, 2 * MiB, 'programmes.kitTokensBytes'],
+  ['KIT_LOLLY_MAX_BYTES', KIT_LOLLY_MAX_BYTES, KIT_LOLLY_MAX_BYTES, 'programmes.kitLollyBytes'],
+  ['KIT_DESIGN_SYSTEM_MAX_BYTES', KIT_DESIGN_SYSTEM_MAX_BYTES, 8 * MiB, 'programmes.kitDesignSystemBytes'],
 ];
 
 const config = parseConfig(JSON.stringify({ instance: { name: 'Pins', baseUrl: 'http://localhost', pack: './packs/demo' }, dev: { enabled: true } }));

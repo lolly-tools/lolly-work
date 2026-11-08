@@ -143,6 +143,7 @@ import { MAX_IGNORED as MAPPING_MAX_IGNORED, MAX_NAME as MAPPING_MAX_NAME } from
 import { MAX_RASTER_EDGE_PX } from '../render/pipeline.ts';
 import { MAX_ATTR_LEN as TELEMETRY_LABEL_CHARS } from '../telemetry/ingest.ts';
 
+import { KIT_DESIGN_SYSTEM_MAX_BYTES, KIT_LOLLY_MAX_BYTES, KIT_MAX_BYTES, KIT_TOKENS_MAX_BYTES } from '../programmes/kit.ts';
 export interface LimitEntry {
   id: string;
   area: string;
@@ -548,6 +549,10 @@ export function limitsInventory(config: InstanceConfig, extra: { partnerRightsMo
   add('programmes.partnerLinksListed', 'Partner links listed', RIGHTS_LIMITS.linksListed, 'count');
   add('programmes.choicesPerRequest', 'Held files chosen in one request', CHOICES_PER_REQUEST, 'count');
   add('programmes.choiceNoteLength', 'Choice note length', CHOICE_NOTE_MAX, 'count', 'Characters.');
+  add('programmes.kitBytes', 'Partner kit size', KIT_MAX_BYTES, 'bytes');
+  add('programmes.kitTokensBytes', 'Partner kit tokens file size', KIT_TOKENS_MAX_BYTES, 'bytes');
+  add('programmes.kitLollyBytes', 'Partner kit .lolly file size', KIT_LOLLY_MAX_BYTES, 'bytes');
+  add('programmes.kitDesignSystemBytes', 'Partner kit design system size', KIT_DESIGN_SYSTEM_MAX_BYTES, 'bytes', 'Inflated.');
   // The gate the server applies now: the configured mode when one is set, else the
   // instance's own recorded decision.
   const configuredGate = config.policy?.catalog?.partnerRights;
