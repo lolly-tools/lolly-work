@@ -6410,8 +6410,8 @@ export function buildApp(deps: AppDeps): App {
     },
   });
   companyProfiles.register(router);
-  registerCompanyKitRoutes(router, {
-    store, blobs, requireAction, memberOf, audit,
+  const companyKits = registerCompanyKitRoutes(router, {
+    store, blobs, notifier, baseUrl: config.instance.baseUrl, requireAction, memberOf, audit,
     kitVisible: async (groups, assetId) => !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit'),
     submitKit: async (input) => {
       const outcome = await submitAsset(submitDeps(), input);
@@ -6424,7 +6424,10 @@ export function buildApp(deps: AppDeps): App {
     // Ending a partnership, or deleting a company, withdraws its share anyway
     // choices (plans/82 M4 and M5), each with its audit row in one transaction.
     rightsChoices: exitRightsChoices(store, auditBody),
-    forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
+    forgetCompanyProfile: async (companyId) => {
+      await companyKits.forgetCompany(companyId);
+      await companyProfiles.forgetCompany(companyId);
+    },
     invite: async (actor, email, groups, endsAt) => {
       // The invitation can be accepted until the membership ends, and never for
       // more than the 366 days any invitation may stay open.
@@ -6751,7 +6754,7 @@ export function buildApp(deps: AppDeps): App {
     // skipped rather than doubled up.
     const wasDomainSubject = isTerminal(next.state)
       ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id) || await brandPages.settleApproval(next, user.id) || await brandEdits.settleApproval(next, user.id)
-        || await companyProfiles.settleApproval(next, user.id))
+        || await companyProfiles.settleApproval(next, user.id) || await companyKits.settleApproval(next))
       : false;
     if (isTerminal(next.state) && !wasDomainSubject) {
       await store.putMessage({
@@ -6799,6 +6802,7 @@ export function buildApp(deps: AppDeps): App {
     await brandPages.settleApproval(next, user.id);
     await brandEdits.settleApproval(next, user.id);
     await companyProfiles.settleApproval(next, user.id);
+    await companyKits.settleApproval(next);
     sendJson(res, 200, serializeApproval(next, user.id, undefined, await actorsMap()));
   });
 
