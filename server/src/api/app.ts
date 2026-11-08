@@ -110,7 +110,7 @@ import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
 import { linksThatWouldLose, registerRightsRoutes } from '../programmes/rights-routes.ts';
 import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
-import { composeRightsRecords, loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
+import { AssetScanBoundExceeded, composeRightsRecords, loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
 import { decidePartnerRightsDefault, partnerRightsState, type PartnerRightsState } from '../catalog/rights-mode.ts';
 import { partnerRightsCheck } from '../setup/checks.ts';
 import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
@@ -241,6 +241,7 @@ import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkK
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { checkDesignRules, renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
+import { AssetHeldError, type RenderAssetGate } from '../render/host.ts';
 import type { RenderPartner } from '../render/record.ts';
 import { isPublishedTemplateRef, templateOverlay, templateRetired, templateSeed, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
@@ -467,6 +468,23 @@ export function buildApp(deps: AppDeps): App {
   });
   const brandRules = createBrandRuleService(brand, store, deploymentConfig.dev.enabled);
   const config = { ...deploymentConfig, instance: { ...deploymentConfig.instance, get pack() { return brand.root(); } } };
+  // What a programme-scoped caller's server render or compile may draw
+  // (plans/82 M4 and M6): exactly the files their own feed holds, in either
+  // mode. In report mode that feed is scoped to their programmes; with the
+  // licence gate on it is gated by licence too. Staff draw as before.
+  const licenceAssetGate = async (groups: string[], role?: string): Promise<{ allows(id: string): boolean; catalogIds: ReadonlySet<string>; revision: string } | null> => {
+    if (!isProgrammeScoped(groups, role)) return null;
+    await providersReady;
+    const served = await servedIndex.forCaller({ groups });
+    const allowed = new Set((served.index.assets ?? []).map((entry) => entry.id));
+    const catalogIds = new Set((await catalogEntriesForRights()).map((entry) => entry.id));
+    return { allows: (id) => allowed.has(id), catalogIds, revision: `${(await partnerRightsReady).mode}:${served.version}` };
+  };
+  /** The same gate for one automation request: it notes each file it held back. */
+  const automationAssetGate = async (caller: { user: { groups: string[]; role?: string } | null; groups: string[] }): Promise<{ assetGate?: RenderAssetGate }> => {
+    const gate = await licenceAssetGate(caller.groups, caller.user?.role);
+    return gate ? { assetGate: { allows: (id) => gate.allows(id), held: new Set<string>(), catalogIds: gate.catalogIds } } : {};
+  };
   // `submitter`: the person the render is for. The worker may then read the
   // project files its inputs name, while that person can see them (plan 76 M4j).
   const renderTool = (...args: [...Parameters<typeof renderToolUnscoped>, submitter?: UserRecord | null]) => {
@@ -479,6 +497,7 @@ export function buildApp(deps: AppDeps): App {
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
         companyFor: companyForRender, partnerFor: partnerForRender,
+        assetGate: licenceAssetGate,
         // The design system that drew the render, named as the brand card names it.
         designSystem: async () => {
           const tokens = (await brandChrome.public().catch(() => null))?.tokens ?? null;
@@ -488,7 +507,7 @@ export function buildApp(deps: AppDeps): App {
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
-        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal, deadlineAt });
+        workerReadToken: mintRenderRead(args[1].assetScope?.groups ?? args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal, deadlineAt });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;
@@ -3946,10 +3965,16 @@ export function buildApp(deps: AppDeps): App {
         else q.set(k, v);
       }
     }
+    // A link a partner made draws only what that partner may draw now (plans/82
+    // M4): their programme scope and licence permissions, read again on every
+    // fetch, so a withdrawn choice or mark reaches a live link.
+    const linkMaker = await store.getUser(link.createdBy);
+    const assetScope = linkMaker && isProgrammeScoped(linkMaker.groups, linkMaker.role)
+      ? { groups: linkMaker.groups, ...(linkMaker.role ? { role: linkMaker.role } : {}) } : undefined;
     try {
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner() }, {
         toolId, format: fmt, query: q.toString(),
-        principal: null, profile: {}, overlays: await store.listOverlays(),
+        principal: null, profile: {}, overlays: await store.listOverlays(), ...(assetScope ? { assetScope } : {}),
       });
       const etag = `W/"r-${result.cacheKey.slice(0, 16)}"`;
       if (result.evidence?.brandRules || result.watermarkNote) setDeliveryClass(res, 'person-private');
@@ -6486,6 +6511,11 @@ export function buildApp(deps: AppDeps): App {
     // so a held file is still there to count and to choose.
     feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups, ungated: true })).index; },
     extraLimits: () => ({ collectionZipBytes: COLLECTION_ZIP_MAX_BYTES, collectionMembers: COLLECTION_MAX_MEMBERS }),
+    templateValues: async (id) => {
+      const rec = await store.getInstanceAsset(id);
+      const blob = rec?.blobs.json ? await blobs.get(rec.blobs.json) : null;
+      return blob ? templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES)) : null;
+    },
   });
   registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights });
 
@@ -12073,7 +12103,7 @@ export function buildApp(deps: AppDeps): App {
     // Compile, validate and package read this policy. Batch rows render through the
     // pipeline, which applies the rules for the batch format itself.
     const governed = ['compile', 'validate', 'package'].includes(job.verb) ? body.toolId : undefined;
-    const context = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format) };
+    const context = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format), ...await automationAssetGate(caller) };
     if (job.verb === 'batch') {
       if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const record = job;
@@ -12322,7 +12352,7 @@ export function buildApp(deps: AppDeps): App {
       if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
       const hostedResolver = hostedAssetResolverFor(caller.groups);
       const automationContext = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver, readUpload: automationUploadReader(caller.principal), ...automationFiles(caller),
-        policy: await automationPolicy(caller, verb === 'compile' || verb === 'validate' ? body.toolId : undefined, body.format) };
+        policy: await automationPolicy(caller, verb === 'compile' || verb === 'validate' ? body.toolId : undefined, body.format), ...await automationAssetGate(caller) };
       const execute = async (): Promise<unknown> => {
         let result: unknown;
         if (verb === 'compile') result = await compileVerb(automationContext, body as unknown as Parameters<typeof compileVerb>[1]);
@@ -12346,6 +12376,8 @@ export function buildApp(deps: AppDeps): App {
         if (e instanceof UploadReferenceError) return sendError(res, e.status, e.code, e.message);
         if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
         if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
+        if (e instanceof AssetHeldError) { const r = e.report('document'); return sendError(res, 422, 'ASSET_HELD', r.message, { assets: r.assets, ...(r.more ? { more: r.more } : {}) }); }
+        if (e instanceof AssetScanBoundExceeded) return sendError(res, 422, 'VALUES_TOO_LARGE', e.message);
         return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
       }
     });
@@ -12359,7 +12391,7 @@ export function buildApp(deps: AppDeps): App {
     if (!(await requireAutomationTools(res, caller, body, body.document))) return;
     const execute = async () => {
       const document = body.document ?? (await compileVerb(
-        { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format) },
+        { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format), ...await automationAssetGate(caller) },
         body as unknown as Parameters<typeof compileVerb>[1],
       ) as { document: unknown }).document;
       return packageVerb(document);
@@ -12381,6 +12413,8 @@ export function buildApp(deps: AppDeps): App {
     } catch (e) {
       if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
       if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
+      if (e instanceof AssetHeldError) { const r = e.report('document'); return sendError(res, 422, 'ASSET_HELD', r.message, { assets: r.assets, ...(r.more ? { more: r.more } : {}) }); }
+      if (e instanceof AssetScanBoundExceeded) return sendError(res, 422, 'VALUES_TOO_LARGE', e.message);
       return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
     }
   });
