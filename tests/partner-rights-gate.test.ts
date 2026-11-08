@@ -321,7 +321,7 @@ test('instance and pack file bytes follow the gate through the feed checks (#346
   const status = async (base: string, email: string, path: string) => (await fetch(`${base}${path}`, { headers: { cookie: await login(base, email) } })).status;
   // An instance file: instanceAssetReadable reads the caller's feed, which the gate shapes.
   assert.equal(await status(gate, 'rita@northwind.test', '/catalog/inst/open-shot/png'), 200, 'a file whose licence travels');
-  assert.equal(await status(gate, 'rita@northwind.test', '/catalog/inst/plain-shot/png'), 403, 'a file with no licence record is held');
+  assert.equal(await status(gate, 'rita@northwind.test', '/catalog/inst/plain-shot/png'), 404, 'a file with no licence record is held, with the one plain answer a partner gets (#353)');
   assert.equal(await status(report, 'rita@northwind.test', '/catalog/inst/plain-shot/png'), 200, 'report mode changes nothing a partner receives');
   assert.equal(await status(gate, 'staff@test', '/catalog/inst/plain-shot/png'), 200, 'staff unchanged');
   // A pack file: feedNamesFile answers only for a file the caller's gated feed names.
@@ -329,4 +329,75 @@ test('instance and pack file bytes follow the gate through the feed checks (#346
   assert.equal(await status(gate, 'rita@northwind.test', '/catalog/assets/acme/unrecorded.jpg'), 404, 'a held pack file is not named by the feed');
   assert.equal(await status(report, 'rita@northwind.test', '/catalog/assets/acme/unrecorded.jpg'), 200);
   assert.equal(await status(gate, 'staff@test', '/catalog/assets/acme/unrecorded.jpg'), 200);
+});
+
+test('a share anyway choice names the head\'s bytes: an older version of the file is not sent with it', async () => {
+  const at = new Date().toISOString();
+  const v1 = await blobs.put('inst/versioned/v1/png', Buffer.from('png:OLD'), 'image/png');
+  const v2 = await blobs.put('inst/versioned/v2/png', Buffer.from('png:NEW'), 'image/png');
+  await store.putInstanceAsset({
+    id: 'inst/versioned', entry: instanceAssetEntry('inst/versioned', { name: 'Versioned shot', type: 'image' }, [{ format: 'png', size: v2.size, checksum: v2.checksum }]),
+    blobs: { png: 'inst/versioned/v2/png' }, groups: ['marketing'], createdAt: at, headVersion: 2,
+  } as never);
+  for (const [version, stat, blobId] of [[1, v1, 'inst/versioned/v1/png'], [2, v2, 'inst/versioned/v2/png']] as const) {
+    await store.putAssetVersion({ assetId: 'inst/versioned', version, formats: [{ format: 'png', blobId, size: stat.size, checksum: stat.checksum }], by: 'user:x', at });
+  }
+  await store.putCollection({ id: 'versioned-kit', name: 'Versioned kit', members: ['inst/versioned'], groups: ['programme-resellers-emea', 'marketing'], curator: 'user:x', createdAt: 'x', updatedAt: 'x' });
+  const bruno = await login(gate, 'bruno@test');
+  const chose = await call(gate, bruno, 'PUT', '/api/v1/programmes/resellers-emea/rights/choices', { assetIds: ['inst/versioned'], company: 'northwind-it' });
+  assert.equal(chose.status, 200, JSON.stringify(chose.body));
+  const rita = await login(gate, 'rita@northwind.test');
+  const head = await fetch(`${gate}/catalog/inst/versioned/png`, { headers: { cookie: rita } });
+  assert.equal(head.status, 200, 'head');
+  assert.equal(await head.text(), 'png:NEW', 'the bytes chosen');
+  assert.equal((await fetch(`${gate}/catalog/inst/versioned/png?v=1`, { headers: { cookie: rita } })).status, 404, 'not the version before them, with the one plain answer');
+  assert.equal((await fetch(`${gate}/catalog/inst/versioned/png?v=2`, { headers: { cookie: rita } })).status, 200, 'the head by number');
+  const history = await call(gate, rita, 'GET', '/api/v1/catalog/assets/inst/versioned/versions');
+  assert.deepEqual(history.body.versions.map((v: { version: number }) => v.version), [2], 'the history lists only the chosen bytes');
+  assert.equal((await fetch(`${gate}/catalog/inst/versioned/png?v=1`, { headers: { cookie: await login(gate, 'staff@test') } })).status, 200, 'staff unchanged');
+});
+
+test('a link to a held file stays held when the file is cut over to an instance file and its provider turned off', async () => {
+  const single = await mint({ kind: 'share', target: { assetId: 'ext/dam/s1' } });
+  assert.equal(single.status, 201, JSON.stringify(single.body));
+  assert.equal((await fetch(single.path)).status, 404, 'held before the cutover');
+  const stat = await blobs.put('inst/cutover/jpg', Buffer.from('jpg:cut'), 'image/jpeg');
+  await store.putInstanceAsset({
+    id: 'inst/cutover', entry: instanceAssetEntry('inst/cutover', { name: 'Stock s1', type: 'image' }, [{ format: 'jpg', size: stat.size, checksum: stat.checksum }]),
+    blobs: { jpg: 'inst/cutover/jpg' }, groups: ['marketing'], createdAt: new Date().toISOString(),
+  } as never);
+  await store.putAlias('ext/dam/s1', 'inst/cutover');
+  const owner = await login(gate, 'owner@test');
+  assert.equal((await call(gate, owner, 'POST', '/api/v1/catalog/providers/dam/disable')).status, 200);
+  try {
+    assert.notEqual((await fetch(single.path)).status, 200, 'judged by the instance file it now serves, which records no licence');
+  } finally {
+    assert.equal((await call(gate, owner, 'POST', '/api/v1/catalog/providers/dam/enable')).status, 200);
+  }
+});
+
+test('includeHeld classifies a file through its alias at mint, as the link is judged at every fetch', async () => {
+  const stat = await blobs.put('inst/aliased/jpg', Buffer.from('jpg:aliased'), 'image/jpeg');
+  await store.putInstanceAsset({
+    id: 'inst/aliased', entry: instanceAssetEntry('inst/aliased', { name: 'Event e2, kept here', type: 'image' }, [{ format: 'jpg', size: stat.size, checksum: stat.checksum }]),
+    blobs: { jpg: 'inst/aliased/jpg' }, groups: ['marketing'], createdAt: new Date().toISOString(),
+  } as never);
+  await store.putAlias('ext/dam/e2', 'inst/aliased');
+  const dry = await call(gate, await login(gate, 'staff@test'), 'POST', '/api/v1/links?dryRun=1', { kind: 'share', target: { assetId: 'ext/dam/e2' } });
+  assert.equal(dry.body.held, 1, 'the dry run reads the instance file it now serves, which records no licence');
+  const chosen = await mint({ kind: 'share', target: { assetId: 'ext/dam/e2' }, includeHeld: true, note: 'cut over, still ours to send' });
+  assert.equal(chosen.status, 201, JSON.stringify(chosen.body));
+  assert.equal(chosen.body.includeHeld, 1);
+  assert.equal((await fetch(chosen.path)).status, 200, 'the chosen bytes are served');
+});
+
+test('a link and its audit row are kept together: no link without the row that records it', async () => {
+  const linksBefore = (await store.listAllLinks()).length;
+  const original = store.appendAudit;
+  store.appendAudit = async (body) => { if (body.action === 'link.create') throw new Error('the audit write failed'); return original(body); };
+  const res = await mint({ kind: 'download', target: { collectionId: 'launch-kit' }, includeHeld: true, note: 'kept with its row' });
+  store.appendAudit = original;
+  const made = (await store.listAllLinks()).length - linksBefore;
+  const rows = (await store.listAudit()).filter((e) => e.action === 'link.create' && e.payload?.note === 'kept with its row').length;
+  assert.ok(made === 0 || rows > 0, `a link was kept (${made}) without its row (status ${res.status})`);
 });

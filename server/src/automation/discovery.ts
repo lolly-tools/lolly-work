@@ -68,7 +68,9 @@ export interface DiscoveryDeps {
   /** The current pack has a design tokens head, so the in-process host has `tokens`. */
   tokens(): boolean;
   designRevision(): string;
-  catalogVersion(): Promise<string>;
+  /** The catalog's version for this caller: the instance's own for staff, and one
+   *  derived from their own feed for a partner programme member (plans/82 M1). */
+  catalogVersion(groups: string[], role?: string): Promise<string>;
   /** The design-system rules for a format, or with none the rules every format
    *  shares (brand/rules.ts requestRuleContext), as compile and validate apply them. */
   managedRules(toolId: string, format?: string): Promise<ManagedRuleContext | undefined>;
@@ -103,8 +105,27 @@ export interface DiscoveryDeps {
   tokenLimits?(req: IncomingMessage): Promise<{ limits: Record<string, number | null>; usage: Record<string, unknown> } | null>;
 }
 
+/** A response body as text, or null once it passes `limit` bytes (the rest is
+ *  never read). */
+async function boundedText(res: Response, limit: number): Promise<string | null> {
+  const reader = res.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) { await reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 /** The worker's readiness, read from its unauthenticated `/readyz` and kept for
- *  `ttlMs`, so discovery never sends more than one probe per interval. */
+ *  `ttlMs`, so discovery never sends more than one probe per interval. A worker
+ *  reports a full set of slots as `atCapacity` on a 200; an older worker
+ *  answered 503 instead. Both read as busy. */
 export function createWorkerProbe(cfg: WorkerConfig, fetchImpl: typeof fetch, ttlMs = 15_000): () => Promise<WorkerState> {
   let last: { at: number; state: Promise<WorkerState> } | null = null;
   return () => {
@@ -112,8 +133,14 @@ export function createWorkerProbe(cfg: WorkerConfig, fetchImpl: typeof fetch, tt
     const state = (async (): Promise<WorkerState> => {
       try {
         const res = await fetchImpl(workerEndpoint(cfg, '/readyz'), { signal: AbortSignal.timeout(2_000) });
-        await res.body?.cancel().catch(() => {});
-        return res.status === 200 ? 'ready' : res.status === 503 ? 'busy' : 'unreachable';
+        if (res.status !== 200) {
+          await res.body?.cancel().catch(() => {});
+          return res.status === 503 ? 'busy' : 'unreachable';
+        }
+        const text = await boundedText(res, 4096);
+        let full = false;
+        try { full = text !== null && (JSON.parse(text) as { atCapacity?: unknown } | null)?.atCapacity === true; } catch { /* a bare 200 is ready */ }
+        return full ? 'busy' : 'ready';
       } catch { return 'unreachable'; }
     })();
     last = { at: Date.now(), state };
@@ -288,7 +315,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
     sendWithEtag(req, res, {
       apiVersion: described.apiVersion, schema: contract.schema, view, toolId, tool,
       versions: { engine: described.engineVersion, tool: described.version, policy: contract.overlay?.version ?? 0,
-        design: deps.designRevision(), catalog: await deps.catalogVersion(), ...(contract.rules ? { rules: contract.rules.rulesDigest.slice(0, 16) } : {}) },
+        design: deps.designRevision(), catalog: await deps.catalogVersion(caller.groups, caller.user?.role), ...(contract.rules ? { rules: contract.rules.rulesDigest.slice(0, 16) } : {}) },
       policy: contract.effects,
       render: { renderer: described.server.renderer, formats: contract.formats, ...(contract.format ? { format: contract.format } : {}) },
       unavailable: [...contract.unavailable, ...(render ? [] : [RENDER_FORBIDDEN])],

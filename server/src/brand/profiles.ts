@@ -29,7 +29,7 @@ export interface ProfilesResult {
 
 async function inferActiveFromSymlink(packRoot: string, names: string[]): Promise<string | null> {
   try {
-    const target = await readlink(join(packRoot, 'catalog')); // e.g. 'brands/suse/catalog'
+    const target = await readlink(join(packRoot, 'catalog')); // e.g. 'brands/lolly-demo/catalog'
     const m = /(?:^|\/)brands\/([^/]+)\/catalog\/?$/.exec(target.split('\\').join('/'));
     if (m && names.includes(m[1] as string)) return m[1] as string;
   } catch {

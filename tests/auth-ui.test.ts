@@ -12,16 +12,16 @@ test('sign-in and invitation pages use local theme assets, provider marks, and i
   assert.match(html, /class="provider-icon"/); assert.match(html, /disabled aria-label="SUSE ID \(pending\)"/);
   assert.ok(!html.includes('<script')); assert.ok(!html.includes('idp=suse'));
   assert.ok(html.includes('returnTo=%2Fproject'), 'provider choice preserves the destination');
-  const invite = invitePageHtml({ workspace: 'lolly.ing', token: 'secret-token', inviter: 'Andy', project: { name: 'SKO-Keynote', role: 'editor' }, email: 'ravan@suse.com', now: Date.now() }, { csrf: 'nonce', choices: [{ idp: 'google', label: 'Continue with Google', provider: 'Google' }, { idp: '', label: 'SUSE ID', provider: 'SUSE ID', pending: true }], passwordSetup: false, passwordSignIn: null, github: false });
+  const invite = invitePageHtml({ workspace: 'lolly.ing', token: 'secret-token', inviter: 'Andy', project: { name: 'SKO-Keynote', role: 'editor' }, email: 'ravan@lolly.example', now: Date.now() }, { csrf: 'nonce', choices: [{ idp: 'google', label: 'Continue with Google', provider: 'Google' }, { idp: '', label: 'SUSE ID', provider: 'SUSE ID', pending: true }], passwordSetup: false, passwordSignIn: null, github: false });
   assert.match(invite, /SUSE ID<\/span><span class="auth-pending">\(pending\)/);
   assert.equal((invite.match(/name="action" value="start"/g) ?? []).length, 1, 'pending sign-in cannot submit an authentication request');
-  assert.ok(!invite.includes('ravan@suse.com'), 'invitation address stays masked');
+  assert.ok(!invite.includes('ravan@lolly.example'), 'invitation address stays masked');
 });
 
 test('server theme resolves DTCG aliases, excludes CSS injection, and keeps usable contrast', () => {
-  const tokens = { base: { color: { brand: { pine: { $value: '#0c322c' }, jungle: { $value: '#30ba78' } } } }, light: { color: { semantic: { primary: { $value: '{color.brand.pine}' }, surface: { $value: '#ffffff' } } } }, dark: { color: { semantic: { primary: { $value: '{color.brand.jungle}' }, surface: { $value: '#0c322c' } } } } };
+  const tokens = { base: { color: { brand: { spearmint: { $value: '#033633' }, 'green-apple': { $value: '#50c369' } } } }, light: { color: { semantic: { primary: { $value: '{color.brand.spearmint}' }, surface: { $value: '#ffffff' } } } }, dark: { color: { semantic: { primary: { $value: '{color.brand.green-apple}' }, surface: { $value: '#033633' } } } } };
   const css = authThemeCss(tokens, { family: 'SUSE', file: 'SUSE[wght].woff2' });
-  assert.match(css, /--pack-accent-light:#0c322c/); assert.match(css, /--pack-accent-dark:#30ba78/);
+  assert.match(css, /--pack-accent-light:#033633/); assert.match(css, /--pack-accent-dark:#50c369/);
   assert.match(css, /--pack-on-accent-light:#fff/); assert.match(css, /--pack-on-accent-dark:#000/);
   assert.match(css, /\/api\/brand\/font\/SUSE%5Bwght%5D.woff2/);
   const unsafe = authThemeCss({ light: { color: { semantic: { primary: { $value: '#ffffff; background:url(https://evil.test)' } } } } }, { family: "x'}", file: 'external.woff2' });
@@ -29,6 +29,35 @@ test('server theme resolves DTCG aliases, excludes CSS injection, and keeps usab
   assert.throws(() => parseConfig(JSON.stringify({ idp: { pending: [''] } })), /idp.pending/);
 });
 
+
+test('server theme reads a mode x colourway design system through its canonical colourway', () => {
+  // Lolly Demo's shape: the mode sets alias into colourway sets, and each colourway is a
+  // $themes entry with a `com.suse.lolly` axis. Only the canonical colourway is read.
+  const axis = (kind: string, canonical = false) => ({ $extensions: { 'com.suse.lolly': { axis: { kind, ...(canonical ? { canonical } : {}) } } } });
+  const tokens = {
+    $themes: [
+      { name: 'light', selectedTokenSets: { base: 'enabled', light: 'enabled' }, ...axis('mode') },
+      { name: 'dark', selectedTokenSets: { base: 'enabled', dark: 'enabled' }, ...axis('mode') },
+      { name: 'Morning', group: 'colourway', selectedTokenSets: { 'colourway/morning': 'enabled' }, ...axis('colourway') },
+      { name: 'Spearmint', group: 'colourway', selectedTokenSets: { 'colourway/spearmint': 'enabled' }, ...axis('colourway', true) },
+    ],
+    base: { color: { brand: { spearmint: { $value: '#033633' }, 'green-apple': { $value: '#50c369' }, ochre: { $value: '#7a3d0a' } } } },
+    light: { color: { semantic: { primary: { $value: '{color.colourway.light.primary}' } } } },
+    dark: { color: { semantic: { primary: { $value: '{color.colourway.dark.primary}' } } } },
+    'colourway/morning': { color: { colourway: { light: { primary: { $value: '{color.brand.ochre}' } }, dark: { primary: { $value: '{color.brand.ochre}' } } } } },
+    'colourway/spearmint': { color: { colourway: { light: { primary: { $value: '{color.brand.spearmint}' } }, dark: { primary: { $value: '{color.brand.green-apple}' } } } } },
+  };
+  const css = authThemeCss(tokens, null);
+  assert.match(css, /--pack-accent-light:#033633/, 'the canonical colourway, not the first one listed');
+  assert.match(css, /--pack-accent-dark:#50c369/);
+  assert.ok(!css.includes('#7a3d0a'), 'a non-canonical colourway is never read');
+  // A colourway that lists the mode sets as disabled does not switch them off.
+  const listed = { ...tokens, $themes: tokens.$themes.map((t) => t.name === 'Spearmint'
+    ? { ...t, selectedTokenSets: { light: 'disabled', dark: 'disabled', 'colourway/spearmint': 'enabled' } } : t) };
+  const kept = authThemeCss(listed, null);
+  assert.match(kept, /--pack-accent-light:#033633/);
+  assert.match(kept, /--pack-accent-dark:#50c369/);
+});
 
 test('authentication selects the active UI family and maps variable and static weights truthfully', () => {
   const tokens = { base: { font: { brand: { $value: '{font.ui}' }, ui: { $value: 'SUSE' } } } };

@@ -53,33 +53,33 @@ Sign-in is the **dev provider** - no passwords. Click a link, or hit
 
 | Persona | Email | Groups | Role |
 |---|---|---|---|
-| Admin | `admin@suse.example` | admin | admin |
-| Brand lead | `brand@suse.example` | brand-team, approver | approver |
-| Marketer | `marketer@suse.example` | marketing | member |
-| Contractor | `contractor@suse.example` | contractors | member |
+| Admin | `admin@lolly.example` | admin | admin |
+| Brand lead | `brand@lolly.example` | brand-team, approver | approver |
+| Marketer | `marketer@lolly.example` | marketing | member |
+| Contractor | `contractor@lolly.example` | contractors | member |
 
 ## 4. The tour
 
-### Marketer - `marketer@suse.example` (open the shell at `/`)
+### Marketer - `marketer@lolly.example` (open the shell at `/`)
 - The **export button reads "Request approval"**, not Download - marketing is
   denied `export.download`, so exports route into the brand-review chain.
-- On **event-name-badge**, the **logo input is locked** to the brand logo (baked,
+- On **certificate**, the **logo input is locked** to the brand logo (baked,
   not editable) and the tool is bound to the **brand-review** approval chain.
-- On **qr-code**, the **module colour is locked** to SUSE green and the
+- On **qr-code**, the **module colour is locked** to Lolly Demo's Spearmint and the
   **background input is hidden** entirely. Open the seeded qr-code link and the
   locked colour is what renders - a param that tries to override it is refused.
 - In the console Approvals view (or the shell's requests list), the marketer's
   **"your requests"** shows all states: one pending, one approved, one
   rejected-with-comment, one waiting at legal.
 
-### Brand lead - `brand@suse.example`
-- On qr-code and event-name-badge, brand-team **can edit** the very inputs the
+### Brand lead - `brand@lolly.example`
+- On qr-code and certificate, brand-team **can edit** the very inputs the
   marketer sees locked (colour, background, logo) - same overlay, different group.
 - Has an **approvals inbox**: the "Brand sign-off" step of the brand-review chain
   is routed to brand-team/approver. Approve to advance it to legal; reject (with a
   required reason) to send it back to the submitter.
 
-### Admin - `admin@suse.example` (open the console at `/admin`)
+### Admin - `admin@lolly.example` (open the console at `/admin`)
 - **Overview** - 14 days of activity (events + exports per day), top tools,
   exports by format, and fleet-by-client, all from the seeded telemetry + fleet.
 - **Projects** - the team project *Summit 2026* (visible to marketing + brand-team)

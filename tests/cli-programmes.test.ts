@@ -271,3 +271,21 @@ test('help describes every new command on a separate line', async () => {
     assert.doesNotMatch(line, /, and\b|\bit[.!?]?\s*$/);
   }
 });
+
+test('programmes rights-report prints the mode, sources, pack prefixes and templates that seed held files', async () => {
+  const report = {
+    programme: { name: 'Resellers' }, rules: 'rights-rules-x', mode: { mode: 'report', line: 'Report only: set in configuration (policy.catalog.partnerRights).' },
+    totals: { assets: 4, travel: 1, held: 3, exempt: 0, sharedAnyway: 0, needsChoosing: 0 },
+    sources: [{ label: 'Launch kit', assets: 4, exempt: 0, travel: { count: 1, byLicence: [{ licence: 'CC BY 4.0', count: 1 }] }, held: { count: 3, byReason: [{ label: 'licence not recorded', count: 3 }] } }],
+    links: { count: 0, files: 0, links: [], more: 0 },
+    prefixes: [{ sentences: ['2 files under acme/ declare LicenseRef-Acme-Internal, an identifier these rules do not carry.'], clearedBy: 'The owner can record these as owner-published in the pack, or the rules can be widened. Ask your Lolly administrator.' }],
+    templates: [{ name: 'Partner price sheet', audiences: [{ name: 'Northwind IT', files: [{ name: 'Office photo', why: 'licence', reason: 'licence not recorded' }, { name: 'Internal photo', why: 'not-shared' }] }] }],
+  };
+  const result = await lw(['programmes', 'rights-report', 'resellers'], [{ method: 'GET', path: `${AT}/rights-report`, answer: report }]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /^Report only: set in configuration/m);
+  assert.match(result.stdout, /Resellers: 4 file\(s\); 1 travel, 3 would be held back, 0 shared anyway, 0 need choosing again, 0 exempt/);
+  assert.match(result.stdout, /^2 files under acme\/ declare LicenseRef-Acme-Internal/m);
+  assert.match(result.stdout, /^ {2}The owner can record these as owner-published/m);
+  assert.match(result.stdout, /^template Partner price sheet uses 2 file\(s\) Northwind IT will not receive: Office photo \(licence not recorded\), Internal photo \(not shared with them\)$/m);
+});

@@ -258,10 +258,10 @@ test('with the dev provider and a password entry, the gate offers both', async (
 // ── invite links, messages and the invitations table (plans/74 invite spec 4.1, 4.2) ──
 
 const CONTEXT = {
-  providers: ['Google', 'GitHub'], passwordSignIn: true, passwordDomains: ['suse.com'],
-  inviteNote: 'If your organisation blocks Google sign-in (for example @suse.com), use GitHub or email and password.',
+  providers: ['Google', 'GitHub'], passwordSignIn: true, passwordDomains: ['lolly.example'],
+  inviteNote: 'If your organisation blocks Google sign-in (for example @lolly.example), use GitHub or email and password.',
 };
-const ORG_CONFIG = { invites: { domains: ['suse.com', 'partner.example'], maxTtlHours: 720, projectRoles: ['viewer', 'editor'] } };
+const ORG_CONFIG = { invites: { domains: ['lolly.example', 'partner.example'], maxTtlHours: 720, projectRoles: ['viewer', 'editor'] } };
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 const textOf = (node: any) => node.textContent.replace(/\s+/g, ' ').trim();
 const LOLLY_ING = { provider: 'oidc', providerName: 'Google', providers: PROVIDERS, instanceName: 'lolly.ing' };
@@ -286,38 +286,38 @@ test('the password tick follows the typed addresses until changed, and the invit
   assert.ok(section.textContent.includes('Anyone with the link can then set the password for that address, once. Send the link privately.'));
   assert.ok(section.textContent.includes('Use this for people who cannot use Google or GitHub.'), 'names the other sign-ins, not the password one');
   assert.equal(tick.checked, false);
-  type(p, section, 'sam@suse.com');
+  type(p, section, 'sam@lolly.example');
   assert.equal(tick.checked, true, 'every address is in passwordDomains');
-  type(p, section, 'sam@suse.com, bo@gmail.com');
+  type(p, section, 'sam@lolly.example, bo@gmail.com');
   assert.equal(tick.checked, false, 'one address outside them');
-  type(p, section, 'sam@SUSE.com');
+  type(p, section, 'sam@Lolly.Example');
   assert.equal(tick.checked, true);
   tick.checked = false;
   tick.dispatchEvent(new p.w.Event('change'));
-  type(p, section, 'sam@suse.com ana@suse.com');
+  type(p, section, 'sam@lolly.example ana@lolly.example');
   assert.equal(tick.checked, false, 'a changed tick stays as the admin left it');
   tick.checked = true;
-  await submit(p, section, 'sam@suse.com');
+  await submit(p, section, 'sam@lolly.example');
   assert.equal(p.calls.find((c) => c.path === '/api/v1/invitations' && c.method === 'POST')?.body.passwordSetup, true);
 
   // No password sign-in: no tick and no passwordSetup in the body.
   const q = page({ providers: PROVIDERS.slice(0, 1), context: CONTEXT });
   const plain = await q.helpers.invitationsSection([]);
   assert.ok(!plain.textContent.includes('Let them set a password'));
-  await submit(q, plain, 'sam@suse.com');
+  await submit(q, plain, 'sam@lolly.example');
   assert.equal('passwordSetup' in q.calls.find((c) => c.path === '/api/v1/invitations' && c.method === 'POST')!.body, false);
 });
 
 test('after Invite, one row per address says what happened, and Copy message copies the invite message', async () => {
   const created = {
-    id: 'inv_n', email: 'sam@suse.com', groups: [], status: 'pending', created: true, createdAt: ago(0), expiresAt: '2026-11-02T12:00:00.000Z',
+    id: 'inv_n', email: 'sam@lolly.example', groups: [], status: 'pending', created: true, createdAt: ago(0), expiresAt: '2026-11-02T12:00:00.000Z',
     acceptedAt: null, projects: [], inviter: { name: 'Andy' }, link: 'https://lolly.ing/l/invite/tok-sam', passwordSetup: true, password: 'none',
   };
   const rows = [
     created,
     { ...created, id: 'inv_o', email: 'old@partner.example', created: false, link: 'https://lolly.ing/l/invite/tok-old', passwordSetup: false },
-    { email: 'here@suse.com', status: 'already', created: false },
-    { email: 'grouped@suse.com', status: 'applied', created: false },
+    { email: 'here@lolly.example', status: 'already', created: false },
+    { email: 'grouped@lolly.example', status: 'applied', created: false },
     ...['invites-not-allowed', 'domain-not-allowed', 'self', 'account-disabled', 'owner-only', 'invitation-changed']
       .map((reason, i) => ({ email: `r${i}@x.example`, status: 'refused', reason, created: false })),
   ];
@@ -333,14 +333,14 @@ test('after Invite, one row per address says what happened, and Copy message cop
   await submit(p, section, rows.map((r) => r.email).join(' '));
   const text = textOf(section);
   for (const line of [
-    'sam@suse.com · Invitation ready · ends 2 Nov',
-    'Anyone with this link can set the password for sam@suse.com until it is used. Send the link privately.',
+    'sam@lolly.example · Invitation ready · ends 2 Nov',
+    'Anyone with this link can set the password for sam@lolly.example until it is used. Send the link privately.',
     'old@partner.example · Already invited · ends 2 Nov',
     'The link works only for someone who signs in as old@partner.example.',
-    'here@suse.com · Already on lolly.ing',
-    'grouped@suse.com · Already on lolly.ing · joined the groups now',
+    'here@lolly.example · Already on lolly.ing',
+    'grouped@lolly.example · Already on lolly.ing · joined the groups now',
     'r0@x.example · Not invited. Your role cannot invite new people.',
-    'r1@x.example · Not invited. lolly.ing only invites addresses at suse.com or partner.example.',
+    'r1@x.example · Not invited. lolly.ing only invites addresses at lolly.example or partner.example.',
     'r2@x.example · Not invited. That is your own account.',
     'r3@x.example · Not invited. That account is turned off. Turn the account on first.',
     'r4@x.example · Not invited. Only an owner can change an owner’s groups.',
@@ -357,7 +357,7 @@ test('after Invite, one row per address says what happened, and Copy message cop
   assert.equal(p.copied.at(-1), [
     'Andy invited you to lolly.ing.',
     'https://lolly.ing/l/invite/tok-sam',
-    'Sign in as sam@suse.com with Google or GitHub.',
+    'Sign in as sam@lolly.example with Google or GitHub.',
     'Open the link to set your password.',
     'This invitation ends on Mon 2 Nov 2026.',
     CONTEXT.inviteNote,

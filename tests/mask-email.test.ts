@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { maskEmail, maskEmailSpoken } from '../server/src/access/mask.ts';
 
 test('two characters of a local part of four or more, one of a shorter one; the domain whole', () => {
-  assert.equal(maskEmail('andy.fitzsimon+t1@suse.com'), 'an•••@suse.com');
+  assert.equal(maskEmail('andy.fitzsimon+t1@lolly.example'), 'an•••@lolly.example');
   assert.equal(maskEmail('sam.k@work.com'), 'sa•••@work.com');
   assert.equal(maskEmail('sami@work.com'), 'sa•••@work.com');
   assert.equal(maskEmail('sam@work.com'), 's•••@work.com');
@@ -17,7 +17,7 @@ test('two characters of a local part of four or more, one of a shorter one; the 
 });
 
 test('the mask never holds the full local part of a usual address', () => {
-  for (const email of ['sam@work.com', 'anna@work.com', 'an.fitzsimon@suse.com']) {
+  for (const email of ['sam@work.com', 'anna@work.com', 'an.fitzsimon@lolly.example']) {
     assert.ok(!maskEmail(email).includes(email.split('@')[0]!), email);
   }
 });
@@ -37,6 +37,6 @@ test('something that is not an address is masked completely', () => {
 });
 
 test('the spoken form says the same thing in words', () => {
-  assert.equal(maskEmailSpoken('andy.fitzsimon+t1@suse.com'), 'an address at suse.com that starts with an');
+  assert.equal(maskEmailSpoken('andy.fitzsimon+t1@lolly.example'), 'an address at lolly.example that starts with an');
   assert.equal(maskEmailSpoken('sam@work.com'), 'an address at work.com that starts with s');
 });

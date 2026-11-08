@@ -21,11 +21,11 @@ storage; neither CI nor the earlier macOS rehearsal certifies a new RKE2 release
   `kubeconform -strict` — pinned in CI by `tests/helm-chart.test.ts` (skips where helm is
   absent, like the PG test legs).
 - Topology invariants hold in the rendered output: worker off by default; liveness
-  `/healthz` load-independent vs readiness `/readyz` saturation gate; `LW_RENDER_MAX_CONCURRENT`
+  `/healthz` load-independent vs readiness `/readyz` browser check; `LW_RENDER_MAX_CONCURRENT`
   reaches the pod; with `autoscaling.enabled` the Deployment drops static `replicas` and the
   HPA targets the worker.
 - The worker itself: real-Chromium `rasterise()` verified (PNG/JPEG/PDF
-  bytes), semaphore + 503 `RENDER_BUSY` + `Retry-After` + `/readyz` flip covered by
+  bytes), semaphore + 503 `RENDER_BUSY` + `Retry-After` + `/readyz` `atCapacity` covered by
   `tests/render-worker-*.test.ts`, and the busy answer propagates through the plane to the
   HTTP client (`render.test.ts (l)`).
 - Missing required secrets refuse to render (fail-closed), also pinned by the test.
@@ -36,7 +36,8 @@ storage; neither CI nor the earlier macOS rehearsal certifies a new RKE2 release
   the container's `/render` drove the real lolly.tools shell (hooked path, 18 KB SVG);
   saturation at `LW_RENDER_MAX_CONCURRENT=2` under 6 concurrent rasterises answered
   **2×200 / 4×503 `RENDER_BUSY` + `Retry-After: 2`** with `/readyz` observed 503 mid-burst
-  and 200 after. Retain this historical evidence and verify the selected cluster's
+  and 200 after (readiness has since stopped following capacity: a full worker stays ready
+  and reports `atCapacity: true`). Retain this historical evidence and verify the selected cluster's
   end-to-end render and saturation behavior below.
 
 ## Day one, in order

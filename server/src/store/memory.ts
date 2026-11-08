@@ -45,6 +45,7 @@ import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
+import { rightsChoicePicked } from '../programmes/rights-pick.ts';
 import type { InstanceDefaultRecord } from '../catalog/rights-mode.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
@@ -1049,6 +1050,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async putLink(link) {
       links.set(link.id, link);
     },
+    async putLinkAudited(link, body) {
+      const evt = nextEvent(audit[audit.length - 1] ?? null, body, auditMacKey);
+      links.set(link.id, link);
+      audit.push(evt);
+    },
     async getLink(id) {
       return links.get(id) ?? null;
     },
@@ -1542,6 +1548,37 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async deleteRightsChoice(key) {
       rightsChoices.delete(`${key.assetId}\n${key.group}`);
     },
+    // One process, one event loop: no await between the audience check and
+    // the writes, so each call is whole on its own.
+    async putRightsChoicesAudited(records, audience, events) {
+      const programme = programmes.get(audience.programmeId);
+      const company = audience.companyId ? companies.get(audience.companyId) : undefined;
+      if (!programme || programme.createdAt !== audience.programmeCreatedAt
+        || (audience.companyId && (!company || company.programmeId !== audience.programmeId || company.createdAt !== audience.companyCreatedAt))) return 'AUDIENCE_GONE';
+      if (programme.endedAt || company?.endedAt) return 'AUDIENCE_ENDED';
+      for (const rec of records) rightsChoices.set(`${rec.assetId}\n${rec.group}`, structuredClone(rec));
+      for (const body of events) audit.push(nextEvent(audit[audit.length - 1] ?? null, body, auditMacKey));
+      return null;
+    },
+    async withdrawRightsChoicesAudited(pick, event) {
+      const gone = [...rightsChoices.values()].filter((c) => rightsChoicePicked(c, pick)).sort((a, b) => a.assetId.localeCompare(b.assetId) || a.group.localeCompare(b.group));
+      for (const c of gone) {
+        rightsChoices.delete(`${c.assetId}\n${c.group}`);
+        audit.push(nextEvent(audit[audit.length - 1] ?? null, event(c), auditMacKey));
+      }
+      return gone.map((c) => structuredClone(c));
+    },
+    async deleteAudienceWithChoices(target, event) {
+      const pick = 'companyId' in target ? { companyId: target.companyId } : { programmeId: target.programmeId };
+      const gone = [...rightsChoices.values()].filter((c) => rightsChoicePicked(c, pick)).sort((a, b) => a.assetId.localeCompare(b.assetId) || a.group.localeCompare(b.group));
+      for (const c of gone) {
+        rightsChoices.delete(`${c.assetId}\n${c.group}`);
+        audit.push(nextEvent(audit[audit.length - 1] ?? null, event(c), auditMacKey));
+      }
+      if ('companyId' in target) companies.delete(target.companyId);
+      else programmes.delete(target.programmeId);
+      return gone.map((c) => structuredClone(c));
+    },
     async getInstanceDefault(key) {
       const rec = instanceDefaults.get(key);
       return rec ? { ...rec } : null;
@@ -1551,7 +1588,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return { ...instanceDefaults.get(rec.key)! };
     },
     async hasAccounts() {
-      return users.size > 0;
+      return users.size > 0 || apiTokens.size > 0;
     },
     async listProgrammeExits(filter) {
       return [...programmeExits.values()]

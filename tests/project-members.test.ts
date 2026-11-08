@@ -991,35 +991,35 @@ test('project invite answers carry each invitation\'s link and the message conte
   const env = await boot({
     idp: PASSWORD_IDP,
     instance: { name: 'lolly.ing', baseUrl: 'https://team.example', inviteNote: 'Use GitHub or email and password.' },
-    policy: { invites: { allow: 'members', passwordDomains: ['suse.com'] } },
+    policy: { invites: { allow: 'members', passwordDomains: ['lolly.example'] } },
   });
   const projectId = await seedProject(env);
-  const r = await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['sam@suse.com'], role: 'editor', passwordSetup: true });
+  const r = await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['sam@lolly.example'], role: 'editor', passwordSetup: true });
   assert.equal(r.status, 200);
   const [sam] = r.json.results as Array<{ email: string; status: string; invitationId: string; link: string; expiresAt: string }>;
-  const inv = (await env.store.findActiveInvitation('sam@suse.com'))!;
+  const inv = (await env.store.findActiveInvitation('sam@lolly.example'))!;
   assert.deepEqual([sam!.status, sam!.invitationId, sam!.expiresAt, inv.passwordSetup], ['invited', inv.id, inv.expiresAt, true]);
   assert.deepEqual(r.json.message, { workspace: 'lolly.ing', inviter: 'Ada Admin', providers: ['Email and password'], note: 'Use GitHub or email and password.' });
   assert.equal((await env.store.listAudit()).find((e) => e.action === 'invite.create')?.payload?.passwordSetup, true);
-  assert.equal((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['x@suse.com'], role: 'editor', passwordSetup: 1 })).status, 400);
+  assert.equal((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['x@lolly.example'], role: 'editor', passwordSetup: 1 })).status, 400);
 
   // Inviting the same address again at the same role: already invited, with the link to copy again.
-  const again = (await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['sam@suse.com'], role: 'viewer' })).json.results[0];
+  const again = (await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['sam@lolly.example'], role: 'viewer' })).json.results[0];
   assert.deepEqual([again.status, again.link], ['already', sam!.link]);
 
   // A member manager may invite under the members tier, but never with a password link.
-  const byMona = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['kim@suse.com'], role: 'viewer', passwordSetup: true });
-  assert.deepEqual(brief(byMona.json.results), [{ email: 'kim@suse.com', status: 'invited' }]);
-  assert.equal((await env.store.findActiveInvitation('kim@suse.com'))?.passwordSetup, undefined, 'passwordSetup ignored for a non-admin manager');
+  const byMona = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['kim@lolly.example'], role: 'viewer', passwordSetup: true });
+  assert.deepEqual(brief(byMona.json.results), [{ email: 'kim@lolly.example', status: 'invited' }]);
+  assert.equal((await env.store.findActiveInvitation('kim@lolly.example'))?.passwordSetup, undefined, 'passwordSetup ignored for a non-admin manager');
   // An admin's tick on an existing invitation turns it on, once.
-  await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['kim@suse.com'], role: 'viewer', passwordSetup: true });
-  assert.equal((await env.store.findActiveInvitation('kim@suse.com'))?.passwordSetup, true);
+  await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['kim@lolly.example'], role: 'viewer', passwordSetup: true });
+  assert.equal((await env.store.findActiveInvitation('kim@lolly.example'))?.passwordSetup, true);
 
   // Without password sign-in the tick means nothing.
   const plain = await boot();
   const p2 = await seedProject(plain);
-  await plain.as('admin@test', 'POST', `/api/v1/projects/${p2}/invite`, { emails: ['sam@suse.com'], role: 'viewer', passwordSetup: true });
-  assert.equal((await plain.store.findActiveInvitation('sam@suse.com'))?.passwordSetup, undefined);
+  await plain.as('admin@test', 'POST', `/api/v1/projects/${p2}/invite`, { emails: ['sam@lolly.example'], role: 'viewer', passwordSetup: true });
+  assert.equal((await plain.store.findActiveInvitation('sam@lolly.example'))?.passwordSetup, undefined);
 });
 
 onBothStores('New link and Invite again from the people panel', async (store) => {
@@ -1075,7 +1075,7 @@ test('org-config: invites.passwordSetup follows password sign-in, the role and u
     instance: { name: 'x', baseUrl: 'https://x.example', pack: '/tmp' }, dev: { enabled: true }, ...over,
   }));
   const person = (role: string, id = 'u1') => ({ id, sub: 's', email: 'e@x', groups: [role], idpGroups: [], localGroups: [], role, sessionEpoch: 0, createdAt: '', lastSeenAt: '' }) as unknown as UserRecord;
-  const withPassword = config({ idp: PASSWORD_IDP, policy: { invites: { passwordDomains: ['SUSE.com'] }, requests: { project: false, join: true, ttlDays: 14, joinOpenMax: 50 } } });
+  const withPassword = config({ idp: PASSWORD_IDP, policy: { invites: { passwordDomains: ['Lolly.Example'] }, requests: { project: false, join: true, ttlDays: 14, joinOpenMax: 50 } } });
   const oc = (c: ReturnType<typeof config>, user: UserRecord, grants: Grant[] = []) => assembleOrgConfig({ config: c, user, overlays: new Map(), grants, inboxUnread: 0 });
 
   assert.equal(oc(withPassword, person('admin')).invites.passwordSetup, true);
@@ -1086,7 +1086,7 @@ test('org-config: invites.passwordSetup follows password sign-in, the role and u
   assert.equal(oc(config(), person('admin')).invites.passwordSetup, false, 'no password sign-in, no tick');
   assert.equal(maySetPasswordFromLink(withPassword, person('admin'), []), true);
   assert.equal(maySetPasswordFromLink(withPassword, person('admin', 'svc_ci'), []), false, 'a service token is not a person');
-  assert.deepEqual(oc(withPassword, person('member')).invites.passwordDomains, ['suse.com']);
+  assert.deepEqual(oc(withPassword, person('member')).invites.passwordDomains, ['lolly.example']);
   assert.deepEqual(oc(withPassword, person('member')).requests, { project: false });
   assert.deepEqual(oc(config(), person('member')).requests, { project: true });
 

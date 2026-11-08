@@ -2,7 +2,7 @@
  * The render worker's HTTP surface under backpressure (plans/22 §5, plans/23
  * §3.C): the semaphore wired around the context-open→close span of BOTH
  * /render and /rasterise, the 503 RENDER_BUSY + Retry-After response at
- * capacity, and the /readyz flip - all without launching a real Chromium.
+ * capacity, and what /readyz reports - all without launching a real Chromium.
  * The browser getter is injectable for exactly this reason (see server.ts
  * __setBrowserGetterForTests); the HMAC signing helper is the one
  * tests/render-worker.test.ts already established (worker-client's signBody).
@@ -60,7 +60,7 @@ test('a listening worker without a connected browser is live but not ready', asy
   assert.equal((await fetch(`${base}/healthz`)).status, 200);
   const response = await fetch(`${base}/readyz`);
   assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), { ok: false, active: 0, capacity: 1 });
+  assert.deepEqual(await response.json(), { ok: false, active: 0, capacity: 1, atCapacity: false });
 });
 function rasterJob(): string {
   return JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg"></svg>', format: 'png', ts: Date.now() });
@@ -88,13 +88,13 @@ test('disconnect closes the Chromium context and retains the permit until close 
   const rejected = assert.rejects(response, { name: 'AbortError' });
   await openGate; controller.abort(); await rejected; await closeStarted;
   const closingState = await fetch(`${base}/readyz`);
-  assert.equal(closingState.status, 503, 'the closing context still owns capacity');
-  assert.deepEqual(await closingState.json(), { ok: false, active: 1, capacity: 1 });
+  assert.equal(closingState.status, 200, 'a full worker stays ready');
+  assert.deepEqual(await closingState.json(), { ok: true, active: 1, capacity: 1, atCapacity: true }, 'the closing context still owns capacity');
   releaseClose();
   for (let n = 0; n < 50; n++) {
-    const ready = await fetch(`${base}/readyz`);
-    if (ready.status === 200) {
-      assert.deepEqual(await ready.json(), { ok: true, active: 0, capacity: 1 });
+    const ready = await (await fetch(`${base}/readyz`)).json() as { active: number };
+    if (ready.active === 0) {
+      assert.deepEqual(ready, { ok: true, active: 0, capacity: 1, atCapacity: false });
       return;
     }
     await new Promise(resolve => setTimeout(resolve, 10));
@@ -121,7 +121,7 @@ for (const path of ['/render', '/rasterise']) test(`${path}: cancellation releas
   const rejected = assert.rejects(request, { name: 'AbortError' });
   await pageStarted;
   controller.abort(); await rejected; await closeStarted;
-  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: false, active: 1, capacity: 1 });
+  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: true, active: 1, capacity: 1, atCapacity: true });
   releaseClose();
   let released = false;
   for (let n = 0; n < 50; n++) {
@@ -242,7 +242,7 @@ test('POST /render: a second overlapping request is refused with 503 RENDER_BUSY
   setBrowserGetter(null);
 });
 
-test('GET /readyz flips 200 → 503 → 200 across a saturating request, and needs no HMAC signature', async () => {
+test('GET /readyz stays 200 while the one slot is busy, reports atCapacity, and needs no HMAC signature', async () => {
   let releaseHold!: () => void;
   const hold = new Promise<void>((resolve) => { releaseHold = resolve; });
   let contextOpened!: () => void;
@@ -252,22 +252,27 @@ test('GET /readyz flips 200 → 503 → 200 across a saturating request, and nee
   // No x-lw-render-sig header anywhere in this test - /readyz must not require one.
   const readyBefore = await fetch(`${base}/readyz`);
   assert.equal(readyBefore.status, 200);
-  assert.deepEqual(await readyBefore.json(), { ok: true, active: 0, capacity: 1 });
+  assert.deepEqual(await readyBefore.json(), { ok: true, active: 0, capacity: 1, atCapacity: false });
 
   const body = renderJob('hooky-c');
   const inFlight = fetch(`${base}/render`, { method: 'POST', headers: sign(body), body });
   await contextOpen;
 
   const readyDuring = await fetch(`${base}/readyz`);
-  assert.equal(readyDuring.status, 503, 'saturated ⇒ not ready, so k8s stops routing new work here');
-  assert.deepEqual(await readyDuring.json(), { ok: false, active: 1, capacity: 1 });
+  assert.equal(readyDuring.status, 200, 'a full worker stays in its Service, so the next call of a two-call render can reach it');
+  assert.deepEqual(await readyDuring.json(), { ok: true, active: 1, capacity: 1, atCapacity: true });
+  const busyBody = renderJob('hooky-d');
+  const busy = await fetch(`${base}/render`, { method: 'POST', headers: sign(busyBody), body: busyBody });
+  assert.equal(busy.status, 503, 'a new job is refused per request while the slot is taken');
+  assert.equal(busy.headers.get('retry-after'), '2');
+  assert.equal((await busy.json() as { error: { code: string } }).error.code, 'RENDER_BUSY');
 
   releaseHold();
   await inFlight;
 
   const readyAfter = await fetch(`${base}/readyz`);
-  assert.equal(readyAfter.status, 200, 'capacity freed ⇒ ready again');
-  assert.deepEqual(await readyAfter.json(), { ok: true, active: 0, capacity: 1 });
+  assert.equal(readyAfter.status, 200);
+  assert.deepEqual(await readyAfter.json(), { ok: true, active: 0, capacity: 1, atCapacity: false });
 
   setBrowserGetter(null);
 });
