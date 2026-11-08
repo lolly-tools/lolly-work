@@ -104,6 +104,7 @@ import { accessEndsFor } from '../programmes/exit-schedule.ts';
 import { registerProgrammeTokenRoutes } from '../programmes/token-routes.ts';
 import { registerUsageRoutes } from '../programmes/usage-routes.ts';
 import { createCompanyProfiles } from '../programmes/profile-routes.ts';
+import { registerCompanyKitRoutes } from '../programmes/kit-routes.ts';
 import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../programmes/logo-checks.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
@@ -249,7 +250,7 @@ import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, r
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
-import { registerIntentRoutes } from '../automation/intents.ts';
+import { checkTemplateIntents, registerIntentRoutes, templateDrawable, type TemplateIntentManifest } from '../automation/intents.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
 import { registerContextRoutes, type ContextSkill } from '../automation/context-routes.ts';
 import { servedType as brandPageFileType } from '../brand-pages/manifest.ts';
@@ -857,6 +858,7 @@ export function buildApp(deps: AppDeps): App {
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
       ...(rec.publication?.bindings ? { bindings: rec.publication.bindings } : {}),
       ...(Array.isArray(rec.groups) ? { groups: rec.groups } : {}),
+      ...(rec.publication?.intents?.length ? { intents: rec.publication.intents } : {}),
     };
   };
   // ── company values (plans/82 M3, programmes/company-values.ts) ──────────
@@ -916,14 +918,18 @@ export function buildApp(deps: AppDeps): App {
   };
   /** org-config's `partner` block: the caller's company, with the details its
    *  pieces carry, and its programme (the company's own, else the caller's only one). */
-  const partnerBlock = (ctx: CompanyContext | null, groups: string[], companies: CompanyRecord[], programmes: ProgrammeRecord[]): OrgConfigPartner | undefined => {
+  const partnerBlock = async (ctx: CompanyContext | null, groups: string[], companies: CompanyRecord[], programmes: ProgrammeRecord[]): Promise<OrgConfigPartner | undefined> => {
     const programmeId = ctx?.company.programmeId ?? pickProgramme(groups, companies);
     const programme = programmes.find((p) => p.id === programmeId);
     const p = ctx?.profile;
+    const pointer = ctx ? (await store.getCompanyProfile(ctx.company.id))?.kit : undefined;
+    const kit = pointer ? (await servedIndex.forCaller({ groups })).index.assets?.find((a) => a.id === pointer.assetId && a.type === 'partner-kit') : undefined;
+    const kitRecord = kit ? await store.getInstanceAsset(kit.id) : null;
     const out: OrgConfigPartner = {
       ...(ctx ? { company: {
         id: ctx.company.id, name: ctx.company.name, revision: ctx.revision,
         logos: { ...(p?.logoLight ? { light: p.logoLight } : {}), ...(p?.logoDark ? { dark: p.logoDark } : {}), ...(p?.mark ? { mark: p.mark } : {}) },
+        ...(kitRecord ? { kit: { id: kitRecord.id, revision: kitRecord.headVersion ?? 1, label: ctx.company.name } } : {}),
         ...(p?.website ? { website: p.website } : {}), ...(p?.contact ? { contact: { ...p.contact } } : {}),
         ...(p?.address ? { address: p.address } : {}), ...(p?.currency ? { currency: p.currency } : {}), ...(p?.taxNote ? { taxNote: p.taxNote } : {}),
       } } : {}),
@@ -3072,7 +3078,7 @@ export function buildApp(deps: AppDeps): App {
         toolStarts.set(meta.toolId, { defaults: bound.defaults, ...(bound.bindings ? { bindings: bound.bindings } : {}) });
       }
     }
-    const partnerBase = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
+    const partnerBase = scoped ? await partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
     // When their access through a programme ends (plans/82 M5): the earliest
     // membership end date or scheduled end they would be told about.
     const ends = scoped ? await accessEndsFor(store, subject) : null;
@@ -6457,6 +6463,15 @@ export function buildApp(deps: AppDeps): App {
     },
   });
   companyProfiles.register(router);
+  registerCompanyKitRoutes(router, {
+    store, blobs, requireAction, memberOf, audit,
+    kitVisible: async (groups, assetId) => !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit'),
+    submitKit: async (input) => {
+      const outcome = await submitAsset(submitDeps(input.submitter), input);
+      if (outcome.ok) await trimVersionHistory(outcome.record).catch(() => 0);
+      return outcome;
+    },
+  });
   registerProgrammePeopleRoutes(router, {
     store, requireAction, audit, people, noticeContext: (now) => noticeContext(config, now),
     // Ending a partnership, or deleting a company, withdraws its share anyway
@@ -6499,6 +6514,15 @@ export function buildApp(deps: AppDeps): App {
       } catch { return null; }
     },
     toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
+    // A template's purposes (plans/82 M7), held by the engine's own intents.json check
+    // against the base tool, with every input the template fixes set by its rules.
+    checkTemplateIntents: async (toolId, raw, rules) => {
+      const engine = await loadEngine();
+      let manifest: TemplateIntentManifest;
+      try { manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')); }
+      catch { return { errors: [{ path: '', message: `this workspace no longer has the tool "${toolId}"` }] }; }
+      return checkTemplateIntents(engine, { ...manifest, id: toolId }, raw, rules, (await store.listOverlays()).get(toolId)?.bindings);
+    },
     submitVersion: async (actor, target, bytes, from) => {
       const outcome = await submitAsset(submitDeps(actor), {
         bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups, role: actor.role },
@@ -8615,6 +8639,11 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
     }
     await providersReady;
+    // A partner kit (plans/82 M8) changes only through its company's kit route,
+    // which audits the revision and holds a change when the kit's review switch is on.
+    if (id.startsWith(INST_PREFIX) && (await store.getInstanceAsset(id))?.entry.type === 'partner-kit') {
+      return sendError(res, 409, 'PARTNER_KIT', 'a partner kit changes through its company kit route');
+    }
     // ROLLBACK (plans/31 §6): point the head at a version that already exists.
     // Nothing is copied and nothing is deleted - the version that was head
     // stays in the history, so a rollback is itself reversible. It is a
@@ -9563,9 +9592,16 @@ export function buildApp(deps: AppDeps): App {
     // working for an already-published asset. A partner programme member
     // reads a live one only while their feed holds it, their own included
     // (plans/82 M1).
-    const allowed = !submissionServable(rec) ? !!(await submissionRelation(rec, user))
-      : isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
-        : !!(await submissionRelation(rec, user)) || instanceAssetVisible(rec, user.groups);
+    // A partner kit (plans/82 M8) is never reached as someone's submission: only
+    // its own company, or whoever may manage programmes now, reads its bytes, so a
+    // manager who saved one revision and was later moved reads no later one.
+    const kitRow = rec.entry.type === 'partner-kit';
+    const allowed = kitRow
+      ? (isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
+        : instanceAssetVisible(rec, user.groups) || evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', ['*'], await store.listGrants()))
+      : !submissionServable(rec) ? !!(await submissionRelation(rec, user))
+        : isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
+          : !!(await submissionRelation(rec, user)) || instanceAssetVisible(rec, user.groups);
     if (!allowed) {
       return scopedCaller(user) ? notAvailable(res) : sendError(res, 403, 'FORBIDDEN', 'not yours to review');
     }
@@ -9623,6 +9659,11 @@ export function buildApp(deps: AppDeps): App {
     const parsed = parseDescriptivePatch(body, rec.entry, rec.submission.data ? ['name', 'description', 'tags'] : ['name', 'type', 'description', 'tags']);
     if (rec.submission.data && body.type !== undefined && body.type !== rec.entry.type) {
       return sendError(res, 400, 'INVALID_INPUT', `a ${rec.submission.data.kind} keeps its type`);
+    }
+    // A partner kit is made only through its company's kit route (plans/82 M8):
+    // nothing becomes one, and one never becomes anything else, by a type edit.
+    if (body.type !== undefined && body.type !== rec.entry.type && (body.type === 'partner-kit' || rec.entry.type === 'partner-kit')) {
+      return sendError(res, 400, 'INVALID_INPUT', 'a partner kit is saved through its company kit route');
     }
     if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
     const before: Record<string, unknown> = { ...parsed.before };
@@ -12301,6 +12342,29 @@ export function buildApp(deps: AppDeps): App {
     catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
+    // Published templates as candidates for an intent (plans/82 M7), from the caller's own feed.
+    intentTemplates: async (groups, role) => {
+      const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+      const declaring = feed.filter((a) => a.type === 'template' && Array.isArray((a.meta as { intents?: unknown } | undefined)?.intents) && !(a.meta as { retired?: unknown }).retired);
+      // A template whose fixed values name a file this caller's render would hold back
+      // is not one they can make, so it is never offered.
+      const gate = await licenceAssetGate(groups, role);
+      return (await Promise.all(declaring.map((a) => publishedTemplateFor(groups, a.id))))
+        .filter((t): t is RenderTemplate => !!t && !t.retired && templateDrawable(t, gate));
+    },
+    templateFor: (groups, id) => publishedTemplateFor(groups, id),
+    templateCompanyValues: async (template, groups) => {
+      const overlay = (await store.listOverlays()).get(template.toolId);
+      if (!template.bindings && !overlay?.bindings) return {};
+      const { ctx, ambiguous } = await companyContextFor(groups, template.groups);
+      const plan = planBindings({
+        ...(overlay?.bindings ? { overlayBindings: overlay.bindings } : {}), ...(template.bindings ? { templateBindings: template.bindings } : {}),
+        ...(template.editable ? { templateEditable: template.editable } : {}),
+        overlayLocks: (id) => resolveInputAccess(overlay, id, groups).level === 'locked', ctx, ambiguous, theme: 'light',
+      });
+      return { ...plan.values };
+    },
+    templatesOnly: async (groups, role) => new Set((await templatesOnlyOf(groups, role)).keys()),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),

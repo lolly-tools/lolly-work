@@ -41,6 +41,7 @@ import type { SubmitOutcome } from '../catalog/submit.ts';
 import { createApproval, currentStep, isEligible, type Approval } from '../approvals/engine.ts';
 import { randomId, sha256Hex } from '../lib/crypto.ts';
 import { companyGroup, type CompanyRecord } from './people.ts';
+import { deleteKitAsset } from './kit.ts';
 import {
   checkLogo, LOGO_MIN_CONTRAST, LOGO_SURFACES, LOGO_TYPES, PNG_MAX_BYTES, PNG_MIN_LONG_SIDE, SVG_MAX_BYTES,
   type LogoSurface, type LogoSurfaces, type LogoWarning,
@@ -522,9 +523,13 @@ export function createCompanyProfiles(d: CompanyProfileDeps) {
   }
 
   /** What deleting a company does to its profile: the profile and its history
-   *  go, its logos stop being served, and a waiting contact change is dropped. */
+   *  go, its kit assets are deleted, its logos stop being served and a waiting
+   *  contact change is dropped. */
   const forgetCompany = async (companyId: string): Promise<void> => {
     const rec = await store.getCompanyProfile(companyId);
+    for (const asset of await store.listInstanceAssets()) {
+      if (asset.entry.type === 'partner-kit' && (asset.entry.meta as { company?: unknown })?.company === companyId) await deleteKitAsset(store, d.blobs, asset.id);
+    }
     const at = new Date().toISOString();
     for (const surface of LOGO_SURFACES) {
       const assetId = rec?.profile[LOGO_FIELD[surface]];
