@@ -102,3 +102,33 @@ export function partnerLine(partner: RenderPartner | null | undefined): string |
   if (!partner?.company) return null;
   return `Partner: ${partner.company.name}${partner.kit ? `, kit revision ${partner.kit.revision}` : ''}`;
 }
+
+/** What a matched approval holds that a variant record reads. */
+export interface ApprovedVariantReview {
+  id: string;
+  actions?: Array<{ at: string }>;
+  exportReview?: { sha256?: string; covers?: string; templateRef?: { id: string; version: number } };
+}
+
+/** The approval record of one template version's variants, in the engine's shape. */
+export interface TemplateApprovalRecord {
+  approvalId: string; decidedAt: string; covers: 'template';
+  templateId: string; templateVersion: number; exampleSha256: string;
+}
+
+/**
+ * The record a variant render writes when one approval of its template covers it
+ * (plans/82 M7, decision 5, approved by Andy on 2026-11-07): the approval id and
+ * the time of the decision, `covers: 'template'` with the template's id and
+ * version, and the digest of the example file the reviewer saw, labelled as the
+ * example's. Never this file's digest, a name, a person or a comment. Null when
+ * the approval is not a template's, has no decision time or no example digest,
+ * or names another template or version than the one this render was made from.
+ */
+export function variantApprovalRecord(approval: ApprovedVariantReview | null | undefined, template: { id: string; version: number }): TemplateApprovalRecord | null {
+  const review = approval?.exportReview;
+  const decidedAt = approval?.actions?.at(-1)?.at;
+  if (!approval || review?.covers !== 'template-variants' || !decidedAt || !/^[0-9a-f]{64}$/.test(review.sha256 ?? '')) return null;
+  if (review.templateRef && (review.templateRef.id !== template.id || review.templateRef.version !== template.version)) return null;
+  return { approvalId: approval.id, decidedAt, covers: 'template', templateId: template.id, templateVersion: template.version, exampleSha256: `sha256:${review.sha256}` };
+}
