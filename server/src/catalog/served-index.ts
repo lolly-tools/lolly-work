@@ -118,6 +118,22 @@ const quoted = (version: string): string => `"${version}"`;
 
 type ProviderRecordLike = { id: string; exposure: { groups?: string[] | '*' } };
 
+/** A scoped entry names a successor only while the same feed carries that asset. */
+function scopedReplacements(assets: AssetIndexEntry[]): AssetIndexEntry[] {
+  const served = new Set(assets.map(entry => entry.id));
+  return assets.map(entry => {
+    const visible = { ...entry };
+    if (typeof visible.replacedBy === 'string' && !served.has(visible.replacedBy)) delete visible.replacedBy;
+    const meta = visible.meta as Record<string, unknown> | undefined;
+    if (meta && typeof meta.replacedBy === 'string' && !served.has(meta.replacedBy)) {
+      const shown = { ...meta };
+      delete shown.replacedBy;
+      visible.meta = shown;
+    }
+    return visible;
+  });
+}
+
 /** Every group any asset source names, plus the caller's own: composing with
  *  this set sees every asset, so a programme scope can then keep exactly what
  *  it includes. */
@@ -171,7 +187,7 @@ export function applyProgrammeScope(
   const keep = rights ? (entry: AssetIndexEntry): boolean => included(entry) && rights(entry) : included;
   const assets = (index.assets ?? []).filter(keep);
   const served = new Set(assets.map((a) => a.id));
-  const out: AssetIndex = { ...index, assets };
+  const out: AssetIndex = { ...index, assets: scopedReplacements(assets) };
   if (Array.isArray(index.collections)) {
     out.collections = (index.collections as Array<{ id: string; members: string[] }>)
       .filter((c) => grantedIds.has(c.id))
@@ -229,7 +245,7 @@ export function intersectServed(theirs: ServedIndex, mine: ServedIndex): ServedI
   // and instance entries, so the intersection is the answer in every case, and its
   // bytes are always the intersected feed, never the file on disk.
   const admitted = new Set((mine.index.assets ?? []).map((entry) => entry.id));
-  const assets = (theirs.index.assets ?? []).filter((entry) => admitted.has(entry.id));
+  const assets = scopedReplacements((theirs.index.assets ?? []).filter((entry) => admitted.has(entry.id)));
   const served = new Set(assets.map((entry) => entry.id));
   const index: AssetIndex = { ...theirs.index, assets };
   if (Array.isArray(theirs.index.collections)) {
