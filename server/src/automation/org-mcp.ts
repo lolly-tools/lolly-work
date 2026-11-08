@@ -92,6 +92,7 @@ const batchId = id('A batch id from submit_batch.');
 const destinationId = id('A destination id from list_destinations.');
 const approvalId = id('An approval id from request_approval.');
 const format = { type: 'string', maxLength: 16, description: 'An output format the tool offers, such as svg or png. describe_tool lists them.' };
+const template = { type: 'string', pattern: '^inst/[A-Za-z0-9_-]{1,64}$', description: 'A published template id from your feed, as resolve_intent or the templates resource name it.' };
 const inputs = { type: 'object', description: 'Input values by input id. describe_tool lists the ones this token may set. Leave out locked inputs: the server applies them. To start from a published template, add its id as template ("inst/..."): the render starts from its values and refuses inputs it fixes.' };
 const idempotencyKey = { type: 'string', minLength: 1, maxLength: 200, description: 'Keep the same key when retrying after a lost answer, so the work runs once.' };
 const priority = { type: 'integer', minimum: 0, maximum: 9, description: 'Higher runs first.' };
@@ -190,9 +191,9 @@ export const ORG_TOOLS: OrgTool[] = [
     inputSchema: schema({ limit: { type: 'integer', minimum: 1, maximum: 100 }, cursor: { type: 'string', maxLength: 512, description: 'The next value from the last page.' } }),
     annotations: reads, route: { method: 'GET', path: '/api/v1/discovery/tools' }, needs: 'tool.use',
     run: (ctx, args) => json(ctx.call('GET', `/api/v1/discovery/tools${query(args, { limit: 'limit', cursor: 'cursor' })}`)) },
-  { name: 'describe_tool', description: 'Read one tool\'s effective input schema for this token: hidden inputs are absent, locked inputs are readOnly with their value, and choices are narrowed. Pass format to apply that format\'s design-system rules.',
-    inputSchema: schema({ toolId, format }, ['toolId']), annotations: reads, route: { method: 'GET', path: '/api/v1/schema/:toolId' }, needs: 'tool.use',
-    run: (ctx, args) => json(ctx.call('GET', `/api/v1/schema/${enc(String(args.toolId))}${query(args, { format: 'format' })}`)) },
+  { name: 'describe_tool', description: 'Read one tool\'s effective input schema for this token: hidden inputs are absent, locked inputs are readOnly with their value, and choices are narrowed. Pass format to apply that format\'s design-system rules. Pass template ("inst/...") to read the schema a render that starts from that published template takes: the inputs it fixes are readOnly with their values.',
+    inputSchema: schema({ toolId, format, template }, ['toolId']), annotations: reads, route: { method: 'GET', path: '/api/v1/schema/:toolId' }, needs: 'tool.use',
+    run: (ctx, args) => json(ctx.call('GET', `/api/v1/schema/${enc(String(args.toolId))}${query(args, { format: 'format', template: 'template' })}`)) },
   { name: 'validate', description: 'Check input values against the tool and policy without rendering. Problems come back as errors with stable codes.',
     inputSchema: schema({ toolId, inputs, format }, ['toolId']), annotations: reads, route: { method: 'POST', path: '/api/v1/validate' }, needs: 'tool.use',
     run: (ctx, args) => json(ctx.call('POST', '/api/v1/validate', pick(args, ['toolId', 'inputs', 'format']))) },
