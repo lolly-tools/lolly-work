@@ -475,3 +475,44 @@ test('two deletes of one mark through the rights route withdraw and audit it onc
   } finally { store.listAssetRightsMarks = list; }
   assert.equal((await store.listAudit()).filter((a) => a.action === 'catalog.rights.unmark' && a.subject === `rights-mark:${scope}`).length, 1);
 });
+
+test('a mark stated after a version passed its early check still binds that version, under the lock', async () => {
+  const admin = await login('admin@test');
+  const plain = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  const id = plain.body.id as string;
+  const newer = await submitTemplate(admin, 'Partner price sheet', 'SLES 16 SP3');
+  const delegated = { principal: 'group:brand', action: 'programme.manage', resource: '*', effect: 'allow' };
+  await store.putGrant(delegated as never);
+  // Staff state the mark between the route's early check and the commit's lock.
+  const lock = store.withAssetLock.bind(store);
+  let staged = false;
+  store.withAssetLock = async (assetId, fn) => {
+    if (!staged && assetId === id) {
+      staged = true;
+      await store.addAssetRightsMark({ scope: `asset:${id}`, holder: 'Partner Hub', terms: 'Staff statement.', statedBy: 'staff', statedAt: new Date().toISOString() });
+    }
+    return lock(assetId, fn);
+  };
+  try {
+    const bruno = await login('bruno@test');
+    const moved = await call(bruno, 'POST', `/api/v1/programmes/resellers/templates/${bare(id)}/versions`, { from: newer });
+    assert.equal(moved.status, 403, 'the commit asks again under the lock');
+    assert.equal((await store.getInstanceAsset(id))?.headVersion ?? 1, 1, 'the head did not move');
+  } finally { store.withAssetLock = lock; await store.deleteGrant(delegated as never); }
+});
+
+test('the rights route states an asset mark under that asset\'s lock', async () => {
+  const admin = await login('admin@test');
+  const plain = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  const id = plain.body.id as string;
+  let open!: () => void;
+  const gate = new Promise<void>((r) => { open = r; });
+  const holding = store.withAssetLock(id, () => gate);
+  const put = call(admin, 'PUT', '/api/v1/catalog/rights/marks', { scope: `asset:${id}`, holder: 'Acme legal', terms: 'Held while locked.' });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${id}`), 'nothing written while another holds the lock');
+  open();
+  await holding;
+  assert.ok((await put).status < 300);
+  assert.equal((await store.listAssetRightsMarks()).find((m) => m.scope === `asset:${id}`)?.terms, 'Held while locked.');
+});

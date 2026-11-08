@@ -297,6 +297,8 @@ export interface SubmitDeps {
   rulesTools?: RulesToolSubmitter;
   /** Called once a new version became an asset's head (programmes/owner-mark.ts). */
   onHeadMoved?: (rec: InstanceAssetRecord, submitter: SubmitInput['submitter']) => Promise<void>;
+  /** Asked under the asset's lock before a head moves: false refuses (MARKED_HEAD). */
+  mayMoveHead?: (rec: InstanceAssetRecord, submitter: SubmitInput['submitter']) => Promise<boolean>;
 }
 
 /** What a rules tool submission becomes before it is hashed or stored. */
@@ -369,6 +371,8 @@ export function companyLogoFields(logo: NonNullable<SubmitInput['companyLogo']>,
 
 export type SubmitRefusal =
   | { ok: false; code: 'SUBMISSION_INCOMPLETE'; detail: string }
+  /** The asset carries the workspace's own mark and this submitter may not move its head. */
+  | { ok: false; code: 'MARKED_HEAD'; detail: string }
   | { ok: false; code: 'SOURCE_CHANGED'; detail: string }
   | { ok: false; code: 'QUOTA_EXCEEDED'; detail: string }
   | { ok: false; code: 'SCAN_REJECTED'; detail: string }
@@ -608,6 +612,10 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     // version number, the record it moves and the mark check all read what is current.
     return store.withAssetLock(input.target.id, async () => {
     const target = (await store.getInstanceAsset(input.target!.id)) ?? input.target!;
+    if (deps.mayMoveHead && !(await deps.mayMoveHead(target, input.submitter))) {
+      await release();
+      return { ok: false, code: 'MARKED_HEAD', detail: 'This file carries the workspace\'s own mark: a new version needs catalog.edit.' } satisfies SubmitOutcome;
+    }
     const rows = await store.listAssetVersions(target.id);
     if (!rows.length) {
       const first = backfillVersionOne(target);

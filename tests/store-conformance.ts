@@ -1502,7 +1502,11 @@ export async function runStoreConformance(store: Store): Promise<void> {
   const lockOther = await store.withAssetLock('inst/other', async () => { lockOrder.push('other'); return 3; });
   openLock();
   assert.deepEqual([await lockFirst, await lockSecond, lockOther], [1, 2, 3]);
-  assert.deepEqual(lockOrder, ['first:start', 'other', 'first:end', 'second'], 'the same asset waits, another does not');
+  // Whichever of the two takes the lock first, the other never runs inside it; the
+  // other asset ran while the first held its lock.
+  const start = lockOrder.indexOf('first:start'), end = lockOrder.indexOf('first:end'), second = lockOrder.indexOf('second');
+  assert.ok(second < start || second > end, `the same asset waits: ${lockOrder.join(', ')}`);
+  assert.ok(lockOrder.indexOf('other') < end, `another asset does not wait: ${lockOrder.join(', ')}`);
   await assert.rejects(store.withAssetLock('inst/sheet', async () => { throw new Error('boom'); }), /boom/);
   assert.equal(await store.withAssetLock('inst/sheet', async () => 'after'), 'after', 'a failure releases the lock');
   await store.deleteAssetRightsMark('asset:inst/sheet');

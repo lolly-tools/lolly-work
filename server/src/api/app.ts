@@ -6347,7 +6347,7 @@ export function buildApp(deps: AppDeps): App {
         ...(from ? { from } : {}),
       });
       if (!outcome.ok) {
-        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : 422;
+        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : outcome.code === 'MARKED_HEAD' ? 403 : 422;
         return { ok: false, status, code: outcome.code, detail: outcome.detail };
       }
       await trimVersionHistory(outcome.record).catch(() => 0);
@@ -8339,6 +8339,10 @@ export function buildApp(deps: AppDeps): App {
       if (!Number.isInteger(wanted) || wanted < 1) return sendError(res, 400, 'INVALID_INPUT', 'version must be a version number');
       // The head moves under the asset's lock, with the mark checked against it there.
       const done = await store.withAssetLock(id, async () => {
+      // Asked again here: a mark stated since the check above binds this rollback too.
+      if (await ownerMarks.markOn(id) && !(await mayStateMark(user))) {
+        return sendError(res, 403, 'FORBIDDEN', 'this file carries the workspace\'s own mark: a rollback needs catalog.edit');
+      }
       const rec = (await store.getInstanceAsset(id))!;
       const rows = await assetVersionRows(rec);
       const row = rows.find((r) => r.version === wanted);
@@ -8350,6 +8354,7 @@ export function buildApp(deps: AppDeps): App {
       await store.putInstanceAsset(applyVersionToRecord(rec, row));
       // A rollback is a head change too: the workspace's own mark answers to the head it restored.
       await ownerMarks.recheckLocked(user, id);
+      await audit(`user:${user.id}`, 'catalog.rollback', `catalog:${id}`, { before: { version: from }, after: { version: wanted } });
       return from;
       });
       if (typeof done !== 'number') return;
@@ -8357,7 +8362,6 @@ export function buildApp(deps: AppDeps): App {
       // The bytes behind a stable id just changed, so every cached render that
       // could have consumed them has to miss (plans/31 §6).
       bustInstanceCatalog();
-      await audit(`user:${user.id}`, 'catalog.rollback', `catalog:${id}`, { before: { version: from }, after: { version: wanted } });
       return sendJson(res, 200, { ok: true, id, version: wanted, changed: true, previous: from }, { 'cache-control': 'no-store' });
     }
     if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
@@ -8458,18 +8462,21 @@ export function buildApp(deps: AppDeps): App {
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
 
     let name = instAsset?.entry.name;
-    if (instAsset && parsed && !('error' in parsed) && descriptiveTouched(parsed)) {
-      // Written under the asset's lock from a fresh read, so a version committing
-      // meanwhile keeps its head (programmes/owner-mark.ts).
-      name = await store.withAssetLock(instAsset.id, async () => {
+    const writeAndAudit = async (): Promise<void> => {
+      if (instAsset && parsed && !('error' in parsed) && descriptiveTouched(parsed)) {
+        // A fresh read under the asset's lock, so a version committing meanwhile
+        // keeps its head (programmes/owner-mark.ts).
         const current = (await store.getInstanceAsset(instAsset.id)) ?? instAsset;
         const entry = applyDescriptivePatch(current.entry, parsed);
         await store.putInstanceAsset({ ...current, entry });
-        return entry.name;
-      });
-    }
-    if (meta && meta !== stored) await store.putAssetMeta(meta);
-    await audit(`user:${user.id}`, 'catalog.edit', `catalog:${id}`, { before, after });
+        name = entry.name;
+      }
+      if (meta && meta !== stored) await store.putAssetMeta(meta);
+      await audit(`user:${user.id}`, 'catalog.edit', `catalog:${id}`, { before, after });
+    };
+    // An instance asset's write and its audit happen under the asset's lock.
+    if (instAsset) await store.withAssetLock(instAsset.id, writeAndAudit);
+    else await writeAndAudit();
     sendJson(res, 200, {
       ok: true,
       id,
@@ -8886,6 +8893,12 @@ export function buildApp(deps: AppDeps): App {
     // Every head change checks the workspace's own mark against the new head.
     // Called inside the commit's asset lock, so the unlocked recheck.
     onHeadMoved: (rec: InstanceAssetRecord, submitter: { id: string }) => ownerMarks.recheckLocked(submitter, rec.id),
+    // The same rule as the routes' early check, asked again where the head moves.
+    mayMoveHead: async (rec: InstanceAssetRecord, submitter: { id: string }) => {
+      if (!(await ownerMarks.markOn(rec.id))) return true;
+      const person = await store.getUser(submitter.id);
+      return !!person && mayStateMark(person);
+    },
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     // A template or user tool must seed a tool this pack has (plan 299). The
@@ -9142,7 +9155,7 @@ export function buildApp(deps: AppDeps): App {
       });
       // A misconfigured review chain is the instance's fault, not the
       // submitter's, so it reads as unavailable rather than as a bad request.
-      const status = outcome.code === 'SUBMISSION_INCOMPLETE' ? 503 : outcome.code === 'SOURCE_CHANGED' ? 403 : outcome.code === 'QUOTA_EXCEEDED' ? 409
+      const status = outcome.code === 'SUBMISSION_INCOMPLETE' ? 503 : outcome.code === 'SOURCE_CHANGED' || outcome.code === 'MARKED_HEAD' ? 403 : outcome.code === 'QUOTA_EXCEEDED' ? 409
         : outcome.code === 'SCAN_REJECTED' || outcome.code === 'INVALID_SUBMISSION' ? 422
           : outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 502;
       return sendError(res, status, outcome.code, outcome.detail);

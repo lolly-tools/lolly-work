@@ -407,11 +407,14 @@ async function insertCollabReceipts(client: PgClient, sessionId: string, princip
   [sessionId, principal, receipts.map(r => r.id), receipts.map(r => r.digest), receipts.map(r => r.accepted), revision]);
 }
 
-export async function createPostgresStore(databaseUrl: string): Promise<Store & { close(): Promise<void> }> {
+export async function createPostgresStore(databaseUrl: string, opts: { poolMax?: number } = {}): Promise<Store & { close(): Promise<void> }> {
   let roleGroups: RoleGroups = {};
   let auditMacKey: string | undefined;
   const { default: pg } = await import('pg');
-  const pool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl)), 'store') as unknown as PgPool;
+  const pool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl, opts.poolMax !== undefined ? { max: opts.poolMax } : {})), 'store') as unknown as PgPool;
+  // Asset locks (withAssetLock) hold their own connections: a holder's work runs on
+  // `pool`, so waiters queued here can never take every connection that work needs.
+  const assetLockPool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl, { max: 4 })), 'asset lock') as unknown as PgPool;
   // A claim stays open during scanning and admission. Its transaction must not
   // consume the record connections the admission needs in order to finish.
   const submissionPool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl)), 'catalog submission') as unknown as PgPool;
@@ -2452,7 +2455,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       );
     },
     async withAssetLock(assetId, fn) {
-      const client = await pool.connect();
+      const client = await assetLockPool.connect();
       try {
         await client.query('begin');
         await client.query('select pg_advisory_xact_lock($1, hashtext($2))', [ASSET_MARK_LOCK_KEY, assetId]);
@@ -3446,7 +3449,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return pendingAgainst(pool); // read-only; safe on a pending schema
     },
     async close() {
-      await Promise.all([pool.end(), submissionPool.end()]);
+      await Promise.all([pool.end(), submissionPool.end(), assetLockPool.end()]);
     },
   };
 }
