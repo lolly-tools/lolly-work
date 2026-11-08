@@ -6466,7 +6466,7 @@ export function buildApp(deps: AppDeps): App {
     store, blobs, requireAction, memberOf, audit,
     kitVisible: async (groups, assetId) => !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit'),
     submitKit: async (input) => {
-      const outcome = await submitAsset(submitDeps(), input);
+      const outcome = await submitAsset(submitDeps(input.submitter), input);
       if (outcome.ok) await trimVersionHistory(outcome.record).catch(() => 0);
       return outcome;
     },

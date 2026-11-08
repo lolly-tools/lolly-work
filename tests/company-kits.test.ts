@@ -476,3 +476,15 @@ test('a kit\'s revision and details change only through its company kit route, n
   assert.equal((await call(bruno, 'GET', route)).body.revision, again.body.revision, 'the live revision did not move');
   assert.equal((await call(bruno, 'DELETE', `${AT}/rollco`)).status, 200);
 });
+
+test('two saves of one kit at once each make their own revision', async () => {
+  assert.equal((await call(bruno, 'PUT', `${AT}/twinco`, { name: 'Twin Co' })).status, 201);
+  const route = `${AT}/twinco/kit`;
+  const body = { ...kit('twinco'), label: 'Twin Co', logos: {} };
+  assert.equal((await call(bruno, 'PUT', route, body)).status, 200);
+  const [a, b] = await Promise.all([call(bruno, 'PUT', route, { ...body, colours: [] }), call(bruno, 'PUT', route, { ...body, label: 'Twin Co B' })]);
+  assert.equal(a.status, 200); assert.equal(b.status, 200);
+  assert.deepEqual([a.body.revision, b.body.revision].sort(), [2, 3], 'the asset lock gives each save its own version');
+  assert.equal((await store.listAssetVersions(a.body.assetId)).filter((v) => v.version >= 2).length, 2);
+  assert.equal((await call(bruno, 'DELETE', `${AT}/twinco`)).status, 200);
+});
