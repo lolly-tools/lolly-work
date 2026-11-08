@@ -133,6 +133,10 @@ test('the grants API says which grants do not apply to partner programme members
   assert.equal(of('group:marketing', 'grant.edit')?.partnerScope, undefined, 'a staff grant applies');
   const created = await (await send(admin, 'POST', '/api/v1/grants', { principal: `user:${ritaId}`, action: 'audit.export', resource: '*', effect: 'allow' })).json() as { partnerScope?: string };
   assert.equal(created.partnerScope, 'Does not apply to partner programme members: audit.export is not available to partners.', 'said at the moment it is set');
+  const everyone = { principal: '*', action: 'policy.edit', resource: '*', effect: 'allow' };
+  const wide = await (await send(admin, 'POST', '/api/v1/grants', everyone)).json() as { partnerScope?: string };
+  assert.ok(wide.partnerScope, 'a grant for everyone reaches partners too, and says it does not apply to them');
+  await send(admin, 'DELETE', '/api/v1/grants', everyone);
   const toolUse = await (await send(admin, 'POST', '/api/v1/grants', { principal: 'group:programme-resellers', action: 'tool.use', resource: '*', effect: 'allow' })).json() as { partnerScope?: string };
   assert.equal(toolUse.partnerScope, undefined, 'a partner action carries no note');
 });

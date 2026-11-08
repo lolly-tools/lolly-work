@@ -9376,20 +9376,31 @@ export function buildApp(deps: AppDeps): App {
     const partnerScope = op === 'create' ? partnerScopeNote(grant, await scopedUserIds()) : null;
     sendJson(res, op === 'create' ? 201 : 200, { ok: true, grant, ...(partnerScope ? { partnerScope } : {}) });
   };
-  /** People a grant naming them would reach only as a partner programme member. */
-  const scopedUserIds = async (): Promise<Set<string>> =>
-    new Set((await store.listUsers()).filter((u) => isProgrammeScoped(u.groups, u.role)).map((u) => u.id));
+  /** Who a grant could reach as a partner programme member: scoped people and
+   *  programme tokens by principal id, and the groups any of them hold. */
+  const scopedUserIds = async (): Promise<{ ids: Set<string>; groups: Set<string> }> => {
+    const ids = new Set<string>(), groups = new Set<string>();
+    const add = (id: string, held: string[]) => { ids.add(id); for (const g of held) groups.add(g); };
+    for (const u of await store.listUsers()) if (isProgrammeScoped(u.groups, u.role)) add(u.id, u.groups);
+    for (const t of await store.listApiTokens()) {
+      const account = serviceAccountFor(t);
+      if (isProgrammeScoped(account.groups, account.role)) add(account.id, account.groups);
+    }
+    return { ids, groups };
+  };
   /**
    * Why a grant does not apply to partner programme members, or null. Shown beside
    * the grant (an admin sees the limit where they set it): a grant naming the partner
    * marker, a programme or company group, or a person in one, for an action outside
    * PARTNER_ACTIONS (rbac/evaluate.ts) stays stored and does nothing for them.
    */
-  const partnerScopeNote = (grant: Pick<Grant, 'principal' | 'action'>, scopedUsers: ReadonlySet<string>): string | null => {
+  const partnerScopeNote = (grant: Pick<Grant, 'principal' | 'action'>, scoped: { ids: ReadonlySet<string>; groups: ReadonlySet<string> }): string | null => {
     if (PARTNER_ACTIONS.has(grant.action)) return null;
     const p = grant.principal;
-    const partner = p.startsWith('group:') ? (p.slice(6) === PARTNER_GROUP || isPartnerGroup(p.slice(6)))
-      : p.startsWith('user:') && scopedUsers.has(p.slice(5));
+    // Everyone, a partner group, a group a partner (or a programme token) holds, or one of them by id.
+    const partner = p === '*'
+      || (p.startsWith('group:') && (p.slice(6) === PARTNER_GROUP || isPartnerGroup(p.slice(6)) || scoped.groups.has(p.slice(6))))
+      || (p.startsWith('user:') && scoped.ids.has(p.slice(5)));
     return partner ? `Does not apply to partner programme members: ${grant.action} is not available to partners.` : null;
   };
 
