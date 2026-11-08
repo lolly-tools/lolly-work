@@ -19,6 +19,7 @@ import { edgeProviderDescriptor, edgeTagHeaders, type EdgeConfig, type EdgeProvi
 import type { EdgePurgeOutbox } from './outbox.ts';
 import { createEdgeAdapter, edgeCredentialContext } from './registry.ts';
 import type { EdgeAdapter } from './types.ts';
+import { JSON_BODY_MEDIUM_BYTES, JSON_BODY_SMALL_BYTES } from '../api/body-limits.ts';
 
 export interface EdgeRouteDeps {
   config: EdgeConfig;
@@ -34,7 +35,7 @@ export interface EdgeRouteDeps {
   fetchImpl?: typeof fetch;
 }
 
-const MAX_ITEMS = 100;
+export const MAX_ITEMS = 100;
 
 function stringList(value: unknown): string[] | null {
   if (value === undefined) return [];
@@ -81,7 +82,7 @@ export function registerEdgeRoutes(router: ReturnType<typeof createRouter>, deps
     const user = await deps.requireOwner(req, res);
     if (!user) return;
     if (!deps.outbox.configured) return sendError(res, 409, 'EDGE_NOT_CONFIGURED', 'No edge provider is configured in instance.json.');
-    const body = await readJson(req, 64 * 1024) as { tags?: unknown; urls?: unknown; paths?: unknown } | null;
+    const body = await readJson(req, JSON_BODY_MEDIUM_BYTES) as { tags?: unknown; urls?: unknown; paths?: unknown } | null;
     const tags = stringList(body?.tags), urls = stringList(body?.urls), paths = stringList(body?.paths);
     if (!tags || !urls || !paths) return sendError(res, 400, 'INVALID_INPUT', `tags, urls and paths must each be a list of at most ${MAX_ITEMS} strings`);
     if (!tags.length && !urls.length && !paths.length) return sendError(res, 400, 'INVALID_INPUT', 'Give at least one tag, URL or path to purge.');
@@ -101,7 +102,7 @@ export function registerEdgeRoutes(router: ReturnType<typeof createRouter>, deps
     if (!p) return;
     if (p.credentialRef) return sendError(res, 409, 'CONFIG_MANAGED', `${p.id} reads its credential from the environment (credentialRef); change it there.`);
     if (!deps.credentialSecret) return sendError(res, 409, 'CREDENTIAL_SECRET_MISSING', 'Set LW_CREDENTIAL_SECRET before storing edge credentials.');
-    const body = await readJson(req, 16 * 1024) as { secret?: unknown } | null;
+    const body = await readJson(req, JSON_BODY_SMALL_BYTES) as { secret?: unknown } | null;
     const secret = typeof body?.secret === 'string' ? body.secret.trim() : '';
     if (secret.length < 8 || secret.length > 4096 || /\s/.test(secret)) return sendError(res, 400, 'INVALID_INPUT', 'secret required: the provider API key or token, without spaces');
     // Read the zone with the candidate before keeping it, so a wrong key is refused now.

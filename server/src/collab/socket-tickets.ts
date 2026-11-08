@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 /** One-use native socket credentials. Kept by the same process that owns live rooms. */
 import { randomBytes } from 'node:crypto';
+import { MAX_TICKETS, SOCKET_TICKET_TTL_MS } from './limits.ts';
+export { SOCKET_TICKET_TTL_MS };
 
 export const SOCKET_TICKET_PROTOCOL = 'lolly-collab-v1';
 export const SOCKET_TICKET_PREFIX = 'lolly-ticket.';
-export const SOCKET_TICKET_TTL_MS = 30_000;
-const MAX_TICKETS = 1024;
 
 export function createSocketTickets(now: () => number = Date.now) {
   const pending = new Map<string, { cookie: string; sessionId: string; expires: number }>();

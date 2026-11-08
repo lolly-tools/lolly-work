@@ -50,7 +50,7 @@ export function noticeContext(config: Pick<InstanceConfig, 'instance'>, nowMs: n
 /** Someone with an account, as the notices name them. Never shown by address alone. */
 export type PersonName = { firstname?: string; lastname?: string; email: string };
 
-const MAX_TITLE_CHARS = 200;
+export const MAX_TITLE_CHARS = 200;
 const DAY_MS = 86_400_000;
 /** How long an answer or an acceptance stays in the inbox. */
 export const NOTICE_DAYS = 30;

@@ -51,11 +51,11 @@ import { isSvgTemplate, renderCapabilities } from './capabilities.ts';
 import { loadToolOrRefuse, ToolLoadRefusal } from './tool-load.ts';
 import { isPublishedTemplateRef, templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
 import { bindOverlay, defaultsFor, LOGO_FIELDS, themeOf, type BindingPlan, type Theme } from '../programmes/company-values.ts';
-import { recordEnvironment, recordedThemes, type RenderPartner } from './record.ts';
+import { recordEnvironment, recordedThemes, variantApprovalRecord, type ApprovedVariantReview, type RenderPartner } from './record.ts';
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
  *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
-const MAX_RASTER_EDGE_PX = 10_000;
+export const MAX_RASTER_EDGE_PX = 10_000;
 
 /** Upper bound on the resvg scale factor itself - guards against a degenerate
  *  targetWidthPx producing an absurd scale before the aspect-ratio check below. */
@@ -104,7 +104,7 @@ function renderErrorFromWorker(e: WorkerError): RenderError {
 export interface RenderDeps {
   /** The approved export review matching a render, for `enforce.watermark:
    *  until-approved`. Absent (unit tests, older callers) nothing matches, so the mark stays. */
-  approvedExportReview?: (key: ExportReviewKey & { toolVersion: string }) => Promise<{ id: string } | null>;
+  approvedExportReview?: (key: ExportReviewKey & { toolVersion: string }) => Promise<ApprovedVariantReview | null>;
   workerReadToken?: string;
   workerFiles?: RenderFileScope;
   managedRules?: ManagedRuleContext;
@@ -855,12 +855,23 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
         themes: system ? recordedThemes(tokenEngine, system.tokens, st.tokenSelection as Record<string, string> | null) : [],
         partner, designRecordEnvironment: (meta) => tokenEngine.designRecordEnvironment(meta),
       });
-      out.bytes = await engine.embedC2pa(out.bytes, format, {
-        signer: { privateKey: deps.signer.privateKey, certDer: deps.signer.certDer, chain: deps.signer.chain },
+      // A variant render that came out clean under one approval of its template
+      // carries that approval's record (plans/82 M7, decision 5).
+      const approvalRecord = coversVariants && !watermark ? variantApprovalRecord(approval, template!) : null;
+      const sign = (record: typeof approvalRecord) => engine.embedC2pa(out.bytes, format, {
+        signer: { privateKey: deps.signer!.privateKey, certDer: deps.signer!.certDer, chain: deps.signer!.chain },
         title: req.toolId,
-        ...(deps.signer.claimGenerator ? { claimGenerator: deps.signer.claimGenerator } : {}),
+        ...(deps.signer!.claimGenerator ? { claimGenerator: deps.signer!.claimGenerator } : {}),
         ...(Object.keys(environment).length ? { environment } : {}),
+        ...(record ? { approval: record } : {}),
       });
+      try { out.bytes = await sign(approvalRecord); }
+      catch (e) {
+        if (!approvalRecord) throw e;
+        // A record the engine refuses never costs the file its credential.
+        process.stderr.write(`[render:c2pa] the approval record for ${req.toolId}.${format} was refused: ${(e as Error).message}\n`);
+        out.bytes = await sign(null);
+      }
     } catch (e) {
       // Log to stderr (container stream); ship the unsigned bytes rather than 500.
       process.stderr.write(`[render:c2pa] signing ${req.toolId}.${format} failed: ${(e as Error).message}\n`);

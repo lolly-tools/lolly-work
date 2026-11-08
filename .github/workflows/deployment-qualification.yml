@@ -70,9 +70,19 @@ jobs:
         env:
           TOOL: ${{ matrix.tool }}
           TF_IN_AUTOMATION: '1'
+          # Read-only job token for the REST API route if the provider release downloads fail.
+          GH_TOKEN: ${{ github.token }}
         run: |
           "$TOOL" fmt -check -recursive
-          "$TOOL" init -backend=false -input=false -lockfile=readonly
+          # The registry serves provider packages from GitHub release URLs. If those
+          # fail, mirror the exact packages the lock file pins (checked against its
+          # zh: hashes) and install from the mirror; init still checks the lock.
+          if ! "$TOOL" init -backend=false -input=false -lockfile=readonly; then
+            echo '::warning::Provider install from the registry failed; installing the locked packages through the GitHub REST API'
+            mirror="$RUNNER_TEMP/lolly-provider-mirror"
+            bash "$GITHUB_WORKSPACE/scripts/ci-provider-mirror.sh" .terraform.lock.hcl "$mirror"
+            "$TOOL" init -backend=false -input=false -lockfile=readonly -plugin-dir="$mirror"
+          fi
           "$TOOL" validate -no-color
           "$TOOL" test -no-color
 

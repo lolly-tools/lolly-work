@@ -5,11 +5,10 @@ import {
 } from '@lolly-tools/core/partner-kit-v1';
 import { readBlobBody, type BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
-import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
+import { submissionServable, type InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import { centralEntries, entryBytes, type ZipEntry } from '../catalog/instance-pack.ts';
 import { MAX_RULES_FILE_BYTES } from '../catalog/rules-tools.ts';
 import { LOGO_FIELD } from './profile.ts';
-import { SVG_MAX_BYTES } from './logo-checks.ts';
 import type { CompanyRecord } from './people.ts';
 
 export const KIT_MAX_BYTES = PARTNER_KIT_MAX_BYTES;
@@ -18,7 +17,9 @@ export const KIT_LOLLY_MAX_BYTES = MAX_RULES_FILE_BYTES;
 /** A share's design system, inflated: a tokens document with room for embedded data, far below the pack budget. */
 export const KIT_DESIGN_SYSTEM_MAX_BYTES = 8 * 1024 * 1024;
 export const KIT_TOKENS_MAX_PARTS = 512;
-export const KIT_SVG_MAX_BYTES = SVG_MAX_BYTES;
+/** The SVG logo bound, the same as logo-checks.ts SVG_MAX_BYTES (a test holds them equal).
+ *  Not imported from there: logo-checks reaches this module through submit.ts. */
+export const KIT_SVG_MAX_BYTES = 512 * 1024;
 const SURFACES = ['light', 'dark', 'mark'] as const;
 
 interface TokensExtraction { doc: unknown; warnings: string[] }
@@ -97,6 +98,15 @@ export async function storedKit(blobs: BlobStore, rec: InstanceAssetRecord): Pro
   if (!blob) return null;
   const bytes = await readBlobBody(blob.body, KIT_MAX_BYTES);
   return (await loadKitEngine()).readPartnerKit(bytes.toString('utf8'));
+}
+
+/** The company's current kit, only while its asset is live. */
+export async function readCompanyKit(store: Store, blobs: BlobStore, companyId: string): Promise<{ assetId: string; revision: number; kit: PartnerKitV1 } | null> {
+  const pointer = (await store.getCompanyProfile(companyId))?.kit;
+  const rec = pointer ? await store.getInstanceAsset(pointer.assetId) : null;
+  if (!rec || rec.entry.type !== 'partner-kit' || (rec.entry.meta as { company?: unknown })?.company !== companyId || !submissionServable(rec) || (await store.getLifecycle(rec.id))?.revokedAt) return null;
+  const kit = await storedKit(blobs, rec);
+  return kit ? { assetId: rec.id, revision: rec.headVersion ?? 1, kit } : null;
 }
 
 function tokenPart(bytes: Buffer, entry: ZipEntry, maxBytes = KIT_TOKENS_MAX_BYTES): Buffer {

@@ -1434,7 +1434,55 @@ const INSTANCE_TABS = [
   { key: 'brand-pages', label: 'Brand pages', icon: 'brandPages', render: (h) => viewBrandPages(h) },
   { key: 'flags', label: 'Feature flags', icon: 'flags', render: (h) => viewFeatureFlags(h) },
   { key: 'injectables', label: 'Injectables', icon: 'injectables', render: (h) => viewInjectables(h) },
+  { key: 'limits', label: 'Limits and quotas', icon: 'limits', render: (h) => viewLimits(h) },
 ];
+// Limits and quotas (plans/82 M7; Andy, 2026-11-07): every limit Work enforces, with
+// its value and where it comes from. Each figure is read by the server from the
+// constant or the setting its own check reads, so this page cannot drift from the code.
+const LIMIT_SOURCE_WORDS = { configuration: 'Configuration', environment: 'Environment', 'built-in': 'Built-in default' };
+function limitValueText(entry) {
+  const v = entry.value;
+  if (v === null) return 'No cap';
+  if (typeof v === 'boolean') return v ? 'On' : 'Off';
+  if (typeof v === 'string') return entry.unit === 'mode' && /^[a-z]+$/.test(v) ? v.charAt(0).toUpperCase() + v.slice(1) : v;
+  const n = Number(v);
+  // Whole figures in full: a maximum such as 1,000,000 must not read as "1000K".
+  const full = (x) => Number(x).toLocaleString('en');
+  switch (entry.unit) {
+    case 'bytes': return fmtBytes(n);
+    case 'ms': return n >= 86_400_000 && n % 86_400_000 === 0 ? `${full(n / 86_400_000)} ${n === 86_400_000 ? 'day' : 'days'}`
+      : n >= 3_600_000 && n % 3_600_000 === 0 ? `${full(n / 3_600_000)} h`
+      : n >= 60_000 && n % 60_000 === 0 ? `${full(n / 60_000)} min` : n >= 1000 && n % 1000 === 0 ? `${full(n / 1000)} s` : `${full(n)} ms`;
+    case 'seconds': return n >= 86_400 && n % 86_400 === 0 ? `${full(n / 86_400)} ${n === 86_400 ? 'day' : 'days'}`
+      : n >= 3600 && n % 3600 === 0 ? `${full(n / 3600)} h` : n >= 60 && n % 60 === 0 ? `${full(n / 60)} min` : `${full(n)} s`;
+    case 'days': return n === 0 ? '0 (kept)' : `${full(n)} ${n === 1 ? 'day' : 'days'}`;
+    case 'per-minute': return `${full(n)} a minute`;
+    case 'per-second': return `${full(n)} a second`;
+    case 'rows': return `${full(n)} ${n === 1 ? 'row' : 'rows'}`;
+    default: return full(n);
+  }
+}
+async function viewLimits(main) {
+  let data;
+  try { data = await api('/api/v1/limits'); }
+  catch (e) { main.append(el('h1', {}, 'Limits and quotas'), el('p', { class: 'form-err' }, e.message)); return; }
+  const limits = data.limits ?? [];
+  const areas = [...new Set(limits.map((l) => l.area))];
+  const changed = limits.filter((l) => l.source !== 'built-in').length;
+  main.append(
+    el('h1', {}, 'Limits and quotas'),
+    el('p', { class: 'sub' }, `Every limit this deployment enforces, with its value now and where the value comes from: ${fmt(limits.length)} limits, ${fmt(changed)} set by configuration or the environment. Agent tokens show their own limits and use on each programme’s Agent tokens card.`),
+    ...areas.map((area) => el('div', { class: 'card stack limits-area' },
+      el('h2', {}, area),
+      // Two columns, so a phone keeps the value and its source beside the limit.
+      dataTable(['Limit', 'Value and source'], limits.filter((l) => l.area === area).map((l) => el('tr', { 'data-limit': l.id },
+        el('td', {}, el('div', { class: 'cell-lines' }, el('span', {}, l.label), l.note ? el('span', { class: 'muted' }, l.note) : null, el('span', { class: 'muted mono limit-id' }, l.id))),
+        el('td', {}, el('div', { class: 'cell-lines' }, el('strong', {}, limitValueText(l)),
+          l.source === 'built-in' ? el('span', { class: 'muted' }, LIMIT_SOURCE_WORDS[l.source]) : el('span', { class: 'status review' }, LIMIT_SOURCE_WORDS[l.source] ?? l.source))))),
+      // Every limit stays on the page: no pager hides the later rows of a long area.
+      { filter: false, paginate: false }))));
+}
+
 async function viewInstance(main, params) {
   const tabs = INSTANCE_TABS.filter(tab => canView(tab.key));
   if (!tabs.length || (params?.get?.('tab') && !tabs.some(tab => tab.key === params.get('tab')))) {
@@ -2819,6 +2867,64 @@ function catalogMetaEditor(detail, entry, host) {
     err);
 }
 
+// The asset page's Licence row (plans/82 M4): the licence this file records,
+// where the answer comes from (its own record, your licence record or a mark,
+// with who stated it and when), and the controls to record a licence or mark
+// the file. Shown to catalog.edit only; the record is your own statement and
+// Lolly does not check it.
+function catalogLicenceSection(id) {
+  if (!(session?.console?.actions ?? []).includes('catalog.edit')) return null;
+  const host = el('div', { class: 'stack' }, el('h3', { class: 'detail-h' }, 'Licence'), el('p', { class: 'muted' }, 'Loading…'));
+  const draw = async () => {
+    let a;
+    try { a = await api(`/api/v1/catalog/rights/asset?${new URLSearchParams({ id })}`); }
+    catch (e) { host.replaceChildren(el('h3', { class: 'detail-h' }, 'Licence'), el('p', { class: 'form-err' }, e.message)); return; }
+    const err = errSpan();
+    const reads = a.reads;
+    const readsLine = reads.exempt ? 'Always reaches partners: part of the design system or published by your team.'
+      : reads.travels ? `${reads.licence}. May reach partners.`
+      : `${reads.licence || 'Licence not recorded'}. Held back from partners once the gate is on: ${reads.conditions?.length ? `conditions recorded, not yet interpreted (${reads.conditions.join(', ')})` : reads.detail ?? reads.reason}.`;
+    const from = a.source === 'own' ? `Recorded on the file itself: ${a.declared}.`
+      : a.source === 'licence-record' ? a.licence.statement
+      : a.source === 'mark' ? `${a.mark.statement} Inherited from ${a.mark.scope.startsWith('asset:') ? 'this file' : a.mark.scope.replace(/^folder:/, 'folder ').replace(/^provider:/, 'source ').replace(/^prefix:/, 'ids starting ')}.`
+      : 'Nothing recorded.';
+    const controls = [];
+    if (a.source === 'none' || a.source === 'licence-record') {
+      const decl = el('input', { value: a.licence?.declaration ?? '', placeholder: 'CC-BY-NC-4.0', 'aria-label': 'Licence' });
+      const credit = el('input', { value: a.licence?.attribution ?? '', placeholder: 'Photo by A. Person', 'aria-label': 'Credit' });
+      const save = armConfirmButton({}, a.licence ? 'Change licence record' : 'Record licence', 'Record it as your own record of the licence?', async (disarm) => {
+        try { await api('/api/v1/catalog/rights/licences', { method: 'PUT', body: { assetId: id, declaration: decl.value.trim(), ...(credit.value.trim() ? { attribution: credit.value.trim() } : {}) } }); toast('Licence recorded'); draw(); }
+        catch (ex) { err.textContent = ex.message; disarm(); }
+      });
+      controls.push(el('details', { class: 'tbl' }, el('summary', {}, a.licence ? 'Change the licence record' : 'Record its licence'),
+        el('div', { class: 'stack' }, el('div', { class: 'grant-fields' }, field('Licence', decl), field('Credit (optional)', credit)),
+          el('p', { class: 'sub flush' }, 'Write the licence in the rights holder\u2019s own words. Lolly keeps your text and reads the licence with the same rules as everywhere else.'), el('p', {}, save))));
+      if (a.licence) {
+        controls.push(armConfirmButton({ class: 'danger' }, 'Remove licence record', 'Remove the record?', async (disarm) => {
+          try { await api(`/api/v1/catalog/rights/licences?${new URLSearchParams({ assetId: id })}`, { method: 'DELETE' }); toast('Licence record removed'); draw(); }
+          catch (ex) { err.textContent = ex.message; disarm(); }
+        }));
+      }
+    }
+    if (a.source === 'none') {
+      const scope = el('select', { 'aria-label': 'Mark' }, ...a.markScopes.map((sc) => el('option', { value: sc }, sc.startsWith('asset:') ? 'This file' : sc.replace(/^folder:/, 'Its folder: ').replace(/^provider:/, 'Its whole source: ').replace(/^prefix:/, 'Every id starting '))));
+      controls.push(el('div', { class: 'grant-fields' }, field('Mark as your own', scope), el('div', {}, armConfirmButton({}, 'Mark', 'Record it as your own statement?', async (disarm) => {
+        try { await api('/api/v1/catalog/rights/marks', { method: 'PUT', body: { scope: scope.value } }); toast('Marked as your own'); draw(); }
+        catch (ex) { err.textContent = ex.message; disarm(); }
+      }))));
+    }
+    if (a.source === 'mark') {
+      controls.push(armConfirmButton({ class: 'danger' }, 'Unmark', `Withdraw the mark on ${a.mark.scope}?`, async (disarm) => {
+        try { await api(`/api/v1/catalog/rights/marks?${new URLSearchParams({ scope: a.mark.scope })}`, { method: 'DELETE' }); toast('Mark withdrawn'); draw(); }
+        catch (ex) { err.textContent = ex.message; disarm(); }
+      }));
+    }
+    host.replaceChildren(el('h3', { class: 'detail-h' }, 'Licence'), el('p', {}, readsLine), el('p', { class: 'sub flush' }, from), ...controls, err);
+  };
+  void draw();
+  return host;
+}
+
 function renderCatalogDetail(detail, entry, host, opener, history) {
   const state = detail.state ?? entry.state;
   const lc = detail.lifecycle;
@@ -2866,6 +2972,7 @@ function renderCatalogDetail(detail, entry, host, opener, history) {
       el('h3', { class: 'detail-h' }, 'Tags'),
       tags.length ? el('div', { class: 'chips' }, ...tags.map((t) => el('span', { class: 'chip' }, t))) : el('span', { class: 'muted' }, 'none')),
     metaSection,
+    catalogLicenceSection(detail.id ?? entry.id),
     detail.replacedBy
       ? el('p', { class: 'sub flush' }, 'Replaced by ', el('span', { class: 'mono' }, detail.replacedBy))
       : null,
@@ -2902,6 +3009,8 @@ async function collectionsCard(assetIndex) {
   try {
     collections = (await api('/api/v1/catalog/collections')).collections ?? [];
   } catch { return null; }
+  // How many files of each a partner or a link holder gets with the licence gate on (plans/82 M4).
+  const travel = new Map(((await api('/api/v1/catalog/rights/collections').catch(() => null))?.collections ?? []).map((c) => [c.id, c]));
 
   const known = (assetIndex.assets ?? []).map((a) => ({ id: a.id, name: a.name ?? a.id }));
   const nameOf = new Map(known.map((a) => [a.id, a.name]));
@@ -2914,6 +3023,7 @@ async function collectionsCard(assetIndex) {
     return el('tr', {},
       el('td', {}, c.name, el('div', { class: 'muted mono' }, c.id)),
       numCell(c.members.length),
+      el('td', {}, travel.has(c.id) ? `${travel.get(c.id).travel} of ${travel.get(c.id).files}` : ''),
       el('td', {}, groupsText(c)),
       el('td', { class: 'muted mono' }, (c.curator ?? '').replace(/^user:/, '')),
       whenCell(c.updatedAt),
@@ -2933,7 +3043,7 @@ async function collectionsCard(assetIndex) {
       'Named, ordered sets of assets, visible to the groups you name. A collection link gives someone outside the org a page listing that set and a download-all, and nothing else: no search, no browsing past the set, no sign-up. Every asset is re-checked against its lifecycle each time the link is opened.'),
     collections.length
       ? dataTable(
-          ['Collection', { label: 'Assets', num: true }, 'Visible to', 'Curator', { label: 'Updated', sort: 'date' }, { label: '', w: '1%', sort: false }],
+          ['Collection', { label: 'Assets', num: true }, { label: 'Travel', sort: false }, 'Visible to', 'Curator', { label: 'Updated', sort: 'date' }, { label: '', w: '1%', sort: false }],
           collections.map(rowFor), { csvName: 'collections' })
       : el('p', { class: 'empty' }, 'No collections yet. Assemble one to share a set of assets as a single link.'),
     panelHost);
@@ -2984,32 +3094,41 @@ function renderCollectionEditor(existing, known, nameOf, host, opener) {
   };
 
   const linkHost = el('div', { class: 'stack' });
-  const shareBtn = el('button', { onclick: async () => {
+  const showLink = (link, sentence) => linkHost.replaceChildren(
+    el('p', { class: 'sub', style: 'margin:0 0 6px' }, sentence(link)),
+    el('div', { class: 'lc-actions' },
+      el('span', { class: 'mono url-cell', title: link.url }, link.url),
+      copyButton(() => link.url, 'Copy')));
+  // Licences (plans/82 M4): a dry run first. With nothing held the link is
+  // made at once; otherwise the held files are listed with their reasons and
+  // the maker chooses to leave them out or to include them anyway, with a note.
+  const mintLink = async (btn, kind, sentence) => {
     err.textContent = '';
-    shareBtn.disabled = true;
+    btn.disabled = true;
+    const body = { kind, target: { collectionId: existing.id } };
     try {
-      const link = await api('/api/v1/links', { method: 'POST', body: { kind: 'share', target: { collectionId: existing.id } } });
+      const dry = await api('/api/v1/links?dryRun=1', { method: 'POST', body });
+      if (!dry.held) { showLink(await api('/api/v1/links', { method: 'POST', body }), sentence); btn.disabled = false; return; }
+      const note = el('input', { maxlength: '500', placeholder: 'The sponsor asked for the full set', 'aria-label': 'Note' });
+      const without = el('button', { onclick: async () => {
+        try { showLink(await api('/api/v1/links', { method: 'POST', body }), sentence); } catch (e) { err.textContent = e.message; }
+      } }, 'Make the link without them');
+      const include = armConfirmButton({}, 'Include them anyway', 'Send the held files with this link?', async (disarm) => {
+        try { showLink(await api('/api/v1/links', { method: 'POST', body: { ...body, includeHeld: true, ...(note.value.trim() ? { note: note.value.trim() } : {}) } }), sentence); }
+        catch (e) { err.textContent = e.message; disarm(); }
+      });
+      const held = dry.files.filter((f) => f.travels === false);
       linkHost.replaceChildren(
-        el('p', { class: 'sub', style: 'margin:0 0 6px' }, `Anyone with this link sees this collection until ${when(link.expiresAt)}.`),
-        el('div', { class: 'lc-actions' },
-          el('span', { class: 'mono url-cell', title: link.url }, link.url),
-          copyButton(() => link.url, 'Copy')));
+        el('p', {}, `${dry.travel} of ${dry.files.length} files travel. ${held.length === 1 ? 'This one is' : `These ${held.length} are`} held back by the licence gate, when it is on:`),
+        el('ul', {}, ...held.map((f) => el('li', {}, `${f.name}: ${f.licence || 'licence not recorded'}${f.conditions?.length ? ` (conditions recorded, not yet interpreted: ${f.conditions.join(', ')})` : ''}`))),
+        el('p', { class: 'sub flush' }, 'Including them is your choice for this link only, remembered against each file as it is now. A file added to the collection later, or a new version, is not included. The ZIP\u2019s credits say the sender chose to carry them.'),
+        field('Note (optional)', note),
+        el('div', { class: 'lc-actions' }, without, include));
     } catch (e) { err.textContent = e.message; }
-    shareBtn.disabled = false;
-  } }, 'Create a share link');
-  const zipBtn = el('button', { onclick: async () => {
-    err.textContent = '';
-    zipBtn.disabled = true;
-    try {
-      const link = await api('/api/v1/links', { method: 'POST', body: { kind: 'download', target: { collectionId: existing.id } } });
-      linkHost.replaceChildren(
-        el('p', { class: 'sub', style: 'margin:0 0 6px' }, `This link downloads the whole set as a zip, until ${when(link.expiresAt)}.`),
-        el('div', { class: 'lc-actions' },
-          el('span', { class: 'mono url-cell', title: link.url }, link.url),
-          copyButton(() => link.url, 'Copy')));
-    } catch (e) { err.textContent = e.message; }
-    zipBtn.disabled = false;
-  } }, 'Create a download-all link');
+    btn.disabled = false;
+  };
+  const shareBtn = el('button', { onclick: () => mintLink(shareBtn, 'share', (link) => `Anyone with this link sees this collection until ${when(link.expiresAt)}.`) }, 'Create a share link');
+  const zipBtn = el('button', { onclick: () => mintLink(zipBtn, 'download', (link) => `This link downloads the whole set as a zip, until ${when(link.expiresAt)}.`) }, 'Create a download-all link');
 
   const saveBtn = el('button', { class: 'primary', onclick: async () => {
     err.textContent = '';
@@ -3846,7 +3965,9 @@ function exportReviewPanel(a, { actionable }) {
     el('p', {}, figures),
     el('p', { class: 'mono', title: x.sha256 }, `${recorded ? 'Reviewed SHA-256' : 'SHA-256'} ${x.sha256.slice(0, 12)}…${x.sha256.slice(-8)}`),
     recorded ? el('p', { class: 'mono', title: x.credentialRecord.sha256 }, `Approved file SHA-256 ${x.credentialRecord.sha256.slice(0, 12)}…${x.credentialRecord.sha256.slice(-8)}`) : null,
-    recordLine ? el('p', {}, recordLine) : null);
+    recordLine ? el('p', {}, recordLine) : null,
+    // A token's request (plans/82 M7): the file is the agent's own render, frozen as Work made it.
+    x.origin === 'service-token' ? el('p', { class: 'appr-file-agent' }, 'An agent asked. This file is its own render, kept exactly as Lolly Work made it.') : null);
   const stage = el('div', { class: 'appr-file-stage' });
   const actions = el('div', { class: 'appr-file-actions' });
   const panel = el('div', { class: 'appr-file' }, variantCoverLine(x), stage, facts, actions);
@@ -3879,10 +4000,11 @@ function exportReviewPanel(a, { actionable }) {
     else if (x.preview === 'audio') stage.replaceChildren(el('audio', { src: url, controls: '', 'aria-label': label }));
     else if (x.preview === 'pdf') stage.replaceChildren(el('a', { href: url, target: '_blank', rel: 'noopener', class: 'btn' }, 'Open the PDF in a new tab'));
     else stage.replaceChildren(el('p', { class: 'muted' }, 'This format has no preview here. Download the file to check it.'));
-    actions.replaceChildren(
+    // replaceChildren writes a null out as the text "null", so the absent link is left out.
+    actions.replaceChildren(...[
       el('a', { href: url, download: x.name, class: mine ? 'btn primary' : 'btn' }, a.state === 'approved' ? 'Download approved file' : 'Download'),
       recorded ? el('a', { href: `${x.artifactUrl}?file=reviewed`, download: x.name, class: 'btn' }, 'Download reviewed file') : null,
-      checked === null ? el('span', { class: 'muted' }, 'This browser could not check the digest.') : el('span', { class: 'muted' }, 'Digest checked.'));
+      checked === null ? el('span', { class: 'muted' }, 'This browser could not check the digest.') : el('span', { class: 'muted' }, 'Digest checked.')].filter(Boolean));
     if (actionable) {
       state.token = res.headers.get('x-lolly-review-token');
       if (state.token) state.onReady?.();
@@ -5617,7 +5739,176 @@ function programmeEditor(p, tools, collections, groups = []) {
   void programmeTemplates(p, templatesHost);
   const peopleHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading people…'));
   void programmePeople(p, peopleHost);
-  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), form, templatesHost, peopleHost);
+  const licencesHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading licences…'));
+  void programmeLicences(p, licencesHost);
+  // A scheduled end with Change and Cancel, or the ended notice with Reopen (plans/82 M5).
+  const stateHost = el('div', { class: 'stack' });
+  void partnershipState(p, stateHost, { reload: () => route() });
+  // Partners' agents: their tokens and what they did (plans/82 M7).
+  const tokensHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading tokens…'));
+  void api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`).then((r) => r.companies ?? []).catch(() => [])
+    .then((companies) => programmeTokens(p, tokensHost, { companies }));
+  const usageHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading what agents did…'));
+  void programmeUsage(p, usageHost);
+  return el('div', {}, el('h1', {}, p.name), el('p', { class: 'sub' }, `Choose what people in ${p.name} get.`), stateHost, form, templatesHost, licencesHost, tokensHost, usageHost, peopleHost);
+}
+
+// Licences (plans/82 M4): what reaches the programme by the licence each file
+// records. The admin reads the report, marks the folders that are the
+// workspace's own and chooses, file by file, to share a held file anyway.
+// Every count, limit and line here comes from the report route, which reads
+// the constants the server enforces.
+async function programmeLicences(p, host) {
+  let r;
+  try { r = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/rights-report`); }
+  catch (e) { host.replaceChildren(el('div', { class: 'card stack' }, el('h2', {}, 'Licences'), el('p', { class: 'form-err' }, e.message))); return; }
+  const reload = () => programmeLicences(p, host);
+  const canMark = (session?.console?.actions ?? []).includes('catalog.edit');
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const files = (n) => `${n} ${n === 1 ? 'file' : 'files'}`;
+  const gate = r.mode?.mode === 'gate';
+  const t = r.totals;
+  const summary = gate
+    ? `${t.held} of ${files(t.assets)} held back from ${p.name}.`
+    : `${t.held} of ${files(t.assets)} would be held back from ${p.name} once the gate is on.`;
+  const companies = new Map();
+  for (const c of r.choices ?? []) if (c.company) companies.set(c.company.id, c.company.name);
+  let companyList = [];
+  try { companyList = (await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`)).companies ?? []; } catch { /* the programme itself is still an audience */ }
+
+  const markForm = (row) => {
+    const holder = el('input', { value: '', placeholder: 'Your organisation', 'aria-label': 'Holder' });
+    const terms = el('textarea', { rows: '3', maxlength: String(r.limits.markTerms), 'aria-label': 'Terms' });
+    const note = el('input', { maxlength: String(r.limits.markNote), placeholder: 'Shot by our photo team', 'aria-label': 'Note' });
+    const sentence = el('p', { class: 'sub flush' });
+    const err = errSpan();
+    let defaults = null;
+    const describe = () => { sentence.textContent = `Recorded as ${holder.value.trim() || defaults?.holder || 'your organisation'}'s own statement by you, today. Lolly does not check ownership.`; };
+    holder.addEventListener('input', describe);
+    api('/api/v1/catalog/rights/marks').then((m) => {
+      defaults = m.defaults;
+      holder.value = m.defaults.holder;
+      terms.value = m.defaults.terms;
+      describe();
+    }).catch((ex) => { err.textContent = ex.message; });
+    describe();
+    const save = armConfirmButton({ class: 'primary' }, 'Record the mark', 'Record it as your own statement?', async (disarm) => {
+      err.textContent = '';
+      try {
+        await api('/api/v1/catalog/rights/marks', { method: 'PUT', body: { scope: row.markScope, holder: holder.value.trim(), terms: terms.value.trim(), ...(note.value.trim() ? { note: note.value.trim() } : {}) } });
+        toast(`Marked ${row.label} as your own`); reload();
+      } catch (ex) { err.textContent = ex.message; disarm(); }
+    });
+    return el('details', { class: 'tbl' }, el('summary', {}, 'These are ours'),
+      el('div', { class: 'stack' }, field('Holder', holder), field('Terms', terms), field('Note (optional)', note), sentence, el('p', {}, save), err));
+  };
+
+  const markLine = (row) => {
+    const m = row.mark;
+    const err = errSpan();
+    const added = m.covered.atStatement !== undefined && m.covered.now > m.covered.atStatement ? ` ${m.covered.now - m.covered.atStatement} added since the mark.` : '';
+    const withdraw = canMark ? armConfirmButton({ class: 'danger' }, 'Withdraw mark', 'Withdraw the mark?', async (disarm) => {
+      try { await api(`/api/v1/catalog/rights/marks?${new URLSearchParams({ scope: m.scope })}`, { method: 'DELETE' }); toast('Mark withdrawn'); reload(); }
+      catch (ex) { err.textContent = ex.message; disarm(); }
+    }) : null;
+    return el('div', { class: 'stack' }, el('p', { class: 'sub flush' }, `${m.statement} Covers ${files(m.covered.now)} with no licence record of their own.${added}`), withdraw ? el('p', {}, withdraw) : null, err);
+  };
+
+  const heldList = (row) => {
+    if (!row.heldFiles.length) return null;
+    const ticks = new Map();
+    const audience = el('select', { 'aria-label': 'For' }, el('option', { value: '' }, `Everyone in ${p.name}`),
+      ...companyList.map((c) => el('option', { value: c.id }, c.name)));
+    const note = el('input', { maxlength: String(r.limits.choiceNote), placeholder: 'The photographer agreed by email, ref 2026-114', 'aria-label': 'Note' });
+    const err = errSpan();
+    const count = () => [...ticks.values()].filter((cb) => cb.checked).length;
+    const share = armConfirmButton({}, () => `Share anyway (${count()})`, 'Send these held files to this audience?', async (disarm) => {
+      const assetIds = [...ticks].filter(([, cb]) => cb.checked).map(([id]) => id);
+      if (!assetIds.length) { err.textContent = 'Tick the files to share.'; disarm(); return; }
+      try {
+        await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/rights/choices`, { method: 'PUT', body: { assetIds, ...(audience.value ? { company: audience.value } : {}), ...(note.value.trim() ? { note: note.value.trim() } : {}) } });
+        toast(`Shared ${files(assetIds.length)} anyway`); reload();
+      } catch (ex) { err.textContent = ex.message; disarm(); }
+    });
+    const rows = row.heldFiles.map((f) => {
+      const cb = el('input', { type: 'checkbox', 'aria-label': `Choose ${f.name}` });
+      cb.addEventListener('change', () => { share.textContent = `Share anyway (${count()})`; });
+      ticks.set(f.id, cb);
+      const why = [f.licence || 'Licence not recorded', f.conditions?.length ? `Conditions recorded, not yet interpreted: ${f.conditions.join(', ')}` : f.detail ?? f.reason].filter(Boolean).join(' · ');
+      return el('tr', {}, el('td', {}, cb), el('td', {}, f.name, f.needsChoosing ? el('div', { class: 'muted' }, 'Needs choosing again: the file or its licence changed') : null), el('td', {}, why));
+    });
+    return el('details', { class: 'tbl' }, el('summary', {}, `Held files (${row.heldFiles.length}${row.heldMore ? ` of ${row.heldFiles.length + row.heldMore}` : ''})`),
+      el('div', { class: 'stack' },
+        dataTable([{ label: '', sort: false, w: '1%' }, 'File', 'Licence'], rows, { filter: false, paginate: false, csv: false }),
+        row.heldMore ? el('p', { class: 'muted' }, `The report lists ${r.limits.heldFilesListedPerSource} held files per source; ${row.heldMore} more are counted above.`) : null,
+        el('div', { class: 'grant-fields' }, field('For', audience), field('Note (optional)', note)),
+        el('p', { class: 'sub flush' }, 'A choice names each file and is remembered against its licence record and version. A new version or a changed record needs a new choice. Partners see the file, never the choice.'),
+        el('p', {}, share), err));
+  };
+
+  const sourceRow = (row) => el('tr', {},
+    el('td', {}, el('strong', {}, row.label)),
+    numCell(row.assets),
+    // One block per cell, so each line stacks in the phone's card layout too.
+    el('td', {}, el('div', {}, ...row.travel.byLicence.map((l) => el('div', {}, `${l.count} ${l.licence}`)), row.exempt ? el('div', { class: 'muted' }, `${row.exempt} exempt`) : null,
+      row.sharedAnyway ? el('div', {}, `${row.sharedAnyway} shared anyway`) : null)),
+    el('td', {}, el('div', {}, ...row.held.byReason.map((h) => el('div', {}, `${h.label[0].toUpperCase()}${h.label.slice(1)}: ${h.count}`)), heldList(row))),
+    el('td', {}, row.mark ? markLine(row) : row.markScope && canMark && row.held.count ? markForm(row) : null));
+
+  const choiceRow = (c) => {
+    const err = errSpan();
+    const q = new URLSearchParams({ assetId: c.assetId, ...(c.company ? { company: c.company.id } : {}) });
+    const withdraw = armConfirmButton({ class: 'danger' }, 'Withdraw', 'Withdraw the choice?', async (disarm) => {
+      try { await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/rights/choices?${q}`, { method: 'DELETE' }); toast('Choice withdrawn'); reload(); }
+      catch (ex) { err.textContent = ex.message; disarm(); }
+    });
+    const standing = { live: 'In force', 'needs-choosing': 'Needs choosing again', 'not-needed': 'Not needed now: the file travels', gone: 'The file is no longer in the feed' }[c.standing] ?? c.standing;
+    return el('tr', {}, el('td', {}, c.name), el('td', {}, c.licence || 'Licence not recorded'), el('td', {}, c.company ? c.company.name : `Everyone in ${p.name}`),
+      el('td', {}, el('div', {}, `${c.chosenBy.name}, ${c.chosenOn ?? day(c.chosenAt)}`, c.note ? el('div', { class: 'muted' }, c.note) : null)), el('td', {}, standing), el('td', {}, withdraw, err));
+  };
+
+  const L = r.limits;
+  const limits = el('details', { class: 'tbl' }, el('summary', {}, 'Limits'),
+    el('ul', {},
+      el('li', {}, `The report lists up to ${L.heldFilesListedPerSource} held files per source and ${L.linksListed} links.`),
+      el('li', {}, `Share anyway takes up to ${L.choicesPerRequest} files at once, with a note of up to ${L.choiceNote} characters.`),
+      el('li', {}, `A mark's holder takes up to ${L.markHolder} characters, its terms ${L.markTerms} and its note ${L.markNote}.`),
+      el('li', {}, `A licence record takes up to ${L.licenceDeclaration} characters, its credit ${L.licenceAttribution}.`),
+      L.collectionZipBytes ? el('li', {}, `A collection holds up to ${L.collectionMembers} files and its ZIP up to ${Math.round(L.collectionZipBytes / 1024 ** 3)} GB.`) : null));
+
+  host.replaceChildren(el('div', { class: 'card stack' },
+    el('h2', {}, 'Licences'),
+    el('p', { class: 'sub flush' }, `What reaches people in ${p.name}, file by file, by the licence each file records. Your design system, published templates and brand skills always reach them.`),
+    el('p', {}, el('strong', {}, r.mode?.line ?? '')),
+    el('p', {}, summary),
+    el('p', { class: 'muted' }, `Shared anyway: ${t.sharedAnyway}. Needs choosing again: ${t.needsChoosing}. Marks in force: ${r.inForce?.marks ?? 0}. Choices in force: ${r.inForce?.choices ?? 0}.`),
+    r.sources.length
+      ? dataTable(['Source', { label: 'Files', num: true }, 'Travel', 'Held back', { label: '', sort: false }], r.sources.map(sourceRow), { filter: false, paginate: false })
+      : el('p', { class: 'muted' }, 'Nothing reaches this programme yet.'),
+    // Held pack files by id prefix: a mark is offered only where it can act
+    // (files that record no licence). What clears the other files follows the
+    // lines that name them, ahead of the mark, so it is not read as part of it.
+    r.prefixes?.length ? el('h3', {}, 'Pack files held back, by id prefix') : null,
+    ...(r.prefixes ?? []).map((pr) => el('div', { class: 'stack' },
+      ...pr.sentences.map((line) => el('p', { class: 'flush' }, line)),
+      pr.clearedBy ? el('p', { class: 'sub flush' }, pr.clearedBy) : null,
+      pr.markScope && canMark ? markForm({ markScope: pr.markScope, label: pr.prefix }) : null)),
+    r.choices?.length ? el('h3', {}, `Shared anyway (${r.choices.length})`) : null,
+    r.choices?.length ? dataTable(['File', 'Licence', 'For', 'Chosen by', 'Status', { label: '', sort: false }], r.choices.map(choiceRow), { filter: false, paginate: false }) : null,
+    // Published templates that start with files one of the programme's
+    // audiences will not receive (W-M4-8): the API and lw say so too.
+    r.templates?.length ? el('h3', {}, `Templates that start with files an audience will not receive (${r.templates.length})`) : null,
+    r.templates?.length ? el('p', { class: 'sub flush' }, gate
+      ? 'A render from one of these is refused for that audience until the file reaches them.'
+      : 'Once the gate is on, a render from one of these is refused for that audience until the file reaches them.') : null,
+    r.templates?.length ? dataTable(['Template', 'Audience', 'Files they will not receive'], r.templates.flatMap((t) => t.audiences.map((a) => el('tr', {},
+      el('td', {}, t.name), el('td', {}, a.name),
+      el('td', {}, el('div', {}, ...a.files.map((f) => el('div', {}, `${f.name}: ${f.why === 'licence' ? f.reason ?? 'held back by its licence' : 'not shared with them'}`))))))),
+    { filter: false, paginate: false }) : null,
+    r.links.count ? el('h3', {}, `Links made by your people that would lose files (${r.links.count})`) : null,
+    r.links.count ? el('p', { class: 'sub flush' }, gate ? 'These links leave the held files out now.' : 'Once the gate is on, these links leave the held files out unless their maker chose to include them.') : null,
+    r.links.count ? dataTable(['Link', 'Made by', { label: 'Loses', num: true }], r.links.links.map((l) => el('tr', {}, el('td', {}, l.target.name), el('td', {}, l.createdBy.name), el('td', { class: 'num' }, `${l.held} of ${l.files}`))), { filter: false, paginate: false }) : null,
+    limits));
 }
 
 // A partner company's page (plans/82 M3): its logos and details, set up once by
@@ -5807,14 +6098,23 @@ async function companyPage(p, companyId, main) {
     } }, 'Save')),
     settingsErr);
 
+  // Its scheduled end or ended notice, and its own End card (plans/82 M5).
+  const record = (people.companies ?? []).find((c) => c.id === companyId) ?? company;
+  const stateHost = el('div', { class: 'stack' });
+  void partnershipState(p, stateHost, { company: { ...record, name: company.name }, reload });
+  const endCard = record.endedAt ? null : endPartnershipCard(p, { company: { id: companyId, name: company.name }, reload });
+  // This company's agent tokens (plans/82 M7).
+  const tokensHost = el('div', { class: 'stack' }, el('p', { class: 'muted' }, 'Loading tokens…'));
+  void programmeTokens(p, tokensHost, { company: { id: companyId, name: company.name } });
   main.append(
     el('p', { class: 'muted flush' }, el('a', { href: `#/programmes?id=${encodeURIComponent(p.id)}` }, p.name), ' / Companies'),
     el('h1', {}, company.name),
+    stateHost,
     el('p', { class: 'sub' }, `Set up once: these logos and details are on every piece ${company.name}’s people and agents make from a template that takes them.`),
     el('p', { class: 'programme-actions' },
       el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(`programme-${p.id},company-${companyId}`)}` }, 'See what they get'),
       el('a', { class: 'btn', href: `#/programmes?id=${encodeURIComponent(p.id)}` }, 'Back')),
-    detailsCard, logosCard, companyKitCard(base.replace(/\/profile$/, '/kit'), company, kitView, view.settings, chains), contactsCard);
+    ...[detailsCard, logosCard, companyKitCard(base.replace(/\/profile$/, '/kit'), company, kitView, view.settings, chains), contactsCard, tokensHost, endCard].filter(Boolean));
 }
 
 async function readCompanyKit(base) {
@@ -6131,6 +6431,75 @@ async function programmeTemplates(p, host) {
     return out;
   };
 
+  // "This template is for" (plans/82 M7): the purposes an agent's request can start
+  // from it, in the engine's own words, checked by the server against its rules.
+  const vocab = data.intentVocabulary ?? { purposes: [], surfaces: [], roles: [] };
+  const sentence = (id) => { const words = id.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/-/g, ' ').toLowerCase(); return words.charAt(0).toUpperCase() + words.slice(1); };
+  const intentLine = (intents) => {
+    const purposes = intents.map((e) => sentence(e.purpose)).join(' · ');
+    const surfaces = [...new Set(intents.flatMap((e) => Object.keys(e.surfaces ?? {})))].map(sentence);
+    return surfaces.length ? `${purposes} · ${surfaces.join(', ')}` : purposes;
+  };
+  const intentsEditor = (t, done) => {
+    const first = t.intents?.[0] ?? {};
+    const chosenPurposes = new Set((t.intents ?? []).map((e) => e.purpose));
+    const chosenSurfaces = new Set(Object.keys(first.surfaces ?? {}));
+    const purposeList = el('div', { class: 'chk-list template-purposes' }, ...vocab.purposes.map((v) => {
+      const cb = el('input', { type: 'checkbox', ...(chosenPurposes.has(v.id) ? { checked: 'checked' } : {}) });
+      cb.addEventListener('change', () => { if (cb.checked) chosenPurposes.add(v.id); else chosenPurposes.delete(v.id); });
+      return el('label', { class: 'chk' }, cb, el('span', {}, sentence(v.id)), el('span', { class: 'muted' }, ` ${v.meaning}`));
+    }));
+    const surfaceList = el('div', { class: 'chk-list template-surfaces' }, ...vocab.surfaces.map((id) => {
+      const cb = el('input', { type: 'checkbox', ...(chosenSurfaces.has(id) ? { checked: 'checked' } : {}) });
+      cb.addEventListener('change', () => { if (cb.checked) chosenSurfaces.add(id); else chosenSurfaces.delete(id); });
+      return el('label', { class: 'chk' }, cb, el('span', {}, sentence(id)));
+    }));
+    // Which input takes each piece of content, among the ones partners or their company fill.
+    const open = t.editable ? new Set([...t.editable, ...Object.keys(t.bindings ?? {})]) : null;
+    const inputs = t.inputs.filter((i) => !open || open.has(i.id));
+    const roleOf = (inputId) => Object.entries(first.roles ?? {}).find(([, id]) => id === inputId)?.[0]
+      ?? ((first.needs ?? []).includes(inputId) || vocab.roles.some((r) => r.id === inputId && (first.needs ?? []).includes(r.id)) ? inputId : '');
+    const roleRows = inputs.map((i) => {
+      const fits = vocab.roles.filter((r) => !i.type || r.types.includes(i.type));
+      const current = roleOf(i.id);
+      const sel = el('select', { 'aria-label': `What ${i.label} gives` }, el('option', { value: '' }, 'Nothing an agent fills'),
+        ...fits.map((r) => el('option', { value: r.id, ...(r.id === current ? { selected: 'selected' } : {}) }, sentence(r.id))));
+      const needed = el('input', { type: 'checkbox', ...(current && (first.needs ?? []).includes(current) ? { checked: 'checked' } : {}) });
+      return { input: i, sel, needed, el: el('div', { class: 'template-role' }, field(i.label, sel), el('label', { class: 'chk' }, needed, el('span', {}, 'Needed'))) };
+    });
+    const saveErr = errSpan();
+    const value = () => {
+      const roles = {};
+      const needs = [];
+      for (const r of roleRows) {
+        if (!r.sel.value) continue;
+        if (r.sel.value !== r.input.id) roles[r.sel.value] = r.input.id;
+        if (r.needed.checked) needs.push(r.sel.value);
+      }
+      const surfaces = Object.fromEntries([...chosenSurfaces].map((id) => [id, {}]));
+      return [...chosenPurposes].map((purpose) => ({ purpose, ...(needs.length ? { needs } : {}), ...(Object.keys(roles).length ? { roles } : {}), ...(chosenSurfaces.size ? { surfaces } : {}) }));
+    };
+    return el('div', { class: 'stack template-intents-editor' },
+      el('strong', {}, 'This template is for'),
+      el('p', { class: 'sub flush' }, 'When an agent says what a piece has to do, a template that serves that purpose can be chosen, starting from its values. Partners’ agents see it only if it is published to them.'),
+      field('Purposes', purposeList), field('Shapes it draws', surfaceList),
+      roleRows.length ? el('div', { class: 'stack' }, el('span', { class: 'field-label' }, 'Content an agent gives'), ...roleRows.map((r) => r.el)) : null,
+      el('p', { class: 'programme-actions' },
+        el('button', { class: 'primary', onclick: async () => {
+          saveErr.textContent = '';
+          const intents = value();
+          try { await api(`${base}/${bare(t.id)}`, { method: 'PUT', body: { intents: intents.length ? intents : null } }); toast(`Saved what ${t.name} is for`); reload(); }
+          catch (ex) { saveErr.textContent = ex.message; }
+        } }, 'Save'),
+        t.intents ? el('button', { onclick: async () => {
+          saveErr.textContent = '';
+          try { await api(`${base}/${bare(t.id)}`, { method: 'PUT', body: { intents: null } }); toast(`${t.name} is for no purpose now`); reload(); }
+          catch (ex) { saveErr.textContent = ex.message; }
+        } }, 'Clear') : null,
+        el('button', { onclick: done }, 'Cancel')),
+      saveErr);
+  };
+
   const row = (t) => {
     const err = errSpan();
     const panel = el('div', { class: 'stack template-panel', hidden: 'hidden' });
@@ -6207,6 +6576,7 @@ async function programmeTemplates(p, host) {
       try { await api(`${base}/${bare(t.id)}/restore`, { method: 'POST' }); toast(`Published ${t.name} again`); reload(); }
       catch (ex) { err.textContent = ex.message; }
     } }, 'Publish again');
+    const purposes = t.kind === 'template' && vocab.purposes.length ? el('button', { onclick: () => showPanel(intentsEditor(t, () => showPanel())) }, 'Purposes') : null;
     const version = t.kind === 'rules-tool' ? (t.toolVersion ?? String(t.version)) : String(t.version);
     return el('div', { class: 'template-row' },
       el('div', { class: 'template-cells' },
@@ -6220,7 +6590,8 @@ async function programmeTemplates(p, host) {
         el('div', {}, el('div', { class: 'template-label' }, 'Partners can change'), canChange,
           t.bindings ? el('div', { class: 'muted template-takes' }, `From the company: ${Object.entries(t.bindings).map(([id, f]) => `${t.inputs.find((i) => i.id === id)?.label ?? id} (${fieldLabel(f)})`).join(', ')}`) : null),
         el('div', {}, el('div', { class: 'template-label' }, 'Version'), version, el('div', { class: 'muted' }, `Published ${day(t.publishedAt)}`)),
-        el('div', { class: 'programme-actions template-actions' }, ...(t.retired ? [restore] : [change, newVersion, retire]), fileInput)),
+        el('div', { class: 'programme-actions template-actions' }, ...(t.retired ? [restore] : [change, ...(purposes ? [purposes] : []), newVersion, retire]), fileInput)),
+      t.kind === 'template' && t.intents?.length ? el('p', { class: 'flush template-intents' }, el('span', { class: 'template-label' }, 'This template is for: '), intentLine(t.intents)) : null,
       t.toolOpenTo?.filter((n) => n !== p.name).length && !t.retired ? openNote(t.toolName, t.toolOpenTo.filter((n) => n !== p.name)) : null,
       // The switch, once per tool, on the first live row that starts it.
       t.kind === 'template' && !t.retired && (p.tools.includes(t.toolId) || onlyTools.has(t.toolId)) && !switchShown.has(t.toolId)
@@ -6509,52 +6880,9 @@ async function programmePeople(p, host, lastResult = null) {
     el('p', { class: 'sub flush' }, 'Paste a list or a CSV: one address per line, optionally followed by a name, a company and an end date (YYYY-MM-DD), separated by commas. You see what will happen before anything does, and adding the same list again changes nothing.'),
     list, el('p', {}, el('button', { onclick: preview }, 'Preview')), addErr, out);
 
-  // Ending the partnership.
-  const projectsSel = el('select', { 'aria-label': 'Their projects' },
-    ...(p.team ? [el('option', { value: 'team-readonly' }, `Move their projects to ${p.team}, read-only (the team that owns this programme)`)] : []),
-    el('option', { value: 'me-readonly' }, 'Move their projects to me, read-only'),
-    el('option', { value: 'me' }, 'Move their projects to me, editable'),
-    el('option', { value: 'keep' }, 'Leave their projects where they are'));
-  const noTeam = p.team ? null : el('p', { class: 'sub flush' }, 'This programme has no owning team, so their projects move to you. Set an owning team above to send them to that team instead.');
-  const whoSel = el('select', { 'aria-label': 'Whose access ends' },
-    el('option', { value: '' }, `Everyone in ${p.name}`),
-    ...data.companies.map((c) => el('option', { value: `company:${c.id}` }, `Everyone at ${c.name}`)),
-    ...domains.map((d) => el('option', { value: `domain:${d.domain}` }, `Everyone with an address at ${d.domain}`)));
-  const who = () => {
-    const [kind, id] = whoSel.value.split(/:(.*)/);
-    return kind === 'company' ? { company: id } : kind === 'domain' ? { domain: id } : { programme: p.id };
-  };
-  const endOut = el('div', { class: 'stack' });
-  const endErr = errSpan();
-  const exitPreview = async () => {
-    endErr.textContent = ''; endOut.replaceChildren();
-    try {
-      const dry = await api('/api/v1/programmes/exit', { method: 'POST', body: { ...who(), projects: projectsSel.value } });
-      const projectCount = dry.accounts.reduce((n, a) => n + a.projects.length, 0);
-      const links = dry.accounts.reduce((n, a) => n + a.links, 0);
-      const goLabel = dry.accounts.length ? `End access for ${dry.accounts.length} ${dry.accounts.length === 1 ? 'person' : 'people'}` : 'End the partnership';
-      const go = armConfirmButton({ class: 'danger' }, goLabel, 'Really end it?', async (disarm) => {
-        try {
-          const done = await api('/api/v1/programmes/exit', { method: 'POST', body: { ...who(), projects: projectsSel.value, apply: true } });
-          toast(`Ended access for ${done.accounts.length}`); reload();
-        } catch (ex) { endErr.textContent = ex.message; disarm(); }
-      });
-      endOut.replaceChildren(...[
-        el('p', {}, `${dry.accounts.length} ${dry.accounts.length === 1 ? 'account' : 'accounts'}, ${projectCount} project${projectCount === 1 ? '' : 's'}, ${links} link${links === 1 ? '' : 's'}, ${dry.pendingInvitations.length} open invitation${dry.pendingInvitations.length === 1 ? '' : 's'}.`),
-        dry.accounts.length ? dataTable(['Person', 'Projects', 'Links'], dry.accounts.map((a) => el('tr', {}, el('td', {}, a.name, el('div', { class: 'muted' }, a.email)),
-          el('td', {}, a.projects.map((x) => x.name).join(', ') || '—'), el('td', {}, String(a.links))))) : null,
-        dry.skipped.length ? el('p', { class: 'muted' }, `Left alone: ${dry.skipped.map((s) => `${s.email} (${s.reason})`).join(', ')}.`) : null,
-        dry.domainRules?.length ? el('p', {}, 'First, nobody new joins through ',
-          dry.domainRules.map((r) => `${r.domain} (${r.programme.name}${r.company ? `, ${r.company.name}` : ''})`).join(', '), ' any more.') : null,
-        el('p', { class: 'sub flush' }, 'Their accounts are disabled and signed out, and their links, agent tokens and open invitations stop working. Everything is recorded in Audit.'),
-        dry.accounts.length || dry.pendingInvitations.length || dry.domainRules?.length ? el('p', {}, go) : null].filter(Boolean));
-    } catch (ex) { endErr.textContent = ex.message; }
-  };
-  const endCard = el('div', { class: 'card stack' },
-    el('h2', {}, 'End this partnership'),
-    el('p', { class: 'sub flush' }, 'See who has access and what they own, then end it in one step.'),
-    field('Whose access ends', whoSel), field('Their projects', projectsSel), noTeam,
-    el('p', {}, el('button', { onclick: exitPreview }, 'See what ending it does')), endErr, endOut);
+  // Ending the partnership (plans/82 M5): who, when, a notice before the end and
+  // their projects; the dry run shows everything it ends, one table per kind.
+  const endCard = p.endedAt ? null : endPartnershipCard(p, { companies: data.companies, domains, reload });
 
   // Provider folders (plans/82 M1 part 2c): one folder of a connected source,
   // and everything in it, for the whole programme or one company in it.
@@ -6582,11 +6910,33 @@ async function programmePeople(p, host, lastResult = null) {
   // button without looking must never give partners the whole source.
   // Option values: '' is no choice, 'whole' the whole source, 'path:<p>' a folder.
   const folderNote = el('p', { class: 'sub flush' });
+  // Licences (plans/82 M4): how many files here record no licence, and a tick
+  // that records the folder as the workspace's own in the same save.
+  const canMark = (session?.console?.actions ?? []).includes('catalog.edit');
+  const licenceNote = el('p', { class: 'sub flush' });
+  const oursTick = el('input', { type: 'checkbox', 'aria-label': 'These files are ours' });
+  const oursLabel = el('label', { class: 'chk', hidden: 'hidden' }, oursTick, el('span', {}, 'These files are ours: record a mark on the folder in the same save. Lolly does not check ownership.'));
+  let coverageAsk = 0;
+  const describeLicences = async (source, path) => {
+    const ask = ++coverageAsk;
+    licenceNote.textContent = ''; oursLabel.hidden = true; oursTick.checked = false;
+    if (!source || path === null) return;
+    const scope = path ? `folder:${source.id}/${path}` : `provider:${source.id}`;
+    try {
+      const c = await api(`/api/v1/catalog/rights/coverage?${new URLSearchParams({ scope })}`);
+      if (ask !== coverageAsk) return;
+      if (c.marked) { licenceNote.textContent = 'This folder is already marked as your own.'; return; }
+      if (!c.unrecorded) return;
+      licenceNote.textContent = `${c.unrecorded} of ${c.files} files here have no licence record and will not reach partners once the licence gate is on, until they are marked or their licence is recorded.`;
+      oursLabel.hidden = !canMark;
+    } catch { /* the count is a help, not a step */ }
+  };
   const chosenPath = () => (folderSel.value === 'whole' ? '' : folderSel.value.startsWith('path:') ? folderSel.value.slice(5) : null);
   const describeChoice = () => {
     const source = sources.find((s) => s.id === sourceSel.value);
     const path = chosenPath();
     addFolder.disabled = path === null;
+    void describeLicences(source, path);
     if (path === null || !source) { folderNote.textContent = ''; return; }
     const inside = source.folders.filter((f) => f.path && f.path !== path && (path === '' || f.path.startsWith(`${path}/`)));
     const names = inside.slice(0, 8).map((f) => `${f.path} (${f.assets})`);
@@ -6621,7 +6971,10 @@ async function programmePeople(p, host, lastResult = null) {
         provider: sourceSel.value, path, ...(path === '' ? { whole: true } : {}),
         ...(folderCompany.value ? { company: folderCompany.value } : {}), ...(folderEnds.value ? { endsAt: folderEnds.value } : {}),
       } });
-      toast(`Added ${folderName(path)}`); reload();
+      if (oursTick.checked && !oursLabel.hidden) {
+        await api('/api/v1/catalog/rights/marks', { method: 'PUT', body: { scope: path ? `folder:${sourceSel.value}/${path}` : `provider:${sourceSel.value}` } });
+      }
+      toast(`Added ${folderName(path)}${oursTick.checked && !oursLabel.hidden ? ', marked as your own' : ''}`); reload();
     } catch (ex) { folderErr.textContent = ex.message; addFolder.disabled = false; }
   } }, 'Give this folder');
   fillFolders();
@@ -6636,10 +6989,437 @@ async function programmePeople(p, host, lastResult = null) {
       ? el('div', { class: 'grant-fields' }, field('Source', sourceSel), field('Folder', folderSel), field('Who gets it', folderCompany), field('End date (optional)', folderEnds))
       : el('p', { class: 'muted' }, 'No connected sources yet. Connect one under Catalog, then come back to give a folder.'),
     sources.length ? folderNote : null,
+    sources.length ? licenceNote : null,
+    sources.length ? oursLabel : null,
     sources.length ? el('p', {}, addFolder) : null,
     folderErr);
 
-  host.replaceChildren(companiesCard, foldersCard, domainsCard, peopleCard, endCard);
+  host.replaceChildren(...[companiesCard, foldersCard, domainsCard, peopleCard, endCard].filter(Boolean));
+}
+
+// ── agent tokens and their use (plans/82 M7) ───────────────────────────────
+// Every limit shows its value, where it comes from and the use against it, read
+// from the routes that enforce them (Andy, 2026-11-07).
+const LIMIT_KEYS = [['callsPerMinute', 'calls a minute'], ['rendersPerDay', 'renders a day'], ['rendersPerMonth', 'renders a month']];
+const LIMIT_SOURCE = { token: 'set on this token', programme: 'the programme’s', instance: 'the instance default', none: 'no limit for an internal token' };
+const countText = (n) => fmt(n ?? 0);
+const limitText = (value, unit) => (value === null || value === undefined ? `No cap on ${unit}` : `${countText(value)} ${unit}`);
+
+/** Three limit fields: blank takes the default shown, "No cap" removes the cap. */
+function limitFields(overrides = {}, inherited = {}) {
+  const rows = LIMIT_KEYS.map(([key, unit]) => {
+    const stated = Object.hasOwn(overrides, key);
+    const input = el('input', { type: 'number', min: '1', step: '1', inputmode: 'numeric', 'aria-label': `Limit: ${unit}`,
+      placeholder: inherited[key] === null || inherited[key] === undefined ? 'No cap' : `${inherited[key]} (default)`,
+      ...(stated && overrides[key] !== null ? { value: String(overrides[key]) } : {}) });
+    const none = el('input', { type: 'checkbox', ...(stated && overrides[key] === null ? { checked: 'checked' } : {}) });
+    const sync = () => { input.disabled = none.checked; };
+    none.addEventListener('change', sync); sync();
+    return { key, el: el('div', { class: 'limit-field' }, field(sentenceCase(unit), input), el('label', { class: 'chk' }, none, el('span', {}, 'No cap'))), value: () => {
+      if (none.checked) return null;
+      const raw = input.value.trim();
+      if (!raw) return undefined;
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) throw new Error(`${sentenceCase(unit)}: a whole number from 1, or tick No cap.`);
+      return n;
+    } };
+  });
+  return {
+    el: el('div', { class: 'grant-fields limit-fields' }, ...rows.map((r) => r.el)),
+    value: () => Object.fromEntries(rows.flatMap((r) => { const v = r.value(); return v === undefined ? [] : [[r.key, v]]; })),
+  };
+}
+const sentenceCase = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** The Tokens card: a programme's agent tokens, or one company's. */
+async function programmeTokens(p, host, { company = null, companies = [] } = {}) {
+  let data;
+  const query = company ? `?company=${encodeURIComponent(company.id)}` : '';
+  try { data = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/tokens${query}`); }
+  catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
+  const reload = () => programmeTokens(p, host, { company, companies });
+  const base = `/api/v1/programmes/${encodeURIComponent(p.id)}/tokens`;
+  const caps = data.caps ?? { scopes: [], defaultScopes: [], ttlDays: { default: 90, min: 1, max: 365 } };
+  const companyName = (id) => (company && company.id === id ? company.name : companies.find((c) => c.id === id)?.name ?? id);
+  const scopeLabel = (id) => caps.scopes.find((s) => s.id === id)?.label ?? id;
+  const day = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '');
+  const panel = el('div', { class: 'stack token-panel' });
+  const err = errSpan();
+  const defaults = p.tokenLimitDefaults;
+
+  const row = (t) => {
+    const u = t.usage ?? {};
+    const lim = t.limits ?? {};
+    const src = t.limitSources ?? {};
+    const status = t.revokedAt ? el('span', { class: 'status revoked' }, `Revoked ${day(t.revokedAt)}`)
+      : t.expired ? el('span', { class: 'status revoked' }, 'Expired')
+        : t.expiring ? el('span', { class: 'status expired' }, 'Expiring soon') : el('span', { class: 'status live' }, 'Live');
+    const turned = (u.week?.rateLimited ?? 0) + (u.week?.budgetRefused ?? 0);
+    const changeLimits = !t.revokedAt && !t.expired ? el('button', { onclick: () => {
+      const inherited = {};
+      for (const [key] of LIMIT_KEYS) inherited[key] = src[key] === 'token' ? defaults?.limits?.[key] : lim[key];
+      const fields = limitFields(t.limitOverrides ?? {}, inherited);
+      const pErr = errSpan();
+      panel.replaceChildren(el('div', { class: 'card stack token-limits-editor' },
+        el('h3', { class: 'flush' }, `Limits for ${t.label}`),
+        el('p', { class: 'sub flush' }, 'Leave a field blank to take the programme’s figure. A limit set here applies to this token only.'),
+        fields.el,
+        el('p', { class: 'programme-actions' },
+          el('button', { class: 'primary', onclick: async () => {
+            pErr.textContent = '';
+            try { await api(`${base}/${encodeURIComponent(t.id)}`, { method: 'PUT', body: { limits: fields.value() } }); toast(`Saved the limits for ${t.label}`); reload(); }
+            catch (ex) { pErr.textContent = ex.message; }
+          } }, 'Save'),
+          el('button', { onclick: () => panel.replaceChildren() }, 'Cancel')),
+        pErr));
+    } }, 'Change limits') : null;
+    const revoke = !t.revokedAt ? armConfirmButton({ class: 'danger' }, 'Revoke', 'Really revoke?', async (disarm) => {
+      err.textContent = '';
+      try { await api(`${base}/${encodeURIComponent(t.id)}`, { method: 'DELETE' }); toast(`Revoked ${t.label}`); reload(); }
+      catch (ex) { err.textContent = ex.message; disarm(); }
+    }) : null;
+    // One block per cell, so a narrow screen stacks its lines instead of setting them side by side.
+    const cell = (...lines) => el('td', {}, el('div', { class: 'cell-lines' }, ...lines.filter(Boolean)));
+    return el('tr', {},
+      cell(el('strong', {}, t.label), el('div', { class: 'muted' }, [t.company ? companyName(t.company) : `Anyone in ${p.name}`, ...(t.scopes ?? []).map(scopeLabel)].join(' · ')), el('div', {}, status)),
+      cell(...LIMIT_KEYS.map(([key, unit]) => el('div', {}, limitText(lim[key], unit), el('span', { class: 'muted' }, ` · ${LIMIT_SOURCE[src[key]] ?? src[key] ?? ''}`)))),
+      cell(
+        el('div', {}, `${countText(u.today?.calls)} calls, busiest minute ${countText(u.today?.busiestMinute)}`),
+        el('div', {}, lim.rendersPerDay ? `${countText(u.today?.renders)} of ${countText(lim.rendersPerDay)} renders` : `${countText(u.today?.renders)} renders`),
+        el('div', { class: 'muted' }, `${countText(u.month?.renders)} renders this month`)),
+      cell(el('div', {}, turned ? `${countText(turned)} this week` : 'None this week'),
+        turned ? el('div', { class: 'muted' }, `${countText(u.week?.rateLimited)} over the call limit, ${countText(u.week?.budgetRefused)} over a render budget`) : null,
+        u.lastRefusal ? el('div', { class: 'muted' }, `Last ${day(u.lastRefusal.at)}, ${u.lastRefusal.code}`) : null),
+      cell(el('div', {}, t.expiresAt ? day(t.expiresAt) : 'Never'), el('div', { class: 'muted' }, t.lastUsedAt ? `Used ${day(t.lastUsedAt)}` : 'Not used yet')),
+      el('td', {}, el('div', { class: 'programme-actions' }, ...[changeLimits, revoke].filter(Boolean))));
+  };
+
+  // Mint: a label, the company, scopes within the caps, the tools, a lifetime and limits.
+  const label = el('input', { placeholder: 'Rita’s agent', maxlength: '80', 'aria-label': 'Label' });
+  const companySel = company ? null : el('select', { 'aria-label': 'Company' }, el('option', { value: '' }, `Anyone in ${p.name}`),
+    ...companies.filter((c) => !c.endedAt).map((c) => el('option', { value: c.id }, c.name)));
+  const scopeBoxes = caps.scopes.map((s) => ({ id: s.id, box: el('input', { type: 'checkbox', ...(caps.defaultScopes.includes(s.id) ? { checked: 'checked' } : {}) }), s }));
+  const ttl = el('input', { type: 'number', min: String(caps.ttlDays.min), max: String(caps.ttlDays.max), step: '1', value: String(caps.ttlDays.default), 'aria-label': 'Days until it expires' });
+  const mintLimits = limitFields({}, defaults?.limits ?? {});
+  const mintErr = errSpan();
+  const mint = el('button', { class: 'primary', onclick: async () => {
+    mintErr.textContent = '';
+    if (!label.value.trim()) { mintErr.textContent = 'Name the agent or automation.'; label.focus(); return; }
+    let limits;
+    try { limits = mintLimits.value(); } catch (ex) { mintErr.textContent = ex.message; return; }
+    try {
+      const made = await api(base, { method: 'POST', body: {
+        label: label.value.trim(), ...(company ? { company: company.id } : companySel.value ? { company: companySel.value } : {}),
+        scopes: scopeBoxes.filter((b) => b.box.checked).map((b) => b.id), ttlDays: Number(ttl.value), ...(Object.keys(limits).length ? { limits } : {}),
+      } });
+      // The one time the secret exists outside the agent: shown once, with Copy.
+      const secret = el('code', { class: 'token-secret' }, made.token);
+      panel.replaceChildren(el('div', { class: 'card stack token-secret-sheet', role: 'dialog', 'aria-label': 'The new token’s secret' },
+        el('h3', { class: 'flush' }, `${made.label}: copy the secret now`),
+        el('p', { class: 'flush' }, 'This is the only time it is shown. Give it to the partner to put in their agent’s settings. Lolly Work keeps only a hash of it.'),
+        el('p', { class: 'token-secret-line' }, secret, ' ', copyButton(() => made.token, 'Copy')),
+        el('p', { class: 'sub flush' }, `It expires on ${day(made.expiresAt)}. Its limits: ${LIMIT_KEYS.map(([key, unit]) => limitText(made.limits?.[key], unit)).join(', ')}.`),
+        el('p', {}, el('button', { class: 'primary', onclick: () => { panel.replaceChildren(); reload(); } }, 'I have copied it'))));
+      label.value = '';
+    } catch (ex) { mintErr.textContent = ex.message; }
+  } }, 'Mint token');
+  const mintForm = el('div', { class: 'stack token-mint' },
+    el('h3', {}, 'Mint a token for an agent'),
+    el('div', { class: 'grant-fields' }, field('Label', label), companySel ? field('Company', companySel) : null,
+      field(`Days until it expires (${caps.ttlDays.min} to ${caps.ttlDays.max})`, ttl)),
+    el('div', { class: 'stack' }, el('span', { class: 'field-label' }, 'What it may do'),
+      el('div', { class: 'chk-list' }, ...scopeBoxes.map((b) => el('label', { class: 'chk' }, b.box, el('span', {}, b.s.label), el('span', { class: 'muted' }, ` ${b.s.description}`))))),
+    el('div', { class: 'stack' }, el('span', { class: 'field-label' }, 'Limits'), mintLimits.el),
+    el('p', {}, mint), mintErr);
+
+  // The programme's own figures, which every token here starts from.
+  const defaultsLine = defaults ? el('p', { class: 'flush token-defaults' }, 'Every token here starts with ',
+    LIMIT_KEYS.map(([key, unit]) => `${limitText(defaults.limits[key], unit).toLowerCase()} (${defaults.sources[key] === 'programme' ? 'set for this programme' : 'the instance default'})`).join(', '), '.') : null;
+  const changeDefaults = defaults && !company ? el('button', { onclick: () => {
+    const fields = limitFields(Object.fromEntries(LIMIT_KEYS.filter(([key]) => defaults.sources[key] === 'programme').map(([key]) => [key, defaults.limits[key]])), {});
+    const dErr = errSpan();
+    panel.replaceChildren(el('div', { class: 'card stack' },
+      el('h3', { class: 'flush' }, `Limits for every token in ${p.name}`),
+      el('p', { class: 'sub flush' }, 'Leave a field blank to take the instance default. A token with its own figure keeps it.'),
+      fields.el,
+      el('p', { class: 'programme-actions' },
+        el('button', { class: 'primary', onclick: async () => {
+          dErr.textContent = '';
+          let tokenLimits;
+          try { tokenLimits = fields.value(); } catch (ex) { dErr.textContent = ex.message; return; }
+          try {
+            await api(`/api/v1/programmes/${encodeURIComponent(p.id)}`, { method: 'PUT', body: { name: p.name, ...(p.description ? { description: p.description } : {}), tokenLimits: Object.keys(tokenLimits).length ? tokenLimits : null } });
+            toast(`Saved the limits for ${p.name}`); route();
+          } catch (ex) { dErr.textContent = ex.message; }
+        } }, 'Save'),
+        el('button', { onclick: () => panel.replaceChildren() }, 'Cancel')),
+      dErr));
+  } }, 'Change the programme’s limits') : null;
+
+  const tokens = data.tokens ?? [];
+  host.replaceChildren(el('div', { class: 'card stack tokens-card' },
+    el('h2', {}, company ? `Agent tokens for ${company.name}` : 'Agent tokens'),
+    el('p', { class: 'sub flush' }, `A token lets a partner’s agent use what ${company ? company.name : p.name} gets, over the API and MCP, within the limits below. Partners see their own limits; where a figure comes from is shown only here.`),
+    ...[defaultsLine, changeDefaults ? el('p', { class: 'programme-actions' }, changeDefaults) : null].filter(Boolean),
+    tokens.length
+      ? dataTable(['Token', 'Limits', 'Today', 'Turned away', 'Expires', ''], tokens.map(row), { filter: tokens.length > 8 })
+      : el('p', { class: 'muted' }, 'No tokens yet.'),
+    err, panel, mintForm));
+}
+
+/** The Usage card: what this programme's tokens did, per token, company and programme, with a CSV of the same cells. */
+async function programmeUsage(p, host, by = 'week') {
+  const to = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.now() - (by === 'week' ? 27 : 6) * 86_400_000).toISOString().slice(0, 10);
+  const url = `/api/v1/programmes/${encodeURIComponent(p.id)}/usage?from=${from}&to=${to}&by=${by}`;
+  let data;
+  try { data = await api(url); } catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
+  const turnedAway = (c) => Object.values(c.refusals ?? {}).reduce((n, v) => n + v, 0);
+  const cells = (c) => [numCell(c.calls), numCell(c.renders), numCell(c.batches?.count ?? 0, `${countText(c.batches?.count)} (${countText(c.batches?.rows)} rows)`),
+    numCell((c.deliveries ?? []).reduce((n, d) => n + d.count, 0)),
+    el('td', {}, `${countText(c.approvals?.open)} open, ${countText(c.approvals?.approved)} approved, ${countText(c.approvals?.rejected)} rejected`),
+    numCell(turnedAway(c))];
+  const rows = [
+    ...(data.tokens ?? []).map((t) => el('tr', {}, el('td', {}, t.label, el('div', { class: 'muted' }, t.company ? (data.companies ?? []).find((c) => c.id === t.company)?.name ?? t.company : `Anyone in ${p.name}`)), ...cells(t.totals))),
+    ...(data.companies ?? []).map((c) => el('tr', { class: 'usage-total' }, el('td', {}, el('strong', {}, `All of ${c.name}`)), ...cells(c.totals))),
+    el('tr', { class: 'usage-total' }, el('td', {}, el('strong', {}, `All of ${p.name}`)), ...cells(data.totals ?? {})),
+  ];
+  const byTool = new Map();
+  for (const t of data.tokens ?? []) for (const r of t.totals.rendersByTool ?? []) {
+    const key = `${r.toolId} ${r.format}`;
+    const cur = byTool.get(key) ?? { toolId: r.toolId, format: r.format, succeeded: 0, failed: 0, cancelled: 0 };
+    cur.succeeded += r.succeeded ?? 0; cur.failed += r.failed ?? 0; cur.cancelled += r.cancelled ?? 0;
+    byTool.set(key, cur);
+  }
+  const refusals = Object.entries(data.totals?.refusals ?? {}).filter(([, n]) => n);
+  const toggle = el('button', { onclick: () => programmeUsage(p, host, by === 'week' ? 'day' : 'week') }, by === 'week' ? 'Last 7 days, by day' : 'Last 4 weeks, by week');
+  host.replaceChildren(el('div', { class: 'card stack usage-card' },
+    el('h2', {}, 'What agents did'),
+    el('p', { class: 'sub flush' }, `${by === 'week' ? 'The last 4 weeks' : 'The last 7 days'}, from ${from} to ${to} (UTC). Counts only: no input values, prompts, titles or file names, and nothing an agent says about itself.`),
+    el('p', { class: 'programme-actions' }, toggle, el('a', { class: 'btn', href: `${url}&format=csv`, download: '' }, 'Download CSV')),
+    (data.tokens ?? []).length ? dataTable(['Token', { label: 'Calls', num: true }, { label: 'Renders', num: true }, 'Batches', { label: 'Deliveries', num: true }, 'Approvals', { label: 'Turned away', num: true }], rows, { filter: false })
+      : el('p', { class: 'muted' }, 'No agent tokens in this programme yet.'),
+    byTool.size ? el('div', { class: 'stack' }, el('h3', { class: 'flush' }, 'Renders by tool'),
+      dataTable(['Tool', 'Format', { label: 'Succeeded', num: true }, { label: 'Failed', num: true }, { label: 'Cancelled', num: true }],
+        [...byTool.values()].map((r) => el('tr', {}, el('td', {}, r.toolId), el('td', {}, r.format.toUpperCase()), numCell(r.succeeded), numCell(r.failed), numCell(r.cancelled))), { filter: false })) : null,
+    refusals.length ? el('p', { class: 'flush' }, 'Turned away, by reason: ', refusals.map(([code, n]) => `${code} ${countText(n)}`).join(', '), '.') : null));
+}
+
+// ── ending a partnership (plans/82 M5) ──────────────────────────────────────
+// A whole day in UTC: an end date ends at 23:59:59 UTC, so it reads back as the
+// same day wherever the admin is.
+const utcDay = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' }) : '');
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const PROJECT_CHOICES = (p) => [
+  ...(p.team ? [['team-readonly', `Move their projects to ${p.team}, read-only (the team that owns this programme)`]] : []),
+  ['me-readonly', 'Move their projects to me, read-only'],
+  ['me', 'Move their projects to me, editable'],
+  ['keep', 'Leave their projects where they are'],
+];
+const projectsWord = { 'team-readonly': 'moved to the owning team, read-only', 'me-readonly': 'moved to whoever ended it, read-only', me: 'moved to whoever ended it, editable', keep: 'left where they are' };
+
+/** What ending it does, one table per kind. Kinds with nothing in them are named in one line. */
+function exitDryRunTables(dry, p, companies = []) {
+  const companyName = (id) => companies.find((c) => c.id === id)?.name ?? id;
+  const out = [];
+  const empty = [];
+  const table = (title, count, cols, rows) => {
+    if (!count) { empty.push(title.toLowerCase()); return; }
+    out.push(el('div', { class: 'stack exit-kind' }, el('h4', { class: 'flush' }, `${title} (${count})`), dataTable(cols, rows, { filter: false })));
+  };
+  const person = (a) => el('td', {}, a.name || a.email, a.name && a.name !== a.email ? el('div', { class: 'muted' }, a.email) : null);
+  const people = [
+    ...dry.accounts.map((a) => el('tr', {}, person(a), el('td', {}, 'Access ends'))),
+    ...(dry.stays ?? []).map((a) => el('tr', {}, person(a), el('td', {}, 'Stays', el('div', { class: 'muted' }, `Still in ${a.stays.map((x) => x.name ?? x).join(', ')}`)))),
+    ...(dry.cannotEnd ?? []).map((a) => el('tr', {}, person(a), el('td', {}, el('span', { class: 'status revoked' }, 'Cannot be ended'), a.reason ? el('div', { class: 'muted' }, a.reason) : null))),
+    ...(dry.skipped ?? []).map((sk) => el('tr', {}, el('td', {}, sk.email), el('td', {}, 'Left alone', el('div', { class: 'muted' }, sk.reason)))),
+  ];
+  table('People', people.length, ['Person', 'What happens'], people);
+  const projects = dry.accounts.flatMap((a) => a.projects.map((x) => el('tr', {}, el('td', {}, x.name), el('td', {}, a.name || a.email))));
+  table('Projects', projects.length, ['Project', 'Owner now'], projects);
+  if (projects.length) out.push(el('p', { class: 'sub flush' }, `Their projects are ${projectsWord[dry.projects] ?? dry.projects}.`));
+  const links = dry.accounts.filter((a) => a.links).map((a) => el('tr', {}, person(a), numCell(a.links)));
+  table('Share links', links.length, ['Person', { label: 'Links', num: true }], links);
+  table('Agent tokens', (dry.tokens ?? []).length, ['Token'], (dry.tokens ?? []).map((t) => el('tr', {}, el('td', {}, t.label))));
+  table('Templates to retire', (dry.templates ?? []).length, ['Template', 'What happens'], (dry.templates ?? []).map((t) => el('tr', {}, el('td', {}, t.name),
+    el('td', {}, t.action === 'narrow' ? `Stays published to ${(t.keeps ?? []).join(', ')} only` : 'Retired: new starts stop, saved copies keep working'))));
+  table('Folders', (dry.folders ?? []).length, ['Folder', 'For'], (dry.folders ?? []).map((f) => el('tr', {}, el('td', {}, f.path || 'All of it', el('div', { class: 'muted' }, f.provider)),
+    el('td', {}, f.company ? `Everyone at ${companyName(f.company)}` : `Everyone in ${p.name}`))));
+  table('Domain rules', (dry.domainRules ?? []).length, ['Domain', 'Joins'], (dry.domainRules ?? []).map((r) => el('tr', {}, el('td', {}, r.domain),
+    el('td', {}, `${r.programme?.name ?? p.name}${r.company ? `, ${r.company.name}` : ''}`))));
+  table('Licence choices to withdraw', (dry.rightsChoices ?? []).length, ['Asset', 'Shared with'], (dry.rightsChoices ?? []).map((c) => el('tr', {}, el('td', {}, c.assetId, c.licence ? el('div', { class: 'muted' }, c.licence) : null), el('td', {}, c.group))));
+  table('Open invitations', (dry.pendingInvitations ?? []).length, ['Email'], (dry.pendingInvitations ?? []).map((i) => el('tr', {}, el('td', {}, i.email))));
+  if (empty.length) out.push(el('p', { class: 'muted flush' }, `Nothing to end among ${empty.join(', ')}.`));
+  return out;
+}
+
+/** The End card: whose access ends, when, a notice before the end, their projects. */
+function endPartnershipCard(p, { companies = [], domains = [], company = null, reload }) {
+  const projectsSel = el('select', { 'aria-label': 'Their projects' }, ...PROJECT_CHOICES(p).map(([value, label]) => el('option', { value }, label)));
+  const noTeam = p.team ? null : el('p', { class: 'sub flush' }, 'This programme has no owning team, so their projects move to you. Set an owning team on the programme to send them to that team instead.');
+  const whoSel = company
+    ? el('select', { 'aria-label': 'Whose access ends', disabled: 'disabled' }, el('option', { value: `company:${company.id}` }, `Everyone at ${company.name}`))
+    : el('select', { 'aria-label': 'Whose access ends' },
+      el('option', { value: '' }, `Everyone in ${p.name}`),
+      ...companies.filter((c) => !c.endedAt).map((c) => el('option', { value: `company:${c.id}` }, `Everyone at ${c.name}`)),
+      ...domains.map((d) => el('option', { value: `domain:${d.domain}` }, `Everyone with an address at ${d.domain}`)));
+  const who = () => {
+    const [kind, id] = whoSel.value.split(/:(.*)/);
+    return kind === 'company' ? { company: id } : kind === 'domain' ? { domain: id } : { programme: p.id };
+  };
+  // When: now, or at the end of a chosen day in UTC. A date ends a programme or a company, never a domain.
+  const nowRadio = el('input', { type: 'radio', name: `exit-when-${p.id}-${company?.id ?? ''}`, value: 'now', checked: 'checked' });
+  const dateRadio = el('input', { type: 'radio', name: `exit-when-${p.id}-${company?.id ?? ''}`, value: 'date' });
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  const dateIn = el('input', { type: 'date', min: tomorrow, 'aria-label': 'End date', disabled: 'disabled' });
+  const noticeBox = el('input', { type: 'checkbox', checked: 'checked', disabled: 'disabled' });
+  const noticeLine = el('span', { class: 'muted' });
+  const out = el('div', { class: 'stack' });
+  const err = errSpan();
+  const dated = () => dateRadio.checked;
+  const sync = () => {
+    const byDomain = who().domain !== undefined;
+    dateRadio.disabled = byDomain;
+    if (byDomain && dated()) nowRadio.checked = true;
+    dateIn.disabled = !dated();
+    noticeBox.disabled = !dated();
+    noticeLine.textContent = byDomain ? 'A date ends a programme or a company; access through a domain ends now.' : '';
+    out.replaceChildren();
+  };
+  for (const c of [nowRadio, dateRadio, whoSel, projectsSel, dateIn, noticeBox]) c.addEventListener('change', sync);
+  const body = (extra = {}) => ({ ...who(), projects: projectsSel.value,
+    ...(dated() && dateIn.value ? { at: dateIn.value, notice: noticeBox.checked } : {}), ...extra });
+  const preview = async () => {
+    err.textContent = ''; out.replaceChildren();
+    if (dated() && !dateIn.value) { err.textContent = 'Choose the day it ends.'; dateIn.focus(); return; }
+    try {
+      const dry = await api('/api/v1/programmes/exit', { method: 'POST', body: body() });
+      if (dry.alreadyEnded) { out.replaceChildren(el('p', {}, `This ended on ${utcDay(dry.alreadyEnded.at)}. Reopen it from the ended notice above.`)); return; }
+      const ending = dry.accounts.length || dry.pendingInvitations.length || dry.domainRules?.length || dry.tokens?.length || dry.templates?.length || dry.folders?.length || dry.rightsChoices?.length;
+      const label = dry.endsAt ? `Schedule the end for ${utcDay(dry.endsAt)}` : dry.accounts.length ? `End access for ${plural(dry.accounts.length, 'person', 'people')} now` : 'End it now';
+      const go = armConfirmButton({ class: 'danger' }, label, dry.endsAt ? 'Really schedule it?' : 'Really end it now?', async (disarm) => {
+        try {
+          const done = await api('/api/v1/programmes/exit', { method: 'POST', body: body({ apply: true }) });
+          toast(done.scheduled ? `Ends on ${utcDay(done.endsAt)}` : `Ended access for ${plural(done.accounts.length, 'person', 'people')}`);
+          reload();
+        } catch (ex) { err.textContent = ex.message; disarm(); }
+      });
+      const limits = dry.limits ?? {};
+      out.replaceChildren(...[
+        el('p', {}, dry.endsAt ? `On ${utcDay(dry.endsAt)}, at the end of the day in UTC, as things then stand:` : 'Now:'),
+        ...exitDryRunTables(dry, p, company ? [company] : companies),
+        el('p', { class: 'sub flush' }, 'Accounts are disabled and signed out everywhere; their links, agent tokens and open invitations stop working. Everything is recorded in Audit, and a receipt keeps what ended so you can reopen it for '
+          + `${limits.reopenDays ?? 30} days.`),
+        dry.endsAt ? el('p', { class: 'sub flush' }, noticeBox.checked
+          ? `They are told ${(limits.noticeDaysBefore ?? [14, 1]).map((d) => plural(d, 'day')).join(' and ')} before the end, in their inbox${limits.email ? ' and by email' : ''}.`
+          : 'Nobody is told before the end.') : null,
+        ending ? el('p', {}, go) : el('p', { class: 'muted' }, 'Nothing to end.')].filter(Boolean));
+    } catch (ex) { err.textContent = ex.message; }
+  };
+  const whenField = el('div', { class: 'stack exit-when' },
+    el('span', { class: 'field-label' }, 'When'),
+    el('label', { class: 'chk' }, nowRadio, el('span', {}, 'Now')),
+    el('label', { class: 'chk' }, dateRadio, el('span', {}, 'At the end of a day'), ' ', dateIn),
+    el('label', { class: 'chk' }, noticeBox, el('span', {}, 'Tell them before the end')),
+    noticeLine);
+  return el('div', { class: 'card stack' },
+    el('h2', {}, company ? `End the partnership with ${company.name}` : 'End this partnership'),
+    el('p', { class: 'sub flush' }, 'See who has access and what they own, then end it now or on a date.'),
+    field('Whose access ends', whoSel), whenField, field('Their projects', projectsSel), noTeam,
+    el('p', {}, el('button', { onclick: preview }, 'See what ending it does')), err, out);
+}
+
+/** The receipt of one end, as counts. */
+function exitReceipt(e) {
+  const c = e.counts;
+  if (!c) return null;
+  const rows = [
+    ['Access ended', c.ended], ['Stayed, through another programme', c.stays], ['Could not be ended', c.notEnded], ['Projects moved', c.projects],
+    ['Open invitations revoked', c.invitations], ['Agent tokens revoked', c.tokens], ['Templates retired', c.templates], ['Folders ended', c.folders],
+    ['Domain rules withdrawn', c.domainRules], ['Licence choices withdrawn', c.rightsChoices],
+  ].filter(([, n]) => n);
+  return el('div', { class: 'stack' }, el('h3', { class: 'flush' }, 'Receipt'),
+    rows.length ? dataTable(['What', { label: 'Count', num: true }], rows.map(([what, n]) => el('tr', {}, el('td', {}, what), numCell(n))), { filter: false }) : el('p', { class: 'muted flush' }, 'Nothing was ended.'),
+    el('p', { class: 'sub flush' }, `Receipt ${e.id}${e.via === 'scheduled' ? ', run on its scheduled day' : ''}.`));
+}
+
+/**
+ * A scheduled end with Change and Cancel, and an ended programme or company with
+ * Reopen while it is offered and the receipt below. `company` limits it to one
+ * company's ends; without it, the programme's own.
+ */
+async function partnershipState(p, host, { company = null, reload } = {}) {
+  let data;
+  try { data = await api(`/api/v1/programmes/${encodeURIComponent(p.id)}/exits`); }
+  catch (e) { host.replaceChildren(el('p', { class: 'form-err' }, e.message)); return; }
+  const mine = (data.exits ?? []).filter((e) => (company ? e.company === company.id : !e.company && e.selection?.programme === p.id));
+  const target = company ?? p;
+  const blocks = [];
+  for (const e of mine.filter((x) => x.state === 'scheduled')) {
+    const err = errSpan();
+    const dateIn = el('input', { type: 'date', value: (e.endsAt ?? '').slice(0, 10), min: new Date(Date.now() + 86_400_000).toISOString().slice(0, 10), 'aria-label': 'New end date' });
+    const noticeBox = el('input', { type: 'checkbox', ...(e.notice !== false ? { checked: 'checked' } : {}) });
+    const change = el('div', { class: 'stack', hidden: 'hidden' },
+      el('div', { class: 'grant-fields' }, field('New end date', dateIn)),
+      el('label', { class: 'chk' }, noticeBox, el('span', {}, 'Tell them before the end')),
+      el('p', { class: 'programme-actions' }, el('button', { class: 'primary', onclick: async (ev) => {
+        err.textContent = ''; ev.currentTarget.disabled = true;
+        try { const r = await api(`/api/v1/programmes/exits/${encodeURIComponent(e.id)}`, { method: 'PUT', body: { at: dateIn.value, notice: noticeBox.checked } }); toast(`Ends on ${utcDay(r.endsAt)}`); reload(); }
+        catch (ex) { err.textContent = ex.message; ev.currentTarget.disabled = false; }
+      } }, 'Save the new date')));
+    const cancel = armConfirmButton({}, 'Cancel the end', 'Really cancel it?', async (disarm) => {
+      err.textContent = '';
+      try { await api(`/api/v1/programmes/exits/${encodeURIComponent(e.id)}`, { method: 'DELETE' }); toast('The end is called off'); reload(); }
+      catch (ex) { err.textContent = ex.message; disarm(); }
+    });
+    blocks.push(el('div', { class: 'card stack exit-state', 'data-exit-state': 'scheduled' },
+      el('h2', { class: 'flush' }, el('span', { class: 'status expired' }, 'Scheduled'), ` ${target.name} ends on ${utcDay(e.endsAt)}`),
+      el('p', { class: 'sub flush' }, `Set by ${e.createdBy?.name ?? 'an admin'}. Access ends at the end of that day in UTC. ${e.notice !== false ? 'They are told 14 days and 1 day before.' : 'Nobody is told before.'} Their projects are ${projectsWord[e.projects] ?? e.projects ?? 'moved as chosen'}.`),
+      el('p', { class: 'programme-actions' }, el('button', { onclick: () => { change.hidden = !change.hidden; } }, 'Change'), cancel),
+      change, err));
+  }
+  if (target.endedAt) {
+    const e = mine.find((x) => x.id === target.endedExit) ?? mine.find((x) => x.state === 'done');
+    const err = errSpan();
+    const review = el('div', { class: 'stack' });
+    const giveBack = el('input', { type: 'checkbox', checked: 'checked' });
+    const reopen = e?.reopen?.offered ? el('button', { class: 'primary', onclick: async () => {
+      err.textContent = ''; review.replaceChildren();
+      try {
+        const dry = await api(`/api/v1/programmes/exits/${encodeURIComponent(e.id)}/reopen`, { method: 'POST', body: { projects: giveBack.checked } });
+        const back = (dry.accounts ?? []).filter((a) => a.result === 'enabled' || a.result === 'rejoined').length;
+        const projectsBack = (dry.projects ?? []).filter((x) => x.result === 'returned').length;
+        const templatesBack = (dry.templates ?? []).filter((x) => x.result !== 'kept').length;
+        const foldersBack = (dry.folders ?? []).filter((x) => x.result === 'restored').length;
+        const comesBack = [templatesBack ? plural(templatesBack, 'template') : null, foldersBack ? plural(foldersBack, 'folder') : null].filter(Boolean);
+        const go = armConfirmButton({ class: 'primary' }, `Reopen ${target.name}`, 'Really reopen it?', async (disarm) => {
+          try { await api(`/api/v1/programmes/exits/${encodeURIComponent(e.id)}/reopen`, { method: 'POST', body: { projects: giveBack.checked, apply: true } }); toast(`Reopened ${target.name}`); reload(); }
+          catch (ex) { err.textContent = ex.message; disarm(); }
+        });
+        const people = (dry.accounts ?? []).map((a) => el('tr', {}, el('td', {}, a.email), el('td', {},
+          a.result === 'enabled' || a.result === 'rejoined' ? 'Signs in again' : a.result === 'gone' ? 'Account erased since' : 'Stays disabled', a.reason ? el('div', { class: 'muted' }, a.reason) : null)));
+        const st = dry.stayEnded ?? { tokens: 0, links: 0, rightsChoices: [] };
+        review.replaceChildren(...[
+          el('p', {}, [
+            `${plural(back, 'person', 'people')} ${back === 1 ? 'signs' : 'sign'} in again.`,
+            projectsBack ? `${plural(projectsBack, 'project')} ${projectsBack === 1 ? 'goes' : 'go'} back to ${projectsBack === 1 ? 'its owner' : 'their owners'}.` : null,
+            comesBack.length ? `${comesBack.join(' and ')} ${templatesBack + foldersBack === 1 ? 'comes' : 'come'} back.` : null,
+          ].filter(Boolean).join(' ')),
+          people.length ? dataTable(['Person', 'After reopening'], people, { filter: false }) : null,
+          el('p', { class: 'sub flush' }, `Staying ended: ${plural(st.tokens, 'agent token')}, ${plural(st.links, 'share link')}, ${plural((st.rightsChoices ?? []).length, 'licence choice')} and every session. Make new ones where they are needed.`),
+          el('p', {}, go)].filter(Boolean));
+      } catch (ex) { err.textContent = ex.message; }
+    } }, 'Reopen') : null;
+    blocks.push(el('div', { class: 'card stack exit-state', 'data-exit-state': 'ended' },
+      el('h2', { class: 'flush' }, el('span', { class: 'status revoked' }, 'Ended'), ` on ${utcDay(target.endedAt)}${e?.createdBy?.name ? ` by ${e.createdBy.name}` : ''}`),
+      el('p', { class: 'sub flush' }, `${target.name}’s record, profile and history stay here. Delete removes them.`),
+      e?.reopen?.offered ? el('div', { class: 'stack' },
+        el('p', { class: 'flush' }, `Reopen puts back what this end took, until ${utcDay(e.reopen.until)}.`),
+        el('label', { class: 'chk' }, giveBack, el('span', {}, 'Give their projects back')),
+        el('p', { class: 'programme-actions' }, reopen)) : el('p', { class: 'muted flush' }, `Reopen was offered for ${e?.reopen?.days ?? data.reopenDays ?? 30} days after the end. Add the people again by list.`),
+      review, err, e ? exitReceipt(e) : null));
+  }
+  host.replaceChildren(...blocks);
 }
 
 
@@ -7232,7 +8012,8 @@ function renderPreview(data) {
       : el('p', { class: 'muted' }, 'No collections.'),
     assets.sample?.length
       ? el('p', { class: 'chips' }, ...assets.sample.map((a) => el('span', { class: 'chip', title: a.id }, a.name)))
-      : null) : null;
+      : null,
+    assets.licence ? previewLicence(assets.licence) : null) : null;
   // The templates these groups get (plans/82 M2). The app is told only which
   // inputs it may offer; the lines under each template are for the admin.
   const templates = preview.templates ?? [];
@@ -7301,6 +8082,23 @@ function renderPreview(data) {
     el('div', { class: 'card stack' },
       el('h2', {}, 'Profile fields'), dataTable(['Field', 'Access', 'Locked to'], profileRows)),
   );
+}
+
+// Licences in Preview (plans/82 M4), for the admin: what the gate holds back
+// from these groups, in either mode, and what was shared anyway and by whom.
+function previewLicence(l) {
+  const files = (n) => `${n} ${n === 1 ? 'file' : 'files'}`;
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  return el('div', { class: 'stack' },
+    el('h3', {}, 'Licences'),
+    el('p', { class: 'sub flush' }, l.line),
+    el('p', {}, l.mode === 'gate'
+      ? `${files(l.onceGated)} reach them. Held back (licence): ${l.heldBack}.`
+      : `${files(l.onceGated)} once the gate is on (${l.total} today). Held back (licence): ${l.heldBack}.`),
+    el('p', { class: 'muted' }, `Shared anyway: ${l.sharedAnyway}. Needs choosing again: ${l.needsChoosing}.`),
+    l.shared?.length
+      ? el('ul', {}, ...l.shared.map((f) => el('li', {}, `${f.name}, ${f.licence}, chosen by ${f.chosenBy}, ${day(f.chosenAt)}`)))
+      : null);
 }
 
 async function viewPreview(main, params) {
@@ -7760,6 +8558,7 @@ const NAV_ICONS = {
   flags: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
   brandPages: '<path d="M4 4h16v16H4z"/><path d="M4 9h16"/><path d="M9 14h6"/><path d="M9 17h3"/>',
   injectables: '<path d="M12 2v20"/><path d="M2 12h20"/><path d="M12 2l3 3-3 3-3-3z"/><circle cx="12" cy="12" r="2.5"/>',
+  limits: '<path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   docs: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8"/><path d="M8 11h6"/>',
 };
 function navIcon(id) {

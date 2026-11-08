@@ -30,11 +30,12 @@ import type { BrandEditRevisionSummary } from './edit-store.ts';
 import { BrandError, type BrandService, type BrandSnapshot } from './service.ts';
 import type { BrandSource } from './sources.ts';
 import { brandEditPolicy, type BrandEditPointer, type BrandState } from './state.ts';
+import { JSON_BODY_CONTROL_BYTES } from '../api/body-limits.ts';
 
 export const BRAND_EDIT_ACTION = 'brand.edit';
 /** Revisions whose documents are kept per source. Older ones stay in the history with their digests. */
-const KEEP_DOCUMENTS = 50;
-const HISTORY_LIMIT = 200;
+export const KEEP_DOCUMENTS = 50;
+export const HISTORY_LIMIT = 200;
 
 export interface BrandEditsDeps {
   config: InstanceConfig;
@@ -389,7 +390,7 @@ export function createBrandEdits(d: BrandEditsDeps) {
       const user = await requireEditor(req, res);
       if (!user) return;
       await attempt(res, async () => {
-        const body = await readJson(req, 4096) as { to?: unknown } | null;
+        const body = await readJson(req, JSON_BODY_CONTROL_BYTES) as { to?: unknown } | null;
         const snap = await brand.snapshot(), sourceId = snap.source.id, actor = actorOf(user);
         // Back to an earlier revision is a new send of what it changed, on today's base, so a chain still decides.
         if (body?.to !== undefined && body.to !== null) {
@@ -447,7 +448,7 @@ export function createBrandEdits(d: BrandEditsDeps) {
       if (!user) return;
       if (!brand.mutable) return sendError(res, 409, 'READ_ONLY', 'This deployment cannot keep these settings. Configure Postgres.');
       await attempt(res, async () => {
-        const body = await readJson(req, 4096) as { approvalChain?: unknown; lookAfterImage?: unknown } | null;
+        const body = await readJson(req, JSON_BODY_CONTROL_BYTES) as { approvalChain?: unknown; lookAfterImage?: unknown } | null;
         if (body?.approvalChain !== null && typeof body?.approvalChain !== 'string') throw new BrandEditRefusal('INVALID_INPUT', 'approvalChain is a chain id, or null for no approval.', 400);
         if (typeof body?.lookAfterImage !== 'boolean') throw new BrandEditRefusal('INVALID_INPUT', 'lookAfterImage is true or false.', 400);
         if (body.approvalChain && !await store.getChain(body.approvalChain)) throw new BrandEditRefusal('CHAIN_NOT_FOUND', 'That approval chain does not exist.', 409);

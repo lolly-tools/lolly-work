@@ -205,6 +205,8 @@ export interface EngineApi {
   parseVisualIntent(value: unknown): { ok: true } | { ok: false; errors: readonly IntentErrorV1[] };
   resolveIntent(request: unknown, tools: readonly IntentToolFactsV1[]): Promise<IntentResolutionV1>;
   parseToolIntents(text: string): { ok: true; intents: ToolIntentV1[] } | { ok: false; errors: readonly { path: string; message: string }[] };
+  /** The problems with a tool's purposes against its inputs: `intents.json`'s check. */
+  checkToolIntents(tool: IntentToolFactsV1): { path: string; message: string }[];
   IntentInvalidError: new (errors: readonly IntentErrorV1[]) => Error & { errors: readonly IntentErrorV1[] };
   loadTool(toolId: string, fetchFile: (p: string) => Promise<string>, opts?: { lang?: string }): Promise<LoadedTool>;
   createRuntime(tool: LoadedTool, host: unknown, initialState?: Record<string, unknown>, opts?: { hookExecutor?: (tool: LoadedTool, host: unknown) => Promise<unknown> }): Promise<Runtime>;
@@ -240,6 +242,9 @@ export interface C2paEmbedOptions {
   /** The Lolly record's flat scalar keys (the `tools.lolly.export` assertion):
    *  the design system, its theme choices and the partner (plans/82 M3). */
   environment?: Record<string, string>;
+  /** The approval of a template's variants that a clean variant render carries
+   *  (the `tools.lolly.approval` assertion, plans/82 M7, decision 5). */
+  approval?: import('./record.ts').TemplateApprovalRecord;
 }
 
 // string-typed (non-literal) so tsc doesn't resolve the sibling .ts source.

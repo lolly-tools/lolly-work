@@ -86,7 +86,7 @@ import { SERVICE_TOKEN_PREFIX, hashServiceSecret, mintServiceSecret, serviceAcco
 import { parseTokenAuthority, tokenScopeGuard, tokenScopeVocabulary } from '../iam/token-scopes.ts';
 import { TokenLimitRefusal, createTokenLimits, limitsSentence, parseLimitOverrides, registerTokenLimitRoutes, sendTokenLimitRefusal } from '../iam/token-limits.ts';
 import { runRetention } from '../audit/retention.ts';
-import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
+import { bearerFromHeader, hashScimSecret, mintScimSecret, SCIM_TOKEN_DEFAULT_DAYS, SCIM_TOKEN_MAX_DAYS } from '../scim/tokens.ts';
 import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
   scimErrorBody, scimList, userToScim,
@@ -105,6 +105,7 @@ import { registerProgrammeTokenRoutes } from '../programmes/token-routes.ts';
 import { registerUsageRoutes } from '../programmes/usage-routes.ts';
 import { createCompanyProfiles } from '../programmes/profile-routes.ts';
 import { registerCompanyKitRoutes } from '../programmes/kit-routes.ts';
+import { readCompanyKit } from '../programmes/kit.ts';
 import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../programmes/logo-checks.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
@@ -115,7 +116,7 @@ import { AssetScanBoundExceeded, composeRightsRecords, loadRightsEngine, rightsA
 import { decidePartnerRightsDefault, partnerRightsState, type PartnerRightsState } from '../catalog/rights-mode.ts';
 import { partnerRightsCheck } from '../setup/checks.ts';
 import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
-import { collectionCredits } from '../links/credits.ts';
+import { collectionCredits, pageCreditLine } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { createOwnerMarks } from '../programmes/owner-mark.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
@@ -201,6 +202,7 @@ import {
 } from '../catalog/tag-rules.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { createBrandService, BrandError, type BrandSnapshot } from '../brand/service.ts';
+import { DELIVERY_BODY_BYTES, FORM_BODY_BYTES, JSON_BODY_CONTROL_BYTES, PROVIDER_PUBLISH_BYTES } from './body-limits.ts';
 import { EDGE_DEFAULTS, edgeTagHeaders, publicOnlyHosts } from '../edge/config.ts';
 import { EdgePurgeOutbox, type EdgePurgeRequest } from '../edge/outbox.ts';
 import { createEdgeAdapter, envEdgeCredentials, resolveEdgeCredential } from '../edge/registry.ts';
@@ -239,7 +241,7 @@ import { KIND_HANDLERS } from '../injectables/kinds.ts';
 import { INJECTABLE_KINDS, type InjectableRecord } from '../injectables/types.ts';
 import { buildConfigDocument, validateConfigDocument, diffConfigDocument, requiredActions, commitConfigApply, canonicalHash, diffSummary } from '../policy/config-doc.ts';
 import { readToolInputs } from '../policy/tool-inputs.ts';
-import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkKind, type LinkRecord } from '../links/sign.ts';
+import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, LINK_ACCESS_MAX_SEC, LINK_MAX_TTL_HOURS, type LinkKind, type LinkRecord } from '../links/sign.ts';
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { checkDesignRules, renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
@@ -250,7 +252,8 @@ import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, r
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
-import { registerIntentRoutes } from '../automation/intents.ts';
+import { registerLimitsRoute } from '../observability/limits-route.ts';
+import { checkTemplateIntents, registerIntentRoutes, templateDrawable, type TemplateIntentManifest } from '../automation/intents.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
 import { registerContextRoutes, type ContextSkill } from '../automation/context-routes.ts';
 import { servedType as brandPageFileType } from '../brand-pages/manifest.ts';
@@ -312,8 +315,6 @@ const OPEN_LINK_OWN_PARAMS = new Set(['s', 'pw', 'name', 'z', 'zx']);
 const QUERY_CREDENTIAL_DEPRECATION = '@1792195200';
 /** The header a job result token rides in instead of `?token=`. */
 const JOB_TOKEN_HEADER = 'x-lw-job-token';
-/** Longest a link's password cookie lasts; never past the link's own expiry. */
-const LINK_ACCESS_MAX_SEC = 12 * 3600;
 const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link', 'source-review', 'export-review'];
 
 /** The vendored engine version, read off engine-pin.json (the manifest the
@@ -858,6 +859,7 @@ export function buildApp(deps: AppDeps): App {
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
       ...(rec.publication?.bindings ? { bindings: rec.publication.bindings } : {}),
       ...(Array.isArray(rec.groups) ? { groups: rec.groups } : {}),
+      ...(rec.publication?.intents?.length ? { intents: rec.publication.intents } : {}),
     };
   };
   // ── company values (plans/82 M3, programmes/company-values.ts) ──────────
@@ -3009,7 +3011,7 @@ export function buildApp(deps: AppDeps): App {
     const render = (html: string): void => { res.writeHead(200, activateHeaders); res.end(html); };
     const me = await resolveMember(store, req.headers.cookie, sessionVerify);
     if (!me) return render(activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/'));
-    const form = new URLSearchParams(await readRaw(req, 4096).then((b) => b.toString('utf8')).catch(() => ''));
+    const form = new URLSearchParams(await readRaw(req, FORM_BODY_BYTES).then((b) => b.toString('utf8')).catch(() => ''));
     const code = form.get('code') ?? '';
     const decision = form.get('decision');
     if (!code || (decision !== 'approve' && decision !== 'deny')) {
@@ -3646,7 +3648,7 @@ export function buildApp(deps: AppDeps): App {
       if (unnamed) return sendError(res, 409, 'NO_FILE_IDENTITY', `Held files with no checksum cannot be sent anyway (${unnamed} here). Make the link without the held files.`);
       if (held.length) body.target = { ...body.target, includeHeld: held.map((h) => ({ id: h.id, fingerprint: h.fingerprint! })) };
     }
-    const maxTtl = kind === 'guest-edit' ? config.policy.guestLinks.maxTtlHours : 24 * 365;
+    const maxTtl = kind === 'guest-edit' ? config.policy.guestLinks.maxTtlHours : LINK_MAX_TTL_HOURS;
     const defTtl = kind === 'guest-edit' ? config.policy.guestLinks.defaultTtlHours : DEFAULT_TTL_SEC[kind] / 3600;
     if (body.ttlHours !== undefined && (typeof body.ttlHours !== 'number' || !Number.isFinite(body.ttlHours) || body.ttlHours <= 0)) return sendError(res, 400, 'INVALID_INPUT', 'ttlHours must be a positive finite number');
     const ttlHours = Math.min(body.ttlHours ?? defTtl, maxTtl);
@@ -4498,7 +4500,7 @@ export function buildApp(deps: AppDeps): App {
       codes: { undeliverable: 'OUTPUT_NOT_DELIVERABLE', gone: 'OUTPUT_UNAVAILABLE', corrupt: 'OUTPUT_INTEGRITY' } };
   };
   const deliverRetainedOutput = (load: typeof loadJobOutput): Handler => async (req, res, ctx) => {
-    const body = (await readJson(req, 32 * 1024)) as {
+    const body = (await readJson(req, DELIVERY_BODY_BYTES)) as {
       destinationId?: unknown;
       name?: unknown;
       format?: unknown;
@@ -6073,7 +6075,7 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 403, 'FORBIDDEN', 'an admin or owner with user.invite issues sign-in links');
     }
     if (!passwordIdp) return sendError(res, 404, 'NO_PASSWORD_SIGN_IN', 'email and password sign-in is not configured on this instance');
-    const body = (await readJson(req, 4096)) as { email?: unknown; purpose?: unknown } | null;
+    const body = (await readJson(req, JSON_BODY_CONTROL_BYTES)) as { email?: unknown; purpose?: unknown } | null;
     const email = typeof body?.email === 'string' ? normaliseEmail(body.email) : '';
     if (!email || email.length > 254 || !INVITE_EMAIL.test(email)) {
       return sendError(res, 400, 'INVALID_INPUT', 'email must be an email address', { field: 'email' });
@@ -6394,8 +6396,14 @@ export function buildApp(deps: AppDeps): App {
     // older file cannot clear renders from a newer tool. A render made without
     // until-approved has no digest, and its approval is of this file alone.
     const evidence = render.output.evidence;
+    // A render keyed on its template's variants (plans/82 M7) asks for the template,
+    // and the request records it with the template's name, for the reviewer's card.
+    const variant = evidence?.untilApproved?.covers === 'template-variants' ? evidence.untilApproved.template : undefined;
+    const variantName = variant ? (await store.getInstanceAsset(variant.id))?.entry.name : undefined;
     const exportReview = describeRenderReview(bytes, { toolId, format, name: `${render.id}.${format}`,
-      toolVersion: evidence?.tool?.version ?? null, inputsDigest: evidence?.untilApproved?.inputsDigest ?? null }, new Date().toISOString());
+      toolVersion: evidence?.tool?.version ?? null, inputsDigest: evidence?.untilApproved?.inputsDigest ?? null,
+      ...(variant ? { covers: 'template-variants' as const, templateRef: { id: variant.id, version: variant.version, ...(typeof variantName === 'string' ? { name: variantName } : {}) } } : {}),
+    }, new Date().toISOString());
     if (!exportReview) return sendError(res, 422, 'ARTIFACT_FORMAT_MISMATCH', `That file is not a ${format} file.`);
     const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 200) : `${toolId} (${format})`;
     const approval = createApproval({ id: `apr_${randomId(8)}`, subjectType: 'export-review', subjectRef: `export-review:${exportReview.fingerprint}`, title, chain, nominees: [], createdBy: user.id, now: new Date().toISOString() });
@@ -6462,9 +6470,10 @@ export function buildApp(deps: AppDeps): App {
     },
   });
   companyProfiles.register(router);
+  const kitVisible = async (groups: string[], assetId: string) => !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit');
   const companyKits = registerCompanyKitRoutes(router, {
     store, blobs, notifier, baseUrl: config.instance.baseUrl, requireAction, memberOf, audit,
-    kitVisible: async (groups, assetId) => !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit'),
+    kitVisible,
     submitKit: async (input) => {
       const outcome = await submitAsset(submitDeps(input.submitter), input);
       if (outcome.ok) await trimVersionHistory(outcome.record).catch(() => 0);
@@ -6516,6 +6525,15 @@ export function buildApp(deps: AppDeps): App {
       } catch { return null; }
     },
     toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
+    // A template's purposes (plans/82 M7), held by the engine's own intents.json check
+    // against the base tool, with every input the template fixes set by its rules.
+    checkTemplateIntents: async (toolId, raw, rules) => {
+      const engine = await loadEngine();
+      let manifest: TemplateIntentManifest;
+      try { manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')); }
+      catch { return { errors: [{ path: '', message: `this workspace no longer has the tool "${toolId}"` }] }; }
+      return checkTemplateIntents(engine, { ...manifest, id: toolId }, raw, rules, (await store.listOverlays()).get(toolId)?.bindings);
+    },
     submitVersion: async (actor, target, bytes, from) => {
       const outcome = await submitAsset(submitDeps(actor), {
         bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups, role: actor.role },
@@ -6568,7 +6586,15 @@ export function buildApp(deps: AppDeps): App {
       return blob ? templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES)) : null;
     },
   });
-  registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark });
+  registerCatalogRightsRoutes(router, {
+    store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark,
+    holdsAny: async (req, actions) => {
+      const user = (await memberOf(req)) ?? (await serviceAccountOf(req));
+      if (!user) return null;
+      const grants = await store.listGrants();
+      return actions.some((action) => evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], grants)) ? user : null;
+    },
+  });
 
   registerDomainRoutes(router, {
     store, requireAction, audit, resolveTxt,
@@ -8193,8 +8219,12 @@ export function buildApp(deps: AppDeps): App {
       return;
     }
 
+    // The credit each file's licence asks for, read as the link's maker sees the file (plans/82 M4).
+    const [pageEngine, pageEntries] = await Promise.all([loadRightsEngine(), linkMakerEntries(link)]);
     const items: CollectionPageItem[] = members.map((m) => {
       const source = m.source;
+      const entry = pageEntries.get(m.assetId);
+      const credit = entry ? pageCreditLine(pageEngine, entry) : null;
       // No password rides in these addresses: a password link's cookie,
       // scoped to this link's path, opens each item and the zip.
       const base = `/l/${link.id}?s=${encodeURIComponent(url.searchParams.get('s') ?? '')}`;
@@ -8206,6 +8236,7 @@ export function buildApp(deps: AppDeps): App {
         ...(sizeText(m.size) ? { sizeText: sizeText(m.size) as string } : {}),
         ...(isPreviewableFormat(source.format) ? { previewHref: `${base}${asset}` } : {}),
         downloadHref: `${base}${asset}&dl=1`,
+        ...(credit ? { credit } : {}),
       };
     });
     const s = encodeURIComponent(url.searchParams.get('s') ?? '');
@@ -10612,9 +10643,9 @@ export function buildApp(deps: AppDeps): App {
     if (!name || !format || !/^[a-z0-9]+$/i.test(format)) return sendError(res, 400, 'INVALID_INPUT', 'name and format query params required');
     let bytes: Buffer;
     try {
-      bytes = await readRaw(req, 64 * 1024 * 1024);
+      bytes = await readRaw(req, PROVIDER_PUBLISH_BYTES);
     } catch {
-      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'export exceeds the 64 MiB publish cap');
+      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `export exceeds the ${PROVIDER_PUBLISH_BYTES / (1024 * 1024)} MiB publish cap`);
     }
     if (!bytes.length) return sendError(res, 400, 'INVALID_INPUT', 'empty export body');
     const gate = await verifyLollyExport(bytes, format);
@@ -12136,6 +12167,12 @@ export function buildApp(deps: AppDeps): App {
       return result;
     }),
   });
+  // Every limit Work enforces, with its value and source, for the Limits and quotas panel (plans/82 M7).
+  registerLimitsRoute(router, {
+    requireAction, config,
+    partnerRightsMode: async () => (await partnerRightsReady).mode,
+    runner: () => ({ concurrency: durableRenders.concurrency, leaseMs: durableRenders.leaseMs, timeoutMs: durableRenders.timeoutMs }),
+  });
   const durable = registerRenderRoutes(router, {
     store, blobs,
     authenticate: async (req) => {
@@ -12323,6 +12360,29 @@ export function buildApp(deps: AppDeps): App {
     catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
+    // Published templates as candidates for an intent (plans/82 M7), from the caller's own feed.
+    intentTemplates: async (groups, role) => {
+      const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+      const declaring = feed.filter((a) => a.type === 'template' && Array.isArray((a.meta as { intents?: unknown } | undefined)?.intents) && !(a.meta as { retired?: unknown }).retired);
+      // A template whose fixed values name a file this caller's render would hold back
+      // is not one they can make, so it is never offered.
+      const gate = await licenceAssetGate(groups, role);
+      return (await Promise.all(declaring.map((a) => publishedTemplateFor(groups, a.id))))
+        .filter((t): t is RenderTemplate => !!t && !t.retired && templateDrawable(t, gate));
+    },
+    templateFor: (groups, id) => publishedTemplateFor(groups, id),
+    templateCompanyValues: async (template, groups) => {
+      const overlay = (await store.listOverlays()).get(template.toolId);
+      if (!template.bindings && !overlay?.bindings) return {};
+      const { ctx, ambiguous } = await companyContextFor(groups, template.groups);
+      const plan = planBindings({
+        ...(overlay?.bindings ? { overlayBindings: overlay.bindings } : {}), ...(template.bindings ? { templateBindings: template.bindings } : {}),
+        ...(template.editable ? { templateEditable: template.editable } : {}),
+        overlayLocks: (id) => resolveInputAccess(overlay, id, groups).level === 'locked', ctx, ambiguous, theme: 'light',
+      });
+      return { ...plan.values };
+    },
+    templatesOnly: async (groups, role) => new Set((await templatesOnlyOf(groups, role)).keys()),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
@@ -12415,6 +12475,20 @@ export function buildApp(deps: AppDeps): App {
       const blob = blobId ? await blobs.get(blobId) : null;
       if (!format || !blob) return null;
       return { bytes: await readBlobBody(blob.body, 4 * 1024 * 1024), mediaType: format === 'svg' ? 'image/svg+xml' : 'image/png' };
+    },
+    companyKit: async (groups, companyId) => {
+      const view = await readCompanyKit(store, blobs, companyId);
+      return view && await kitVisible(groups, view.assetId) ? view : null;
+    },
+    companyKitLogo: async (groups, companyId, pin) => {
+      const rec = pin.id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(pin.id) : null;
+      if (!rec || (rec.entry.meta as { company?: unknown })?.company !== companyId || !(rec.entry.tags as string[] | undefined)?.includes('logo')
+        || !submissionServable(rec) || !(await feedHolds(groups, rec.id)) || (await catalogBytesGate(rec.id, false)).blocked) return null;
+      // The head's blobs are authoritative at the head. An older pin reads only
+      // its version row, even when that version's bytes are no longer stored.
+      const blobId = pin.version === headVersionOf(rec) ? Object.values(rec.blobs)[0] : (await store.getAssetVersion(rec.id, pin.version))?.formats[0]?.blobId;
+      const blob = blobId ? await blobs.get(blobId) : null;
+      return blob ? { bytes: await readBlobBody(blob.body, 4 * 1024 * 1024), mediaType: blob.stat.contentType } : null;
     },
     templates: async (groups) => {
       const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
@@ -12975,8 +13049,8 @@ export function buildApp(deps: AppDeps): App {
     const body = (await readJson(req)) as { idp?: unknown; ttlDays?: unknown } | null;
     const idp = typeof body?.idp === 'string' ? body.idp.trim().slice(0, 80) : '';
     if (!idp || !resolveIdp(idp) || resolveIdp(idp)?.kind !== 'oidc') return sendError(res, 400, 'INVALID_INPUT', 'idp must name a configured OIDC connector');
-    const ttlDays = body?.ttlDays ?? 90;
-    if (typeof ttlDays !== 'number' || !Number.isFinite(ttlDays) || ttlDays <= 0 || ttlDays > 365) return sendError(res, 400, 'INVALID_INPUT', 'ttlDays must be greater than zero and at most 365');
+    const ttlDays = body?.ttlDays ?? SCIM_TOKEN_DEFAULT_DAYS;
+    if (typeof ttlDays !== 'number' || !Number.isFinite(ttlDays) || ttlDays <= 0 || ttlDays > SCIM_TOKEN_MAX_DAYS) return sendError(res, 400, 'INVALID_INPUT', `ttlDays must be greater than zero and at most ${SCIM_TOKEN_MAX_DAYS}`);
     const { secret, tokenHash } = mintScimSecret();
     const rec: ScimTokenRecord = {
       id: `sct_${randomId(8)}`, idp, tokenHash, createdBy: `user:${user.id}`, createdAt: new Date().toISOString(),

@@ -26,20 +26,20 @@ import { RenderApiRefusal, type RenderApiConfig, type RenderApiMapping, type Ren
 import { aggregate, wireFor, type RenderView } from './wire.ts';
 
 /** Bannerbear documents a 10 second limit on its synchronous host. */
-const SYNC_LIMIT_MS = 10_000;
+export const SYNC_LIMIT_MS = 10_000;
 /** Placid documents 10 simultaneous `create_now` requests. */
-const MAX_WAITERS = 10;
+export const MAX_WAITERS = 10;
 const WAIT_STEP_MS = 100;
-const MAX_BODY_BYTES = 1024 * 1024;
-const MAX_URL_QUERY = 8192;
+export const MAX_BODY_BYTES = 1024 * 1024;
+export const MAX_URL_QUERY = 8192;
 /** A record whose renders never appeared after this long lost its submitter. */
-const INCOMPLETE_AFTER_MS = 300_000;
+export const INCOMPLETE_AFTER_MS = 300_000;
 /** The URL API keeps its rows under this prefix, so a token cannot put another image behind a public URL. */
 const URL_API_KEY_PREFIX = 'placid-url:';
 /** How long a failed URL render stands before a later request tries again. */
-const URL_RETRY_WINDOW_MS = 60_000;
+export const URL_RETRY_WINDOW_MS = 60_000;
 /** Renders one request may step past. A pointer row moves with them, so the next request starts further on. */
-const MAX_URL_GENERATIONS = 16;
+export const MAX_URL_GENERATIONS = 16;
 const DOCS = '/info/work-move-from-render-api.html';
 
 type ViewStore = RenderApiStore & Pick<RenderStore, 'getRender' | 'renderCallbackSummary'>;

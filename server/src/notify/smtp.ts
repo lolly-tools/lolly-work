@@ -31,7 +31,7 @@ export interface SmtpMail {
 /** Injectable socket factory (tests hand in a plain connection). */
 export type SmtpConnect = (host: string, port: number) => Socket;
 
-const TIMEOUT_MS = 10_000;
+export const TIMEOUT_MS = 10_000;
 
 /** One reply, possibly multi-line ("250-a" continues, "250 b" ends). */
 async function readReply(read: () => Promise<string>): Promise<{ code: number; lines: string[] }> {

@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PG_CONNECT_TIMEOUT_MS } from './pg-options.ts';
+import { MIGRATION_LOCK_TIMEOUT as LOCK_TIMEOUT, MIGRATION_STATEMENT_TIMEOUT as STATEMENT_TIMEOUT } from './limits.ts';
 
 interface Queryable {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
@@ -21,12 +22,6 @@ interface Queryable {
 // lock leaked that way by an old runner can never block this one.
 const MIGRATE_LOCK_KEY = 0x1011_0004;
 
-// Bounds for the migration session, set with SET LOCAL inside each transaction
-// (a pooler drops session-level SET). Waiting for another replica's migration
-// gives up after LOCK_TIMEOUT with an error instead of hanging; one statement
-// of a migration may run for STATEMENT_TIMEOUT.
-const LOCK_TIMEOUT = '20s';
-const STATEMENT_TIMEOUT = '120s';
 
 /** The database URL migrations run over: `DATABASE_URL_UNPOOLED` when it is set
  *  (the Neon integration on Vercel sets both, and `DATABASE_URL` is the pooled

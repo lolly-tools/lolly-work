@@ -31,6 +31,7 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { templateFixedValues, templateOpenInputs, templateVariantDigest } from '../server/src/approvals/export-review-match.ts';
+import { describeRenderReview } from '../server/src/approvals/export-review.ts';
 import { normalizeOverlay } from '../server/src/policy/overlay.ts';
 
 const TOOL = 'data-sheet';
@@ -244,4 +245,15 @@ test('a new template version needs its own approval', async () => {
   const version = await call('bruno', 'POST', `/api/v1/programmes/resellers/templates/${bare}/versions`, { from: submitted.body.assetId });
   assert.equal(version.status, 201, JSON.stringify(version.body));
   assert.equal((await rendered('€ 9')).marked, true, 'version 2 was never approved');
+});
+
+test('a token\'s request about a variant render records the template it covers, as a person\'s does', () => {
+  const bytes = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>');
+  const facts = { toolId: TOOL, format: 'svg', name: 'r.svg', toolVersion: '1.0.0', inputsDigest: 'd'.repeat(64) };
+  const plain = describeRenderReview(bytes, facts, '2026-11-08T00:00:00.000Z')!;
+  const variant = describeRenderReview(bytes, { ...facts, covers: 'template-variants', templateRef: { id: 'inst/abc', version: 3, name: 'Partner data sheet' } }, '2026-11-08T00:00:00.000Z')!;
+  assert.equal(plain.covers, undefined);
+  assert.equal(variant.covers, 'template-variants');
+  assert.deepEqual(variant.templateRef, { id: 'inst/abc', version: 3, name: 'Partner data sheet' });
+  assert.notEqual(variant.fingerprint, plain.fingerprint, 'the decision is bound to what it covers');
 });

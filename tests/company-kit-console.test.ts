@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { KIT_LIMITS } from '../server/src/programmes/kit-routes.ts';
 import { PROFILE_LIMITS } from '../server/src/programmes/profile-routes.ts';
+import { SVG_MAX_BYTES } from '../server/src/programmes/logo-checks.ts';
 
 const require = createRequire(import.meta.url);
 const { JSDOM } = require('jsdom');
@@ -273,4 +274,8 @@ test('Preview as the company shows the kit line its people read, and None yet wi
     assert.equal(row(h.helpers.renderPreview(data({ id: 'inst/kit', revision: 2, label: 'Northwind IT' }))), 'Northwind IT · revision 2');
     assert.equal(row(h.helpers.renderPreview(data())), 'None yet');
   } finally { h.close(); }
+});
+
+test('the kit card shows the same SVG bound the logo checks enforce', () => {
+  assert.equal(KIT_LIMITS.imports.svgMaxBytes, SVG_MAX_BYTES);
 });

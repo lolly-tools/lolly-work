@@ -9,6 +9,7 @@ import { clearCookie, SESSION_COOKIE, GUEST_COOKIE, parseCookies, readMemberSess
 import { mintToken, verifyToken } from './tokens.ts';
 import { randomId, sha256Hex } from '../lib/crypto.ts';
 import { revokeBrowserSessions } from './local-logout.ts';
+import { FORM_BODY_BYTES, FORM_BODY_LARGE_BYTES } from '../api/body-limits.ts';
 
 interface Provider { kind: string; id: string; issuer: string; clientId: string; displayName: string; oidc: OidcPolicy }
 export function registerOidcLogout(d: {
@@ -46,7 +47,7 @@ export function registerOidcLogout(d: {
     const me = await d.memberOf(req), held = current(req);
     if (!me || !held) return sendError(res, 401, 'NO_OIDC_SESSION', 'Sign in with your identity provider first.');
     const cookies = parseCookies(req.headers.cookie);
-    const form = new URLSearchParams((await readRaw(req, 4096)).toString('utf8'));
+    const form = new URLSearchParams((await readRaw(req, FORM_BODY_BYTES)).toString('utf8'));
     const box = verifyToken<{ nonce: string; binding: string }>('lw/logout', cookies[cookieName] ?? '', d.keys);
     if (!box || form.get('nonce') !== box.nonce || box.binding !== sha256Hex(cookies[SESSION_COOKIE] ?? '')) return sendError(res, 403, 'BAD_STATE', 'Open the sign-out page again.');
     const doc = await discover(held.p.issuer, d.fetchImpl);
@@ -66,7 +67,7 @@ export function registerOidcLogout(d: {
     let token: string;
     try {
       if (!req.headers['content-type']?.toLowerCase().startsWith('application/x-www-form-urlencoded')) throw new Error('expected form');
-      const form = new URLSearchParams((await readRaw(req, 32 * 1024)).toString('utf8'));
+      const form = new URLSearchParams((await readRaw(req, FORM_BODY_LARGE_BYTES)).toString('utf8'));
       const value = form.get('logout_token');
       if (!value || form.getAll('logout_token').length !== 1) throw new Error('expected logout token');
       token = value;

@@ -22,6 +22,7 @@ import {
   type ProjectFileRecord,
 } from './files.ts';
 import { parsePartIndex, RunningDigests, storeTransferPart, transferChunks, transferProgress, verifyTransfer } from '../uploads/parts.ts';
+import { JSON_BODY_LIST_BYTES } from '../api/body-limits.ts';
 
 interface Dependencies {
   config: InstanceConfig;
@@ -40,7 +41,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *  read out of the database, whose host may meter that (Neon Free: 5 GB a
  *  month), and the shell keeps what it fetched, so only a runaway client
  *  comes near this. */
-const DOWNLOAD_BUDGETS_PER_DAY = 2;
+export const DOWNLOAD_BUDGETS_PER_DAY = 2;
 
 export function registerProjectFileRoutes(router: ReturnType<typeof createRouter>, d: Dependencies): void {
   /** read: viewer. write: `session.create` plus editor, and not archived.
@@ -105,7 +106,7 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
     const gated = await gate(req, res, ctx.params.id!, 'write');
     if (!gated) return;
     const policy = projectFilePolicy(d.config);
-    const body = await readJson(req, 512 * 1024);
+    const body = await readJson(req, JSON_BODY_LIST_BYTES);
     const size = body && typeof body === 'object' ? (body as { size?: unknown }).size : undefined;
     if (typeof size === 'number' && Number.isSafeInteger(size) && size > policy.maxFileBytes) {
       return sendError(res, 413, 'PROJECT_FILE_TOO_LARGE', `a shared file can be at most ${policy.maxFileBytes} bytes`, { maxBytes: policy.maxFileBytes });

@@ -16,12 +16,9 @@
  */
 import { BlobLimitError, bufferToStream, readPutBody, usageMonth, type BlobStore, type UsageNoticeKind } from './types.ts';
 import { guardPool, pgPoolOptions } from '../store/pg-options.ts';
+import { POSTGRES_BLOB_MAX_BYTES } from './limits.ts';
+export { POSTGRES_BLOB_MAX_BYTES };
 
-/** The largest blob this driver stores. `pg` reads `bytea` back as hex text,
- *  twice the stored size, and PostgreSQL refuses to build a value over 1 GiB,
- *  so a blob much past 512 MiB could be written but never read. A read also
- *  holds several copies of the blob in this process while it decodes. */
-export const POSTGRES_BLOB_MAX_BYTES = 500 * 1024 * 1024;
 
 interface PgPool {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;

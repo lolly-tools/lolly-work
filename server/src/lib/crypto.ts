@@ -59,7 +59,7 @@ const SCRYPT_CONCURRENCY = 2;
  *  flood of guesses would otherwise grow without end, with every real
  *  sign-in waiting behind it. At ~0.1 s a derivation, a full queue clears in
  *  under two seconds. */
-const SCRYPT_MAX_WAITERS = 32;
+export const SCRYPT_MAX_WAITERS = 32;
 let scryptInflight = 0;
 const scryptWaiters: (() => void)[] = [];
 

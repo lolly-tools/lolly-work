@@ -35,7 +35,7 @@ import type { Store, UserRecord } from '../store/types.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { INST_PREFIX, instanceAssetEntry, submissionServable, type InstanceAssetRecord } from '../catalog/instance-assets.ts';
-import { normalizeEditable, templateRetired } from '../catalog/templates.ts';
+import { normalizeEditable, templateRetired, templateValues } from '../catalog/templates.ts';
 import { MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
 import { MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE } from '../catalog/rules-tools.ts';
 import { randomId } from '../lib/crypto.ts';
@@ -45,6 +45,7 @@ import { COMPANY_FIELDS, FIELD_LABELS, LOGO_FIELDS, normalizeBindings } from './
 import { markScopeKey, type AssetRightsMarkRecord } from '../catalog/rights.ts';
 import { recordedScope, type OwnerMarks } from './owner-mark.ts';
 import { headVersionOf, type CopiedFrom } from '../catalog/versions.ts';
+import { INTENT_PURPOSE_MEANINGS, INTENT_PURPOSES, INTENT_ROLES, INTENT_SURFACES, type ToolIntentV1 } from '@lolly-tools/core/intent-v1';
 
 type Router = ReturnType<typeof createRouter>;
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
@@ -71,8 +72,15 @@ export interface TemplateRouteDeps {
   ownerMarks: OwnerMarks;
   /** Whether this person may state or withdraw the workspace's mark: staff with `catalog.edit`. */
   mayStateMark(actor: UserRecord): Promise<boolean>;
+  /** A template's purposes (plans/82 M7), read and checked against the base tool
+   *  with the template's fixed inputs set: the engine's own `intents.json` check.
+   *  Absent, a template declares no purposes. */
+  checkTemplateIntents?(toolId: string, raw: unknown, rules: TemplateIntentRules): Promise<{ intents: ToolIntentV1[] } | { errors: Array<{ path: string; message: string }> }>;
   now?: () => Date;
 }
+
+/** What a template's purposes are checked against: the inputs it leaves open and its values. */
+export interface TemplateIntentRules { editable?: string[]; bindings?: Record<string, string>; values?: Record<string, unknown> | null }
 
 /** The mark on a published template, as the Templates card shows it. */
 export interface OwnerMarkView { holder: string; terms: string; statedBy: string; statedAt: string }
@@ -141,6 +149,15 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const blob = rec.blobs.json ? await deps.blobs.get(rec.blobs.json) : null;
     return blob ? readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES) : null;
   };
+  /** A template's purposes from a request body, checked against its rules: null clears
+   *  them, and a refusal says each problem. */
+  const templateIntents = async (toolId: string, raw: unknown, rules: TemplateIntentRules): Promise<{ intents: ToolIntentV1[] | null } | { error: string; errors?: Array<{ path: string; message: string }> }> => {
+    if (raw === null) return { intents: null };
+    if (!deps.checkTemplateIntents) return { error: 'this workspace cannot check a template\'s purposes' };
+    const checked = await deps.checkTemplateIntents(toolId, raw, rules);
+    if ('errors' in checked) return { error: `the template's purposes do not hold: ${checked.errors.map((e) => `${e.path ? `${e.path}: ` : ''}${e.message}`).join('; ').slice(0, 600)}`, errors: checked.errors };
+    return { intents: checked.intents };
+  };
   const markScope = (assetId: string): string => markScopeKey({ kind: 'asset', id: assetId });
   const marks = deps.ownerMarks;
   const markView = async (mark: AssetRightsMarkRecord | undefined): Promise<OwnerMarkView | null> =>
@@ -208,6 +225,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
         fixedTheme: type === 'template' && !!rec.publication?.fixedTheme,
         // Inputs that take the partner company's values (plans/82 M3).
         bindings: rec.publication?.bindings ?? null,
+        // The purposes it is for (plans/82 M7), for the card's "This template is for" line.
+        intents: type === 'template' ? rec.publication?.intents ?? null : null,
         // The workspace's mark, for the card's line and tick (plans/82 M6).
         ownerMark: await markView(marked.get(markScopeKey({ kind: 'asset', id: rec.id }))),
         version: rec.headVersion ?? 1,
@@ -243,6 +262,12 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       templates: rows, candidates,
       // What a binding may name, for the "Takes from the company" picker.
       companyFields: COMPANY_FIELDS.map((id) => ({ id, label: FIELD_LABELS[id], kind: LOGO_FIELDS.has(id) ? 'logo' : 'text' })),
+      // The words "This template is for" offers (plans/82 M7): the engine's own lists.
+      intentVocabulary: {
+        purposes: INTENT_PURPOSES.map((id) => ({ id, meaning: INTENT_PURPOSE_MEANINGS[id] })),
+        surfaces: INTENT_SURFACES.map((s) => s.id),
+        roles: Object.entries(INTENT_ROLES).map(([id, types]) => ({ id, types: [...types] })),
+      },
     }, { 'cache-control': 'no-store' });
   }, { delivery: 'person-private' });
 
@@ -265,12 +290,12 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     sendJson(res, 200, { programme: programme.id, toolId, on: body.on });
   });
 
-  /** Publish one of the catalog's templates: `{ from, groups, editable?, fixedTheme?, bindings? }`. The
+  /** Publish one of the catalog's templates: `{ from, groups, editable?, fixedTheme?, bindings?, intents? }`. The
    *  programme gets its own copy, with its own versions, rules and retirement. */
   router.add('POST', '/api/v1/programmes/:id/templates', async (req, res, ctx) => {
     const actor = await manager(req, res); if (!actor) return;
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
-    const body = ((await readJson(req)) ?? {}) as { from?: unknown; groups?: unknown; editable?: unknown; fixedTheme?: unknown; bindings?: unknown; ownerMark?: unknown };
+    const body = ((await readJson(req)) ?? {}) as { from?: unknown; groups?: unknown; editable?: unknown; fixedTheme?: unknown; bindings?: unknown; ownerMark?: unknown; intents?: unknown };
     if (body.fixedTheme !== undefined && typeof body.fixedTheme !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'fixedTheme must be true or false');
     const ownerMark = ownerMarkFlag(body.ownerMark);
     if (typeof ownerMark !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', ownerMark.error);
@@ -291,6 +316,10 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     if ('error' in bindings) return sendError(res, 400, 'INVALID_INPUT', bindings.error);
     const bytes = await readTemplate(source);
     if (!bytes) return sendError(res, 409, 'TEMPLATE_UNREADABLE', 'the template\'s bytes could not be read');
+    // The purposes it is for (plans/82 M7), checked with its own rules.
+    const intents = body.intents === undefined ? { intents: null } : await templateIntents(toolId, body.intents,
+      { ...(editable.editable ? { editable: editable.editable } : {}), ...(bindings.bindings ? { bindings: bindings.bindings } : {}), values: templateValues(bytes) });
+    if ('error' in intents) return sendError(res, 400, 'INVALID_INPUT', intents.error, intents.errors ? { errors: intents.errors } : undefined);
     const id = `${INST_PREFIX}${randomId(8)}`;
     const at = now();
     const stat = await deps.blobs.put(`${id}/json`, bytes, 'application/json');
@@ -310,7 +339,8 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       },
       publication: {
         ...(editable.editable ? { editable: editable.editable } : {}), ...(body.fixedTheme ? { fixedTheme: true } : {}),
-        ...(bindings.bindings ? { bindings: bindings.bindings } : {}), from: { id: source.id, version: headVersionOf(source) },
+        ...(bindings.bindings ? { bindings: bindings.bindings } : {}), ...(intents.intents ? { intents: intents.intents } : {}),
+        from: { id: source.id, version: headVersionOf(source) },
       },
       createdAt: at,
     };
@@ -318,11 +348,12 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     await store.putLifecycle({ assetId: id, onExpiry: 'hide' });
     await store.putCredential({ assetId: id, status: 'none', sniffedAt: at });
     await audit(`user:${actor.id}`, 'programme.template.publish', `programme:${programme.id}`, {
-      template: id, from: source.id, toolId, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true, bindings: bindings.bindings ?? null, ownerMark,
+      template: id, from: source.id, toolId, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true, bindings: bindings.bindings ?? null,
+      intents: intents.intents?.map((entry) => entry.purpose) ?? null, ownerMark,
     });
     // The copy carries no licence of its own: the file it came from decides (publication.from).
     const mark = ownerMark && mayMark ? await marks.state(actor, id) : undefined;
-    sendJson(res, 201, { id, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true, bindings: bindings.bindings ?? null, ownerMark: await markView(mark) });
+    sendJson(res, 201, { id, groups, editable: editable.editable ?? null, fixedTheme: body.fixedTheme === true, bindings: bindings.bindings ?? null, intents: intents.intents ?? null, ownerMark: await markView(mark) });
   });
 
   /** Publish a Share with rules file: the `.lolly` as the body, `?groups=` for who
@@ -355,7 +386,7 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     sendJson(res, 201, { id: out.id, state: out.state, groups, ownerMark: await markView(mark) });
   });
 
-  /** Change who gets it or what they may change: `{ groups?, editable?, fixedTheme?, bindings? }`.
+  /** Change who gets it or what they may change: `{ groups?, editable?, fixedTheme?, bindings?, intents? }`.
    *  `bindings` (input id to company field, null to clear) works on a Share with
    *  rules file too: there it names the file's own inputs, and each one it binds
    *  is locked to the company's value. */
@@ -363,7 +394,7 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const actor = await manager(req, res); if (!actor) return;
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
     const found = await publishedHere(res, programme, `${INST_PREFIX}${String(ctx.params.asset)}`); if (!found) return;
-    const body = ((await readJson(req)) ?? {}) as { groups?: unknown; editable?: unknown; fixedTheme?: unknown; bindings?: unknown; ownerMark?: unknown };
+    const body = ((await readJson(req)) ?? {}) as { groups?: unknown; editable?: unknown; fixedTheme?: unknown; bindings?: unknown; ownerMark?: unknown; intents?: unknown };
     if (body.fixedTheme !== undefined && typeof body.fixedTheme !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'fixedTheme must be true or false');
     if (body.ownerMark !== undefined && typeof body.ownerMark !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'ownerMark must be true or false');
     if (body.ownerMark !== undefined && !(await deps.mayStateMark(actor))) return sendError(res, 403, 'FORBIDDEN', 'stating or withdrawing the workspace\'s own mark needs catalog.edit');
@@ -374,7 +405,7 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     if (body.ownerMark === true && !(await marks.ownWork(rec))) {
       return sendError(res, 409, 'NOT_OWN_WORK', 'the file this template came from records a licence, came from a provider or a partner, so the workspace does not state it as its own');
     }
-    if ((body.editable !== undefined || body.fixedTheme !== undefined) && rec.entry.type !== 'template') {
+    if ((body.editable !== undefined || body.fixedTheme !== undefined || body.intents !== undefined) && rec.entry.type !== 'template') {
       return sendError(res, 400, 'INVALID_INPUT', 'a Share with rules file brings its own rules; change them in Lolly and publish a new version');
     }
     let next = rec;
@@ -409,17 +440,36 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       const publication = { ...rest, ...(bindings.bindings ? { bindings: bindings.bindings } : {}) };
       next = { ...next, publication: Object.keys(publication).length ? publication : undefined };
     }
+    // The purposes it is for (plans/82 M7): set, cleared, or checked again when what
+    // they rest on changes, so a purpose never needs an input the template now fixes.
+    const reckon = body.intents !== undefined ? body.intents
+      : (body.editable !== undefined || body.bindings !== undefined) && next.publication?.intents?.length ? next.publication.intents : undefined;
+    if (reckon !== undefined) {
+      const toolId = String((rec.entry.meta as { toolId?: unknown } | undefined)?.toolId ?? '');
+      const bytes = reckon === null ? null : await readTemplate(rec);
+      const intents = await templateIntents(toolId, reckon, {
+        ...(next.publication?.editable ? { editable: next.publication.editable } : {}),
+        ...(next.publication?.bindings ? { bindings: next.publication.bindings } : {}),
+        values: bytes ? templateValues(bytes) : null,
+      });
+      if ('error' in intents) return sendError(res, 400, 'INVALID_INPUT', intents.error, intents.errors ? { errors: intents.errors } : undefined);
+      const { intents: _was, ...rest } = next.publication ?? {};
+      void _was;
+      const publication = { ...rest, ...(intents.intents ? { intents: intents.intents } : {}) };
+      next = { ...next, publication: Object.keys(publication).length ? publication : undefined };
+    }
     await store.putInstanceAsset(next);
+    const purposes = (r: InstanceAssetRecord) => r.publication?.intents?.map((entry) => entry.purpose) ?? null;
     await audit(`user:${actor.id}`, 'programme.template.update', `programme:${programme.id}`, {
       template: rec.id,
-      before: { groups: groupsOf(rec), editable: rec.publication?.editable ?? null, fixedTheme: !!rec.publication?.fixedTheme, bindings: rec.publication?.bindings ?? null },
-      after: { groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme, bindings: next.publication?.bindings ?? null },
+      before: { groups: groupsOf(rec), editable: rec.publication?.editable ?? null, fixedTheme: !!rec.publication?.fixedTheme, bindings: rec.publication?.bindings ?? null, intents: purposes(rec) },
+      after: { groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme, bindings: next.publication?.bindings ?? null, intents: purposes(next) },
     });
     // The card's tick: on records the mark (stated by whoever ticks it), off withdraws it.
     if (body.ownerMark === true) await marks.stateLocked(actor, rec.id);
     if (body.ownerMark === false) await marks.withdrawLocked(actor, rec.id, rec.id, 'untick');
     sendJson(res, 200, { id: rec.id, groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme, bindings: next.publication?.bindings ?? null,
-      ownerMark: await markView(await marks.markOn(rec.id)) });
+      intents: next.publication?.intents ?? null, ownerMark: await markView(await marks.markOn(rec.id)) });
     });
   });
 

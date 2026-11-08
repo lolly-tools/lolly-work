@@ -12,7 +12,13 @@
  *  - a tool this caller cannot render is not in the list, so no part of the answer names it;
  *  - a tool this deployment or policy leaves with no format is not in the list either;
  *  - what is left is narrowed by input policy, so an answer never hands back a value the
- *    render route would refuse.
+ *    render route would refuse;
+ *  - an input the caller's company fills (plans/82 M3) is the server's, so a role it fills
+ *    is met and the answer leaves the value to the server;
+ *  - a published template in the caller's feed that declares purposes (plans/82 M7) is a
+ *    candidate of its own, with its fixed inputs set. A surface it is chosen for names the
+ *    base tool with `inputs.template`, which is how a render starts from a template; its
+ *    candidates and refusals name the template by its id.
  *
  * Nothing is kept. Like `POST /api/v1/validate`, this route writes no audit record because
  * it changes nothing and makes nothing. There is no background mode, because a job record
@@ -22,22 +28,27 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ServerResponse } from 'node:http';
-import { TOOL_INTENTS_FILE, type IntentToolFactsV1 } from '@lolly-tools/core/intent-v1';
+import { TOOL_INTENTS_FILE, type IntentResolutionV1, type IntentToolFactsV1 } from '@lolly-tools/core/intent-v1';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import { BrandError } from '../brand/service.ts';
 import { projectRuleOverlay } from '../brand/rules.ts';
 import { checkParams, resolveInputAccess, type ToolOverlay } from '../policy/overlay.ts';
+import { templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
+import { referencedAssetIds } from '../catalog/rights.ts';
+import { templateOpenInputs } from '../approvals/export-review-match.ts';
+import type { EngineApi } from '../render/contract.ts';
+import type { ToolIntentV1 } from '@lolly-tools/core/intent-v1';
 import { loadEngine } from '../render/contract.ts';
 import { describeTool } from './verbs.ts';
 import { mayRenderTool, policyFormats } from './effective-contract.ts';
 import type { DiscoveryCaller, DiscoveryDeps } from './discovery.ts';
 
 export const INTENTS_RESOLVE_PATH = '/api/v1/intents/resolve';
-const MAX_BODY_BYTES = 512 * 1024;
+export const MAX_BODY_BYTES = 512 * 1024;
 
 /** A type no role takes, for an input this caller cannot set. The resolver cannot fill
  *  it or offer its options, and its value still decides which other inputs show. */
-const NOT_THE_CALLERS = 'set-by-policy';
+export const NOT_THE_CALLERS = 'set-by-policy';
 
 const optionValue = (option: unknown): unknown =>
   option && typeof option === 'object' && 'value' in option ? (option as { value: unknown }).value : option;
@@ -46,16 +57,20 @@ const hasValue = (value: unknown): boolean => value !== undefined && value !== n
 
 /**
  * One tool's facts as this caller can use them. A locked or hidden input belongs to the
- * server, so a role that needs one is met when the server has a value for it. A purpose or
- * a declared surface that depends on a value this caller may not set is not offered,
- * because the piece it describes is not one this caller can make.
+ * server, so a role that needs one is met when the server has a value for it. So does an
+ * input the caller's company fills (`serverValues`, plans/82 M3): it is set by the server
+ * whether the company's rule locks it or only fills it, and a role it fills is met. A
+ * purpose or a declared surface that depends on a value this caller may not set is not
+ * offered, because the piece it describes is not one this caller can make.
  */
-export function callerToolFacts(tool: IntentToolFactsV1, formats: readonly string[], overlay: ToolOverlay | undefined, groups: string[]): IntentToolFactsV1 {
+export function callerToolFacts(tool: IntentToolFactsV1, formats: readonly string[], overlay: ToolOverlay | undefined, groups: string[], serverValues: Record<string, unknown> = {}): IntentToolFactsV1 {
   const may = (values: Record<string, unknown>): boolean => checkParams(values, overlay, groups).length === 0;
+  const filled = (inputId: string): boolean => Object.hasOwn(serverValues, inputId) && hasValue(serverValues[inputId]);
   const inputs = (tool.inputs ?? []).map((input) => {
     const access = resolveInputAccess(overlay, input.id, groups);
-    if (access.level === 'locked' || access.level === 'hidden') {
-      const value = 'value' in access ? access.value : input.default;
+    if (access.level === 'locked' || access.level === 'hidden' || filled(input.id)) {
+      // The company's value wins over a fixed one: a bound input renders with it.
+      const value = filled(input.id) ? serverValues[input.id] : 'value' in access && access.value !== undefined ? access.value : input.default;
       return { id: input.id, type: NOT_THE_CALLERS, ...(value !== undefined ? { default: value } : {}), ...(input.showIf !== undefined ? { showIf: input.showIf } : {}) };
     }
     if (access.level !== 'choice' || !access.allow) return input;
@@ -64,6 +79,7 @@ export function callerToolFacts(tool: IntentToolFactsV1, formats: readonly strin
     return { ...input, type: NOT_THE_CALLERS };
   });
   const serverMeets = (inputId: string): boolean => {
+    if (filled(inputId)) return true;
     const access = resolveInputAccess(overlay, inputId, groups);
     if (access.level !== 'locked' && access.level !== 'hidden') return false;
     return hasValue(inputs.find(input => input.id === inputId)?.default);
@@ -76,6 +92,88 @@ export function callerToolFacts(tool: IntentToolFactsV1, formats: readonly strin
   return { ...tool, inputs, intents, render: { ...tool.render, formats } };
 }
 
+/** The values a caller's company fills, by input id: only the bound inputs it has a value for. */
+function companyFilled(company: { defaults: Record<string, unknown>; bindings?: Record<string, string> } | null): Record<string, unknown> {
+  if (!company?.bindings) return {};
+  return Object.fromEntries(Object.keys(company.bindings).filter((id) => Object.hasOwn(company.defaults, id) && hasValue(company.defaults[id])).map((id) => [id, company.defaults[id]]));
+}
+
+/**
+ * One published template as a candidate of its own (plans/82 M7): the base tool's facts
+ * with the template's values as where each input starts, its rules over the tool's own,
+ * and its declared purposes. Fixed inputs are the server's; so are the ones the caller's
+ * company fills. Its id is the template's, so it is never folded into its base tool.
+ */
+export function templateToolFacts(base: IntentToolFactsV1, template: RenderTemplate, formats: readonly string[], overlay: ToolOverlay | undefined, groups: string[], serverValues: Record<string, unknown> = {}): IntentToolFactsV1 {
+  const ids = (base.inputs ?? []).map((input) => input.id);
+  const start = templateSeed(template.values, ids);
+  const inputs = (base.inputs ?? []).map((input) => Object.hasOwn(start, input.id) ? { ...input, default: start[input.id] } : input);
+  return callerToolFacts({ ...base, id: template.id, name: template.name, inputs, intents: template.intents ?? [] }, formats,
+    templateOverlay(overlay, template, groups, ids), groups, serverValues);
+}
+
+/**
+ * The answer as a render takes it: a surface chosen for a template names the base tool
+ * and starts from the template (`inputs.template`), and the record of what was chosen
+ * names the base tool too. Candidates, refusals and the purpose list name the template
+ * by its id, so an agent can tell which template each one was.
+ */
+export function asTemplateRenders(resolution: IntentResolutionV1, templates: ReadonlyMap<string, string>): IntentResolutionV1 {
+  if (!templates.size) return resolution;
+  const sorted = (values: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(values).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  return {
+    ...resolution,
+    closed: { ...resolution.closed, chosen: resolution.closed.chosen.map((c) => (c.toolId && templates.has(c.toolId) ? { ...c, toolId: templates.get(c.toolId)! } : c)) },
+    surfaces: resolution.surfaces.map((surface) => {
+      const chosen = surface.chosen;
+      if (!chosen || !templates.has(chosen.toolId)) return surface;
+      return { ...surface, chosen: { ...chosen, toolId: templates.get(chosen.toolId)!, inputs: sorted({ ...chosen.inputs, template: chosen.toolId }) } };
+    }),
+  };
+}
+
+/** A tool's manifest, as a template's purposes are checked against it. */
+export interface TemplateIntentManifest { id: string; inputs?: Array<{ id: string; type: string; default?: unknown; required?: boolean; options?: unknown[]; showIf?: unknown }>; render?: Record<string, unknown> }
+
+/**
+ * A template's purposes, read and checked as a tool's `intents.json` is, against the base
+ * tool with the template's rules applied (plans/82 M7). An input the template fixes is
+ * set by its rules and takes its value; an editable one starts from the template's value.
+ * A purpose may not set an input the template fixes or the partner's company fills, or
+ * name one in a surface: at resolution the server owns those values, and a purpose that
+ * set one would be dropped or refused.
+ */
+export function checkTemplateIntents(engine: Pick<EngineApi, 'parseToolIntents' | 'checkToolIntents'>, manifest: TemplateIntentManifest, raw: unknown,
+  rules: { editable?: string[]; bindings?: Record<string, string>; values?: Record<string, unknown> | null }, overlayBindings?: Record<string, unknown>): { intents: ToolIntentV1[] } | { errors: Array<{ path: string; message: string }> } {
+  const parsed = engine.parseToolIntents(JSON.stringify({ version: 1, intents: raw }));
+  if (!parsed.ok) return { errors: [...parsed.errors] };
+  const open = templateOpenInputs(rules, overlayBindings);
+  const bound = new Set([...Object.keys(rules.bindings ?? {}), ...Object.keys(overlayBindings ?? {})]);
+  const values = rules.values ?? {};
+  const fixed = (id: string): boolean => !!open && !open.includes(id);
+  const inputs = (manifest.inputs ?? []).map((input) => {
+    const start = Object.hasOwn(values, input.id) ? { default: values[input.id] } : input.default !== undefined ? { default: input.default } : {};
+    return fixed(input.id) ? { id: input.id, type: NOT_THE_CALLERS, ...start } : { ...input, ...start };
+  });
+  const errors: Array<{ path: string; message: string }> = [];
+  parsed.intents.forEach((entry, index) => {
+    const owned = (id: string): boolean => fixed(id) || bound.has(id);
+    for (const id of Object.keys(entry.set ?? {})) if (owned(id)) errors.push({ path: `intents/${index}/set/${id}`, message: `${id} is fixed by the template or filled from the partner's company.` });
+    for (const [surface, set] of Object.entries(entry.surfaces ?? {})) {
+      for (const id of Object.keys(set ?? {})) if (owned(id)) errors.push({ path: `intents/${index}/surfaces/${surface}/${id}`, message: `${id} is fixed by the template or filled from the partner's company.` });
+    }
+  });
+  errors.push(...engine.checkToolIntents({ id: manifest.id, inputs, render: manifest.render as never, intents: parsed.intents }));
+  return errors.length ? { errors } : { intents: parsed.intents };
+}
+
+/** Whether every file a template's values name is one this caller's render may draw. */
+export function templateDrawable(template: Pick<RenderTemplate, 'values'>, gate: { allows(id: string): boolean; catalogIds: ReadonlySet<string> } | null): boolean {
+  if (!gate) return true;
+  try { return referencedAssetIds(template.values, gate.catalogIds, { strict: true }).every((id) => gate.allows(id)); }
+  catch { return false; }
+}
+
 async function readSidecar(pack: string, toolId: string): Promise<string | null> {
   try { return await readFile(join(pack, 'tools', toolId, TOOL_INTENTS_FILE), 'utf8'); }
   catch (error) {
@@ -86,10 +184,37 @@ async function readSidecar(pack: string, toolId: string): Promise<string | null>
 
 const warned = new Set<string>();
 
-/** Every tool that serves a purpose and that this caller can render here, as the resolver reads it. */
-async function callerTools(deps: DiscoveryDeps, caller: DiscoveryCaller, ids: readonly string[], overlays: Map<string, ToolOverlay>): Promise<IntentToolFactsV1[]> {
+/** Every tool and published template that serves a purpose and that this caller can
+ *  render here, as the resolver reads them, and which ids are templates of which tool. */
+async function callerTools(deps: DiscoveryDeps, caller: DiscoveryCaller, ids: readonly string[], overlays: Map<string, ToolOverlay>): Promise<{ tools: IntentToolFactsV1[]; templates: Map<string, string> }> {
   const engine = await loadEngine();
+  const role = caller.user?.role;
+  const [templatesOnly, templates] = await Promise.all([
+    deps.templatesOnly ? deps.templatesOnly(caller.groups, role) : new Set<string>(),
+    deps.intentTemplates ? deps.intentTemplates(caller.groups, role) : [],
+  ]);
+  const usable = new Set(ids);
+  const templated = templates.filter((template) => usable.has(template.toolId) && template.intents?.length && !template.retired);
+  // A tool's facts for this caller, before its purposes: its formats here and its policy
+  // with the caller's company values and the design-system rules over it.
+  const factsOf = async (id: string) => {
+    const described = await describeTool({ pack: deps.pack(), profile: {} }, id, { caps: deps.caps, allowHooksInFastPath: deps.allowHooksInFastPath, tokens: deps.tokens() }).catch(() => null);
+    if (!described) return null;
+    const original = overlays.get(id);
+    const { formats } = policyFormats(described.server.formats, original);
+    if (!formats.length) return null;
+    const company = deps.companyOverlay ? await deps.companyOverlay(id, caller.groups, original) : null;
+    const rules = await deps.managedRules(id);
+    const bound = company ? company.overlay : original;
+    const overlay = rules ? projectRuleOverlay(bound, rules, caller.groups) : bound;
+    return { manifest: described.manifest as unknown as IntentToolFactsV1, formats, overlay, filled: companyFilled(company) };
+  };
+  const facts = new Map<string, Awaited<ReturnType<typeof factsOf>>>();
+  for (const id of new Set([...ids, ...templated.map((t) => t.toolId)])) facts.set(id, await factsOf(id));
+
   const found = await Promise.all(ids.map(async (id): Promise<IntentToolFactsV1 | null> => {
+    // A tool used here only through its templates is offered only as those templates.
+    if (templatesOnly.has(id)) return null;
     const text = await readSidecar(deps.pack(), id);
     if (text === null) return null;
     const parsed = engine.parseToolIntents(text);
@@ -98,16 +223,19 @@ async function callerTools(deps: DiscoveryDeps, caller: DiscoveryCaller, ids: re
       return null;
     }
     // A tool that does not load here cannot render here. Discovery reports why.
-    const described = await describeTool({ pack: deps.pack(), profile: {} }, id, { caps: deps.caps, allowHooksInFastPath: deps.allowHooksInFastPath, tokens: deps.tokens() }).catch(() => null);
-    if (!described) return null;
-    const original = overlays.get(id);
-    const { formats } = policyFormats(described.server.formats, original);
-    if (!formats.length) return null;
-    const rules = await deps.managedRules(id);
-    const overlay = rules ? projectRuleOverlay(original, rules, caller.groups) : original;
-    return callerToolFacts({ ...(described.manifest as unknown as IntentToolFactsV1), intents: parsed.intents }, formats, overlay, caller.groups);
+    const own = facts.get(id);
+    if (!own) return null;
+    return callerToolFacts({ ...own.manifest, intents: parsed.intents }, own.formats, own.overlay, caller.groups, own.filled);
   }));
-  return found.filter(tool => tool !== null);
+  const map = new Map<string, string>();
+  for (const template of templated) {
+    const own = facts.get(template.toolId);
+    if (!own) continue;
+    const filled = deps.templateCompanyValues ? await deps.templateCompanyValues(template, caller.groups) : {};
+    found.push(templateToolFacts(own.manifest, template, own.formats, own.overlay, caller.groups, { ...own.filled, ...filled }));
+    map.set(template.id, template.toolId);
+  }
+  return { tools: found.filter(tool => tool !== null), templates: map };
 }
 
 async function resolve(res: ServerResponse, deps: DiscoveryDeps, caller: DiscoveryCaller, body: unknown): Promise<void> {
@@ -121,7 +249,8 @@ async function resolve(res: ServerResponse, deps: DiscoveryDeps, caller: Discove
     const ids = all.filter(id => mayRenderTool(caller.user, id, overlays, grants, deps.accessMode));
     // Otherwise a caller with no rights would hear that no tool serves the purpose.
     if (all.length && !ids.length) return sendError(res, caller.user ? 403 : 401, caller.user ? 'FORBIDDEN' : 'UNAUTHORIZED', 'tool.use and export.server required');
-    sendJson(res, 200, await engine.resolveIntent(body, await callerTools(deps, caller, ids, overlays)));
+    const { tools, templates } = await callerTools(deps, caller, ids, overlays);
+    sendJson(res, 200, asTemplateRenders(await engine.resolveIntent(body, tools), templates));
   } catch (error) {
     if (error instanceof engine.IntentInvalidError) return sendError(res, 400, 'INTENT_INVALID', 'This intent was refused. errors lists each problem.', { errors: error.errors });
     if (error instanceof BrandError) return sendError(res, error.status, error.code, error.message);

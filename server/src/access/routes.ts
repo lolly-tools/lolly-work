@@ -43,6 +43,7 @@ import { maskEmail } from './mask.ts';
 import { answerNotice, joinApprovedText, noticeContext } from './messages.ts';
 import { fileRequest, invitationLive, NOTE_MAX, providerName, retireRequestNotice } from './requests.ts';
 import type { MyRequest, RequestDeps, RequestView } from './types.ts';
+import { JSON_BODY_CONTROL_BYTES, JSON_BODY_SMALL_BYTES } from '../api/body-limits.ts';
 
 /** Who an app-side change is made by: the same actor `shareProjectWith` takes. */
 export interface ShareActor { principal: string; name: string; userId: string | null }
@@ -236,7 +237,7 @@ export function registerAccessRoutes(router: ReturnType<typeof createRouter>, d:
   const ask = async (req: IncomingMessage, res: ServerResponse, target: { projectId: string } | { sessionId: string }): Promise<void> => {
     const user = await d.memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
-    const body = (await readJson(req, 16 * 1024)) as { role?: unknown; note?: unknown } | null;
+    const body = (await readJson(req, JSON_BODY_SMALL_BYTES)) as { role?: unknown; note?: unknown } | null;
     if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'INVALID_INPUT', 'body must be a JSON object');
     if (body.role !== 'viewer' && body.role !== 'commenter' && body.role !== 'editor') {
       return sendError(res, 400, 'INVALID_INPUT', 'role must be viewer, commenter or editor', { field: 'role' });
@@ -362,7 +363,7 @@ export function registerAccessRoutes(router: ReturnType<typeof createRouter>, d:
     // The body gives a role, and for a join a project to add the person to.
     // The project, the person and the invitation a request is about are what
     // it stored, never what the body says (security rule 10).
-    const body = (await readJson(req, 4 * 1024)) as { role?: unknown; projectId?: unknown } | null;
+    const body = (await readJson(req, JSON_BODY_CONTROL_BYTES)) as { role?: unknown; projectId?: unknown } | null;
     if (body !== null && (typeof body !== 'object' || Array.isArray(body))) return sendError(res, 400, 'INVALID_INPUT', 'body must be a JSON object');
     if (body?.role !== undefined && body.role !== null && !isMemberRole(body.role)) {
       return sendError(res, 400, 'INVALID_INPUT', 'role must be viewer, editor or manager', { field: 'role' });

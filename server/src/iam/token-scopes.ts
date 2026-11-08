@@ -129,6 +129,8 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'GET /api/v1/context/brand/skills/:slug/*': ['catalog.read'],
   'GET /api/v1/context/partner/company': ['catalog.read'],
   'GET /api/v1/context/partner/company/logo/:surface': ['catalog.read'],
+  'GET /api/v1/context/partner/kit': ['catalog.read'],
+  'GET /api/v1/context/partner/kit/logo/:surface': ['catalog.read'],
   'GET /api/v1/context/partner/templates': ['catalog.read'],
 
   'GET /api/v1/discovery/tools': WORK,
@@ -237,7 +239,7 @@ export function scopesCoverAction(scopes: readonly string[], action: string): bo
 }
 
 const TOOL_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
-const MAX_TOKEN_TOOLS = 64;
+export const MAX_TOKEN_TOOLS = 64;
 
 export interface TokenAuthority { role: string; scopes?: TokenScope[]; tools?: string[] }
 

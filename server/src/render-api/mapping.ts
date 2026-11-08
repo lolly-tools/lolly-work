@@ -11,8 +11,8 @@ const FORMATS = new Set(['svg', 'png', 'jpg', 'pdf']);
 const TOOL_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
 const INPUT_ID = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,127}$/;
-const MAX_NAME = 200;
-const MAX_IGNORED = 1000;
+export const MAX_NAME = 200;
+export const MAX_IGNORED = 1000;
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const safeKey = (key: string): boolean => key.length >= 1 && key.length <= MAX_NAME && !UNSAFE_KEYS.has(key);

@@ -30,6 +30,8 @@ export interface CollectionPageItem {
   sizeText?: string;
   previewHref?: string;
   downloadHref: string;
+  /** The credit a file's licence asks for (plans/82 M4): the recorded credit, the licence linked to its text, the source. */
+  credit?: { text: string; licenceName: string; licenceUrl: string; sourceUrl?: string };
 }
 
 export interface CollectionPageBrand {
@@ -117,11 +119,15 @@ export function collectionPageHtml(view: CollectionPageView): string {
       ? `<img class="thumb-img" src="${esc(item.previewHref)}" alt="" loading="lazy" decoding="async">`
       : `<span class="thumb-tile">${esc(item.format.toUpperCase().slice(0, 6))}</span>`;
     const meta = [item.format.toUpperCase(), item.sizeText].filter(Boolean).join(' · ');
+    const c = item.credit;
+    const credit = c
+      ? `<span class="item-credit">${c.text ? `${esc(c.text)} · ` : ''}<a href="${esc(c.licenceUrl)}" rel="license noopener noreferrer">${esc(c.licenceName)}</a>${c.sourceUrl ? ` · <a href="${esc(c.sourceUrl)}" rel="noopener noreferrer">Source</a>` : ''}</span>`
+      : '';
     return `<li class="item">
       <div class="thumb">${preview}</div>
       <div class="item-body">
         <span class="item-name" title="${esc(item.name)}">${esc(item.name)}</span>
-        <span class="item-meta">${esc(meta)}</span>
+        <span class="item-meta">${esc(meta)}</span>${credit}
       </div>
       <a class="btn btn-quiet" href="${esc(item.downloadHref)}">Download</a>
     </li>`;
@@ -179,6 +185,8 @@ export function collectionPageHtml(view: CollectionPageView): string {
   .item-body { display:flex; flex-direction:column; gap:2px; min-width:0; }
   .item-name { font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .item-meta { color:var(--muted); font-size:12px; }
+  .item-credit { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+  .item-credit a { color:inherit; }
   .note { color:var(--muted); font-size:13px; margin:16px 0 0; }
   .empty { color:var(--muted); }
   footer { margin-top:38px; padding-top:16px; border-top:1px solid var(--line);

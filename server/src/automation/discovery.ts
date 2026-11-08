@@ -27,7 +27,8 @@ import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { sendError, sendJson, type createRouter } from '../api/router.ts';
 import { matchesEtag, sendBytes } from '../api/file-delivery.ts';
 import { evaluate, type Grant, type Role } from '../rbac/evaluate.ts';
-import type { ToolOverlay } from '../policy/overlay.ts';
+import { resolveInputAccess, type ToolOverlay } from '../policy/overlay.ts';
+import { isPublishedTemplateRef, templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
 import { projectRuleOverlay, type ManagedRuleContext } from '../brand/rules.ts';
 import { BrandError } from '../brand/service.ts';
 import { TOKEN_SCOPES_VERSION, scopesCoverAction } from '../iam/token-scopes.ts';
@@ -77,7 +78,17 @@ export interface DiscoveryDeps {
   /** The caller's partner company values for a tool (plans/82 M3): the overlay
    *  with bound inputs locked to the company's value where its rule locks them,
    *  and the values the tool starts from. Absent binds nothing. */
-  companyOverlay?(toolId: string, groups: string[], overlay: ToolOverlay | undefined): Promise<{ overlay: ToolOverlay | undefined; defaults: Record<string, unknown> }>;
+  companyOverlay?(toolId: string, groups: string[], overlay: ToolOverlay | undefined): Promise<{ overlay: ToolOverlay | undefined; defaults: Record<string, unknown>; bindings?: Record<string, string> }>;
+  /** The published templates this caller's feed carries that declare purposes
+   *  (plans/82 M7), with their rules and values. Retired ones are left out. */
+  intentTemplates?(groups: string[], role?: string): Promise<RenderTemplate[]>;
+  /** One published template, as this caller's feed serves it, or null. */
+  templateFor?(groups: string[], id: string): Promise<RenderTemplate | null>;
+  /** The company values a template's bound inputs take for this caller (plans/82
+   *  M3), by input id: its own bindings and the tool overlay's. Empty with none. */
+  templateCompanyValues?(template: RenderTemplate, groups: string[]): Promise<Record<string, unknown>>;
+  /** The tools this caller uses only through published templates. */
+  templatesOnly?(groups: string[], role?: string): Promise<ReadonlySet<string>>;
   caps: RenderCapabilities;
   allowHooksInFastPath: boolean;
   /** A C2PA signer resolves, so server renders carry Content Credentials. */
@@ -172,13 +183,30 @@ function sendWithEtag(req: IncomingMessage, res: ServerResponse, body: Record<st
 /** The caller's effective contract for one described tool. Without a requested
  *  format it carries only the design-system rules every format shares, the same
  *  rules a compile, validate or package that names no format is checked against. */
-async function contractFor(deps: DiscoveryDeps, described: ToolDescription, overlays: Map<string, ToolOverlay>, groups: string[], format?: string) {
+async function contractFor(deps: DiscoveryDeps, described: ToolDescription, overlays: Map<string, ToolOverlay>, groups: string[], format?: string, template?: RenderTemplate) {
   const original = overlays.get(described.toolId);
   const allowed = policyFormats(described.server.formats, original);
   const rules = await deps.managedRules(described.toolId, format);
-  const company = deps.companyOverlay ? await deps.companyOverlay(described.toolId, groups, original) : { overlay: original, defaults: {} };
-  const overlay = rules ? projectRuleOverlay(company.overlay, rules, groups) : company.overlay;
-  const input = effectiveInputSchema(described.raw, overlay, groups, company.defaults);
+  const company = deps.companyOverlay ? await deps.companyOverlay(described.toolId, groups, original) : { overlay: original, defaults: {} as Record<string, unknown> };
+  const projected = rules ? projectRuleOverlay(company.overlay, rules, groups) : company.overlay;
+  // Starting from a published template (plans/82 M7): its rules over the tool's own, and
+  // its values where each input starts, under the values the caller's company fills.
+  let overlay = projected;
+  let defaults = company.defaults;
+  if (template) {
+    const ids = ((described.manifest.inputs ?? []) as Array<{ id: string }>).map((input) => input.id);
+    overlay = templateOverlay(projected, template, groups, ids);
+    const filled = deps.templateCompanyValues ? await deps.templateCompanyValues(template, groups) : {};
+    // A bound input the template fixes renders with the company's value, as the
+    // render's own binding does, never with the template's.
+    for (const [id, value] of Object.entries(filled)) {
+      if (overlay && resolveInputAccess(overlay, id, groups).level === 'locked') {
+        overlay = { ...overlay, inputAccess: { ...overlay.inputAccess, [id]: [{ groups: ['*'], level: 'locked', value }] } };
+      }
+    }
+    defaults = { ...company.defaults, ...templateSeed(template.values, ids), ...filled };
+  }
+  const input = effectiveInputSchema(described.raw, overlay, groups, defaults);
   const effects: PolicyEffect[] = [...input.effects, ...allowed.effects];
   return { schema: input.schema, effects, formats: allowed.formats, format, rules, overlay: original,
     unavailable: [...described.server.unavailable, ...allowed.unavailable] as Unavailable[] };
@@ -308,14 +336,26 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
     if (format !== undefined && ![...described.server.formats, ...described.server.unavailable.map(entry => entry.format)].includes(format)) {
       return sendError(res, 400, 'INVALID_INPUT', 'format is not one this tool declares');
     }
+    // `template=inst/<id>`: the schema a render that starts from that template takes,
+    // for a template this caller's own feed carries (plans/82 M7).
+    const templateRef = ctx.url.searchParams.get('template');
+    let template: RenderTemplate | undefined;
+    if (templateRef !== null) {
+      if (!isPublishedTemplateRef(templateRef)) return sendError(res, 400, 'INVALID_INPUT', 'template is a published template id, inst/<id>');
+      const found = deps.templateFor ? await deps.templateFor(caller.groups, templateRef) : null;
+      if (!found || found.retired) return sendError(res, 404, 'NOT_FOUND', 'no such template for you');
+      if (found.toolId !== toolId) return sendError(res, 400, 'INVALID_INPUT', `${templateRef} starts ${found.toolId}, not ${toolId}`);
+      template = found;
+    }
     let contract: Awaited<ReturnType<typeof contractFor>>;
-    try { contract = await contractFor(deps, described, overlays, caller.groups, format); }
+    try { contract = await contractFor(deps, described, overlays, caller.groups, format, template); }
     catch (e) { if (e instanceof BrandError) return sendError(res, e.status, e.code, e.message); throw e; }
     const render = mayRenderTool(caller.user, toolId, overlays, grants, deps.accessMode, !!own);
     sendWithEtag(req, res, {
-      apiVersion: described.apiVersion, schema: contract.schema, view, toolId, tool,
+      apiVersion: described.apiVersion, schema: contract.schema, view, toolId, tool, ...(template ? { template: { id: template.id, name: template.name, version: template.version } } : {}),
       versions: { engine: described.engineVersion, tool: described.version, policy: contract.overlay?.version ?? 0,
-        design: await deps.designRevision(caller.groups, caller.user?.role), catalog: await deps.catalogVersion(caller.groups, caller.user?.role), ...(contract.rules ? { rules: contract.rules.rulesDigest.slice(0, 16) } : {}) },
+        design: await deps.designRevision(caller.groups, caller.user?.role), catalog: await deps.catalogVersion(caller.groups, caller.user?.role), ...(contract.rules ? { rules: contract.rules.rulesDigest.slice(0, 16) } : {}),
+        ...(template ? { template: template.version } : {}) },
       policy: contract.effects,
       render: { renderer: described.server.renderer, formats: contract.formats, ...(contract.format ? { format: contract.format } : {}) },
       unavailable: [...contract.unavailable, ...(render ? [] : [RENDER_FORBIDDEN])],

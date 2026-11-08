@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { readJson, sendJson, sendError, type createRouter } from '../api/router.ts';
 import { generateSetup, identitySettingsHash, mergeSetupPatch, setupDraft, setupSettingsHash, SetupInputError } from './configuration.ts';
 import { testIdentityDiscovery } from './identity.ts';
+import { JSON_BODY_CONTROL_BYTES, JSON_BODY_MEDIUM_BYTES } from '../api/body-limits.ts';
 
 export function registerSetupRoutes(router: ReturnType<typeof createRouter>, deps: {
   config: InstanceConfig; store: Store; secrets: Secrets; fetchImpl: typeof fetch;
@@ -49,7 +50,7 @@ export function registerSetupRoutes(router: ReturnType<typeof createRouter>, dep
   router.add('POST', '/api/v1/system/setup/configuration', async (req, res) => {
     const user = await deps.owner(req, res); if (!user) return;
     try {
-      const proposal = generateSetup(await readJson(req, 64 * 1024), config);
+      const proposal = generateSetup(await readJson(req, JSON_BODY_MEDIUM_BYTES), config);
       if (config.dev.enabled && !proposal.patch.dev.enabled) {
         const target = parseConfig(JSON.stringify(mergeSetupPatch(config as unknown as Record<string, unknown>, proposal.patch)));
         if (identitySettingsHash(target) !== fingerprint() || user.role !== 'owner' || !(await proofFor(user)).signIn) {
@@ -76,7 +77,7 @@ export function registerSetupRoutes(router: ReturnType<typeof createRouter>, dep
   });
   router.add('POST', '/api/v1/system/setup/account-test', async (req, res) => {
     if (!(await deps.owner(req, res))) return;
-    const body = await readJson(req, 4096) as { sub?: unknown } | null;
+    const body = await readJson(req, JSON_BODY_CONTROL_BYTES) as { sub?: unknown } | null;
     if (!body || typeof body.sub !== 'string' || !body.sub || body.sub.length > 1000 || /[\u0000-\u001f]/.test(body.sub)) return sendError(res, 400, 'INVALID_INPUT', 'Enter the exact durable subject, not an email address to merge.');
     const user = await store.getUserBySub(body.sub);
     sendJson(res, 200, { account: user ? await proofFor(user) : null,

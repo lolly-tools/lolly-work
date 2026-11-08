@@ -351,8 +351,8 @@ export function lockedValues(overlay: ToolOverlay | undefined, groups: string[])
 const ACCESS_LEVELS: AccessLevel[] = ['editable', 'choice', 'locked', 'hidden'];
 const WATERMARKS = ['until-approved', 'always', 'never'] as const;
 /** Attribution is fine print beside a sidebar control, not a policy essay. */
-const NAME_MAX = 80;
-const REASON_MAX = 200;
+export const NAME_MAX = 80;
+export const REASON_MAX = 200;
 
 /**
  * Validate + normalize an overlay edit from the control plane (console/CLI)
