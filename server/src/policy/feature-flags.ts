@@ -96,6 +96,14 @@ export const GOVERNABLE_FLAGS: readonly GovernableFlag[] = [
     builtinDefault: true,
     info: 'Lets nearby Lolly devices on the same network find each other (mDNS/DNS-SD), so an invite can be handed over by tapping a name instead of scanning a code (OSS plans/110). Native shells only; a browser cannot discover. A device is never discoverable until the user opts in for a set time, and the ceremony still confirms every pairing with matching plates. Force off + hide to keep devices off the local-network discovery lane fleet-wide.',
   },
+  {
+    id: 'colourway-asset-treatments',
+    label: 'Colourway asset treatments',
+    // ON by default, matching the shell's own default (OSS shells/web/src/feature-flags.ts
+    // COLOURWAY_ASSET_TREATMENTS_FLAG, engine 1.344). Mirrors to keep "inherit" honest.
+    builtinDefault: true,
+    info: 'Offers each colourway of the design system as a colour choice for two-colour icons and for photos, in Assets and the asset picker. A brand that wants its icons and photos shown only in their own colours forces this off and hides the toggle. Anything already made with a colourway keeps its colours.',
+  },
 ] as const;
 
 const FLAG_BY_ID = new Map<string, GovernableFlag>(GOVERNABLE_FLAGS.map((f) => [f.id, f]));
