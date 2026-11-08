@@ -108,7 +108,7 @@ export function noteField(id: string): string {
 }
 
 /** A masked address as it is seen, beside the words a screen reader says
- *  instead ("an address at suse.com that starts with an"). */
+ *  instead ("an address at lolly.example that starts with an"). */
 export function maskedAddress(masked: string, spoken: string): string {
   return `<span class="tag addr" aria-hidden="true">${esc(masked)}</span><span class="sr-only">${esc(spoken)}</span>`;
 }

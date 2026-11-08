@@ -30,28 +30,28 @@ import {
 } from '../server/src/catalog/rights.ts';
 
 const OWNER = 'Owner-published, not an open licence';
-const mark = (scope: string, holder = 'SUSE'): AssetRightsMarkRecord => ({ scope, holder, terms: `Published by ${holder}. Not an open licence.`, statedBy: 'usr_1', statedAt: '2026-11-07T10:00:00.000Z' });
+const mark = (scope: string, holder = 'Northwind'): AssetRightsMarkRecord => ({ scope, holder, terms: `Published by ${holder}. Not an open licence.`, statedBy: 'usr_1', statedAt: '2026-11-07T10:00:00.000Z' });
 
 test('scopes: four kinds, read strictly, each covering as narrowly as it says', () => {
   assert.deepEqual(parseMarkScope('folder:dam/event-photos/'), { kind: 'folder', provider: 'dam', path: 'event-photos' });
   assert.equal(markScopeKey(parseMarkScope('folder:dam//event-photos/day-2')!), 'folder:dam/event-photos/day-2');
   assert.deepEqual(parseMarkScope('provider:dam'), { kind: 'provider', provider: 'dam' });
-  assert.deepEqual(parseMarkScope('prefix:suse/logo/'), { kind: 'prefix', prefix: 'suse/logo/' });
+  assert.deepEqual(parseMarkScope('prefix:lolly/logo/'), { kind: 'prefix', prefix: 'lolly/logo/' });
   assert.deepEqual(parseMarkScope('asset:ext/dam/a1'), { kind: 'asset', id: 'ext/dam/a1' });
-  for (const bad of ['folder:dam/', 'folder:dam/../x', 'prefix:suse/logo', 'prefix:ext/dam/', 'prefix:inst/', 'collection:launch', 'provider:', 'asset:../x', 42]) {
+  for (const bad of ['folder:dam/', 'folder:dam/../x', 'prefix:lolly/logo', 'prefix:ext/dam/', 'prefix:inst/', 'collection:launch', 'provider:', 'asset:../x', 42]) {
     assert.equal(parseMarkScope(bad), null, String(bad));
   }
   const photo = { id: 'ext/dam/e3', meta: { providerFolder: 'event-photos/day-2' } };
   const ranks = ['asset:ext/dam/e3', 'folder:dam/event-photos/day-2', 'folder:dam/event-photos', 'provider:dam'].map((s) => markCovers(parseMarkScope(s)!, photo));
   assert.ok(ranks.every((r, i) => r > 0 && (i === 0 || r < ranks[i - 1]!)), 'one file, then the deeper folder, then the folder, then the provider');
   assert.equal(markCovers(parseMarkScope('folder:dam/event')!, { id: 'ext/dam/x', meta: { providerFolder: 'event-photos' } }), 0, 'a sibling with the same start is not below');
-  assert.equal(markCovers(parseMarkScope('prefix:suse/')!, { id: 'suse/logo/a' }) > 0, true);
+  assert.equal(markCovers(parseMarkScope('prefix:lolly/')!, { id: 'lolly/logo/a' }) > 0, true);
   assert.equal(markCovers(parseMarkScope('provider:dam')!, { id: 'ext/other/a' }), 0);
 });
 
 test('composition: only a blank declaration inherits, a licence record answers first, and the engine reads the result', async () => {
   const engine = await loadRightsEngine();
-  const marks = [mark('provider:dam', 'Whole DAM'), mark('folder:dam/event-photos', 'SUSE'), mark('prefix:acme/', 'Acme')];
+  const marks = [mark('provider:dam', 'Whole DAM'), mark('folder:dam/event-photos', 'Northwind'), mark('prefix:acme/', 'Acme')];
   const licences: AssetLicenceRecord[] = [{ assetId: 'ext/dam/e2', declaration: 'CC BY-NC 4.0', attribution: 'Photo by A. Person', recordedBy: 'usr_1', recordedAt: 'x' }];
   const entries = [
     { id: 'ext/dam/e1', meta: { providerFolder: 'event-photos' } },
@@ -65,7 +65,7 @@ test('composition: only a blank declaration inherits, a licence record answers f
   const answer = (id: string) => rightsAnswer(engine, out.find((e) => e.id === id)!);
 
   const e1 = answer('ext/dam/e1');
-  assert.ok(e1.state === 'travels' && e1.licence === OWNER && e1.owner?.holder === 'SUSE', 'the folder mark, narrower than the provider one');
+  assert.ok(e1.state === 'travels' && e1.licence === OWNER && e1.owner?.holder === 'Northwind', 'the folder mark, narrower than the provider one');
   assert.ok(e1.state === 'travels' && e1.declared === 'LicenseRef-Owner-Published');
   const e2 = answer('ext/dam/e2');
   assert.ok(e2.state === 'held' && e2.category === 'not-interpreted', 'a licence record beats a mark, and NC stays recognised and not interpreted');
@@ -103,7 +103,7 @@ before(async () => {
     version: 1, assets: PACK.map((a) => ({ ...a, formats: [{ format: 'bin', url: `/catalog/assets/acme/${a.id.split('/').pop()}.bin` }] })),
   }));
   const config = parseConfig(JSON.stringify({
-    instance: { name: 'SUSE', baseUrl: 'http://localhost', pack },
+    instance: { name: 'Northwind', baseUrl: 'http://localhost', pack },
     rateLimit: { enabled: false },
     dev: { enabled: true, users: [
       { email: 'bruno@test', groups: ['admin'], name: 'Bruno Marsh' },
@@ -155,18 +155,18 @@ test('a folder mark: stated once, composed onto every file below it, shown with 
   assert.equal(row0.held.count, 3);
 
   const defaults = (await call(bruno, 'GET', '/api/v1/catalog/rights/marks')).body.defaults;
-  assert.deepEqual(defaults, { holder: 'SUSE', terms: 'Published by SUSE for the people and partner programmes of this workspace to use in their work. Not an open licence.' });
+  assert.deepEqual(defaults, { holder: 'Northwind', terms: 'Published by Northwind for the people and partner programmes of this workspace to use in their work. Not an open licence.' });
 
   const put = await call(bruno, 'PUT', '/api/v1/catalog/rights/marks', { scope: 'folder:dam/event-photos', note: 'shot by our photo team' });
   assert.equal(put.status, 201, JSON.stringify(put.body));
-  assert.equal(put.body.mark.holder, 'SUSE', 'the holder is prefilled with the workspace name');
+  assert.equal(put.body.mark.holder, 'Northwind', 'the holder is prefilled with the workspace name');
   assert.equal(put.body.mark.terms, defaults.terms);
   assert.deepEqual(put.body.covered, { now: 3, atStatement: 3 });
-  assert.match(put.body.statement, /^Recorded as SUSE's own statement by Bruno Marsh on \d{1,2} \w{3} \d{4}\. Lolly does not check ownership\.$/);
+  assert.match(put.body.statement, /^Recorded as Northwind's own statement by Bruno Marsh on \d{1,2} \w{3} \d{4}\. Lolly does not check ownership\.$/);
 
   const rita = await feed('rita@northwind.test');
   const e1 = rita.assets.find((a) => a.id === 'ext/dam/e1')!;
-  assert.deepEqual(e1.rights.works[0].creators, [{ name: 'SUSE', role: 'owner' }]);
+  assert.deepEqual(e1.rights.works[0].creators, [{ name: 'Northwind', role: 'owner' }]);
   assert.equal(e1.rights.works[0].rights[0].declaration, 'LicenseRef-Owner-Published');
   assert.equal(e1.rights.works[0].grants[0].scope, defaults.terms);
   assert.ok(!JSON.stringify(rita).includes('Bruno') && !JSON.stringify(rita).includes('statedBy'), 'the app wire never says who stated a mark');
@@ -182,12 +182,12 @@ test('a folder mark: stated once, composed onto every file below it, shown with 
   assert.equal(row.mark.note, 'shot by our photo team');
 
   const audit = (await store.listAudit()).filter((e) => e.action === 'catalog.rights.mark').at(-1)!;
-  assert.deepEqual(audit.payload, { scope: 'folder:dam/event-photos', holder: 'SUSE', terms: defaults.terms, note: 'shot by our photo team', covered: 3 });
+  assert.deepEqual(audit.payload, { scope: 'folder:dam/event-photos', holder: 'Northwind', terms: defaults.terms, note: 'shot by our photo team', covered: 3 });
 
-  const edit = await call(bruno, 'PUT', '/api/v1/catalog/rights/marks', { scope: 'folder:dam/event-photos/', holder: 'SUSE Software Solutions', terms: 'Ours. Not an open licence.' });
+  const edit = await call(bruno, 'PUT', '/api/v1/catalog/rights/marks', { scope: 'folder:dam/event-photos/', holder: 'Northwind Traders', terms: 'Ours. Not an open licence.' });
   assert.equal(edit.status, 200, 'the same scope, written another way, is the same mark');
   const edited = (await store.listAudit()).filter((e) => e.action === 'catalog.rights.mark').at(-1)!;
-  assert.deepEqual((edited.payload as { before: unknown }).before, { holder: 'SUSE', terms: defaults.terms, note: 'shot by our photo team' });
+  assert.deepEqual((edited.payload as { before: unknown }).before, { holder: 'Northwind', terms: defaults.terms, note: 'shot by our photo team' });
 });
 
 test('a licence record: the text as typed, read as the engine reads it, never over a file\'s own record', async () => {
@@ -245,17 +245,17 @@ test('withdrawing a mark returns its files to what they record themselves', asyn
   assert.equal(row.held.count, 3);
   assert.equal(row.mark, undefined);
   const unmark = (await store.listAudit()).filter((e) => e.action === 'catalog.rights.unmark').at(-1)!;
-  assert.equal((unmark.payload as { before: { holder: string } }).before.holder, 'SUSE Software Solutions');
+  assert.equal((unmark.payload as { before: { holder: string } }).before.holder, 'Northwind Traders');
   assert.deepEqual((await call(bruno, 'GET', '/api/v1/catalog/rights/marks')).body.marks, []);
 });
 
 test('held pack files group by id prefix, and a prefix a mark cannot reach says what would clear it instead', () => {
-  const suse = Array.from({ length: 210 }, (_, i) => ({ id: `suse/logo/${i}`, declared: 'LicenseRef-SUSE-Proprietary', category: 'identifier' as const }));
+  const pack = Array.from({ length: 210 }, (_, i) => ({ id: `lolly/logo/${i}`, declared: 'LicenseRef-Lolly-Marks', category: 'identifier' as const }));
   const acme = [{ id: 'acme/photo/a', declared: '', category: 'not-recorded' as const }, { id: 'acme/photo/b', declared: 'CC-BY-NC-4.0', category: 'not-interpreted' as const }];
-  const rows = packPrefixRows([...suse, ...acme, { id: 'ext/dam/x', declared: '', category: 'not-recorded' }]);
-  assert.deepEqual(rows.map((r) => r.prefix), ['suse/', 'acme/'], 'provider and instance files are not pack prefixes');
+  const rows = packPrefixRows([...pack, ...acme, { id: 'ext/dam/x', declared: '', category: 'not-recorded' }]);
+  assert.deepEqual(rows.map((r) => r.prefix), ['lolly/', 'acme/'], 'provider and instance files are not pack prefixes');
   const [s0, a0] = rows;
-  assert.deepEqual(s0!.sentences, ['210 files under suse/ declare LicenseRef-SUSE-Proprietary, an identifier these rules do not carry.']);
+  assert.deepEqual(s0!.sentences, ['210 files under lolly/ declare LicenseRef-Lolly-Marks, an identifier these rules do not carry.']);
   assert.equal(s0!.markScope, undefined, 'a mark reaches only a blank declaration, so none is offered here');
   assert.equal(s0!.clearedBy, IDENTIFIER_CLEARED_BY);
   assert.equal(IDENTIFIER_CLEARED_BY, 'The owner can record these as owner-published in the pack, or the rules can be widened. Ask your Lolly administrator.');

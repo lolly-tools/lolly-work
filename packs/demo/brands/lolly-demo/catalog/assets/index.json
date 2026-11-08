@@ -1,0 +1,142 @@
+{
+  "version": "1",
+  "generatedAt": "2026-11-07T00:00:00Z",
+  "defaultFavourites": [],
+  "defaultHiddenTools": [],
+  "brandTokens": "lolly/tokens/demo",
+  "assets": [
+    {
+      "id": "lolly/tokens/demo",
+      "name": "Lolly Demo",
+      "description": "Lolly Demo, Lolly's own design system, coloured with the Opal palette of treats and nature. Named colours (Spearmint, Green Apple, Liquorice, Honey, Reef and the rest), the chart spectrum, light and dark semantic slots with the slide roles, Outfit headings with SUSE and SUSE Mono, and Lolly's marks in the logo slots.",
+      "type": "tokens",
+      "version": "1.0.0",
+      "tier": "core",
+      "tags": [
+        "tokens",
+        "brand",
+        "dtcg",
+        "opal"
+      ],
+      "formats": [
+        {
+          "format": "json",
+          "url": "/catalog/assets/lolly/tokens/demo.json",
+          "checksum": "sha256-B/YTRzxq/puiYyMwE/uCWb12fbfaowpYz8Hb04Hf4Og=",
+          "size": 56982
+        }
+      ],
+      "brandLock": true
+    },
+    {
+      "id": "lolly/logo/horizontal",
+      "name": "Lolly Wordmark - Horizontal",
+      "description": "The Lolly wordmark in Liquorice: Lolly Demo's horizontal logo for light backgrounds.",
+      "type": "vector",
+      "version": "1.0.0",
+      "tier": "core",
+      "tags": [
+        "logo",
+        "lolly",
+        "wordmark",
+        "horizontal",
+        "primary",
+        "on-light"
+      ],
+      "formats": [
+        {
+          "format": "svg",
+          "url": "/catalog/assets/lolly/logo/horizontal.svg",
+          "checksum": "sha256-vw924joc4foUFWk0JdM4CJ/Jhj0Ki2X6MeWSEWbbprc=",
+          "size": 526
+        }
+      ],
+      "added": "2026-10-19",
+      "license": "LicenseRef-Lolly-Marks",
+      "rights": {
+        "works": [
+          {
+            "id": "lolly/logo/horizontal",
+            "title": "Lolly Wordmark - Horizontal",
+            "creators": [
+              {
+                "name": "Andy Fitzsimon",
+                "role": "owner"
+              }
+            ],
+            "rights": [
+              {
+                "declaration": "LicenseRef-Lolly-Marks",
+                "assertedBy": "catalog",
+                "evidence": "catalog-entry",
+                "status": "unparsed"
+              }
+            ],
+            "grants": [
+              {
+                "kind": "own-work",
+                "scope": "The Lolly name and marks belong to Andy Fitzsimon. They are not under an open licence: the Mozilla Public License 2.0 on Lolly's source code grants no rights in them (section 2.3). You may show these files unaltered to refer to Lolly. For any other use, ask at https://github.com/lolly-tools/lolly/issues.",
+                "asserted": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "lolly/logo/horizontal-reverse",
+      "name": "Lolly Wordmark - Horizontal reverse",
+      "description": "The Lolly wordmark in Daylight, for dark backgrounds.",
+      "type": "vector",
+      "version": "1.0.0",
+      "tier": "core",
+      "tags": [
+        "logo",
+        "lolly",
+        "wordmark",
+        "horizontal",
+        "reverse",
+        "on-dark"
+      ],
+      "formats": [
+        {
+          "format": "svg",
+          "url": "/catalog/assets/lolly/logo/horizontal-reverse.svg",
+          "checksum": "sha256-4t3EMz8ZcxVCXBypCtHhax3ZVfojB2Tm6TWNPWDKb74=",
+          "size": 526
+        }
+      ],
+      "added": "2026-10-19",
+      "license": "LicenseRef-Lolly-Marks",
+      "rights": {
+        "works": [
+          {
+            "id": "lolly/logo/horizontal-reverse",
+            "title": "Lolly Wordmark - Horizontal reverse",
+            "creators": [
+              {
+                "name": "Andy Fitzsimon",
+                "role": "owner"
+              }
+            ],
+            "rights": [
+              {
+                "declaration": "LicenseRef-Lolly-Marks",
+                "assertedBy": "catalog",
+                "evidence": "catalog-entry",
+                "status": "unparsed"
+              }
+            ],
+            "grants": [
+              {
+                "kind": "own-work",
+                "scope": "The Lolly name and marks belong to Andy Fitzsimon. They are not under an open licence: the Mozilla Public License 2.0 on Lolly's source code grants no rights in them (section 2.3). You may show these files unaltered to refer to Lolly. For any other use, ask at https://github.com/lolly-tools/lolly/issues.",
+                "asserted": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

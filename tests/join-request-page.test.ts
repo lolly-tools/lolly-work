@@ -114,7 +114,7 @@ test('held by the per-address cap: the same page, nothing stored, audited as hel
 
 test('the address is the ask token\'s: an email field is ignored; a forged or expired token gets the expired page', async () => {
   const env = await boot();
-  const sent = await askToJoin(env, { email: 'victim@suse.example' });
+  const sent = await askToJoin(env, { email: 'victim@lolly.example' });
   assert.equal(sent.status, 200);
   assert.deepEqual((await openJoins(env)).map((r) => r.email), [SAM]);
 
@@ -124,13 +124,13 @@ test('the address is the ask token\'s: an email field is ignored; a forged or ex
     assert.equal(res.status, 403);
     assert.ok(html.includes('<h1>This page expired</h1>') && html.includes('Sign in again to send your request.'));
   });
-  const forged = mintToken('lw/ask', { e: 'victim@suse.example', idp: 'primary', sub: 'x' }, 'not-the-secret', 1800);
+  const forged = mintToken('lw/ask', { e: 'victim@lolly.example', idp: 'primary', sub: 'x' }, 'not-the-secret', 1800);
   await expiredPage(await postForm(env.base, '/api/auth/request', { ask: forged, csrf, action: 'join' }, page.form));
-  const stale = mintToken('lw/ask', { e: 'victim@suse.example', idp: 'primary', sub: 'x' }, SESSION_SECRET, 1800, Date.now() - 3_600_000);
+  const stale = mintToken('lw/ask', { e: 'victim@lolly.example', idp: 'primary', sub: 'x' }, SESSION_SECRET, 1800, Date.now() - 3_600_000);
   await expiredPage(await postForm(env.base, '/api/auth/request', { ask: stale, csrf, action: 'join' }, page.form));
-  const otherDomain = mintToken('lw/form', { e: 'victim@suse.example', idp: 'primary', sub: 'x' }, SESSION_SECRET, 1800);
+  const otherDomain = mintToken('lw/form', { e: 'victim@lolly.example', idp: 'primary', sub: 'x' }, SESSION_SECRET, 1800);
   await expiredPage(await postForm(env.base, '/api/auth/request', { ask: otherDomain, csrf, action: 'join' }, page.form));
-  assert.ok(!(await openJoins(env)).some((r) => r.email === 'victim@suse.example'));
+  assert.ok(!(await openJoins(env)).some((r) => r.email === 'victim@lolly.example'));
 });
 
 test('an address its provider did not confirm gets no ask form', async () => {
@@ -226,7 +226,7 @@ test('the gate learns the workspace name, that it is invite only, and that peopl
 test('from the wrong-account page: ask to use this account, see it waiting, and the inviter is told', async () => {
   const env = await boot();
   await project(env, 'prj_c', 'Weekend C');
-  await invite(env, { id: 'inv_w1', email: 'w1@suse.example', projects: [{ projectId: 'prj_c', role: 'editor' }] });
+  await invite(env, { id: 'inv_w1', email: 'w1@lolly.example', projects: [{ projectId: 'prj_c', role: 'editor' }] });
   const token = tokenFor('inv_w1', 'prj_c');
   env.script.google = { sub: 'g-sam', email: SAM, email_verified: true, given_name: 'Sam' };
   const first = await startAndReturn(env, token, 'primary');
@@ -244,7 +244,7 @@ test('from the wrong-account page: ask to use this account, see it waiting, and 
   assert.equal(request?.userId, undefined, 'no account behind it');
   const notice = (await env.store.listMessages()).find((m) => m.id === `msg_req_${request!.id}`)!;
   assert.ok(notice.audience.users?.includes(env.admin.id));
-  assert.ok(notice.body?.includes('Someone with the invitation for w•••@suse.example signed in as sam.k@gmail.example.'));
+  assert.ok(notice.body?.includes('Someone with the invitation for w•••@lolly.example signed in as sam.k@gmail.example.'));
 
   // Back on the page, the request is waiting.
   const again = await startAndReturn(env, token, 'primary');
@@ -256,7 +256,7 @@ test('from the wrong-account page: ask to use this account, see it waiting, and 
 test('signed in as another account: the ask carries the account, and only its own session may send it', async () => {
   const env = await boot({ idp: { admission: { emails: ['listed@gmail.example'] } } });
   await project(env, 'prj_c', 'Weekend C');
-  await invite(env, { id: 'inv_w1', email: 'w1@suse.example', projects: [{ projectId: 'prj_c', role: 'editor' }] });
+  await invite(env, { id: 'inv_w1', email: 'w1@lolly.example', projects: [{ projectId: 'prj_c', role: 'editor' }] });
   env.script.google = { sub: 'g-listed', email: 'listed@gmail.example', email_verified: true };
   const { done, session, form } = await startAndReturn(env, tokenFor('inv_w1', 'prj_c'), 'primary');
   const html = await done.text();

@@ -88,9 +88,9 @@ export const SHELL_DIR = join(OSS_DIR, 'shells', 'web', 'dist');
 /** Where the view is written. Under packs/ because packs are data, never
  *  committed (.gitignore keeps only packs/demo). */
 export const PACK_VIEW = resolve(HERE, '..', 'packs', 'oss-view');
-/** The profile the demo constants below belong to (BRAND_LOGO_ASSET, BRAND_GREEN
- *  are SUSE catalog values). LOLLY_PROFILE overrides it. */
-const DEMO_PROFILE = 'suse';
+/** The profile the demo constants below belong to (BRAND_LOGO_ASSET, BRAND_ACCENT
+ *  are Lolly Demo catalog values). LOLLY_PROFILE overrides it. */
+const DEMO_PROFILE = 'lolly-demo';
 
 /** The slice of the OSS resolver (packages/node-shell/src/content-roots.ts) the
  *  view needs. Typed here because the module is imported by path at run time:
@@ -221,11 +221,11 @@ export async function resolvePack(oss = OSS_DIR): Promise<PackVerdict> {
   try {
     roots = mod.contentRoots({ root: oss, profile: wanted });
   } catch (err) {
-    // A public clone has no private SUSE pack: take the resolver's own choice
-    // and say that the demo's locked values name assets it will not find.
+    // A checkout without this profile: take the resolver's own choice and say
+    // that the demo's locked values name assets that profile will not have.
     roots = mod.contentRoots({ root: oss });
     const why = (err instanceof Error ? err.message : String(err)).split('\n')[0];
-    note = `profile "${wanted}" is not on disk (${why}); mounted "${roots.profile}" instead. The locked logo and colour values name SUSE assets and will not resolve on it.`;
+    note = `profile "${wanted}" is not on disk (${why}); mounted "${roots.profile}" instead. The locked logo and colour values name Lolly Demo assets and will not resolve there.`;
   }
   const tools = buildPackView(PACK_VIEW, mod, roots);
   return { dir: PACK_VIEW, how: 'view', profile: roots.profile, tools, note };
@@ -244,11 +244,11 @@ export function describePack(pack: PackVerdict): string {
 }
 
 
-/** Real logo asset id in the SUSE-profile catalog - the value a locked logo
+/** Real logo asset id in the Lolly Demo catalog - the value a locked logo
  *  input bakes to. */
-const BRAND_LOGO_ASSET = 'suse/logo/hor-pos-green';
-/** SUSE green - the value the locked qr-code module colour bakes to. */
-const BRAND_GREEN = '#30ba78';
+const BRAND_LOGO_ASSET = 'lolly/logo/horizontal';
+/** Lolly Demo's Spearmint - the value the locked qr-code module colour bakes to. */
+const BRAND_ACCENT = '#033633';
 
 /** Dev personas - the four sign-in identities the demo hands out. Groups drive
  *  role (roleFromGroups) and every policy/eligibility decision. */
@@ -259,10 +259,10 @@ export const PERSONAS: Array<{
   lastname: string;
   title: string;
 }> = [
-  { email: 'admin@suse.example', groups: ['admin'], firstname: 'Ada', lastname: 'Ops', title: 'Platform Admin' },
-  { email: 'brand@suse.example', groups: ['brand-team', 'approver'], firstname: 'Bruno', lastname: 'Marques', title: 'Brand Lead' },
-  { email: 'marketer@suse.example', groups: ['marketing'], firstname: 'Mia', lastname: 'Fields', title: 'Field Marketing Manager' },
-  { email: 'contractor@suse.example', groups: ['contractors'], firstname: 'Cleo', lastname: 'Vidal', title: 'Contract Designer' },
+  { email: 'admin@lolly.example', groups: ['admin'], firstname: 'Ada', lastname: 'Ops', title: 'Platform Admin' },
+  { email: 'brand@lolly.example', groups: ['brand-team', 'approver'], firstname: 'Bruno', lastname: 'Marques', title: 'Brand Lead' },
+  { email: 'marketer@lolly.example', groups: ['marketing'], firstname: 'Mia', lastname: 'Fields', title: 'Field Marketing Manager' },
+  { email: 'contractor@lolly.example', groups: ['contractors'], firstname: 'Cleo', lastname: 'Vidal', title: 'Contract Designer' },
 ];
 
 // ── seed shapes ──────────────────────────────────────────────────────────────
@@ -283,14 +283,14 @@ export function demoGrants(): Grant[] {
 export function demoOverlays(): ToolOverlay[] {
   return [
     // qr-code: brand-team edits freely; everyone else gets the module colour
-    // LOCKED (baked to SUSE green) and the background input HIDDEN entirely.
+    // LOCKED (baked to Lolly Demo's Spearmint) and the background input HIDDEN entirely.
     {
       toolId: 'qr-code',
       version: 1,
       inputAccess: {
         color: [
           { groups: ['brand-team'], level: 'editable' },
-          { groups: ['*'], level: 'locked', value: BRAND_GREEN },
+          { groups: ['*'], level: 'locked', value: BRAND_ACCENT },
         ],
         background: [
           { groups: ['brand-team'], level: 'editable' },
@@ -298,14 +298,14 @@ export function demoOverlays(): ToolOverlay[] {
         ],
       },
     },
-    // event-name-badge: the LOGO input is locked to the brand logo for everyone
+    // certificate: the LOGO input is locked to the brand logo for everyone
     // but brand-team, AND the tool's outputs escalate through the brand-review
     // chain, with a preview watermark until an approval clears.
     {
-      toolId: 'event-name-badge',
+      toolId: 'certificate',
       version: 1,
       inputAccess: {
-        eventLogo: [
+        brandLogo: [
           { groups: ['brand-team'], level: 'editable' },
           { groups: ['*'], level: 'locked', value: BRAND_LOGO_ASSET },
         ],
@@ -319,10 +319,10 @@ export function demoOverlays(): ToolOverlay[] {
       version: 1,
       enforce: { watermark: 'always' },
     },
-    // deck-builder is hidden from anyone outside brand/marketing/admin - demoing
+    // deck-studio is hidden from anyone outside brand/marketing/admin - demoing
     // per-caller catalog filtering (a contractor never learns it exists).
     {
-      toolId: 'deck-builder',
+      toolId: 'deck-studio',
       version: 1,
       visibility: { groups: ['brand-team', 'marketing', 'admin'] },
     },
@@ -354,13 +354,13 @@ export function demoLifecycle(now = Date.now()): LifecycleRow[] {
   const DAY = 86_400_000;
   return [
     // Upcoming expiry - still live, console shows the date + warn policy.
-    { assetId: 'suse/logo/hor-pos-green', validUntil: iso(2 * DAY), onExpiry: 'warn' },
+    { assetId: 'lolly/logo/horizontal', validUntil: iso(2 * DAY), onExpiry: 'warn' },
     // Expired but warned - kept in the feed (flagged expired) and blob still 200s.
-    { assetId: 'suse/logo/hor-neg-green', validUntil: iso(-2 * DAY), onExpiry: 'warn' },
+    { assetId: 'lolly/logo/horizontal-reverse', validUntil: iso(-2 * DAY), onExpiry: 'warn' },
     // Expired + hide - dropped from the feed and the blob 410s.
-    { assetId: 'suse/logo/vert-pos-black', validUntil: iso(-2 * DAY), onExpiry: 'hide' },
+    { assetId: 'lolly/logo/mono', validUntil: iso(-2 * DAY), onExpiry: 'hide' },
     // Scheduled (not yet valid) - dropped from the feed and the blob 410s.
-    { assetId: 'suse/lottie/pulse-rings', validFrom: iso(7 * DAY), onExpiry: 'hide' },
+    { assetId: 'lolly/logo/primary', validFrom: iso(7 * DAY), onExpiry: 'hide' },
   ];
 }
 
@@ -446,13 +446,13 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
   await inj('qr-tool', 'tool', 'QR code tool', ['*'], { toolId: 'qr-code', source: 'catalog' });
   // A url-source tool: the same tool preconfigured via a Lolly tool URL - the shell
   // opens it with those inputs already applied (#/tool/<id>?<query>).
-  await inj('welcome-qr', 'tool', 'SUSE welcome QR', ['*'], { toolId: 'org-welcome', source: 'url', ref: 'https://demo.lolly.example/#/tool/org-welcome?url=https%3A%2F%2Fsuse.com' });
+  await inj('welcome-qr', 'tool', 'Welcome QR', ['*'], { toolId: 'org-welcome', source: 'url', ref: 'https://demo.lolly.example/#/tool/org-welcome?url=https%3A%2F%2Flolly.tools' });
   await inj('seasonal-jelly', 'flag', 'Seasonal jelly effects', ['*'], { flagId: 'jelly-effects', default: 'on', visibility: 'show' });
 
   // 3. Projects + sessions (real tool ids + plausible inputs + labels).
   const iso = (ms = 0) => new Date(now + ms).toISOString();
-  const brand = users['brand@suse.example']!;
-  const marketer = users['marketer@suse.example']!;
+  const brand = users['brand@lolly.example']!;
+  const marketer = users['marketer@lolly.example']!;
 
   const summit = `prj_${randomId(6)}`;
   await store.putProject({
@@ -475,17 +475,17 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
     project: string; by: UserRecord; toolId: string; toolVersion: string;
     inputs: Record<string, unknown>; label: string; ageDays: number;
   }> = [
-    { project: summit, by: brand, toolId: 'event-name-badge', toolVersion: '1.0.0',
-      inputs: { eventName: 'SUSE Summit 2026', firstname: 'Ada', lastname: 'Lovelace', jobTitle: 'Keynote Speaker', status: 'speaker' },
-      label: 'Keynote badge — Ada', ageDays: 3 },
-    { project: summit, by: marketer, toolId: 'event-name-badge', toolVersion: '1.0.0',
-      inputs: { eventName: 'SUSE Summit 2026', firstname: 'Grace', lastname: 'Hopper', jobTitle: 'Track Host', status: 'staff' },
-      label: 'Badge — Grace', ageDays: 2 },
+    { project: summit, by: brand, toolId: 'certificate', toolVersion: '1.2.2',
+      inputs: { certKind: 'appreciation', firstname: 'Ada', lastname: 'Lovelace', awardtopic: 'Keynote, Lolly Summit 2026', presenterTitle: 'Keynote Speaker' },
+      label: 'Keynote certificate — Ada', ageDays: 3 },
+    { project: summit, by: marketer, toolId: 'certificate', toolVersion: '1.2.2',
+      inputs: { certKind: 'appreciation', firstname: 'Grace', lastname: 'Hopper', awardtopic: 'Track host, Lolly Summit 2026', presenterTitle: 'Track Host' },
+      label: 'Certificate — Grace', ageDays: 2 },
     { project: summit, by: marketer, toolId: 'qr-code', toolVersion: '2.0.0',
-      inputs: { url: 'https://summit.suse.com/register', color: BRAND_GREEN },
+      inputs: { url: 'https://summit.lolly.example/register', color: BRAND_ACCENT },
       label: 'Registration QR', ageDays: 2 },
-    { project: summit, by: brand, toolId: 'deck-builder', toolVersion: '1.0.0',
-      inputs: { size: '16:9', theme: 'pine', pageNumbers: true },
+    { project: summit, by: brand, toolId: 'deck-studio', toolVersion: '1.2.4',
+      inputs: { size: 'wide', pageNumbers: true },
       label: 'Opening keynote deck', ageDays: 1 },
     { project: drafts, by: marketer, toolId: 'countdown-timer', toolVersion: '1.0.0',
       inputs: {}, label: 'Booth countdown', ageDays: 1 },
@@ -577,11 +577,11 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
 
 /** Tools/formats the seeded usage telemetry ranges over - shared with seedViaHttp
  *  so the leaderboards read the same names whichever path seeded them. */
-const ACTIVITY_TOOLS = ['deck-builder', 'qr-code', 'event-name-badge', 'd3', 'chart-creator', 'street-map', 'countdown-timer', 'mesh-gradient'];
+const ACTIVITY_TOOLS = ['deck-studio', 'qr-code', 'certificate', 'd3', 'chart-creator', 'street-map', 'countdown-timer', 'mesh-gradient'];
 const ACTIVITY_FORMATS = ['png', 'pdf', 'svg', 'pptx', 'webm'];
 /** Catalog assets the usage telemetry attributes to (the Top assets panel) - 
- *  real ids from the SUSE profile catalog + the demo DAM seeded above. */
-const ACTIVITY_ASSETS = ['suse/logo/hor-pos-green', 'suse/logo/hor-neg-green', 'summit-keynote-bg', 'partner-badge', 'suse/tokens/brand'];
+ *  real ids from the Lolly Demo catalog + the demo DAM seeded above. */
+const ACTIVITY_ASSETS = ['lolly/logo/horizontal', 'lolly/logo/horizontal-reverse', 'summit-keynote-bg', 'partner-badge', 'lolly/tokens/demo'];
 /** A believable mixed fleet: web/tauri/cli across a couple of engine versions
  *  and platforms (one lagging tauri on the old 1.52 engine - the upgrade nudge). */
 const FLEET_CLIENT_HEADERS = [
@@ -616,7 +616,7 @@ function mulberry32(seed: number): () => number {
  */
 export function demoTelemetryEvents(seeded: SeedResult, now = Date.now()): StoredEvent[] {
   const rnd = mulberry32(0x5eed);
-  const attributed = [seeded.users['marketer@suse.example']!.id, seeded.users['admin@suse.example']!.id];
+  const attributed = [seeded.users['marketer@lolly.example']!.id, seeded.users['admin@lolly.example']!.id];
   const pick = <T>(arr: T[], skew = 1): T => arr[Math.floor(rnd() ** skew * arr.length)]!;
   const attribution = (): { userId?: string } => (rnd() < 0.6 ? { userId: attributed[Math.floor(rnd() * attributed.length)]! } : {});
   const DAY = 86_400_000;
@@ -660,7 +660,7 @@ export function demoAuditHistory(seeded: SeedResult, now = Date.now()): Array<{
 }> {
   const rnd = mulberry32(0xa0d17);
   const DAY = 86_400_000;
-  const people = ['admin@suse.example', 'brand@suse.example', 'marketer@suse.example', 'contractor@suse.example']
+  const people = ['admin@lolly.example', 'brand@lolly.example', 'marketer@lolly.example', 'contractor@lolly.example']
     .map((e) => seeded.users[e]).filter((u): u is UserRecord => !!u);
   const actor = (skew = 1): string => `user:${people[Math.floor(rnd() ** skew * people.length)]!.id}`;
   const session = (): SeedResult['sessions'][number] => seeded.sessions[Math.floor(rnd() * seeded.sessions.length)]!;
@@ -729,8 +729,8 @@ export async function demoLinks(adminId: string, now = Date.now()): Promise<{ re
     id: `lnk_${randomId(6)}`, kind, target, exp: expSec(hours), createdBy: adminId, createdAt, ...extra,
   });
   const records: LinkRecord[] = [
-    mk('embed', { toolId: 'qr-code', params: { url: 'https://suse.com' } }, 2160),
-    mk('guest-edit', { toolId: 'event-name-badge' }, 72, { pwHash: await hashPassword('summit') }),
+    mk('embed', { toolId: 'qr-code', params: { url: 'https://lolly.tools' } }, 2160),
+    mk('guest-edit', { toolId: 'certificate' }, 72, { pwHash: await hashPassword('summit') }),
     mk('download', { toolId: 'countdown-timer' }, 24),
     mk('share', { toolId: 'street-map' }, 168),
   ];
@@ -745,9 +745,9 @@ export async function demoLinks(adminId: string, now = Date.now()): Promise<{ re
  */
 export function demoApprovals(seeded: SeedResult, now = Date.now()): Approval[] {
   const chain = demoChains()[0]!;
-  const marketer = seeded.users['marketer@suse.example']!;
-  const brand = seeded.users['brand@suse.example']!;
-  const admin = seeded.users['admin@suse.example']!;
+  const marketer = seeded.users['marketer@lolly.example']!;
+  const brand = seeded.users['brand@lolly.example']!;
+  const admin = seeded.users['admin@lolly.example']!;
   const brandActor = { id: brand.id, groups: brand.groups };
   const adminActor = { id: admin.id, groups: admin.groups };
   const DAY = 86_400_000;
@@ -756,16 +756,16 @@ export function demoApprovals(seeded: SeedResult, now = Date.now()): Approval[] 
     createApproval({ id: `apr_${randomId(6)}`, subjectType: 'asset', subjectRef, title, chain, nominees: [], createdBy: marketer.id, now: iso(-ageDays * DAY) });
 
   // A: pending at Brand sign-off (brand's inbox).
-  const a = raise('Summit keynote badge — brand check', 'event-name-badge/summit-keynote', 2);
+  const a = raise('Summit keynote certificate — brand check', 'certificate/summit-keynote', 2);
   // B: fully approved (brand clears step 0, admin clears step 1).
   let b = raise('Booth QR — approved run', 'qr-code/booth', 3);
   b = applyAction(b, brandActor, 'approve', undefined, iso(-3 * DAY + 3_600_000));
   b = applyAction(b, adminActor, 'approve', 'Looks good, ship it.', iso(-2 * DAY));
   // C: rejected at Brand sign-off, with a comment.
-  let c = raise('Sponsor logo lockup', 'event-name-badge/sponsor', 4);
+  let c = raise('Sponsor logo lockup', 'certificate/sponsor', 4);
   c = applyAction(c, brandActor, 'reject', 'Logo clear space is too tight — please redo.', iso(-4 * DAY + 7_200_000));
   // D: pending at Legal sign-off (admin's inbox) - brand cleared step 0.
-  let d = raise('Registration deck — legal review', 'deck-builder/registration', 1);
+  let d = raise('Registration deck — legal review', 'deck-studio/registration', 1);
   d = applyAction(d, brandActor, 'approve', undefined, iso(-1 * DAY + 3_600_000));
   return [a, b, c, d];
 }
@@ -782,8 +782,8 @@ export async function seedActivity(
   seeded: SeedResult,
   now = Date.now(),
 ): Promise<{ telemetryEvents: number; fleetClients: number; links: number; approvals: number; auditRows: number }> {
-  const marketer = seeded.users['marketer@suse.example']!;
-  const admin = seeded.users['admin@suse.example']!;
+  const marketer = seeded.users['marketer@lolly.example']!;
+  const admin = seeded.users['admin@lolly.example']!;
   await store.setTelemetryConsent(marketer.id, true);
   await store.setTelemetryConsent(admin.id, true);
 
@@ -830,23 +830,23 @@ const ROOM_SPECS: Array<{ sessionLabel: string; startedMinAgo: number; opsApplie
   {
     sessionLabel: 'Opening keynote deck', startedMinAgo: 12, opsApplied: 428,
     members: [
-      { email: 'brand@suse.example', role: 'writer', joinedMinAgo: 12 },
-      { email: 'marketer@suse.example', role: 'writer', joinedMinAgo: 9 },
-      { email: 'admin@suse.example', role: 'observer', joinedMinAgo: 4 },
+      { email: 'brand@lolly.example', role: 'writer', joinedMinAgo: 12 },
+      { email: 'marketer@lolly.example', role: 'writer', joinedMinAgo: 9 },
+      { email: 'admin@lolly.example', role: 'observer', joinedMinAgo: 4 },
     ],
   },
   {
     sessionLabel: 'Registration QR', startedMinAgo: 4, opsApplied: 73,
     members: [
-      { email: 'marketer@suse.example', role: 'writer', joinedMinAgo: 4 },
+      { email: 'marketer@lolly.example', role: 'writer', joinedMinAgo: 4 },
       { guest: 'Guest · booth-ipad', role: 'observer', joinedMinAgo: 2 },
     ],
   },
   {
-    sessionLabel: 'Keynote badge — Ada', startedMinAgo: 26, opsApplied: 216,
+    sessionLabel: 'Keynote certificate — Ada', startedMinAgo: 26, opsApplied: 216,
     members: [
-      { email: 'brand@suse.example', role: 'writer', joinedMinAgo: 26 },
-      { email: 'contractor@suse.example', role: 'observer', joinedMinAgo: 21 },
+      { email: 'brand@lolly.example', role: 'writer', joinedMinAgo: 26 },
+      { email: 'contractor@lolly.example', role: 'observer', joinedMinAgo: 21 },
     ],
   },
 ];
@@ -936,7 +936,7 @@ export function detectDist(distDir = SHELL_DIR): DistVerdict {
 export function buildDemoConfig(opts: { baseUrl: string; accessMode: 'open' | 'gated'; pack: string; shellDir?: string }): InstanceConfig {
   return parseConfig(JSON.stringify({
     instance: {
-      name: 'SUSE Content Automation',
+      name: 'Lolly Content Automation',
       baseUrl: opts.baseUrl,
       pack: opts.pack,
       ...(opts.shellDir ? { shellDir: opts.shellDir } : {}),
@@ -982,10 +982,10 @@ const jpost = (base: string, path: string, body: unknown, cookie: Cookie) =>
 export async function seedViaHttp(base: string): Promise<{ telemetryEvents: number; approvals: number; links: number }> {
   const cookies: Record<string, Cookie> = {};
   for (const p of PERSONAS) cookies[p.email] = await loginCookie(base, p.email);
-  const admin = cookies['admin@suse.example']!;
-  const brand = cookies['brand@suse.example']!;
-  const marketer = cookies['marketer@suse.example']!;
-  const contractor = cookies['contractor@suse.example']!;
+  const admin = cookies['admin@lolly.example']!;
+  const brand = cookies['brand@lolly.example']!;
+  const marketer = cookies['marketer@lolly.example']!;
+  const contractor = cookies['contractor@lolly.example']!;
 
   // Consent for two people so leaderboards attribute (opt-in policy).
   await jpost(base, '/api/v1/telemetry/consent', { consent: true }, marketer);
@@ -1040,8 +1040,8 @@ export async function seedViaHttp(base: string): Promise<{ telemetryEvents: numb
   // Links of each kind (+ one revoked). download→countdown-timer is hook-less,
   // so it actually resolves to bytes (used by the verify step).
   const mint = (body: unknown) => jpost(base, '/api/v1/links', body, admin).then((r) => r.json() as Promise<{ id: string; url: string }>);
-  await mint({ kind: 'embed', target: { toolId: 'qr-code', params: { url: 'https://suse.com' } }, ttlHours: 2160 });
-  await mint({ kind: 'guest-edit', target: { toolId: 'event-name-badge' }, password: 'summit', ttlHours: 72 });
+  await mint({ kind: 'embed', target: { toolId: 'qr-code', params: { url: 'https://lolly.tools' } }, ttlHours: 2160 });
+  await mint({ kind: 'guest-edit', target: { toolId: 'certificate' }, password: 'summit', ttlHours: 72 });
   await mint({ kind: 'download', target: { toolId: 'countdown-timer' }, ttlHours: 24 });
   const dead = await mint({ kind: 'share', target: { toolId: 'street-map' } });
   await jpost(base, `/api/v1/links/${dead.id}/revoke`, {}, admin);
@@ -1056,16 +1056,16 @@ export async function seedViaHttp(base: string): Promise<{ telemetryEvents: numb
     jpost(base, `/api/v1/approvals/${id}/act`, { action, ...(comment ? { comment } : {}) }, cookie);
 
   // A: pending at Brand sign-off (brand's inbox). Nominate brand for the ping.
-  await submit('Summit keynote badge — brand check', 'event-name-badge/summit-keynote');
+  await submit('Summit keynote certificate — brand check', 'certificate/summit-keynote');
   // B: fully approved (brand clears step 0, admin clears step 1 → approved).
   const b = await submit('Booth QR — approved run', 'qr-code/booth');
   await act(b.id, brand, 'approve');
   await act(b.id, admin, 'approve', 'Looks good, ship it.');
   // C: rejected with a comment at Brand sign-off.
-  const c = await submit('Sponsor logo lockup', 'event-name-badge/sponsor');
+  const c = await submit('Sponsor logo lockup', 'certificate/sponsor');
   await act(c.id, brand, 'reject', 'Logo clear space is too tight — please redo.');
   // D: pending at Legal sign-off (admin's inbox) - brand cleared step 0.
-  const dApr = await submit('Registration deck — legal review', 'deck-builder/registration');
+  const dApr = await submit('Registration deck — legal review', 'deck-studio/registration');
   await act(dApr.id, brand, 'approve');
   const approvals = 4;
 
@@ -1119,7 +1119,7 @@ async function main(): Promise<void> {
   const devUrl = (email: string, to = '/') => `${baseUrl}/api/auth/dev?email=${email}&returnTo=${encodeURIComponent(to)}`;
   console.log(`
 ${line}
-  SUSE Content Automation — lolly-work demo
+  Lolly Content Automation — lolly-work demo
 ${line}
   ▸ OPEN   ${baseUrl}
   ▸ Console  ${baseUrl}/admin      ▸ Health  ${baseUrl}/healthz
@@ -1140,10 +1140,10 @@ ${line}
       : dist.fresh ? '' : 'shell (pnpm run build:web in ../lolly) to demo the employee governance UX.'}
 
   Sign in (dev provider — click a link, no password):
-    admin       ${devUrl('admin@suse.example', '/admin')}
-    brand       ${devUrl('brand@suse.example')}
-    marketer    ${devUrl('marketer@suse.example')}
-    contractor  ${devUrl('contractor@suse.example')}
+    admin       ${devUrl('admin@lolly.example', '/admin')}
+    brand       ${devUrl('brand@lolly.example')}
+    marketer    ${devUrl('marketer@lolly.example')}
+    contractor  ${devUrl('contractor@lolly.example')}
 
   Seeded: ${Object.keys(seeded.users).length} people · 4 overlays · 1 chain ·
     2 projects / ${seeded.sessionIds.length} sessions · 4 lifecycle rows · 2 messages ·

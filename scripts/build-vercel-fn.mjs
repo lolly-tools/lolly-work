@@ -196,7 +196,7 @@ for (const d of ['migrations', 'console', 'docs', 'docs-pin.json', join('packs',
 }
 
 // The demo pack's catalog is a brand-profile SYMLINK (packs/demo/catalog ->
-// brands/suse/catalog). Never trust a copy to carry it: cpSync's dereference
+// brands/lolly-demo/catalog). Never trust a copy to carry it: cpSync's dereference
 // rewrote the relative link into an ABSOLUTE one pointing at the build
 // sandbox - alive at build time, dead at runtime, and every /catalog, brand
 // and render surface 404'd. Materialize instead: drop whatever the copy

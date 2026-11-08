@@ -1,7 +1,7 @@
 {
   "deployment": { "mode": "evaluation", "application": "api", "requireServerRendering": false },
   "instance": {
-    "name": "SUSE Content Automation",
+    "name": "Lolly Content Automation",
     "baseUrl": "http://localhost:8787",
     "pack": "./packs/demo"
   },
