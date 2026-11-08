@@ -6,9 +6,10 @@
  * piece was made for. Flat scalar keys in the credential's `environment`,
  * because Verify reads only scalars there.
  *
- * The partner keys are exactly the five approved ones and nothing more:
+ * The partner keys are exactly the seven approved ones and nothing more:
  * `partnerCompany`, `partnerCompanyLabel`, `partnerProfileRevision`,
- * `partnerProgramme` and `partnerProgrammeLabel`. Never recorded: the person,
+ * `partnerProgramme`, `partnerProgrammeLabel`, `partnerKit` and
+ * `partnerKitRevision`. Never recorded: the person,
  * a token's id or label, an agent's name or model, the contact's email or
  * phone, the address and the currency. Those may be drawn into the artwork as
  * values; they are never written as metadata.
@@ -20,6 +21,7 @@
 export interface RenderPartner {
   company?: { id: string; name: string; revision: number };
   programme?: { id: string; name: string };
+  kit?: { id: string; revision: number };
 }
 
 /** One theme group's choice, as the app records it (ExportThemeChoice). */
@@ -32,6 +34,8 @@ type TokenEngine = {
 };
 
 const clip = (v: string, n: number): string => v.slice(0, n);
+/** A kit is an instance asset of this workspace. */
+const KIT_ID = /^inst\/[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * The theme choices that drew a render, the way the engine's designRecordOf
@@ -83,11 +87,18 @@ export function recordEnvironment(opts: {
     out.partnerProgramme = programme.id;
     out.partnerProgrammeLabel = programme.name;
   }
+  // The kit (plans/82 M8) only beside the company it belongs to, as the app writes it.
+  const kit = opts.partner?.kit;
+  if (company && kit && KIT_ID.test(kit.id) && Number.isSafeInteger(kit.revision) && kit.revision > 0) {
+    out.partnerKit = kit.id;
+    out.partnerKitRevision = String(kit.revision);
+  }
   return out;
 }
 
-/** "Partner: Northwind IT", the line a render record and the MCP's answer carry,
+/** "Partner: Northwind IT, kit revision 2", the line a render record and the MCP's answer carry,
  *  so an agent can read back what the file says. */
 export function partnerLine(partner: RenderPartner | null | undefined): string | null {
-  return partner?.company ? `Partner: ${partner.company.name}` : null;
+  if (!partner?.company) return null;
+  return `Partner: ${partner.company.name}${partner.kit ? `, kit revision ${partner.kit.revision}` : ''}`;
 }

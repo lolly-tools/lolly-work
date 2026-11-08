@@ -40,7 +40,7 @@ export interface RenderResult {
   purgedAt?: string;
   /** The partner the file was made for, as its credential records it (plans/82 M3):
    *  ids for the per-company counts, and the line an agent reads back. */
-  partner?: { company?: string; programme?: string; line?: string };
+  partner?: { company?: string; programme?: string; kit?: string; kitRevision?: number; line?: string };
 }
 
 export interface RenderFailure { code: string; message: string; inspection?: OutputInspection; production?: ProductionReport; productionAttempts?: ProductionReport[] }

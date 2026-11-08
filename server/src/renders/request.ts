@@ -90,7 +90,7 @@ export function renderWire(record: RenderRecord): Record<string, unknown> {
       ...(output.identity ? { identity: { id: output.identity.id, coverage: output.identity.coverage } } : {}),
       ...(output.evidence?.untilApproved ? { watermark: { marked: output.evidence.untilApproved.marked, note: output.evidence.untilApproved.note } } : {}),
       ...(output.expiredAt ? { expiredAt: output.expiredAt } : {}),
-      // "Partner: Northwind IT", so an agent can read back what the file says.
+      // "Partner: Northwind IT, kit revision 2", so an agent can read back what the file says.
       ...(output.partner?.line ? { partner: output.partner.line } : {}),
       ...(output.evidence ? { evidence: { id: output.evidence.id, coverage: output.evidence.coverage, url: `/api/v1/renders/${record.id}/evidence` }, ...(output.evidence.brandRules ? { brandRules: { disposition: output.evidence.brandRules.disposition, scope: output.evidence.brandRules.scope, revision: output.evidence.brandRules.revision } } : {}) } : {}),
       ...(output.expiredAt ? {} : { url: `/api/v1/renders/${record.id}/output/default` }) } } : {}),
