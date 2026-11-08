@@ -16,13 +16,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import type { AssetIndex, AssetIndexEntry } from '../catalog/lifecycle.ts';
-import { entryCompany, HELD_LABEL, LICENCE_ATTRIBUTION_MAX, LICENCE_DECLARATION_MAX, loadRightsEngine, MARK_HOLDER_MAX, MARK_TERMS_MAX, parseMarkScope, RIGHTS_NOTE_MAX, rightsAnswer, type AssetRightsMarkRecord, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
+import { entryCompany, HELD_LABEL, referencedAssetIds, LICENCE_ATTRIBUTION_MAX, LICENCE_DECLARATION_MAX, loadRightsEngine, MARK_HOLDER_MAX, MARK_TERMS_MAX, parseMarkScope, RIGHTS_NOTE_MAX, rightsAnswer, type AssetRightsMarkRecord, type HeldCategory, type RightsAnswer, type RightsEngine } from '../catalog/rights.ts';
 import { markCoverage, markStatement } from '../catalog/rights-routes.ts';
 import { entryInFolders, folderRuleGroup, liveFolderRules, type PartnerFolderRecord } from './folders.ts';
 import { companyGroup } from './people.ts';
 import type { PartnerRightsState } from '../catalog/rights-mode.ts';
 import { CHOICE_NOTE_MAX, CHOICES_PER_REQUEST, choiceFingerprint, choiceStanding, currentFingerprint, factsOf, pinLookup, withdrawEvent, type AuditBodyOf, type ChoiceStanding, type PinLookup, type RightsChoiceRecord } from './rights.ts';
 import { isEnded, isProgrammeScoped, namesProgrammeGroup, PARTNER_GROUP, programmeGroup } from './types.ts';
+import { licenceGate } from '../catalog/served-index.ts';
 
 type Router = ReturnType<typeof createRouter>;
 
@@ -42,6 +43,8 @@ export interface RightsRouteDeps {
   rightsMode?(): Promise<PartnerRightsState>;
   /** Bounds enforced elsewhere (the collection ZIP), read from their own constants. */
   extraLimits?(): Record<string, number>;
+  /** A published template's stored values, or null (catalog/templates.ts templateValues). */
+  templateValues?(id: string): Promise<Record<string, unknown> | null>;
 }
 
 /** Held files listed per source row; the rest are counted. */
@@ -386,6 +389,58 @@ export const RIGHTS_LIMITS = {
   licenceAttribution: LICENCE_ATTRIBUTION_MAX,
 } as const;
 
+export { referencedAssetIds as seededAssetIds } from '../catalog/rights.ts';
+
+/** A template that starts partners from files one of the programme's audiences will not receive. */
+export interface TemplateSeedHold {
+  id: string;
+  name: string;
+  /** Per audience, the files it will not receive, and why: held back by the licence gate, or never shared with it. */
+  audiences: Array<{ kind: 'programme' | 'company'; id: string; name: string; files: Array<{ id: string; name: string; why: 'licence' | 'not-shared'; licence?: string; reason?: string }> }>;
+}
+
+/**
+ * The templates the programme's people start from that seed files an
+ * audience will not receive, so the brand team sees it before a partner's
+ * render is refused: "Partner price sheet uses 2 files held back from
+ * Northwind IT". Read as the gate would read them, in either mode.
+ */
+export async function templatesSeedingHeld(
+  engine: RightsEngine, feed: AssetIndex, programme: { id: string; name: string }, companies: ReadonlyArray<{ id: string; name: string }>,
+  choices: readonly RightsChoiceRecord[], feedFor: (groups: string[]) => Promise<AssetIndex>, templateValues: (id: string) => Promise<Record<string, unknown> | null>,
+  catalogIds: ReadonlySet<string>, nameOf: (id: string) => string, pins?: PinLookup,
+): Promise<TemplateSeedHold[]> {
+  const templates = (feed.assets ?? []).filter((e) => e.type === 'template');
+  if (!templates.length) return [];
+  const audiences = [
+    { kind: 'programme' as const, id: programme.id, name: programme.name, groups: [programmeGroup(programme.id)] },
+    ...companies.map((c) => ({ kind: 'company' as const, id: c.id, name: c.name, groups: [programmeGroup(programme.id), companyGroup(c.id)] })),
+  ];
+  const seen = await Promise.all(audiences.map(async (a) => {
+    const entries = new Map(((await feedFor([...a.groups, PARTNER_GROUP])).assets ?? []).map((e) => [e.id, e]));
+    return { ...a, entries, keep: licenceGate(engine, new Set(a.groups), choices, pins) };
+  }));
+  const out: TemplateSeedHold[] = [];
+  for (const t of templates) {
+    const ids = referencedAssetIds(await templateValues(t.id), catalogIds).filter((id) => id !== t.id);
+    if (!ids.length) continue;
+    const held = seen.flatMap((a) => {
+      if (!a.entries.has(t.id)) return [];
+      type SeedFile = TemplateSeedHold['audiences'][number]['files'][number];
+      const files = ids.flatMap((id): SeedFile[] => {
+        const entry = a.entries.get(id);
+        if (!entry) return [{ id, name: nameOf(id), why: 'not-shared' }];
+        if (a.keep(entry)) return [];
+        const answer = rightsAnswer(engine, entry);
+        return [{ id, name: nameOf(id), why: 'licence', ...(answer.state === 'held' ? { licence: answer.licence, reason: answer.reason } : {}) }];
+      });
+      return files.length ? [{ kind: a.kind, id: a.id, name: a.name, files }] : [];
+    });
+    if (held.length) out.push({ id: t.id, name: typeof t.name === 'string' && t.name ? t.name : t.id, audiences: held });
+  }
+  return out;
+}
+
 /** Put the mark stated on each row's own scope beside the row, with what it covers now. */
 async function attachMarks(engine: RightsEngine, store: Store, report: ProgrammeRightsReport, catalogEntries: () => Promise<AssetIndexEntry[]>): Promise<void> {
   const marks = await store.listAssetRightsMarks();
@@ -432,6 +487,12 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     const entries = new Map((feed.assets ?? []).map((e) => [e.id, e]));
     const pins = pinLookup(instAssets);
     const views = choices.map((c) => choiceView(engine, c, entries.get(c.assetId), users, companies, pins));
+    const catalog = deps.templateValues ? await deps.catalogEntries() : [];
+    const catalogNames = new Map(catalog.map((e) => [e.id, typeof e.name === 'string' && e.name ? e.name : e.id]));
+    const templates = deps.templateValues
+      ? await templatesSeedingHeld(engine, feed, programme, companies.map((c) => ({ id: c.id, name: c.name })), choices, deps.feedFor, deps.templateValues,
+        new Set(catalogNames.keys()), (id) => catalogNames.get(id) ?? id, pins)
+      : [];
     const mode = deps.rightsMode ? await deps.rightsMode() : null;
     sendJson(res, 200, {
       programme: { id: programme.id, name: programme.name },
@@ -440,6 +501,7 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
       // For the admin only: what was shared anyway, to whom, by whom and why.
       choices: views,
       links,
+      templates,
       inForce: { marks: (await store.listAssetRightsMarks()).length, choices: views.filter((v) => v.standing === 'live').length },
       limits: { ...RIGHTS_LIMITS, ...(deps.extraLimits?.() ?? {}) },
     }, { 'cache-control': 'no-store' });

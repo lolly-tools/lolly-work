@@ -255,15 +255,34 @@ test('a new version moves the version the feed shows and the values a render sta
 });
 
 test('a retired template answers 410 with what replaced it, and the feed says so', async () => {
+  const admin = await login('admin@test');
+  const next = await fetch(`${base}/api/v1/catalog/submit?type=template&toolId=price-card&groups=programme-resellers`, {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ toolId: 'price-card', name: 'Partner price sheet 2027', values: sheet.values }),
+  });
+  const successor = (await next.json() as { assetId: string }).assetId;
+  assert.equal(next.status, 201);
+  await setPublication({ editable: ['price'], retiredAt: new Date().toISOString(), retiredBy: 'user:admin', replacedBy: successor });
+  const rita = await login('rita@acme.test');
+  const gone = await render(rita, { template: templateId, price: '€ 99' });
+  assert.equal(gone.status, 410);
+  assert.equal(gone.body.error.code, 'TEMPLATE_RETIRED');
+  assert.equal(gone.body.error.replacedBy, successor);
+  const entry = await feedEntry(rita);
+  assert.equal(entry?.meta?.retired, true, 'still in the feed, so a saved copy can say what happened');
+  assert.equal(entry?.meta?.replacedBy, successor);
+});
+
+test('a successor outside the partner\'s feed is not named to the partner', async () => {
   await setPublication({ editable: ['price'], retiredAt: new Date().toISOString(), retiredBy: 'user:admin', replacedBy: 'inst/next0001' });
   const rita = await login('rita@acme.test');
   const gone = await render(rita, { template: templateId, price: '€ 99' });
   assert.equal(gone.status, 410);
   assert.equal(gone.body.error.code, 'TEMPLATE_RETIRED');
-  assert.equal(gone.body.error.replacedBy, 'inst/next0001');
+  assert.equal(gone.body.error.replacedBy, undefined);
   const entry = await feedEntry(rita);
-  assert.equal(entry?.meta?.retired, true, 'still in the feed, so a saved copy can say what happened');
-  assert.equal(entry?.meta?.replacedBy, 'inst/next0001');
+  assert.equal(entry?.meta?.retired, true);
+  assert.equal(entry?.meta?.replacedBy, undefined);
 });
 
 test('a template travels in the inputs of validate and durable renders, as agents send it', async () => {

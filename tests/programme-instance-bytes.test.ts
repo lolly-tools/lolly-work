@@ -47,7 +47,9 @@ before(async () => {
   }));
   store = createMemoryStore();
   const blobs = createMemoryBlobStore();
-  for (const [id, groups] of [['inst/internal', '*'], ['inst/kit', ['marketing']], ['inst/emea-only', ['emea-sales']], ['inst/sub1', '*']] as const) {
+  // The programme's own sheet and a company's logo are published to their groups only.
+  for (const [id, groups] of [['inst/internal', '*'], ['inst/kit', ['marketing']], ['inst/emea-only', ['emea-sales']], ['inst/sub1', '*'],
+    ['inst/programme-sheet', ['programme-resellers']], ['inst/northwind-logo', ['company-northwind']]] as const) {
     const stat = await blobs.put(`${id}/png`, Buffer.from(`png:${id}`), 'image/png');
     await store.putInstanceAsset({
       id, entry: instanceAssetEntry(id, { name: id, type: 'image' }, [{ format: 'png', size: stat.size, checksum: stat.checksum }]),
@@ -65,6 +67,7 @@ before(async () => {
   base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
   const admin = await login('admin@test');
   await fetch(`${base}/api/v1/programmes/resellers`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Resellers', tools: [], collections: ['emea-kit'] }) });
+  await fetch(`${base}/api/v1/programmes/resellers/companies/northwind`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Northwind IT' }) });
   await login('rita@reseller.test');
   const ritaId = (await store.getUserBySub('dev:rita@reseller.test'))!.id;
   // Two of Rita's own submissions, shared with everyone inside the workspace but not
@@ -214,4 +217,17 @@ test('a view never shows the admin an asset their own groups would not: the part
   assert.ok(!feed.assets.some((a) => a.id === 'inst/emea-only'), 'nor in the view\'s feed');
   assert.ok(feed.assets.some((a) => a.id === 'inst/kit'), 'what both see stays');
   assert.deepEqual(feed.collections?.find((c) => c.id === 'emea-kit')?.members, ['inst/kit'], 'the collection keeps only what both see');
+});
+
+test('a view shows what the programme and the company were given, though the admin\'s own groups do not hold them', async () => {
+  const admin = await login('admin@test');
+  assert.equal((await bytes(admin, 'inst/programme-sheet')).status, 403, 'the admin\'s own groups do not show the programme\'s sheet');
+  const started = await fetch(`${base}/api/v1/programmes/resellers/view-as`, { method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ company: 'northwind' }) });
+  const { token } = await started.json() as { token: string };
+  const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: token } });
+  assert.equal((await viewed('/catalog/inst/programme-sheet/png')).status, 200, 'what the programme publishes');
+  assert.equal((await viewed('/catalog/inst/northwind-logo/png')).status, 200, 'the company\'s logo');
+  const feed = (await (await viewed('/catalog/assets/index.json')).json()) as { assets: Array<{ id: string }> };
+  assert.ok(feed.assets.some((a) => a.id === 'inst/programme-sheet') && feed.assets.some((a) => a.id === 'inst/northwind-logo'), 'both in the view\'s feed');
+  assert.notEqual((await viewed('/catalog/inst/internal/png')).status, 200, 'still nothing the programme does not include');
 });

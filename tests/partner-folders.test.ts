@@ -128,7 +128,7 @@ test('a folder rule gives a programme that folder and everything below it, and n
 
   const rita = await login('rita@acme.test');
   assert.equal((await fetch(`${base}/catalog/ext/dam/a1/f`, { headers: { cookie: rita } })).status, 200);
-  assert.equal((await fetch(`${base}/catalog/ext/dam/a3/f`, { headers: { cookie: rita } })).status, 403, 'a file outside the folder is refused');
+  assert.equal((await fetch(`${base}/catalog/ext/dam/a3/f`, { headers: { cookie: rita } })).status, 404, 'a file outside the folder is refused, with the plain answer');
   const found = await (await fetch(`${base}/api/v1/catalog/search?q=price`, { headers: { cookie: rita } })).json() as { results: Array<{ id: string }> };
   const ids = found.results.map((r) => r.id).sort();
   assert.ok(ids.includes('ext/dam/a1') && ids.includes('ext/dam/a2'));

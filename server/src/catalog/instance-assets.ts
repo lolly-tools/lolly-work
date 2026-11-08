@@ -49,6 +49,8 @@ export interface AssetSubmission {
   state: SubmissionState;
   /** 'user:<id>' who submitted it. */
   by: string;
+  /** Whether the submitter was a partner programme member when they did. */
+  byScoped?: boolean;
   /** ISO instant the bytes were stored. */
   at: string;
   /** sha256 hex of the submitted bytes - the duplicate short-circuit key. */

@@ -211,6 +211,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const programmeExits = new Map<string, ProgrammeExitRecord>();
   const companyProfiles = new Map<string, CompanyProfileRecord>();
   const rightsMarks = new Map<string, AssetRightsMarkRecord>();
+  /** One promise chain per instance asset: withAssetLock runs callers one at a time. */
+  const assetLocks = new Map<string, Promise<void>>();
   const assetLicences = new Map<string, AssetLicenceRecord>();
   const rightsChoices = new Map<string, RightsChoiceRecord>();
   // A memory store keeps nothing across starts, so the licence gate's default
@@ -1526,6 +1528,29 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async putAssetRightsMark(rec) {
       rightsMarks.set(rec.scope, structuredClone(rec));
+    },
+    async withAssetLock(assetId, fn) {
+      const prior = assetLocks.get(assetId) ?? Promise.resolve();
+      let release!: () => void;
+      const mine = new Promise<void>((r) => { release = r; });
+      const queued = prior.then(() => mine);
+      assetLocks.set(assetId, queued);
+      await prior;
+      try { return await fn(); } finally {
+        release();
+        if (assetLocks.get(assetId) === queued) assetLocks.delete(assetId);
+      }
+    },
+    async takeAssetRightsMark(scope) {
+      const prior = rightsMarks.get(scope);
+      if (!prior) return null;
+      rightsMarks.delete(scope);
+      return structuredClone(prior);
+    },
+    async addAssetRightsMark(rec) {
+      if (rightsMarks.has(rec.scope)) return false;
+      rightsMarks.set(rec.scope, structuredClone(rec));
+      return true;
     },
     async deleteAssetRightsMark(scope) {
       rightsMarks.delete(scope);
