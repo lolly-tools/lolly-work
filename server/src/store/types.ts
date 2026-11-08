@@ -1895,11 +1895,13 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   getCompanyProfile(companyId: string): Promise<CompanyProfileRecord | null>;
   listCompanyProfiles(): Promise<CompanyProfileRecord[]>;
   /** Save a new revision, the row and its history copy together, keeping the
-   *  settings. Writes nothing and answers false when the stored revision is no
-   *  longer `expectRevision` (0 for a company with no profile yet). */
-  saveCompanyProfile(rec: Omit<CompanyProfileRecord, 'settings'>, expectRevision: number): Promise<boolean>;
+   *  settings and kit pointer. Writes nothing and answers false when the stored
+   *  revision is no longer `expectRevision` (0 for a company with no profile yet). */
+  saveCompanyProfile(rec: Omit<CompanyProfileRecord, 'settings' | 'kit'>, expectRevision: number): Promise<boolean>;
   /** Who else may edit, and whether their changes wait. Never a revision. */
   putCompanyProfileSettings(companyId: string, settings: CompanyProfileSettings): Promise<void>;
+  /** Change the kit pointer only when the current asset matches. Never a profile revision. */
+  putCompanyKit(companyId: string, kit: { assetId: string } | null, expectAssetId: string | null): Promise<boolean>;
   getCompanyProfileRevision(companyId: string, revision: number): Promise<CompanyProfileRevision | null>;
   /** Oldest first. */
   listCompanyProfileHistory(companyId: string): Promise<CompanyProfileRevision[]>;

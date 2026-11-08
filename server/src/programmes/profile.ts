@@ -61,6 +61,8 @@ export interface CompanyProfileRecord {
   revision: number;
   profile: CompanyProfile;
   settings: CompanyProfileSettings;
+  /** The kit keeps its own revisions in the instance asset. */
+  kit?: { assetId: string };
   /** 'user:<id>' who made the revision. */
   updatedBy: string;
   updatedAt: string;

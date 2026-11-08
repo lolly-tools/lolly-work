@@ -1,0 +1,11 @@
+{
+  "color": {
+    "brand": {
+      "northwind-blue": { "$type": "color", "$value": "#0B3D91" }
+    },
+    "semantic": {
+      "primary": { "$type": "color", "$value": "{color.brand.northwind-blue}" },
+      "accent": { "$type": "color", "$value": "#E3001B" }
+    }
+  }
+}

@@ -102,7 +102,7 @@ function tokenUsageFromRow(r: Record<string, unknown>): TokenUsageDay {
 function companyProfileFromRow(r: Record<string, unknown>): CompanyProfileRecord {
   const at = r.updated_at ? new Date(r.updated_at as string).toISOString() : '';
   return { companyId: r.company_id as string, revision: Number(r.revision), profile: (r.profile ?? {}) as CompanyProfile,
-    settings: (r.settings ?? {}) as CompanyProfileSettings, updatedBy: r.updated_by as string, updatedAt: Number(r.revision) ? at : '' };
+    settings: (r.settings ?? {}) as CompanyProfileSettings, ...(r.kit ? { kit: r.kit as { assetId: string } } : {}), updatedBy: r.updated_by as string, updatedAt: Number(r.revision) ? at : '' };
 }
 
 function companyProfileRevisionFromRow(r: Record<string, unknown>): CompanyProfileRevision {
@@ -2691,6 +2691,18 @@ export async function createPostgresStore(databaseUrl: string, opts: { poolMax?:
          on conflict (company_id) do update set settings = excluded.settings`,
         [companyId, JSON.stringify(settings)],
       );
+    },
+    async putCompanyKit(companyId, kit, expectAssetId) {
+      await pool.query(
+        `insert into partner_company_profiles (company_id, revision, profile, updated_by) values ($1, 0, '{}'::jsonb, '')
+         on conflict (company_id) do nothing`, [companyId],
+      );
+      const result = await pool.query(
+        `update partner_company_profiles set kit = $2::jsonb
+         where company_id = $1 and (kit->>'assetId') is not distinct from $3 returning company_id`,
+        [companyId, kit ? JSON.stringify(kit) : null, expectAssetId],
+      );
+      return result.rows.length > 0;
     },
     async getCompanyProfileRevision(companyId, revision) {
       const { rows } = await pool.query('select * from partner_company_profile_history where company_id = $1 and revision = $2', [companyId, revision]);
