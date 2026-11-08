@@ -96,6 +96,8 @@ import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, 
 import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
+import { createViewAs, VIEW_AS_HEADER, ViewAsEndedError } from '../programmes/view-as.ts';
+import { currentView, withRequestView } from '../rbac/view-context.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { accessEndsFor } from '../programmes/exit-schedule.ts';
@@ -117,7 +119,7 @@ import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
-import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, PARTNER_ACTIONS, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
@@ -468,7 +470,7 @@ export function buildApp(deps: AppDeps): App {
   // `submitter`: the person the render is for. The worker may then read the
   // project files its inputs name, while that person can see them (plan 76 M4j).
   const renderTool = (...args: [...Parameters<typeof renderToolUnscoped>, submitter?: UserRecord | null]) => {
-    const run = async (signal: AbortSignal) => {
+    const run = async (signal: AbortSignal, deadlineAt: number) => {
       await catalogPreparation;
       signal.throwIfAborted();
       const snap = brand.current()!;
@@ -486,7 +488,7 @@ export function buildApp(deps: AppDeps): App {
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
-        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
+        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal, deadlineAt });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;
@@ -550,7 +552,7 @@ export function buildApp(deps: AppDeps): App {
   // The Chromium render worker is active only when both the URL and the shared
   // HMAC key are present; otherwise hooked tools keep 501-ing (unchanged).
   const renderWorker: WorkerConfig | undefined = config.render.worker.url && secrets.renderWorker
-    ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs, requireHttps: productionMode(config) }
+    ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs, connectRetryMs: config.render.worker.connectRetryMs, requireHttps: productionMode(config) }
     : undefined;
   // Pull dispatch (render.worker.dispatch "pull", plan 324 M3): render and
   // raster jobs wait in this process until a worker leases one over
@@ -622,6 +624,8 @@ export function buildApp(deps: AppDeps): App {
   // authenticate an `upgrade` request with byte-identical semantics - including
   // the disabled-account and pre-epoch-token refusals.
   const memberOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
+    // A view-as read answers as the partner it names (programmes/view-as.ts).
+    const viewed = await viewAs.member(req); if (viewed) return viewed;
     const delegated = agentRequests.principal(req);
     if (!delegated) return resolveMember(store, req.headers.cookie, sessionVerify);
     const user = await store.getUser(delegated.userId);
@@ -637,6 +641,22 @@ export function buildApp(deps: AppDeps): App {
   };
   const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
     store.appendAudit(auditBody(actor, action, subject, payload));
+  // View as a partner (plans/82 M6): one tab, the admin's session required, and
+  // while viewing, changes are not saved to the partner's account.
+  const viewEndKey = (viewId: string): string => sha256Hex(JSON.stringify(['view-as', 'ended', viewId]));
+  const viewAs = createViewAs({
+    sessionMember: (req) => resolveMember(store, req.headers.cookie, sessionVerify),
+    delegated: (req) => !!agentRequests.principal(req),
+    sessionKey: (req) => { const p = readPrincipal(req.headers.cookie, sessionVerify); return p?.kind === 'member' ? localSessionKey(p) : null; },
+    // An ended view is kept with the sign-out records (31 days, past any token's hour).
+    viewEnded: (viewId) => store.localSessionRevoked(viewEndKey(viewId)),
+    endView: async (viewId) => { const key = viewEndKey(viewId); await store.recordOidcLogout({ replayKey: key, targetKey: key, iat: Math.floor(Date.now() / 1000) }); },
+    mayManage: async (user, programmeId) => evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', [`programme:${programmeId}`, '*'], await store.listGrants()),
+    programme: (id) => store.getProgramme(id),
+    company: async (id) => (await store.listCompanies()).find((c) => c.id === id) ?? null,
+    roleOf: (groups) => roleFromGroups(groups, config.idp.roleGroups),
+    secret: secrets.session, verifySecrets: sessionVerify, audit,
+  });
 
   const revisionActor = (req: IncomingMessage, user: UserRecord): string => {
     const agent = agentRequests.principal(req)?.agent;
@@ -1061,6 +1081,10 @@ export function buildApp(deps: AppDeps): App {
     const reach = rec?.enabled ? await providerReach(rec, groups) : null;
     if (!rec || !reach) return null;
     if (!ref.path) throw new Error('cms provider refs require a remote asset id');
+    // A partner programme member reaches exactly what their feed holds, as on
+    // /catalog/ext: a remote id the feed leaves out (past sync.maxAssets, say) is
+    // not theirs, whichever verb names it (plans/82 M1). Asked before the provider is.
+    if (isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups)) && !(await feedHolds(groups, extAssetId(rec.id, ref.path)))) return null;
     const provider = federation.instantiate(rec);
     const asset = await findProviderAsset(provider, ref.path);
     if (!asset || !passesExposure(rec, asset) || !reachesAsset(reach, asset)) return null;
@@ -3039,8 +3063,8 @@ export function buildApp(deps: AppDeps): App {
     const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
     let payload;
     try {
-      payload = { ...await buildOrgConfigFor(user, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
-        branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
+      payload = viewAs.decorate(req, { ...await buildOrgConfigFor(user, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
+        branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } });
     } catch (err) {
       metrics.orgConfigError();
       throw err;
@@ -4827,10 +4851,12 @@ export function buildApp(deps: AppDeps): App {
     // anyway, so the honest answer there is to sign in on the instance and
     // export the pack, or use the desktop app.
     if (config.policy.defaultAccessMode === 'open') allowCrossOriginRead(res, 'ETag');
-    if (config.policy.defaultAccessMode !== 'open') {
-      const me = await resolveMember(store, req.headers.cookie, sessionVerify);
-      if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in to download the instance pack');
-    }
+    const me = req.headers.cookie ? await resolveMember(store, req.headers.cookie, sessionVerify) : null;
+    if (config.policy.defaultAccessMode !== 'open' && !me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in to download the instance pack');
+    // The pack is the whole hosted brand (its catalog, filenames and checksums), and
+    // a partner programme member reads only what their feed holds (plans/82 M1), so
+    // they are refused here, before the tag is read or any 304 or HEAD answers.
+    if (me && isProgrammeScoped(me.groups, me.role)) return sendError(res, 403, 'FORBIDDEN', 'the instance pack is not part of a partner programme');
     await ensureConnectPack();
     // The stored checksum IS the pack's cache identity - the same value the
     // meta route reports, since both come from the write's own stat. A client
@@ -6400,6 +6426,7 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // Templates published to a programme (plans/82 M2).
+  viewAs.register(router);
   registerTemplateRoutes(router, {
     store, blobs, requireAction, audit,
     toolFacts: async (toolId) => {
@@ -7213,6 +7240,7 @@ export function buildApp(deps: AppDeps): App {
       const [, sid, formatRef] = parts as [string, string, string];
       const id = `${INST_PREFIX}${sid}`;
       const rec = await store.getInstanceAsset(id);
+      if (scopedCaller(user) && (!rec || !(await instanceAssetReadable(user, rec)))) return notAvailable(res);
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
       // A partner programme member reads exactly what their feed holds (plans/82 M1),
       // the same rule as their federated bytes, links and asset records: an internal
@@ -7295,6 +7323,12 @@ export function buildApp(deps: AppDeps): App {
       // holds: a granted collection can name one asset of a provider they do
       // not otherwise see (plans/82 M1).
       const scopedReader = !!user && isProgrammeScoped(user.groups, user.role);
+      // Staff keep the bytes for five minutes (plan 80 D6). A partner programme
+      // member, and an admin viewing as one, is answered no-cache instead (Andy,
+      // 2026-11-07, D6 changed for programme members only): what they may read
+      // follows their feed, and a browser cache is not keyed by person, so the
+      // browser asks again and the checks run for whoever asks.
+      const extBytesCache = scopedReader ? cachePolicy('instance-private').cacheControl : 'private, max-age=300';
       if (scopedReader
         ? !(await servedIndex.forCaller({ groups: user!.groups })).index.assets?.some((entry) => entry.id === assetId)
         : !callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
@@ -7324,6 +7358,9 @@ export function buildApp(deps: AppDeps): App {
       if ((await catalogBytesGate(assetId, true)).blocked) {
         return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
       }
+      // A converted preview is made on request; a view never starts that work, and
+      // none is kept to serve instead, so the app can say the preview is not ready.
+      if (convertedPreview && viewAs.viewing(req)) return sendError(res, 409, 'PREVIEW_NOT_READY', 'This preview is not ready. Previews are not made while viewing as a partner.');
       if (convertedPreview && !renderWorker) return sendError(res, 501, 'PREVIEW_UNAVAILABLE', 'This instance has no preview service.');
       // hold-implies-pin (plans/27 §3, §5): when this asset's bytes have been
       // materialized into the instance's own store, prefer the local copy - the
@@ -7336,7 +7373,7 @@ export function buildApp(deps: AppDeps): App {
         if (localStat) {
           const etag = `"${localStat.checksum}"`;
           if (req.headers['if-none-match'] === etag) {
-            res.writeHead(304, { etag, 'cache-control': 'private, max-age=300' });
+            res.writeHead(304, { etag, 'cache-control': extBytesCache });
             res.end();
             return;
           }
@@ -7347,7 +7384,7 @@ export function buildApp(deps: AppDeps): App {
             // whole read of the file, and parallel parts would multiply it.
             res.writeHead(200, {
               'content-type': local.stat.contentType, ...INERT_BYTES,
-              'cache-control': 'private, max-age=300', etag, 'content-length': String(local.stat.size),
+              'cache-control': extBytesCache, etag, 'content-length': String(local.stat.size),
             });
             Readable.fromWeb(local.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
             return;
@@ -7356,10 +7393,10 @@ export function buildApp(deps: AppDeps): App {
       }
       // The fragment entry names this file's format and the entry version.
       // The version keys the byte cache and the ETag, so a change in the DAM
-      // is a miss. The browser keeps the bytes for five minutes and then asks
-      // again, which the ETag answers with a 304: provider bytes sit behind
+      // is a miss. A staff browser keeps the bytes for five minutes and then
+      // asks again, which the ETag answers with a 304: provider bytes sit behind
       // access checks, so a person who loses access must not keep a cached copy
-      // that stays valid for longer (plan 80 D6).
+      // that stays valid for longer (plan 80 D6; partners: extBytesCache above).
       const fragEntry = await federation.entry(assetId);
       const entryVersion = typeof fragEntry?.version === 'string' && fragEntry.version ? fragEntry.version : '';
       const fileEntry = fragEntry?.formats?.find((f) => f.url === `/catalog/${assetId}/${formatRef}`);
@@ -7368,7 +7405,7 @@ export function buildApp(deps: AppDeps): App {
         ? extCacheKey({ provider: providerId, remoteId, formatRef, preview: filePreview, version: entryVersion })
         : '';
       const etag = cacheKey ? `"x${sha256Hex(cacheKey).slice(0, 32)}"` : '';
-      const bytesCache = 'private, max-age=300';
+      const bytesCache = extBytesCache;
       if (etag && etagMatches(req, etag)) {
         res.writeHead(304, { etag, 'cache-control': bytesCache });
         res.end();
@@ -7443,6 +7480,7 @@ export function buildApp(deps: AppDeps): App {
         if (cacheKey) body.pipe(extCache.tee(cacheKey, servedType)).pipe(res);
         else body.pipe(res);
       } catch (error) {
+        if (error instanceof ViewAsEndedError) throw error;
         if (error instanceof RangeNotSatisfiableError) return unsatisfiable(error.size);
         return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
       }
@@ -7509,6 +7547,12 @@ export function buildApp(deps: AppDeps): App {
       if (!first?.hash || owners.size !== 1 || hashes.size !== 1 || first.hash.slice(0, 16) !== address[2]) return sendError(res, 404, 'NOT_FOUND', 'no currently accessible asset release');
       addressedAssetId = first.id; addressedAssetSha = first.hash;
     }
+    // A partner programme member: ownership and the feed are asked before the file system
+    // is, so neither the answer nor its timing says whether a file is there (plans/82 M1).
+    if (scopedCaller(user)) {
+      const owner = addressedAssetId ?? (await loadAssetPathMap(config.instance.pack)).get(actualRel);
+      if (!(owner ? await feedHolds(user!.groups, owner) : await feedNamesFile(user!.groups, rel))) return notAvailable(res);
+    }
     let file = await safeFile(join(config.instance.pack, 'catalog'), actualRel);
     if (!file && address) {
       actualRel = `${address[1]}${address[3]}`; file = await safeFile(join(config.instance.pack, 'catalog'), actualRel);
@@ -7525,6 +7569,9 @@ export function buildApp(deps: AppDeps): App {
     // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
     // the blob dies too - a guessed/cached URL doesn't bypass the feed.
     const assetId = addressedAssetId ?? (await loadAssetPathMap(config.instance.pack)).get(actualRel);
+    // A partner programme member is told nothing about a file their feed leaves out,
+    // its lifecycle included: the feed is asked first, and the denial is plain (plans/82 M1).
+    if (assetId && user && isProgrammeScoped(user.groups, user.role) && !(await feedHolds(user.groups, assetId))) return notAvailable(res);
     if (assetId) {
       const { state, blocked } = await catalogBytesGate(assetId, false);
       if (blocked) {
@@ -7537,7 +7584,7 @@ export function buildApp(deps: AppDeps): App {
       // A partner programme member reads only what their feed names: a pack file no
       // asset owns (a release inventory, a rendition, a licence text) answers only when
       // an entry in their own feed points at it (plans/82 M1).
-      return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      return notAvailable(res);
     }
     sendBytes(req, res, bytes, { contentType: contentType(rel), ranges: true,
       modified: file!.modified, headers: { ...INERT_BYTES, 'cache-control': cachePolicy('instance-private').cacheControl } });
@@ -7611,15 +7658,23 @@ export function buildApp(deps: AppDeps): App {
    *  the asset's own groups. One rule for every instance-asset route. */
   const instanceAssetReadable = async (user: UserRecord | null | undefined, rec: InstanceAssetRecord): Promise<boolean> =>
     user && isProgrammeScoped(user.groups, user.role) ? callerSeesAsset(user, rec.id) : instanceAssetVisible(rec, user?.groups ?? []);
+  /** One answer for a partner programme member, whether a thing is missing or kept from
+   *  them, so a refusal never says that something exists (plans/82 M1). */
+  const notAvailable = (res: ServerResponse): void => sendError(res, 404, 'NOT_FOUND', 'not available');
+  const scopedCaller = (user: { groups: string[]; role?: string } | null | undefined): boolean => !!user && isProgrammeScoped(user.groups, user.role);
+  /** Whether a group set's served feed holds an asset, under its current id. The one
+   *  question every partner programme check asks (plans/82 M1). */
+  const feedHolds = async (groups: string[], rawId: string): Promise<boolean> => {
+    const assetId = await resolveAssetAlias(rawId);
+    await providersReady;
+    return !!(await servedIndex.forCaller({ groups })).index.assets?.some((entry) => entry.id === assetId);
+  };
   const callerSeesAsset = async (user: UserRecord, rawId: string): Promise<boolean> => {
     const assetId = await resolveAssetAlias(rawId);
     // A partner programme member sees exactly what their feed holds (plans/82
     // M1): essentials and what their programmes include, never the rest of the
     // pack. Their feed is lifecycle-gated, so they cannot link a scheduled asset.
-    if (isProgrammeScoped(user.groups, user.role)) {
-      await providersReady;
-      return !!(await servedIndex.forCaller({ groups: user.groups })).index.assets?.some((entry) => entry.id === assetId);
-    }
+    if (isProgrammeScoped(user.groups, user.role)) return feedHolds(user.groups, assetId);
     if (assetId.startsWith(INST_PREFIX)) {
       const rec = await store.getInstanceAsset(assetId);
       // A submission that is not live yet is not linkable: it is not in the
@@ -8130,7 +8185,11 @@ export function buildApp(deps: AppDeps): App {
     await providersReady;
     const served = await servedIndex.forCaller({ groups: user?.groups ?? [], background: true });
     const represented = new Set(served.providers.map(provider => provider.id));
-    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)), providerVisibleTo)
+    // In a view as a partner, a source is listed only when the admin behind the view
+    // sees it too (rbac/view-context.ts), pending ones included.
+    const viewer = currentView()?.viewer;
+    const seesSource = (rec: ProviderRecord, groups: string[]): boolean => providerVisibleTo(rec, groups) && (!viewer || providerVisibleTo(rec, viewer.groups));
+    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)), seesSource)
       .map(source => !represented.has(source.id) && source.status === 'current' ? { ...source, status: 'pending', count: undefined } : source);
     const sources = query.source ? sourceStatuses.filter(source => source.id === query.source) : sourceStatuses;
     const complete = sources.every(source => source.status === 'current' && !source.truncated && !source.incomplete);
@@ -8165,6 +8224,7 @@ export function buildApp(deps: AppDeps): App {
       // asset are versioned where they live, and claiming otherwise here would
       // invent a history this instance does not have.
       if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+      if (scopedCaller(user) && (!instAsset || !(await callerSeesAsset(user, id)))) return notAvailable(res);
       if (!instAsset) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       const head = headVersionOf(instAsset);
@@ -8668,17 +8728,22 @@ export function buildApp(deps: AppDeps): App {
   // collections their groups admit with members narrowed to what they are
   // already being served. Neither is derived from the other.
 
+  // A partner programme member trusted with collections curates only the ones
+  // their programme sees, never the workspace's own (plans/82 M1): the grant says
+  // what they may do, the programme says to what.
+  const curates = (user: UserRecord, rec: CollectionRecord): boolean => !isProgrammeScoped(user.groups, user.role) || callerSeesCollection(user, rec);
+
   router.add('GET', '/api/v1/catalog/collections', async (req, res) => {
     const user = await requireAction(req, res, 'catalog.collection.manage');
     if (!user) return;
-    sendJson(res, 200, { collections: sortCollections(await store.listCollections()) }, { 'cache-control': 'private, no-store' });
+    sendJson(res, 200, { collections: sortCollections((await store.listCollections()).filter((rec) => curates(user, rec))) }, { 'cache-control': 'private, no-store' });
   });
 
   router.add('GET', '/api/v1/catalog/collections/:id', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'catalog.collection.manage');
     if (!user) return;
     const rec = await store.getCollection(ctx.params.id as string);
-    if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+    if (!rec || !curates(user, rec)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
     sendJson(res, 200, rec, { 'cache-control': 'private, no-store' });
   });
 
@@ -8700,10 +8765,12 @@ export function buildApp(deps: AppDeps): App {
     if (!user) return;
     const id = ctx.params.id as string;
     const prior = await store.getCollection(id);
+    if (prior && !curates(user, prior)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
     const parsed = normalizeCollection(id, await readJson(req), {
       curator: `user:${user.id}`, now: new Date().toISOString(), prior,
     });
     if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
+    if (!curates(user, parsed)) return sendError(res, 403, 'FORBIDDEN', 'a collection you curate names your programme in its groups');
     await providersReady;
     const unseen: string[] = [];
     for (const memberId of parsed.members) {
@@ -8726,7 +8793,7 @@ export function buildApp(deps: AppDeps): App {
     if (!user) return;
     const id = ctx.params.id as string;
     const before = await store.getCollection(id);
-    if (!before) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+    if (!before || !curates(user, before)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
     await store.deleteCollection(id);
     await audit(`user:${user.id}`, 'catalog.collection.delete', `collection:${id}`, { before });
     sendJson(res, 200, { ok: true, id });
@@ -8746,6 +8813,8 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
     }
     await providersReady;
+    // A partner programme member trusted with scans scans only what their feed holds (plans/82 M1).
+    if (isProgrammeScoped(user.groups, user.role) && !(await feedHolds(user.groups, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
     let bytes: Uint8Array;
     let sourceUpdatedAt: string | undefined;
     try {
@@ -8908,9 +8977,14 @@ export function buildApp(deps: AppDeps): App {
 
   // ── catalog lifecycle admin (plans/06 §3: "stop sharing" as one action) ───
   router.add('GET', '/api/v1/catalog/lifecycle', async (req, res) => {
-    if (!(await requireAction(req, res, 'catalog.expire'))) return;
+    const user = await requireAction(req, res, 'catalog.expire');
+    if (!user) return;
     const now = Date.now();
-    const rows = await store.listLifecycle();
+    // A partner programme member trusted with dates sees the rows of what their feed
+    // holds, and nothing of the rest of the catalog's lifecycle (plans/82 M1).
+    const all = await store.listLifecycle();
+    const rows = isProgrammeScoped(user.groups, user.role)
+      ? (await Promise.all(all.map(async (row) => (await feedHolds(user.groups, row.assetId)) ? [row] : []))).flat() : all;
     sendJson(res, 200, { rows: await Promise.all(rows.map((r) => lifecycleView(r, now))) });
   });
 
@@ -8937,6 +9011,9 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, isHoldOp ? 'catalog.hold' : 'catalog.expire');
     if (!user) return;
     if (!assetId) return sendError(res, 400, 'INVALID_INPUT', 'assetId required');
+    // The same scope for a write: a partner programme member dates, holds or stops
+    // sharing only what their feed holds (plans/82 M1).
+    if (isProgrammeScoped(user.groups, user.role) && !(await feedHolds(user.groups, assetId))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
     if (body?.onExpiry && body.onExpiry !== 'hide' && body.onExpiry !== 'warn') {
       return sendError(res, 400, 'INVALID_INPUT', 'onExpiry must be hide or warn');
     }
@@ -9020,6 +9097,8 @@ export function buildApp(deps: AppDeps): App {
 
   const submitDeps = () => ({
     store, blobs, policy: config.policy.submit,
+    duplicateVisible: async (submitter: { groups: string[]; role?: string }, rec: InstanceAssetRecord) =>
+      !isProgrammeScoped(submitter.groups, submitter.role ?? roleFromGroups(submitter.groups, config.idp.roleGroups)) || feedHolds(submitter.groups, rec.id),
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     // A template or user tool must seed a tool this pack has (plan 299). The
@@ -9256,7 +9335,7 @@ export function buildApp(deps: AppDeps): App {
       ...(declaredGroups.length ? { groups: declaredGroups } : {}),
       ...(projectInput ? { contentType: projectInput.contentType } : uploaded ? { contentType: uploaded.upload.contentType }
         : req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
-      submitter: { id: user.id, groups: user.groups },
+      submitter: { id: user.id, groups: user.groups, role: user.role },
       ...(toolIdParam ? { toolId: toolIdParam } : {}),
       ...(clientRef ? { clientRef } : {}),
     }); } finally { await release?.(); }
@@ -9337,9 +9416,14 @@ export function buildApp(deps: AppDeps): App {
     const [defs, metas] = await Promise.all([store.listCatalogFields(), store.listAssetMeta()]);
     const metaById = new Map(metas.map((m) => [m.assetId, m]));
     const rows: Array<Record<string, unknown>> = [];
+    // A partner programme member's live rows also follow their feed (plans/82 M1):
+    // once published, their own submission is theirs only while their programme
+    // includes it. Rows still waiting for a decision keep the relationship alone.
+    const scoped = isProgrammeScoped(user.groups, user.role);
     for (const rec of listSubmissions(await store.listInstanceAssets(), state)) {
       const relation = await submissionRelation(rec, user);
-      if (relation) rows.push({ ...submissionView(rec, actors, servedFields(defs, metaById.get(rec.id))), relation });
+      if (!relation || (scoped && submissionServable(rec) && !(await instanceAssetReadable(user, rec)))) continue;
+      rows.push({ ...submissionView(rec, actors, servedFields(defs, metaById.get(rec.id))), relation });
     }
     sendJson(res, 200, { submissions: rows }, { 'cache-control': 'no-store' });
   });
@@ -9351,7 +9435,7 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
-    if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
+    if (!rec?.submission) return scopedCaller(user) ? notAvailable(res) : sendError(res, 404, 'NOT_FOUND', 'no such submission');
     // Only the submitter and whoever may act on the step see a PENDING
     // submission's bytes, which are the submitter's own upload: nothing can
     // replace them before the decision. Once it is live, staff keep that
@@ -9363,7 +9447,7 @@ export function buildApp(deps: AppDeps): App {
       : isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
         : !!(await submissionRelation(rec, user)) || instanceAssetVisible(rec, user.groups);
     if (!allowed) {
-      return sendError(res, 403, 'FORBIDDEN', 'not yours to review');
+      return scopedCaller(user) ? notAvailable(res) : sendError(res, 403, 'FORBIDDEN', 'not yours to review');
     }
     // Once it is published this row is an ordinary catalog asset, so it answers
     // to the ordinary lifecycle gate: a revoked, expired or scheduled asset
@@ -9399,6 +9483,8 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
+    // A partner learns a submission's state only from one of their own.
+    if (scopedCaller(user) && (!rec?.submission || !(await submissionRelation(rec, user)))) return notAvailable(res);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     if (rec.submission.state !== 'submitted') {
       return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
@@ -9502,6 +9588,8 @@ export function buildApp(deps: AppDeps): App {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
+    // A partner never acts on a submission's review, so nothing about one is said to them.
+    if (scopedCaller(user)) return notAvailable(res);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     if (rec.submission.state !== 'submitted') return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
     const approvalId = rec.submission.approvalId;
@@ -9564,15 +9652,46 @@ export function buildApp(deps: AppDeps): App {
     if (op === 'create') await store.putGrant(grant);
     else await store.deleteGrant(grant);
     await audit(`user:${user.id}`, `grant.${op}`, `grant:${grant.principal}`, { ...grant });
-    sendJson(res, op === 'create' ? 201 : 200, { ok: true, grant });
+    const partnerScope = op === 'create' ? partnerScopeNote(grant, await scopedUserIds()) : null;
+    sendJson(res, op === 'create' ? 201 : 200, { ok: true, grant, ...(partnerScope ? { partnerScope } : {}) });
+  };
+  /** Who a grant could reach as a partner programme member: scoped people and
+   *  programme tokens by principal id, and the groups any of them hold. */
+  const scopedUserIds = async (): Promise<{ ids: Set<string>; groups: Set<string> }> => {
+    const ids = new Set<string>(), groups = new Set<string>();
+    const add = (id: string, held: string[]) => { ids.add(id); for (const g of held) groups.add(g); };
+    for (const u of await store.listUsers()) if (isProgrammeScoped(u.groups, u.role)) add(u.id, u.groups);
+    for (const t of await store.listApiTokens()) {
+      const account = serviceAccountFor(t);
+      if (isProgrammeScoped(account.groups, account.role)) add(account.id, account.groups);
+    }
+    return { ids, groups };
+  };
+  /**
+   * Why a grant does not apply to partner programme members, or null. Shown beside
+   * the grant (an admin sees the limit where they set it): a grant naming the partner
+   * marker, a programme or company group, or a person in one, for an action outside
+   * PARTNER_ACTIONS (rbac/evaluate.ts) stays stored and does nothing for them.
+   */
+  const partnerScopeNote = (grant: Pick<Grant, 'principal' | 'action'>, scoped: { ids: ReadonlySet<string>; groups: ReadonlySet<string> }): string | null => {
+    if (PARTNER_ACTIONS.has(grant.action)) return null;
+    const p = grant.principal;
+    // Everyone, a partner group, a group a partner (or a programme token) holds, or one of them by id.
+    const partner = p === '*'
+      || (p.startsWith('group:') && (p.slice(6) === PARTNER_GROUP || isPartnerGroup(p.slice(6)) || scoped.groups.has(p.slice(6))))
+      || (p.startsWith('user:') && scoped.ids.has(p.slice(5)));
+    return partner ? `Does not apply to partner programme members: ${grant.action} is not available to partners.` : null;
   };
 
   router.add('GET', '/api/v1/grants', async (req, res) => {
     if (!(await requireAction(req, res, 'grant.edit'))) return;
-    // A stored rule that can never match says why, so the console can mark it.
+    // A stored rule that can never match says why, so the console can mark it, and
+    // so does one that partner programme members are never allowed.
+    const scopedUsers = await scopedUserIds();
     sendJson(res, 200, { grants: (await store.listGrants()).map((g) => {
       const never = grantNeverMatches(g);
-      return never ? { ...g, neverMatches: never } : g;
+      const partnerScope = partnerScopeNote(g, scopedUsers);
+      return { ...g, ...(never ? { neverMatches: never } : {}), ...(partnerScope ? { partnerScope } : {}) };
     }) });
   });
   router.add('POST', '/api/v1/grants', (req, res) => grantMutation(req, res, 'create'));
@@ -10444,6 +10563,10 @@ export function buildApp(deps: AppDeps): App {
     const metas = await store.listAssetMeta();
     const metaById = new Map(metas.map((m) => [m.assetId, m]));
     const composed = (await servedIndex.forCaller({ groups: user.groups })).index;
+    // A partner programme member gets live results only for what their feed holds
+    // (plans/82 M1): a provider asset sync left out (past sync.maxAssets, say) is
+    // not theirs, so its name, tags and files never reach them through search.
+    const feedIds = isProgrammeScoped(user.groups, user.role) ? new Set((composed.assets ?? []).map((entry) => entry.id)) : null;
     // The haystack folds the org's own field values (plans/31 section 4) and
     // the asset's on-device OCR text (section 7) alongside id, name, description
     // and tags: a value an org files an asset under, or a word printed on the
@@ -10484,6 +10607,7 @@ export function buildApp(deps: AppDeps): App {
           // A partner given only some folders of this provider gets results from those folders only.
           if (!reachesAsset(reaches.get(rec.id) ?? null, a)) continue;
           const entry = hideEntryTags(mapProviderAsset(rec, a), tagRules);
+          if (feedIds && !feedIds.has(entry.id)) continue;
           if (liveGate && !liveGate(entry)) continue;
           const row = lifecycleById.get(entry.id);
           const { state, upstreamExpired } = combinedState(row, entryWindow(entry), Date.now());
@@ -12052,7 +12176,8 @@ export function buildApp(deps: AppDeps): App {
     caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
-    designRevision: () => brand.current()!.revision, catalogVersion: instanceCatalogVersion,
+    designRevision: () => brand.current()!.revision,
+    catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
@@ -12140,8 +12265,9 @@ export function buildApp(deps: AppDeps): App {
     },
     companyLogo: async (groups, id) => {
       const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
-      if (!rec || !submissionServable(rec) || !instanceAssetVisible(rec, groups)) return null;
-      if ((await store.getLifecycle(id))?.revokedAt) return null;
+      // The same answer as the logo's bytes route: what the caller's feed holds, through
+      // the lifecycle gate, so a scheduled, expired or revoked logo stays put.
+      if (!rec || !submissionServable(rec) || !(await feedHolds(groups, id)) || (await catalogBytesGate(id, false)).blocked) return null;
       const [format, blobId] = Object.entries(rec.blobs)[0] ?? [];
       const blob = blobId ? await blobs.get(blobId) : null;
       if (!format || !blob) return null;
@@ -12298,6 +12424,7 @@ export function buildApp(deps: AppDeps): App {
       if (!(e instanceof RenderError)) throw e;
       // A request refused for what it asked never ran, so it counts nothing.
       if (e.status < 500) await giveBack?.();
+      if (e.retryAfter !== undefined) res.setHeader('retry-after', String(e.retryAfter));
       // Name the refused input, as the GET route does, so an agent knows which one.
       const v = e.violations?.[0];
       return sendError(res, e.status, e.code, e.message, v
@@ -13041,7 +13168,7 @@ export function buildApp(deps: AppDeps): App {
     res.setHeader('vary', 'Origin');
     if (req.method === 'OPTIONS') {
       res.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-      res.setHeader('access-control-allow-headers', 'content-type, x-lolly-client, if-none-match, idempotency-key');
+      res.setHeader('access-control-allow-headers', `content-type, x-lolly-client, if-none-match, idempotency-key, ${VIEW_AS_HEADER}`);
       res.setHeader('access-control-max-age', '600');
       res.writeHead(204);
       res.end();
@@ -13105,7 +13232,9 @@ export function buildApp(deps: AppDeps): App {
     }
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
-    const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
+    // A tab viewing as a partner (programmes/view-as.ts) writes no fleet record, as the
+    // admin or as anyone: the request is refused or answered as the partner below.
+    const client = req.headers[VIEW_AS_HEADER] === undefined ? parseClientHeader(req.headers['x-lolly-client'] as string | undefined) : null;
     // Histogram writes must not terminate the server when the store is unavailable.
     if (client) void store.recordClient(client).catch(() => log('warn', 'fleet observation failed'));
     // Install identity (plans/34 wave 3): a shell may add `install/<id>` to its
@@ -13187,6 +13316,9 @@ export function buildApp(deps: AppDeps): App {
         return;
       }
     }
+    // View as a partner: refused here unless it is the admin's own session reading
+    // what a partner reads (programmes/view-as.ts).
+    if (await viewAs.gate(req, res, pathname)) { routeClass = 'view-as-refused'; return; }
     // A renewal that cannot be decided (the store is down) is skipped: the
     // session stays as it was and the next request asks again.
     const renewed = await renewedSessionCookie(req, pathname).catch(() => null);
@@ -13205,6 +13337,11 @@ export function buildApp(deps: AppDeps): App {
         if (!res.headersSent) sendCollabActive(res);
         return;
       }
+      // A view that ended mid-request ends the request (programmes/view-as.ts).
+      if (err instanceof ViewAsEndedError) {
+        if (!res.headersSent) sendError(res, 403, err.code, err.message);
+        return;
+      }
       // Too many password checks waiting (lib/crypto.ts): try again shortly.
       if (err instanceof ScryptBusyError) {
         if (!res.headersSent) { res.setHeader('retry-after', '2'); sendError(res, 503, err.code, err.message); }
@@ -13215,7 +13352,8 @@ export function buildApp(deps: AppDeps): App {
     }
   };
   // One server span per request when OTLP traces are on; otherwise the handler directly.
-  const app: App = (req, res) => otel.serve(req, res, (span) => handle(req, res, span));
+  // Each request carries its own view holder (rbac/view-context.ts), empty unless view-as admits one.
+  const app: App = (req, res) => withRequestView(() => otel.serve(req, res, (span) => handle(req, res, span)));
   appRoutes.set(app, router.descriptions);
   return app;
 }

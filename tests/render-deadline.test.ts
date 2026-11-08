@@ -19,6 +19,12 @@ test('render deadlines preserve caller cancellation and successful results', asy
   await assert.rejects(withRenderDeadline(async () => 1, 1000, caller.signal), /cancelled/);
 });
 
+test('the deadline reaches the render as an epoch time', async () => {
+  const before = Date.now();
+  const seen = await withRenderDeadline(async (_signal, deadlineAt) => deadlineAt, 1000);
+  assert.ok(seen >= before + 1000 && seen <= Date.now() + 1000);
+});
+
 test('message destinations allow HTTP and instance paths', () => {
   for (const url of ['#/tools/card', '/tools/card', 'https://example.org/page', 'http://example.org/page']) assert.equal(safeMessageUrl(url), true);
   for (const url of ['javascript:alert(1)', 'data:text/plain,x', '//example.org/page', '/\\example.org', 'https://user:pass@example.org', ' https://example.org']) assert.equal(safeMessageUrl(url), false);

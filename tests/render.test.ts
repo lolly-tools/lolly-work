@@ -747,6 +747,89 @@ test('(l) a saturated worker propagates: 503 RENDER_BUSY reaches the client with
   await closeServer(busy);
 });
 
+test('(l2) a PNG still renders when the worker refuses connections between its two calls, as a lone busy worker out of its Service does', async () => {
+  // The worker serves /render, then stops listening for a while: what a single
+  // worker looks like while Kubernetes holds it out of its Service. The plane's
+  // /rasterise call is refused until it listens again, and the render completes.
+  const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const OUTAGE_MS = 700;
+  let renderedAt = 0, rasterisedAt = 0;
+  let port = 0;
+  let reopen: ReturnType<typeof setTimeout> | undefined;
+  const worker = mockServer((req, res) => {
+    void (async () => {
+      const path = (req.url ?? '').split('?')[0];
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const job = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { brandRevision?: string };
+      if (path === '/render') {
+        res.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
+        res.end(JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><text>TWO_CALLS</text></svg>', brandRevision: job.brandRevision }));
+        renderedAt = Date.now();
+        worker.close(() => { reopen = setTimeout(() => worker.listen(port, '127.0.0.1'), OUTAGE_MS); });
+        return;
+      }
+      rasterisedAt = Date.now();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ bytesB64: PNG_B64, mime: 'image/png' }));
+    })().catch(() => { res.writeHead(500); res.end(); });
+  });
+  await new Promise<void>((r) => worker.listen(0, '127.0.0.1', () => r()));
+  port = (worker.address() as { port: number }).port;
+
+  const srv = await makeServer(
+    { render: { allowHooksInFastPath: false, worker: { url: `http://127.0.0.1:${port}`, timeoutMs: 5000, connectRetryMs: 10_000 } } },
+    [],
+    { renderWorker: 'two-call-key' },
+  );
+  try {
+    const cookie = await login(srv.base, 'admin@test');
+    const res = await fetch(`${srv.base}/api/v1/render`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ toolId: 'hooky', format: 'png', inputs: { title: 'TWO_CALLS' } }) });
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(res.headers.get('content-type'), 'image/png');
+    assert.equal(Buffer.from(await res.arrayBuffer()).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    assert.ok(rasterisedAt - renderedAt >= OUTAGE_MS - 50, `the raster call waited out the refusal (${rasterisedAt - renderedAt} ms)`);
+  } finally {
+    clearTimeout(reopen);
+    await closeServer(worker);
+  }
+});
+
+test('(l3) a worker that never accepts a connection answers 503 RENDER_BUSY with Retry-After, not 502', async () => {
+  const gone = mockServer(() => {});
+  await new Promise<void>((r) => gone.listen(0, '127.0.0.1', () => r()));
+  const port = (gone.address() as { port: number }).port;
+  await closeServer(gone);
+  const srv = await makeServer(
+    { render: { allowHooksInFastPath: false, worker: { url: `http://127.0.0.1:${port}`, timeoutMs: 5000, connectRetryMs: 400 } } },
+    [],
+    { renderWorker: 'gone-key' },
+  );
+  const cookie = await login(srv.base, 'admin@test');
+  for (const res of [
+    await fetch(`${srv.base}/api/v1/render`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'hooky', format: 'png', inputs: {} }) }),
+    await fetch(`${srv.base}/render/hooky.svg?title=x`, { headers: { cookie } }),
+  ]) {
+    assert.equal(res.status, 503);
+    assert.equal((await res.json() as { error: { code: string } }).error.code, 'RENDER_BUSY');
+    assert.equal(res.headers.get('retry-after'), '5');
+  }
+  // A connect budget longer than the render deadline still answers RENDER_BUSY,
+  // not RENDER_TIMEOUT: the retrying stops before the deadline.
+  const short = await makeServer(
+    { render: { allowHooksInFastPath: false, worker: { url: `http://127.0.0.1:${port}`, timeoutMs: 1500, connectRetryMs: 30_000 } } },
+    [],
+    { renderWorker: 'gone-key' },
+  );
+  const shortCookie = await login(short.base, 'admin@test');
+  const started = Date.now();
+  const res = await fetch(`${short.base}/api/v1/render`, { method: 'POST', headers: { cookie: shortCookie, 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'hooky', format: 'svg', inputs: {} }) });
+  assert.equal(res.status, 503);
+  assert.equal((await res.json() as { error: { code: string } }).error.code, 'RENDER_BUSY');
+  assert.ok(Date.now() - started < 1500, 'answered before the render deadline');
+});
+
 test('(m) a worker widens the format tier: jpg + pdf render via /rasterise, jpeg aliases jpg, and a workerless deploy still 400s', async () => {
   const { createHmac } = await import('node:crypto');
   const SECRET = 'widen-key';

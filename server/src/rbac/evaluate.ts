@@ -7,6 +7,7 @@
  * evaluator never needs to look anything up.
  */
 
+import { isProgrammeScoped } from '../programmes/types.ts';
 export type Effect = 'allow' | 'deny';
 
 export interface Grant {
@@ -153,6 +154,49 @@ export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role
   return 'member';
 }
 
+/**
+ * The only actions a partner programme member can ever be allowed (plans/82 M6,
+ * scope-2 A): what a partner's people, their programme's tokens and an admin viewing
+ * as one of them use. Every other action is denied to a programme-scoped principal,
+ * whatever a role default or a grant says, so a delegated admin grant (grant.edit,
+ * policy.edit, programme.manage, catalog.edit, provider actions, audit and telemetry
+ * reads) never reaches the workspace's own data through a partner. Partners share
+ * through their company group (no group.create), and deliveries push to the lead
+ * brand's destinations (no delivery.create). Admins and owners are never scoped.
+ */
+export const PARTNER_ACTIONS: ReadonlySet<string> = new Set([
+  'catalog.read', 'tool.use',
+  'session.view', 'session.create', 'session.edit', 'session.delete', 'session.share',
+  'comment.view', 'comment.create', 'comment.edit', 'comment.resolve', 'comment.moderate',
+  'collab.join', 'project.create',
+  'export.download', 'export.request', 'export.server',
+  'link.create', 'catalog.submit',
+]);
+
+/** Whether this action is closed to this principal because it is a partner's. */
+export function partnerActionClosed(ctx: { groups: readonly string[]; role?: string }, action: string): boolean {
+  return !PARTNER_ACTIONS.has(action) && isProgrammeScoped(ctx.groups as string[], ctx.role);
+}
+
+/**
+ * A view as a partner (programmes/view-as.ts) answers as a synthetic member whose id
+ * names the real admin (`view-as:<admin id>`). A view never shows the admin anything
+ * they could not see themselves: the admin's own explicit denies apply to that member
+ * here, the admin's tool visibility in policy/overlay.ts and the admin's own feed in
+ * catalog/served-index.ts (through rbac/view-context.ts). view-as.ts records the admin
+ * on every request it admits. Only view-as.ts makes that id, so no account, group or
+ * grant can name it.
+ */
+export interface ViewAsViewer { userId: string; groups: string[]; role: Role }
+const viewers = new Map<string, ViewAsViewer>();
+export function setViewAsViewer(subjectId: string, viewer: ViewAsViewer): void {
+  viewers.set(subjectId, { userId: viewer.userId, groups: [...viewer.groups], role: viewer.role });
+}
+/** The admin behind a view's subject id, or undefined for anyone else. */
+export function viewAsViewerOf(userId: string | undefined): ViewAsViewer | undefined {
+  return userId ? viewers.get(userId) : undefined;
+}
+
 function principalMatches(selector: string, ctx: Pick<PrincipalCtx, 'userId' | 'groups'>): boolean {
   if (selector === '*') return true;
   if (selector.startsWith('group:')) return ctx.groups.includes(selector.slice(6));
@@ -169,17 +213,21 @@ function principalMatches(selector: string, ctx: Pick<PrincipalCtx, 'userId' | '
  * instead of evaluate().
  */
 export function grantDecision(
-  ctx: Pick<PrincipalCtx, 'userId' | 'groups'>,
+  ctx: Pick<PrincipalCtx, 'userId' | 'groups'> & { role?: string },
   action: string,
   resourceSelectors: string[],
   grants: Grant[],
 ): 'allow' | 'deny' | 'none' {
+  // A partner programme member is denied every action outside PARTNER_ACTIONS.
+  if (partnerActionClosed(ctx, action)) return 'deny';
   let allowed = false;
+  const viewer = viewAsViewerOf(ctx.userId);
   for (const g of grants) {
     if (g.action !== action) continue;
-    if (!principalMatches(g.principal, ctx)) continue;
     if (g.resource !== '*' && !resourceSelectors.includes(g.resource)) continue;
-    if (g.effect === 'deny') return 'deny';
+    const own = principalMatches(g.principal, ctx);
+    if (g.effect === 'deny' && (own || (viewer !== undefined && principalMatches(g.principal, viewer)))) return 'deny';
+    if (!own) continue;
     allowed = true;
   }
   return allowed ? 'allow' : 'none';
