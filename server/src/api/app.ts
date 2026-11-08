@@ -115,7 +115,7 @@ import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
-import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, denialCode, mayEditCollab, mayJoinCollab, ownerOnlyAction, roleFromGroups, PARTNER_ACTIONS, type Grant, type Role, GROUP_NAMED_ROLES, PERSON_ROLES, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
@@ -9373,15 +9373,35 @@ export function buildApp(deps: AppDeps): App {
     if (op === 'create') await store.putGrant(grant);
     else await store.deleteGrant(grant);
     await audit(`user:${user.id}`, `grant.${op}`, `grant:${grant.principal}`, { ...grant });
-    sendJson(res, op === 'create' ? 201 : 200, { ok: true, grant });
+    const partnerScope = op === 'create' ? partnerScopeNote(grant, await scopedUserIds()) : null;
+    sendJson(res, op === 'create' ? 201 : 200, { ok: true, grant, ...(partnerScope ? { partnerScope } : {}) });
+  };
+  /** People a grant naming them would reach only as a partner programme member. */
+  const scopedUserIds = async (): Promise<Set<string>> =>
+    new Set((await store.listUsers()).filter((u) => isProgrammeScoped(u.groups, u.role)).map((u) => u.id));
+  /**
+   * Why a grant does not apply to partner programme members, or null. Shown beside
+   * the grant (an admin sees the limit where they set it): a grant naming the partner
+   * marker, a programme or company group, or a person in one, for an action outside
+   * PARTNER_ACTIONS (rbac/evaluate.ts) stays stored and does nothing for them.
+   */
+  const partnerScopeNote = (grant: Pick<Grant, 'principal' | 'action'>, scopedUsers: ReadonlySet<string>): string | null => {
+    if (PARTNER_ACTIONS.has(grant.action)) return null;
+    const p = grant.principal;
+    const partner = p.startsWith('group:') ? (p.slice(6) === PARTNER_GROUP || isPartnerGroup(p.slice(6)))
+      : p.startsWith('user:') && scopedUsers.has(p.slice(5));
+    return partner ? `Does not apply to partner programme members: ${grant.action} is not available to partners.` : null;
   };
 
   router.add('GET', '/api/v1/grants', async (req, res) => {
     if (!(await requireAction(req, res, 'grant.edit'))) return;
-    // A stored rule that can never match says why, so the console can mark it.
+    // A stored rule that can never match says why, so the console can mark it, and
+    // so does one that partner programme members are never allowed.
+    const scopedUsers = await scopedUserIds();
     sendJson(res, 200, { grants: (await store.listGrants()).map((g) => {
       const never = grantNeverMatches(g);
-      return never ? { ...g, neverMatches: never } : g;
+      const partnerScope = partnerScopeNote(g, scopedUsers);
+      return { ...g, ...(never ? { neverMatches: never } : {}), ...(partnerScope ? { partnerScope } : {}) };
     }) });
   });
   router.add('POST', '/api/v1/grants', (req, res) => grantMutation(req, res, 'create'));
