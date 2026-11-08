@@ -27,7 +27,7 @@ import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { sendError, sendJson, type createRouter } from '../api/router.ts';
 import { matchesEtag, sendBytes } from '../api/file-delivery.ts';
 import { evaluate, type Grant, type Role } from '../rbac/evaluate.ts';
-import type { ToolOverlay } from '../policy/overlay.ts';
+import { resolveInputAccess, type ToolOverlay } from '../policy/overlay.ts';
 import { isPublishedTemplateRef, templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
 import { projectRuleOverlay, type ManagedRuleContext } from '../brand/rules.ts';
 import { BrandError } from '../brand/service.ts';
@@ -81,7 +81,7 @@ export interface DiscoveryDeps {
   companyOverlay?(toolId: string, groups: string[], overlay: ToolOverlay | undefined): Promise<{ overlay: ToolOverlay | undefined; defaults: Record<string, unknown>; bindings?: Record<string, string> }>;
   /** The published templates this caller's feed carries that declare purposes
    *  (plans/82 M7), with their rules and values. Retired ones are left out. */
-  intentTemplates?(groups: string[]): Promise<RenderTemplate[]>;
+  intentTemplates?(groups: string[], role?: string): Promise<RenderTemplate[]>;
   /** One published template, as this caller's feed serves it, or null. */
   templateFor?(groups: string[], id: string): Promise<RenderTemplate | null>;
   /** The company values a template's bound inputs take for this caller (plans/82
@@ -197,6 +197,13 @@ async function contractFor(deps: DiscoveryDeps, described: ToolDescription, over
     const ids = ((described.manifest.inputs ?? []) as Array<{ id: string }>).map((input) => input.id);
     overlay = templateOverlay(projected, template, groups, ids);
     const filled = deps.templateCompanyValues ? await deps.templateCompanyValues(template, groups) : {};
+    // A bound input the template fixes renders with the company's value, as the
+    // render's own binding does, never with the template's.
+    for (const [id, value] of Object.entries(filled)) {
+      if (overlay && resolveInputAccess(overlay, id, groups).level === 'locked') {
+        overlay = { ...overlay, inputAccess: { ...overlay.inputAccess, [id]: [{ groups: ['*'], level: 'locked', value }] } };
+      }
+    }
     defaults = { ...company.defaults, ...templateSeed(template.values, ids), ...filled };
   }
   const input = effectiveInputSchema(described.raw, overlay, groups, defaults);

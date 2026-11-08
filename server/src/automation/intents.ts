@@ -34,6 +34,10 @@ import { BrandError } from '../brand/service.ts';
 import { projectRuleOverlay } from '../brand/rules.ts';
 import { checkParams, resolveInputAccess, type ToolOverlay } from '../policy/overlay.ts';
 import { templateOverlay, templateSeed, type RenderTemplate } from '../catalog/templates.ts';
+import { referencedAssetIds } from '../catalog/rights.ts';
+import { templateOpenInputs } from '../approvals/export-review-match.ts';
+import type { EngineApi } from '../render/contract.ts';
+import type { ToolIntentV1 } from '@lolly-tools/core/intent-v1';
 import { loadEngine } from '../render/contract.ts';
 import { describeTool } from './verbs.ts';
 import { mayRenderTool, policyFormats } from './effective-contract.ts';
@@ -128,6 +132,48 @@ export function asTemplateRenders(resolution: IntentResolutionV1, templates: Rea
   };
 }
 
+/** A tool's manifest, as a template's purposes are checked against it. */
+export interface TemplateIntentManifest { id: string; inputs?: Array<{ id: string; type: string; default?: unknown; required?: boolean; options?: unknown[]; showIf?: unknown }>; render?: Record<string, unknown> }
+
+/**
+ * A template's purposes, read and checked as a tool's `intents.json` is, against the base
+ * tool with the template's rules applied (plans/82 M7). An input the template fixes is
+ * set by its rules and takes its value; an editable one starts from the template's value.
+ * A purpose may not set an input the template fixes or the partner's company fills, or
+ * name one in a surface: at resolution the server owns those values, and a purpose that
+ * set one would be dropped or refused.
+ */
+export function checkTemplateIntents(engine: Pick<EngineApi, 'parseToolIntents' | 'checkToolIntents'>, manifest: TemplateIntentManifest, raw: unknown,
+  rules: { editable?: string[]; bindings?: Record<string, string>; values?: Record<string, unknown> | null }, overlayBindings?: Record<string, unknown>): { intents: ToolIntentV1[] } | { errors: Array<{ path: string; message: string }> } {
+  const parsed = engine.parseToolIntents(JSON.stringify({ version: 1, intents: raw }));
+  if (!parsed.ok) return { errors: [...parsed.errors] };
+  const open = templateOpenInputs(rules, overlayBindings);
+  const bound = new Set([...Object.keys(rules.bindings ?? {}), ...Object.keys(overlayBindings ?? {})]);
+  const values = rules.values ?? {};
+  const fixed = (id: string): boolean => !!open && !open.includes(id);
+  const inputs = (manifest.inputs ?? []).map((input) => {
+    const start = Object.hasOwn(values, input.id) ? { default: values[input.id] } : input.default !== undefined ? { default: input.default } : {};
+    return fixed(input.id) ? { id: input.id, type: NOT_THE_CALLERS, ...start } : { ...input, ...start };
+  });
+  const errors: Array<{ path: string; message: string }> = [];
+  parsed.intents.forEach((entry, index) => {
+    const owned = (id: string): boolean => fixed(id) || bound.has(id);
+    for (const id of Object.keys(entry.set ?? {})) if (owned(id)) errors.push({ path: `intents/${index}/set/${id}`, message: `${id} is fixed by the template or filled from the partner's company.` });
+    for (const [surface, set] of Object.entries(entry.surfaces ?? {})) {
+      for (const id of Object.keys(set ?? {})) if (owned(id)) errors.push({ path: `intents/${index}/surfaces/${surface}/${id}`, message: `${id} is fixed by the template or filled from the partner's company.` });
+    }
+  });
+  errors.push(...engine.checkToolIntents({ id: manifest.id, inputs, render: manifest.render as never, intents: parsed.intents }));
+  return errors.length ? { errors } : { intents: parsed.intents };
+}
+
+/** Whether every file a template's values name is one this caller's render may draw. */
+export function templateDrawable(template: Pick<RenderTemplate, 'values'>, gate: { allows(id: string): boolean; catalogIds: ReadonlySet<string> } | null): boolean {
+  if (!gate) return true;
+  try { return referencedAssetIds(template.values, gate.catalogIds, { strict: true }).every((id) => gate.allows(id)); }
+  catch { return false; }
+}
+
 async function readSidecar(pack: string, toolId: string): Promise<string | null> {
   try { return await readFile(join(pack, 'tools', toolId, TOOL_INTENTS_FILE), 'utf8'); }
   catch (error) {
@@ -145,7 +191,7 @@ async function callerTools(deps: DiscoveryDeps, caller: DiscoveryCaller, ids: re
   const role = caller.user?.role;
   const [templatesOnly, templates] = await Promise.all([
     deps.templatesOnly ? deps.templatesOnly(caller.groups, role) : new Set<string>(),
-    deps.intentTemplates ? deps.intentTemplates(caller.groups) : [],
+    deps.intentTemplates ? deps.intentTemplates(caller.groups, role) : [],
   ]);
   const usable = new Set(ids);
   const templated = templates.filter((template) => usable.has(template.toolId) && template.intents?.length && !template.retired);

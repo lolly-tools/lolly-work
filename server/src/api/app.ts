@@ -249,7 +249,7 @@ import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, r
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
-import { NOT_THE_CALLERS, registerIntentRoutes } from '../automation/intents.ts';
+import { checkTemplateIntents, registerIntentRoutes, templateDrawable, type TemplateIntentManifest } from '../automation/intents.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
 import { registerContextRoutes, type ContextSkill } from '../automation/context-routes.ts';
 import { servedType as brandPageFileType } from '../brand-pages/manifest.ts';
@@ -6504,18 +6504,10 @@ export function buildApp(deps: AppDeps): App {
     // against the base tool, with every input the template fixes set by its rules.
     checkTemplateIntents: async (toolId, raw, rules) => {
       const engine = await loadEngine();
-      const parsed = engine.parseToolIntents(JSON.stringify({ version: 1, intents: raw }));
-      if (!parsed.ok) return { errors: [...parsed.errors] };
-      let manifest: { inputs?: Array<{ id: string; type: string; default?: unknown }>; render?: Record<string, unknown> };
+      let manifest: TemplateIntentManifest;
       try { manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')); }
       catch { return { errors: [{ path: '', message: `this workspace no longer has the tool "${toolId}"` }] }; }
-      const open = templateOpenInputs(rules, (await store.listOverlays()).get(toolId)?.bindings);
-      const inputs = (manifest.inputs ?? []).map((input) => !open || open.includes(input.id) ? input : {
-        id: input.id, type: NOT_THE_CALLERS,
-        ...(rules.values && Object.hasOwn(rules.values, input.id) ? { default: rules.values[input.id] } : input.default !== undefined ? { default: input.default } : {}),
-      });
-      const issues = engine.checkToolIntents({ id: toolId, inputs, render: manifest.render as never, intents: parsed.intents });
-      return issues.length ? { errors: issues } : { intents: parsed.intents };
+      return checkTemplateIntents(engine, { ...manifest, id: toolId }, raw, rules, (await store.listOverlays()).get(toolId)?.bindings);
     },
     submitVersion: async (actor, target, bytes, from) => {
       const outcome = await submitAsset(submitDeps(actor), {
@@ -12312,10 +12304,14 @@ export function buildApp(deps: AppDeps): App {
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
     // Published templates as candidates for an intent (plans/82 M7), from the caller's own feed.
-    intentTemplates: async (groups) => {
+    intentTemplates: async (groups, role) => {
       const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
       const declaring = feed.filter((a) => a.type === 'template' && Array.isArray((a.meta as { intents?: unknown } | undefined)?.intents) && !(a.meta as { retired?: unknown }).retired);
-      return (await Promise.all(declaring.map((a) => publishedTemplateFor(groups, a.id)))).filter((t): t is RenderTemplate => !!t && !t.retired);
+      // A template whose fixed values name a file this caller's render would hold back
+      // is not one they can make, so it is never offered.
+      const gate = await licenceAssetGate(groups, role);
+      return (await Promise.all(declaring.map((a) => publishedTemplateFor(groups, a.id))))
+        .filter((t): t is RenderTemplate => !!t && !t.retired && templateDrawable(t, gate));
     },
     templateFor: (groups, id) => publishedTemplateFor(groups, id),
     templateCompanyValues: async (template, groups) => {

@@ -24,9 +24,12 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { asTemplateRenders, callerToolFacts } from '../server/src/automation/intents.ts';
+import { asTemplateRenders, callerToolFacts, checkTemplateIntents, templateDrawable } from '../server/src/automation/intents.ts';
 import { servedTemplateEntry } from '../server/src/catalog/templates.ts';
 import type { ToolIntentV1 } from '@lolly-tools/core/intent-v1';
+
+const ENGINE: string = '@lolly/engine';
+const engine = await import(ENGINE) as Parameters<typeof checkTemplateIntents>[0];
 
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400"><text>{{heading}} {{company}}</text></svg>';
 const INPUTS = [
@@ -105,7 +108,7 @@ before(async () => {
     tokens[key] = made.body.token;
   }
   // A catalog template of the webinar tool, published to Resellers with its own purposes.
-  const submitted = await call('bruno', 'POST', '/api/v1/catalog/submit?type=template&toolId=webinar', { toolId: 'webinar', name: 'Webinar banner (partner)', values: { heading: '', tagline: 'Join the SUSE webinar' } });
+  const submitted = await call('bruno', 'POST', '/api/v1/catalog/submit?type=template&toolId=webinar', { toolId: 'webinar', name: 'Webinar banner (partner)', values: { heading: '', tagline: 'Join the SUSE webinar', company: 'OtherCo' } });
   assert.ok(submitted.status === 201 || submitted.status === 200, JSON.stringify(submitted.body));
   source = submitted.body.assetId;
   const published = await call('bruno', 'POST', '/api/v1/programmes/resellers/templates', {
@@ -160,8 +163,13 @@ test('a published template with purposes is a candidate, and its surface renders
   assert.equal(chosen.inputs.company, undefined, 'and so is its name');
   assert.equal(preferred.body.closed.chosen[0].toolId, 'webinar', 'the record names the base tool');
   // The answer renders as it stands.
-  const made = await bearer('northwind', 'POST', '/api/v1/render', { toolId: chosen.toolId, format: chosen.format, inputs: chosen.inputs });
-  assert.equal(made.status, 200, JSON.stringify(made.body));
+  const made = await fetch(`${base}/api/v1/render`, { method: 'POST', headers: { authorization: `Bearer ${tokens.northwind}`, 'content-type': 'application/json' },
+    // As SVG, so the drawn words can be read.
+    body: JSON.stringify({ toolId: chosen.toolId, format: 'svg', inputs: chosen.inputs }) });
+  const svg = await made.text();
+  assert.equal(made.status, 200, svg.slice(0, 300));
+  assert.match(svg, /Northwind IT/, 'the company\'s name, bound over the template\'s fixed one');
+  assert.doesNotMatch(svg, /OtherCo/);
 });
 
 test('the answer for a template names the base tool with inputs.template', () => {
@@ -209,6 +217,16 @@ test('a template\'s purposes are checked against its rules, when set and when it
   const fixed = await put({ intents: [{ purpose: 'promote', needs: ['heading', 'subheading'], roles: { subheading: 'tagline' } }] });
   assert.equal(fixed.status, 400, JSON.stringify(fixed.body));
   assert.equal((await put({ intents: [{ purpose: 'nonsense' }] })).status, 400);
+  // A purpose may not set, or size a surface with, an input the template fixes or the company fills.
+  for (const intents of [
+    [{ purpose: 'promote', needs: ['heading'], set: { tagline: 'Act now' } }],
+    [{ purpose: 'promote', needs: ['heading'], set: { company: 'Someone' } }],
+    [{ purpose: 'promote', needs: ['heading'], surfaces: { banner: { tagline: 'Wide' } } }],
+  ]) {
+    const refused = await put({ intents });
+    assert.equal(refused.status, 400, JSON.stringify(intents));
+    assert.match(refused.body.error.message, /fixed by the template or filled from the partner's company/);
+  }
   // Fixing heading while a purpose still needs it is refused, and nothing changes.
   const narrowed = await put({ editable: ['date'] });
   assert.equal(narrowed.status, 400, JSON.stringify(narrowed.body));
@@ -231,10 +249,28 @@ test('the schema route and describe_tool take a template and answer with its rul
   const props = schema.body.schema.properties as Record<string, { readOnly?: boolean; default?: unknown; const?: unknown }>;
   assert.equal(props.tagline?.readOnly, true, JSON.stringify(props.tagline));
   assert.equal(props.heading?.readOnly, undefined, 'an editable input stays the caller\'s');
+  // company is fixed by the template as OtherCo and bound to the company: Northwind's own name wins, as in the render.
+  assert.equal(props.company?.readOnly, true);
+  assert.equal(props.company?.const ?? props.company?.default, 'Northwind IT', JSON.stringify(props.company));
   assert.equal((await bearer('northwind', 'GET', `/api/v1/schema/cobrand?template=${encodeURIComponent(template)}`)).status, 400, 'another tool\'s template');
   assert.equal((await bearer('outsider', 'GET', `/api/v1/schema/webinar?template=${encodeURIComponent(template)}`)).status, 404, 'not in their feed');
   assert.equal((await bearer('northwind', 'GET', '/api/v1/schema/webinar?template=Webinar')).status, 400);
   const described = await mcpTool('northwind', 'describe_tool', { toolId: 'webinar', template });
   assert.notEqual(described.isError, true, JSON.stringify(described.structuredContent));
   assert.equal(described.structuredContent.template.id, template);
+});
+
+test('a template\'s purposes are checked with its own values, and a held file keeps a template off the list', () => {
+  const manifest = { id: 'legal-card', render: { formats: ['svg'] }, inputs: [
+    { id: 'heading', type: 'text', default: '' }, { id: 'legal', type: 'text', required: true, default: '' },
+  ] };
+  const intents = [{ purpose: 'promote', needs: ['heading'] }];
+  // legal is required and no role fills it: the template's own value is what renders.
+  assert.ok('intents' in checkTemplateIntents(engine, manifest, intents, { editable: ['heading', 'legal'], values: { legal: '© SUSE 2026' } }), 'the template supplies it');
+  assert.ok('errors' in checkTemplateIntents(engine, manifest, intents, { editable: ['heading', 'legal'], values: {} }), 'nothing supplies it');
+  const gate = { allows: (id: string) => id === 'demo/logo/ok', catalogIds: new Set(['demo/logo/ok', 'demo/logo/held']) };
+  assert.equal(templateDrawable({ values: { logo: 'demo/logo/ok' } }, gate), true);
+  assert.equal(templateDrawable({ values: { logo: 'demo/logo/held' } }, gate), false, 'a fixed file the caller may not draw');
+  assert.equal(templateDrawable({ values: { logo: { id: 'demo/logo/held' } } }, gate), false);
+  assert.equal(templateDrawable({ values: { logo: 'demo/logo/held' } }, null), true, 'no gate for staff');
 });
