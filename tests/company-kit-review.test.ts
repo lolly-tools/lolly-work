@@ -130,7 +130,8 @@ test('every manager save waits for approval and becomes the next revision on the
   const approval = (await store.getApproval(id))!;
   assert.equal(approval.subjectType, 'partner-kit');
   assert.equal(approval.subjectRef, 'revision');
-  assert.deepEqual(approval.partnerKit, { companyId: 'revision', action: 'save', blobId: approval.partnerKit?.blobId });
+  assert.deepEqual(approval.partnerKit, { companyId: 'revision', companyCreatedAt: approval.partnerKit?.companyCreatedAt, action: 'save', blobId: approval.partnerKit?.blobId });
+  assert.ok(approval.partnerKit?.companyCreatedAt, 'the request is tied to this company record');
   const held = (await blobs.get(approval.partnerKit!.blobId!))!;
   assert.equal(JSON.parse(await new Response(held.body).text()).colours[0].value, '#0b3d91');
   assert.deepEqual(await read('revision'), { ...before, pending: { approvalId: id, action: 'save' } });
@@ -200,7 +201,8 @@ test('removing a kit waits without retiring the live asset until approved', asyn
   const asked = await call(manager, 'DELETE', at);
   assert.equal(asked.status, 202);
   const id = asked.body.pending.approvalId;
-  assert.deepEqual((await store.getApproval(id))!.partnerKit, { companyId: 'remove', action: 'remove' });
+  const subject = (await store.getApproval(id))!.partnerKit!;
+  assert.deepEqual(subject, { companyId: 'remove', companyCreatedAt: subject.companyCreatedAt, action: 'remove' });
   assert.deepEqual(await read('remove'), { ...before, pending: { approvalId: id, action: 'remove' } });
   assert.equal((await store.getLifecycle(before.assetId))?.revokedAt, undefined);
   assert.equal((await call(manager, 'PUT', at, kit('remove', 'Another'))).status, 409);
@@ -391,4 +393,43 @@ test('kit and approval audit payloads carry no kit bytes or colours', async () =
     if (row.action === 'programme.company.kit') assert.deepEqual(Object.keys(row.payload!).sort(),
       ['revisionAfter', 'revisionBefore', 'source', ...('via' in row.payload! ? ['via'] : [])]);
   }
+});
+
+// Read-only review (plans/82 M8, W-M8-4): each test fails on the code before its fix.
+
+test('a request filed for a company that was deleted and made again with its id never applies to the new one', async () => {
+  const id = 'reborn';
+  const at = await company(id);
+  const before = await read(id);
+  await settings(id, { kitApprovalChain: 'kit-review' });
+  const asked = await call(manager, 'PUT', at, kit(id, 'Proposed'));
+  assert.equal(asked.status, 202, JSON.stringify(asked.body));
+  // As if the request had been stored after the old company was deleted: it points at the old record.
+  const filed = (await store.getApproval(asked.body.pending.approvalId))!;
+  await store.putApproval({ ...filed, partnerKit: { ...filed.partnerKit!, companyCreatedAt: '2000-01-01T00:00:00.000Z' } });
+  await decide(filed.id, 'approve');
+  assert.equal((await read(id)).revision, before.revision, 'the company made later keeps its own kit');
+  assert.equal((await read(id)).kit.label, before.kit.label);
+});
+
+test('a decision applies only while the stored request still says approved', async () => {
+  const id = 'second-thoughts';
+  const at = await company(id);
+  const before = await read(id);
+  await settings(id, { kitApprovalChain: 'kit-review' });
+  const asked = await call(manager, 'PUT', at, kit(id, 'Proposed'));
+  assert.equal(asked.status, 202);
+  const filed = (await store.getApproval(asked.body.pending.approvalId))!;
+  // A second reviewer's rejection is what the store holds; a stale approve settles from its own copy.
+  await decide(filed.id, 'reject');
+  // The approve had read the waiting bytes before the rejection deleted them.
+  await blobs.put(filed.partnerKit!.blobId!, Buffer.from(JSON.stringify(kit(id, 'Proposed'))), 'application/json');
+  const { registerCompanyKitRoutes } = await import('../server/src/programmes/kit-routes.ts');
+  const kits = registerCompanyKitRoutes({ add: () => undefined } as never, {
+    store, blobs, notifier: { email: () => undefined, event: () => undefined } as never, baseUrl: 'http://localhost',
+    requireAction: async () => null, memberOf: async () => null, audit: async () => undefined,
+    kitVisible: async () => true, submitKit: async () => { throw new Error('a rejected request is never published'); },
+  } as never);
+  await kits.settleApproval({ ...filed, state: 'approved' });
+  assert.equal((await read(id)).revision, before.revision);
 });

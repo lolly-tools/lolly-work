@@ -19,6 +19,8 @@ export interface CompanyKitDeps extends Pick<CompanyProfileDeps, 'store' | 'blob
 
 export interface CompanyKitApproval {
   companyId: string;
+  /** The company record's creation time, so a company later made with the same id never takes this change. */
+  companyCreatedAt?: string;
   action: 'save' | 'remove';
   blobId?: string;
 }
@@ -34,6 +36,12 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     if (!await pendingFor(companyId)) return false;
     sendError(res, ...pendingFailure().error);
     return true;
+  };
+  /** The same company record (by its creation time, when known), still in a live programme. */
+  const sameLiveCompany = async (companyId: string, createdAt?: string): Promise<boolean> => {
+    if (!await kitCompanyLive(store, companyId)) return false;
+    if (createdAt === undefined) return true;
+    return (await store.listCompanies()).find((c) => c.id === companyId)?.createdAt === createdAt;
   };
   const managed = async (req: IncomingMessage, res: ServerResponse, params: Record<string, string | undefined>) => {
     const actor = await d.requireAction(req, res, 'programme.manage'); if (!actor) return null;
@@ -120,11 +128,18 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
       const title = `Partner kit: ${company.name}`;
       const approval: Approval = {
         ...createApproval({ id, subjectType: 'partner-kit', subjectRef: company.id, title, chain, nominees: [], createdBy: actor.id, now: new Date().toISOString() }),
-        partnerKit: { companyId: company.id, action, ...(blobId ? { blobId } : {}) },
+        partnerKit: { companyId: company.id, companyCreatedAt: company.createdAt, action, ...(blobId ? { blobId } : {}) },
       };
       if (blobId && bytes) await blobs.put(blobId, bytes, 'application/json');
       try { await store.putApproval(approval); }
       catch (error) { if (blobId) await blobs.delete(blobId); throw error; }
+      // The company is asked again once the request is stored: one deleted or
+      // ended while it was filed keeps no request and no waiting bytes.
+      if (!await sameLiveCompany(company.id, company.createdAt)) {
+        await store.putApproval(withdraw(approval, actor.id, new Date().toISOString()));
+        if (blobId) await blobs.delete(blobId).catch(() => undefined);
+        return failure(409, 'PROGRAMME_ENDED', 'the company was removed or its partnership ended while the change was filed');
+      }
       await d.audit(`user:${actor.id}`, 'approval.submit', `approval:${id}`, { chainId: chain.id, subjectType: 'partner-kit', company: company.id, action });
       const step = currentStep(approval);
       if (step) {
@@ -211,7 +226,12 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     const subject = approval.partnerKit;
     let applied = false;
     try {
-      if (approval.state === 'approved' && await kitCompanyLive(store, subject.companyId)) {
+      // The decision is read back as stored, so a request rejected or withdrawn
+      // since this one was decided applies nothing; and only the same company,
+      // still live, takes the change.
+      const stored = await store.getApproval(approval.id);
+      if (approval.state === 'approved' && stored?.state === 'approved'
+        && await sameLiveCompany(subject.companyId, subject.companyCreatedAt)) {
         const company = (await store.listCompanies()).find((c) => c.id === subject.companyId)!;
         const via = { approval: approval.id };
         if (subject.action === 'remove') applied = !('error' in await remove(approval.createdBy, company, via));
