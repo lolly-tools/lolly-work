@@ -410,7 +410,7 @@ test('the AI lease answers a view as it answers the partner, so the view keeps t
   assert.deepEqual(viewed.body, (await call(admin, 'GET', '/api/v1/policy/ai')).body, 'the same deployment policy');
 });
 
-test('a view shows a tool only when the admin sees it too: a tool kept to a group the admin is not in stays hidden', async () => {
+test('a tool the viewed programme is granted shows in the view, even kept by its overlay to a group the admin is not in', async () => {
   const admin = await login('admin@test');
   const { body } = await call(admin, 'POST', '/api/v1/programmes/resellers/view-as', { company: 'northwind' });
   const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: body.token } });
@@ -419,9 +419,11 @@ test('a view shows a tool only when the admin sees it too: a tool kept to a grou
     // The programme's grant still gives the partner the tool (console Preview says so).
     const preview = await call(admin, 'GET', '/api/v1/org-config/preview?groups=partner,programme-resellers,company-northwind');
     assert.ok('price-sheet' in preview.body.orgConfig.tools, 'the partner gets it');
-    assert.equal((await viewed('/tools/price-sheet/tool.json')).status, 404, 'the admin is not in pricing, so the view refuses it');
+    // The admin manages the programme that grants it, so the view shows the partner's tool.
+    assert.equal((await viewed('/tools/price-sheet/tool.json')).status, 200, 'the programme\'s grant counts on the admin\'s side too');
     const config = await call(admin, 'GET', '/api/v1/org-config', undefined, body.token);
-    assert.ok(!('price-sheet' in config.body.tools));
+    assert.ok('price-sheet' in config.body.tools);
+    // A tool the programme is not granted stays out of the view.
+    assert.equal((await viewed('/tools/internal-deck/tool.json')).status, 404);
   } finally { await store.deleteOverlay('price-sheet'); }
-  assert.equal((await viewed('/tools/price-sheet/tool.json')).status, 200, 'back once the admin sees it again');
 });

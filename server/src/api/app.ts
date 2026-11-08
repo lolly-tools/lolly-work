@@ -116,6 +116,7 @@ import { partnerRightsCheck } from '../setup/checks.ts';
 import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
 import { collectionCredits, pageCreditLine } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
+import { createOwnerMarks } from '../programmes/owner-mark.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
@@ -495,6 +496,8 @@ export function buildApp(deps: AppDeps): App {
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
+      const scopedGroups = scopedCaller(args[1].principal) ? args[1].principal!.groups
+        : args[1].assetScope && isProgrammeScoped(args[1].assetScope.groups, args[1].assetScope.role) ? args[1].assetScope.groups : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
         companyFor: companyForRender, partnerFor: partnerForRender,
         assetGate: licenceAssetGate,
@@ -506,7 +509,15 @@ export function buildApp(deps: AppDeps): App {
         },
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
-        ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
+        ...args[0],
+        // A partner's render, or a link a partner made (its asset scope is the maker's
+        // programme scope), names only sources that partner's feed carries.
+        ...(scopedGroups ? {
+          resolveProvenance: (refs: string[]) => resolveProvenance(refs, scopedGroups),
+          // Scoped provenance must never share cached bytes with a staff render.
+          instanceCatalogVersion: async () => `programme:${(await servedIndex.forCaller({ groups: scopedGroups })).version}`,
+        } : {}),
+        approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
         workerReadToken: mintRenderRead(args[1].assetScope?.groups ?? args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal, deadlineAt });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
@@ -814,8 +825,22 @@ export function buildApp(deps: AppDeps): App {
    * still in the feed, so the render can say what replaced it.
    */
   const publishedTemplateFor = async (groups: string[], id: string): Promise<RenderTemplate | null> => {
-    const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((asset) => asset.id === id && asset.type === 'template');
-    return entry ? templateFromRecord(id, entry, await store.getInstanceAsset(id)) : null;
+    const assets = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+    const entry = assets.find((asset) => asset.id === id && asset.type === 'template');
+    const template = entry ? await templateFromRecord(id, entry, await store.getInstanceAsset(id)) : null;
+    // A partner programme member is told a retired template's successor only when
+    // their own feed carries it.
+    const successor = template?.retired?.replacedBy;
+    if (template && successor && isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups)) && !assets.some((asset) => asset.id === successor)) {
+      return { ...template, retired: {} };
+    }
+    return template;
+  };
+  /** The successor a served feed entry names, if it names one. */
+  const feedReplacement = (entry: unknown): { replacedBy?: string } => {
+    const row = entry as { replacedBy?: unknown; meta?: { replacedBy?: unknown } } | undefined;
+    const id = typeof row?.replacedBy === 'string' ? row.replacedBy : typeof row?.meta?.replacedBy === 'string' ? row.meta.replacedBy : undefined;
+    return id ? { replacedBy: id } : {};
   };
   /** A template's render shape from its record and the index entry that names it. */
   const templateFromRecord = async (id: string, entry: AssetIndexEntry, rec: Awaited<ReturnType<typeof store.getInstanceAsset>>): Promise<RenderTemplate | null> => {
@@ -858,8 +883,10 @@ export function buildApp(deps: AppDeps): App {
    *  catalog, which holds only the pack's own assets. */
   const companyLogoRef = async (groups: string[], id: string): Promise<unknown | null> => {
     const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
-    if (!rec || !submissionServable(rec) || !instanceAssetVisible(rec, groups)) return null;
-    if ((await store.getLifecycle(id))?.revokedAt) return null;
+    if (!rec || !submissionServable(rec)) return null;
+    if (isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups))) {
+      if (!(await feedHolds(groups, id)) || (await catalogBytesGate(id, false)).blocked) return null;
+    } else if (!instanceAssetVisible(rec, groups) || (await store.getLifecycle(id))?.revokedAt) return null;
     const [format, blobId] = Object.entries(rec.blobs)[0] ?? [];
     const blob = blobId ? await blobs.get(blobId) : null;
     if (!format || !blob) return null;
@@ -6424,7 +6451,7 @@ export function buildApp(deps: AppDeps): App {
       return read;
     },
     submitLogo: async (submitter, input) => {
-      const outcome = await submitAsset(submitDeps(), { ...input, submitter });
+      const outcome = await submitAsset(submitDeps(submitter), { ...input, submitter });
       if (outcome.ok) await trimVersionHistory(outcome.record).catch(() => 0);
       return outcome;
     },
@@ -6450,10 +6477,16 @@ export function buildApp(deps: AppDeps): App {
     resolveTxt,
   });
 
+  // The workspace's own mark on what it publishes (plans/82 M6, programmes/owner-mark.ts).
+  const ownerMarks = createOwnerMarks({ store, audit, workspaceName: () => config.instance.name });
+  /** Staff who may edit the catalog state or withdraw that mark; never a partner. */
+  const mayStateMark = async (user: UserRecord): Promise<boolean> => !isProgrammeScoped(user.groups, user.role)
+    && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.edit', ['*'], await store.listGrants());
+
   // Templates published to a programme (plans/82 M2).
   viewAs.register(router);
   registerTemplateRoutes(router, {
-    store, blobs, requireAction, audit,
+    store, blobs, requireAction, audit, ownerMarks, mayStateMark,
     toolFacts: async (toolId) => {
       if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
       try {
@@ -6466,26 +6499,27 @@ export function buildApp(deps: AppDeps): App {
       } catch { return null; }
     },
     toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
-    submitVersion: async (actor, target, bytes) => {
-      const outcome = await submitAsset(submitDeps(), {
-        bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups },
+    submitVersion: async (actor, target, bytes, from) => {
+      const outcome = await submitAsset(submitDeps(actor), {
+        bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups, role: actor.role },
+        ...(from ? { from } : {}),
       });
       if (!outcome.ok) {
-        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : 422;
+        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : outcome.code === 'MARKED_HEAD' ? 403 : 422;
         return { ok: false, status, code: outcome.code, detail: outcome.detail };
       }
       await trimVersionHistory(outcome.record).catch(() => 0);
       return { ok: true, ...(outcome.version ? { version: outcome.version } : {}) };
     },
     submitRulesFile: async (actor, bytes, groups) => {
-      const outcome = await submitAsset(submitDeps(), {
-        bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups },
+      const outcome = await submitAsset(submitDeps(actor), {
+        bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups, role: actor.role },
       });
       if (!outcome.ok) {
         const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' || outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 422;
         return { ok: false, status, code: outcome.code, detail: outcome.detail };
       }
-      return { ok: true, id: outcome.record.id, state: outcome.record.submission?.state ?? 'live' };
+      return { ok: true, id: outcome.record.id, state: outcome.record.submission?.state ?? 'live', duplicate: outcome.duplicate };
     },
   });
 
@@ -6518,7 +6552,7 @@ export function buildApp(deps: AppDeps): App {
     },
   });
   registerCatalogRightsRoutes(router, {
-    store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights,
+    store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark,
     holdsAny: async (req, actions) => {
       const user = (await memberOf(req)) ?? (await serviceAccountOf(req));
       if (!user) return null;
@@ -6882,12 +6916,13 @@ export function buildApp(deps: AppDeps): App {
   // upstream filename; `c2pa: null` states honestly that the source shipped no
   // manifest of its own (none of the current providers do) while the
   // attribution still travels with the export.
-  const resolveProvenance = async (refs: string[]): Promise<ProvenanceIngredient[]> => {
+  const resolveProvenance = async (refs: string[], scopedGroups?: string[]): Promise<ProvenanceIngredient[]> => {
     await providersReady;
     const out: ProvenanceIngredient[] = [];
     const seen = new Set<string>();
     let fragments: Awaited<ReturnType<typeof federation.fragments>> | undefined;
     const pathMap = await loadAssetPathMap(config.instance.pack);
+    const held = scopedGroups ? new Set((await servedIndex.forCaller({ groups: scopedGroups })).index.assets?.map(asset => asset.id)) : null;
     // A detection upgrades `c2pa: null` → `{ kind: 'embedded' }` for the
     // consumed asset - the export can then distinguish "source said nothing"
     // from "source carries a credential" (plans/27 §4). Detection, never a verdict.
@@ -6898,6 +6933,7 @@ export function buildApp(deps: AppDeps): App {
         const [, pid, rid, fmtRef] = rel.split('/');
         if (!pid || !rid) continue;
         const assetId = extAssetId(pid, rid);
+        if (held && !held.has(assetId)) continue;
         if (seen.has(assetId)) continue;
         seen.add(assetId);
         const rec = await store.getProvider(pid, { includeFragment: false });
@@ -6918,7 +6954,7 @@ export function buildApp(deps: AppDeps): App {
         });
       } else {
         const assetId = pathMap.get(rel);
-        if (!assetId || seen.has(assetId)) continue;
+        if (!assetId || seen.has(assetId) || (held && !held.has(assetId))) continue;
         seen.add(assetId);
         out.push({
           title: assetId.split('/').pop() ?? assetId, assetId, relationship: 'componentOf',
@@ -7353,23 +7389,22 @@ export function buildApp(deps: AppDeps): App {
       if (parts.length !== 4) return sendError(res, 404, 'NOT_FOUND', 'bad federated asset path');
       const [, providerId, remoteId, formatRef] = parts as [string, string, string, string];
       await providersReady;
+      const assetId = extAssetId(providerId, remoteId);
+      const scopedReader = scopedCaller(user);
+      if (scopedReader && !(await feedHolds(user!.groups, assetId))) return notAvailable(res);
       const rec = await store.getProvider(providerId, { includeFragment: false });
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
       if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
-      const assetId = extAssetId(providerId, remoteId);
       // A partner programme member reads only the federated assets their feed
       // holds: a granted collection can name one asset of a provider they do
       // not otherwise see (plans/82 M1).
-      const scopedReader = !!user && isProgrammeScoped(user.groups, user.role);
       // Staff keep the bytes for five minutes (plan 80 D6). A partner programme
       // member, and an admin viewing as one, is answered no-cache instead (Andy,
       // 2026-11-07, D6 changed for programme members only): what they may read
       // follows their feed, and a browser cache is not keyed by person, so the
       // browser asks again and the checks run for whoever asks.
       const extBytesCache = scopedReader ? cachePolicy('instance-private').cacheControl : 'private, max-age=300';
-      if (scopedReader
-        ? !(await servedIndex.forCaller({ groups: user!.groups })).index.assets?.some((entry) => entry.id === assetId)
-        : !callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
+      if (!scopedReader && !callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const filePreview = ctx.url.searchParams.get('preview') === '1';
       const convertedPreview = ctx.url.searchParams.get('view') === '1';
       if (convertedPreview && filePreview) return sendError(res, 400, 'INVALID_INPUT', 'choose one preview representation');
@@ -8318,7 +8353,9 @@ export function buildApp(deps: AppDeps): App {
       ...(meta ? { fieldsUpdatedBy: meta.updatedBy, fieldsUpdatedAt: meta.updatedAt } : {}),
       // ID-level supersession and the served version (plans/31 §6), so the
       // console can show "replaced by X" and "version N" without a second call.
-      ...(meta?.replacedBy ? { replacedBy: meta.replacedBy } : {}),
+      // A partner programme member reads the successor only from their own feed's entry,
+      // which names one only when that feed carries it (catalog/served-index.ts).
+      ...(scopedCaller(user) ? feedReplacement(entry) : meta?.replacedBy ? { replacedBy: meta.replacedBy } : {}),
       ...(instAsset ? { version: headVersionOf(instAsset) } : {}),
       // Whether THIS caller may edit any of it, so the console offers an editor
       // only where the PUT would actually be allowed rather than teaching
@@ -8586,11 +8623,21 @@ export function buildApp(deps: AppDeps): App {
     // contribution right.
     if (isHeadOp) {
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
-      const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
-      if (!rec) return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset has versions');
+      if (!id.startsWith(INST_PREFIX) || !(await store.getInstanceAsset(id))) return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset has versions');
+      // A file carrying the workspace's own mark changes head only for someone who may withdraw it.
+      if (await ownerMarks.markOn(id) && !(await mayStateMark(user))) {
+        return sendError(res, 403, 'FORBIDDEN', 'this file carries the workspace\'s own mark: a rollback needs catalog.edit');
+      }
       const body = (await readJson(req)) as { version?: unknown } | null;
       const wanted = Number((body ?? {}).version);
       if (!Number.isInteger(wanted) || wanted < 1) return sendError(res, 400, 'INVALID_INPUT', 'version must be a version number');
+      // The head moves under the asset's lock, with the mark checked against it there.
+      const done = await store.withAssetLock(id, async () => {
+      // Asked again here: a mark stated since the check above binds this rollback too.
+      if (await ownerMarks.markOn(id) && !(await mayStateMark(user))) {
+        return sendError(res, 403, 'FORBIDDEN', 'this file carries the workspace\'s own mark: a rollback needs catalog.edit');
+      }
+      const rec = (await store.getInstanceAsset(id))!;
       const rows = await assetVersionRows(rec);
       const row = rows.find((r) => r.version === wanted);
       if (!row) return sendError(res, 404, 'NOT_FOUND', `no version ${wanted} of this asset`);
@@ -8599,10 +8646,16 @@ export function buildApp(deps: AppDeps): App {
         return sendJson(res, 200, { ok: true, id, version: wanted, changed: false }, { 'cache-control': 'no-store' });
       }
       await store.putInstanceAsset(applyVersionToRecord(rec, row));
+      // A rollback is a head change too: the workspace's own mark answers to the head it restored.
+      await ownerMarks.recheckLocked(user, id);
+      await audit(`user:${user.id}`, 'catalog.rollback', `catalog:${id}`, { before: { version: from }, after: { version: wanted } });
+      return from;
+      });
+      if (typeof done !== 'number') return;
+      const from = done;
       // The bytes behind a stable id just changed, so every cached render that
       // could have consumed them has to miss (plans/31 §6).
       bustInstanceCatalog();
-      await audit(`user:${user.id}`, 'catalog.rollback', `catalog:${id}`, { before: { version: from }, after: { version: wanted } });
       return sendJson(res, 200, { ok: true, id, version: wanted, changed: true, previous: from }, { 'cache-control': 'no-store' });
     }
     if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
@@ -8703,13 +8756,21 @@ export function buildApp(deps: AppDeps): App {
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
 
     let name = instAsset?.entry.name;
-    if (instAsset && parsed && !('error' in parsed) && descriptiveTouched(parsed)) {
-      const entry = applyDescriptivePatch(instAsset.entry, parsed);
-      await store.putInstanceAsset({ ...instAsset, entry });
-      name = entry.name;
-    }
-    if (meta && meta !== stored) await store.putAssetMeta(meta);
-    await audit(`user:${user.id}`, 'catalog.edit', `catalog:${id}`, { before, after });
+    const writeAndAudit = async (): Promise<void> => {
+      if (instAsset && parsed && !('error' in parsed) && descriptiveTouched(parsed)) {
+        // A fresh read under the asset's lock, so a version committing meanwhile
+        // keeps its head (programmes/owner-mark.ts).
+        const current = (await store.getInstanceAsset(instAsset.id)) ?? instAsset;
+        const entry = applyDescriptivePatch(current.entry, parsed);
+        await store.putInstanceAsset({ ...current, entry });
+        name = entry.name;
+      }
+      if (meta && meta !== stored) await store.putAssetMeta(meta);
+      await audit(`user:${user.id}`, 'catalog.edit', `catalog:${id}`, { before, after });
+    };
+    // An instance asset's write and its audit happen under the asset's lock.
+    if (instAsset) await store.withAssetLock(instAsset.id, writeAndAudit);
+    else await writeAndAudit();
     sendJson(res, 200, {
       ok: true,
       id,
@@ -9138,8 +9199,17 @@ export function buildApp(deps: AppDeps): App {
   // DAM already holds. Bytes ride the raw body and the declared metadata rides
   // query params, exactly like publish-out one surface over.
 
-  const submitDeps = () => ({
+  const submitDeps = (submitter: { id: string; groups: string[]; role?: string }) => ({
     store, blobs, policy: config.policy.submit,
+    // Every head change checks the workspace's own mark against the new head.
+    // Called inside the commit's asset lock, so the unlocked recheck.
+    onHeadMoved: (rec: InstanceAssetRecord, submitter: { id: string }) => ownerMarks.recheckLocked(submitter, rec.id),
+    // The same rule as the routes' early check, asked again where the head moves.
+    mayMoveHead: async (rec: InstanceAssetRecord, submitter: { id: string }) => {
+      if (!(await ownerMarks.markOn(rec.id))) return true;
+      const person = await store.getUser(submitter.id);
+      return !!person && mayStateMark(person);
+    },
     duplicateVisible: async (submitter: { groups: string[]; role?: string }, rec: InstanceAssetRecord) =>
       !isProgrammeScoped(submitter.groups, submitter.role ?? roleFromGroups(submitter.groups, config.idp.roleGroups)) || feedHolds(submitter.groups, rec.id),
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
@@ -9148,6 +9218,8 @@ export function buildApp(deps: AppDeps): App {
     // same manifest reader the policy editor uses answers it, plus the name
     // the review queue shows.
     toolLookup: async (toolId: string) => {
+      if (isProgrammeScoped(submitter.groups, submitter.role ?? roleFromGroups(submitter.groups, config.idp.roleGroups))
+        && !callerCanSeeTool(await catalogCallerOf(submitter), toolId)) return null;
       const inputs = await readToolManifestInputs(toolId);
       if (!inputs) return null;
       let name: string | undefined;
@@ -9212,10 +9284,11 @@ export function buildApp(deps: AppDeps): App {
    * disagree about who is looking at a pending asset.
    */
   const submissionRelation = async (
-    rec: InstanceAssetRecord, user: { id: string; groups: string[] },
+    rec: InstanceAssetRecord, user: { id: string; groups: string[]; role?: string },
   ): Promise<'mine' | 'inbox' | null> => {
     const s = rec.submission as AssetSubmission;
     if (s.by === `user:${user.id}`) return 'mine';
+    if (scopedCaller(user)) return null;
     if (!s.approvalId) return null;
     const approval = await store.getApproval(s.approvalId);
     return approval && eligibleForCurrentStep(approval, user.groups) ? 'inbox' : null;
@@ -9296,6 +9369,10 @@ export function buildApp(deps: AppDeps): App {
         return sendError(res, 409, 'ASSET_IS_PINNED',
           `these bytes are a local copy of ${target.origin.provider}'s asset and still carry its identity; cut the provider over before versioning them here`);
       }
+      // A file carrying the workspace's own mark changes head only for someone who may withdraw it.
+      if (await ownerMarks.markOn(target.id) && !(await mayStateMark(user))) {
+        return sendError(res, 403, 'FORBIDDEN', 'this file carries the workspace\'s own mark: a new version needs catalog.edit');
+      }
       // Descriptive metadata and exposure have their own doors, and quietly
       // ignoring them here would let a caller believe they had moved.
       for (const key of ['groups', 'type', 'description', 'tags'] as const) {
@@ -9366,7 +9443,7 @@ export function buildApp(deps: AppDeps): App {
     // A submission that finished while this one read the bytes has used the upload.
     if (uploaded && !await store.getUpload(uploaded.upload.id)) { await release?.(); return sendError(res, 404, 'NOT_FOUND', 'no such finished upload'); }
     let outcome: Awaited<ReturnType<typeof submitAsset>>;
-    try { outcome = await submitAsset(submitDeps(), {
+    try { outcome = await submitAsset(submitDeps(user), {
       bytes,
       ...(projectInput ? { projectSource: projectInput.source, sourceStillReadable: projectInput.stillReadable } : {}),
       ...(target ? { target } : {}),
@@ -9394,7 +9471,7 @@ export function buildApp(deps: AppDeps): App {
       });
       // A misconfigured review chain is the instance's fault, not the
       // submitter's, so it reads as unavailable rather than as a bad request.
-      const status = outcome.code === 'SUBMISSION_INCOMPLETE' ? 503 : outcome.code === 'SOURCE_CHANGED' ? 403 : outcome.code === 'QUOTA_EXCEEDED' ? 409
+      const status = outcome.code === 'SUBMISSION_INCOMPLETE' ? 503 : outcome.code === 'SOURCE_CHANGED' || outcome.code === 'MARKED_HEAD' ? 403 : outcome.code === 'QUOTA_EXCEEDED' ? 409
         : outcome.code === 'SCAN_REJECTED' || outcome.code === 'INVALID_SUBMISSION' ? 422
           : outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 502;
       return sendError(res, status, outcome.code, outcome.detail);
@@ -9526,8 +9603,9 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
-    // A partner learns a submission's state only from one of their own.
-    if (scopedCaller(user) && (!rec?.submission || !(await submissionRelation(rec, user)))) return notAvailable(res);
+    // A partner reads their own pending submission, or a submission in their feed.
+    if (scopedCaller(user) && (!rec?.submission || !(rec.submission.state === 'submitted' && rec.submission.by === `user:${user.id}`)
+      && !(await feedHolds(user.groups, rec.id)))) return notAvailable(res);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     if (rec.submission.state !== 'submitted') {
       return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
@@ -12219,7 +12297,7 @@ export function buildApp(deps: AppDeps): App {
     caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
-    designRevision: () => brand.current()!.revision,
+    designRevision: (groups, role) => isProgrammeScoped(groups, role) ? partnerBrandRevision() : brand.current()!.revision,
     catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
@@ -13256,6 +13334,22 @@ export function buildApp(deps: AppDeps): App {
     }, secrets.session, secure, renewal.ttlSec);
   };
 
+  /** The design system's revision as a partner programme member sees it: the active
+   *  source and its tokens, the parts every partner receives. An internal asset's
+   *  change leaves it as it was; switching or editing the design system moves it. */
+  const partnerBrandRevision = (): string => {
+    const snap = brand.current()!;
+    return sha256Hex(JSON.stringify(['partner-brand', snap.source.id, snap.source.tokensChecksum ?? '', snap.state.revision])).slice(0, 32);
+  };
+  /** Whether a request answers as a partner programme member, from what it carries:
+   *  a view (already admitted), the session cookie's own claims, or a token. */
+  const scopedRequest = async (req: IncomingMessage): Promise<boolean> => {
+    if (viewAs.viewing(req)) return true;
+    const session = readMemberSession(req.headers.cookie, sessionVerify);
+    if (session) return isProgrammeScoped(session.user.groups ?? [], session.user.role);
+    return req.headers.authorization !== undefined && scopedCaller(await serviceAccountOf(req));
+  };
+
   const handle = async (req: IncomingMessage, res: ServerResponse, span: RequestSpan | undefined): Promise<void> => {
     // Nothing runs before the licence gate's mode is known (plans/82 M4): a
     // sign-in that created the first account first would decide an empty
@@ -13372,9 +13466,13 @@ export function buildApp(deps: AppDeps): App {
     if (renewed) res.setHeader('set-cookie', renewed);
     try {
       const matched = await brand.run(async () => {
-        res.setHeader('x-lolly-brand-revision', brand.current()!.revision);
+        // A partner programme member is told a revision of what they see of the design
+        // system (its source and its tokens), never the whole pack's (plans/82 M1).
+        // Read from what the request already carries: no catalog work on this path.
+        const revision = await scopedRequest(req) ? partnerBrandRevision() : brand.current()!.revision;
+        res.setHeader('x-lolly-brand-revision', revision);
         const expected = req.headers['x-lolly-brand-revision'];
-        if (expected && expected !== brand.current()!.revision) throw new BrandError('The design system changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
+        if (expected && expected !== revision) throw new BrandError('The design system changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
         return router.dispatch(req, res);
       });
       if (matched) routeClass = matched;

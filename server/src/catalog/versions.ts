@@ -38,6 +38,9 @@ export interface AssetVersionFormat {
   contentType?: string;
 }
 
+/** The catalog file, and the version of it, that a version's bytes were copied from. */
+export interface CopiedFrom { id: string; version: number }
+
 export interface AssetVersionRecord {
   /** The catalog id these bytes belong to - always `inst/*`. */
   assetId: string;
@@ -49,6 +52,11 @@ export interface AssetVersionRecord {
   formats: AssetVersionFormat[];
   /** 'user:<id>' who put these bytes here. */
   by: string;
+  /** Whether `by` was a partner programme member when they did (programmes/owner-mark.ts). */
+  byScoped?: boolean;
+  /** The catalog file and version these bytes were copied from, when they were (a
+   *  programme template's new version from a catalog template). */
+  from?: CopiedFrom;
   at: string;
   /** Why these bytes replaced the last - the changelog line a curator reads. */
   note?: string;
@@ -114,6 +122,9 @@ export function backfillVersionOne(rec: InstanceAssetRecord): AssetVersionRecord
     version: 1,
     formats: formatsOfRecord(rec),
     by: rec.submission?.by ?? 'instance',
+    // The first version's provenance, as its submission recorded it (programmes/owner-mark.ts).
+    ...(rec.submission?.byScoped !== undefined ? { byScoped: rec.submission.byScoped } : {}),
+    ...(rec.publication?.from ? { from: rec.publication.from } : {}),
     at: rec.submission?.at ?? rec.createdAt,
     ...(typeof rec.entry.width === 'number' && typeof rec.entry.height === 'number'
       ? { width: rec.entry.width, height: rec.entry.height }

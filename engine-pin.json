@@ -1,17 +1,17 @@
 {
-  "generatedFrom": "8be2ceaf828c22f14e9d8067d8b8805b5d0ea921",
+  "generatedFrom": "c4e386df6fde6d43a8df02ce26f4045840050f86",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
-    "version": "1.6.0",
-    "tarball": "lolly-tools-core-1.6.0.tgz",
-    "tarballSha256": "a4b459c90d85ee1ae72b409d824738e48d1e1ee45ce3fc173c44132663ed1fe1",
-    "contentHash": "d11200840c71d75accecebc963426e8e23d17555d71bcabfd1a516777bb10ded"
+    "version": "1.7.0",
+    "tarball": "lolly-tools-core-1.7.0.tgz",
+    "tarballSha256": "88ba6b7d4cd7fd1f7ad233522f6d13a7c5b13083b1869960d0bbf8215811ec6c",
+    "contentHash": "0bf988c80a1ad4f536ab071ac2925ef9240c737dc79c301c9a929c11c74d8a14"
   },
   "engine": {
-    "version": "1.334.0",
-    "tarball": "lolly-engine-1.334.0.tgz",
-    "tarballSha256": "1f6979a821e44a5986b7706a46b4c752d55586c9487285e77d9012743f835667",
-    "contentHash": "c967e2bfbf22d9bc3a390945bf76a6787a2876a54b783b66b976c5e51729efc2"
+    "version": "1.336.0",
+    "tarball": "lolly-engine-1.336.0.tgz",
+    "tarballSha256": "e378ac03b5a51efdd95a6061150b4374bd60d61fa21388314e6105aad4eb7875",
+    "contentHash": "3a0612eb621a76a26fd44ef67a86b6e716c8fcee901fbb5bc7482b58c976891f"
   },
   "schemas": {
     "asset-ref.schema.json": "1e610bd8369b1f4756306709af95bb009aa39981a9776343f92f1c00c51bc3cd",
@@ -35,6 +35,7 @@
     "file-operation-report-v1.schema.json": "f95969fd3f0f5099ef642679e079de1eec7432b73275dfc1772e25a79b0447d7",
     "file-operation-request-v1.schema.json": "20ca45779c17949e4d5a8482209106fd9be768ff89ee71127624860d8d2c13e2",
     "intent-resolution-v1.schema.json": "2d45600a8928490f2cc9a25354715de0bacfdd3923d5184ed0fdfadac87dc719",
+    "partner-kit-v1.schema.json": "62858ab2feb19494c0eb21230c41b74d3a624635ef6c82f3bea7f174f88d2b07",
     "ratecard.schema.json": "e164d8ce234279c04877511cb9673cc721d0118647cdae0401246c8f35d0b777",
     "read-extract-v1.schema.json": "f61b40c61a5ac3cfdf9202aa25a1467edd43acaddf22d9bed297edb05a9b2d03",
     "rebrand-census-v1.schema.json": "174fca1471739bd5bd01fae50c1a95a07326ed2f51580bac2ee39e04457370c7",
