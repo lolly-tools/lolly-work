@@ -165,18 +165,20 @@ import { createRoomPersistence } from './persistence.ts';
 import {
   GUEST_GROUP, guestDisplayName, guestLinkRole, guestSeatOf, resolveInviter, type GuestSeat,
 } from './guests.ts';
+import {
+  CONNECTS_PER_USER_PER_MIN, JOIN_TIMEOUT_MS, MAX_BUFFERED_BYTES, MAX_DESIGN_SYSTEM_CHARS, MAX_MESSAGE_BYTES,
+  MAX_QUEUED_MESSAGES, MAX_SOCKETS, MAX_SOCKETS_PER_USER, OPS_MESSAGES_PER_SEC, OPS_PER_SEC,
+} from './limits.ts';
+export {
+  CONNECTS_PER_USER_PER_MIN, JOIN_TIMEOUT_MS, MAX_BUFFERED_BYTES, MAX_MESSAGE_BYTES, MAX_QUEUED_MESSAGES,
+  MAX_SOCKETS, MAX_SOCKETS_PER_USER, OPS_MESSAGES_PER_SEC, OPS_PER_SEC,
+};
 
 /** Every collab socket lives under this prefix; the rest of the path is the
  *  session id. Exported so main.ts and the tests share one literal. */
 export const COLLAB_WS_PREFIX = '/ws/collab/';
 
-/** Largest frame accepted off the wire. Ops are tiny and a full 200-op batch is
- *  a few KB; the ceiling exists so a peer cannot buffer megabytes. `ws` closes
- *  an oversize frame itself (1009). */
-export const MAX_MESSAGE_BYTES = 256 * 1024;
 
-/** A socket that completes the handshake and never sends `join` is closed. */
-export const JOIN_TIMEOUT_MS = 10_000;
 
 /** How often the empty-room sweeper runs (rooms.ts `RoomRegistry.sweep`, which
  *  owns the grace period itself). Unref'd, so it never holds the process open. */
@@ -185,31 +187,6 @@ export const SWEEP_INTERVAL_MS = 10_000;
 // ── the abuse ceilings (OSS plans/100 §11.21 "size + rate caps, disconnect-on-
 //    abuse"). `maxPayload` is the SIZE half; everything below is the RATE half.
 
-/** Ops accepted per socket per second, summed across messages. The op COUNT cap
- *  (`MAX_OPS_PER_MESSAGE`) bounds one message; this bounds the stream. */
-export const OPS_PER_SEC = 200;
-/** `ops` MESSAGES per socket per second. Capped independently of the op count
- *  because the cost of a message is not its ops: every one runs `authorizeOps`,
- *  which is five UNCACHED store reads (`getUserBySub`, `listGrants`,
- *  `listOverlays`, `getSession`, `getProject` - issued as one parallel batch).
- *  The re-read is deliberate - a revocation must not wait for a room to close - 
- *  so the message rate is what has to be bounded instead. 40/s is a gesture
- *  commit every 25 ms, well above what a human hand produces. */
-export const OPS_MESSAGES_PER_SEC = 40;
-/** Handlers queued behind one connection's serialized chain before the socket is
- *  closed. `queue = queue.then(…)` preserves arrival order but bounds nothing on
- *  its own, so a client that outruns the store would otherwise grow the heap. */
-export const MAX_QUEUED_MESSAGES = 64;
-/** Live sockets across the whole gateway. */
-export const MAX_SOCKETS = 512;
-/** Live sockets ONE user may hold. Also the bound on how many WRITER_CAP seats a
- *  single account can occupy in one room, together with `WRITER_CAP_PER_USER`. */
-export const MAX_SOCKETS_PER_USER = 8;
-/** Upgrades one user may complete per minute. Each connect/disconnect cycle
- *  writes 2–3 hash-chained audit rows, and `appendAudit` takes an instance-global
- *  advisory lock - so an unthrottled reconnect loop from one authenticated member
- *  serialises audit writes for the entire instance. */
-export const CONNECTS_PER_USER_PER_MIN = 30;
 /** How often each socket is pinged - and, on the same tick, how often a SEATED
  *  connection is re-authorized (`seatValid`). A half-open TCP connection is
  *  invisible to `close`, and a member who never leaves keeps a WRITER_CAP seat
@@ -220,9 +197,6 @@ export const CONNECTS_PER_USER_PER_MIN = 30;
 export const PING_INTERVAL_MS = 30_000;
 /** Consecutive unanswered pings before the socket is terminated. */
 export const PONG_MISSES = 2;
-/** Outbound bytes allowed to sit in one socket's send buffer. A peer that stopped
- *  reading must not be able to buffer a whole room in server memory. */
-export const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
 /** Application close codes (4000–4999 is the private range). A client can tell
  *  "you were disconnected for flooding" from "the server is shutting down". */
@@ -400,11 +374,6 @@ export function isAllowedOrigin(
 
 // ── the design-system claim (OSS plans/186 §3.10) ─────────────────────────────
 
-/** Longest `ds`/`dsi` value read off the upgrade URL. A brand profile name is a
- *  short path segment and an instance base is a URL; anything past this is not
- *  one of ours, and keeping the read bounded means a silly-length query cannot
- *  be carried around by the gate. */
-const MAX_DESIGN_SYSTEM_CHARS = 256;
 
 /** What a client says it is rendering with. Either half may be absent, and an
  *  absent half is simply not checked - see `designSystemRefusal`. */

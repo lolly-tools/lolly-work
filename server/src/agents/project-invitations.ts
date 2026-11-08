@@ -9,6 +9,7 @@ import type { ProjectAgentRecord } from '../store/types.ts';
 import { agentAttribution } from './attribution.ts';
 import { agentSecret, projectAgentCanWrite } from './access.ts';
 import type { Dependencies } from './routes.ts';
+import { JSON_BODY_CONTROL_BYTES } from '../api/body-limits.ts';
 
 export function registerProjectInvitations(router: ReturnType<typeof createRouter>, d: Dependencies) {
   const safe = (r: ProjectAgentRecord) => ({ id: r.id, projectId: r.projectId, label: r.label, role: r.role,
@@ -28,7 +29,7 @@ export function registerProjectInvitations(router: ReturnType<typeof createRoute
   });
   router.add('POST', '/api/v1/projects/:id/agents', async (req, res, ctx) => {
     const admitted = await gate(req, res, ctx.params.id!); if (!admitted) return;
-    const body = await readJson(req, 4096) as { label?: unknown; role?: unknown; hours?: unknown } | null;
+    const body = await readJson(req, JSON_BODY_CONTROL_BYTES) as { label?: unknown; role?: unknown; hours?: unknown } | null;
     const label = typeof body?.label === 'string' ? body.label.trim() : '', role = body?.role, hours = body?.hours ?? 24;
     if (!label || label.length > 80 || /[\u0000-\u001f]/.test(label) || !['viewer', 'editor'].includes(String(role)) || !Number.isInteger(hours) || Number(hours) < 1 || Number(hours) > 168) {
       return sendError(res, 400, 'INVALID_INPUT', 'Choose an agent name, viewer or editor access, and an expiry from 1 to 168 hours.');

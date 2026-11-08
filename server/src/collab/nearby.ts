@@ -33,6 +33,8 @@
  */
 
 /** One visible member, as the caller sees them (never their address). */
+import { NEARBY_TTL_MS } from './limits.ts';
+export { NEARBY_TTL_MS };
 export interface NearbyMemberView {
   userId: string;
   name: string;
@@ -57,9 +59,6 @@ interface Entry {
   at: number;
 }
 
-/** 12 hours: long enough to span a working session, short enough that a stale entry
- *  from a closed laptop ages off the same day. */
-export const NEARBY_TTL_MS = 12 * 60 * 60 * 1000;
 
 export function createNearbyRegistry(opts?: { now?: () => number; ttlMs?: number }): NearbyRegistry {
   const now = opts?.now ?? Date.now;

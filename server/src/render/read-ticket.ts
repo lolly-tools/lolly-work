@@ -14,7 +14,7 @@ import { loadEngine } from './contract.ts';
 /** The most project files one render may read. */
 export const RENDER_READ_FILE_LIMIT = 64;
 /** The longest ticket the worker accepts (workers/render/src/server.ts). */
-const TICKET_MAX_LENGTH = 8192;
+export const TICKET_MAX_LENGTH = 8192;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const FILE_PATH = /^\/api\/v1\/projects\/([^/]+)\/files\/([^/]+)$/;
 

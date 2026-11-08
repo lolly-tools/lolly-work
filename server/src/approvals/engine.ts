@@ -23,7 +23,7 @@
  *    no resume in v1.
  */
 
-export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review' | 'export-review' | 'brand-page' | 'brand-edit' | 'company-profile';
+export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review' | 'export-review' | 'brand-page' | 'brand-edit' | 'company-profile' | 'partner-kit';
 
 export type ApprovalState = 'submitted' | 'in_review' | 'approved' | 'rejected' | 'withdrawn';
 
@@ -65,6 +65,8 @@ export interface Approval {
   brandEdit?: { sourceId: string; revision: number; digest: string; changes: number };
   /** A partner company contact's change to its profile (programmes/profile-routes.ts, plans/82 M3). */
   companyProfile?: import('../programmes/profile-routes.ts').CompanyProfileApproval;
+  /** A company kit change with any proposed bytes held until the decision. */
+  partnerKit?: import('../programmes/kit-routes.ts').CompanyKitApproval;
   id: string;
   subjectType: SubjectType;
   subjectRef: string;

@@ -148,7 +148,7 @@ export interface OfrepResolver {
 /** The most cached answers kept; the oldest go first. */
 const MAX_CACHE_ENTRIES = 5000;
 /** The largest answer read. A flag evaluation is a few hundred bytes. */
-const MAX_BODY_BYTES = 64 * 1024;
+export const MAX_BODY_BYTES = 64 * 1024;
 /** Transient failures are retried sooner than a stable answer is refreshed. */
 const RETRY_FLOOR_MS = 5000;
 /** A 429's Retry-After is honoured up to this long. */

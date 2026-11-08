@@ -239,7 +239,7 @@ export function scopesCoverAction(scopes: readonly string[], action: string): bo
 }
 
 const TOOL_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
-const MAX_TOKEN_TOOLS = 64;
+export const MAX_TOKEN_TOOLS = 64;
 
 export interface TokenAuthority { role: string; scopes?: TokenScope[]; tools?: string[] }
 

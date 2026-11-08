@@ -39,6 +39,8 @@ async function exitSummary(store: Store, rec: ProgrammeExitRecord, names: Map<st
     id: rec.id, state: rec.state, selection: rec.selection,
     ...(rec.programmeId ? { programme: rec.programmeId } : {}), ...(rec.companyId ? { company: rec.companyId } : {}),
     createdAt: rec.createdAt, createdBy: { id: rec.createdBy, name: names.get(rec.createdBy) ?? rec.createdBy },
+    // A scheduled end's choices, for Change on the programme and company pages.
+    ...(rec.endsAt ? { endsAt: rec.endsAt, notice: rec.notice !== false } : {}), ...(rec.projects ? { projects: rec.projects } : {}),
     ...(rec.doneAt ? { doneAt: rec.doneAt } : {}), ...(rec.via ? { via: rec.via } : {}),
     ...(r ? { counts: {
       ended: count('ended'), stays: count('stays'), notEnded: count('not-ended'), invitations: r.invitations.length, tokens: r.tokens.length,

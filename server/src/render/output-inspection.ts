@@ -1,9 +1,9 @@
 import { sha256Hex } from '../lib/crypto.ts';
 
 export const OUTPUT_PROFILE = 'work/output-v1' as const;
-const MAX_BYTES = 32 * 1024 * 1024;
-const MAX_SVG_BYTES = 2 * 1024 * 1024;
-const MAX_PIXELS = 16_000_000;
+export const MAX_BYTES = 32 * 1024 * 1024;
+export const MAX_SVG_BYTES = 2 * 1024 * 1024;
+export const MAX_PIXELS = 16_000_000;
 const MIME: Record<string, string> = { svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', pdf: 'application/pdf' };
 const IDS = ['format', 'mime', 'readability', 'width', 'height'] as const;
 type CheckId = typeof IDS[number];

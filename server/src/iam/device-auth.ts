@@ -30,12 +30,12 @@ const CODE_LEN = 8;
 export const DEVICE_CODE_TTL_SEC = 600;
 export const DEVICE_POLL_INTERVAL_SEC = 5;
 /** Pending-request ceiling - a memory/table bound, far above any honest use. */
-const MAX_PENDING = 100;
+export const MAX_PENDING = 100;
 /** Per-caller ceiling on flows STARTED in a window: the global MAX_PENDING
  *  alone let one address fill the table and lock every `lw login` out for
  *  the code TTL. */
-const PER_IP_STARTS = 5;
-const PER_IP_WINDOW_MS = 10 * 60 * 1000;
+export const PER_IP_STARTS = 5;
+export const PER_IP_WINDOW_MS = 10 * 60 * 1000;
 
 export interface DeviceAuthPending {
   userCode: string;

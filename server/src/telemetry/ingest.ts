@@ -81,7 +81,7 @@ export interface IngestPolicy {
 }
 
 /** Attrs are labels, not content - reject anything long enough to be a value. */
-const MAX_ATTR_LEN = 200;
+export const MAX_ATTR_LEN = 200;
 
 /**
  * Validate + sanitize one event. Returns null for unknown events or when

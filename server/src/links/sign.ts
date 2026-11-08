@@ -95,6 +95,11 @@ export function linkResourceSelectors(target: LinkTarget): string[] {
   return target.toolId ? [`tool:${target.toolId}`, '*'] : ['*'];
 }
 
+/** The longest a link may last, in hours, except a guest link, which follows the guest link policy. */
+export const LINK_MAX_TTL_HOURS = 24 * 365;
+/** Longest a link's password cookie lasts; never past the link's own expiry. */
+export const LINK_ACCESS_MAX_SEC = 12 * 3600;
+
 export const DEFAULT_TTL_SEC: Record<LinkKind, number> = {
   share: 7 * 24 * 3600,
   embed: 90 * 24 * 3600,

@@ -53,6 +53,8 @@ export interface CompanyProfileSettings {
   editors?: string[];
   /** An approval chain a contact's change goes through. Absent is off. */
   approvalChain?: string;
+  /** An approval chain every kit change goes through. Absent is off. */
+  kitApprovalChain?: string;
 }
 
 export interface CompanyProfileRecord {
@@ -83,6 +85,8 @@ export const LOGO_FIELD: Record<LogoSurface, 'logoLight' | 'logoDark' | 'mark'> 
 export const DETAIL_FIELDS = ['website', 'contact', 'address', 'currency', 'taxNote'] as const;
 type DetailField = (typeof DETAIL_FIELDS)[number];
 
+/** A currency is an ISO 4217 code: three letters. */
+export const CURRENCY_CODE_LENGTH = 3;
 export const LIMITS = { name: 120, website: 500, contactName: 120, email: 254, phone: 40, address: 600, addressLines: 6, taxNote: 200 } as const;
 /** Contacts a company may name as editors. */
 export const MAX_EDITORS = 50;
@@ -170,7 +174,7 @@ export function readProfileBody(raw: unknown, opts: { allowName: boolean }): Pat
     out.address = v;
   }
   if (b.currency !== undefined) {
-    const v = text('currency', b.currency, 3);
+    const v = text('currency', b.currency, CURRENCY_CODE_LENGTH);
     if (v && typeof v === 'object') return { error: 'currency must be a three-letter ISO 4217 code, such as EUR' };
     if (v && !knownCurrency(v.toUpperCase())) return { error: 'currency must be a three-letter ISO 4217 code, such as EUR' };
     out.currency = v ? v.toUpperCase() : null;

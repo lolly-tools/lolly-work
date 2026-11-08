@@ -25,6 +25,7 @@ import {
 import { fileMetadata, fileWire, ownsFileReference, type FileMetadata } from './files.ts';
 import { approvalArtifactPolicy } from '../approvals/export-review.ts';
 import { BRAND_PAGE_ACTION, brandPagesConfig } from '../brand-pages/types.ts';
+import { JSON_BODY_LIST_BYTES } from '../api/body-limits.ts';
 
 interface Dependencies {
   config: InstanceConfig;
@@ -84,7 +85,7 @@ export function registerUploadRoutes(router: ReturnType<typeof createRouter>, d:
     const user = await caller(req, res, true);
     if (!user) return;
     const policy = uploadPolicy(d.config);
-    const body = await readJson(req, 512 * 1024) as Record<string, unknown> | null;
+    const body = await readJson(req, JSON_BODY_LIST_BYTES) as Record<string, unknown> | null;
     const scope = body && typeof body === 'object' ? body.scope : undefined;
     if (!policy.enabled && scope !== 'approval-artifact' && scope !== 'brand-page') return sendError(res, 404, 'NOT_FOUND', 'uploads are off');
     if (!isUploadScope(scope)) return sendError(res, 400, 'INVALID_INPUT', 'scope is catalog-submission, automation-input, file, approval-artifact or brand-page');

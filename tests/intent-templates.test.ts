@@ -242,6 +242,17 @@ test('a template\'s purposes are checked against its rules, when set and when it
   assert.equal(back.status, 200, JSON.stringify(back.body));
 });
 
+test('the Templates card reads each template\'s purposes and the words to choose them from', async () => {
+  const listed = await call('bruno', 'GET', '/api/v1/programmes/resellers/templates');
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  const row = listed.body.templates.find((t: { id: string }) => t.id === template);
+  assert.deepEqual(row.intents.map((e: { purpose: string }) => e.purpose), ['promote']);
+  const vocab = listed.body.intentVocabulary;
+  assert.ok(vocab.purposes.some((v: { id: string; meaning: string }) => v.id === 'promote' && v.meaning));
+  assert.ok(vocab.surfaces.includes('banner'));
+  assert.ok(vocab.roles.some((r: { id: string; types: string[] }) => r.id === 'partnerMark' && r.types.includes('asset')));
+});
+
 test('the schema route and describe_tool take a template and answer with its rules', async () => {
   const schema = await bearer('northwind', 'GET', `/api/v1/schema/webinar?template=${encodeURIComponent(template)}`);
   assert.equal(schema.status, 200, JSON.stringify(schema.body));

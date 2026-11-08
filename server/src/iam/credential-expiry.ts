@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+export const CREDENTIAL_MIN_DAYS = 1;
 export const CREDENTIAL_DEFAULT_DAYS = 90;
 export const CREDENTIAL_MAX_DAYS = 365;
 export function credentialActive(record: { expiresAt?: string; revokedAt?: string } | null, allowLegacyUnbounded: boolean, now = Date.now()): boolean {
@@ -9,8 +10,8 @@ export function credentialActive(record: { expiresAt?: string; revokedAt?: strin
 }
 export function credentialExpiry(days: unknown, now = Date.now()): string {
   const ttl = days === undefined ? CREDENTIAL_DEFAULT_DAYS : days;
-  if (typeof ttl !== 'number' || !Number.isInteger(ttl) || ttl < 1 || ttl > CREDENTIAL_MAX_DAYS) {
-    throw new Error('ttlDays must be an integer from 1 to 365');
+  if (typeof ttl !== 'number' || !Number.isInteger(ttl) || ttl < CREDENTIAL_MIN_DAYS || ttl > CREDENTIAL_MAX_DAYS) {
+    throw new Error(`ttlDays must be an integer from ${CREDENTIAL_MIN_DAYS} to ${CREDENTIAL_MAX_DAYS}`);
   }
   return new Date(now + ttl * 86400000).toISOString();
 }

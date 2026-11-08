@@ -37,9 +37,9 @@ interface Dependencies {
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** What one owner may read back in a day, in instance upload budgets, as for
  *  project files: every byte may come out of a metered database. */
-const READ_BUDGETS_PER_DAY = 2;
+export const READ_BUDGETS_PER_DAY = 2;
 /** The largest create body: the base64 of FILE_INLINE_MAX_BYTES, a report and the names. */
-const INLINE_BODY_BYTES = Math.ceil(FILE_INLINE_MAX_BYTES / 3) * 4 + FILE_REPORT_MAX_BYTES + 16 * 1024;
+export const INLINE_BODY_BYTES = Math.ceil(FILE_INLINE_MAX_BYTES / 3) * 4 + FILE_REPORT_MAX_BYTES + 16 * 1024;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
 export function registerFileRoutes(router: ReturnType<typeof createRouter>, d: Dependencies): void {

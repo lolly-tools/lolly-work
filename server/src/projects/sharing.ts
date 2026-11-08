@@ -80,7 +80,7 @@ export function createWindowQuota(limit: number, windowMs: number, now: () => nu
 
 /** Longest project name the message title carries. */
 export const MAX_PROJECT_NAME_CHARS = 120;
-const MAX_TITLE_CHARS = 200;
+export const MAX_TITLE_CHARS = 200;
 
 /**
  * The id of "you were added to project P". Derived from (project, person) so

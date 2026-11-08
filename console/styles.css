@@ -1566,3 +1566,8 @@ html.account-inspector-open { overflow: hidden; }
 .preview-drawing img { display: block; width: 100%; height: auto; border: 1px solid var(--hairline); border-radius: var(--radius); background: #fff; }
 .company-history summary { cursor: pointer; font-size: 13px; color: var(--ink-2); }
 .company-history[open] summary { margin-bottom: var(--sp-3); }
+
+/* A table cell of several lines (agent tokens, plans/82 M7): one block, so a narrow screen stacks them. */
+.cell-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* A limit's id can be long; it wraps on a narrow screen rather than widening the table. */
+.limit-id { overflow-wrap: anywhere; font-size: 12px; }

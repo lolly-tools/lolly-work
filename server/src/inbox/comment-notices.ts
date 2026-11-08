@@ -42,7 +42,7 @@ export const NOTICE_EXCERPT_CHARS = 140;
 /** The body of a notice whose thread holds no message by someone else any more. */
 export const NOTICE_GONE_BODY = 'This comment is no longer available.';
 /** Longest title the inbox carries, as every other inbox message. */
-const MAX_TITLE_CHARS = 200;
+export const MAX_TITLE_CHARS = 200;
 
 /** A comment notice as an inbox row: the same fields as every other inbox
  *  message, with its own `kind`. */

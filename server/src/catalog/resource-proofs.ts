@@ -7,7 +7,7 @@ import { publicStaticDeliveryClass } from '@lolly-tools/core/delivery-v1';
 import { filteredToolManifestBytes, servedToolSidecar } from './tool-sidecars.ts';
 import type { CatalogCaller, CatalogSigning } from './signing.ts';
 
-const MAX_FILE_BYTES = 64 * 1024 * 1024, MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+export const MAX_FILE_BYTES = 64 * 1024 * 1024, MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 export function catalogResourcePath(path: string): boolean {
   return path.length <= 1024 && /^\/(?:catalog\/(?:previews|og)|info\/shots)\//.test(path) && !/[%\\?#\p{White_Space}\p{Cc}]/u.test(path)
     && path.split('/').slice(1).every(segment => segment && segment !== '.' && segment !== '..');
