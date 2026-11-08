@@ -92,7 +92,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
+import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, programmeGroup, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
 import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
@@ -108,10 +108,12 @@ import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../prog
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
-import { registerRightsRoutes } from '../programmes/rights-routes.ts';
+import { linksThatWouldLose, registerRightsRoutes } from '../programmes/rights-routes.ts';
 import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
-import { loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
-import { CHOICE_NOTE_MAX, choiceFingerprint, exitRightsChoices, factsOf } from '../programmes/rights.ts';
+import { AssetScanBoundExceeded, composeRightsRecords, loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
+import { decidePartnerRightsDefault, partnerRightsState, type PartnerRightsState } from '../catalog/rights-mode.ts';
+import { partnerRightsCheck } from '../setup/checks.ts';
+import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
 import { collectionCredits } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
@@ -162,7 +164,7 @@ import {
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
 } from '../catalog/lifecycle.ts';
 import { buildFragment, callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
-import { createServedIndex } from '../catalog/served-index.ts';
+import { createServedIndex, licenceGate } from '../catalog/served-index.ts';
 import { createCatalogDelivery, retainedToolBytes, type CatalogSnapshotKind } from '../catalog/delivery.ts';
 import { createExtCache, extCacheKey } from '../catalog/ext-cache.ts';
 import { contentRangeValue, parseByteRange, RangeNotSatisfiableError, satisfyByteRange } from '../catalog/byte-range.ts';
@@ -187,7 +189,7 @@ import {
 } from '../catalog/asset-meta.ts';
 import { textIndexFiles, textIndexRevision, textIndexView } from '../catalog/text-index.ts';
 import {
-  collectionVisible, composeCollections, normalizeCollection, sortCollections,
+  collectionVisible, composeCollections, MAX_MEMBERS as COLLECTION_MAX_MEMBERS, normalizeCollection, sortCollections,
   type CollectionRecord,
 } from '../catalog/collections.ts';
 import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
@@ -239,6 +241,7 @@ import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkK
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { checkDesignRules, renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool, type RenderCompany } from '../render/pipeline.ts';
+import { AssetHeldError, type RenderAssetGate } from '../render/host.ts';
 import type { RenderPartner } from '../render/record.ts';
 import { isPublishedTemplateRef, templateOverlay, templateRetired, templateSeed, templateValues, type RenderTemplate } from '../catalog/templates.ts';
 import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, readRulesToolData, MAX_RULES_FILE_BYTES, RULES_TOOL_TYPE, type BuiltRulesTool, type DesignRenderer } from '../catalog/rules-tools.ts';
@@ -431,6 +434,12 @@ const COLOURWAY_ROW = 'Colourway and mode';
 /** A value taken from the design system: a token reference such as `{color.semantic.primary}`. */
 const isTokenRef = (value: unknown): boolean => typeof value === 'string' && /^\{[^{}]+\}$/.test(value);
 
+/** The licence gate's mode is read again after a failure, backing off to this. */
+const PARTNER_RIGHTS_RETRY_MS = 250;
+const PARTNER_RIGHTS_RETRY_MAX_MS = 15_000;
+/** How long a request waits for the mode before answering 503 STARTING. */
+const PARTNER_RIGHTS_WAIT_MS = 5_000;
+
 export function buildApp(deps: AppDeps): App {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
   const resolveTxt: TxtLookup = deps.resolveTxt ?? dnsResolveTxt;
@@ -459,6 +468,23 @@ export function buildApp(deps: AppDeps): App {
   });
   const brandRules = createBrandRuleService(brand, store, deploymentConfig.dev.enabled);
   const config = { ...deploymentConfig, instance: { ...deploymentConfig.instance, get pack() { return brand.root(); } } };
+  // What a programme-scoped caller's server render or compile may draw
+  // (plans/82 M4 and M6): exactly the files their own feed holds, in either
+  // mode. In report mode that feed is scoped to their programmes; with the
+  // licence gate on it is gated by licence too. Staff draw as before.
+  const licenceAssetGate = async (groups: string[], role?: string): Promise<{ allows(id: string): boolean; catalogIds: ReadonlySet<string>; revision: string } | null> => {
+    if (!isProgrammeScoped(groups, role)) return null;
+    await providersReady;
+    const served = await servedIndex.forCaller({ groups });
+    const allowed = new Set((served.index.assets ?? []).map((entry) => entry.id));
+    const catalogIds = new Set((await catalogEntriesForRights()).map((entry) => entry.id));
+    return { allows: (id) => allowed.has(id), catalogIds, revision: `${(await partnerRightsReady).mode}:${served.version}` };
+  };
+  /** The same gate for one automation request: it notes each file it held back. */
+  const automationAssetGate = async (caller: { user: { groups: string[]; role?: string } | null; groups: string[] }): Promise<{ assetGate?: RenderAssetGate }> => {
+    const gate = await licenceAssetGate(caller.groups, caller.user?.role);
+    return gate ? { assetGate: { allows: (id) => gate.allows(id), held: new Set<string>(), catalogIds: gate.catalogIds } } : {};
+  };
   // `submitter`: the person the render is for. The worker may then read the
   // project files its inputs name, while that person can see them (plan 76 M4j).
   const renderTool = (...args: [...Parameters<typeof renderToolUnscoped>, submitter?: UserRecord | null]) => {
@@ -469,8 +495,11 @@ export function buildApp(deps: AppDeps): App {
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
+      const scopedGroups = scopedCaller(args[1].principal) ? args[1].principal!.groups
+        : args[1].assetScope && isProgrammeScoped(args[1].assetScope.groups, args[1].assetScope.role) ? args[1].assetScope.groups : undefined;
       const out = await renderToolUnscoped({ templateFor: id => publishedTemplateFor(args[1].principal?.groups ?? [], id),
         companyFor: companyForRender, partnerFor: partnerForRender,
+        assetGate: licenceAssetGate,
         // The design system that drew the render, named as the brand card names it.
         designSystem: async () => {
           const tokens = (await brandChrome.public().catch(() => null))?.tokens ?? null;
@@ -480,13 +509,15 @@ export function buildApp(deps: AppDeps): App {
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
         ...args[0],
-        ...(scopedCaller(args[1].principal) ? {
-          resolveProvenance: (refs: string[]) => resolveProvenance(refs, args[1].principal!.groups),
+        // A partner's render, or a link a partner made (its asset scope is the maker's
+        // programme scope), names only sources that partner's feed carries.
+        ...(scopedGroups ? {
+          resolveProvenance: (refs: string[]) => resolveProvenance(refs, scopedGroups),
           // Scoped provenance must never share cached bytes with a staff render.
-          instanceCatalogVersion: async () => `programme:${(await servedIndex.forCaller({ groups: args[1].principal!.groups })).version}`,
+          instanceCatalogVersion: async () => `programme:${(await servedIndex.forCaller({ groups: scopedGroups })).version}`,
         } : {}),
         approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
-        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal, deadlineAt });
+        workerReadToken: mintRenderRead(args[1].assetScope?.groups ?? args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal, deadlineAt });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;
@@ -760,9 +791,31 @@ export function buildApp(deps: AppDeps): App {
   });
   // The composed asset feed, memoised per caller visibility (catalog/served-index.ts),
   // and the bounded cache of federated bytes (catalog/ext-cache.ts).
+  // The licence gate's mode (plans/82 M4): configuration first, else the
+  // default this instance recorded once on its first start of a release that
+  // knows the gate. A store that cannot answer leaves the gate reporting only.
+  // The licence gate's mode (plans/82 M4) is decided once, before anything
+  // can create an account, and never guessed: a failed read or write is tried
+  // again, and until the mode is known every request but health and
+  // readiness waits, then answers 503 (the handler below). Report mode is
+  // never a fallback, so a recorded gate cannot open for the life of a process.
+  let partnerRightsKnown: PartnerRightsState | null = null;
+  const partnerRightsReady: Promise<PartnerRightsState> = (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        partnerRightsKnown = partnerRightsState(config, await decidePartnerRightsDefault(store));
+        return partnerRightsKnown;
+      } catch (err) {
+        console.warn(`[lolly-work] the licence gate default could not be read or recorded (attempt ${attempt + 1}); trying again: ${(err as Error).message}`);
+        // Unreferenced: a retry never keeps a stopping process alive.
+        await new Promise((r) => setTimeout(r, Math.min(PARTNER_RIGHTS_RETRY_MAX_MS, PARTNER_RIGHTS_RETRY_MS * 2 ** Math.min(attempt, 6))).unref());
+      }
+    }
+  })();
   const servedIndex = createServedIndex({
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
     roleOf: (groups) => roleFromGroups(groups, config.idp.roleGroups),
+    partnerRights: async () => (await partnerRightsReady).mode,
   });
   /**
    * A published template as this group set's own feed serves it (plans/82 M2),
@@ -1202,6 +1255,7 @@ export function buildApp(deps: AppDeps): App {
         : await setupReport().then(report => report.ready ? 'ok' : 'incomplete').catch(() => 'unknown');
     }
     checks.catalog = catalogCheck;
+    checks.licenceGate = partnerRightsKnown ? 'ok' : 'deciding';
     const ok = Object.values(checks).every(value => value === 'ok');
     sendJson(res, ok ? 200 : 503, { ok, store: store.storageKind, checks });
   });
@@ -3076,6 +3130,37 @@ export function buildApp(deps: AppDeps): App {
   // `groups=admin` honestly shows admin escalation. The synthetic id can't
   // collide with a real user id, so only group:/`*` grants apply - never some
   // specific person's user: grants (correct for a group projection).
+  /** What the licence gate does to one partner group set (plans/82 M4), for Preview. */
+  const previewLicence = async (groups: string[]) => {
+    const state = await partnerRightsReady;
+    const engine = await loadRightsEngine();
+    const partner = new Set(partnerGroupsOf(groups));
+    const choices = (await store.listRightsChoices()).filter((c) => partner.has(c.group));
+    const pins = await pinsNow();
+    const keep = licenceGate(engine, partner, choices, pins);
+    const all = (await servedIndex.forCaller({ groups, ungated: true })).index.assets ?? [];
+    const companies = new Set([...partner].filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
+    const users = new Map((await store.listUsers()).map((u) => [u.id, u]));
+    let heldBack = 0, sharedAnyway = 0, needsChoosing = 0;
+    const shared: Array<Record<string, unknown>> = [];
+    for (const entry of all) {
+      const answer = rightsAnswer(engine, entry, companies);
+      if (answer.state !== 'held') continue;
+      const mine = choices.filter((c) => c.assetId === entry.id);
+      if (keep(entry)) {
+        sharedAnyway++;
+        const c = mine.find((x) => currentFingerprint(engine, entry, x.group, pins) === x.fingerprint)!;
+        const who = users.get(c.chosenBy);
+        shared.push({ id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, licence: answer.licence || 'licence not recorded', group: c.group,
+          chosenBy: who ? [who.firstname, who.lastname].filter(Boolean).join(' ') || who.email : c.chosenBy, chosenAt: c.chosenAt });
+      } else {
+        heldBack++;
+        if (mine.length) needsChoosing++;
+      }
+    }
+    return { mode: state.mode, line: state.line, total: all.length, onceGated: all.length - heldBack, heldBack, sharedAnyway, needsChoosing, shared: shared.slice(0, 50) };
+  };
+
   router.add('GET', '/api/v1/org-config/preview', async (req, res, ctx) => {
     const groups = (ctx.url.searchParams.get('groups') ?? '')
       .split(',').map((g) => g.trim()).filter(Boolean);
@@ -3130,6 +3215,10 @@ export function buildApp(deps: AppDeps): App {
       byType: Object.fromEntries([...feedAssets.reduce((m, a) => m.set(String(a.type ?? 'other'), (m.get(String(a.type ?? 'other')) ?? 0) + 1), new Map<string, number>())].sort()),
       sample: feedAssets.slice(0, 24).map((a) => ({ id: a.id, name: typeof a.name === 'string' ? a.name : a.id, type: a.type ?? null })),
       collections: ((feed.collections ?? []) as Array<{ id: string; name: string; members: string[] }>).map((c) => ({ id: c.id, name: c.name, members: c.members.length })),
+      // Licences (plans/82 M4), for the admin reading Preview only: what the
+      // gate holds back from these groups, in either mode, and what was shared
+      // anyway, by whom. Never on org-config.
+      ...(isProgrammeScoped(groups, subject.role) ? { licence: await previewLicence(groups) } : {}),
     };
     // Which partner rule decided each governed input, for the admin reading
     // this (plans/82): a company's rule over its programme's, or the stricter
@@ -3523,8 +3612,14 @@ export function buildApp(deps: AppDeps): App {
       if (!body.target.assetId && !body.target.collectionId) return sendError(res, 400, 'INVALID_INPUT', 'a dry run and includeHeld are for links to catalog files');
       if (!dryRun && isProgrammeScoped(user.groups, user.role)) return sendError(res, 403, 'FORBIDDEN', 'only staff can send files held back by their licence');
       const ids = body.target.collectionId ? (await store.getCollection(body.target.collectionId))?.members ?? [] : [body.target.assetId!.trim()];
-      const [engine, seen] = await Promise.all([loadRightsEngine(), entriesSeenBy(user.groups)]);
-      const files = ids.map((id) => ({ id, entry: seen.get(id), answer: seen.has(id) ? rightsAnswer(engine, seen.get(id)!) : null }));
+      const [engine, seen, pins] = await Promise.all([loadRightsEngine(), entriesSeenBy(user.groups), pinsNow()]);
+      // Each file is classified as the bytes route will serve it: through its
+      // alias, as the link is judged at every fetch.
+      const resolvedIds = await Promise.all(ids.map((id) => resolveAssetAlias(id)));
+      const files = ids.map((id, i) => {
+        const entry = seen.get(resolvedIds[i]!) ?? seen.get(id);
+        return { id, entry, answer: entry ? rightsAnswer(engine, entry) : null };
+      });
       if (dryRun) {
         return sendJson(res, 200, {
           dryRun: true,
@@ -3538,8 +3633,12 @@ export function buildApp(deps: AppDeps): App {
           })),
         }, { 'cache-control': 'no-store' });
       }
-      const held = files.flatMap((f) => (f.entry && f.answer?.state === 'held' ? [{ id: f.id, fingerprint: choiceFingerprint(factsOf(engine, f.entry, 'link')) }] : []));
-      if (held.length) body.target = { ...body.target, includeHeld: held };
+      const held = files.flatMap((f) => (f.entry && f.answer?.state === 'held' ? [{ id: f.id, fingerprint: currentFingerprint(engine, f.entry, 'link', pins) }] : []));
+      // A file whose bytes carry no checksum cannot be remembered by its facts,
+      // so it is never sent anyway: the link is made without it, or not at all.
+      const unnamed = held.filter((h) => h.fingerprint === null).length;
+      if (unnamed) return sendError(res, 409, 'NO_FILE_IDENTITY', `Held files with no checksum cannot be sent anyway (${unnamed} here). Make the link without the held files.`);
+      if (held.length) body.target = { ...body.target, includeHeld: held.map((h) => ({ id: h.id, fingerprint: h.fingerprint! })) };
     }
     const maxTtl = kind === 'guest-edit' ? config.policy.guestLinks.maxTtlHours : 24 * 365;
     const defTtl = kind === 'guest-edit' ? config.policy.guestLinks.defaultTtlHours : DEFAULT_TTL_SEC[kind] / 3600;
@@ -3555,12 +3654,13 @@ export function buildApp(deps: AppDeps): App {
       ...(body.password ? { pwHash: await hashPassword(body.password) } : {}),
       ...(body.projectId ? { projectId: body.projectId } : {}),
     };
-    await store.putLink(link);
-    await audit(`user:${user.id}`, 'link.create', `link:${link.id}`, {
+    // The link and its row commit together: a link carrying held files never
+    // exists without the audit that records the choice (plans/82 M4).
+    await store.putLinkAudited(link, auditBody(`user:${user.id}`, 'link.create', `link:${link.id}`, {
       kind, toolId: body.target.toolId ?? null, assetId: body.target.assetId ?? null,
       collectionId: body.target.collectionId ?? null, ...(link.target.open ? { open: true } : {}),
       ...(link.target.includeHeld ? { includeHeld: link.target.includeHeld.map((h) => h.id), ...(linkNote ? { note: linkNote } : {}) } : {}),
-    });
+    }));
     sendJson(res, 201, { id: link.id, kind, url: `${config.instance.baseUrl}${linkPath(link, secrets.link)}`, expiresAt: new Date(link.exp * 1000).toISOString(),
       ...(link.target.open ? { open: true } : {}), ...(link.target.includeHeld ? { includeHeld: link.target.includeHeld.length } : {}) });
   });
@@ -3891,10 +3991,16 @@ export function buildApp(deps: AppDeps): App {
         else q.set(k, v);
       }
     }
+    // A link a partner made draws only what that partner may draw now (plans/82
+    // M4): their programme scope and licence permissions, read again on every
+    // fetch, so a withdrawn choice or mark reaches a live link.
+    const linkMaker = await store.getUser(link.createdBy);
+    const assetScope = linkMaker && isProgrammeScoped(linkMaker.groups, linkMaker.role)
+      ? { groups: linkMaker.groups, ...(linkMaker.role ? { role: linkMaker.role } : {}) } : undefined;
     try {
       const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner() }, {
         toolId, format: fmt, query: q.toString(),
-        principal: null, profile: {}, overlays: await store.listOverlays(),
+        principal: null, profile: {}, overlays: await store.listOverlays(), ...(assetScope ? { assetScope } : {}),
       });
       const etag = `W/"r-${result.cacheKey.slice(0, 16)}"`;
       if (result.evidence?.brandRules || result.watermarkNote) setDeliveryClass(res, 'person-private');
@@ -4865,11 +4971,34 @@ export function buildApp(deps: AppDeps): App {
     sendJson(res, 200, { pending, current: pending.length === 0 });
   });
 
+  /** The licence gate's setup line (plans/82 M4): the mode, why, and in report mode what the gate would hold back. */
+  const licenceGateSetupCheck = async () => {
+    const state = await partnerRightsReady;
+    if (state.mode === 'gate') return partnerRightsCheck(state, { programmes: [], linksLosing: 0 });
+    try {
+      await providersReady;
+      const engine = await loadRightsEngine();
+      const [programmes, companies, choices, pins] = await Promise.all([store.listProgrammes(), store.listCompanies(), store.listRightsChoices(), pinsNow()]);
+      const counts = [];
+      for (const programme of programmes) {
+        const groups = [programmeGroup(programme.id), ...companies.filter((c) => c.programmeId === programme.id).map((c) => `company-${c.id}`)];
+        const keep = licenceGate(engine, new Set(groups), choices, pins);
+        const assets = (await servedIndex.forCaller({ groups: [...groups, PARTNER_GROUP], ungated: true })).index.assets ?? [];
+        counts.push({ name: programme.name, held: assets.filter((entry) => !keep(entry)).length });
+      }
+      const links = await linksThatWouldLose(engine, store, async (groups) => (await servedIndex.forCaller({ groups, ungated: true })).index, Date.now());
+      return partnerRightsCheck(state, { programmes: counts, linksLosing: links.count });
+    } catch {
+      return { id: 'partner-rights', status: 'not-tested' as const, message: `${state.line} The counts could not be read now.` };
+    }
+  };
+
   router.add('GET', '/api/v1/system/setup', async (req, res) => {
     if (!(await requireAction(req, res, 'instance.config'))) return;
     const report = await setupReport();
     const [reachable, pending] = await Promise.all([store.ping().catch(() => false), store.pendingMigrations().catch(() => null)]);
     const checks = [...report.checks,
+      await licenceGateSetupCheck(),
       { id: 'database-live', status: reachable ? 'pass' : 'fail', message: reachable ? 'The store answered this check.' : 'The store cannot answer. Check database availability.' },
       { id: 'schema', status: pending === null || pending.length ? 'fail' : 'pass', message: pending === null
         ? 'The schema check is unavailable. Check database availability.' : pending.length ? 'Apply pending migrations before acceptance.' : 'No pending migrations.' },
@@ -6295,7 +6424,7 @@ export function buildApp(deps: AppDeps): App {
   // Submit: validate the chain exists and every nominee is eligible for step 0,
   // then open the approval in review and notify the nominees.
   registerProgrammeRoutes(router, {
-    store, requireAction, audit, instanceTokenLimits: config.automation.tokenLimits,
+    store, requireAction, audit, instanceTokenLimits: config.automation.tokenLimits, rightsChoices: exitRightsChoices(store, auditBody),
     toolIds: async () => {
       try {
         const index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'tools', 'index.json'), 'utf8')) as { tools?: Array<{ id?: unknown }> };
@@ -6329,8 +6458,9 @@ export function buildApp(deps: AppDeps): App {
   companyProfiles.register(router);
   registerProgrammePeopleRoutes(router, {
     store, requireAction, audit, people, noticeContext: (now) => noticeContext(config, now),
-    // Ending a partnership withdraws its share anyway choices (plans/82 M4 and M5).
-    rightsChoices: exitRightsChoices(store, audit),
+    // Ending a partnership, or deleting a company, withdraws its share anyway
+    // choices (plans/82 M4 and M5), each with its audit row in one transaction.
+    rightsChoices: exitRightsChoices(store, auditBody),
     forgetCompanyProfile: (companyId) => companyProfiles.forgetCompany(companyId),
     invite: async (actor, email, groups, endsAt) => {
       // The invitation can be accepted until the membership ends, and never for
@@ -6401,7 +6531,18 @@ export function buildApp(deps: AppDeps): App {
     const frags = await federation.fragments({ background: true });
     return [...(await loadAssetIndexById(config.instance.pack)).values(), ...frags.flatMap((f) => f.fragment.assets), ...(await store.listInstanceAssets()).map((r) => r.entry)];
   };
-  registerRightsRoutes(router, { store, requireAction, audit, catalogEntries: catalogEntriesForRights, feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups })).index; } });
+  registerRightsRoutes(router, {
+    store, requireAction, audit, auditBody, catalogEntries: catalogEntriesForRights, rightsMode: () => partnerRightsReady,
+    // The report and a choice read what the audience would get with no gate,
+    // so a held file is still there to count and to choose.
+    feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups, ungated: true })).index; },
+    extraLimits: () => ({ collectionZipBytes: COLLECTION_ZIP_MAX_BYTES, collectionMembers: COLLECTION_MAX_MEMBERS }),
+    templateValues: async (id) => {
+      const rec = await store.getInstanceAsset(id);
+      const blob = rec?.blobs.json ? await blobs.get(rec.blobs.json) : null;
+      return blob ? templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES)) : null;
+    },
+  });
   registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights });
 
   registerDomainRoutes(router, {
@@ -6876,6 +7017,26 @@ export function buildApp(deps: AppDeps): App {
   };
 
   /**
+   * Which stored versions of an instance file a partner may read with the
+   * licence gate on (plans/82 M4), or null for everyone else. A file their
+   * feed holds on its own licence: every version, since the licence names the
+   * asset. A file it holds only through a share anyway choice: the versions
+   * whose bytes are the head's, the bytes the choice was made against.
+   */
+  const versionsAllowedFor = async (user: UserRecord | null | undefined, id: string): Promise<((row: AssetVersionRecord) => boolean) | null> => {
+    if (!user || !isProgrammeScoped(user.groups, user.role) || (await partnerRightsReady).mode !== 'gate') return null;
+    await providersReady;
+    const entry = (await servedIndex.forCaller({ groups: user.groups })).index.assets?.find((e) => e.id === id);
+    if (!entry) return () => false;
+    const companies = new Set(user.groups.filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
+    if (rightsAnswer(await loadRightsEngine(), entry, companies).state !== 'held') return () => true;
+    // The feed states a checksum as `sha256-<base64>`, a version row as hex.
+    const sri = (c: string | undefined): string => (c && /^[0-9a-f]{64}$/i.test(c) ? `sha256-${Buffer.from(c, 'hex').toString('base64')}` : c ?? '');
+    const head = new Map((entry.formats ?? []).map((f) => [f.format, sri((f as { checksum?: string }).checksum)]));
+    return (row) => row.formats.length === head.size && row.formats.every((f) => !!f.checksum && head.get(f.format) === sri(f.checksum));
+  };
+
+  /**
    * Apply `policy.catalog.versionKeep` to one asset, returning how many
    * versions it dropped. Two things are never trimmed: the HEAD (a rollback
    * deliberately makes an old version current, and retention must not delete
@@ -7174,6 +7335,10 @@ export function buildApp(deps: AppDeps): App {
         const row = (await assetVersionRows(rec)).find((r) => r.version === n);
         const fmt = row?.formats.find((f) => f.format === formatRef);
         if (!fmt) return sendError(res, 404, 'NOT_FOUND', `no version ${n} of this asset in ${formatRef}`);
+        // A partner sent this file anyway receives the bytes it was chosen
+        // against, never an older version of it (plans/82 M4).
+        const allowed = await versionsAllowedFor(user, id);
+        if (allowed && !allowed(row!)) return notAvailable(res);
         blobId = fmt.blobId;
       }
       const stat = blobId ? await blobs.head(blobId) : null;
@@ -7502,6 +7667,8 @@ export function buildApp(deps: AppDeps): App {
    *  /catalog/* route follows for blob paths (plans/27 §5). */
   const resolveAssetAlias = async (assetId: string): Promise<string> =>
     assetId.startsWith(EXT_PREFIX) ? (await store.getAlias(assetId)) ?? assetId : assetId;
+  /** The local pins of federated files (plans/27): a choice binds the bytes the pin serves. */
+  const pinsNow = async (): Promise<PinLookup> => pinLookup(await store.listInstanceAssets());
 
   /** The federated feed entry for an ext/* id, or undefined when the provider's
    *  exposure slice does not federate it. */
@@ -7790,10 +7957,62 @@ export function buildApp(deps: AppDeps): App {
     if (!maker || !isProgrammeScoped(maker.groups, maker.role)) return true;
     return check(maker);
   };
+  /**
+   * The licence gate on a bearer link (plans/82 M4), or null when the gate
+   * reports only. For each file the link names it answers whether the bytes
+   * may be served and whether they travel by someone's choice. A link a
+   * partner made carries what the partner's own gated feed holds, share
+   * anyway choices included. A link staff made carries a held file only when
+   * its minter chose it at mint and the facts it was chosen against still
+   * hold (target.includeHeld). A held file is left out, never counted as
+   * withdrawn: the bearer is told nothing about it.
+   */
+  type LinkRightsGate = (assetId: string) => { serve: boolean; byChoice: boolean };
+  const linkRightsGate = async (link: LinkRecord): Promise<LinkRightsGate | null> => {
+    if ((await partnerRightsReady).mode !== 'gate') return null;
+    const maker = await store.getUser(link.createdBy);
+    const engine = await loadRightsEngine();
+    // Each file is judged as the bytes route serves it: through its alias, so a
+    // cutover to an instance file is judged by the instance file's record.
+    const targets = link.target.collectionId ? (await store.getCollection(link.target.collectionId))?.members ?? [] : [link.target.assetId ?? ''];
+    const resolved = new Map(await Promise.all(targets.map(async (id) => [id, await resolveAssetAlias(id)] as const)));
+    if (maker && isProgrammeScoped(maker.groups, maker.role)) {
+      const gated = await entriesSeenBy(maker.groups);
+      const companies = new Set(maker.groups.filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
+      return (assetId) => {
+        const entry = gated.get(resolved.get(assetId) ?? assetId);
+        return entry ? { serve: true, byChoice: rightsAnswer(engine, entry, companies).state === 'held' } : { serve: false, byChoice: false };
+      };
+    }
+    const seen = await entriesSeenBy(maker?.groups ?? []);
+    const [marks, licences, pins] = await Promise.all([store.listAssetRightsMarks(), store.listAssetLicences(), pinsNow()]);
+    const chosen = new Map((link.target.includeHeld ?? []).map((h) => [h.id, h.fingerprint]));
+    const answers = new Map<string, { serve: boolean; byChoice: boolean }>();
+    for (const assetId of targets) {
+      // The maker's own feed first; a file it no longer lists is read from its
+      // source with the marks and licence records composed, as the feed would.
+      // A file with no record to judge is not served.
+      const id = resolved.get(assetId) ?? assetId;
+      let entry = seen.get(id);
+      if (!entry) {
+        const raw = id.startsWith(EXT_PREFIX) ? await federation.entry(id)
+          : id.startsWith(INST_PREFIX) ? (await store.getInstanceAsset(id))?.entry : (await loadAssetIndexById(config.instance.pack)).get(id);
+        entry = raw ? composeRightsRecords(engine, [raw], marks, licences)[0] : undefined;
+      }
+      if (!entry) { answers.set(assetId, { serve: false, byChoice: false }); continue; }
+      if (rightsAnswer(engine, entry).state !== 'held') { answers.set(assetId, { serve: true, byChoice: false }); continue; }
+      const fingerprint = chosen.get(assetId);
+      const byChoice = !!fingerprint && fingerprint === currentFingerprint(engine, entry, 'link', pins);
+      answers.set(assetId, { serve: byChoice, byChoice });
+    }
+    return (assetId) => answers.get(assetId) ?? { serve: false, byChoice: false };
+  };
   const serveLinkedAsset = async (req: IncomingMessage, res: ServerResponse, link: LinkRecord): Promise<void> => {
     if (!await programmeMakerStillSees(link, (maker) => callerSeesAsset(maker, link.target.assetId ?? ''))) {
       return sendError(res, 410, 'LINK_MAKER_NO_ACCESS', 'the person who made this link no longer has this asset');
     }
+    const gate = await linkRightsGate(link);
+    if (gate && !gate(link.target.assetId ?? '').serve) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
     const source = await resolveLinkedSource(link.target.assetId ?? '', link.target.format);
     await streamLinkedSource(req, res, source, link.kind === 'download');
   };
@@ -7822,11 +8041,13 @@ export function buildApp(deps: AppDeps): App {
    *  a list, because naming an asset they may not have would be a reach past
    *  the set. */
   const resolveCollectionMembers = async (
-    rec: CollectionRecord,
+    rec: CollectionRecord, gate: LinkRightsGate | null = null,
   ): Promise<{ members: ResolvedMember[]; withheld: number }> => {
     const members: ResolvedMember[] = [];
     let withheld = 0;
     for (const assetId of rec.members) {
+      // A file the licence gate holds is left out and not counted (plans/82 M4).
+      if (gate && !gate(assetId).serve) continue;
       const source = await resolveLinkedSource(assetId);
       if (source.kind === 'refused') {
         withheld++;
@@ -7893,11 +8114,14 @@ export function buildApp(deps: AppDeps): App {
       if (!rec.members.includes(wantAsset)) {
         return sendError(res, 404, 'NOT_IN_COLLECTION', 'this link reaches this collection only');
       }
+      const gate = await linkRightsGate(link);
+      if (gate && !gate(wantAsset).serve) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       const source = await resolveLinkedSource(wantAsset);
       return streamLinkedSource(req, res, source, url.searchParams.get('dl') === '1' || link.kind === 'download');
     }
 
-    const { members, withheld } = await resolveCollectionMembers(rec);
+    const gate = await linkRightsGate(link);
+    const { members, withheld } = await resolveCollectionMembers(rec, gate);
 
     // A `download` link IS the zip; a `share` link offers it from its page.
     if (link.kind === 'download' || url.searchParams.get('zip') === '1') {
@@ -7915,7 +8139,7 @@ export function buildApp(deps: AppDeps): App {
       const [engine, entries] = await Promise.all([loadRightsEngine(), linkMakerEntries(link)]);
       const credits = collectionCredits(engine, named.map(({ member, path }) => {
         const entry = entries.get(member.assetId);
-        return { id: member.assetId, path, fallbackLabel: member.source.filename, ...(entry ? { entry } : {}) };
+        return { id: member.assetId, path, fallbackLabel: member.source.filename, ...(entry ? { entry } : {}), ...(gate?.(member.assetId).byChoice ? { includedByChoice: true } : {}) };
       }));
       res.writeHead(200, {
         'content-type': 'application/zip',
@@ -8062,6 +8286,7 @@ export function buildApp(deps: AppDeps): App {
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       const head = headVersionOf(instAsset);
       const rows = await assetVersionRows(instAsset);
+      const allowedVersion = await versionsAllowedFor(user, id);
       const sourceReviews = [];
       const reviewGrants = await store.listGrants();
       for (const approval of await store.listApprovals({})) if (approval.sourceReview?.files.some(file => file.assetId === id)
@@ -8073,7 +8298,7 @@ export function buildApp(deps: AppDeps): App {
         metadataHistory: 'not-recorded', sourceReviews,
         sourceReviewCapability: instAsset.origin ? null : { kind: 'frozen-instance-originals-v1', maxFiles: 32, maxFileBytes: 64 * 1024 * 1024, maxTotalBytes: 128 * 1024 * 1024 },
         keep: config.policy.catalog.versionKeep,
-        versions: [...rows].sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
+        versions: [...rows].filter(allowedVersion ?? (() => true)).sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
       }, { 'cache-control': 'private, no-store' });
     }
     await providersReady;
@@ -10366,6 +10591,14 @@ export function buildApp(deps: AppDeps): App {
     finally { res.removeListener('close', disconnected); }
   });
 
+  /** The licence gate for a partner's live search results, or null when none applies (plans/82 M4). */
+  const liveSearchGate = async (user: UserRecord): Promise<((entry: AssetIndexEntry) => boolean) | null> => {
+    if ((await partnerRightsReady).mode !== 'gate' || !isProgrammeScoped(user.groups, user.role)) return null;
+    const [engine, marks, licences, choices, pins] = await Promise.all([loadRightsEngine(), store.listAssetRightsMarks(), store.listAssetLicences(), store.listRightsChoices(), pinsNow()]);
+    const keep = licenceGate(engine, new Set(partnerGroupsOf(user.groups)), choices, pins);
+    return (entry) => keep(composeRightsRecords(engine, [entry], marks, licences)[0]!);
+  };
+
   router.add('GET', '/api/v1/catalog/search', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
@@ -10421,6 +10654,9 @@ export function buildApp(deps: AppDeps): App {
     const live = candidates.filter((rec) => reaches.get(rec.id));
     // Live results lose hidden tags the same way the feed's entries do.
     const tagRules = await loadTagRules(store);
+    // And for a partner with the licence gate on, the gate the feed applies
+    // (plans/82 M4), over the entry with its marks and licence records composed.
+    const liveGate = await liveSearchGate(user);
     await Promise.all(live.map(async (rec) => {
       try {
         const provider = federation.instantiate(rec);
@@ -10435,6 +10671,7 @@ export function buildApp(deps: AppDeps): App {
           if (!reachesAsset(reaches.get(rec.id) ?? null, a)) continue;
           const entry = hideEntryTags(mapProviderAsset(rec, a), tagRules);
           if (feedIds && !feedIds.has(entry.id)) continue;
+          if (liveGate && !liveGate(entry)) continue;
           const row = lifecycleById.get(entry.id);
           const { state, upstreamExpired } = combinedState(row, entryWindow(entry), Date.now());
           if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'))) continue;
@@ -11899,7 +12136,7 @@ export function buildApp(deps: AppDeps): App {
     // Compile, validate and package read this policy. Batch rows render through the
     // pipeline, which applies the rules for the batch format itself.
     const governed = ['compile', 'validate', 'package'].includes(job.verb) ? body.toolId : undefined;
-    const context = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format) };
+    const context = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), readUpload: automationUploadReader(caller.principal), ...automationFiles(caller), policy: await automationPolicy(caller, governed, body.format), ...await automationAssetGate(caller) };
     if (job.verb === 'batch') {
       if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const record = job;
@@ -12148,7 +12385,7 @@ export function buildApp(deps: AppDeps): App {
       if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
       const hostedResolver = hostedAssetResolverFor(caller.groups);
       const automationContext = { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver, readUpload: automationUploadReader(caller.principal), ...automationFiles(caller),
-        policy: await automationPolicy(caller, verb === 'compile' || verb === 'validate' ? body.toolId : undefined, body.format) };
+        policy: await automationPolicy(caller, verb === 'compile' || verb === 'validate' ? body.toolId : undefined, body.format), ...await automationAssetGate(caller) };
       const execute = async (): Promise<unknown> => {
         let result: unknown;
         if (verb === 'compile') result = await compileVerb(automationContext, body as unknown as Parameters<typeof compileVerb>[1]);
@@ -12172,6 +12409,8 @@ export function buildApp(deps: AppDeps): App {
         if (e instanceof UploadReferenceError) return sendError(res, e.status, e.code, e.message);
         if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
         if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
+        if (e instanceof AssetHeldError) { const r = e.report('document'); return sendError(res, 422, 'ASSET_HELD', r.message, { assets: r.assets, ...(r.more ? { more: r.more } : {}) }); }
+        if (e instanceof AssetScanBoundExceeded) return sendError(res, 422, 'VALUES_TOO_LARGE', e.message);
         return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
       }
     });
@@ -12185,7 +12424,7 @@ export function buildApp(deps: AppDeps): App {
     if (!(await requireAutomationTools(res, caller, body, body.document))) return;
     const execute = async () => {
       const document = body.document ?? (await compileVerb(
-        { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format) },
+        { pack: config.instance.pack, profile: caller.profile, toolFiles: publishedToolFiles(caller), hostedResolver: hostedAssetResolverFor(caller.groups), policy: await automationPolicy(caller, body.toolId, body.format), ...await automationAssetGate(caller) },
         body as unknown as Parameters<typeof compileVerb>[1],
       ) as { document: unknown }).document;
       return packageVerb(document);
@@ -12207,6 +12446,8 @@ export function buildApp(deps: AppDeps): App {
     } catch (e) {
       if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
       if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
+      if (e instanceof AssetHeldError) { const r = e.report('document'); return sendError(res, 422, 'ASSET_HELD', r.message, { assets: r.assets, ...(r.more ? { more: r.more } : {}) }); }
+      if (e instanceof AssetScanBoundExceeded) return sendError(res, 422, 'VALUES_TOO_LARGE', e.message);
       return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
     }
   });
@@ -13052,6 +13293,20 @@ export function buildApp(deps: AppDeps): App {
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse, span: RequestSpan | undefined): Promise<void> => {
+    // Nothing runs before the licence gate's mode is known (plans/82 M4): a
+    // sign-in that created the first account first would decide an empty
+    // instance as an upgrade. Health and readiness answer meanwhile.
+    // The path is read as the router reads it, so `/healthz/%2e%2e/...` is the
+    // route it normalises to, never the health check it starts with.
+    const startupPath = !partnerRightsKnown ? new URL(req.url ?? '/', 'http://local').pathname.split('/').filter(Boolean).join('/') : '';
+    if (!partnerRightsKnown && startupPath !== 'healthz' && startupPath !== 'readyz') {
+      const known = await Promise.race([partnerRightsReady, new Promise<null>((r) => setTimeout(() => r(null), PARTNER_RIGHTS_WAIT_MS).unref())]);
+      if (!known) {
+        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '5', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ error: { code: 'STARTING', message: 'This instance is still starting. Try again in a few seconds.' } }));
+        return;
+      }
+    }
     guardDelivery(req, res, edgeDelivery);
     // A public-only edge hostname (edge/config.ts) answers reads of public classes and nothing else.
     if (servesPublicOnly(res) && req.method !== 'GET' && req.method !== 'HEAD') {

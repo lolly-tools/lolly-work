@@ -5,7 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts';
 import { loadToolOrRefuse } from '../render/tool-load.ts';
-import { withRenderHost } from '../render/host.ts';
+import { AssetHeldError, withRenderHost, type RenderAssetGate } from '../render/host.ts';
+import { embeddedAssetIds, referencedAssetIds, withoutRefusedRefs } from '../catalog/rights.ts';
 import { designRuleIssues, vectorFieldParams } from '../render/pipeline.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { isSvgTemplate, toolServerFormats, type RenderCapabilities, type ToolServerFormats } from '../render/capabilities.ts';
@@ -32,6 +33,10 @@ export interface AutomationContext {
   /** A published rules tool's own files, from the caller's served feed (plans/82
    *  M2), or null for a tool the pack holds. Tool-relative path to bytes. */
   toolFiles?: (toolId: string) => Promise<ReadonlyMap<string, Buffer> | null>;
+  /** What a programme-scoped caller may draw (plans/82 M4 and M6), fresh for
+   *  each request: a compile that reaches for, or carries, a file outside it
+   *  is refused. */
+  assetGate?: RenderAssetGate;
 }
 /** What a verb knows of a file reference it read. */
 export interface VerbFile { id: string; checksum: string; name: string; contentType: string }
@@ -86,7 +91,65 @@ export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Pro
   const { engine, tool } = await load(ctx, req.toolId);
   requireDeclaredFormat(tool, req.format);
   const inputs = ctx.policy ? applyInputPolicy(req.inputs ?? {}, ctx.policy.overlays.get(req.toolId), ctx.policy.groups) : req.inputs ?? {};
-  return withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
+  const gate = ctx.assetGate;
+  const known = gate?.catalogIds ?? new Set<string>();
+  const supplied = new Set(referencedAssetIds(req.inputs ?? {}, known));
+  if (gate) {
+    // The files this compile will reach for, before anything resolves them:
+    // the caller's value where they gave one, the tool's default otherwise.
+    const effective: Record<string, unknown> = { ...(inputs as Record<string, unknown>) };
+    for (const input of tool.manifest.inputs as Array<{ id: string; default?: unknown }>) {
+      if (effective[input.id] === undefined || effective[input.id] === null) effective[input.id] = input.default;
+    }
+    const reached = referencedAssetIds(effective, known, { strict: true }).filter((id) => !gate.allows(id));
+    if (reached.length) throw new AssetHeldError(reached, supplied);
+  }
+  let compiled: unknown;
+  try {
+    compiled = await withRenderHost(ctx, async (_dom, host) => engine.compileDocument(tool, inputs, { host, ...(req.designVersion ? { designVersion: req.designVersion } : {}) }));
+  } catch (e) {
+    if (e instanceof AssetHeldError) throw new AssetHeldError([...e.assets, ...(gate?.held ?? [])], supplied);
+    throw e;
+  }
+  if (gate) {
+    // The engine drops a file it cannot read and carries on, so a held file is
+    // refused here rather than left out without a word. A document also
+    // carries files no read touched: a default or a value holding its bytes
+    // inline or marked baked, in its manifest and its values. Every one is
+    // checked before the document leaves, and /package compiles through here.
+    const document = (compiled as { document?: { values?: unknown } } | null)?.document;
+    const carried = [...embeddedAssetIds(compiled, known), ...referencedAssetIds(document?.values, known, { strict: true })].filter((id) => !gate.allows(id));
+    if (gate.held.size || carried.length) throw new AssetHeldError([...gate.held, ...carried], supplied);
+    // What is left can still name a file the caller may not draw: a default
+    // in the tool's manifest or model they chose something else for. The
+    // document they receive names none of them.
+    compiled = withoutRefusedRefs(compiled, known, (id) => gate.allows(id));
+    // A file the engine could not resolve is named in a warning only when the
+    // caller named it; one from a default or a policy is only described.
+    const result = compiled as { warnings?: unknown } | null;
+    if (result && Array.isArray(result.warnings)) {
+      const given = new Set(stringsIn(req.inputs ?? {}));
+      result.warnings = result.warnings.map((w) => {
+        const m = typeof w === 'string' ? /^asset (.+) for (.+) was not resolved$/.exec(w) : null;
+        return m && !given.has(m[1]!) ? `a file for ${m[2]} was not resolved` : w;
+      });
+    }
+  }
+  return compiled;
+}
+
+/** Every string inside some values, to the gate's scan bound (a lenient read: it stops there). */
+function stringsIn(values: unknown): string[] {
+  const out: string[] = [];
+  let budget = 200_000;
+  const walk = (v: unknown, depth: number): void => {
+    if (v === null || v === undefined || --budget < 0 || depth > 64) return;
+    if (typeof v === 'string') out.push(v);
+    else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1);
+    else if (typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) walk(x, depth + 1);
+  };
+  walk(values, 0);
+  return out;
 }
 
 export async function validateVerb(ctx: AutomationContext, body: Record<string, unknown>): Promise<unknown> {

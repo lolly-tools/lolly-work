@@ -84,5 +84,6 @@
   "0094_token_usage.sql": "additive",
   "0095_programme_tokens.sql": "additive",
   "0096_asset_rights_marks.sql": "additive",
-  "0097_programme_rights_choices.sql": "additive"
+  "0097_programme_rights_choices.sql": "additive",
+  "0098_instance_defaults.sql": "additive"
 }

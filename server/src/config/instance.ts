@@ -87,6 +87,17 @@ export interface CatalogPolicy {
    * rollback onto an old version cannot be undone by retention.
    */
   versionKeep: number;
+  /**
+   * The licence gate for partner programmes and bearer links (plans/82 M4).
+   * `gate` holds back a catalog file whose recorded licence does not let the
+   * bytes be passed on, unless the brand team marked it as its own or an admin
+   * chose to share it anyway; `report` changes nothing and only reports what
+   * `gate` would do. Absent, the instance's own recorded default answers:
+   * `gate` when it was first started with no accounts in it, `report` when it
+   * was upgraded with accounts already in it (catalog/rights-mode.ts). An
+   * upgrade never changes what a partner receives without this line.
+   */
+  partnerRights?: 'report' | 'gate';
 }
 
 /**
@@ -1360,6 +1371,10 @@ export function parseConfig(json: string): InstanceConfig {
   const keep = cfg.policy.catalog.versionKeep;
   if (!Number.isFinite(keep) || keep < 0 || !Number.isInteger(keep)) {
     throw new Error(`policy.catalog.versionKeep must be a whole number >= 0 (0 = keep every version): ${keep}`);
+  }
+  const partnerRights = cfg.policy.catalog.partnerRights;
+  if (partnerRights !== undefined && partnerRights !== 'report' && partnerRights !== 'gate') {
+    throw new Error(`policy.catalog.partnerRights must be "report" or "gate": ${String(partnerRights)}`);
   }
   const hook = cfg.submit.scanHook;
   if (hook) {

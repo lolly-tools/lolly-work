@@ -322,3 +322,15 @@ test('a retired template\'s 410 names its successor to a partner only when their
   const body = await res.text();
   assert.doesNotMatch(body, /internal-card/, 'no successor outside the partner\'s feed');
 });
+
+test('a link a partner made names no source outside that partner\'s feed in its provenance', async () => {
+  for (const action of ['link.create', 'export.download']) await store.putGrant({ principal: 'group:programme-resellers', action, resource: '*', effect: 'allow' });
+  const made = await send(rita, 'POST', '/api/v1/links', { kind: 'download', target: { toolId: 'scope-card', format: 'svg', params: { title: 'Link provenance', note: '/catalog/ext/private/hidden/f1' } } });
+  assert.equal(made.status, 201, await made.clone().text());
+  const url = ((await made.json()) as { url: string }).url.replace(/^https?:\/\/[^/]+/, base);
+  const opened = await fetch(url);
+  const text = await opened.text();
+  assert.equal(opened.status, 200, text);
+  assert.ok(!opened.headers.get('x-lolly-provenance')?.includes('ext/private/hidden'));
+  assert.doesNotMatch(text, /Secret campaign photo|secret-campaign.json|ext\/private\/hidden/);
+});

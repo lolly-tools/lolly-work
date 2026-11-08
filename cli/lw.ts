@@ -1159,19 +1159,25 @@ switch (cmd) {
       // would let through and hold back, by source, and the links made by staff
       // that would lose files. Read-only.
       const programme = positionals[2] ?? fail('usage: lw programmes rights-report <programme> [--json]');
-      type Row = { label: string; assets: number; exempt: number; travel: { count: number; byLicence: Array<{ licence: string; count: number }> };
+      type Row = { label: string; assets: number; exempt: number; sharedAnyway?: number; travel: { count: number; byLicence: Array<{ licence: string; count: number }> };
         held: { count: number; byReason: Array<{ label: string; count: number }> } };
       const r = await call(`/api/v1/programmes/${encodeURIComponent(programme)}/rights-report`) as {
-        programme: { name: string }; rules: string; totals: { assets: number; travel: number; held: number; exempt: number }; sources: Row[];
+        programme: { name: string }; rules: string; mode?: { mode: string; line: string };
+        totals: { assets: number; travel: number; held: number; exempt: number; sharedAnyway?: number; needsChoosing?: number }; sources: Row[];
         links: { count: number; files: number; links: Array<{ id: string; target: { name: string }; createdBy: { name: string }; held: number; files: number }>; more: number };
+        prefixes?: Array<{ sentences: string[]; clearedBy?: string }>;
+        templates?: Array<{ name: string; audiences: Array<{ name: string; files: Array<{ name: string; why: 'licence' | 'not-shared'; reason?: string }> }> }>;
       };
       out(r);
       if (!values.json) {
         const t = r.totals;
-        console.log(`${r.programme.name}: ${t.assets} file(s); ${t.travel} travel, ${t.held} would be held back, ${t.exempt} exempt (${r.rules})`);
+        if (r.mode) console.log(r.mode.line);
+        const held = r.mode?.mode === 'gate' ? 'held back' : 'would be held back';
+        console.log(`${r.programme.name}: ${t.assets} file(s); ${t.travel} travel, ${t.held} ${held}, ${t.sharedAnyway ?? 0} shared anyway, ${t.needsChoosing ?? 0} need choosing again, ${t.exempt} exempt (${r.rules})`);
         for (const row of r.sources) {
           const parts = [
             ...row.travel.byLicence.map((l) => `travel ${l.count}: ${l.licence}`),
+            ...(row.sharedAnyway ? [`shared anyway ${row.sharedAnyway}`] : []),
             ...row.held.byReason.map((h) => `held ${h.count}: ${h.label}`),
             ...(row.exempt ? [`exempt ${row.exempt}`] : []),
           ];
@@ -1180,6 +1186,17 @@ switch (cmd) {
         console.log(`links made by staff that would lose files: ${r.links.count}${r.links.count ? ` (${r.links.files} file(s))` : ''}`);
         for (const l of r.links.links) console.log(`  ${l.id}  ${l.target.name}  by ${l.createdBy.name}  loses ${l.held} of ${l.files}`);
         if (r.links.more) console.log(`  and ${r.links.more} more`);
+        for (const pr of r.prefixes ?? []) {
+          for (const line of pr.sentences) console.log(line);
+          if (pr.clearedBy) console.log(`  ${pr.clearedBy}`);
+        }
+        // Published templates that seed files one of the programme's audiences will not receive.
+        for (const t of r.templates ?? []) {
+          for (const a of t.audiences) {
+            const why = (f: { why: string; reason?: string }) => f.why === 'licence' ? f.reason ?? 'held back by its licence' : 'not shared with them';
+            console.log(`template ${t.name} uses ${a.files.length} file(s) ${a.name} will not receive: ${a.files.map((f) => `${f.name} (${why(f)})`).join(', ')}`);
+          }
+        }
       }
       break;
     }
