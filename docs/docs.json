@@ -83,10 +83,16 @@
           "summary": "Invite people to the workspace or a project, send invite links, set passwords from a link, and answer requests to join and for access."
         },
         {
+          "slug": "run-a-partner-programme",
+          "path": "run-a-partner-programme.md",
+          "title": "Run a partner programme",
+          "summary": "For partner teams: what a partner sees, can open, can change and cannot reach, and how to set up a programme, run it day to day and end a partnership."
+        },
+        {
           "slug": "partner-programmes",
           "path": "partner-programmes.md",
           "title": "Partner programmes",
-          "summary": "Name each kind of partner and choose the tools and assets its people get, with nothing internal shared by default."
+          "summary": "The reference for partner programmes: tools and files, company details and logos, templates, licences, ending a partnership, agent tokens, routes and audit events."
         },
         {
           "slug": "design-system-administration",

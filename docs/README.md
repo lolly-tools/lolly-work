@@ -21,6 +21,7 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 - [Sign-in and sessions](identity.md)
 - [Account data controls](account-lifecycle.md)
 - [Invite people and handle requests](invitations.md)
+- [Run a partner programme](run-a-partner-programme.md)
 - [Partner programmes](partner-programmes.md)
 - [Design-system administration](design-system-administration.md)
 - [Roles and grants](permissions.md)

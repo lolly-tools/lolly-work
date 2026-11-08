@@ -387,6 +387,15 @@ export interface ExportOpts {
   c2paAiUpscale?: { model: string; version: string };
 
   /**
+   * A rendition's action for the C2PA history (added v1.341). Set by the runtime
+   * when the tool declares `renditionOf` and the named input's picture carries a
+   * credential, which then travels in `ingredients` as the one `parentOf`. The
+   * embedder opens that parent first and writes `action` where a new file writes
+   * `c2pa.created`. Opaque to the shell; ignored by non-C2PA exports.
+   */
+  c2paRendition?: { action: import('../rendition-v1.ts').RenditionAction };
+
+  /**
    * The attribution this export promised, and the way back to say what it
    * actually delivered (added v1.197, plan 253). The runtime freezes ONE
    * evaluation of the recorded sources per export and puts its plan here, so
@@ -484,6 +493,8 @@ export interface ExportPartner {
   company?: { id: string; label: string; revision: number };
   /** The partner programme: its workspace id and its name. */
   programme?: { id: string; label: string };
+  /** The piece's attached kit: its catalog asset id and revision, only for this company (engine 1.343+). */
+  kit?: { id: string; revision: number };
 }
 
 /** One brand skill revision that guided an export (plan 323). */
