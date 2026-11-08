@@ -177,6 +177,17 @@ export function isProgrammeScoped(groups: readonly string[], role: string | unde
  *  draw with. Nothing here is a logo or a picture. */
 export const ESSENTIAL_ASSET_TYPES: ReadonlySet<string> = new Set(['tokens', 'font', 'palette']);
 
+/**
+ * Asset types the licence gate never holds back (plans/82 M4): the design
+ * system above (a font's licence is not read yet; recording font licences is
+ * a later step), the JSON the brand team authored and published to a
+ * programme (`template`, `rules-tool`, `user-tool`, M2) and brand skills
+ * (`skill`), so the lead brand's own guidance still reaches partners and
+ * their agents. A company's own supplied files are exempt for that company
+ * too; that rule reads the entry, not its type (catalog/rights.ts).
+ */
+export const RIGHTS_EXEMPT_TYPES: ReadonlySet<string> = new Set([...ESSENTIAL_ASSET_TYPES, 'template', 'rules-tool', 'user-tool', 'skill']);
+
 /** A group list grants a programme member only when it names one of their
  *  programme groups. `*` and other groups never do. */
 export function namesProgrammeGroup(groups: readonly string[] | '*' | undefined, programmeGroups: ReadonlySet<string>): boolean {
