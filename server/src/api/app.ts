@@ -111,7 +111,7 @@ import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
 import { composeRightsRecords, loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
 import { decidePartnerRightsDefault, partnerRightsState, type PartnerRightsState } from '../catalog/rights-mode.ts';
 import { partnerRightsCheck } from '../setup/checks.ts';
-import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices } from '../programmes/rights.ts';
+import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
 import { collectionCredits } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
@@ -3086,7 +3086,8 @@ export function buildApp(deps: AppDeps): App {
     const engine = await loadRightsEngine();
     const partner = new Set(partnerGroupsOf(groups));
     const choices = (await store.listRightsChoices()).filter((c) => partner.has(c.group));
-    const keep = licenceGate(engine, partner, choices);
+    const pins = await pinsNow();
+    const keep = licenceGate(engine, partner, choices, pins);
     const all = (await servedIndex.forCaller({ groups, ungated: true })).index.assets ?? [];
     const companies = new Set([...partner].filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
     const users = new Map((await store.listUsers()).map((u) => [u.id, u]));
@@ -3098,7 +3099,7 @@ export function buildApp(deps: AppDeps): App {
       const mine = choices.filter((c) => c.assetId === entry.id);
       if (keep(entry)) {
         sharedAnyway++;
-        const c = mine.find((x) => currentFingerprint(engine, entry, x.group) === x.fingerprint)!;
+        const c = mine.find((x) => currentFingerprint(engine, entry, x.group, pins) === x.fingerprint)!;
         const who = users.get(c.chosenBy);
         shared.push({ id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id, licence: answer.licence || 'licence not recorded', group: c.group,
           chosenBy: who ? [who.firstname, who.lastname].filter(Boolean).join(' ') || who.email : c.chosenBy, chosenAt: c.chosenAt });
@@ -3561,8 +3562,14 @@ export function buildApp(deps: AppDeps): App {
       if (!body.target.assetId && !body.target.collectionId) return sendError(res, 400, 'INVALID_INPUT', 'a dry run and includeHeld are for links to catalog files');
       if (!dryRun && isProgrammeScoped(user.groups, user.role)) return sendError(res, 403, 'FORBIDDEN', 'only staff can send files held back by their licence');
       const ids = body.target.collectionId ? (await store.getCollection(body.target.collectionId))?.members ?? [] : [body.target.assetId!.trim()];
-      const [engine, seen] = await Promise.all([loadRightsEngine(), entriesSeenBy(user.groups)]);
-      const files = ids.map((id) => ({ id, entry: seen.get(id), answer: seen.has(id) ? rightsAnswer(engine, seen.get(id)!) : null }));
+      const [engine, seen, pins] = await Promise.all([loadRightsEngine(), entriesSeenBy(user.groups), pinsNow()]);
+      // Each file is classified as the bytes route will serve it: through its
+      // alias, as the link is judged at every fetch.
+      const resolvedIds = await Promise.all(ids.map((id) => resolveAssetAlias(id)));
+      const files = ids.map((id, i) => {
+        const entry = seen.get(resolvedIds[i]!) ?? seen.get(id);
+        return { id, entry, answer: entry ? rightsAnswer(engine, entry) : null };
+      });
       if (dryRun) {
         return sendJson(res, 200, {
           dryRun: true,
@@ -3576,7 +3583,7 @@ export function buildApp(deps: AppDeps): App {
           })),
         }, { 'cache-control': 'no-store' });
       }
-      const held = files.flatMap((f) => (f.entry && f.answer?.state === 'held' ? [{ id: f.id, fingerprint: currentFingerprint(engine, f.entry, 'link') }] : []));
+      const held = files.flatMap((f) => (f.entry && f.answer?.state === 'held' ? [{ id: f.id, fingerprint: currentFingerprint(engine, f.entry, 'link', pins) }] : []));
       // A file whose bytes carry no checksum cannot be remembered by its facts,
       // so it is never sent anyway: the link is made without it, or not at all.
       const unnamed = held.filter((h) => h.fingerprint === null).length;
@@ -3597,12 +3604,13 @@ export function buildApp(deps: AppDeps): App {
       ...(body.password ? { pwHash: await hashPassword(body.password) } : {}),
       ...(body.projectId ? { projectId: body.projectId } : {}),
     };
-    await store.putLink(link);
-    await audit(`user:${user.id}`, 'link.create', `link:${link.id}`, {
+    // The link and its row commit together: a link carrying held files never
+    // exists without the audit that records the choice (plans/82 M4).
+    await store.putLinkAudited(link, auditBody(`user:${user.id}`, 'link.create', `link:${link.id}`, {
       kind, toolId: body.target.toolId ?? null, assetId: body.target.assetId ?? null,
       collectionId: body.target.collectionId ?? null, ...(link.target.open ? { open: true } : {}),
       ...(link.target.includeHeld ? { includeHeld: link.target.includeHeld.map((h) => h.id), ...(linkNote ? { note: linkNote } : {}) } : {}),
-    });
+    }));
     sendJson(res, 201, { id: link.id, kind, url: `${config.instance.baseUrl}${linkPath(link, secrets.link)}`, expiresAt: new Date(link.exp * 1000).toISOString(),
       ...(link.target.open ? { open: true } : {}), ...(link.target.includeHeld ? { includeHeld: link.target.includeHeld.length } : {}) });
   });
@@ -4918,11 +4926,11 @@ export function buildApp(deps: AppDeps): App {
     try {
       await providersReady;
       const engine = await loadRightsEngine();
-      const [programmes, companies, choices] = await Promise.all([store.listProgrammes(), store.listCompanies(), store.listRightsChoices()]);
+      const [programmes, companies, choices, pins] = await Promise.all([store.listProgrammes(), store.listCompanies(), store.listRightsChoices(), pinsNow()]);
       const counts = [];
       for (const programme of programmes) {
         const groups = [programmeGroup(programme.id), ...companies.filter((c) => c.programmeId === programme.id).map((c) => `company-${c.id}`)];
-        const keep = licenceGate(engine, new Set(groups), choices);
+        const keep = licenceGate(engine, new Set(groups), choices, pins);
         const assets = (await servedIndex.forCaller({ groups: [...groups, PARTNER_GROUP], ungated: true })).index.assets ?? [];
         counts.push({ name: programme.name, held: assets.filter((entry) => !keep(entry)).length });
       }
@@ -7585,6 +7593,8 @@ export function buildApp(deps: AppDeps): App {
    *  /catalog/* route follows for blob paths (plans/27 §5). */
   const resolveAssetAlias = async (assetId: string): Promise<string> =>
     assetId.startsWith(EXT_PREFIX) ? (await store.getAlias(assetId)) ?? assetId : assetId;
+  /** The local pins of federated files (plans/27): a choice binds the bytes the pin serves. */
+  const pinsNow = async (): Promise<PinLookup> => pinLookup(await store.listInstanceAssets());
 
   /** The federated feed entry for an ext/* id, or undefined when the provider's
    *  exposure slice does not federate it. */
@@ -7893,7 +7903,7 @@ export function buildApp(deps: AppDeps): App {
       };
     }
     const seen = await entriesSeenBy(maker?.groups ?? []);
-    const [marks, licences] = await Promise.all([store.listAssetRightsMarks(), store.listAssetLicences()]);
+    const [marks, licences, pins] = await Promise.all([store.listAssetRightsMarks(), store.listAssetLicences(), pinsNow()]);
     const chosen = new Map((link.target.includeHeld ?? []).map((h) => [h.id, h.fingerprint]));
     const answers = new Map<string, { serve: boolean; byChoice: boolean }>();
     for (const assetId of targets) {
@@ -7910,7 +7920,7 @@ export function buildApp(deps: AppDeps): App {
       if (!entry) { answers.set(assetId, { serve: false, byChoice: false }); continue; }
       if (rightsAnswer(engine, entry).state !== 'held') { answers.set(assetId, { serve: true, byChoice: false }); continue; }
       const fingerprint = chosen.get(assetId);
-      const byChoice = !!fingerprint && fingerprint === currentFingerprint(engine, entry, 'link');
+      const byChoice = !!fingerprint && fingerprint === currentFingerprint(engine, entry, 'link', pins);
       answers.set(assetId, { serve: byChoice, byChoice });
     }
     return (assetId) => answers.get(assetId) ?? { serve: false, byChoice: false };
@@ -10432,8 +10442,8 @@ export function buildApp(deps: AppDeps): App {
   /** The licence gate for a partner's live search results, or null when none applies (plans/82 M4). */
   const liveSearchGate = async (user: UserRecord): Promise<((entry: AssetIndexEntry) => boolean) | null> => {
     if ((await partnerRightsReady).mode !== 'gate' || !isProgrammeScoped(user.groups, user.role)) return null;
-    const [engine, marks, licences, choices] = await Promise.all([loadRightsEngine(), store.listAssetRightsMarks(), store.listAssetLicences(), store.listRightsChoices()]);
-    const keep = licenceGate(engine, new Set(partnerGroupsOf(user.groups)), choices);
+    const [engine, marks, licences, choices, pins] = await Promise.all([loadRightsEngine(), store.listAssetRightsMarks(), store.listAssetLicences(), store.listRightsChoices(), pinsNow()]);
+    const keep = licenceGate(engine, new Set(partnerGroupsOf(user.groups)), choices, pins);
     return (entry) => keep(composeRightsRecords(engine, [entry], marks, licences)[0]!);
   };
 
@@ -13108,7 +13118,10 @@ export function buildApp(deps: AppDeps): App {
     // Nothing runs before the licence gate's mode is known (plans/82 M4): a
     // sign-in that created the first account first would decide an empty
     // instance as an upgrade. Health and readiness answer meanwhile.
-    if (!partnerRightsKnown && !/^\/(healthz|readyz)(\/|$|\?)/.test(req.url ?? '/')) {
+    // The path is read as the router reads it, so `/healthz/%2e%2e/...` is the
+    // route it normalises to, never the health check it starts with.
+    const startupPath = !partnerRightsKnown ? new URL(req.url ?? '/', 'http://local').pathname.split('/').filter(Boolean).join('/') : '';
+    if (!partnerRightsKnown && startupPath !== 'healthz' && startupPath !== 'readyz') {
       const known = await Promise.race([partnerRightsReady, new Promise<null>((r) => setTimeout(() => r(null), PARTNER_RIGHTS_WAIT_MS).unref())]);
       if (!known) {
         res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '5', 'cache-control': 'no-store' });

@@ -1050,6 +1050,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async putLink(link) {
       links.set(link.id, link);
     },
+    async putLinkAudited(link, body) {
+      const evt = nextEvent(audit[audit.length - 1] ?? null, body, auditMacKey);
+      links.set(link.id, link);
+      audit.push(evt);
+    },
     async getLink(id) {
       return links.get(id) ?? null;
     },
@@ -1548,7 +1553,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async putRightsChoicesAudited(records, audience, events) {
       const programme = programmes.get(audience.programmeId);
       const company = audience.companyId ? companies.get(audience.companyId) : undefined;
-      if (!programme || (audience.companyId && (!company || company.programmeId !== audience.programmeId))) return 'AUDIENCE_GONE';
+      if (!programme || programme.createdAt !== audience.programmeCreatedAt
+        || (audience.companyId && (!company || company.programmeId !== audience.programmeId || company.createdAt !== audience.companyCreatedAt))) return 'AUDIENCE_GONE';
       if (programme.endedAt || company?.endedAt) return 'AUDIENCE_ENDED';
       for (const rec of records) rightsChoices.set(`${rec.assetId}\n${rec.group}`, structuredClone(rec));
       for (const body of events) audit.push(nextEvent(audit[audit.length - 1] ?? null, body, auditMacKey));
@@ -1560,6 +1566,17 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         rightsChoices.delete(`${c.assetId}\n${c.group}`);
         audit.push(nextEvent(audit[audit.length - 1] ?? null, event(c), auditMacKey));
       }
+      return gone.map((c) => structuredClone(c));
+    },
+    async deleteAudienceWithChoices(target, event) {
+      const pick = 'companyId' in target ? { companyId: target.companyId } : { programmeId: target.programmeId };
+      const gone = [...rightsChoices.values()].filter((c) => rightsChoicePicked(c, pick)).sort((a, b) => a.assetId.localeCompare(b.assetId) || a.group.localeCompare(b.group));
+      for (const c of gone) {
+        rightsChoices.delete(`${c.assetId}\n${c.group}`);
+        audit.push(nextEvent(audit[audit.length - 1] ?? null, event(c), auditMacKey));
+      }
+      if ('companyId' in target) companies.delete(target.companyId);
+      else programmes.delete(target.programmeId);
       return gone.map((c) => structuredClone(c));
     },
     async getInstanceDefault(key) {

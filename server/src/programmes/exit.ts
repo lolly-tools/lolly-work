@@ -75,6 +75,8 @@ export interface ExitRightsChoice { assetId: string; group: string; licence?: st
 export interface ExitRightsChoices {
   list(pick: { programmeId?: string; companyId?: string }): Promise<ExitRightsChoice[]>;
   withdraw(actor: string, pick: { programmeId?: string; companyId?: string }, via: string): Promise<ExitRightsChoice[]>;
+  /** Delete the company or programme record and withdraw its choices, audited, in one transaction. */
+  deleteAudience?(actor: string, target: { companyId: string } | { programmeId: string }, via: string): Promise<ExitRightsChoice[]>;
 }
 
 /** One project as it was before the exit moved it, so Reopen can put it back. */

@@ -198,7 +198,11 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     const rec = (await store.listCompanies()).find((c) => c.id === id && c.programmeId === programme.id);
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such company in this programme');
     await store.deleteLocalGroup(companyGroup(id));
-    await store.deleteCompany(id);
+    // The record and its share anyway choices go together, audited, in one
+    // transaction (plans/82 M4): a company made later with this id inherits
+    // none, and a choice racing this delete finds no company and is refused.
+    if (deps.rightsChoices?.deleteAudience) await deps.rightsChoices.deleteAudience(`user:${actor.id}`, { companyId: id }, 'company-delete');
+    else await store.deleteCompany(id);
     noteCompanyProgramme(id, null);
     await deps.forgetCompanyProfile?.(id);
     await forgetDomainCompany(store, id, now());
@@ -214,10 +218,6 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
     // M5), so a company made later with the same id inherits none of them.
     await forgetGroupReach(store, deps.audit, `user:${actor.id}`, companyGroup(id), 'company-delete');
     await store.deleteProgrammeExits({ companyId: id });
-    // Its share anyway choices go after the record, so one racing this delete
-    // finds no company and is refused, and a company made later with this id
-    // starts with none (plans/82 M4).
-    await deps.rightsChoices?.withdraw(`user:${actor.id}`, { companyId: id }, 'company-delete');
     await deps.audit(`user:${actor.id}`, 'programme.company.delete', `programme:${programme.id}`, { company: id, name: rec.name });
     sendJson(res, 200, { ok: true });
   });

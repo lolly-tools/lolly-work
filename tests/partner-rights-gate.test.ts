@@ -375,3 +375,29 @@ test('a link to a held file stays held when the file is cut over to an instance 
     assert.equal((await call(gate, owner, 'POST', '/api/v1/catalog/providers/dam/enable')).status, 200);
   }
 });
+
+test('includeHeld classifies a file through its alias at mint, as the link is judged at every fetch', async () => {
+  const stat = await blobs.put('inst/aliased/jpg', Buffer.from('jpg:aliased'), 'image/jpeg');
+  await store.putInstanceAsset({
+    id: 'inst/aliased', entry: instanceAssetEntry('inst/aliased', { name: 'Event e2, kept here', type: 'image' }, [{ format: 'jpg', size: stat.size, checksum: stat.checksum }]),
+    blobs: { jpg: 'inst/aliased/jpg' }, groups: ['marketing'], createdAt: new Date().toISOString(),
+  } as never);
+  await store.putAlias('ext/dam/e2', 'inst/aliased');
+  const dry = await call(gate, await login(gate, 'staff@test'), 'POST', '/api/v1/links?dryRun=1', { kind: 'share', target: { assetId: 'ext/dam/e2' } });
+  assert.equal(dry.body.held, 1, 'the dry run reads the instance file it now serves, which records no licence');
+  const chosen = await mint({ kind: 'share', target: { assetId: 'ext/dam/e2' }, includeHeld: true, note: 'cut over, still ours to send' });
+  assert.equal(chosen.status, 201, JSON.stringify(chosen.body));
+  assert.equal(chosen.body.includeHeld, 1);
+  assert.equal((await fetch(chosen.path)).status, 200, 'the chosen bytes are served');
+});
+
+test('a link and its audit row are kept together: no link without the row that records it', async () => {
+  const linksBefore = (await store.listAllLinks()).length;
+  const original = store.appendAudit;
+  store.appendAudit = async (body) => { if (body.action === 'link.create') throw new Error('the audit write failed'); return original(body); };
+  const res = await mint({ kind: 'download', target: { collectionId: 'launch-kit' }, includeHeld: true, note: 'kept with its row' });
+  store.appendAudit = original;
+  const made = (await store.listAllLinks()).length - linksBefore;
+  const rows = (await store.listAudit()).filter((e) => e.action === 'link.create' && e.payload?.note === 'kept with its row').length;
+  assert.ok(made === 0 || rows > 0, `a link was kept (${made}) without its row (status ${res.status})`);
+});

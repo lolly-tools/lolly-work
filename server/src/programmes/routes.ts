@@ -250,12 +250,12 @@ export function registerProgrammeRoutes(router: Router, deps: ProgrammeRouteDeps
     // Members keep the partner marker, so they see only the essentials until an
     // admin adds them to another programme or makes them internal on purpose.
     await store.deleteLocalGroup(group);
-    await store.deleteProgramme(id);
-    // Its share anyway choices, its companies' included, go after the record:
-    // a choice racing this delete is either written first and withdrawn here, or finds
-    // no programme and is refused. A programme made later with this id starts
-    // with none.
-    await deps.rightsChoices?.withdraw(`user:${actor.id}`, { programmeId: id }, 'programme-delete');
+    // The record and its share anyway choices, its companies' included, go
+    // together, audited, in one transaction (plans/82 M4): a programme made
+    // later with this id inherits none, and a choice racing this delete finds
+    // no programme and is refused.
+    if (deps.rightsChoices?.deleteAudience) await deps.rightsChoices.deleteAudience(`user:${actor.id}`, { programmeId: id }, 'programme-delete');
+    else await store.deleteProgramme(id);
     await deps.audit(`user:${actor.id}`, 'programme.delete', `programme:${id}`, { before: summary(before) });
     sendJson(res, 200, { ok: true });
   });

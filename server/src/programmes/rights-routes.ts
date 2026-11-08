@@ -21,7 +21,7 @@ import { markCoverage, markStatement } from '../catalog/rights-routes.ts';
 import { entryInFolders, folderRuleGroup, liveFolderRules, type PartnerFolderRecord } from './folders.ts';
 import { companyGroup } from './people.ts';
 import type { PartnerRightsState } from '../catalog/rights-mode.ts';
-import { CHOICE_NOTE_MAX, CHOICES_PER_REQUEST, choiceFingerprint, choiceStanding, currentFingerprint, factsOf, withdrawEvent, type AuditBodyOf, type ChoiceStanding, type RightsChoiceRecord } from './rights.ts';
+import { CHOICE_NOTE_MAX, CHOICES_PER_REQUEST, choiceFingerprint, choiceStanding, currentFingerprint, factsOf, pinLookup, withdrawEvent, type AuditBodyOf, type ChoiceStanding, type PinLookup, type RightsChoiceRecord } from './rights.ts';
 import { isEnded, isProgrammeScoped, namesProgrammeGroup, PARTNER_GROUP, programmeGroup } from './types.ts';
 import { licenceGate } from '../catalog/served-index.ts';
 
@@ -235,7 +235,7 @@ const ROW_ORDER: Record<SourceKind, number> = {
  * exempt.
  */
 export function programmeRightsReport(
-  engine: RightsEngine, feed: AssetIndex, groups: ReadonlySet<string>, sources: ReportSources, now: number, choices: readonly RightsChoiceRecord[] = [],
+  engine: RightsEngine, feed: AssetIndex, groups: ReadonlySet<string>, sources: ReportSources, now: number, choices: readonly RightsChoiceRecord[] = [], pins?: PinLookup,
 ): ProgrammeRightsReport {
   const companies = new Set(sources.companies.map((c) => c.id));
   const rows = new Map<string, SourceRow & { licences: Map<string, number>; reasons: Map<HeldCategory, number> }>();
@@ -245,7 +245,7 @@ export function programmeRightsReport(
   const retired = new Set<string>();
   for (const choice of choices) {
     if (!groups.has(choice.group)) continue;
-    const standing = choiceStanding(engine, choice, entries.get(choice.assetId));
+    const standing = choiceStanding(engine, choice, entries.get(choice.assetId), new Set(), pins);
     if (standing === 'live') live.add(choice.assetId);
     else if (standing === 'needs-choosing') retired.add(choice.assetId);
   }
@@ -333,6 +333,7 @@ export async function linksThatWouldLose(engine: RightsEngine, store: Store, fee
     return found;
   };
   const users = new Map((await store.listUsers()).map((u) => [u.id, u]));
+  const pins = pinLookup(await store.listInstanceAssets());
   const losing: LinkLoss[] = [];
   let files = 0;
   for (const link of await store.listAllLinks()) {
@@ -355,7 +356,7 @@ export async function linksThatWouldLose(engine: RightsEngine, store: Store, fee
       if (rightsAnswer(engine, entry).state !== 'held') continue;
       // A file the minter chose to send at mint, still on the facts it was chosen against, stays.
       const chosen = target.includeHeld?.find((h) => h.id === raw);
-      if (chosen && chosen.fingerprint === currentFingerprint(engine, entry, 'link')) continue;
+      if (chosen && chosen.fingerprint === currentFingerprint(engine, entry, 'link', pins)) continue;
       held++;
     }
     if (!held) continue;
@@ -407,7 +408,7 @@ export interface TemplateSeedHold {
 export async function templatesSeedingHeld(
   engine: RightsEngine, feed: AssetIndex, programme: { id: string; name: string }, companies: ReadonlyArray<{ id: string; name: string }>,
   choices: readonly RightsChoiceRecord[], feedFor: (groups: string[]) => Promise<AssetIndex>, templateValues: (id: string) => Promise<Record<string, unknown> | null>,
-  catalogIds: ReadonlySet<string>, nameOf: (id: string) => string,
+  catalogIds: ReadonlySet<string>, nameOf: (id: string) => string, pins?: PinLookup,
 ): Promise<TemplateSeedHold[]> {
   const templates = (feed.assets ?? []).filter((e) => e.type === 'template');
   if (!templates.length) return [];
@@ -417,7 +418,7 @@ export async function templatesSeedingHeld(
   ];
   const seen = await Promise.all(audiences.map(async (a) => {
     const entries = new Map(((await feedFor([...a.groups, PARTNER_GROUP])).assets ?? []).map((e) => [e.id, e]));
-    return { ...a, entries, keep: licenceGate(engine, new Set(a.groups), choices) };
+    return { ...a, entries, keep: licenceGate(engine, new Set(a.groups), choices, pins) };
   }));
   const out: TemplateSeedHold[] = [];
   for (const t of templates) {
@@ -479,17 +480,18 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     const report = programmeRightsReport(engine, feed, new Set(groups), {
       collections, instAssets, providers, folderRules: folderRules.filter((r) => r.programmeId === programme.id),
       companies: companies.map((c) => ({ id: c.id, name: c.name })),
-    }, now, choices);
+    }, now, choices, pinLookup(instAssets));
     await attachMarks(engine, store, report, deps.catalogEntries);
     const links = await linksThatWouldLose(engine, store, deps.feedFor, now);
     const users = new Map((await store.listUsers()).map((u) => [u.id, u]));
     const entries = new Map((feed.assets ?? []).map((e) => [e.id, e]));
-    const views = choices.map((c) => choiceView(engine, c, entries.get(c.assetId), users, companies));
+    const pins = pinLookup(instAssets);
+    const views = choices.map((c) => choiceView(engine, c, entries.get(c.assetId), users, companies, pins));
     const catalog = deps.templateValues ? await deps.catalogEntries() : [];
     const catalogNames = new Map(catalog.map((e) => [e.id, typeof e.name === 'string' && e.name ? e.name : e.id]));
     const templates = deps.templateValues
       ? await templatesSeedingHeld(engine, feed, programme, companies.map((c) => ({ id: c.id, name: c.name })), choices, deps.feedFor, deps.templateValues,
-        new Set(catalogNames.keys()), (id) => catalogNames.get(id) ?? id)
+        new Set(catalogNames.keys()), (id) => catalogNames.get(id) ?? id, pins)
       : [];
     const mode = deps.rightsMode ? await deps.rightsMode() : null;
     sendJson(res, 200, {
@@ -528,11 +530,13 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     // inherit one. The store reads the audience again inside the write.
     if (isEnded(programme)) return sendError(res, 409, 'AUDIENCE_ENDED', 'this programme has ended; share anyway is for a programme that is running');
     let companyId: string | undefined;
+    let companyCreatedAt: string | undefined;
     if (body.company !== undefined && body.company !== null && body.company !== '') {
       const company = (await store.listCompanies()).find((c) => c.id === body.company && c.programmeId === programme.id);
       if (!company) return sendError(res, 404, 'NOT_FOUND', 'no such company in this programme');
       if (isEnded(company)) return sendError(res, 409, 'AUDIENCE_ENDED', 'this company\'s partnership has ended; share anyway is for a company that is in the programme');
       companyId = company.id;
+      companyCreatedAt = company.createdAt;
     }
     const group = companyId ? companyGroup(companyId) : programmeGroup(programme.id);
     const audience = [programmeGroup(programme.id), ...(companyId ? [companyGroup(companyId)] : []), PARTNER_GROUP];
@@ -545,7 +549,8 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     if (notHeld.length) return sendError(res, 409, 'NOT_HELD', `${notHeld.length} of these files already reach this audience; share anyway is for files held back`);
     // A choice is remembered against the file's bytes, so a file whose bytes
     // carry no checksum cannot be chosen.
-    const unnamed = [...new Set(ids)].filter((id) => !factsOf(engine, entries.get(id)!, group)).length;
+    const pins = pinLookup(await store.listInstanceAssets());
+    const unnamed = [...new Set(ids)].filter((id) => !factsOf(engine, entries.get(id)!, group, pins)).length;
     if (unnamed) return sendError(res, 409, 'NO_FILE_IDENTITY', `Files with no checksum cannot be shared anyway (${unnamed} here): a choice is remembered against the file's bytes.`);
     const at = new Date().toISOString();
     const made: RightsChoiceRecord[] = [];
@@ -553,7 +558,7 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     for (const id of new Set(ids)) {
       const entry = entries.get(id)!;
       const answer = rightsAnswer(engine, entry, companies);
-      const facts = factsOf(engine, entry, group);
+      const facts = factsOf(engine, entry, group, pins);
       if (answer.state !== 'held' || !facts) continue;
       made.push({
         assetId: id, group, programmeId: programme.id, ...(companyId ? { companyId } : {}),
@@ -562,7 +567,9 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
       });
     }
     // Each choice and its audit row commit together, or none does.
-    const refused = await store.putRightsChoicesAudited(made, { programmeId: programme.id, ...(companyId ? { companyId } : {}) }, made.map((rec) =>
+    // The audience as this request read it: a record made since with the same id is another audience.
+    const refused = await store.putRightsChoicesAudited(made, { programmeId: programme.id, programmeCreatedAt: programme.createdAt,
+      ...(companyId ? { companyId, companyCreatedAt: companyCreatedAt! } : {}) }, made.map((rec) =>
       bodyOf(`user:${actor.id}`, 'programme.rights.share-anyway', `programme:${programme.id}`, {
         assetId: rec.assetId, group, licence: rec.declared, reason: rec.reason, ...(note ? { note } : {}), fingerprint: rec.fingerprint,
       })));
@@ -570,7 +577,7 @@ export function registerRightsRoutes(router: Router, deps: RightsRouteDeps): voi
     if (refused) return sendError(res, 404, 'NOT_FOUND', 'this audience no longer exists; nothing was shared');
     const users = new Map([[actor.id, actor]]);
     const named = companyId ? (await store.listCompanies()).filter((x) => x.id === companyId) : [];
-    sendJson(res, 200, { choices: made.map((c) => choiceView(engine, c, entries.get(c.assetId), users, named)) });
+    sendJson(res, 200, { choices: made.map((c) => choiceView(engine, c, entries.get(c.assetId), users, named, pins)) });
   });
 
   /** Withdraw one choice: `?assetId=&company=`. The file is held again. */
@@ -592,10 +599,10 @@ const DATE = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', 
 
 /** One choice as the admin reads it: the file, the audience, who chose and when, and whether it still counts. */
 function choiceView(
-  engine: RightsEngine, c: RightsChoiceRecord, entry: AssetIndexEntry | undefined, users: ReadonlyMap<string, UserRecord>, companies: ReadonlyArray<{ id: string; name: string }>,
+  engine: RightsEngine, c: RightsChoiceRecord, entry: AssetIndexEntry | undefined, users: ReadonlyMap<string, UserRecord>, companies: ReadonlyArray<{ id: string; name: string }>, pins?: PinLookup,
 ): Record<string, unknown> {
   const who = users.get(c.chosenBy);
-  const standing: ChoiceStanding = choiceStanding(engine, c, entry);
+  const standing: ChoiceStanding = choiceStanding(engine, c, entry, new Set(), pins);
   const company = c.companyId ? companies.find((x) => x.id === c.companyId) : undefined;
   return {
     assetId: c.assetId, name: entry ? nameOf(entry) : c.assetId, group: c.group,

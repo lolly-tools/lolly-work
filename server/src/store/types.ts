@@ -6,6 +6,9 @@ import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
+/** The audience a choice is written for, as it was when the request read it:
+ *  a record made later with the same id has another `createdAt`. */
+export interface RightsChoiceAudience { programmeId: string; programmeCreatedAt: string; companyId?: string; companyCreatedAt?: string }
 /** Which share anyway choices a withdrawal takes. */
 export type RightsChoicePick = { key: { assetId: string; group: string }; programmeId?: string } | { companyId: string } | { programmeId: string };
 import type { InstanceDefaultRecord } from '../catalog/rights-mode.ts';
@@ -1642,6 +1645,9 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
 
   // links
   putLink(link: LinkRecord): Promise<void>;
+  /** The link and its audit event in one transaction (plans/82 M4): a link
+   *  that carries held files never exists without the row that says so. */
+  putLinkAudited(link: LinkRecord, audit: AuditEventBody): Promise<void>;
   getLink(id: string): Promise<LinkRecord | null>;
   revokeLink(id: string, at: string): Promise<void>;
   listLinksBy(createdBy: string): Promise<LinkRecord[]>;
@@ -1919,11 +1925,16 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
    *  under the choices' own lock. The audience is read again inside it, so a
    *  programme or company that ended or went meanwhile refuses the write and
    *  nothing is kept. Null when written. */
-  putRightsChoicesAudited(records: RightsChoiceRecord[], audience: { programmeId: string; companyId?: string }, events: AuditEventBody[]): Promise<null | 'AUDIENCE_GONE' | 'AUDIENCE_ENDED'>;
+  putRightsChoicesAudited(records: RightsChoiceRecord[], audience: RightsChoiceAudience, events: AuditEventBody[]): Promise<null | 'AUDIENCE_GONE' | 'AUDIENCE_ENDED'>;
   /** Delete the choices `pick` names (one key, a company's, or a programme's
    *  and its companies') with one audit event each, in one transaction under
    *  the same lock. Returns what went. */
   withdrawRightsChoicesAudited(pick: RightsChoicePick, event: (rec: RightsChoiceRecord) => AuditEventBody): Promise<RightsChoiceRecord[]>;
+  /** Delete a company or a programme record and withdraw its share anyway
+   *  choices (a programme's companies' too) with one audit event each, in one
+   *  transaction under the choices' lock: a delete never leaves choices a
+   *  record made later with the same id could inherit. Returns what went. */
+  deleteAudienceWithChoices(target: { companyId: string } | { programmeId: string }, event: (rec: RightsChoiceRecord) => AuditEventBody): Promise<RightsChoiceRecord[]>;
   // Defaults an instance decides once (plans/82 M4, migrations/0098). A memory
   // store records nothing and answers the partner rights default as 'report'.
   getInstanceDefault(key: string): Promise<InstanceDefaultRecord | null>;

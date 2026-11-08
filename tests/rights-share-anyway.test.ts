@@ -25,7 +25,7 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { canonicalJson, sha256Hex } from '../server/src/lib/crypto.ts';
-import { assetIdentity, choiceFingerprint, withdrawRightsChoices } from '../server/src/programmes/rights.ts';
+import { assetIdentity, choiceFingerprint, pinLookup, withdrawRightsChoices } from '../server/src/programmes/rights.ts';
 
 test('the fingerprint is sha256 over the canonical facts, and moves with any one of them', () => {
   const facts = { assetId: 'ext/dam/a', checksum: 'v1', declaration: 'CC-BY-NC-4.0', group: 'company-northwind-it', rulesVersion: 'rights-rules-x' };
@@ -46,8 +46,20 @@ test('a choice binds every rendition the file serves, and no file without an ide
   assert.notEqual(assetIdentity({ ...base, locales: { fr: [f('png', 'sha256-fr')] } } as never), assetIdentity({ ...base, locales: { fr: [f('png', 'sha256-fr2')] } } as never));
   assert.equal(assetIdentity({ id: 'acme/x', formats: [f('png', 'sha256-a'), f('svg')] }), null, 'a pack rendition with no checksum: no identity');
   assert.equal(assetIdentity({ id: 'acme/x', version: '3', formats: [f('png')] }), null, 'a pack version alone does not move with the bytes');
-  assert.ok(assetIdentity({ id: 'ext/dam/x', version: 'abcd', formats: [f('jpg')] }), 'a federated version hashes the upstream date and formats');
-  assert.notEqual(assetIdentity({ id: 'ext/dam/x', version: 'abcd', formats: [f('jpg')] }), assetIdentity({ id: 'ext/dam/x', version: 'abce', formats: [f('jpg')] }));
+  const dated = { id: 'ext/dam/x', updatedAt: '2026-11-01T00:00:00.000Z', formats: [f('jpg')] };
+  assert.ok(assetIdentity({ ...dated, version: 'abcd' } as never), 'a federated version hashes the upstream date and formats');
+  assert.notEqual(assetIdentity({ ...dated, version: 'abcd' } as never), assetIdentity({ ...dated, version: 'abce' } as never));
+  assert.equal(assetIdentity({ id: 'ext/git/x', version: 'abcd', formats: [f('jpg')] }), null, 'a provider that states neither a checksum nor a change date gives no revision');
+  // One checksum form: hex as a blob stores it, sha256-<base64> as the feed states it.
+  const hex = 'b0f828b84c15ab6d5672a124034ddfef24eebb070bee4ae2a662541d36c96058';
+  assert.equal(assetIdentity({ id: 'inst/a', formats: [f('png', hex)] }), assetIdentity({ id: 'inst/a', formats: [f('png', `sha256-${Buffer.from(hex, 'hex').toString('base64')}`)] }));
+  // A pinned federated file is served from the pin, so the pin's checksums stand for it.
+  const pins = (c: string) => pinLookup([{ id: 'inst/pin', origin: { provider: 'git', remoteId: 'x' }, entry: { id: 'inst/pin', formats: [f('jpg', c)] }, headVersion: 1 }]);
+  const git = { id: 'ext/git/x', version: 'abcd', formats: [f('jpg')] };
+  assert.ok(assetIdentity(git, pins('sha256-a')), 'a pin gives a file with no revision an identity');
+  assert.notEqual(assetIdentity(git, pins('sha256-a')), assetIdentity(git, pins('sha256-b')), 'and moves when the pinned bytes do');
+  const upstream = { ...dated, id: 'ext/git/x', version: 'v2' };
+  assert.notEqual(assetIdentity(upstream as never, pins('sha256-a')), assetIdentity(upstream as never), 'pinned v1 bytes are not the provider\'s v2');
 });
 
 let server: Server;
@@ -56,6 +68,8 @@ let store: ReturnType<typeof createMemoryStore>;
 
 const photo = (remoteId: string, folder: string) => ({
   remoteId, name: `${folder} ${remoteId}`, nativeType: 'file', sections: [], folder, tags: [], approved: true, formats: [{ format: 'jpg', remoteRef: 'f', size: 8 }],
+  // When the file last changed: the revision a choice binds, since this provider gives no checksum.
+  updatedAt: '2026-11-01T00:00:00.000Z',
 });
 const PACK = [
   { id: 'acme/photo/sponsored', name: 'Sponsored photo', type: 'raster', license: 'CC-BY-NC-4.0', attribution: 'Photo by A. Person' },
@@ -312,4 +326,39 @@ test('deleting a company or a programme withdraws its choices, audited, and the 
   assert.equal((await lastAudit('programme.rights.withdraw'))!.payload!.via, 'programme-delete');
   assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/partners-apac', { name: 'Partners, APAC' })).status, 201);
   assert.deepEqual(await of('programme-partners-apac'), [], 'nor does a programme');
+});
+
+test('a choice made for a company that was deleted and made again meanwhile is refused: the new company is another audience', async () => {
+  const bruno = await login('bruno@test');
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/companies/pied-piper', { name: 'Pied Piper' })).status, 201);
+  const original = store.putRightsChoicesAudited;
+  let release!: () => void, reached!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
+  const atWrite = new Promise<void>((r) => { reached = r; });
+  store.putRightsChoicesAudited = async (...args) => { reached(); await held; return original(...args); };
+  const racing = call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/rights/choices', { assetIds: ['ext/dam/e1'], company: 'pied-piper' });
+  await Promise.race([atWrite, pause(3000)]);
+  store.putRightsChoicesAudited = original;
+  assert.equal((await call(bruno, 'DELETE', '/api/v1/programmes/resellers-emea/companies/pied-piper')).status, 200);
+  await pause(5);
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/companies/pied-piper', { name: 'Pied Piper' })).status, 201);
+  release();
+  const res = await racing;
+  assert.equal(res.status, 404, JSON.stringify(res.body));
+  assert.ok(!(await store.listRightsChoices()).some((c) => c.group === 'company-pied-piper'), 'the company made again inherits nothing');
+});
+
+test('a delete that fails part way never leaves choices behind for an id made again', async () => {
+  const bruno = await login('bruno@test');
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/companies/aviato', { name: 'Aviato' })).status, 201);
+  assert.equal((await call(bruno, 'PUT', '/api/v1/programmes/resellers-emea/rights/choices', { assetIds: ['ext/dam/e1'], company: 'aviato' })).status, 200);
+  // Withdrawing on its own fails; a delete that does the two together is unaffected.
+  const original = store.withdrawRightsChoicesAudited;
+  store.withdrawRightsChoicesAudited = async () => { throw new Error('the database went away'); };
+  await call(bruno, 'DELETE', '/api/v1/programmes/resellers-emea/companies/aviato');
+  store.withdrawRightsChoicesAudited = original;
+  const exists = (await store.listCompanies()).some((c) => c.id === 'aviato');
+  const left = (await store.listRightsChoices()).filter((c) => c.group === 'company-aviato');
+  assert.ok(exists || left.length === 0, 'either the company is still there, or its choices went with it');
+  if (!exists) assert.equal((await lastAudit('programme.rights.withdraw'))!.payload!.via, 'company-delete');
 });
