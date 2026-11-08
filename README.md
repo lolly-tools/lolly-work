@@ -172,10 +172,10 @@ pnpm run demo    # → http://localhost:8787 (PORT=8788 for another port)
 ```
 
 Sign-in links are printed at boot (dev provider, no passwords). To demo the locked
-profile: sign in as `marketer@suse.example`, open the profile view in the shell - 
+profile: sign in as `marketer@lolly.example`, open the profile view in the shell - 
 firstname/lastname/email/title render padlocked (`mode: locked, source: idp` in
 `GET /api/v1/org-config`). The admin console is at `/admin` - sign in as
-`admin@suse.example`. A shell dist built before the org governance module makes the
+`admin@lolly.example`. A shell dist built before the org governance module makes the
 demo fall back to `open` mode (data + console still demo; the in-shell governance UX
 needs a fresh `pnpm run build:web` in the OSS repo - the demo never builds anything).
 

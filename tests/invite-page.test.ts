@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { createMetrics } from '../server/src/observability/metrics.ts';
 import { boot, devLogin, invite, openPage, project, snapshot, tokenFor, type Env } from './invite-harness.ts';
 
-const INVITED = 'an.fitzsimon@suse.example';
+const INVITED = 'an.fitzsimon@lolly.example';
 
 async function withProject(): Promise<Env & { token: string }> {
   const env = await boot();
@@ -42,7 +42,7 @@ test('signed out, pending: who invited, to what, as which role, until when, and 
   assert.ok(html.includes('<h1>Andy Fitz invited you to Brand refresh</h1>'));
   assert.ok(html.includes('On lolly.ing, as an Editor. Editors can open and save work in Brand refresh.'));
   // The mask is hidden from screen readers, which read the words beside it.
-  assert.ok(html.includes('Sign in with the address this invitation was sent to: <span class="tag addr" aria-hidden="true">an•••@suse.example</span><span class="sr-only">an address at suse.example that starts with an</span>'));
+  assert.ok(html.includes('Sign in with the address this invitation was sent to: <span class="tag addr" aria-hidden="true">an•••@lolly.example</span><span class="sr-only">an address at lolly.example that starts with an</span>'));
   assert.match(html, /Ends in 30 days \(\d{1,2} [A-Z][a-z]{2}( \d{4})?, UTC\)\./);
   // One form per sign-in, posting the token and the form nonce; no password
   // buttons, since the flag is off and the address has no password.
@@ -52,7 +52,7 @@ test('signed out, pending: who invited, to what, as which role, until when, and 
   assert.ok(html.includes(`name="token" value="${env.token}"`));
   assert.ok(page.csrf && page.form, 'a form nonce and its cookie');
   assert.ok(html.includes('Using GitHub? lolly.ing checks every verified address on your GitHub account.'));
-  assert.ok(html.includes('If your organisation blocks Google sign-in (for example @suse.com), use GitHub or email and password.'));
+  assert.ok(html.includes('If your organisation blocks Google sign-in (for example @lolly.example), use GitHub or email and password.'));
   assert.ok(html.includes('Not expecting this? You can ignore this page.'));
   assert.ok(!html.includes('Link to open'), 'no in-app browser card in a real browser');
 
@@ -70,9 +70,9 @@ test('roles and a workspace link read as the spec says; the password buttons fol
   const env = await boot();
   await project(env, 'prj_v', 'Viewers Club');
   await project(env, 'prj_m', 'Managers Club');
-  await invite(env, { id: 'inv_v', email: 'v@suse.example', projects: [{ projectId: 'prj_v', role: 'viewer' }] });
-  await invite(env, { id: 'inv_m', email: 'm@suse.example', projects: [{ projectId: 'prj_m', role: 'manager' }], passwordSetup: true });
-  await invite(env, { id: 'inv_w', email: 'w@suse.example', passwordSetup: true });
+  await invite(env, { id: 'inv_v', email: 'v@lolly.example', projects: [{ projectId: 'prj_v', role: 'viewer' }] });
+  await invite(env, { id: 'inv_m', email: 'm@lolly.example', projects: [{ projectId: 'prj_m', role: 'manager' }], passwordSetup: true });
+  await invite(env, { id: 'inv_w', email: 'w@lolly.example', passwordSetup: true });
 
   const viewer = (await openPage(env.base, `/l/invite/${tokenFor('inv_v', 'prj_v')}`)).html;
   assert.ok(viewer.includes('On lolly.ing, as a Viewer. Viewers can open work in Viewers Club and make their own copy.'));
@@ -83,14 +83,14 @@ test('roles and a workspace link read as the spec says; the password buttons fol
   const setAt = manager.indexOf('Set a password');
   assert.ok(setAt > 0 && setAt < manager.indexOf('Continue with Google'));
   assert.match(manager, /<button class="primary" type="submit">Set a password<\/button>/);
-  assert.ok(manager.includes('You then sign in with <span class="tag addr" aria-hidden="true">m•••@suse.example</span>'));
+  assert.ok(manager.includes('You then sign in with <span class="tag addr" aria-hidden="true">m•••@lolly.example</span>'));
 
   const workspace = (await openPage(env.base, `/l/invite/${tokenFor('inv_w', null)}`)).html;
   assert.ok(workspace.includes('<h1>Andy Fitz invited you to lolly.ing</h1>'));
   assert.ok(workspace.includes('lolly.ing is a private Lolly workspace. Once you are in, projects people share with you appear in Projects.'));
 
   // With a password already set for the address: sign in with it instead.
-  await env.store.putPasswordCredential({ id: 'pwc_w', email: 'w@suse.example', hash: 'scrypt$x', at: new Date().toISOString(), ownerIssued: false });
+  await env.store.putPasswordCredential({ id: 'pwc_w', email: 'w@lolly.example', hash: 'scrypt$x', at: new Date().toISOString(), ownerIssued: false });
   const withPassword = (await openPage(env.base, `/l/invite/${tokenFor('inv_w', null)}`)).html;
   assert.ok(!withPassword.includes('Set a password'));
   assert.ok(withPassword.includes('Sign in with email and password'));
@@ -98,7 +98,7 @@ test('roles and a workspace link read as the spec says; the password buttons fol
 
 test('GET writes nothing, signed out or in, whatever the state (spec 6 rule 2)', async () => {
   const env = await withProject();
-  await invite(env, { id: 'inv_old', email: 'old@suse.example', expiresAt: new Date(Date.now() - 60_000).toISOString() });
+  await invite(env, { id: 'inv_old', email: 'old@lolly.example', expiresAt: new Date(Date.now() - 60_000).toISOString() });
   const before = await snapshot(env.store);
   const member = await devLogin(env.base, 'priya@admin.example');
   const afterLogin = await snapshot(env.store);
@@ -139,7 +139,7 @@ test('two inviters, two projects on one invitation: each link shows only its own
   await project(env, 'prj_a', 'Atlas launch');
   await project(env, 'prj_b', 'Secret merger', priya.id);
   await invite(env, {
-    id: 'inv_two', email: 'sam@suse.example', projects: [
+    id: 'inv_two', email: 'sam@lolly.example', projects: [
       { projectId: 'prj_a', role: 'editor', invitedBy: `user:${env.admin.id}` },
       { projectId: 'prj_b', role: 'viewer', invitedBy: `user:${priya.id}` },
     ],
@@ -155,8 +155,8 @@ test('two inviters, two projects on one invitation: each link shows only its own
 
 test('dead links: unknown, malformed, revoked and replaced give the same 410, byte for byte (spec 6 rules 5 and 6)', async () => {
   const env = await withProject();
-  await invite(env, { id: 'inv_rev', email: 'rev@suse.example' });
-  await invite(env, { id: 'inv_new', email: 'new@suse.example' });
+  await invite(env, { id: 'inv_rev', email: 'rev@lolly.example' });
+  await invite(env, { id: 'inv_new', email: 'new@lolly.example' });
   const replaced = tokenFor('inv_new', null);
   await env.store.rotateInvitationLink('inv_new');
   await env.store.revokeInvitation('inv_rev', new Date().toISOString());
@@ -188,7 +188,7 @@ test('dead links: unknown, malformed, revoked and replaced give the same 410, by
 test('ended: a 410 that names the inviter and the project and says what to do', async () => {
   const env = await boot();
   await project(env, 'prj_brand', 'Brand refresh');
-  await invite(env, { id: 'inv_end', email: 'e@suse.example', projects: [{ projectId: 'prj_brand', role: 'editor' }], expiresAt: '2026-10-03T09:00:00Z' });
+  await invite(env, { id: 'inv_end', email: 'e@lolly.example', projects: [{ projectId: 'prj_brand', role: 'editor' }], expiresAt: '2026-10-03T09:00:00Z' });
   const page = await openPage(env.base, `/l/invite/${tokenFor('inv_end', 'prj_brand')}`);
   assert.equal(page.res.status, 410);
   assert.ok(page.html.includes('<h1>This invitation has ended</h1>'));
@@ -225,9 +225,9 @@ test('signed in: the holder of the address gets one Join button; anyone else get
   // Someone else, with less than the invitation gives: the ask is offered.
   const owner = await devLogin(env.base, 'owner@admin.example');
   await env.store.putProject({ id: 'prj_x', name: 'Elsewhere', visibility: 'private', ownerId: env.admin.id, createdAt: new Date().toISOString() });
-  await invite(env, { id: 'inv_x', email: 'x@suse.example', projects: [{ projectId: 'prj_x', role: 'editor' }] });
+  await invite(env, { id: 'inv_x', email: 'x@lolly.example', projects: [{ projectId: 'prj_x', role: 'editor' }] });
   const other = await openPage(env.base, `/l/invite/${tokenFor('inv_x', 'prj_x')}`, owner);
-  assert.ok(other.html.includes('You are signed in to lolly.ing as <span class="tag addr">owner@admin.example</span>. This invitation is for <span class="tag addr" aria-hidden="true">x•••@suse.example</span>'));
+  assert.ok(other.html.includes('You are signed in to lolly.ing as <span class="tag addr">owner@admin.example</span>. This invitation is for <span class="tag addr" aria-hidden="true">x•••@lolly.example</span>'));
   assert.ok(other.html.includes('<h2>Use a different account</h2>'));
   assert.equal((other.html.match(/name="prompt" value="select_account"/g) ?? []).length, 3, 'each sign-in asks for the account picker');
   // An owner manages every project already, so there is nothing to ask for.
@@ -243,7 +243,7 @@ test('a link for a project taken off the invitation, or archived, reads as a wor
   const env = await boot();
   await project(env, 'prj_gone', 'Gone project');
   await project(env, 'prj_arch', 'Archived project');
-  await invite(env, { id: 'inv_g', email: 'g@suse.example', projects: [{ projectId: 'prj_arch', role: 'editor' }] });
+  await invite(env, { id: 'inv_g', email: 'g@lolly.example', projects: [{ projectId: 'prj_arch', role: 'editor' }] });
   const stale = (await openPage(env.base, `/l/invite/${tokenFor('inv_g', 'prj_gone')}`)).html;
   assert.ok(stale.includes('<h1>Andy Fitz invited you to lolly.ing</h1>') && !stale.includes('Gone project'));
   await env.store.putProject({ id: 'prj_arch', name: 'Archived project', visibility: 'private', ownerId: env.admin.id, createdAt: new Date().toISOString(), archivedAt: new Date().toISOString() });
@@ -271,7 +271,7 @@ test('names and project names are text on the page (spec 6 rule 19)', async () =
   const env = await boot();
   const evil = await env.store.upsertUserBySub({ sub: 'dev:evil@admin.example', email: 'evil@admin.example', firstname: '<img src=x onerror=alert(1)>', groups: ['admin'], role: 'admin' });
   await project(env, 'prj_evil', '<script>alert(1)</script>', evil.id);
-  await invite(env, { id: 'inv_evil', email: 'e@suse.example', projects: [{ projectId: 'prj_evil', role: 'editor', invitedBy: `user:${evil.id}` }], invitedBy: `user:${evil.id}` });
+  await invite(env, { id: 'inv_evil', email: 'e@lolly.example', projects: [{ projectId: 'prj_evil', role: 'editor', invitedBy: `user:${evil.id}` }], invitedBy: `user:${evil.id}` });
   const html = (await openPage(env.base, `/l/invite/${tokenFor('inv_evil', 'prj_evil')}`)).html;
   assert.ok(!html.includes('<script>alert(1)</script>') && html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
   assert.ok(!html.includes('<img src=x') && html.includes('&lt;img src=x onerror=alert(1)&gt;'));
@@ -280,7 +280,7 @@ test('names and project names are text on the page (spec 6 rule 19)', async () =
 test('the request metric names the route, never the token (spec 6 rule 21)', async () => {
   const metrics = createMetrics();
   const env = await boot({ metrics });
-  await invite(env, { id: 'inv_m', email: 'm@suse.example' });
+  await invite(env, { id: 'inv_m', email: 'm@lolly.example' });
   const token = tokenFor('inv_m', null);
   await openPage(env.base, `/l/invite/${token}`);
   await openPage(env.base, '/l/invite/abc.def');

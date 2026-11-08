@@ -96,7 +96,7 @@ test('with no pack index, or one in another shape, a view still serves only what
     const rita = await login(hub, 'rita@reseller.test');
     assert.equal((await fetch(`${hub.base}/catalog/inst/emea-only/png`, { headers: { cookie: rita } })).status, 200, 'the programme includes it');
     const { get } = await view(hub);
-    assert.equal((await get('/catalog/inst/emea-only/png')).status, 403, 'the admin\'s own groups do not show it');
+    assert.equal((await get('/catalog/inst/emea-only/png')).status, 404, 'the admin\'s own groups do not show it');
     assert.equal((await get('/api/v1/catalog/assets/inst/emea-only')).status, 404);
   }
 });

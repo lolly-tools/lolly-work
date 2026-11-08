@@ -103,7 +103,7 @@ export interface RowMark {
 }
 
 /**
- * Held pack files under one top-level id prefix (`suse/`), by the
+ * Held pack files under one top-level id prefix (`lolly/`), by the
  * declaration they carry. A pack file reaches a programme through a
  * collection, so its row has no folder to mark; this is where the brand team
  * sees, for example, that every file under suse/ declares an identifier
@@ -113,7 +113,7 @@ export interface PrefixRow {
   prefix: string;
   held: number;
   byDeclaration: Array<{ declared: string; category: HeldCategory; label: string; count: number }>;
-  /** One sentence per declaration, such as "210 files under suse/ declare LicenseRef-SUSE-Proprietary, an identifier these rules do not carry." */
+  /** One sentence per declaration, such as "210 files under lolly/ declare LicenseRef-Lolly-Marks, an identifier these rules do not carry." */
   sentences: string[];
   /** Held files here that declare nothing: a mark at this prefix would reach them. */
   unrecorded: number;

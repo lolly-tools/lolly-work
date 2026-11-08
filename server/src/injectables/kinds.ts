@@ -14,7 +14,7 @@ import type { Envelope, InjectableRecord, KindHandler } from './types.ts';
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const get = (p: unknown, k: string): unknown => (p && typeof p === 'object' ? (p as Record<string, unknown>)[k] : undefined);
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
-// A catalog asset id is a namespaced path (e.g. "acme/rates-2026", "suse/logo/primary"):
+// A catalog asset id is a namespaced path (e.g. "acme/rates-2026", "lolly/logo/primary"):
 // slashes allowed, but no traversal and no scheme.
 const ASSET_ID = /^[a-z0-9][a-z0-9/_.-]*$/i;
 /** No angle brackets anywhere - a descriptor field is plain text, never markup. */

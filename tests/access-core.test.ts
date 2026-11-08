@@ -163,7 +163,7 @@ test('join caps: three per address in 30 days, then held and audited; the worksp
 test('a switch request needs a live invitation for another address, and is capped per invitation', async () => {
   const t = await setup();
   await t.store.createInvitation({
-    id: 'inv_w1', email: 'w1@suse.example', groups: [], invitedBy: `user:${t.owner.id}`, createdAt: t.iso(),
+    id: 'inv_w1', email: 'w1@lolly.example', groups: [], invitedBy: `user:${t.owner.id}`, createdAt: t.iso(),
     expiresAt: new Date(START + 30 * DAY).toISOString(), projects: [{ projectId: 'prj_b', role: 'editor', invitedBy: `user:${t.owner.id}` }],
   });
   const sw = (over: Record<string, unknown> = {}) => fileRequest(t.d, { kind: 'switch', identity, invitationId: 'inv_w1', projectId: 'prj_b', ...over } as never);
@@ -174,7 +174,7 @@ test('a switch request needs a live invitation for another address, and is cappe
   assert.equal(filed.request?.userId, t.asker.id);
   const [notice] = await t.messages();
   assert.deepEqual(notice?.audience.users, [t.owner.id, t.manager.id, t.admin.id], 'the link project\'s managers, then who may invite');
-  assert.match(notice?.body ?? '', /invitation for w•••@suse\.example signed in as sam\.k@gmail\.com/);
+  assert.match(notice?.body ?? '', /invitation for w•••@lolly\.example signed in as sam\.k@gmail\.com/);
   assert.equal((await t.audits('access.request'))[0]?.actor, `user:${t.asker.id}`);
 
   assert.equal((await sw({ projectId: 'prj_other', identity: { ...identity, email: 'x@y.example' } })).request?.projectId, undefined,
@@ -182,7 +182,7 @@ test('a switch request needs a live invitation for another address, and is cappe
   assert.equal((await sw({ identity: { ...identity, email: 'z@y.example' } })).outcome, 'created');
   assert.deepEqual(await sw({ identity: { ...identity, email: 'q@y.example' } }), { outcome: 'held' }, 'three a day per invitation');
   assert.equal((await t.audits('access.request.held'))[0]?.payload?.reason, 'per-invitation');
-  assert.deepEqual(await sw({ identity: { ...identity, email: 'W1@suse.example' } }), { outcome: 'skipped' }, 'the invited address just accepts');
+  assert.deepEqual(await sw({ identity: { ...identity, email: 'W1@lolly.example' } }), { outcome: 'skipped' }, 'the invited address just accepts');
   assert.deepEqual(await sw({ invitationId: 'inv_nope' }), { outcome: 'skipped' });
   await t.store.revokeInvitation('inv_w1', t.iso());
   assert.deepEqual(await sw({ identity: { ...identity, email: 'r@y.example' } }), { outcome: 'skipped' }, 'a revoked invitation');
@@ -265,7 +265,7 @@ test('access given another way supersedes requests up to that role, retiring the
 test('an invitation for the address supersedes its join request and the switch requests on that invitation', async () => {
   const t = await setup({ join: true });
   for (const id of ['inv_a', 'inv_b']) {
-    await t.store.createInvitation({ id, email: `${id}@suse.example`, groups: [], invitedBy: `user:${t.admin.id}`, createdAt: t.iso() });
+    await t.store.createInvitation({ id, email: `${id}@lolly.example`, groups: [], invitedBy: `user:${t.admin.id}`, createdAt: t.iso() });
   }
   const join = (await fileRequest(t.d, { kind: 'join', identity })).request!;
   const swA = (await fileRequest(t.d, { kind: 'switch', identity: { ...identity, email: 'p@q.example' }, invitationId: 'inv_a' })).request!;

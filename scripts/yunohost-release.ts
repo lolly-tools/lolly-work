@@ -14,9 +14,9 @@
  * The tarball archives HEAD's tree at a fixed UTC time: server, console, vendored engine, docs,
  * migrations and lockfile, with no node_modules (the install script runs
  * `pnpm install --frozen-lockfile --prod` on the host). Four trees are left out on purpose - `packs/`
- * because the demo pack carries SUSE's proprietary brand assets (packs/demo/brands/
- * suse/NOTICE.md) and the YunoHost instance seeds its pack from the web shell
- * instead; `tests/`, `plans/` and `deploy/` because a running instance never reads
+ * because the YunoHost instance seeds its pack from the web shell instead (and the
+ * demo pack's Lolly marks are not under an open licence, packs/demo/brands/
+ * lolly-demo/NOTICE.md); `tests/`, `plans/` and `deploy/` because a running instance never reads
  * them. A dirty working tree is refused: what ships must be a commit.
  */
 

@@ -106,8 +106,8 @@ const bytes = (cookie: string, id: string, query = '') => fetch(`${base}/catalog
 test('a partner gets the bytes their programme includes and never an internal asset shared with everyone', async () => {
   const rita = await login('rita@reseller.test');
   assert.equal((await bytes(rita, 'inst/kit')).status, 200, 'their programme includes the kit');
-  assert.equal((await bytes(rita, 'inst/internal')).status, 403, 'published to everyone, but not to their programme');
-  assert.equal((await bytes(rita, 'inst/internal', '?v=1')).status, 403, 'nor a prior version of it');
+  assert.equal((await bytes(rita, 'inst/internal')).status, 404, 'published to everyone, but not to their programme: not available');
+  assert.equal((await bytes(rita, 'inst/internal', '?v=1')).status, 404, 'nor a prior version of it');
 });
 
 test('staff are unchanged: everyone means everyone inside the workspace', async () => {
@@ -119,7 +119,7 @@ test('staff are unchanged: everyone means everyone inside the workspace', async 
 test('a live internal submission shared with everyone is not a partner\'s to download', async () => {
   const rita = await login('rita@reseller.test');
   const staff = await login('staff@test');
-  assert.equal((await fetch(`${base}/api/v1/catalog/submissions/sub1/bytes`, { headers: { cookie: rita } })).status, 403);
+  assert.equal((await fetch(`${base}/api/v1/catalog/submissions/sub1/bytes`, { headers: { cookie: rita } })).status, 404);
   assert.equal((await fetch(`${base}/api/v1/catalog/submissions/sub1/bytes`, { headers: { cookie: staff } })).status, 200);
 });
 
@@ -129,7 +129,7 @@ test('a submitter reads their own upload while it waits, and only what their fee
   const preview = (cookie: string, id: string) => fetch(`${base}/api/v1/catalog/submissions/${id}/bytes`, { headers: { cookie } });
   assert.equal((await preview(rita, 'rita-pending')).status, 200, 'their own upload, before the decision');
   assert.equal((await preview(staff, 'rita-pending')).status, 403, 'not staff\'s while it waits');
-  assert.equal((await preview(rita, 'rita-live')).status, 403, 'live and shared with everyone, but not in their programme');
+  assert.equal((await preview(rita, 'rita-live')).status, 404, 'live and shared with everyone, but not in their programme');
   assert.equal((await preview(staff, 'rita-live')).status, 200, 'live: the ordinary rule');
   assert.equal((await preview(staff, 'staff-live')).status, 200, 'staff keep their own live submission, published to a group they are not in');
 });
@@ -178,7 +178,7 @@ test('answers that depend on who asks make the browser ask again, and the check 
   assert.equal(again.status, 304);
   assert.equal(again.headers.get('cache-control'), 'private, no-cache, no-transform');
   const borrowed = await fetch(`${base}/catalog/inst/internal/png`, { headers: { cookie: rita, 'if-none-match': etag } });
-  assert.equal(borrowed.status, 403, 'a copy cached for someone else is never confirmed for a partner');
+  assert.equal(borrowed.status, 404, 'a copy cached for someone else is never confirmed for a partner');
 });
 
 test('an admin viewing as the partner gets exactly the partner\'s bytes, records and files, and their own reads are unchanged', async () => {
@@ -189,8 +189,8 @@ test('an admin viewing as the partner gets exactly the partner\'s bytes, records
   const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: token } });
   const own = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin } });
   assert.equal((await viewed('/catalog/inst/kit/png')).status, 200, 'the kit their programme includes');
-  assert.equal((await viewed('/catalog/inst/internal/png')).status, 403, 'not an internal asset shared with everyone');
-  assert.equal((await viewed('/catalog/inst/internal/png?v=1')).status, 403, 'nor a prior version of it');
+  assert.equal((await viewed('/catalog/inst/internal/png')).status, 404, 'not an internal asset shared with everyone: not available');
+  assert.equal((await viewed('/catalog/inst/internal/png?v=1')).status, 404, 'nor a prior version of it');
   assert.equal((await viewed('/api/v1/catalog/assets/inst/internal')).status, 404, 'nor its record');
   assert.equal((await viewed('/api/v1/catalog/assets/inst/kit')).status, 200);
   assert.equal((await viewed('/catalog/delivery-manifest.json')).status, 404, 'not the release inventory');
@@ -208,7 +208,7 @@ test('a view never shows the admin an asset their own groups would not: the part
   const started = await fetch(`${base}/api/v1/programmes/resellers/view-as`, { method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: '{}' });
   const { token } = await started.json() as { token: string };
   const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: token } });
-  assert.equal((await viewed('/catalog/inst/emea-only/png')).status, 403, 'refused in the view, as for anyone who may not see it');
+  assert.equal((await viewed('/catalog/inst/emea-only/png')).status, 404, 'refused in the view, with the partner\'s plain answer');
   assert.equal((await viewed('/api/v1/catalog/assets/inst/emea-only')).status, 404);
   const feed = (await (await viewed('/catalog/assets/index.json')).json()) as { assets: Array<{ id: string }>; collections?: Array<{ id: string; members: string[] }> };
   assert.ok(!feed.assets.some((a) => a.id === 'inst/emea-only'), 'nor in the view\'s feed');

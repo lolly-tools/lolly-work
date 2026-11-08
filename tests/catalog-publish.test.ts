@@ -49,7 +49,7 @@ before(async () => {
   const { Resvg } = await import('@resvg/resvg-js');
   plainPng = new Uint8Array(new Resvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" fill="#30ba78"/></svg>').render().asPng());
   const withProv = addPngProvenance(plainPng, provenanceDoc([
-    { title: 'Summit Logo', assetId: 'suse/logos/primary', relationship: 'componentOf', source: { kind: 'pack', label: 'SUSE' }, c2pa: null },
+    { title: 'Summit Logo', assetId: 'lolly/logos/primary', relationship: 'componentOf', source: { kind: 'pack', label: 'Lolly Demo' }, c2pa: null },
   ]));
   signedExport = await eng.embedC2pa(withProv, 'png', { signer: { privateKey: signer.privateKey, certDer: signer.certDer, chain: signer.chain }, title: 'badge', claimGenerator: 'SUSE Lolly 2.0' });
 
@@ -102,7 +102,7 @@ test('(b) a signed lolly export publishes, and the audit records its provenance 
 
   const evt = (await store.listAudit()).find((e) => e.action === 'catalog.provider.publish');
   assert.ok(evt, 'publish audited');
-  assert.deepEqual((evt!.payload as { provenance?: string[] }).provenance, ['suse/logos/primary'], 'the export provenance chain is recorded');
+  assert.deepEqual((evt!.payload as { provenance?: string[] }).provenance, ['lolly/logos/primary'], 'the export provenance chain is recorded');
 });
 
 test('(c) a plain (unsigned) asset is refused — only lolly exports may be published out', async () => {

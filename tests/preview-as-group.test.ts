@@ -62,7 +62,7 @@ before(async () => {
   await store.putOverlay({
     toolId: 'event-badge', version: 1,
     inputAccess: {
-      title: [{ groups: ['*'], level: 'locked', value: 'SUSE Summit 2026' }],
+      title: [{ groups: ['*'], level: 'locked', value: 'Lolly Summit 2026' }],
       accent: [{ groups: ['brand'], level: 'editable' }, { groups: ['*'], level: 'choice', allow: ['#0C322C', '#30BA78'] }],
       'internal-note': [{ groups: ['*'], level: 'hidden' }],
     },
@@ -124,7 +124,7 @@ test('(c) tool + input projection differs correctly by group; hiddenTools names 
   assert.ok(badge, 'event-badge visible to marketing');
   assert.equal(badge?.approvalChain, 'brand-review');
   assert.equal(badge?.inputs?.find((i) => i.id === 'title')?.access?.level, 'locked');
-  assert.equal(badge?.inputs?.find((i) => i.id === 'title')?.access?.value, 'SUSE Summit 2026');
+  assert.equal(badge?.inputs?.find((i) => i.id === 'title')?.access?.value, 'Lolly Summit 2026');
   assert.equal(badge?.inputs?.find((i) => i.id === 'accent')?.access?.level, 'choice', 'marketing hits the * choice rule');
   assert.deepEqual(badge?.hidden, ['internal-note']);
   assert.ok(!mkt.tools['legal-doc'], 'legal-doc not visible to marketing');
