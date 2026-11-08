@@ -19,8 +19,9 @@
  *   the replacement (decision D2). Lifecycle revoke stays the hard stop.
  *
  * The served feed carries `meta.version`, `meta.editable`, `meta.fixedTheme`,
- * `meta.retired`, `meta.replacedBy` and `meta.bindings`, never a rule's name or
- * reason: the app offers what may change and nothing else (Andy, 2026-10-19).
+ * `meta.retired`, `meta.replacedBy`, `meta.bindings` and `meta.intents`, never a
+ * rule's name or reason: the app offers what may change and nothing else (Andy,
+ * 2026-10-19).
  *
  * On a server render that names a template (`template=inst/<id>`), its rules
  * become an overlay already resolved for the caller: each input takes the
@@ -51,6 +52,11 @@ export interface TemplatePublication {
   /** The catalog template its current version came from, which the workspace's
    *  owner mark is checked against (plans/82 M6, programmes/template-routes.ts). */
   from?: import('./versions.ts').CopiedFrom;
+  /** The purposes the template is for (plans/82 M7), written as a tool's
+   *  `intents.json` entries are, checked against the base tool with the template's
+   *  fixed inputs set. A template that declares them is a candidate when an
+   *  agent says what a piece has to do. */
+  intents?: import('@lolly-tools/core/intent-v1').ToolIntentV1[];
 }
 
 /** What a server render needs from a template the caller may use. */
@@ -69,6 +75,8 @@ export interface RenderTemplate {
    *  the company and programme a render is for (plans/82 M3). */
   bindings?: Record<string, import('../programmes/company-values.ts').CompanyField>;
   groups?: string[];
+  /** The purposes it is for, when it declares any (plans/82 M7). */
+  intents?: import('@lolly-tools/core/intent-v1').ToolIntentV1[];
 }
 
 /** The id a template-scoped render names: an instance template, `inst/<id>`.
@@ -121,6 +129,8 @@ export function servedTemplateEntry(rec: InstanceAssetRecord): AssetIndexEntry {
     // Which inputs take the partner company's values: the app seeds them
     // from org-config's `partner.company` (plans/82 M3).
     ...(pub?.bindings ? { bindings: { ...pub.bindings } } : {}),
+    // The purposes it is for (plans/82 M7): an agent's answer can start from it.
+    ...(pub?.intents?.length ? { intents: structuredClone(pub.intents) } : {}),
   };
   return { ...rec.entry, meta };
 }

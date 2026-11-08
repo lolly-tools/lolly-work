@@ -5,7 +5,7 @@ import {
 } from '@lolly-tools/core/partner-kit-v1';
 import { readBlobBody, type BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
-import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
+import { submissionServable, type InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import { centralEntries, entryBytes, type ZipEntry } from '../catalog/instance-pack.ts';
 import { MAX_RULES_FILE_BYTES } from '../catalog/rules-tools.ts';
 import { LOGO_FIELD } from './profile.ts';
@@ -94,6 +94,15 @@ export async function storedKit(blobs: BlobStore, rec: InstanceAssetRecord): Pro
   if (!blob) return null;
   const bytes = await readBlobBody(blob.body, KIT_MAX_BYTES);
   return (await loadKitEngine()).readPartnerKit(bytes.toString('utf8'));
+}
+
+/** The company's current kit, only while its asset is live. */
+export async function readCompanyKit(store: Store, blobs: BlobStore, companyId: string): Promise<{ assetId: string; revision: number; kit: PartnerKitV1 } | null> {
+  const pointer = (await store.getCompanyProfile(companyId))?.kit;
+  const rec = pointer ? await store.getInstanceAsset(pointer.assetId) : null;
+  if (!rec || rec.entry.type !== 'partner-kit' || (rec.entry.meta as { company?: unknown })?.company !== companyId || !submissionServable(rec) || (await store.getLifecycle(rec.id))?.revokedAt) return null;
+  const kit = await storedKit(blobs, rec);
+  return kit ? { assetId: rec.id, revision: rec.headVersion ?? 1, kit } : null;
 }
 
 function tokenPart(bytes: Buffer, entry: ZipEntry, maxBytes = KIT_TOKENS_MAX_BYTES): Buffer {

@@ -292,6 +292,9 @@ jobs:
       - name: Start checksum-pinned host BuildKit
         id: host-buildkit
         timeout-minutes: 5
+        env:
+          # Read-only job token for the REST API route if the release download URL fails.
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci-buildkit.sh start
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

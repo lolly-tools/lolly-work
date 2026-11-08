@@ -48,6 +48,9 @@ jobs:
       - name: Install frozen project dependencies
         run: pnpm install --frozen-lockfile
       - name: Install checksum-pinned validation tools
+        env:
+          # Read-only job token for the REST API route if a release download URL fails.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           lolly_tools_dir="$RUNNER_TEMP/lolly-helm-tools"
@@ -57,11 +60,11 @@ jobs:
           echo 'e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c  helm-v4.2.3-linux-amd64.tar.gz' | sha256sum -c -
           tar -xzf helm-v4.2.3-linux-amd64.tar.gz linux-amd64/helm
           install -m 0755 linux-amd64/helm "$lolly_tools_dir/bin/helm"
-          curl -fsSL --retry 3 https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz -o kubeconform-linux-amd64.tar.gz
+          bash "$GITHUB_WORKSPACE/scripts/ci-fetch-release-asset.sh" yannh/kubeconform v0.8.0 kubeconform-linux-amd64.tar.gz kubeconform-linux-amd64.tar.gz
           echo '9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform-linux-amd64.tar.gz' | sha256sum -c -
           tar -xzf kubeconform-linux-amd64.tar.gz kubeconform
           install -m 0755 kubeconform "$lolly_tools_dir/bin/kubeconform"
-          curl -fsSL --retry 3 https://github.com/prometheus/prometheus/releases/download/v3.13.4/prometheus-3.13.4.linux-amd64.tar.gz -o prometheus-3.13.4.linux-amd64.tar.gz
+          bash "$GITHUB_WORKSPACE/scripts/ci-fetch-release-asset.sh" prometheus/prometheus v3.13.4 prometheus-3.13.4.linux-amd64.tar.gz prometheus-3.13.4.linux-amd64.tar.gz
           echo '87f21a66f96c597a189cef8d640e8921b621fc17a9feff707c332c4f3b3ddd56  prometheus-3.13.4.linux-amd64.tar.gz' | sha256sum -c -
           tar -xzf prometheus-3.13.4.linux-amd64.tar.gz prometheus-3.13.4.linux-amd64/promtool
           install -m 0755 prometheus-3.13.4.linux-amd64/promtool "$lolly_tools_dir/bin/promtool"
