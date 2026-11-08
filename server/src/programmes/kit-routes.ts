@@ -3,10 +3,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readRaw, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { SubmitInput, SubmitOutcome } from '../catalog/submit.ts';
-import { submissionServable } from '../catalog/instance-assets.ts';
 import type { CompanyProfileDeps } from './profile-routes.ts';
 import { companyGroup, type CompanyRecord } from './people.ts';
-import { KIT_LOLLY_MAX_BYTES, KIT_MAX_BYTES, KIT_TOKENS_MAX_BYTES, proposeCompanyKit, storedKit } from './kit.ts';
+import { KIT_LOLLY_MAX_BYTES, KIT_MAX_BYTES, KIT_TOKENS_MAX_BYTES, proposeCompanyKit, readCompanyKit, storedKit } from './kit.ts';
 
 export interface CompanyKitDeps extends Pick<CompanyProfileDeps, 'store' | 'blobs' | 'requireAction' | 'memberOf' | 'audit'> {
   submitKit(input: SubmitInput): Promise<SubmitOutcome>;
@@ -48,11 +47,8 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     return false;
   };
   const read = async (company: CompanyRecord) => {
-    const pointer = (await store.getCompanyProfile(company.id))?.kit;
-    const rec = pointer ? await store.getInstanceAsset(pointer.assetId) : null;
-    if (!rec || rec.entry.type !== 'partner-kit' || (rec.entry.meta as { company?: unknown })?.company !== company.id || !submissionServable(rec) || (await store.getLifecycle(rec.id))?.revokedAt) return null;
-    const kit = await storedKit(blobs, rec);
-    return kit ? { kit, assetId: rec.id, revision: rec.headVersion ?? 1, source: kit.source ?? null } : null;
+    const view = await readCompanyKit(store, blobs, company.id);
+    return view ? { ...view, source: view.kit.source ?? null } : null;
   };
   const show = async (res: ServerResponse, context: Context, own = false) => {
     const view = await read(context.company);

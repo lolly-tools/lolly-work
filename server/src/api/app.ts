@@ -105,6 +105,7 @@ import { registerProgrammeTokenRoutes } from '../programmes/token-routes.ts';
 import { registerUsageRoutes } from '../programmes/usage-routes.ts';
 import { createCompanyProfiles } from '../programmes/profile-routes.ts';
 import { registerCompanyKitRoutes } from '../programmes/kit-routes.ts';
+import { readCompanyKit } from '../programmes/kit.ts';
 import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../programmes/logo-checks.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
@@ -6410,9 +6411,10 @@ export function buildApp(deps: AppDeps): App {
     },
   });
   companyProfiles.register(router);
+  const kitVisible = async (groups: string[], assetId: string) => !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit');
   registerCompanyKitRoutes(router, {
     store, blobs, requireAction, memberOf, audit,
-    kitVisible: async (groups, assetId) => !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit'),
+    kitVisible,
     submitKit: async (input) => {
       const outcome = await submitAsset(submitDeps(), input);
       if (outcome.ok) await trimVersionHistory(outcome.record).catch(() => 0);
@@ -12298,6 +12300,20 @@ export function buildApp(deps: AppDeps): App {
       const blob = blobId ? await blobs.get(blobId) : null;
       if (!format || !blob) return null;
       return { bytes: await readBlobBody(blob.body, 4 * 1024 * 1024), mediaType: format === 'svg' ? 'image/svg+xml' : 'image/png' };
+    },
+    companyKit: async (groups, companyId) => {
+      const view = await readCompanyKit(store, blobs, companyId);
+      return view && await kitVisible(groups, view.assetId) ? view : null;
+    },
+    companyKitLogo: async (groups, companyId, pin) => {
+      const rec = pin.id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(pin.id) : null;
+      if (!rec || (rec.entry.meta as { company?: unknown })?.company !== companyId || !(rec.entry.tags as string[] | undefined)?.includes('logo')
+        || !submissionServable(rec) || !(await feedHolds(groups, rec.id)) || (await catalogBytesGate(rec.id, false)).blocked) return null;
+      // The head's blobs are authoritative at the head. An older pin reads only
+      // its version row, even when that version's bytes are no longer stored.
+      const blobId = pin.version === headVersionOf(rec) ? Object.values(rec.blobs)[0] : (await store.getAssetVersion(rec.id, pin.version))?.formats[0]?.blobId;
+      const blob = blobId ? await blobs.get(blobId) : null;
+      return blob ? { bytes: await readBlobBody(blob.body, 4 * 1024 * 1024), mediaType: blob.stat.contentType } : null;
     },
     templates: async (groups) => {
       const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
