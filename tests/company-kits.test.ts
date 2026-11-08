@@ -413,3 +413,50 @@ test('under the licence gate a kit is its own company\'s file, exempt for that c
   assert.equal(exemptWhy(entry, new Set(['northwind'])), 'company-own');
   assert.equal(exemptWhy(entry, new Set(['contoso'])), null, 'never exempt as a brand-team file or a design system');
 });
+
+// Second review pass (plans/82 M8, W-M8-1): each test fails on the code before its fix.
+
+test('a kit\'s bytes are never read as someone\'s submission once they have lost the company and the role', async () => {
+  const staffCookie = await login('staff@brand.test');
+  const staff = (await store.listUsers()).find((u) => u.email === 'staff@brand.test')!;
+  const saved = await submitAsset({ store, blobs, policy }, {
+    bytes: Buffer.from(JSON.stringify({ ...kit('globex'), label: 'Globex', logos: {} })), name: 'Globex kit',
+    companyKit: { companyId: 'globex' }, submitter: { id: staff.id, groups: staff.groups },
+  });
+  assert.ok(saved.ok, JSON.stringify(saved));
+  const id = saved.ok ? saved.record.id : '';
+  const bytes = await fetch(`${base}/api/v1/catalog/submissions/${id.replace(/^inst\//, '')}/bytes`, { headers: { cookie: staffCookie } });
+  assert.ok([403, 404].includes(bytes.status), `the submitter outside the company and with no programme.manage reads nothing (${bytes.status})`);
+  const manager = await fetch(`${base}/api/v1/catalog/submissions/${id.replace(/^inst\//, '')}/bytes`, { headers: { cookie: bruno } });
+  assert.equal(manager.status, 200, 'whoever may manage programmes still reads the kit');
+  assert.equal((await call(bruno, 'DELETE', `${AT}/globex/kit`)).status, 200);
+});
+
+test('a first save that outlives its company publishes nothing, and a company made later with that id has no kit', async () => {
+  assert.equal((await call(bruno, 'PUT', `${AT}/lateco`, { name: 'Late Co' })).status, 201);
+  let release!: () => void;
+  const scanning = new Promise<void>((resolve) => { release = resolve; });
+  const pending = submitAsset({ store, blobs, policy,
+    scanHook: { kind: 'http', target: 'http://scanner.test', timeoutMs: 5000, onError: 'reject' },
+    fetchImpl: async () => { await scanning; return new Response('{}', { status: 200 }); },
+  }, { bytes: Buffer.from(JSON.stringify({ ...kit('lateco'), label: 'Late Co', logos: {} })), name: 'Late kit', companyKit: { companyId: 'lateco' }, submitter: { id: 'manager', groups: ['admin'] } });
+  assert.equal((await call(bruno, 'DELETE', `${AT}/lateco`)).status, 200);
+  release();
+  const outcome = await pending;
+  assert.equal(outcome.ok, false);
+  assert.equal((await store.listInstanceAssets()).filter((r) => r.entry.type === 'partner-kit' && (r.entry.meta as { company?: string })?.company === 'lateco').length, 0);
+  assert.equal((await call(bruno, 'PUT', `${AT}/lateco`, { name: 'Another Late Co' })).status, 201);
+  assert.equal((await store.getCompanyProfile('lateco'))?.kit, undefined);
+  assert.equal((await call(bruno, 'DELETE', `${AT}/lateco`)).status, 200);
+});
+
+test('a pending submission never becomes a partner kit by a type edit', async () => {
+  await store.putChain({ id: 'catalog-review', name: 'Catalog review', steps: [{ name: 'Review', approvers: { groups: ['admin'] }, rule: 'any' }], onReject: 'return-to-submitter' } as never);
+  const sent = await fetch(`${base}/api/v1/catalog/submit?name=drawing.svg&type=image`, { method: 'POST', headers: { cookie: bruno, 'content-type': 'image/svg+xml' }, body: new Uint8Array(svg('#123456')) });
+  const body = await sent.json() as { assetId?: string };
+  const id = String(body.assetId ?? '');
+  assert.ok(id, JSON.stringify(body));
+  const edit = await call(bruno, 'PATCH', `/api/v1/catalog/submissions/${id.replace(/^inst\//, '')}`, { type: 'partner-kit' });
+  assert.equal(edit.status, 400, JSON.stringify(edit.body));
+  assert.notEqual((await store.getInstanceAsset(id))?.entry.type, 'partner-kit');
+});

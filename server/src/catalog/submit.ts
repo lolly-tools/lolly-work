@@ -57,7 +57,7 @@ import type { SubmitPolicy, SubmitScanHook } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
 import { randomId, sha256Hex } from '../lib/crypto.ts';
-import { deleteKitAsset, prepareCompanyKit } from '../programmes/kit.ts';
+import { deleteKitAsset, kitCompanyLive, prepareCompanyKit } from '../programmes/kit.ts';
 
 // ── byte sniffing ───────────────────────────────────────────────────────────
 
@@ -674,6 +674,13 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       moved.entry = { ...moved.entry, type: 'partner-kit', tags: ['partner', 'kit'], meta: { company: input.companyKit.companyId } };
       moved.groups = [`company-${input.companyKit.companyId}`];
     }
+    // A kit's company is asked again: one deleted or ended while the scan ran,
+    // with its kit, gets no new revision and nothing comes back.
+    if (input.companyKit && (!await kitCompanyLive(store, input.companyKit.companyId) || !await store.getInstanceAsset(target.id))) {
+      await blobs.delete(blobId).catch(() => undefined);
+      await release();
+      return { ok: false, code: 'INVALID_SUBMISSION', detail: 'the company was removed or its partnership ended while the kit was being saved' };
+    }
     try {
       await store.putAssetVersion(row);
       await store.putInstanceAsset(moved);
@@ -750,7 +757,13 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   }
 
   // Claim the company's pointer before publishing, so a losing first save
-  // never appears as a second live kit in the company's feed.
+  // never appears as a second live kit in the company's feed. The company is
+  // asked again first: one deleted or ended while the scan ran gets no kit.
+  if (input.companyKit && !await kitCompanyLive(store, input.companyKit.companyId)) {
+    await deleteKitAsset(store, blobs, id);
+    await release();
+    return { ok: false, code: 'INVALID_SUBMISSION', detail: 'the company was removed or its partnership ended while the kit was being saved' };
+  }
   if (input.companyKit && !await store.putCompanyKit(input.companyKit.companyId, { assetId: id }, null)) {
     await deleteKitAsset(store, blobs, id);
     await release();

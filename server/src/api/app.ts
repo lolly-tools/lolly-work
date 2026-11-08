@@ -9457,9 +9457,16 @@ export function buildApp(deps: AppDeps): App {
     // working for an already-published asset. A partner programme member
     // reads a live one only while their feed holds it, their own included
     // (plans/82 M1).
-    const allowed = !submissionServable(rec) ? !!(await submissionRelation(rec, user))
-      : isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
-        : !!(await submissionRelation(rec, user)) || instanceAssetVisible(rec, user.groups);
+    // A partner kit (plans/82 M8) is never reached as someone's submission: only
+    // its own company, or whoever may manage programmes now, reads its bytes, so a
+    // manager who saved one revision and was later moved reads no later one.
+    const kitRow = rec.entry.type === 'partner-kit';
+    const allowed = kitRow
+      ? (isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
+        : instanceAssetVisible(rec, user.groups) || evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', ['*'], await store.listGrants()))
+      : !submissionServable(rec) ? !!(await submissionRelation(rec, user))
+        : isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
+          : !!(await submissionRelation(rec, user)) || instanceAssetVisible(rec, user.groups);
     if (!allowed) {
       return scopedCaller(user) ? notAvailable(res) : sendError(res, 403, 'FORBIDDEN', 'not yours to review');
     }
@@ -9516,6 +9523,11 @@ export function buildApp(deps: AppDeps): App {
     const parsed = parseDescriptivePatch(body, rec.entry, rec.submission.data ? ['name', 'description', 'tags'] : ['name', 'type', 'description', 'tags']);
     if (rec.submission.data && body.type !== undefined && body.type !== rec.entry.type) {
       return sendError(res, 400, 'INVALID_INPUT', `a ${rec.submission.data.kind} keeps its type`);
+    }
+    // A partner kit is made only through its company's kit route (plans/82 M8):
+    // nothing becomes one, and one never becomes anything else, by a type edit.
+    if (body.type !== undefined && body.type !== rec.entry.type && (body.type === 'partner-kit' || rec.entry.type === 'partner-kit')) {
+      return sendError(res, 400, 'INVALID_INPUT', 'a partner kit is saved through its company kit route');
     }
     if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
     const before: Record<string, unknown> = { ...parsed.before };

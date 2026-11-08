@@ -79,6 +79,13 @@ export async function prepareCompanyKit(store: Store, companyId: string, bytes: 
   return read;
 }
 
+/** Whether a company still exists in a live programme, asked again when a save is about to publish. */
+export async function kitCompanyLive(store: Store, companyId: string): Promise<boolean> {
+  const company = (await store.listCompanies()).find((c) => c.id === companyId);
+  const programme = company ? await store.getProgramme(company.programmeId) : null;
+  return !!company && !!programme && !company.endedAt && !programme.endedAt;
+}
+
 /** Read stored JSON with the format's own byte bound. */
 export async function storedKit(blobs: BlobStore, rec: InstanceAssetRecord): Promise<PartnerKitV1 | null> {
   const blob = rec.blobs.json ? await blobs.get(rec.blobs.json) : null;
