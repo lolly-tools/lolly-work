@@ -180,6 +180,9 @@ export interface RenderRequest {
   production?: ProductionRequest;
   verification?: 'output-v1' | OutputVerification;
   signal?: AbortSignal;
+  /** When the caller's render deadline falls (epoch ms). Worker calls stop
+   *  retrying a refused connection before it, answering RENDER_BUSY. */
+  deadlineAt?: number;
   toolId: string;
   format: string;
   /** URL-mode query string (no leading '?'), the shared param contract. */
@@ -709,7 +712,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
         overrides: {},
         format: 'svg',
         profile: req.profile,
-      }, { signal: req.signal, onEvidence: value => { workerEvidence = value; productionInputs = value.inputs; } });
+      }, { signal: req.signal, ...(req.deadlineAt ? { deadlineAt: req.deadlineAt } : {}), onEvidence: value => { workerEvidence = value; productionInputs = value.inputs; } });
     } catch (e) {
       if (e instanceof WorkerError) throw renderErrorFromWorker(e);
       throw e;
@@ -820,7 +823,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     let raster: { bytes: Uint8Array; mime: string };
     if (deps.worker && !LEGACY_RESVG) {
       try {
-        raster = await rasteriseViaWorker(deps.worker, { svg: svgStr, format, ...(pxW ? { width: pxW } : {}) }, { signal: req.signal });
+        raster = await rasteriseViaWorker(deps.worker, { svg: svgStr, format, ...(pxW ? { width: pxW } : {}) }, { signal: req.signal, ...(req.deadlineAt ? { deadlineAt: req.deadlineAt } : {}) });
       } catch (e) {
         if (e instanceof WorkerError) throw renderErrorFromWorker(e);
         throw e;

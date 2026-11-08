@@ -23,6 +23,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import type { ToolOverlay } from '../server/src/policy/overlay.ts';
 import { renderCapabilities, toolServerFormats } from '../server/src/render/capabilities.ts';
 import { effectiveInputSchema, policyFormats } from '../server/src/automation/effective-contract.ts';
+import { createWorkerProbe } from '../server/src/automation/discovery.ts';
 
 interface Harness { server: Server; base: string; store: ReturnType<typeof createMemoryStore> }
 const servers: Server[] = [];
@@ -364,13 +365,31 @@ test('an open deployment answers anonymous callers as guests', async () => {
   assert.equal((await fetch(`${srv.base}/api/v1/schema/governed-card?view=raw`)).status, 403);
 });
 
+test('the readiness probe reads at most 4 KiB of the worker\'s body and stops there', async () => {
+  let pulled = 0, cancelled = false;
+  const chunk = new TextEncoder().encode(`{"atCapacity":true,"pad":"${'x'.repeat(1024)}`);
+  const fetchImpl = (async () => new Response(new ReadableStream({
+    pull(controller) { pulled++; if (pulled > 1000) controller.close(); else controller.enqueue(chunk); },
+    cancel() { cancelled = true; },
+  }), { status: 200 })) as unknown as typeof fetch;
+  const probe = createWorkerProbe({ url: 'http://127.0.0.1:9', secret: 's', timeoutMs: 1000 }, fetchImpl);
+  assert.equal(await probe(), 'ready', 'an oversized body is not read as a full worker');
+  assert.ok(cancelled, 'the rest of the body is cancelled');
+  assert.ok(pulled < 10, `read ${pulled} chunks, not the whole stream`);
+  const small = createWorkerProbe({ url: 'http://127.0.0.1:9', secret: 's', timeoutMs: 1000 },
+    (async () => new Response(JSON.stringify({ ok: true, active: 1, capacity: 1, atCapacity: true }), { status: 200 })) as unknown as typeof fetch);
+  assert.equal(await small(), 'busy');
+});
+
 test('a configured worker widens discovery, and its live readiness reaches the caller view', async () => {
-  for (const [status, state] of [[200, 'ready'], [503, 'busy']] as const) {
+  // 200 below capacity; 200 with atCapacity for a full worker; 503 for an older
+  // worker that left readiness when full. The last two both read as busy.
+  for (const [status, atCapacity, state] of [[200, false, 'ready'], [200, true, 'busy'], [503, false, 'busy']] as const) {
     let probes = 0;
     const worker = createServer((req, res) => {
       if (req.url === '/readyz') probes++;
       res.writeHead(req.url === '/readyz' ? status : 404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: status === 200 }));
+      res.end(JSON.stringify({ ok: status === 200, active: atCapacity ? 1 : 0, capacity: 1, atCapacity }));
     });
     await new Promise<void>(resolve => worker.listen(0, '127.0.0.1', resolve));
     servers.push(worker);
