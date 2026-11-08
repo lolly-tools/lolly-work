@@ -46,7 +46,10 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     sendError(res, 409, 'PROGRAMME_ENDED', 'reopen the partnership before changing its kit');
     return false;
   };
-  const read = (company: CompanyRecord) => readCompanyKit(store, blobs, company);
+  const read = async (company: CompanyRecord) => {
+    const view = await readCompanyKit(store, blobs, company.id);
+    return view ? { ...view, source: view.kit.source ?? null } : null;
+  };
   const show = async (res: ServerResponse, context: Context, own = false) => {
     const view = await read(context.company);
     if (!view || (own && !await d.kitVisible(context.actor.groups, view.assetId))) return sendError(res, 404, 'NOT_FOUND', 'this company has no kit');

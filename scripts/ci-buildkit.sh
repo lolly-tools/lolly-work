@@ -6,7 +6,9 @@ readonly BUILDKIT_VERSION='v0.33.1'
 readonly BUILDKIT_COMMIT='8c91502cf280bd70a0c50912ce251c46a8881d9f'
 readonly BUILDKIT_SHA256='4e044bcd62a0c0bbe6a8c94d73989de2bfe4c04dbc0f9d6021cf96b72cd1d965'
 readonly BUILDKIT_BYTES=93348488
-readonly BUILDKIT_URL="https://github.com/moby/buildkit/releases/download/$BUILDKIT_VERSION/buildkit-$BUILDKIT_VERSION.linux-amd64.tar.gz"
+readonly BUILDKIT_ASSET="buildkit-$BUILDKIT_VERSION.linux-amd64.tar.gz"
+# The release download URL first, then the REST API (needs GH_TOKEN); the size and digest checks below decide.
+readonly FETCH_RELEASE_ASSET="$(dirname -- "${BASH_SOURCE[0]}")/ci-fetch-release-asset.sh"
 
 fail() { printf 'ci-buildkit: %s\n' "$*" >&2; exit 1; }
 
@@ -92,8 +94,7 @@ start() {
   # EXIT runs after a failing function's local variables have been unwound.
   builder_ready=false
   trap 'if [[ "$builder_ready" != true ]]; then stop || true; fi' EXIT
-  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-    --connect-timeout 15 --max-time 180 --output "$root/buildkit.tar.gz" "$BUILDKIT_URL"
+  FETCH_RELEASE_MAX_TIME=180 bash "$FETCH_RELEASE_ASSET" moby/buildkit "$BUILDKIT_VERSION" "$BUILDKIT_ASSET" "$root/buildkit.tar.gz"
   [[ "$(wc -c < "$root/buildkit.tar.gz" | tr -d '[:space:]')" = "$BUILDKIT_BYTES" ]] || fail 'release archive size differs'
   printf '%s  %s\n' "$BUILDKIT_SHA256" "$root/buildkit.tar.gz" | sha256sum --check --strict
   mkdir "$root/tools"

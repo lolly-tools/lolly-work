@@ -251,7 +251,7 @@ import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, r
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
-import { registerIntentRoutes } from '../automation/intents.ts';
+import { checkTemplateIntents, registerIntentRoutes, templateDrawable, type TemplateIntentManifest } from '../automation/intents.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
 import { registerContextRoutes, type ContextSkill } from '../automation/context-routes.ts';
 import { servedType as brandPageFileType } from '../brand-pages/manifest.ts';
@@ -859,6 +859,7 @@ export function buildApp(deps: AppDeps): App {
       ...(templateRetired(rec) ? { retired: rec.publication?.replacedBy ? { replacedBy: rec.publication.replacedBy } : {} } : {}),
       ...(rec.publication?.bindings ? { bindings: rec.publication.bindings } : {}),
       ...(Array.isArray(rec.groups) ? { groups: rec.groups } : {}),
+      ...(rec.publication?.intents?.length ? { intents: rec.publication.intents } : {}),
     };
   };
   // ── company values (plans/82 M3, programmes/company-values.ts) ──────────
@@ -951,7 +952,7 @@ export function buildApp(deps: AppDeps): App {
     const programmeId = picked.company?.programmeId ?? pickProgramme(args.groups, companies, publishedTo);
     const programme = programmeId ? await store.getProgramme(programmeId) : null;
     const profile = picked.company ? await store.getCompanyProfile(picked.company.id) : null;
-    const kit = picked.company ? await readCompanyKit(store, blobs, picked.company) : null;
+    const kit = picked.company ? await readCompanyKit(store, blobs, picked.company.id) : null;
     const out: RenderPartner = {
       ...(picked.company ? { company: { id: picked.company.id, name: picked.company.name, revision: profile?.revision ?? 0 } } : {}),
       ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
@@ -6518,6 +6519,15 @@ export function buildApp(deps: AppDeps): App {
       } catch { return null; }
     },
     toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
+    // A template's purposes (plans/82 M7), held by the engine's own intents.json check
+    // against the base tool, with every input the template fixes set by its rules.
+    checkTemplateIntents: async (toolId, raw, rules) => {
+      const engine = await loadEngine();
+      let manifest: TemplateIntentManifest;
+      try { manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')); }
+      catch { return { errors: [{ path: '', message: `this workspace no longer has the tool "${toolId}"` }] }; }
+      return checkTemplateIntents(engine, { ...manifest, id: toolId }, raw, rules, (await store.listOverlays()).get(toolId)?.bindings);
+    },
     submitVersion: async (actor, target, bytes, from) => {
       const outcome = await submitAsset(submitDeps(actor), {
         bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups, role: actor.role },
@@ -6570,7 +6580,15 @@ export function buildApp(deps: AppDeps): App {
       return blob ? templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES)) : null;
     },
   });
-  registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark });
+  registerCatalogRightsRoutes(router, {
+    store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark,
+    holdsAny: async (req, actions) => {
+      const user = (await memberOf(req)) ?? (await serviceAccountOf(req));
+      if (!user) return null;
+      const grants = await store.listGrants();
+      return actions.some((action) => evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], grants)) ? user : null;
+    },
+  });
 
   registerDomainRoutes(router, {
     store, requireAction, audit, resolveTxt,
@@ -12329,6 +12347,29 @@ export function buildApp(deps: AppDeps): App {
     catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
+    // Published templates as candidates for an intent (plans/82 M7), from the caller's own feed.
+    intentTemplates: async (groups, role) => {
+      const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+      const declaring = feed.filter((a) => a.type === 'template' && Array.isArray((a.meta as { intents?: unknown } | undefined)?.intents) && !(a.meta as { retired?: unknown }).retired);
+      // A template whose fixed values name a file this caller's render would hold back
+      // is not one they can make, so it is never offered.
+      const gate = await licenceAssetGate(groups, role);
+      return (await Promise.all(declaring.map((a) => publishedTemplateFor(groups, a.id))))
+        .filter((t): t is RenderTemplate => !!t && !t.retired && templateDrawable(t, gate));
+    },
+    templateFor: (groups, id) => publishedTemplateFor(groups, id),
+    templateCompanyValues: async (template, groups) => {
+      const overlay = (await store.listOverlays()).get(template.toolId);
+      if (!template.bindings && !overlay?.bindings) return {};
+      const { ctx, ambiguous } = await companyContextFor(groups, template.groups);
+      const plan = planBindings({
+        ...(overlay?.bindings ? { overlayBindings: overlay.bindings } : {}), ...(template.bindings ? { templateBindings: template.bindings } : {}),
+        ...(template.editable ? { templateEditable: template.editable } : {}),
+        overlayLocks: (id) => resolveInputAccess(overlay, id, groups).level === 'locked', ctx, ambiguous, theme: 'light',
+      });
+      return { ...plan.values };
+    },
+    templatesOnly: async (groups, role) => new Set((await templatesOnlyOf(groups, role)).keys()),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
     contentCredentials: async () => !!(await getC2paSigner()),
     ...(renderWorker ? { workerState: createWorkerProbe(renderWorker, fetchImpl) } : {}),
@@ -12421,6 +12462,20 @@ export function buildApp(deps: AppDeps): App {
       const blob = blobId ? await blobs.get(blobId) : null;
       if (!format || !blob) return null;
       return { bytes: await readBlobBody(blob.body, 4 * 1024 * 1024), mediaType: format === 'svg' ? 'image/svg+xml' : 'image/png' };
+    },
+    companyKit: async (groups, companyId) => {
+      const view = await readCompanyKit(store, blobs, companyId);
+      return view && await kitVisible(groups, view.assetId) ? view : null;
+    },
+    companyKitLogo: async (groups, companyId, pin) => {
+      const rec = pin.id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(pin.id) : null;
+      if (!rec || (rec.entry.meta as { company?: unknown })?.company !== companyId || !(rec.entry.tags as string[] | undefined)?.includes('logo')
+        || !submissionServable(rec) || !(await feedHolds(groups, rec.id)) || (await catalogBytesGate(rec.id, false)).blocked) return null;
+      // The head's blobs are authoritative at the head. An older pin reads only
+      // its version row, even when that version's bytes are no longer stored.
+      const blobId = pin.version === headVersionOf(rec) ? Object.values(rec.blobs)[0] : (await store.getAssetVersion(rec.id, pin.version))?.formats[0]?.blobId;
+      const blob = blobId ? await blobs.get(blobId) : null;
+      return blob ? { bytes: await readBlobBody(blob.body, 4 * 1024 * 1024), mediaType: blob.stat.contentType } : null;
     },
     templates: async (groups) => {
       const feed = (await servedIndex.forCaller({ groups })).index.assets ?? [];
