@@ -1207,6 +1207,8 @@ switch (cmd) {
         programme: { name: string }; rules: string; mode?: { mode: string; line: string };
         totals: { assets: number; travel: number; held: number; exempt: number; sharedAnyway?: number; needsChoosing?: number }; sources: Row[];
         links: { count: number; files: number; links: Array<{ id: string; target: { name: string }; createdBy: { name: string }; held: number; files: number }>; more: number };
+        prefixes?: Array<{ sentences: string[]; clearedBy?: string }>;
+        templates?: Array<{ name: string; audiences: Array<{ name: string; files: Array<{ name: string; why: 'licence' | 'not-shared'; reason?: string }> }> }>;
       };
       out(r);
       if (!values.json) {
@@ -1226,6 +1228,17 @@ switch (cmd) {
         console.log(`links made by staff that would lose files: ${r.links.count}${r.links.count ? ` (${r.links.files} file(s))` : ''}`);
         for (const l of r.links.links) console.log(`  ${l.id}  ${l.target.name}  by ${l.createdBy.name}  loses ${l.held} of ${l.files}`);
         if (r.links.more) console.log(`  and ${r.links.more} more`);
+        for (const pr of r.prefixes ?? []) {
+          for (const line of pr.sentences) console.log(line);
+          if (pr.clearedBy) console.log(`  ${pr.clearedBy}`);
+        }
+        // Published templates that seed files one of the programme's audiences will not receive.
+        for (const t of r.templates ?? []) {
+          for (const a of t.audiences) {
+            const why = (f: { why: string; reason?: string }) => f.why === 'licence' ? f.reason ?? 'held back by its licence' : 'not shared with them';
+            console.log(`template ${t.name} uses ${a.files.length} file(s) ${a.name} will not receive: ${a.files.map((f) => `${f.name} (${why(f)})`).join(', ')}`);
+          }
+        }
       }
       break;
     }

@@ -217,3 +217,302 @@ test('only someone who manages programmes may publish', async () => {
   assert.equal((await call(bruno, 'GET', '/api/v1/programmes/resellers/templates')).status, 403);
   assert.equal((await call(bruno, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate })).status, 403);
 });
+
+test('publishing records the workspace\'s own mark, stated by the publisher, and the card\'s tick leaves it off or takes it away', async () => {
+  const admin = await login('admin@test');
+  const adminId = (await store.getUserBySub('dev:admin@test'))!.id;
+  const marked = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+  assert.equal(marked.status, 201);
+  const id = marked.body.id as string;
+  assert.equal(marked.body.ownerMark.holder, 'Partner Hub', 'the workspace is the holder');
+  assert.match(marked.body.ownerMark.terms, /^Published by Partner Hub .*Not an open licence\.$/);
+  const mark = (await store.listAssetRightsMarks()).find((m) => m.scope === `asset:${id}`);
+  assert.equal(mark?.statedBy, adminId, 'the publisher stated it');
+  const audited = (await store.listAudit()).filter((a) => a.action === 'catalog.rights.mark' && a.subject === `rights-mark:asset:${id}`);
+  assert.equal(audited.length, 1);
+  assert.equal(audited[0]!.actor, `user:${adminId}`);
+  assert.equal((audited[0]!.payload as { via?: string }).via, 'programme-template');
+  // The partner's served entry carries the composed owner-published record, never who stated it.
+  const entry = await ritaEntry(id) as { rights?: { works?: Array<{ creators?: Array<{ name: string; role: string }>; grants?: Array<{ kind: string }> }> } } | undefined;
+  assert.deepEqual(entry?.rights?.works?.[0]?.creators, [{ name: 'Partner Hub', role: 'owner' }]);
+  assert.equal(entry?.rights?.works?.[0]?.grants?.[0]?.kind, 'own-work');
+  assert.ok(!JSON.stringify(entry).includes(adminId), 'no statedBy on the wire');
+  const row = (await listed()).templates.find((t: { id: string }) => t.id === id);
+  assert.equal(row.ownerMark.holder, 'Partner Hub');
+
+  // Left off at publish.
+  const plain = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  assert.equal(plain.status, 201);
+  assert.equal(plain.body.ownerMark, null);
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${plain.body.id}`));
+  assert.equal((await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, ownerMark: 'yes' })).status, 400);
+
+  // The tick on the card, later: off withdraws it, audited; on records it again.
+  const off = await call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(id)}`, { ownerMark: false });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.ownerMark, null);
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${id}`));
+  assert.equal((await store.listAudit()).filter((a) => a.action === 'catalog.rights.unmark' && a.subject === `rights-mark:asset:${id}`).length, 1);
+  const on = await call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(plain.body.id)}`, { ownerMark: true });
+  assert.equal(on.body.ownerMark.holder, 'Partner Hub');
+  assert.equal((await call(admin, 'POST', `/api/v1/programmes/resellers/templates/rules-file?ownerMark=maybe`)).status, 400);
+});
+
+test('only staff who may edit the catalog state or withdraw the workspace\'s mark', async () => {
+  const admin = await login('admin@test');
+  const delegated = { principal: 'group:brand', action: 'programme.manage', resource: '*', effect: 'allow' };
+  await store.putGrant(delegated as never);
+  try {
+    const bruno = await login('bruno@test');
+    const quiet = await call(bruno, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+    assert.equal(quiet.status, 201, 'a programme manager still publishes');
+    assert.equal(quiet.body.ownerMark, null, 'without catalog.edit, no mark is stated');
+    assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${quiet.body.id}`));
+    assert.equal((await call(bruno, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, ownerMark: true })).status, 403);
+    const marked = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+    assert.equal((await call(bruno, 'PUT', `/api/v1/programmes/resellers/templates/${bare(marked.body.id)}`, { ownerMark: false })).status, 403);
+    assert.equal((await call(bruno, 'PUT', `/api/v1/programmes/resellers/templates/${bare(quiet.body.id)}`, { ownerMark: true })).status, 403);
+    assert.ok((await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${marked.body.id}`), 'the admin\'s mark stays');
+  } finally { await store.deleteGrant(delegated as never); }
+});
+
+test('a template from a file that records a licence is not stated as the workspace\'s own', async () => {
+  const admin = await login('admin@test');
+  const licensed = await submitTemplate(admin, 'Photo price sheet', 'With a CC BY photo');
+  assert.equal((await call(admin, 'PUT', '/api/v1/catalog/rights/licences', { assetId: licensed, declaration: 'CC-BY-4.0', attribution: 'Photo by Someone' })).status < 300, true);
+  const fromLicensed = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: licensed, groups: ['programme-resellers'] });
+  assert.equal(fromLicensed.status, 201);
+  assert.equal(fromLicensed.body.ownerMark, null, 'the file it came from records a licence');
+  assert.equal((await call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(fromLicensed.body.id)}`, { ownerMark: true })).status, 409, 'nor can the tick state it');
+});
+
+test('a new version from a file that records a licence withdraws the mark, audited', async () => {
+  const admin = await login('admin@test');
+  const licensed = await submitTemplate(admin, 'Second photo sheet', 'Another CC BY photo');
+  assert.ok((await call(admin, 'PUT', '/api/v1/catalog/rights/licences', { assetId: licensed, declaration: 'CC-BY-4.0', attribution: 'Photo by Someone' })).status < 300);
+  const own = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+  assert.ok(own.body.ownerMark, 'from the workspace\'s own template: marked');
+  const version = await call(admin, 'POST', `/api/v1/programmes/resellers/templates/${bare(own.body.id)}/versions`, { from: licensed });
+  assert.equal(version.status, 201, JSON.stringify(version.body));
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${own.body.id}`), 'the new head is not the workspace\'s own: the mark is withdrawn');
+  const unmark = (await store.listAudit()).filter((a) => a.action === 'catalog.rights.unmark' && a.subject === `rights-mark:asset:${own.body.id}`);
+  assert.equal((unmark.at(-1)?.payload as { why?: string } | undefined)?.why, 'not-own');
+});
+
+test('stating the mark never overwrites a statement already there, even read stale', async () => {
+  const admin = await login('admin@test');
+  const plain = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  const scope = `asset:${plain.body.id}`;
+  assert.ok((await call(admin, 'PUT', '/api/v1/catalog/rights/marks', { scope, holder: 'Acme legal', terms: 'Custom terms for this sheet.' })).status < 300);
+  const before = (await store.listAudit()).filter((a) => a.action === 'catalog.rights.mark' && a.subject === `rights-mark:${scope}`).length;
+  // A read taken before the other statement was saved: the write itself must not overwrite.
+  const list = store.listAssetRightsMarks.bind(store);
+  store.listAssetRightsMarks = async () => [];
+  try {
+    assert.equal((await call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(plain.body.id)}`, { ownerMark: true })).status, 200);
+  } finally { store.listAssetRightsMarks = list; }
+  const mark = (await store.listAssetRightsMarks()).find((m) => m.scope === scope);
+  assert.equal(mark?.terms, 'Custom terms for this sheet.', 'the custom statement stands');
+  assert.equal(mark?.holder, 'Acme legal');
+  assert.equal((await store.listAudit()).filter((a) => a.action === 'catalog.rights.mark' && a.subject === `rights-mark:${scope}`).length, before, 'nothing recorded, nothing audited');
+});
+
+test('a marked template\'s head changes only for staff who may withdraw the mark', async () => {
+  const admin = await login('admin@test');
+  const licensed = await submitTemplate(admin, 'Third photo sheet', 'Yet another CC BY photo');
+  assert.ok((await call(admin, 'PUT', '/api/v1/catalog/rights/licences', { assetId: licensed, declaration: 'CC-BY-4.0', attribution: 'Photo by Someone' })).status < 300);
+  const marked = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+  assert.ok(marked.body.ownerMark);
+  const delegated = { principal: 'group:brand', action: 'programme.manage', resource: '*', effect: 'allow' };
+  await store.putGrant(delegated as never);
+  try {
+    const bruno = await login('bruno@test');
+    const refused = await call(bruno, 'POST', `/api/v1/programmes/resellers/templates/${bare(marked.body.id)}/versions`, { from: licensed });
+    assert.equal(refused.status, 403, 'a programme manager without catalog.edit cannot move a marked head');
+    assert.ok((await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${marked.body.id}`), 'the staff mark stands');
+  } finally { await store.deleteGrant(delegated as never); }
+});
+
+test('every head change answers to the mark: a new version through the catalog, after a licence is recorded, withdraws it', async () => {
+  const admin = await login('admin@test');
+  const marked = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+  const id = marked.body.id as string;
+  assert.ok(marked.body.ownerMark);
+  assert.ok((await call(admin, 'PUT', '/api/v1/catalog/rights/licences', { assetId: id, declaration: 'CC-BY-4.0', attribution: 'Photo by Someone' })).status < 300);
+  const res = await fetch(`${base}/api/v1/catalog/submit?assetId=${encodeURIComponent(id)}`, {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' },
+    body: JSON.stringify({ toolId: 'price-card', name: 'Partner price sheet', values: { title: 'SLES 16 SP1', price: '€ 1,300', bg: '#0c322c' } }),
+  });
+  assert.ok(res.status === 200 || res.status === 201, await res.text());
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${id}`), 'the shared commit path withdrew it');
+  const unmark = (await store.listAudit()).filter((a) => a.action === 'catalog.rights.unmark' && a.subject === `rights-mark:asset:${id}`);
+  assert.equal((unmark.at(-1)?.payload as { why?: string } | undefined)?.why, 'not-own');
+});
+
+test('a mark statement and a version from a licensed file, at once, never leave a mark on that head', async () => {
+  const admin = await login('admin@test');
+  const licensed = await submitTemplate(admin, 'Fifth photo sheet', 'Licensed, racing');
+  assert.ok((await call(admin, 'PUT', '/api/v1/catalog/rights/licences', { assetId: licensed, declaration: 'CC-BY-4.0', attribution: 'Photo by Someone' })).status < 300);
+  const plain = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  const id = plain.body.id as string;
+  const list = store.listAssetRightsMarks.bind(store);
+  store.listAssetRightsMarks = async () => { const rows = await list(); await new Promise((r) => setTimeout(r, 15)); return rows; };
+  try {
+    await Promise.all([
+      call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(id)}`, { ownerMark: true }),
+      call(admin, 'POST', `/api/v1/programmes/resellers/templates/${bare(id)}/versions`, { from: licensed }),
+    ]);
+  } finally { store.listAssetRightsMarks = list; }
+  assert.equal((await store.getInstanceAsset(id))?.headVersion, 2, 'the licensed version is the head');
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${id}`), 'so no mark stands on it');
+});
+
+test('a source whose author can no longer be found is not the workspace\'s own', async () => {
+  const admin = await login('admin@test');
+  const source = (await store.getInstanceAsset(catalogTemplate))!;
+  const ghost = { ...source, id: 'inst/ghost-source', submission: { ...source.submission!, by: 'user:no-longer-here' } };
+  delete (ghost.submission as { byScoped?: boolean }).byScoped;
+  await store.putInstanceAsset(ghost);
+  const published = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: 'inst/ghost-source', groups: ['programme-resellers'] });
+  assert.equal(published.status, 201);
+  assert.equal(published.body.ownerMark, null);
+});
+
+test('two unticks at once withdraw the mark once, audited once', async () => {
+  const admin = await login('admin@test');
+  const marked = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+  const scope = `asset:${marked.body.id}`;
+  // Both requests read the mark before either removes it.
+  const list = store.listAssetRightsMarks.bind(store);
+  store.listAssetRightsMarks = async () => { const rows = await list(); await new Promise((r) => setTimeout(r, 30)); return rows; };
+  try {
+    await Promise.all([1, 2].map(() => call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(marked.body.id)}`, { ownerMark: false })));
+  } finally { store.listAssetRightsMarks = list; }
+  assert.equal((await store.listAudit()).filter((a) => a.action === 'catalog.rights.unmark' && a.subject === `rights-mark:${scope}`).length, 1);
+});
+
+test('an author who cannot be resolved is never staff, whatever was recorded', async () => {
+  const admin = await login('admin@test');
+  const source = (await store.getInstanceAsset(catalogTemplate))!;
+  await store.putInstanceAsset({ ...source, id: 'inst/ghost-staff', submission: { ...source.submission!, by: 'user:gone-for-good', byScoped: false } });
+  const published = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: 'inst/ghost-staff', groups: ['programme-resellers'] });
+  assert.equal(published.status, 201);
+  assert.equal(published.body.ownerMark, null);
+});
+
+test('a first version keeps where it came from, so returning to it is judged on that', async () => {
+  const { createOwnerMarks } = await import('../server/src/programmes/owner-mark.ts');
+  const { backfillVersionOne, applyVersionToRecord } = await import('../server/src/catalog/versions.ts');
+  const admin = await login('admin@test');
+  const adminId = (await store.getUserBySub('dev:admin@test'))!.id;
+  const licensed = await submitTemplate(admin, 'Sixth photo sheet', 'Licensed, first');
+  assert.ok((await call(admin, 'PUT', '/api/v1/catalog/rights/licences', { assetId: licensed, declaration: 'CC-BY-4.0', attribution: 'Photo by Someone' })).status < 300);
+  const copy = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: licensed, groups: ['programme-resellers'], ownerMark: false });
+  const rec = (await store.getInstanceAsset(copy.body.id))!;
+  const v1 = backfillVersionOne(rec);
+  assert.equal(v1.from?.id, licensed, 'the backfilled first version names the file it was copied from');
+  assert.equal(v1.byScoped, false);
+  await store.putAssetVersion(v1);
+  await store.putAssetVersion({ ...v1, version: 2, from: undefined, by: `user:${adminId}`, byScoped: false });
+  const marks = createOwnerMarks({ store, audit: async () => undefined, workspaceName: () => 'Partner Hub' });
+  assert.equal(await marks.ownWork(applyVersionToRecord(rec, { ...v1, version: 2, from: undefined })), true, 'v2 is the workspace\'s own');
+  assert.equal(await marks.ownWork({ ...rec, headVersion: 1 }), false, 'back at v1, copied from a licensed file: not own work');
+});
+
+test('a copy is judged on the source version it copied, not on the source\'s head now', async () => {
+  const { createOwnerMarks } = await import('../server/src/programmes/owner-mark.ts');
+  const adminId = (await store.getUserBySub('dev:admin@test'))!.id;
+  const source = (await store.getInstanceAsset(catalogTemplate))!;
+  const ritaId = (await store.getUserBySub('dev:rita@acme.test'))!.id;
+  // v1 by a partner, v2 by staff; the copy took v1.
+  await store.putInstanceAsset({ ...source, id: 'inst/two-hands', submission: { ...source.submission!, by: `user:${ritaId}`, byScoped: true }, headVersion: 2 });
+  await store.putAssetVersion({ assetId: 'inst/two-hands', version: 1, formats: [], by: `user:${ritaId}`, byScoped: true, at: 'x' });
+  await store.putAssetVersion({ assetId: 'inst/two-hands', version: 2, formats: [], by: `user:${adminId}`, byScoped: false, at: 'y' });
+  const copy = { ...source, id: 'inst/copy-of-v1', submission: { ...source.submission!, by: `user:${adminId}`, byScoped: false }, publication: { from: { id: 'inst/two-hands', version: 1 } } };
+  const marks = createOwnerMarks({ store, audit: async () => undefined, workspaceName: () => 'Partner Hub' });
+  assert.equal(await marks.ownWork(copy), false, 'v1, the version copied, was a partner\'s');
+  assert.equal(await marks.ownWork({ ...copy, publication: { from: { id: 'inst/two-hands', version: 2 } } }), true);
+});
+
+test('a partner trusted with catalog.edit cannot state, withdraw or record rights through the rights routes', async () => {
+  const rita = await login('rita@acme.test');
+  const delegated = { principal: 'group:programme-resellers', action: 'catalog.edit', resource: '*', effect: 'allow' };
+  await store.putGrant(delegated as never);
+  try {
+    assert.equal((await call(rita, 'PUT', '/api/v1/catalog/rights/marks', { scope: `asset:${catalogTemplate}` })).status, 403);
+    assert.equal((await call(rita, 'DELETE', `/api/v1/catalog/rights/marks?scope=asset:${catalogTemplate}`)).status, 403);
+    assert.equal((await call(rita, 'PUT', '/api/v1/catalog/rights/licences', { assetId: catalogTemplate, declaration: 'CC0-1.0' })).status, 403);
+  } finally { await store.deleteGrant(delegated as never); }
+});
+
+test('a template edit that read the record before a version committed does not undo the version', async () => {
+  const admin = await login('admin@test');
+  const t = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  const id = t.body.id as string;
+  const stale = (await store.getInstanceAsset(id))!;
+  const newer = await submitTemplate(admin, 'Partner price sheet', 'SLES 16 SP2');
+  assert.equal((await call(admin, 'POST', `/api/v1/programmes/resellers/templates/${bare(id)}/versions`, { from: newer })).status, 201);
+  // The edit's first read is the record from before that version.
+  const read = store.getInstanceAsset.bind(store);
+  let first = true;
+  store.getInstanceAsset = async (wanted) => { if (first && wanted === id) { first = false; return structuredClone(stale); } return read(wanted); };
+  try {
+    assert.equal((await call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(id)}`, { groups: ['programme-resellers', 'company-acme'] })).status, 200);
+  } finally { store.getInstanceAsset = read; }
+  const after = (await store.getInstanceAsset(id))!;
+  assert.equal(after.headVersion, 2, 'the version stays the head');
+  assert.deepEqual(after.groups, ['programme-resellers', 'company-acme'], 'and the edit applied');
+});
+
+test('two deletes of one mark through the rights route withdraw and audit it once', async () => {
+  const admin = await login('admin@test');
+  const marked = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+  const scope = `asset:${marked.body.id}`;
+  const list = store.listAssetRightsMarks.bind(store);
+  store.listAssetRightsMarks = async () => { const rows = await list(); await new Promise((r) => setTimeout(r, 30)); return rows; };
+  try {
+    await Promise.all([1, 2].map(() => call(admin, 'DELETE', `/api/v1/catalog/rights/marks?scope=${encodeURIComponent(scope)}`)));
+  } finally { store.listAssetRightsMarks = list; }
+  assert.equal((await store.listAudit()).filter((a) => a.action === 'catalog.rights.unmark' && a.subject === `rights-mark:${scope}`).length, 1);
+});
+
+test('a mark stated after a version passed its early check still binds that version, under the lock', async () => {
+  const admin = await login('admin@test');
+  const plain = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  const id = plain.body.id as string;
+  const newer = await submitTemplate(admin, 'Partner price sheet', 'SLES 16 SP3');
+  const delegated = { principal: 'group:brand', action: 'programme.manage', resource: '*', effect: 'allow' };
+  await store.putGrant(delegated as never);
+  // Staff state the mark between the route's early check and the commit's lock.
+  const lock = store.withAssetLock.bind(store);
+  let staged = false;
+  store.withAssetLock = async (assetId, fn) => {
+    if (!staged && assetId === id) {
+      staged = true;
+      await store.addAssetRightsMark({ scope: `asset:${id}`, holder: 'Partner Hub', terms: 'Staff statement.', statedBy: 'staff', statedAt: new Date().toISOString() });
+    }
+    return lock(assetId, fn);
+  };
+  try {
+    const bruno = await login('bruno@test');
+    const moved = await call(bruno, 'POST', `/api/v1/programmes/resellers/templates/${bare(id)}/versions`, { from: newer });
+    assert.equal(moved.status, 403, 'the commit asks again under the lock');
+    assert.equal((await store.getInstanceAsset(id))?.headVersion ?? 1, 1, 'the head did not move');
+  } finally { store.withAssetLock = lock; await store.deleteGrant(delegated as never); }
+});
+
+test('the rights route states an asset mark under that asset\'s lock', async () => {
+  const admin = await login('admin@test');
+  const plain = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  const id = plain.body.id as string;
+  let open!: () => void;
+  const gate = new Promise<void>((r) => { open = r; });
+  const holding = store.withAssetLock(id, () => gate);
+  const put = call(admin, 'PUT', '/api/v1/catalog/rights/marks', { scope: `asset:${id}`, holder: 'Acme legal', terms: 'Held while locked.' });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${id}`), 'nothing written while another holds the lock');
+  open();
+  await holding;
+  assert.ok((await put).status < 300);
+  assert.equal((await store.listAssetRightsMarks()).find((m) => m.scope === `asset:${id}`)?.terms, 'Held while locked.');
+});
