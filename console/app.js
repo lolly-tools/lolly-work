@@ -1450,7 +1450,9 @@ function limitValueText(entry) {
   const full = (x) => Number(x).toLocaleString('en');
   switch (entry.unit) {
     case 'bytes': return fmtBytes(n);
-    case 'ms': return n >= 60_000 && n % 60_000 === 0 ? `${full(n / 60_000)} min` : n >= 1000 && n % 1000 === 0 ? `${full(n / 1000)} s` : `${full(n)} ms`;
+    case 'ms': return n >= 86_400_000 && n % 86_400_000 === 0 ? `${full(n / 86_400_000)} ${n === 86_400_000 ? 'day' : 'days'}`
+      : n >= 3_600_000 && n % 3_600_000 === 0 ? `${full(n / 3_600_000)} h`
+      : n >= 60_000 && n % 60_000 === 0 ? `${full(n / 60_000)} min` : n >= 1000 && n % 1000 === 0 ? `${full(n / 1000)} s` : `${full(n)} ms`;
     case 'seconds': return n >= 86_400 && n % 86_400 === 0 ? `${full(n / 86_400)} ${n === 86_400 ? 'day' : 'days'}` : n >= 3600 && n % 3600 === 0 ? `${full(n / 3600)} h` : `${full(n)} s`;
     case 'days': return n === 0 ? '0 (kept)' : `${full(n)} ${n === 1 ? 'day' : 'days'}`;
     case 'per-minute': return `${full(n)} a minute`;
@@ -1476,7 +1478,8 @@ async function viewLimits(main) {
         el('td', {}, el('div', { class: 'cell-lines' }, el('span', {}, l.label), l.note ? el('span', { class: 'muted' }, l.note) : null, el('span', { class: 'muted mono limit-id' }, l.id))),
         el('td', {}, el('div', { class: 'cell-lines' }, el('strong', {}, limitValueText(l)),
           l.source === 'built-in' ? el('span', { class: 'muted' }, LIMIT_SOURCE_WORDS[l.source]) : el('span', { class: 'status review' }, LIMIT_SOURCE_WORDS[l.source] ?? l.source))))),
-      { filter: false }))));
+      // Every limit stays on the page: no pager hides the later rows of a long area.
+      { filter: false, paginate: false }))));
 }
 
 async function viewInstance(main, params) {
