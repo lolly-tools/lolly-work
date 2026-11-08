@@ -460,3 +460,19 @@ test('a pending submission never becomes a partner kit by a type edit', async ()
   assert.equal(edit.status, 400, JSON.stringify(edit.body));
   assert.notEqual((await store.getInstanceAsset(id))?.entry.type, 'partner-kit');
 });
+
+test('a kit\'s revision and details change only through its company kit route, never the catalog editor', async () => {
+  assert.equal((await call(bruno, 'PUT', `${AT}/rollco`, { name: 'Roll Co' })).status, 201);
+  const route = `${AT}/rollco/kit`;
+  const body = { ...kit('rollco'), label: 'Roll Co', logos: {} };
+  assert.equal((await call(bruno, 'PUT', route, body)).status, 200);
+  const again = await call(bruno, 'PUT', route, { ...body, colours: [] });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  const id = again.body.assetId as string;
+  for (const [path, change] of [[`${id}/head`, { version: 1 }], [`${id}/meta`, { name: 'Renamed' }]] as const) {
+    const moved = await call(bruno, 'PUT', `/api/v1/catalog/assets/${path}`, change);
+    assert.equal(moved.status, 409, `${path}: ${JSON.stringify(moved.body)}`);
+  }
+  assert.equal((await call(bruno, 'GET', route)).body.revision, again.body.revision, 'the live revision did not move');
+  assert.equal((await call(bruno, 'DELETE', `${AT}/rollco`)).status, 200);
+});
