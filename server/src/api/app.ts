@@ -116,6 +116,7 @@ import { partnerRightsCheck } from '../setup/checks.ts';
 import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
 import { collectionCredits } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
+import { createOwnerMarks } from '../programmes/owner-mark.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
 import { admittingDomains, domainOfEmail, hostDomains, type TxtLookup } from '../programmes/domains.ts';
 import { resolveTxt as dnsResolveTxt } from 'node:dns/promises';
@@ -6476,10 +6477,16 @@ export function buildApp(deps: AppDeps): App {
     resolveTxt,
   });
 
+  // The workspace's own mark on what it publishes (plans/82 M6, programmes/owner-mark.ts).
+  const ownerMarks = createOwnerMarks({ store, audit, workspaceName: () => config.instance.name });
+  /** Staff who may edit the catalog state or withdraw that mark; never a partner. */
+  const mayStateMark = async (user: UserRecord): Promise<boolean> => !isProgrammeScoped(user.groups, user.role)
+    && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.edit', ['*'], await store.listGrants());
+
   // Templates published to a programme (plans/82 M2).
   viewAs.register(router);
   registerTemplateRoutes(router, {
-    store, blobs, requireAction, audit,
+    store, blobs, requireAction, audit, ownerMarks, mayStateMark,
     toolFacts: async (toolId) => {
       if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
       try {
@@ -6492,12 +6499,13 @@ export function buildApp(deps: AppDeps): App {
       } catch { return null; }
     },
     toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
-    submitVersion: async (actor, target, bytes) => {
+    submitVersion: async (actor, target, bytes, from) => {
       const outcome = await submitAsset(submitDeps(actor), {
-        bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups },
+        bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups, role: actor.role },
+        ...(from ? { from } : {}),
       });
       if (!outcome.ok) {
-        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : 422;
+        const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' ? 503 : outcome.code === 'MARKED_HEAD' ? 403 : 422;
         return { ok: false, status, code: outcome.code, detail: outcome.detail };
       }
       await trimVersionHistory(outcome.record).catch(() => 0);
@@ -6505,13 +6513,13 @@ export function buildApp(deps: AppDeps): App {
     },
     submitRulesFile: async (actor, bytes, groups) => {
       const outcome = await submitAsset(submitDeps(actor), {
-        bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups },
+        bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups, role: actor.role },
       });
       if (!outcome.ok) {
         const status = outcome.code === 'QUOTA_EXCEEDED' ? 409 : outcome.code === 'SCAN_UNAVAILABLE' || outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 422;
         return { ok: false, status, code: outcome.code, detail: outcome.detail };
       }
-      return { ok: true, id: outcome.record.id, state: outcome.record.submission?.state ?? 'live' };
+      return { ok: true, id: outcome.record.id, state: outcome.record.submission?.state ?? 'live', duplicate: outcome.duplicate };
     },
   });
 
@@ -6543,7 +6551,7 @@ export function buildApp(deps: AppDeps): App {
       return blob ? templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES)) : null;
     },
   });
-  registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights });
+  registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark });
 
   registerDomainRoutes(router, {
     store, requireAction, audit, resolveTxt,
@@ -8602,11 +8610,21 @@ export function buildApp(deps: AppDeps): App {
     // contribution right.
     if (isHeadOp) {
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
-      const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
-      if (!rec) return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset has versions');
+      if (!id.startsWith(INST_PREFIX) || !(await store.getInstanceAsset(id))) return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset has versions');
+      // A file carrying the workspace's own mark changes head only for someone who may withdraw it.
+      if (await ownerMarks.markOn(id) && !(await mayStateMark(user))) {
+        return sendError(res, 403, 'FORBIDDEN', 'this file carries the workspace\'s own mark: a rollback needs catalog.edit');
+      }
       const body = (await readJson(req)) as { version?: unknown } | null;
       const wanted = Number((body ?? {}).version);
       if (!Number.isInteger(wanted) || wanted < 1) return sendError(res, 400, 'INVALID_INPUT', 'version must be a version number');
+      // The head moves under the asset's lock, with the mark checked against it there.
+      const done = await store.withAssetLock(id, async () => {
+      // Asked again here: a mark stated since the check above binds this rollback too.
+      if (await ownerMarks.markOn(id) && !(await mayStateMark(user))) {
+        return sendError(res, 403, 'FORBIDDEN', 'this file carries the workspace\'s own mark: a rollback needs catalog.edit');
+      }
+      const rec = (await store.getInstanceAsset(id))!;
       const rows = await assetVersionRows(rec);
       const row = rows.find((r) => r.version === wanted);
       if (!row) return sendError(res, 404, 'NOT_FOUND', `no version ${wanted} of this asset`);
@@ -8615,10 +8633,16 @@ export function buildApp(deps: AppDeps): App {
         return sendJson(res, 200, { ok: true, id, version: wanted, changed: false }, { 'cache-control': 'no-store' });
       }
       await store.putInstanceAsset(applyVersionToRecord(rec, row));
+      // A rollback is a head change too: the workspace's own mark answers to the head it restored.
+      await ownerMarks.recheckLocked(user, id);
+      await audit(`user:${user.id}`, 'catalog.rollback', `catalog:${id}`, { before: { version: from }, after: { version: wanted } });
+      return from;
+      });
+      if (typeof done !== 'number') return;
+      const from = done;
       // The bytes behind a stable id just changed, so every cached render that
       // could have consumed them has to miss (plans/31 §6).
       bustInstanceCatalog();
-      await audit(`user:${user.id}`, 'catalog.rollback', `catalog:${id}`, { before: { version: from }, after: { version: wanted } });
       return sendJson(res, 200, { ok: true, id, version: wanted, changed: true, previous: from }, { 'cache-control': 'no-store' });
     }
     if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
@@ -8719,13 +8743,21 @@ export function buildApp(deps: AppDeps): App {
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
 
     let name = instAsset?.entry.name;
-    if (instAsset && parsed && !('error' in parsed) && descriptiveTouched(parsed)) {
-      const entry = applyDescriptivePatch(instAsset.entry, parsed);
-      await store.putInstanceAsset({ ...instAsset, entry });
-      name = entry.name;
-    }
-    if (meta && meta !== stored) await store.putAssetMeta(meta);
-    await audit(`user:${user.id}`, 'catalog.edit', `catalog:${id}`, { before, after });
+    const writeAndAudit = async (): Promise<void> => {
+      if (instAsset && parsed && !('error' in parsed) && descriptiveTouched(parsed)) {
+        // A fresh read under the asset's lock, so a version committing meanwhile
+        // keeps its head (programmes/owner-mark.ts).
+        const current = (await store.getInstanceAsset(instAsset.id)) ?? instAsset;
+        const entry = applyDescriptivePatch(current.entry, parsed);
+        await store.putInstanceAsset({ ...current, entry });
+        name = entry.name;
+      }
+      if (meta && meta !== stored) await store.putAssetMeta(meta);
+      await audit(`user:${user.id}`, 'catalog.edit', `catalog:${id}`, { before, after });
+    };
+    // An instance asset's write and its audit happen under the asset's lock.
+    if (instAsset) await store.withAssetLock(instAsset.id, writeAndAudit);
+    else await writeAndAudit();
     sendJson(res, 200, {
       ok: true,
       id,
@@ -9156,6 +9188,15 @@ export function buildApp(deps: AppDeps): App {
 
   const submitDeps = (submitter: { id: string; groups: string[]; role?: string }) => ({
     store, blobs, policy: config.policy.submit,
+    // Every head change checks the workspace's own mark against the new head.
+    // Called inside the commit's asset lock, so the unlocked recheck.
+    onHeadMoved: (rec: InstanceAssetRecord, submitter: { id: string }) => ownerMarks.recheckLocked(submitter, rec.id),
+    // The same rule as the routes' early check, asked again where the head moves.
+    mayMoveHead: async (rec: InstanceAssetRecord, submitter: { id: string }) => {
+      if (!(await ownerMarks.markOn(rec.id))) return true;
+      const person = await store.getUser(submitter.id);
+      return !!person && mayStateMark(person);
+    },
     duplicateVisible: async (submitter: { groups: string[]; role?: string }, rec: InstanceAssetRecord) =>
       !isProgrammeScoped(submitter.groups, submitter.role ?? roleFromGroups(submitter.groups, config.idp.roleGroups)) || feedHolds(submitter.groups, rec.id),
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
@@ -9315,6 +9356,10 @@ export function buildApp(deps: AppDeps): App {
         return sendError(res, 409, 'ASSET_IS_PINNED',
           `these bytes are a local copy of ${target.origin.provider}'s asset and still carry its identity; cut the provider over before versioning them here`);
       }
+      // A file carrying the workspace's own mark changes head only for someone who may withdraw it.
+      if (await ownerMarks.markOn(target.id) && !(await mayStateMark(user))) {
+        return sendError(res, 403, 'FORBIDDEN', 'this file carries the workspace\'s own mark: a new version needs catalog.edit');
+      }
       // Descriptive metadata and exposure have their own doors, and quietly
       // ignoring them here would let a caller believe they had moved.
       for (const key of ['groups', 'type', 'description', 'tags'] as const) {
@@ -9413,7 +9458,7 @@ export function buildApp(deps: AppDeps): App {
       });
       // A misconfigured review chain is the instance's fault, not the
       // submitter's, so it reads as unavailable rather than as a bad request.
-      const status = outcome.code === 'SUBMISSION_INCOMPLETE' ? 503 : outcome.code === 'SOURCE_CHANGED' ? 403 : outcome.code === 'QUOTA_EXCEEDED' ? 409
+      const status = outcome.code === 'SUBMISSION_INCOMPLETE' ? 503 : outcome.code === 'SOURCE_CHANGED' || outcome.code === 'MARKED_HEAD' ? 403 : outcome.code === 'QUOTA_EXCEEDED' ? 409
         : outcome.code === 'SCAN_REJECTED' || outcome.code === 'INVALID_SUBMISSION' ? 422
           : outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 502;
       return sendError(res, status, outcome.code, outcome.detail);

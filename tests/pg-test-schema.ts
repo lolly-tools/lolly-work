@@ -19,7 +19,7 @@ import type { Store } from '../server/src/store/types.ts';
 const SUITE_LOCK_KEY = 0x1011_0003;
 
 /** Run `body` against a freshly migrated Postgres store, alone. */
-export async function withFreshPostgres(url: string, body: (store: Store) => Promise<void>): Promise<void> {
+export async function withFreshPostgres(url: string, body: (store: Store) => Promise<void>, opts: { poolMax?: number } = {}): Promise<void> {
   const { default: pg } = await import('pg');
   const admin = new pg.Client({ connectionString: url });
   await admin.connect();
@@ -27,7 +27,7 @@ export async function withFreshPostgres(url: string, body: (store: Store) => Pro
     await admin.query('select pg_advisory_lock($1)', [SUITE_LOCK_KEY]);
     await admin.query('drop schema public cascade; create schema public;');
     await runMigrations(url);
-    const store = await createPostgresStore(url);
+    const store = await createPostgresStore(url, opts);
     try {
       await body(store);
     } finally {

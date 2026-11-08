@@ -17,6 +17,16 @@ test('postgres store passes the conformance suite', { skip: !url && 'set LW_TEST
   await withFreshPostgres(url as string, runStoreConformance);
 });
 
+test('asset locks never take the connections their holder\'s work needs, even with two in the pool', { skip: !url && 'set LW_TEST_DATABASE_URL to run' }, async () => {
+  await withFreshPostgres(url as string, async (store) => {
+    // Three callers on one asset; each does store work while holding the lock.
+    const work = () => store.withAssetLock('inst/busy', async () => { await store.listAssetRightsMarks(); await store.listAssetRightsMarks(); return true; });
+    const all = Promise.all([work(), work(), work()]);
+    const stalled = new Promise<'stalled'>((resolve) => setTimeout(() => resolve('stalled'), 8000));
+    assert.notEqual(await Promise.race([all, stalled]), 'stalled', 'every caller finished');
+  }, { poolMax: 2 });
+});
+
 test('account erasure rolls identity deletion back if telemetry scrubbing fails', { skip: !url && 'set LW_TEST_DATABASE_URL to run' }, async () => {
   await withFreshPostgres(url!, async (store) => {
     const { default: pg } = await import('pg');

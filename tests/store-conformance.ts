@@ -1485,6 +1485,32 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(await store.listAssetRightsMarks(), [{ ...mark, note: 'the photo team shot these' }]);
   await store.deleteAssetRightsMark('folder:dam/event-photos');
   assert.deepEqual(await store.listAssetRightsMarks(), []);
+  // Insert-if-absent: the first statement on a scope is recorded, a second leaves it as it was.
+  const own = { ...mark, scope: 'asset:inst/sheet', holder: 'Acme', terms: 'Published by Acme. Not an open licence.' };
+  assert.equal(await store.addAssetRightsMark(own), true);
+  assert.equal(await store.addAssetRightsMark({ ...own, terms: 'Another statement.' }), false);
+  assert.deepEqual(await store.listAssetRightsMarks(), [own], 'the first statement stands');
+  // Take: one step that removes and returns, so a second take finds nothing.
+  assert.deepEqual(await store.takeAssetRightsMark('asset:inst/sheet'), own);
+  assert.equal(await store.takeAssetRightsMark('asset:inst/sheet'), null);
+  // One asset's lock runs its callers one at a time; another asset's does not wait.
+  const lockOrder: string[] = [];
+  let openLock!: () => void;
+  const lockGate = new Promise<void>((r) => { openLock = r; });
+  const lockFirst = store.withAssetLock('inst/sheet', async () => { lockOrder.push('first:start'); await lockGate; lockOrder.push('first:end'); return 1; });
+  const lockSecond = store.withAssetLock('inst/sheet', async () => { lockOrder.push('second'); return 2; });
+  const lockOther = await store.withAssetLock('inst/other', async () => { lockOrder.push('other'); return 3; });
+  openLock();
+  assert.deepEqual([await lockFirst, await lockSecond, lockOther], [1, 2, 3]);
+  // Whichever of the two takes the lock first, the other never runs inside it; the
+  // other asset ran while the first held its lock.
+  const start = lockOrder.indexOf('first:start'), end = lockOrder.indexOf('first:end'), second = lockOrder.indexOf('second');
+  assert.ok(second < start || second > end, `the same asset waits: ${lockOrder.join(', ')}`);
+  assert.ok(lockOrder.indexOf('other') < end, `another asset does not wait: ${lockOrder.join(', ')}`);
+  await assert.rejects(store.withAssetLock('inst/sheet', async () => { throw new Error('boom'); }), /boom/);
+  assert.equal(await store.withAssetLock('inst/sheet', async () => 'after'), 'after', 'a failure releases the lock');
+  await store.deleteAssetRightsMark('asset:inst/sheet');
+  assert.deepEqual(await store.listAssetRightsMarks(), []);
   assert.deepEqual(await store.listAssetLicences(), []);
   const licence = { assetId: 'ext/dam/IMG_2231', declaration: 'CC-BY-NC-4.0', attribution: 'Photo by A. Person', recordedBy: 'usr_1', recordedAt: '2026-11-07T00:00:00.000Z' };
   await store.putAssetLicence(licence);
