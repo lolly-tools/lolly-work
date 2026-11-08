@@ -95,17 +95,17 @@ export function centralEntries(bytes: Buffer): ZipEntry[] {
   return out;
 }
 
-/** One entry's bytes, stored or deflated, bounded by the pack budget. */
-export function entryBytes(bytes: Buffer, e: ZipEntry): Buffer {
+/** One entry's bytes, stored or deflated, bounded by the caller's cap or the pack budget. */
+export function entryBytes(bytes: Buffer, e: ZipEntry, maxBytes = PACK_MAX_BYTES): Buffer {
   if (e.localOffset + 30 > bytes.length) throw new Error('malformed zip local header');
   if (bytes.readUInt32LE(e.localOffset) !== LOCAL_SIG) throw new Error(`malformed zip local header for ${e.name}`);
   const nameLen = bytes.readUInt16LE(e.localOffset + 26);
   const extraLen = bytes.readUInt16LE(e.localOffset + 28);
   const start = e.localOffset + 30 + nameLen + extraLen;
-  if (start + e.compressedSize > bytes.length || e.compressedSize > PACK_MAX_BYTES) throw new Error('pack entry exceeds its bounds');
+  if (start + e.compressedSize > bytes.length || e.compressedSize > maxBytes || e.size > maxBytes) throw new Error('pack entry exceeds its bounds');
   const raw = bytes.subarray(start, start + e.compressedSize);
   if (e.method === 0) return Buffer.from(raw);
-  if (e.method === 8) return inflateRawSync(raw, { maxOutputLength: PACK_MAX_BYTES });
+  if (e.method === 8) return inflateRawSync(raw, { maxOutputLength: maxBytes });
   throw new Error(`unsupported zip compression method ${e.method} for ${e.name}`);
 }
 

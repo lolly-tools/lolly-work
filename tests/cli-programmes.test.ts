@@ -161,6 +161,74 @@ test('companies lists through the people response and removes a company', async 
   assert.match(removed.stdout, /removed acme from resellers/);
 });
 
+const KIT_AT = `${AT}/companies/acme/kit`;
+const KIT = { schemaVersion: 1, id: 'acme', label: 'Acme Partners', logos: {}, colours: [], source: { kind: 'manual' } };
+const KIT_VIEW = { kit: KIT, assetId: 'inst/partner-kit', revision: 2, source: KIT.source };
+
+test('companies kit show reads the company route with plain and JSON output', async () => {
+  for (const json of [false, true]) {
+    const result = await lw([...(json ? ['--json'] : []), 'companies', 'kit', 'show', 'resellers', 'acme'], [
+      { method: 'GET', path: KIT_AT, answer: KIT_VIEW },
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+    if (json) assert.deepEqual(JSON.parse(result.stdout), KIT_VIEW);
+    else assert.match(result.stdout, /Acme Partners\s+inst\/partner-kit\s+revision 2\s+from manual/);
+  }
+});
+
+test('companies kit set sends the full JSON document and remove uses DELETE', async () => {
+  const file = join(home, 'partner-kit.json');
+  writeFileSync(file, JSON.stringify(KIT));
+  const saved = await lw(['--json', 'companies', 'kit', 'set', 'resellers', 'acme', file], [
+    { method: 'PUT', path: KIT_AT, body: KIT, answer: KIT_VIEW },
+  ]);
+  assert.equal(saved.code, 0, saved.stderr);
+  assert.deepEqual(JSON.parse(saved.stdout), KIT_VIEW);
+  const removed = await lw(['companies', 'kit', 'remove', 'resellers', 'acme'], [
+    { method: 'DELETE', path: KIT_AT, answer: { removed: 'inst/partner-kit' } },
+  ]);
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.match(removed.stdout, /removed the kit for acme/);
+});
+
+test('companies kit import sends exact file bytes and a file name, then returns a proposal without saving', async () => {
+  for (const from of ['tokens', 'lolly']) {
+    const file = join(home, `partner colours.${from === 'tokens' ? 'json' : 'lolly'}`);
+    const bytes = Buffer.from(from === 'tokens' ? '{"color":{}}' : 'share bytes');
+    writeFileSync(file, bytes);
+    const answer = { kit: KIT, warnings: ['No colours could be proposed from this source.'] };
+    const result = await lw(['--json', 'companies', 'kit', 'import', 'resellers', 'acme', file, '--from', from], [
+      { method: 'POST', path: `${KIT_AT}/import?from=${from}&name=${encodeURIComponent(`partner colours.${from === 'tokens' ? 'json' : 'lolly'}`)}`, rawBody: bytes, answer },
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), answer);
+  }
+  const logos = await lw(['companies', 'kit', 'import', 'resellers', 'acme', '--from', 'logos'], [
+    { method: 'POST', path: `${KIT_AT}/import?from=logos`, rawBody: Buffer.alloc(0), answer: { kit: KIT, warnings: ['No SVG inks.'] } },
+  ]);
+  assert.equal(logos.code, 0, logos.stderr);
+  assert.deepEqual(JSON.parse(logos.stdout), KIT);
+  assert.match(logos.stderr, /No SVG inks/);
+});
+
+test('companies kit validates arguments, reports API refusals and documents every verb', async () => {
+  for (const args of [[], ['import', 'resellers', 'acme', '--from', 'other'], ['set', 'resellers', 'acme'], ['show', 'resellers', 'acme', 'extra']]) {
+    const result = await lw(['companies', 'kit', ...args]);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /usage: lw companies kit/);
+  }
+  const file = join(home, 'bad-kit.json');
+  writeFileSync(file, '{');
+  assert.match((await lw(['companies', 'kit', 'set', 'resellers', 'acme', file])).stderr, /valid JSON/);
+  const refused = await lw(['companies', 'kit', 'import', 'resellers', 'acme', '--from', 'logos'], [
+    { method: 'POST', path: `${KIT_AT}/import?from=logos`, rawBody: Buffer.alloc(0), answer: { error: { code: 'FORBIDDEN', message: 'programme.manage required' } }, status: 403 },
+  ]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /403 FORBIDDEN programme.manage required/);
+  const help = await lw(['--help']);
+  for (const verb of ['show', 'import', 'set', 'remove']) assert.match(help.stdout, new RegExp(`companies kit ${verb}`));
+});
+
 test('templates publish sends editable inputs and company bindings', async () => {
   const result = await lw(['--json', 'templates', 'publish', 'resellers', '--from', 'inst/source', '--groups', 'programme-resellers, company-acme', '--editable', 'headline, caption', '--bindings', 'logo=logoLight, footer=contactEmail'], [
     { method: 'POST', path: `${AT}/templates`, body: { from: 'inst/source', groups: ['programme-resellers', 'company-acme'], editable: ['headline', 'caption'], bindings: { logo: 'logoLight', footer: 'contactEmail' } }, answer: PUBLICATION, status: 201 },

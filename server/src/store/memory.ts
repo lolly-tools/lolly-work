@@ -1577,7 +1577,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async saveCompanyProfile(rec, expectRevision) {
       const prior = companyProfiles.get(rec.companyId);
       if ((prior?.revision ?? 0) !== expectRevision) return false;
-      companyProfiles.set(rec.companyId, structuredClone({ ...rec, settings: prior?.settings ?? {} }));
+      companyProfiles.set(rec.companyId, structuredClone({ ...rec, settings: prior?.settings ?? {}, ...(prior?.kit ? { kit: prior.kit } : {}) }));
       const history = companyProfileHistory.get(rec.companyId) ?? [];
       history.push(structuredClone({ companyId: rec.companyId, revision: rec.revision, profile: rec.profile, updatedBy: rec.updatedBy, updatedAt: rec.updatedAt }));
       companyProfileHistory.set(rec.companyId, history);
@@ -1586,6 +1586,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async putCompanyProfileSettings(companyId, settings) {
       const prior = companyProfiles.get(companyId) ?? { companyId, revision: 0, profile: {}, settings: {}, updatedBy: '', updatedAt: '' };
       companyProfiles.set(companyId, { ...prior, settings: structuredClone(settings) });
+    },
+    async putCompanyKit(companyId, kit, expectAssetId) {
+      const prior = companyProfiles.get(companyId) ?? { companyId, revision: 0, profile: {}, settings: {}, updatedBy: '', updatedAt: '' };
+      if ((prior.kit?.assetId ?? null) !== expectAssetId) return false;
+      const { kit: _kit, ...rest } = prior;
+      companyProfiles.set(companyId, { ...rest, ...(kit ? { kit: structuredClone(kit) } : {}) });
+      return true;
     },
     async getCompanyProfileRevision(companyId, revision) {
       const row = (companyProfileHistory.get(companyId) ?? []).find((r) => r.revision === revision);

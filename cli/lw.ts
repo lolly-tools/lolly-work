@@ -1028,6 +1028,48 @@ switch (cmd) {
   }
 
   case 'companies': {
+    if (sub === 'kit') {
+      const usage = 'usage: lw companies kit show|import|set|remove <programme> <company> [file] [--from tokens|lolly|logos] [--json]';
+      const verb = positionals[2];
+      const programme = positionals[3];
+      const company = positionals[4];
+      if (!verb || !programme || !company || !['show', 'import', 'set', 'remove'].includes(verb)) fail(usage);
+      const at = `/api/v1/programmes/${encodeURIComponent(programme)}/companies/${encodeURIComponent(company)}/kit`;
+      type KitView = { assetId: string; revision: number; kit: { label: string; colours: unknown[] }; source?: { kind: string; reference?: string } };
+      if (verb === 'show' || verb === 'remove') {
+        if (positionals.length !== 5) fail(usage);
+        const r = await call(at, { method: verb === 'show' ? 'GET' : 'DELETE' }) as KitView;
+        out(r);
+        if (!values.json) console.log(verb === 'remove' ? `removed the kit for ${company}` : `${r.kit.label}  ${r.assetId}  revision ${r.revision}${r.source ? `  from ${r.source.reference ?? r.source.kind}` : ''}`);
+        break;
+      }
+      const file = positionals[5];
+      if (verb === 'set') {
+        if (!file || positionals.length !== 6) fail(usage);
+        let body: unknown;
+        try { body = JSON.parse(readFileSync(file, 'utf8')); } catch { fail('the kit file must contain valid JSON'); }
+        const r = await call(at, { method: 'PUT', body }) as KitView;
+        out(r);
+        if (!values.json) console.log(`${r.kit.label}  ${r.assetId}  revision ${r.revision}`);
+        break;
+      }
+      const from = values.from;
+      if (!from || !['tokens', 'lolly', 'logos'].includes(from) || (from === 'logos' ? positionals.length !== 5 : !file || positionals.length !== 6)) fail(usage);
+      const bytes = file ? readFileSync(file) : Buffer.alloc(0);
+      const sent = await fetch(`${base}${at}/import?from=${from}${file ? `&name=${encodeURIComponent(basename(file))}` : ''}`, {
+        method: 'POST', headers: { ...(values.token ?? process.env.LW_TOKEN ? { authorization: `Bearer ${values.token ?? process.env.LW_TOKEN}` } : savedCookie() ? { cookie: savedCookie()! } : {}),
+          'content-type': 'application/octet-stream', 'x-lolly-client': 'lw-cli engine/0' },
+        body: new Uint8Array(bytes),
+      });
+      const r = await sent.json() as { kit: KitView['kit']; warnings?: string[]; error?: { code: string; message: string } };
+      if (!sent.ok) fail(`${sent.status} ${r.error?.code ?? ''} ${r.error?.message ?? ''}`.trim());
+      out(r);
+      if (!values.json) {
+        console.log(JSON.stringify(r.kit, null, 2));
+        for (const warning of r.warnings ?? []) console.error(`warning: ${warning}`);
+      }
+      break;
+    }
     if (sub !== 'profile') {
       const usage = 'usage: lw companies [ls] <programme> | add <programme> <company> --name "…" | rm <programme> <company>';
       const editing = sub === 'add' || sub === 'rm';
@@ -2620,6 +2662,10 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   companies [ls] <programme>   list the companies in a partner programme
   companies add <programme> <company> --name "…"   add or rename a partner company
   companies rm <programme> <company>   remove a company from a partner programme
+  companies kit show <programme> <company> [--json]   show the company's kit
+  companies kit import <programme> <company> [file] --from tokens|lolly|logos [--json]   propose a kit without saving
+  companies kit set <programme> <company> <kit.json> [--json]   save a kit as the next asset revision
+  companies kit remove <programme> <company> [--json]   retire the kit and clear its pointer
   companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
   companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
   templates [ls] <programme>   list the templates published to a programme and its companies

@@ -57,6 +57,7 @@ import type { SubmitPolicy, SubmitScanHook } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
 import { randomId, sha256Hex } from '../lib/crypto.ts';
+import { deleteKitAsset, prepareCompanyKit } from '../programmes/kit.ts';
 
 // ── byte sniffing ───────────────────────────────────────────────────────────
 
@@ -350,6 +351,8 @@ export interface SubmitInput {
    * belong to someone else's audience, and the profile must point at its own.
    */
   companyLogo?: { companyId: string; surface: 'light' | 'dark' | 'mark' };
+  /** A kit saved through the company routes, with its own asset history. */
+  companyKit?: { companyId: string };
 }
 
 /** What a company logo's served entry carries (plans/82 M3). */
@@ -474,7 +477,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   //     closed. Checked here, before anything is hashed or stored, so a refusal
   //     leaves no orphan bytes behind. The rest of the app refuses a missing
   //     chain the same way (api/app.ts, POST /api/v1/approvals).
-  const reviewed = !input.target && !input.companyLogo;
+  const reviewed = !input.target && !input.companyLogo && !input.companyKit;
   const chain: Chain | null = policy.chain && reviewed ? await store.getChain(policy.chain) : null;
   if (policy.chain && reviewed && !chain?.steps.length) {
     return {
@@ -492,6 +495,15 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   // A version keeps the kind it was published as, whatever the caller declared.
   const dataKind = input.target ? [input.target.entry.type].find(isDataSubmissionType) : [input.type].find(isDataSubmissionType);
   let data: PreparedData | undefined;
+  const kit = input.companyKit ? await prepareCompanyKit(store, input.companyKit.companyId, input.bytes, input.target) : undefined;
+  if (kit && !kit.ok) return { ok: false, code: 'INVALID_SUBMISSION', detail: kit.detail };
+  if (!input.companyKit && (input.type === 'partner-kit' || input.target?.entry.type === 'partner-kit')) {
+    return { ok: false, code: 'INVALID_SUBMISSION', detail: 'save a partner kit through its company kit route' };
+  }
+  if (kit?.ok) {
+    input = { ...input, bytes: kit.bytes, type: 'partner-kit' };
+    size = kit.bytes.length;
+  }
   if (dataKind === 'rules-tool') {
     // A Share with rules file (plans/82 M2): only its data is kept, and the
     // tool is rebuilt from it with this workspace's own compiler.
@@ -535,7 +547,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       };
     }
   }
-  const existing = input.target || input.companyLogo ? undefined : findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
+  const existing = input.target || input.companyLogo || input.companyKit ? undefined : findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
   if (existing) {
     return {
       ok: true, duplicate: true, record: existing, checksum, scan: 'skipped',
@@ -543,7 +555,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     };
   }
 
-  const sniffed: SniffResult = data?.ok
+  const sniffed: SniffResult = data?.ok || kit?.ok
     ? { contentType: 'application/json', format: 'json' }
     : sniffBytes(input.bytes, { ...(input.contentType ? { contentType: input.contentType } : {}), filename: input.name });
 
@@ -640,6 +652,10 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       moved.entry = { ...moved.entry, type: logo.type, tags: logo.tags, meta: logo.meta };
       moved.groups = logo.groups;
     }
+    if (input.companyKit) {
+      moved.entry = { ...moved.entry, type: 'partner-kit', tags: ['partner', 'kit'], meta: { company: input.companyKit.companyId } };
+      moved.groups = [`company-${input.companyKit.companyId}`];
+    }
     try {
       await store.putAssetVersion(row);
       await store.putInstanceAsset(moved);
@@ -689,8 +705,8 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     ...(input.note ? { note: input.note.slice(0, 500) } : {}),
   };
   const logo = input.companyLogo ? companyLogoFields(input.companyLogo, sniffed.format) : undefined;
-  const tags = [...new Set([...(input.tags ?? []), ...(logo?.tags ?? [])].map((t) => t.trim()).filter(Boolean))];
-  const groups = logo?.groups ?? input.groups;
+  const tags = input.companyKit ? ['partner', 'kit'] : [...new Set([...(input.tags ?? []), ...(logo?.tags ?? [])].map((t) => t.trim()).filter(Boolean))];
+  const groups = input.companyKit ? [`company-${input.companyKit.companyId}`] : logo?.groups ?? input.groups;
   let record: InstanceAssetRecord = {
     id,
     entry: instanceAssetEntry(id, {
@@ -701,7 +717,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       ...(sniffed.width && sniffed.height ? { width: sniffed.width, height: sniffed.height } : {}),
       // What a shell needs to offer a template or user tool before fetching
       // its JSON: the tool it opens in, and how much it sets.
-      ...(data?.ok ? { meta: data.meta } : logo ? { meta: logo.meta } : {}),
+      ...(input.companyKit ? { meta: { company: input.companyKit.companyId } } : data?.ok ? { meta: data.meta } : logo ? { meta: logo.meta } : {}),
     }, [{ format: sniffed.format, size: stat.size, checksum: stat.checksum }]),
     blobs: { [sniffed.format]: `${id}/${sniffed.format}` },
     ...(groups?.length ? { groups } : {}),
@@ -713,6 +729,14 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   } catch (err) {
     await release();
     throw err;
+  }
+
+  // Claim the company's pointer before publishing, so a losing first save
+  // never appears as a second live kit in the company's feed.
+  if (input.companyKit && !await store.putCompanyKit(input.companyKit.companyId, { assetId: id }, null)) {
+    await deleteKitAsset(store, blobs, id);
+    await release();
+    return { ok: false, code: 'INVALID_SUBMISSION', detail: 'this company already has one kit; submit a new version of that asset' };
   }
 
   // 5. Content credentials: DETECTION only. A submission is an arbitrary org

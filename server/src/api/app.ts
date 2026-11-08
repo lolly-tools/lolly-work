@@ -104,6 +104,7 @@ import { accessEndsFor } from '../programmes/exit-schedule.ts';
 import { registerProgrammeTokenRoutes } from '../programmes/token-routes.ts';
 import { registerUsageRoutes } from '../programmes/usage-routes.ts';
 import { createCompanyProfiles } from '../programmes/profile-routes.ts';
+import { registerCompanyKitRoutes } from '../programmes/kit-routes.ts';
 import { DEFAULT_SURFACES, surfacesFromTokens, type LogoSurfaces } from '../programmes/logo-checks.ts';
 import { joinThroughDomain, registerDomainRoutes } from '../programmes/domain-routes.ts';
 import { entryInFolders, foldersFor } from '../programmes/folders.ts';
@@ -840,14 +841,18 @@ export function buildApp(deps: AppDeps): App {
   };
   /** org-config's `partner` block: the caller's company, with the details its
    *  pieces carry, and its programme (the company's own, else the caller's only one). */
-  const partnerBlock = (ctx: CompanyContext | null, groups: string[], companies: CompanyRecord[], programmes: ProgrammeRecord[]): OrgConfigPartner | undefined => {
+  const partnerBlock = async (ctx: CompanyContext | null, groups: string[], companies: CompanyRecord[], programmes: ProgrammeRecord[]): Promise<OrgConfigPartner | undefined> => {
     const programmeId = ctx?.company.programmeId ?? pickProgramme(groups, companies);
     const programme = programmes.find((p) => p.id === programmeId);
     const p = ctx?.profile;
+    const pointer = ctx ? (await store.getCompanyProfile(ctx.company.id))?.kit : undefined;
+    const kit = pointer ? (await servedIndex.forCaller({ groups })).index.assets?.find((a) => a.id === pointer.assetId && a.type === 'partner-kit') : undefined;
+    const kitRecord = kit ? await store.getInstanceAsset(kit.id) : null;
     const out: OrgConfigPartner = {
       ...(ctx ? { company: {
         id: ctx.company.id, name: ctx.company.name, revision: ctx.revision,
         logos: { ...(p?.logoLight ? { light: p.logoLight } : {}), ...(p?.logoDark ? { dark: p.logoDark } : {}), ...(p?.mark ? { mark: p.mark } : {}) },
+        ...(kitRecord ? { kit: { id: kitRecord.id, revision: kitRecord.headVersion ?? 1, label: ctx.company.name } } : {}),
         ...(p?.website ? { website: p.website } : {}), ...(p?.contact ? { contact: { ...p.contact } } : {}),
         ...(p?.address ? { address: p.address } : {}), ...(p?.currency ? { currency: p.currency } : {}), ...(p?.taxNote ? { taxNote: p.taxNote } : {}),
       } } : {}),
@@ -2991,7 +2996,7 @@ export function buildApp(deps: AppDeps): App {
         toolStarts.set(meta.toolId, { defaults: bound.defaults, ...(bound.bindings ? { bindings: bound.bindings } : {}) });
       }
     }
-    const partnerBase = scoped ? partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
+    const partnerBase = scoped ? await partnerBlock(company.ctx, subject.groups, await store.listCompanies(), await store.listProgrammes()) : undefined;
     // When their access through a programme ends (plans/82 M5): the earliest
     // membership end date or scheduled end they would be told about.
     const ends = scoped ? await accessEndsFor(store, subject) : null;
@@ -6299,6 +6304,15 @@ export function buildApp(deps: AppDeps): App {
     },
   });
   companyProfiles.register(router);
+  registerCompanyKitRoutes(router, {
+    store, blobs, requireAction, memberOf, audit,
+    kitVisible: async (groups, assetId) => !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit'),
+    submitKit: async (input) => {
+      const outcome = await submitAsset(submitDeps(), input);
+      if (outcome.ok) await trimVersionHistory(outcome.record).catch(() => 0);
+      return outcome;
+    },
+  });
   registerProgrammePeopleRoutes(router, {
     store, requireAction, audit, people, noticeContext: (now) => noticeContext(config, now),
     // Ending a partnership withdraws its share anyway choices (plans/82 M4 and M5).

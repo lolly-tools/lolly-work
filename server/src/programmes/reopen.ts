@@ -9,6 +9,7 @@
  *   as gone;
  * - their programme and company groups and the memberships the exit ended;
  * - the templates it retired, and the audiences it took off the others;
+ * - the company kits it retired and their pointers, while no later kit is set;
  * - the folder rules it ended, with their own end dates, where still ahead;
  * - the domain rules it withdrew, where the domain's proof is still live: a
  *   domain the exit removed comes back on an admin's recorded say-so, or after
@@ -38,7 +39,7 @@ const DAY_MS = 86_400_000;
 
 /** A reopen that has put nothing back yet: the receipt holds it while one runs. */
 export function emptyReopen(): ReopenResult {
-  return { accounts: [], projects: [], templates: [], folders: [], domainRules: [], reopened: { companies: [] }, stayEnded: { tokens: 0, links: 0, rightsChoices: [] } };
+  return { accounts: [], projects: [], templates: [], companyKits: [], folders: [], domainRules: [], reopened: { companies: [] }, stayEnded: { tokens: 0, links: 0, rightsChoices: [] } };
 }
 
 /** When Reopen stops being offered for a receipt, or null when it never is. */
@@ -56,6 +57,7 @@ export interface ReopenResult {
   accounts: Array<{ id: string; email: string; result: 'enabled' | 'rejoined' | 'left-disabled' | 'gone'; groups: string[]; memberships: string[]; reason?: string }>;
   projects: Array<{ id: string; name: string; result: 'returned' | 'kept' | 'gone'; reason?: string }>;
   templates: Array<{ id: string; name: string; result: 'restored' | 'widened' | 'kept'; reason?: string }>;
+  companyKits?: Array<{ companyId: string; assetId: string; result: 'restored' | 'kept' }>;
   folders: Array<{ provider: string; path: string; companyId?: string; result: 'restored' | 'past-end' | 'exists' }>;
   domainRules: Array<{ domain: string; programmeId: string; companyId?: string; result: 'restored' | 'proof-not-live' | 'needs-lookup' | 'past-end' | 'exists' }>;
   /** What this reopen took the ended mark off. */
@@ -217,6 +219,23 @@ export async function reopenExit(
         domain, programmes: restore.map((x) => x.programmeId), via: 'programme-exit-reopen', exit: rec.id,
       });
     }
+  }
+
+  for (const kit of r.companyKits ?? []) {
+    const company = (await store.listCompanies()).find((c) => c.id === kit.companyId);
+    const current = await store.getInstanceAsset(kit.assetId);
+    const life = await store.getLifecycle(kit.assetId);
+    const profile = await store.getCompanyProfile(kit.companyId);
+    let restored = false;
+    if (company?.endedExit === rec.id && current && life?.revokedAt === doneAt && !profile?.kit) {
+      restored = !opts.apply || await store.putCompanyKit(kit.companyId, { assetId: kit.assetId }, null);
+      if (opts.apply && restored) {
+        const { revokedAt: _revoked, ...rest } = life;
+        await store.putLifecycle(rest);
+        await audit(opts.actorRef, 'programme.company.kit', `company:${kit.companyId}`, { revisionBefore: null, revisionAfter: current.headVersion ?? 1, source: null });
+      }
+    }
+    (out.companyKits ??= []).push({ companyId: kit.companyId, assetId: kit.assetId, result: restored ? 'restored' : 'kept' });
   }
 
   // The ended mark comes off only the records this exit marked.
