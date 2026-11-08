@@ -16,6 +16,7 @@ import { agentActor, agentAttribution } from './attribution.ts';
 import { agentSecret, principalOf, projectAgentStanding, resolveAgent } from './access.ts';
 import { displayName } from '../iam/member.ts';
 import type { AgentRoomBridge } from './types.ts';
+import { JSON_BODY_CONTROL_BYTES } from '../api/body-limits.ts';
 
 export interface Dependencies {
   store: Store;
@@ -73,7 +74,7 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
   router.add('POST', '/api/v1/sessions/:id/agents', async (req, res, ctx) => {
     const seat = await sessionGate(req, res, ctx.params.id!); if (!seat) return;
     if (!d.rooms) return sendError(res, 503, 'AGENT_UNAVAILABLE', 'Agent collaboration is not available on this host.');
-    const body = await readJson(req, 4096);
+    const body = await readJson(req, JSON_BODY_CONTROL_BYTES);
     const label = object(body) && typeof body.label === 'string' ? body.label.trim() : '';
     const role = object(body) ? body.role : null, hours = object(body) ? body.hours ?? 24 : 24;
     if (!label || label.length > 80 || /[\u0000-\u001f]/.test(label) || !['viewer', 'editor'].includes(String(role))

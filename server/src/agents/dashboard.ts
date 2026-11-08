@@ -9,7 +9,7 @@ import { displayName } from '../iam/member.ts';
 type Invitation = Omit<DocumentAgentRecord, 'tokenHash' | 'sessionId'> & { sessionId?: string };
 // Project invitations are supported by newer hosts; document-only hosts remain compatible.
 type ObservableStore = Store & { getProjectAgent?: (id: string) => Promise<Invitation | null> };
-const EVENT_LIMIT = 10_000, AGENT_LIMIT = 500;
+export const EVENT_LIMIT = 10_000, AGENT_LIMIT = 500;
 const text = (value: unknown, max = 100) => typeof value === 'string' ? value.slice(0, max) : undefined;
 const count = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
 

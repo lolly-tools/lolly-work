@@ -55,7 +55,7 @@ import { recordEnvironment, recordedThemes, type RenderPartner } from './record.
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
  *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
-const MAX_RASTER_EDGE_PX = 10_000;
+export const MAX_RASTER_EDGE_PX = 10_000;
 
 /** Upper bound on the resvg scale factor itself - guards against a degenerate
  *  targetWidthPx producing an absurd scale before the aspect-ratio check below. */

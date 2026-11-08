@@ -37,10 +37,9 @@ import {
   type AuditAnchor, type AuditEvent, type ChainVerdict, type KeyRetirePayload,
 } from './chain.ts';
 import type { Store } from '../store/types.ts';
+import { RETIRE_REASON_MAX } from './limits.ts';
+export { RETIRE_REASON_MAX };
 
-/** The longest reason kept on the boundary row. It is operator text in the
- *  audit log, so it should say why ("secret rotation 2026-10-04"), not who. */
-export const RETIRE_REASON_MAX = 200;
 
 export interface PlanOptions {
   /** deriveAuditMacKey(LW_SESSION_SECRET_PREVIOUS), when that value is known. */

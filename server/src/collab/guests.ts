@@ -45,6 +45,8 @@ import { displayName } from '../iam/member.ts';
 import type { LinkRecord } from '../links/sign.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import type { MemberRole } from './rooms.ts';
+import { MAX_GUEST_NAME_CHARS } from './limits.ts';
+export { MAX_GUEST_NAME_CHARS };
 
 /**
  * The synthetic group every guest carries into the policy overlay (plans/02 §8:
@@ -64,11 +66,6 @@ export const GUEST_GROUP = 'guests';
  *  the same default `GET /l/:id` stamps when the `name` param is absent. */
 export const GUEST_FALLBACK_NAME = 'Guest';
 
-/** Longest name part rendered into a roster/presence entry. Matches the cap
- *  `GET /l/:id` applies when minting the cookie; re-applied here because the
- *  inviter's display name comes from a different place and a name is relayed to
- *  every peer in the room. */
-export const MAX_GUEST_NAME_CHARS = 60;
 
 /** C0/C1 controls, stripped from anything that becomes a display name. The
  *  presence relay sanitizes what a CLIENT sends (`rooms.ts` `sanitizePresence`)

@@ -54,49 +54,16 @@ import {
 } from './persistence.ts';
 import type { QuiesceResult, RoomPersistence, RoomWriteback, RoomWriter } from './persistence.ts';
 import { createVersionRecorder, type VersionRecorder } from '../versions/recorder.ts';
+import {
+  MAX_BOXES_PER_COLLECTION, MAX_CHAT_CHARS, MAX_COLLECTIONS_PER_ROOM, MAX_OPS_PER_MESSAGE, MAX_PARAMS_PER_ROOM,
+  MAX_ROW_FIELDS, MAX_SCALAR_CHARS, MAX_TRACKED_CLIENTS, PRESENCE_FRAMES_PER_SEC, WRITER_CAP, WRITER_CAP_PER_USER,
+} from './limits.ts';
+export {
+  MAX_BOXES_PER_COLLECTION, MAX_CHAT_CHARS, MAX_COLLECTIONS_PER_ROOM, MAX_OPS_PER_MESSAGE, MAX_PARAMS_PER_ROOM,
+  MAX_ROW_FIELDS, MAX_SCALAR_CHARS, MAX_TRACKED_CLIENTS, PRESENCE_FRAMES_PER_SEC, WRITER_CAP, WRITER_CAP_PER_USER,
+};
 
-// ── caps + limits (OSS plans/100 §7 item 5, §11.21) ───────────────────────────
-
-/** Writers per room; the next eligible joiner becomes an observer and is told
- *  why ("room full, view only" - plans/100 §7 item 5). */
-export const WRITER_CAP = 10;
-/** Writer seats ONE user may hold in one room. WRITER_CAP is per room, so without
- *  this a single account with several tabs (or a script) could take every seat and
- *  leave the room's actual collaborators view-only. */
-export const WRITER_CAP_PER_USER = 3;
-/** Presence frames per client per second before the socket is closed (§11.21). */
-export const PRESENCE_FRAMES_PER_SEC = 40;
-/** Ops accepted in one `ops` message before the socket is closed (§11.21). */
-export const MAX_OPS_PER_MESSAGE = 200;
-/** Longest string a single scalar may carry across the seam. */
-export const MAX_SCALAR_CHARS = 32_768;
-/** Most fields one box row may carry. */
-export const MAX_ROW_FIELDS = 200;
-/** Cursor-chat ceiling - the contract's own limit (plans/100 §3). */
-export const MAX_CHAT_CHARS = 64;
-
-// ── ceilings on the DOCUMENT, not the frame ──────────────────────────────────
-//
-// MAX_ROW_FIELDS and MAX_SCALAR_CHARS bound ONE row; nothing bounded the number of
-// rows, collections or params, and `ReferenceCanvasDoc.ensure` mints a box for any
-// (col, id) pair it has not seen. So an authorized writer could grow a room's
-// document - and the whole-document jsonb the snapshot cadence serialises every 20
-// batches - without limit. These are the ceilings that make a room's memory and its
-// snapshot row a bounded quantity. Every one is far above a real tool session (a
-// large deck is tens of rows), so tripping one means something is wrong, not busy.
-
-/** Distinct scalar inputs one room's document may hold. */
-export const MAX_PARAMS_PER_ROOM = 512;
-/** Distinct collections (blocks input ids) one room's document may hold. */
-export const MAX_COLLECTIONS_PER_ROOM = 64;
-/** Distinct box ids one collection may hold, alive or removed (a tombstone is
- *  still a box the CRDT must remember). */
-export const MAX_BOXES_PER_COLLECTION = 2_000;
-/** Distinct `origin.client` ids whose Lamport high-water mark a room tracks. The
- *  key is peer-chosen and unbounded in cardinality, so the replay filter needs a
- *  ceiling of its own. */
-export const MAX_TRACKED_CLIENTS = 512;
-
+// The caps and document ceilings are in limits.ts, beside the other collaboration limits.
 /** Keys that must never index a plain object, refused at the boundary - the
  *  enum/prototype-key discipline (plans/100 §11.21).
  *

@@ -7,7 +7,7 @@ import type { IncomingMessage } from 'node:http';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
 
 const OUTPUT_TOKEN_HEADER = 'x-lw-render-token';
-const OUTPUT_TOKEN_SECONDS = 24 * 3600;
+export const OUTPUT_TOKEN_SECONDS = 24 * 3600;
 
 export function renderOutputTokens(mintSecret: string, verifySecrets: string | readonly string[]) {
   return {

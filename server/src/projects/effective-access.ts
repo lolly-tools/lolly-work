@@ -5,7 +5,7 @@ import type { Grant } from '../rbac/evaluate.ts';
 import { effectiveProjectAccess, grantLive, projectAccess, projectAccessRank, sharingLimits, type ProjectAccess } from '../rbac/project-access.ts';
 import { nameWithoutEmail } from './sharing.ts';
 
-const ROWS_MAX = 200;
+export const ROWS_MAX = 200;
 type EffectiveRow = { userId: string; name: string; role: ProjectAccess; via: 'group' | 'custom-group' | 'admin'; group?: string; isMe?: true };
 
 export async function effectiveAccessFor(

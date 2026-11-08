@@ -34,7 +34,7 @@ import { centralEntries, entryBytes } from './instance-pack.ts';
 export const RULES_TOOL_TYPE = 'rules-tool';
 /** A file with fonts and photographs embedded runs to a few MiB. */
 export const MAX_RULES_FILE_BYTES = 32 * 1024 * 1024;
-const MAX_ENTRIES = 512;
+export const MAX_ENTRIES = 512;
 const TOOL_ID = /^[a-z0-9][a-z0-9-]{2,95}$/;
 const VERSION = /^\d+\.\d+\.\d+$/;
 const ASSET_PATH = /^assets\/[\w./-]+$/;

@@ -30,6 +30,7 @@ import { accessAtLeast, mayCommentOn, type ProjectAccess } from '../rbac/project
 import { mayReadComments } from './access.ts';
 import { eligibleMentionIds, mentionName, mentionsStillInBody, readMentionRequest } from './mentions.ts';
 import { createActorCap, recordCommentNotices } from './notices.ts';
+import { COMMENT_BODY_BYTES } from '../api/body-limits.ts';
 
 /** The live event peers get after a comment write: ids and a revision, no text. */
 export interface CommentEventFrame { t: 'comment'; threadId: string; revision: number }
@@ -140,7 +141,7 @@ export function registerCommentRoutes(router: ReturnType<typeof createRouter>, d
     const access = await gate(req, res, ctx.params.id!); if (!access) return;
     if (!access.permissions.create) return sendError(res, 403, 'FORBIDDEN', 'Creating comments is disabled.');
     if (!writeAllowed(res, access.user.id)) return;
-    const body = await readJson(req, 16_000), anchor = object(body) ? readCommentAnchor(body.anchor) : null;
+    const body = await readJson(req, COMMENT_BODY_BYTES), anchor = object(body) ? readCommentAnchor(body.anchor) : null;
     if (!object(body) || !commentId(body.id) || !commentId(body.messageId) || !anchor || !bodyText(body.body))
       return sendError(res, 400, 'INVALID_INPUT', 'A valid anchor, message and identifiers are required.');
     const requested = body.mentions === undefined ? [] : readMentionRequest(body.mentions);
@@ -184,7 +185,7 @@ export function registerCommentRoutes(router: ReturnType<typeof createRouter>, d
     const access = await gate(req, res, ctx.params.id!); if (!access) return;
     if (!access.enabled) return sendError(res, 403, 'FORBIDDEN', 'Comments are disabled.');
     if (!writeAllowed(res, access.user.id)) return;
-    const body = await readJson(req, 16_000);
+    const body = await readJson(req, COMMENT_BODY_BYTES);
     if (!object(body) || !Number.isSafeInteger(body.revision) || typeof body.action !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'A comment revision and action are required.');
     const requested = body.mentions === undefined || !['reply', 'edit'].includes(body.action) ? undefined : readMentionRequest(body.mentions);
     if (requested === null) return sendError(res, 400, 'INVALID_INPUT', 'mentions must be a list of at most 10 person ids.');
@@ -243,7 +244,7 @@ export function registerCommentRoutes(router: ReturnType<typeof createRouter>, d
     const access = await gate(req, res, ctx.params.id!); if (!access) return;
     if (!access.enabled) return sendError(res, 403, 'FORBIDDEN', 'Comments are disabled.');
     if (!allowed(res, access.user.id, [quotas.reads, 60])) return;
-    const body = (await readJson(req, 16_000)) ?? {};
+    const body = (await readJson(req, COMMENT_BODY_BYTES)) ?? {};
     if (!object(body)) return sendError(res, 400, 'INVALID_INPUT', 'A JSON object is required.');
     const ids = body.threadIds;
     if (ids !== undefined && (!Array.isArray(ids) || ids.length > COMMENT_READS_MAX_IDS || !ids.every((id) => commentId(id))))

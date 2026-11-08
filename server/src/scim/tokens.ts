@@ -17,6 +17,9 @@ import { randomId, sha256Hex } from '../lib/crypto.ts';
 /** The visible prefix on every SCIM secret, so a leaked one is recognizable in
  *  a log or a paste and can be grepped for. */
 export const SCIM_TOKEN_PREFIX = 'scim_';
+/** A SCIM token's lifetime when none is asked for, and the longest one may last, in days. */
+export const SCIM_TOKEN_DEFAULT_DAYS = 90;
+export const SCIM_TOKEN_MAX_DAYS = 365;
 
 /** Mint a fresh secret and the hash to store. The secret is returned once and
  *  is not recoverable from the hash. 24 random bytes = 192 bits of entropy, so

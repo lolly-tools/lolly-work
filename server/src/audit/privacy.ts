@@ -5,10 +5,10 @@ import type { AuditEventBody } from './chain.ts';
 export const AUDIT_EMAIL_OMITTED = '[email omitted]';
 const TOKENS = /[^\s<>"'(),;:=\[\]{}]+/g;
 const EMAIL_FIELD = /email(?:s|_?hash|_?digest)?$/i;
-const MAX_DEPTH = 10;
-const MAX_NODES = 4096;
-const MAX_STRING = 8192;
-const MAX_ENTRIES = 256;
+export const MAX_DEPTH = 10;
+export const MAX_NODES = 4096;
+export const MAX_STRING = 8192;
+export const MAX_ENTRIES = 256;
 
 export function auditEmailToken(value: string, macKey?: string): string {
   if (value === AUDIT_EMAIL_OMITTED || /^email:[A-Za-z0-9_-]{43}$/.test(value)) return value;

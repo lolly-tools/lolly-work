@@ -30,13 +30,13 @@ const same = (a: unknown, b: unknown): boolean => canonicalJson(a ?? null) === c
 export const TOKEN_EXT = 'com.suse.lolly';
 /** The most a sent document may hold, and the most a device writes into a head. */
 export const BRAND_EDIT_MAX_BYTES = 8 * 1024 * 1024;
-const MAX_DEPTH = 48;
-const MAX_NODES = 400_000;
-const MAX_CHANGES = 5000;
-const MAX_TEXT = 2000;
-const MAX_ROLES = 32;
-const MAX_ROLE_LABEL = 80;
-const MAX_ROLE_DESCRIPTION = 600;
+export const MAX_DEPTH = 48;
+export const MAX_NODES = 400_000;
+export const MAX_CHANGES = 5000;
+export const MAX_TEXT = 2000;
+export const MAX_ROLES = 32;
+export const MAX_ROLE_LABEL = 80;
+export const MAX_ROLE_DESCRIPTION = 600;
 const COLOUR_ROLE_GROUP = 'colourway';
 
 export type BrandEditChange =

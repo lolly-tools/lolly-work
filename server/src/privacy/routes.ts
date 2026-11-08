@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readJson, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { Store, UserRecord } from '../store/types.ts';
 import { SUBJECT_CATEGORIES, SUBJECT_OMISSIONS, readSubjectCursor, subjectCursor, subjectLimit, subjectRow, type SubjectCategory } from './subject.ts';
+import { JSON_BODY_CONTROL_BYTES } from '../api/body-limits.ts';
 
 interface Deps {
   router: ReturnType<typeof createRouter>; store: Store; secret: string;
@@ -54,7 +55,7 @@ export function registerSubjectRoutes({ router, store, secret, owner, audit }: D
   router.add('POST', '/api/v1/users/:id/offboard', async (req, res, ctx) => {
     const actor = await owner(req, res);
     if (!actor) return;
-    const body = await readJson(req, 4096) as { confirmUserId?: unknown } | null;
+    const body = await readJson(req, JSON_BODY_CONTROL_BYTES) as { confirmUserId?: unknown } | null;
     if (body?.confirmUserId !== ctx.params.id) return sendError(res, 400, 'INVALID_INPUT', 'Confirm the account id to disable and revoke its direct issuance.');
     const result = await store.offboardUser(ctx.params.id!, actor.id, new Date().toISOString(), 1000);
     if (result.status === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'No such account.');
