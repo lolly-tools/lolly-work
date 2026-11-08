@@ -36,7 +36,7 @@ import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, partnerG
 import { entryInFolders, foldersFor, nextFolderRuleEnd } from '../programmes/folders.ts';
 import { composeRightsRecords, loadRightsEngine, rightsAnswer, type RightsEngine } from './rights.ts';
 import type { PartnerRightsMode } from './rights-mode.ts';
-import { currentFingerprint, type RightsChoiceRecord } from '../programmes/rights.ts';
+import { currentFingerprint, pinLookup, type PinLookup, type RightsChoiceRecord } from '../programmes/rights.ts';
 
 export interface ServedProvider {
   id: string;
@@ -187,13 +187,13 @@ export function applyProgrammeScope(
  * of the caller's programme or company groups and the facts it was made about
  * still hold.
  */
-export function licenceGate(engine: RightsEngine, partnerGroups: ReadonlySet<string>, choices: readonly RightsChoiceRecord[]): (entry: AssetIndexEntry) => boolean {
+export function licenceGate(engine: RightsEngine, partnerGroups: ReadonlySet<string>, choices: readonly RightsChoiceRecord[], pins?: PinLookup): (entry: AssetIndexEntry) => boolean {
   const companies = new Set([...partnerGroups].filter((g) => g.startsWith('company-')).map((g) => g.slice('company-'.length)));
   const byAsset = new Map<string, RightsChoiceRecord[]>();
   for (const c of choices) if (partnerGroups.has(c.group)) byAsset.set(c.assetId, [...(byAsset.get(c.assetId) ?? []), c]);
   return (entry) => {
     if (rightsAnswer(engine, entry, companies).state !== 'held') return true;
-    return (byAsset.get(entry.id) ?? []).some((c) => currentFingerprint(engine, entry, c.group) === c.fingerprint);
+    return (byAsset.get(entry.id) ?? []).some((c) => currentFingerprint(engine, entry, c.group, pins) === c.fingerprint);
   };
 }
 
@@ -364,7 +364,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
         // Hidden tags come off last, so a label an admin hid is neither shown nor
         // matched by search or the paged browse, which all read this feed.
         const composed = applyTagRules(composeCollections(applyCredentialsToIndex(gated, creds), collections, composeGroups), tagRules);
-        const rights = gating && rightsEngine ? licenceGate(rightsEngine, programmeGroups, rightsChoices) : undefined;
+        const rights = gating && rightsEngine ? licenceGate(rightsEngine, programmeGroups, rightsChoices, pinLookup(instAssets)) : undefined;
         return { composed: scoped ? applyProgrammeScope(composed, programmeGroups, { instAssets, providerRecs, collections, folders, ...(rights ? { rights } : {}) }) : composed, staleAt };
       };
       let raw: Buffer | null = null;

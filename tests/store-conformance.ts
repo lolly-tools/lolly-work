@@ -1529,12 +1529,15 @@ export async function runStoreConformance(store: Store): Promise<void> {
   const atomic = { ...choice, assetId: 'conf/asset', group: 'company-conf-co', programmeId: 'conf-rights', companyId: 'conf-co' };
   const event = (action: string, assetId: string) => ({ at: '2026-11-07T00:00:00.000Z', actor: 'user:usr_1', action, subject: 'programme:conf-rights', payload: { assetId } });
   const auditCount = async (action: string) => (await store.listAudit()).filter((e) => e.action === action && e.subject === 'programme:conf-rights').length;
-  assert.equal(await store.putRightsChoicesAudited([atomic], { programmeId: 'conf-rights', companyId: 'conf-co' }, [event('programme.rights.share-anyway', 'conf/asset')]), null);
+  const aud = { programmeId: 'conf-rights', programmeCreatedAt: prog.createdAt, companyId: 'conf-co', companyCreatedAt: confCompany.createdAt };
+  assert.equal(await store.putRightsChoicesAudited([atomic], aud, [event('programme.rights.share-anyway', 'conf/asset')]), null);
   assert.deepEqual((await store.listRightsChoices()).map((c) => c.assetId), ['conf/asset']);
   assert.equal(await auditCount('programme.rights.share-anyway'), 1, 'the choice and its row together');
-  assert.equal(await store.putRightsChoicesAudited([{ ...atomic, assetId: 'conf/other' }], { programmeId: 'conf-rights', companyId: 'nope' }, [event('programme.rights.share-anyway', 'conf/other')]), 'AUDIENCE_GONE');
+  assert.equal(await store.putRightsChoicesAudited([{ ...atomic, assetId: 'conf/other' }], { ...aud, companyId: 'nope' }, [event('programme.rights.share-anyway', 'conf/other')]), 'AUDIENCE_GONE');
+  assert.equal(await store.putRightsChoicesAudited([{ ...atomic, assetId: 'conf/other' }], { ...aud, companyCreatedAt: '2026-01-01T00:00:00.000Z' }, [event('programme.rights.share-anyway', 'conf/other')]), 'AUDIENCE_GONE',
+    'a company made again with the same id is another audience');
   await store.putCompany({ ...confCompany, endedAt: '2026-11-07T01:00:00.000Z' });
-  assert.equal(await store.putRightsChoicesAudited([{ ...atomic, assetId: 'conf/other' }], { programmeId: 'conf-rights', companyId: 'conf-co' }, [event('programme.rights.share-anyway', 'conf/other')]), 'AUDIENCE_ENDED');
+  assert.equal(await store.putRightsChoicesAudited([{ ...atomic, assetId: 'conf/other' }], aud, [event('programme.rights.share-anyway', 'conf/other')]), 'AUDIENCE_ENDED');
   assert.deepEqual((await store.listRightsChoices()).map((c) => c.assetId), ['conf/asset'], 'a refused write keeps nothing');
   assert.equal(await auditCount('programme.rights.share-anyway'), 1, 'and writes no row');
   const withdrawn = await store.withdrawRightsChoicesAudited({ companyId: 'conf-co' }, (c) => event('programme.rights.withdraw', c.assetId));
@@ -1542,8 +1545,16 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(await auditCount('programme.rights.withdraw'), 1);
   assert.deepEqual(await store.listRightsChoices(), []);
   assert.deepEqual(await store.withdrawRightsChoicesAudited({ programmeId: 'conf-rights' }, (c) => event('programme.rights.withdraw', c.assetId)), []);
-  await store.deleteCompany('conf-co');
-  await store.deleteProgramme('conf-rights');
+  // A delete takes the record and its choices together, with their rows.
+  await store.putCompany({ ...confCompany, endedAt: undefined as unknown as string });
+  assert.equal(await store.putRightsChoicesAudited([atomic], aud, [event('programme.rights.share-anyway', 'conf/asset')]), null);
+  const withdrawnBefore = await auditCount('programme.rights.withdraw');
+  assert.deepEqual((await store.deleteAudienceWithChoices({ companyId: 'conf-co' }, (c) => event('programme.rights.withdraw', c.assetId))).map((c) => c.assetId), ['conf/asset']);
+  assert.equal(await auditCount('programme.rights.withdraw'), withdrawnBefore + 1);
+  assert.ok(!(await store.listCompanies()).some((c) => c.id === 'conf-co'), 'the record went with them');
+  assert.deepEqual(await store.listRightsChoices(), []);
+  assert.deepEqual(await store.deleteAudienceWithChoices({ programmeId: 'conf-rights' }, (c) => event('programme.rights.withdraw', c.assetId)), []);
+  assert.equal(await store.getProgramme('conf-rights'), null);
 
   // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
   // exit, newest first, filtered by programme, company or state, upserted

@@ -51,22 +51,51 @@ export interface ChoiceFacts {
   rulesVersion: string;
 }
 
+/** One checksum form: hex sha256 as stored with a blob, `sha256-<base64>` as a feed states it. */
+export function canonicalChecksum(c: string): string {
+  return /^[0-9a-f]{64}$/i.test(c) ? `sha256-${Buffer.from(c, 'hex').toString('base64')}` : c;
+}
+
+/** The bytes a local pin serves for a federated file (plans/27): checksum by format, and the pin's version. */
+export interface PinnedBytes { checksums: ReadonlyMap<string, string>; version: number }
+export type PinLookup = (assetId: string) => PinnedBytes | undefined;
+
+/** The pins among instance records, as the federated bytes route finds them. */
+export function pinLookup(records: Iterable<{ id: string; origin?: { provider: string; remoteId: string }; entry: AssetIndexEntry; headVersion?: number }>): PinLookup {
+  const pins = new Map<string, PinnedBytes>();
+  for (const r of records) {
+    if (!r.origin) continue;
+    const checksums = new Map<string, string>();
+    for (const f of Array.isArray(r.entry.formats) ? r.entry.formats : []) {
+      const c = (f as { checksum?: unknown }).checksum;
+      if (typeof c === 'string' && c) checksums.set(String((f as { format?: unknown }).format ?? ''), canonicalChecksum(c));
+    }
+    pins.set(`ext/${r.origin.provider}/${r.origin.remoteId}`, { checksums, version: r.headVersion ?? 1 });
+  }
+  return (id) => pins.get(id);
+}
+
 /**
  * The bytes a choice binds: every rendition the entry serves, its localised
- * ones included, each by its checksum, with the entry's version beside them.
- * A federated entry's version is a hash of its upstream date and formats, so
- * it moves with the bytes and stands in for checksums the provider does not
- * give. Null when the identity cannot be established (a rendition with no
- * checksum on an entry with no such version): a choice is never remembered
- * against bytes that could change under it.
+ * ones included, each by its checksum in one form, with the entry's version
+ * beside them. A federated file that is pinned here is served from the pin,
+ * so the pin's checksums stand for the renditions it holds. Otherwise a
+ * federated entry's version stands in for checksums the provider does not
+ * give, but only when the provider stated when the file last changed: a
+ * version made from static format details alone does not move with the
+ * bytes. Null when the identity cannot be established, and a choice is
+ * never remembered against bytes that could change under it.
  */
-export function assetIdentity(entry: AssetIndexEntry): string | null {
-  type Rendition = { format: string; url: string; checksum: string | null; locale?: string };
+export function assetIdentity(entry: AssetIndexEntry, pins?: PinLookup): string | null {
+  type Rendition = { format: string; checksum: string | null; locale?: string };
+  const pin = typeof entry.id === 'string' ? pins?.(entry.id) : undefined;
   const renditions: Rendition[] = [];
   const add = (f: unknown, locale?: string): void => {
     if (!f || typeof f !== 'object') return;
-    const r = f as { format?: unknown; url?: unknown; checksum?: unknown };
-    renditions.push({ format: String(r.format ?? ''), url: String(r.url ?? ''), checksum: typeof r.checksum === 'string' && r.checksum ? r.checksum : null, ...(locale ? { locale } : {}) });
+    const r = f as { format?: unknown; checksum?: unknown };
+    const format = String(r.format ?? '');
+    const own = typeof r.checksum === 'string' && r.checksum ? canonicalChecksum(r.checksum) : null;
+    renditions.push({ format, checksum: (!locale ? pin?.checksums.get(format) : undefined) ?? own, ...(locale ? { locale } : {}) });
   };
   for (const f of Array.isArray(entry.formats) ? entry.formats : []) add(f);
   const locales = (entry as { locales?: unknown }).locales;
@@ -75,10 +104,12 @@ export function assetIdentity(entry: AssetIndexEntry): string | null {
   }
   const version = typeof entry.version === 'string' && entry.version ? entry.version : typeof entry.version === 'number' ? String(entry.version) : null;
   const summed = renditions.length > 0 && renditions.every((r) => r.checksum !== null);
-  const federated = typeof entry.id === 'string' && entry.id.startsWith('ext/') && version !== null;
+  const revised = typeof (entry as { updatedAt?: unknown }).updatedAt === 'string' && !!(entry as { updatedAt?: string }).updatedAt;
+  const federated = typeof entry.id === 'string' && entry.id.startsWith('ext/') && version !== null && revised;
   if (!summed && !federated) return null;
-  renditions.sort((a, b) => (a.locale ?? '').localeCompare(b.locale ?? '') || a.format.localeCompare(b.format) || a.url.localeCompare(b.url));
-  return `sha256:${sha256Hex(canonicalJson({ renditions, version }))}`;
+  // Where a file is served from is not what it is, so addresses stay out.
+  renditions.sort((a, b) => (a.locale ?? '').localeCompare(b.locale ?? '') || a.format.localeCompare(b.format) || (a.checksum ?? '').localeCompare(b.checksum ?? ''));
+  return `sha256:${sha256Hex(canonicalJson({ renditions, version, ...(pin ? { pin: pin.version } : {}) }))}`;
 }
 
 /** sha256 over the canonical facts, as `sha256:<hex>`. */
@@ -89,8 +120,8 @@ export function choiceFingerprint(facts: ChoiceFacts): string {
 }
 
 /** The facts of one entry for one audience, now; null when its bytes have no identity. */
-export function factsOf(engine: RightsEngine, entry: AssetIndexEntry, group: string): ChoiceFacts | null {
-  const identity = assetIdentity(entry);
+export function factsOf(engine: RightsEngine, entry: AssetIndexEntry, group: string, pins?: PinLookup): ChoiceFacts | null {
+  const identity = assetIdentity(entry, pins);
   if (!identity) return null;
   return {
     assetId: entry.id, checksum: identity, declaration: engine.assetLicenceDeclaration(entry as Record<string, unknown>),
@@ -100,8 +131,8 @@ export function factsOf(engine: RightsEngine, entry: AssetIndexEntry, group: str
 
 /** The fingerprint a choice for this entry and audience carries now, or null
  *  when its bytes have no identity: a null never matches a stored choice. */
-export function currentFingerprint(engine: RightsEngine, entry: AssetIndexEntry, group: string): string | null {
-  const facts = factsOf(engine, entry, group);
+export function currentFingerprint(engine: RightsEngine, entry: AssetIndexEntry, group: string, pins?: PinLookup): string | null {
+  const facts = factsOf(engine, entry, group, pins);
   return facts ? choiceFingerprint(facts) : null;
 }
 
@@ -113,10 +144,10 @@ export function currentFingerprint(engine: RightsEngine, entry: AssetIndexEntry,
  */
 export type ChoiceStanding = 'live' | 'needs-choosing' | 'not-needed' | 'gone';
 
-export function choiceStanding(engine: RightsEngine, choice: RightsChoiceRecord, entry: AssetIndexEntry | undefined, companies: ReadonlySet<string> = new Set()): ChoiceStanding {
+export function choiceStanding(engine: RightsEngine, choice: RightsChoiceRecord, entry: AssetIndexEntry | undefined, companies: ReadonlySet<string> = new Set(), pins?: PinLookup): ChoiceStanding {
   if (!entry) return 'gone';
   if (rightsAnswer(engine, entry, companies).state !== 'held') return 'not-needed';
-  return currentFingerprint(engine, entry, choice.group) === choice.fingerprint ? 'live' : 'needs-choosing';
+  return currentFingerprint(engine, entry, choice.group, pins) === choice.fingerprint ? 'live' : 'needs-choosing';
 }
 
 /** The asset ids a caller holding `groups` receives through a live choice. */
@@ -168,6 +199,7 @@ export function exitRightsChoices(store: Store, bodyOf: AuditBodyOf = plainBody)
       .filter((c) => (pick.companyId ? c.companyId === pick.companyId : !!pick.programmeId && c.programmeId === pick.programmeId))
       .map(exitView),
     withdraw: async (actor, pick, via) => (await withdrawRightsChoices(store, bodyOf, actor, pick, via)).map(exitView),
+    deleteAudience: async (actor, target, via) => (await store.deleteAudienceWithChoices(target, (c) => withdrawEvent(bodyOf, actor, c, via))).map(exitView),
   };
 }
 

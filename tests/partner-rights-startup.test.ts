@@ -70,6 +70,21 @@ test('the first sign-in waits for the decision, so an empty instance is decided 
   } finally { server.close(); }
 });
 
+test('a path that starts as the health check but resolves elsewhere waits too', async () => {
+  let open!: () => void;
+  const opened = new Promise<void>((r) => { open = r; });
+  const { store, rows } = freshStore(async () => { await opened; });
+  const { base, server } = await serve(store);
+  try {
+    const signIn = fetch(`${base}/healthz/%2e%2e/api/auth/dev?email=first%40test`, { redirect: 'manual' });
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(await store.hasAccounts(), false, 'no account before the mode is known');
+    open();
+    await signIn;
+    assert.equal(rows.get(PARTNER_RIGHTS_KEY)?.value, 'gate');
+  } finally { server.close(); }
+});
+
 test('a failed read is tried again and never turns a recorded gate into report mode', async () => {
   const { store, rows, reads } = freshStore(async (attempt) => { if (attempt === 0) throw new Error('connection reset'); });
   rows.set(PARTNER_RIGHTS_KEY, { key: PARTNER_RIGHTS_KEY, value: 'gate', why: 'fresh-install', decidedAt: '2026-11-07T00:00:00.000Z' });

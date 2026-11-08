@@ -1725,6 +1725,20 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
          link.projectId ?? null, link.createdBy, link.createdAt],
       );
     },
+    async putLinkAudited(link, body) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query(
+          `insert into links (id, kind, target, exp, pw_hash, project_id, created_by, created_at)
+           values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8)`,
+          [link.id, link.kind, JSON.stringify(link.target), link.exp, link.pwHash ?? null, link.projectId ?? null, link.createdBy, link.createdAt],
+        );
+        await appendAuditInTransaction(client, body);
+        await client.query('commit');
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
     getLink: getLinkById,
     async revokeLink(id, at) {
       await pool.query('update links set revoked_at = $2 where id = $1', [id, at]);
@@ -2496,7 +2510,8 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         const programme = (await client.query('select record from partner_programmes where id = $1', [audience.programmeId])).rows[0]?.record as ProgrammeRecord | undefined;
         const company = audience.companyId
           ? (await client.query('select record from partner_companies where id = $1', [audience.companyId])).rows[0]?.record as CompanyRecord | undefined : undefined;
-        const refusal = !programme || (audience.companyId && (!company || company.programmeId !== audience.programmeId)) ? 'AUDIENCE_GONE' as const
+        const refusal = !programme || programme.createdAt !== audience.programmeCreatedAt
+          || (audience.companyId && (!company || company.programmeId !== audience.programmeId || company.createdAt !== audience.companyCreatedAt)) ? 'AUDIENCE_GONE' as const
           : programme.endedAt || company?.endedAt ? 'AUDIENCE_ENDED' as const : null;
         if (refusal) { await client.query('rollback'); return refusal; }
         for (const rec of records) {
@@ -2509,6 +2524,25 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         for (const body of events) await appendAuditInTransaction(client, body);
         await client.query('commit');
         return null;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async deleteAudienceWithChoices(target, event) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select pg_advisory_xact_lock($1)', [RIGHTS_CHOICES_LOCK_KEY]);
+        const pick = 'companyId' in target ? { companyId: target.companyId } : { programmeId: target.programmeId };
+        const { rows } = await client.query('select record from programme_rights_choices order by asset_id, audience_group');
+        const gone = rows.map((r) => r.record as RightsChoiceRecord).filter((c) => rightsChoicePicked(c, pick));
+        for (const c of gone) {
+          await client.query('delete from programme_rights_choices where asset_id = $1 and audience_group = $2', [c.assetId, c.group]);
+          await appendAuditInTransaction(client, event(c));
+        }
+        if ('companyId' in target) await client.query('delete from partner_companies where id = $1', [target.companyId]);
+        else await client.query('delete from partner_programmes where id = $1', [target.programmeId]);
+        await client.query('commit');
+        return gone;
       } catch (error) { await client.query('rollback'); throw error; }
       finally { client.release(); }
     },
