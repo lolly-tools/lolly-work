@@ -168,3 +168,17 @@ test('a paged feed is reused only while its providers are the same', () => {
   assert.notEqual(pagedBasis(base, []), pagedBasis({ ...base, providers: [{ id: 'big', label: 'Renamed', size: 3 }] } as unknown as ServedIndex, []));
   assert.equal(pagedBasis(base, ['x']), pagedBasis({ ...base }, ['x']));
 });
+
+test('the intersection names no stale provider the admin cannot see, and the paged basis follows it', () => {
+  const served = (providers: string[], stale?: string[]): ServedIndex => ({
+    status: 'composed', sourceFingerprint: 'f', bytes: Buffer.from('{}'), etag: '"x"', version: 'x',
+    index: { assets: [], ...(stale ? { staleProviders: stale } : {}) } as never,
+    providers: providers.map((id) => ({ id, label: id, size: 1 })) as never, sorted: () => [],
+  });
+  const both = intersectServed(served(['dam', 'big'], ['dam', 'big']), served(['dam']));
+  assert.deepEqual((both.index as { staleProviders?: string[] }).staleProviders, ['dam']);
+  assert.ok(!both.bytes.toString().includes('big'), 'the serialised feed does not name it either');
+  const none = intersectServed(served(['big'], ['big']), served([]));
+  assert.equal((none.index as { staleProviders?: string[] }).staleProviders, undefined, 'an empty list is left out');
+  assert.notEqual(pagedBasis(both, []), pagedBasis(intersectServed(served(['dam', 'big'], ['big']), served(['dam'])), []), 'the stale list is part of what the paged feed is built from');
+});

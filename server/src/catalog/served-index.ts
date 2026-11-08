@@ -209,11 +209,20 @@ export function intersectServed(theirs: ServedIndex, mine: ServedIndex): ServedI
   if (Array.isArray(theirs.index.collections)) {
     index.collections = (theirs.index.collections as Array<{ members: string[] }>).map((c) => ({ ...c, members: c.members.filter((m) => served.has(m)) }));
   }
-  const providerIds = new Set(mine.providers.map((provider) => provider.id));
+  const mineIds = new Set(mine.providers.map((provider) => provider.id));
+  const providers = theirs.providers.filter((provider) => mineIds.has(provider.id));
+  // Every provider id the feed names is one both sides see: the stale list too.
+  const kept = new Set(providers.map((provider) => provider.id));
+  const stale = (theirs.index as { staleProviders?: unknown }).staleProviders;
+  if (Array.isArray(stale)) {
+    const visible = stale.filter((id): id is string => typeof id === 'string' && kept.has(id));
+    if (visible.length) (index as { staleProviders?: string[] }).staleProviders = visible;
+    else delete (index as { staleProviders?: string[] }).staleProviders;
+  }
   const bytes = Buffer.from(JSON.stringify(index));
   const version = sha256Hex(bytes).slice(0, 32);
   return withSort({ status: theirs.status === 'missing' ? 'missing' : 'composed', sourceFingerprint: sha256Hex(`${theirs.sourceFingerprint}\n${mine.sourceFingerprint}`), bytes, etag: quoted(version), version,
-    index, providers: theirs.providers.filter((provider) => providerIds.has(provider.id)) });
+    index, providers });
 }
 
 /** What a paged feed is built from: the base feed's content, its providers (ids,
