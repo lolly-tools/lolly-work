@@ -1453,7 +1453,8 @@ function limitValueText(entry) {
     case 'ms': return n >= 86_400_000 && n % 86_400_000 === 0 ? `${full(n / 86_400_000)} ${n === 86_400_000 ? 'day' : 'days'}`
       : n >= 3_600_000 && n % 3_600_000 === 0 ? `${full(n / 3_600_000)} h`
       : n >= 60_000 && n % 60_000 === 0 ? `${full(n / 60_000)} min` : n >= 1000 && n % 1000 === 0 ? `${full(n / 1000)} s` : `${full(n)} ms`;
-    case 'seconds': return n >= 86_400 && n % 86_400 === 0 ? `${full(n / 86_400)} ${n === 86_400 ? 'day' : 'days'}` : n >= 3600 && n % 3600 === 0 ? `${full(n / 3600)} h` : `${full(n)} s`;
+    case 'seconds': return n >= 86_400 && n % 86_400 === 0 ? `${full(n / 86_400)} ${n === 86_400 ? 'day' : 'days'}`
+      : n >= 3600 && n % 3600 === 0 ? `${full(n / 3600)} h` : n >= 60 && n % 60 === 0 ? `${full(n / 60)} min` : `${full(n)} s`;
     case 'days': return n === 0 ? '0 (kept)' : `${full(n)} ${n === 1 ? 'day' : 'days'}`;
     case 'per-minute': return `${full(n)} a minute`;
     case 'per-second': return `${full(n)} a second`;
