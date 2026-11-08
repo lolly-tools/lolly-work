@@ -294,3 +294,31 @@ test('10: missing, disabled and inaccessible providers all give partners the sam
     assert.equal((await own.json() as { error: { code: string } }).error.code, code);
   }
 });
+
+test('the asset record names a successor to a partner only from their own feed', async () => {
+  // The successor recorded in the metadata overlay, the way the console records one.
+  const prior = await store.getAssetMeta('inst/kit');
+  await store.putAssetMeta({ assetId: 'inst/kit', fields: prior?.fields ?? {}, replacedBy: 'inst/internal', updatedBy: 'user:x', updatedAt: new Date().toISOString() } as never);
+  const record = async (cookie: string) => (await (await get(cookie, '/api/v1/catalog/assets/inst/kit')).json()) as { replacedBy?: string };
+  assert.equal((await record(rita)).replacedBy, undefined, 'the stored successor is not in the partner\'s feed');
+  assert.equal((await record(staff)).replacedBy, 'inst/internal', 'staff unchanged');
+});
+
+test('a retired template\'s 410 names its successor to a partner only when their feed carries it', async () => {
+  const at = new Date().toISOString();
+  const put = async (id: string, groups: string[], publication?: Record<string, unknown>) => {
+    const stat = await blobs.put(`${id}/json`, Buffer.from(JSON.stringify({ values: { title: 'Retired card' } })), 'application/json');
+    await store.putInstanceAsset({
+      id, entry: { id, name: id, type: 'template', meta: { toolId: 'scope-card' }, formats: [{ format: 'json', url: `/catalog/${id}/json`, size: stat.size, checksum: stat.checksum }] },
+      blobs: { json: `${id}/json` }, groups, createdAt: at,
+      submission: { state: 'live', by: 'user:x', at, checksum: stat.checksum, size: stat.size, contentType: 'application/json' },
+      ...(publication ? { publication } : {}),
+    } as never);
+  };
+  await put('inst/internal-card', ['marketing']);
+  await put('inst/retired-card', ['programme-resellers'], { retiredAt: at, retiredBy: 'user:x', replacedBy: 'inst/internal-card' });
+  const res = await send(rita, 'POST', '/api/v1/render', { toolId: 'scope-card', format: 'svg', inputs: { template: 'inst/retired-card' } });
+  assert.equal(res.status, 410);
+  const body = await res.text();
+  assert.doesNotMatch(body, /internal-card/, 'no successor outside the partner\'s feed');
+});

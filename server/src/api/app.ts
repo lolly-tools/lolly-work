@@ -38,7 +38,7 @@ import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConf
 import type { ApiTokenRecord, InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { carriesCredential, createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, servesPublicOnly, setDeliveryClass, setDeliveryTags, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
+import { createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, servesPublicOnly, setDeliveryClass, setDeliveryTags, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
 import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
 import { cachePolicy, publicStaticDeliveryClass, tag as deliveryTag, type DeliveryClass, type TagPrefix } from '@lolly-tools/core/delivery-v1';
 import { shellDirectories } from '../lib/shell-release.ts';
@@ -771,8 +771,22 @@ export function buildApp(deps: AppDeps): App {
    * still in the feed, so the render can say what replaced it.
    */
   const publishedTemplateFor = async (groups: string[], id: string): Promise<RenderTemplate | null> => {
-    const entry = (await servedIndex.forCaller({ groups })).index.assets?.find((asset) => asset.id === id && asset.type === 'template');
-    return entry ? templateFromRecord(id, entry, await store.getInstanceAsset(id)) : null;
+    const assets = (await servedIndex.forCaller({ groups })).index.assets ?? [];
+    const entry = assets.find((asset) => asset.id === id && asset.type === 'template');
+    const template = entry ? await templateFromRecord(id, entry, await store.getInstanceAsset(id)) : null;
+    // A partner programme member is told a retired template's successor only when
+    // their own feed carries it.
+    const successor = template?.retired?.replacedBy;
+    if (template && successor && isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups)) && !assets.some((asset) => asset.id === successor)) {
+      return { ...template, retired: {} };
+    }
+    return template;
+  };
+  /** The successor a served feed entry names, if it names one. */
+  const feedReplacement = (entry: unknown): { replacedBy?: string } => {
+    const row = entry as { replacedBy?: unknown; meta?: { replacedBy?: unknown } } | undefined;
+    const id = typeof row?.replacedBy === 'string' ? row.replacedBy : typeof row?.meta?.replacedBy === 'string' ? row.meta.replacedBy : undefined;
+    return id ? { replacedBy: id } : {};
   };
   /** A template's render shape from its record and the index entry that names it. */
   const templateFromRecord = async (id: string, entry: AssetIndexEntry, rec: Awaited<ReturnType<typeof store.getInstanceAsset>>): Promise<RenderTemplate | null> => {
@@ -8093,7 +8107,9 @@ export function buildApp(deps: AppDeps): App {
       ...(meta ? { fieldsUpdatedBy: meta.updatedBy, fieldsUpdatedAt: meta.updatedAt } : {}),
       // ID-level supersession and the served version (plans/31 §6), so the
       // console can show "replaced by X" and "version N" without a second call.
-      ...(meta?.replacedBy ? { replacedBy: meta.replacedBy } : {}),
+      // A partner programme member reads the successor only from their own feed's entry,
+      // which names one only when that feed carries it (catalog/served-index.ts).
+      ...(scopedCaller(user) ? feedReplacement(entry) : meta?.replacedBy ? { replacedBy: meta.replacedBy } : {}),
       ...(instAsset ? { version: headVersionOf(instAsset) } : {}),
       // Whether THIS caller may edit any of it, so the console offers an editor
       // only where the PUT would actually be allowed rather than teaching
@@ -11986,7 +12002,7 @@ export function buildApp(deps: AppDeps): App {
     caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
-    designRevision: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version : brand.current()!.revision,
+    designRevision: (groups, role) => isProgrammeScoped(groups, role) ? partnerBrandRevision() : brand.current()!.revision,
     catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
@@ -13019,6 +13035,22 @@ export function buildApp(deps: AppDeps): App {
     }, secrets.session, secure, renewal.ttlSec);
   };
 
+  /** The design system's revision as a partner programme member sees it: the active
+   *  source and its tokens, the parts every partner receives. An internal asset's
+   *  change leaves it as it was; switching or editing the design system moves it. */
+  const partnerBrandRevision = (): string => {
+    const snap = brand.current()!;
+    return sha256Hex(JSON.stringify(['partner-brand', snap.source.id, snap.source.tokensChecksum ?? '', snap.state.revision])).slice(0, 32);
+  };
+  /** Whether a request answers as a partner programme member, from what it carries:
+   *  a view (already admitted), the session cookie's own claims, or a token. */
+  const scopedRequest = async (req: IncomingMessage): Promise<boolean> => {
+    if (viewAs.viewing(req)) return true;
+    const session = readMemberSession(req.headers.cookie, sessionVerify);
+    if (session) return isProgrammeScoped(session.user.groups ?? [], session.user.role);
+    return req.headers.authorization !== undefined && scopedCaller(await serviceAccountOf(req));
+  };
+
   const handle = async (req: IncomingMessage, res: ServerResponse, span: RequestSpan | undefined): Promise<void> => {
     guardDelivery(req, res, edgeDelivery);
     // A public-only edge hostname (edge/config.ts) answers reads of public classes and nothing else.
@@ -13121,10 +13153,10 @@ export function buildApp(deps: AppDeps): App {
     if (renewed) res.setHeader('set-cookie', renewed);
     try {
       const matched = await brand.run(async () => {
-        // A partner programme member is told a revision of their own feed, never the
-        // whole pack's (plans/82 M1). Only a request that carries a credential can be one.
-        const user = carriesCredential(req) ? await memberOf(req) ?? await serviceAccountOf(req) : null;
-        const revision = scopedCaller(user) ? (await servedIndex.forCaller({ groups: user!.groups })).version : brand.current()!.revision;
+        // A partner programme member is told a revision of what they see of the design
+        // system (its source and its tokens), never the whole pack's (plans/82 M1).
+        // Read from what the request already carries: no catalog work on this path.
+        const revision = await scopedRequest(req) ? partnerBrandRevision() : brand.current()!.revision;
         res.setHeader('x-lolly-brand-revision', revision);
         const expected = req.headers['x-lolly-brand-revision'];
         if (expected && expected !== revision) throw new BrandError('The design system changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
