@@ -14,7 +14,14 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { compileDesignTool } from '@lolly/engine';
+// The engine is loaded at run time through a non-literal specifier, as capture-console.ts does:
+// a static import would pull its DOM-typed modules into the Node-only tsc program.
+const ENGINE_SPEC: string = '@lolly/engine';
+type CompileDesignTool = (def: unknown, renderer: { source: string; styles: string }, files: Record<string, Uint8Array>) => { files: Record<string, string | Uint8Array> };
+async function loadCompiler(): Promise<CompileDesignTool> {
+  const engine = await import(ENGINE_SPEC) as { compileDesignTool: CompileDesignTool };
+  return engine.compileDesignTool;
+}
 import { ZipBuilder } from '../../server/src/links/zip.ts';
 
 export const PARTNER_PEOPLE = [
@@ -37,7 +44,7 @@ const RENDERER = 'var LollyDesignRules = {};';
 
 /** The Share with rules file a designer would publish: a product data sheet
  *  whose price is open and whose logo and details line take the company's. */
-function dataSheetFile(ossDir: string): Buffer {
+async function dataSheetFile(ossDir: string): Promise<Buffer> {
   const font = new Uint8Array(readFileSync(join(ossDir, 'brands/lolly-demo/catalog/fonts/Outfit-Variable.ttf')));
   const digest = sha256(font);
   const fontPath = `assets/${digest}.ttf`;
@@ -62,7 +69,8 @@ function dataSheetFile(ossDir: string): Buffer {
     dependencies: [{ path: fontPath, digest, credit: 'Outfit, SIL Open Font License 1.1: embedded font for editable artwork.' }],
   };
   // The fixture is written as plain data; the compiler checks its shape itself.
-  const compiled = compileDesignTool(def as unknown as Parameters<typeof compileDesignTool>[0], { source: RENDERER, styles: '' }, { [fontPath]: font }) as unknown as { files: Record<string, string | Uint8Array> };
+  const compileDesignTool = await loadCompiler();
+  const compiled = compileDesignTool(def, { source: RENDERER, styles: '' }, { [fontPath]: font });
   const files: Record<string, Buffer> = {};
   for (const [path, value] of Object.entries(compiled.files)) files[`tool/${path}`] = Buffer.from(value as string);
   const integrity = Object.fromEntries(Object.entries(files).map(([path, bytes]) => [path, sha256(bytes)]));
@@ -122,7 +130,7 @@ export async function seedPartnerShots(base: string, ownerEmail: string, ossDir:
   // The Share with rules data sheet, published to the programme, taking the
   // company's logo by mode and its contact line.
   const res = await fetch(`${base}${P}/templates/rules-file?groups=programme-${PROGRAMME}`, {
-    method: 'POST', headers: { cookie: owner, 'content-type': 'application/octet-stream' }, body: new Uint8Array(dataSheetFile(ossDir)) });
+    method: 'POST', headers: { cookie: owner, 'content-type': 'application/octet-stream' }, body: new Uint8Array(await dataSheetFile(ossDir)) });
   if (!res.ok) throw new Error(`rules file: ${res.status} ${(await res.text()).slice(0, 300)}`);
   const listed = await send(base, owner, 'GET', `${P}/templates`) as { templates: Array<{ id: string; name: string }>; candidates: Array<{ id: string }> };
   const sheet = listed.templates.find((t) => t.name === 'Partner data sheet');
