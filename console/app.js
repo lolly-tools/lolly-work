@@ -6196,7 +6196,7 @@ function companyKitCard(base, company, data, settings = {}, chains = []) {
         const name = el('input', { value: colour.name, required: 'required', maxlength: limits.maxColourName, 'aria-label': `Name for ${colour.value}` });
         const role = el('select', { 'aria-label': `Role for ${colour.value}` }, ...limits.colourRoles.map((r) => el('option', { value: r, ...(r === colour.role ? { selected: 'selected' } : {}) }, r[0].toUpperCase() + r.slice(1))));
         const row = { name, role, value: colour.value, removed: false };
-        row.element = el('div', { class: 'programme-actions' },
+        row.element = el('div', { class: 'programme-actions kit-colour-row' },
           el('span', { class: 'bedit-value' }, el('span', { class: 'bedit-swatch', style: `background:${colour.value}` }), el('span', { class: 'mono' }, colour.value)),
           field('Name', name), field('Role', role), el('button', { type: 'button', 'aria-label': `Remove ${colour.name}`, onclick: () => { row.removed = true; row.element.remove(); } }, 'Remove'));
         return row;

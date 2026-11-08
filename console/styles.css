@@ -1515,6 +1515,10 @@ html.account-inspector-open { overflow: hidden; }
    tool list stays a scannable column rather than a page-long run. */
 .programme-head { display: flex; align-items: baseline; gap: var(--sp-6); flex-wrap: wrap; }
 .programme-actions { display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: center; }
+/* A partner kit colour row (plans/82 M8): the swatch, the fields and Remove line up
+   on the inputs, not on their labels, whether the row fits on one line or wraps. */
+.kit-colour-row { align-items: flex-end; }
+.kit-colour-row > .bedit-value { padding-block: 9px; font-size: var(--fs-md); }
 .programme-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); max-height: 26rem; overflow: auto; }
 /* Partner domains (plans/82 M1 part 2b): one block per domain, its proof and the record to publish. */
 .domain-list { gap: var(--sp-7); }
