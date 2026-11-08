@@ -1,17 +1,17 @@
 {
-  "generatedFrom": "8a45f816565f11d88cee7a72d2109d899c533380",
+  "generatedFrom": "e18354bd54ec35976ccb63f57ee9a0beba45a576",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
-    "version": "1.7.0",
-    "tarball": "lolly-tools-core-1.7.0.tgz",
-    "tarballSha256": "88ba6b7d4cd7fd1f7ad233522f6d13a7c5b13083b1869960d0bbf8215811ec6c",
-    "contentHash": "0bf988c80a1ad4f536ab071ac2925ef9240c737dc79c301c9a929c11c74d8a14"
+    "version": "1.8.0",
+    "tarball": "lolly-tools-core-1.8.0.tgz",
+    "tarballSha256": "c0c3f7ce9d7100aa36a6b714294d075e8b79356e7fb10fd8159cc30c533be5cd",
+    "contentHash": "930531970d63c4bbb72bbcf652eb46dc7ebadf634d9863dfed3c80d8b39a5923"
   },
   "engine": {
-    "version": "1.338.0",
-    "tarball": "lolly-engine-1.338.0.tgz",
-    "tarballSha256": "724a466e61832053c2dbb0ea7e1f29b0dece13284a8abfa013ba4e131d91a088",
-    "contentHash": "ada91dc59d48455e80563db455d2076db0aca3f1988ac1d4b4a12b46fb89b916"
+    "version": "1.343.0",
+    "tarball": "lolly-engine-1.343.0.tgz",
+    "tarballSha256": "ac8cd9547fe498a03abe014f92ecaa454cf27808569589b777405bb25924482d",
+    "contentHash": "3d957e261a15f4d0951a261cb80188a171cdbc4fdec8eacb4a042e95d1309323"
   },
   "schemas": {
     "asset-ref.schema.json": "1e610bd8369b1f4756306709af95bb009aa39981a9776343f92f1c00c51bc3cd",
@@ -51,7 +51,7 @@
     "text-measure-v1.schema.json": "6a3b17fdc8d7d8769d723724b73dabd3d5d74c77df577480a9c42cfcb0a0e976",
     "tokens.schema.json": "012f3050656230bb609eb841c6a7e42a3cfa4088c7c3b938a561a81d3fa13dcc",
     "tool-intents-v1.schema.json": "16d0882a0c766dba7c139ec9cb56894b9d5d562581ce30fd72a54f5b4ec14470",
-    "tool.schema.json": "06b871de399446e106d6d817ed7b998268507e065203ca750d61f94145317f4b",
+    "tool.schema.json": "5c96730646e6a26984807f71b7aa86b3d774543c6ef7773295fbfb36c82a4519",
     "visual-intent-v1.schema.json": "900ee6919913b63504902194ad836fb06852dacb2ea5bbe9631b0915e0e5afbf"
   }
 }
