@@ -48,8 +48,9 @@ import { webcrypto } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildDemoConfig, seedStore, seedActivity, demoGrants, demoRooms } from './demo.ts';
-import { buildApp } from '../server/src/api/app.ts';
+import { buildDemoConfig, seedStore, seedActivity, demoGrants, demoRooms, resolvePack } from './demo.ts';
+import { seedPartnerShots, PARTNER_PEOPLE, PROGRAMME, COMPANY } from './lib/partner-shots.ts';
+import { buildApp, roleFromGroups } from '../server/src/api/app.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import type { RenderRunner } from '../server/src/renders/runner.ts';
 
@@ -102,6 +103,13 @@ interface Recipe {
   page: string;           // docs/*.md this illustrates
   theme?: 'light' | 'dark';
   prepare?: (page: any, theme: 'light' | 'dark') => Promise<void>;
+  /** A partner programme shot (plans/82): captured on a demo of its own, seeded
+   *  with the example programme (scripts/lib/partner-shots.ts). */
+  partner?: boolean;
+  /** Sign in as this person instead of the capture owner. */
+  persona?: string;
+  /** An app path (the Lolly shell this instance serves) instead of `/admin#/route`. */
+  path?: string;
 }
 const RECIPES: Recipe[] = [
   { slug: 'overview-dashboard', route: 'overview', cropSelector: '#main', page: 'overview.md' },
@@ -157,7 +165,64 @@ const RECIPES: Recipe[] = [
     await page.getByRole('button', { name: 'Save disabled source', exact: true }).click();
     await page.getByText('Source saved disabled. An owner can now connect its Google account.', { exact: true }).waitFor();
   } },
+  // ── partner programmes (plans/82), on the seeded example programme ──
+  { slug: 'partner-programme-templates', route: `programmes?id=${PROGRAMME}`, cropSelector: '#cap-templates', page: 'partner-programmes.md', partner: true, prepare: async page => {
+    await markCard(page, 'Templates', 'cap-templates');
+  } },
+  { slug: 'partner-company', route: `programmes?id=${PROGRAMME}&company=${COMPANY}`, cropSelector: '#main', page: 'partner-programmes.md', partner: true, prepare: async page => {
+    await page.getByText('Revision history: every revision is kept').waitFor();
+  } },
+  { slug: 'partner-licences', route: `programmes?id=${PROGRAMME}`, cropSelector: '#cap-licences', page: 'partner-programmes.md', partner: true, prepare: async page => {
+    await markCard(page, 'Licences', 'cap-licences');
+  } },
+  { slug: 'partner-end-dry-run', route: `programmes?id=${PROGRAMME}`, cropSelector: '#cap-end', page: 'partner-programmes.md', partner: true, prepare: async page => {
+    await markCard(page, 'End this partnership', 'cap-end');
+    const card = page.locator('#cap-end');
+    await card.getByLabel('Whose access ends', { exact: true }).selectOption(`company:${COMPANY}`);
+    await card.getByRole('button', { name: 'See what ending it does', exact: true }).click();
+    await card.locator('table').first().waitFor();
+  } },
+  // The app as Rita Ortiz at Northwind IT sees it, served by this instance.
+  { slug: 'partner-home', route: '', path: '/', persona: 'rita@northwind.example', cropSelector: '.published-shelf', page: 'run-a-partner-programme.md', partner: true, prepare: async page => {
+    // Frame the shelf to its cards: room below for their edges, and no empty
+    // width beyond the last card.
+    await page.locator('.published-shelf .published-card').first().waitFor();
+    await page.locator('.published-shelf').evaluate((shelf: HTMLElement) => {
+      const cards = [...shelf.querySelectorAll('.published-card, .company-card')] as HTMLElement[];
+      const left = shelf.getBoundingClientRect().left;
+      const right = Math.max(...cards.map((c) => c.getBoundingClientRect().right));
+      shelf.style.width = `${Math.ceil(right - left + 16)}px`;
+      shelf.style.paddingBottom = '16px';
+    });
+  } },
+  { slug: 'partner-company-sheet', route: '', path: '/', persona: 'rita@northwind.example', cropSelector: '.modal.company-sheet', page: 'run-a-partner-programme.md', partner: true, prepare: async page => {
+    await page.locator('.published-shelf button', { hasText: 'Details' }).first().click();
+    await page.locator('.modal.company-sheet').waitFor();
+  } },
+  { slug: 'partner-template-tool', route: '', path: '/', persona: 'rita@northwind.example', cropSelector: '#tool-layout', page: 'run-a-partner-programme.md', partner: true, prepare: async page => {
+    await openDataSheet(page);
+  } },
+  { slug: 'partner-export-record', route: '', path: '/', persona: 'rita@northwind.example', cropSelector: '[data-madewith-section]', page: 'run-a-partner-programme.md', partner: true, prepare: async page => {
+    await openDataSheet(page);
+    await page.locator('button:visible', { hasText: /^\s*More\s*$/ }).last().click();
+    await page.locator('[data-madewith-section]').filter({ hasText: 'Partner' }).waitFor();
+  } },
 ];
+
+/** Open the published data sheet from the partner's home, as Rita would. */
+async function openDataSheet(page: any): Promise<void> {
+  await page.locator('.published-card', { hasText: 'Partner data sheet' }).getByRole('link', { name: /Use/ }).click();
+  await page.locator('#tool-layout').waitFor();
+  await page.getByText('Northwind IT', { exact: false }).first().waitFor();
+  await page.waitForTimeout(2500); // the company logo and the rules renderer settle
+}
+
+/** Give the console card whose heading reads `heading` an id the walker can crop to. */
+async function markCard(page: any, heading: string, id: string): Promise<void> {
+  const h2 = page.locator('.card > h2', { hasText: heading }).first();
+  await h2.waitFor();
+  await h2.evaluate((el: Element, cardId: string) => { (el.closest('.card') as HTMLElement).id = cardId; }, id);
+}
 
 async function openProvider(page: any, name: string): Promise<void> {
   await page.locator('.connect-card').filter({ has: page.locator('.connect-name', { hasText: name }) })
@@ -280,15 +345,32 @@ async function signSvg(svg: string, recipe: Recipe, dims: { w: number; h: number
 }
 
 // ── boot the demo deployment ────────────────────────────────────────────────────
-async function bootDemo(): Promise<{ close: () => Promise<void> }> {
+async function bootDemo(partner = false): Promise<{ close: () => Promise<void> }> {
   // Capture-only evaluation fixture: use the real app and demo seed, with an
   // owner for setup screens. Never inherit an operator's database or secrets.
-  const config = buildDemoConfig({ baseUrl: BASE, accessMode: 'open', pack: join(ROOT, 'packs/demo') });
+  // A partner run (plans/82) mounts the OSS pack view, so Design's rules
+  // renderer is there for a Share with rules template, serves the Lolly shell
+  // for the app shots, turns the licence gate on and adds the partner people.
+  const oss = partner ? resolveOssDir() : '';
+  const pack = partner ? (await resolvePack(oss)).dir : join(ROOT, 'packs/demo');
+  const shellDir = partner ? (process.env.LW_CAPTURE_SHELL_DIR ?? join(oss, 'shells/web/dist')) : undefined;
+  const config = buildDemoConfig({ baseUrl: BASE, accessMode: 'open', pack, ...(shellDir && existsSync(join(shellDir, 'index.html')) ? { shellDir } : {}) });
   config.dev.users.push({ email: ADMIN_PERSONA, groups: ['owner'] });
+  if (partner) {
+    config.dev.users.push(...PARTNER_PEOPLE.map((p) => ({ email: p.email, groups: p.groups })));
+    (config.policy.catalog as { partnerRights?: 'report' | 'gate' }).partnerRights = 'gate';
+  }
   config.render.allowHooksInFastPath = true; // only the curated local demo pack
   const store = createMemoryStore({ grants: demoGrants() });
   const seeded = await seedStore(store);
   await seedActivity(store, seeded);
+  // The partner people with their names, as the demo seeds its own people, so
+  // the console lists Rita Ortiz rather than an address.
+  if (partner) {
+    for (const p of PARTNER_PEOPLE) {
+      await store.upsertUserBySub({ sub: `dev:${p.email}`, email: p.email, firstname: p.firstname, lastname: p.lastname, title: p.title, groups: p.groups, role: roleFromGroups(p.groups) });
+    }
+  }
   let runner: RenderRunner | undefined;
   const app = buildApp({ config, store,
     secrets: { session: 'docs-fixture-session-key'.repeat(3), link: 'docs-fixture-link-key'.repeat(3), credential: 'docs-fixture-credential-key'.repeat(3) },
@@ -296,6 +378,7 @@ async function bootDemo(): Promise<{ close: () => Promise<void> }> {
   });
   const server = createServer((req, res) => void app(req, res));
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(PORT, 'localhost', resolve); });
+  if (partner) await seedPartnerShots(BASE, ADMIN_PERSONA, oss);
   return { close: async () => {
     await runner?.stop(); server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
@@ -320,43 +403,79 @@ async function main(): Promise<void> {
   const rootPem = engine.derToPem(signer.rootDer, 'CERTIFICATE');
   if (!only.size) writeFileSync(join(OUT_DIR, 'signing-root.pem'), rootPem);
 
-  console.log(`▶ booting demo deployment on ${BASE} …`);
-  const demo = await bootDemo();
-  console.log('✓ demo healthy');
-
   const pw = await loadPlaywright();
-  const browser = await pw.chromium.launch({
-    args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-    ...(process.env.LOLLY_BROWSER_CHANNEL ? { channel: process.env.LOLLY_BROWSER_CHANNEL } : {}),
-    ...(process.env.LOLLY_BROWSER_PATH ? { executablePath: process.env.LOLLY_BROWSER_PATH } : {}),
-  });
-
   let ok = 0;
   const failures: string[] = [];
-  try {
-    // bypassCSP: the console's CSP refuses inline scripts, and the walker bundle is
-    // injected as one. The capture is a local tool driving its own demo server.
-    const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, serviceWorkers: 'block', bypassCSP: true });
-    // Sign in as the capture owner once (plants lw_session for the whole context).
-    const auth = await context.newPage();
-    await auth.goto(`${BASE}/api/auth/dev?email=${encodeURIComponent(ADMIN_PERSONA)}&returnTo=/admin`, { waitUntil: 'domcontentloaded' });
-    await auth.close();
+  // The ordinary shots first, on the plain demo; then the partner shots on a
+  // demo seeded with the example programme, so neither changes the other.
+  for (const group of [recipes.filter((r) => !r.partner), recipes.filter((r) => r.partner)]) {
+    if (!group.length) continue;
+    const partner = !!group[0]!.partner;
+    // The Lolly shell draws with WebGPU, so a run with app shots gets the
+    // software adapter the Lolly browser tests use; console-only runs keep the GPU off.
+    const app = group.some((r) => r.path);
+    const browser = await pw.chromium.launch({
+      args: ['--no-sandbox', '--disable-dev-shm-usage', ...(app ? ['--enable-unsafe-webgpu', '--use-webgpu-adapter=swiftshader'] : ['--disable-gpu'])],
+      ...(process.env.LOLLY_BROWSER_CHANNEL ? { channel: process.env.LOLLY_BROWSER_CHANNEL } : {}),
+      ...(process.env.LOLLY_BROWSER_PATH ? { executablePath: process.env.LOLLY_BROWSER_PATH } : {}),
+    });
+    console.log(`▶ booting ${partner ? 'the partner programme' : 'the'} demo deployment on ${BASE} …`);
+    const demo = await bootDemo(partner);
+    console.log('✓ demo healthy');
+    try {
+      ok += await captureGroup(browser, group, walkerSrc, signer, rootPem, failures);
+    } finally {
+      await browser.close();
+      await demo.close();
+    }
+  }
 
+  console.log(`\n${ok}/${recipes.length * THEMES.length} shots captured → docs/shots/`);
+  if (failures.length) { console.error(`\n${failures.length} failed:\n  ${failures.join('\n  ')}`); process.exitCode = 1; }
+}
+
+/** Capture each recipe in both themes, signed in as its persona. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function captureGroup(browser: any, recipes: Recipe[], walkerSrc: string, signer: Signer, rootPem: string, failures: string[]): Promise<number> {
+  let ok = 0;
+  // bypassCSP: the console's CSP refuses inline scripts, and the walker bundle is
+  // injected as one. The capture is a local tool driving its own demo server.
+  // One browser context per person, each signed in once (plants lw_session).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const contexts = new Map<string, any>();
+  const contextFor = async (persona: string, app: boolean) => {
+    const key = persona;
+    if (contexts.has(key)) return contexts.get(key);
+    const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, serviceWorkers: 'block', bypassCSP: true });
+    const auth = await context.newPage();
+    await auth.goto(`${BASE}/api/auth/dev?email=${encodeURIComponent(persona)}&returnTo=${app ? '/api/auth/session' : '/admin'}`, { waitUntil: 'domcontentloaded' });
+    await auth.close();
+    contexts.set(key, context);
+    return context;
+  };
+  try {
     for (const recipe of recipes) {
      // Each screen is captured in BOTH themes: <slug>.svg (light) and
      // <slug>.dark.svg (dark). The docs show whichever matches the reader's theme,
      // so a dark-mode reader gets a dark shot, not a glaring light one.
      for (const theme of THEMES) {
+      const context = await contextFor(recipe.persona ?? ADMIN_PERSONA, !!recipe.path);
       const page = await context.newPage();
       page.setDefaultTimeout(20_000);
       try {
         await page.addInitScript((t) => {
-          try { localStorage.setItem('lw-theme', t); localStorage.removeItem('lw.setup.progress.v1'); } catch { /* ignore */ }
+          try {
+            localStorage.setItem('lw-theme', t); localStorage.removeItem('lw.setup.progress.v1');
+            // The Lolly shell's own theme and first-run flags, for the app shots.
+            localStorage.setItem('theme', t); localStorage.setItem('lolly-welcome-dismissed', '1');
+            localStorage.setItem('lolly-tips-dismissed', '1'); localStorage.setItem('lolly-privacy-ack', '1');
+            localStorage.setItem('lolly-capture-neutral', '1');
+          } catch { /* ignore */ }
         }, theme);
         // The control plane long-polls org-config, so 'networkidle' never fires;
         // gate on concrete DOM signals instead. 'load' + boot-placeholder gone +
         // the view's container visible + fonts ready is a reliable settle.
-        await page.goto(`${BASE}/admin#/${recipe.route}`, { waitUntil: 'load' });
+        await page.goto(recipe.path ? `${BASE}${recipe.path}` : `${BASE}/admin#/${recipe.route}`, { waitUntil: 'load' });
         await page.waitForFunction(() => !document.querySelector('.boot'), null, { timeout: 15_000 }).catch(() => {});
         await recipe.prepare?.(page, theme);
         await page.waitForSelector(`${recipe.cropSelector}`, { state: 'visible', timeout: 15_000 });
@@ -429,12 +548,9 @@ async function main(): Promise<void> {
      }
     }
   } finally {
-    await browser.close();
-    await demo.close();
+    for (const context of contexts.values()) await context.close();
   }
-
-  console.log(`\n${ok}/${recipes.length * THEMES.length} shots captured → docs/shots/`);
-  if (failures.length) { console.error(`\n${failures.length} failed:\n  ${failures.join('\n  ')}`); process.exitCode = 1; }
+  return ok;
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
