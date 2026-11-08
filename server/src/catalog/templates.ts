@@ -48,6 +48,9 @@ export interface TemplatePublication {
    *  `editable` is locked to the company value; in a rules tool every bound
    *  input is. */
   bindings?: Record<string, import('../programmes/company-values.ts').CompanyField>;
+  /** The catalog template its current version came from, which the workspace's
+   *  owner mark is checked against (plans/82 M6, programmes/template-routes.ts). */
+  from?: import('./versions.ts').CopiedFrom;
 }
 
 /** What a server render needs from a template the caller may use. */

@@ -385,6 +385,10 @@ const SESSION_VERSIONS_LOCK_KEY = 0x1011_0007;
 /** The first half of the two-key lock that charges one token's renders at a
  *  time (plans/82 M7); the second half is the token id's hashtext. */
 const TOKEN_USAGE_LOCK_KEY = 0x1011_0011;
+/** The first half of the two-key lock on one instance asset's mark statements,
+ *  withdrawals and head changes (programmes/owner-mark.ts); the second half is the
+ *  asset id's hashtext. */
+const ASSET_MARK_LOCK_KEY = 0x1011_0012;
 
 // Appends a `column = $n` clause + its bound value - shared by the two
 // filtered list queries below so the param-numbering logic lives in one place.
@@ -409,11 +413,14 @@ async function insertCollabReceipts(client: PgClient, sessionId: string, princip
   [sessionId, principal, receipts.map(r => r.id), receipts.map(r => r.digest), receipts.map(r => r.accepted), revision]);
 }
 
-export async function createPostgresStore(databaseUrl: string): Promise<Store & { close(): Promise<void> }> {
+export async function createPostgresStore(databaseUrl: string, opts: { poolMax?: number } = {}): Promise<Store & { close(): Promise<void> }> {
   let roleGroups: RoleGroups = {};
   let auditMacKey: string | undefined;
   const { default: pg } = await import('pg');
-  const pool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl)), 'store') as unknown as PgPool;
+  const pool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl, opts.poolMax !== undefined ? { max: opts.poolMax } : {})), 'store') as unknown as PgPool;
+  // Asset locks (withAssetLock) hold their own connections: a holder's work runs on
+  // `pool`, so waiters queued here can never take every connection that work needs.
+  const assetLockPool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl, { max: 4 })), 'asset lock') as unknown as PgPool;
   // A claim stays open during scanning and admission. Its transaction must not
   // consume the record connections the admission needs in order to finish.
   const submissionPool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl)), 'catalog submission') as unknown as PgPool;
@@ -2467,6 +2474,33 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         [rec.scope, JSON.stringify(rec)],
       );
     },
+    async withAssetLock(assetId, fn) {
+      const client = await assetLockPool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select pg_advisory_xact_lock($1, hashtext($2))', [ASSET_MARK_LOCK_KEY, assetId]);
+        try {
+          const out = await fn();
+          await client.query('commit');
+          return out;
+        } catch (error) {
+          await client.query('rollback').catch(() => undefined);
+          throw error;
+        }
+      } finally { client.release(); }
+    },
+    async takeAssetRightsMark(scope) {
+      const { rows } = await pool.query('delete from asset_rights_marks where scope = $1 returning record', [scope]);
+      return (rows[0]?.record as AssetRightsMarkRecord | undefined) ?? null;
+    },
+    async addAssetRightsMark(rec) {
+      const { rowCount } = await pool.query(
+        `insert into asset_rights_marks (scope, record, updated_at) values ($1, $2::jsonb, now())
+         on conflict (scope) do nothing`,
+        [rec.scope, JSON.stringify(rec)],
+      );
+      return rowCount === 1;
+    },
     async deleteAssetRightsMark(scope) {
       await pool.query('delete from asset_rights_marks where scope = $1', [scope]);
     },
@@ -3525,7 +3559,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return pendingAgainst(pool); // read-only; safe on a pending schema
     },
     async close() {
-      await Promise.all([pool.end(), submissionPool.end()]);
+      await Promise.all([pool.end(), submissionPool.end(), assetLockPool.end()]);
     },
   };
 }
