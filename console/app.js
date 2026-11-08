@@ -5826,6 +5826,7 @@ async function readCompanyKit(base) {
 }
 
 // Partner kits (plans/82 M8): imports are proposals until a person saves.
+const KIT_SURFACE_LABELS = { light: 'Logo for light surfaces', dark: 'Logo for dark surfaces', mark: 'Mark' };
 function companyKitCard(base, company, data, settings = {}, chains = []) {
   const card = el('div', { class: 'card stack company-kit' });
   let proposal = null, warnings = [], busy = false;
@@ -5853,14 +5854,17 @@ function companyKitCard(base, company, data, settings = {}, chains = []) {
     const current = proposal ?? data.kit;
     const waits = !!settings.kitApprovalChain;
     const pending = data.pending;
-    card.append(
+    // Element.append writes a null child as the text "null", so optional parts go through add().
+    const add = (...nodes) => card.append(...nodes.filter((node) => node != null));
+    add(
       el('p', { class: 'sub flush' }, `Up to ${limits.maxColours} colours, ${fmtBytes(limits.maxBytes)}, logos pinned by version.`),
+      el('details', { class: 'tbl' }, el('summary', {}, 'All limits'),
       el('p', { class: 'sub flush' }, `Colour names: up to ${limits.maxColourName} characters. Kit label: up to ${limits.maxLabel} characters. Source file name: up to ${limits.maxSourceReference} characters, without paths or URLs.`),
       el('p', { class: 'sub flush' }, `Clear space: above 0 up to ${limits.maxClearSpace} mark heights. Minimum size: above 0 up to ${limits.maxMinPx} px and ${limits.maxMinMm} mm.`),
       el('p', { class: 'sub flush' }, `Logo ids: up to ${limits.maxAssetId} characters. Logo versions: 1 to ${limits.maxLogoVersion}. Reserved skill ids: up to ${limits.maxSkills}.`),
-      el('p', { class: 'sub flush' }, `Imports: tokens up to ${fmtBytes(limits.imports.tokensMaxBytes)}, including expanded archives with up to ${limits.imports.tokensMaxParts} JSON parts. .lolly shares up to ${fmtBytes(limits.imports.lollyMaxBytes)}, with design-system.json up to ${fmtBytes(limits.imports.designSystemMaxBytes)}. SVG colour reading: up to ${fmtBytes(limits.imports.svgMaxBytes)} per logo.`),
+      el('p', { class: 'sub flush' }, `Imports: tokens up to ${fmtBytes(limits.imports.tokensMaxBytes)}, including expanded archives with up to ${limits.imports.tokensMaxParts} JSON parts. .lolly shares up to ${fmtBytes(limits.imports.lollyMaxBytes)}, with design-system.json up to ${fmtBytes(limits.imports.designSystemMaxBytes)}. SVG colour reading: up to ${fmtBytes(limits.imports.svgMaxBytes)} per logo.`)),
       data.revision ? el('p', { class: 'muted' }, `Revision ${data.revision}${data.source?.reference ? ` · from ${data.source.reference}` : ''}`) : null,
-      el('p', { class: 'sub flush' }, `The company’s people see “Partner kit: ${company.name} · revision ${data.revision ?? '<n>'}” in their tools${data.revision ? '.' : ' after the first save is live.'}`),
+      el('p', { class: 'sub' }, `The company’s people see “Partner kit: ${company.name} · revision ${data.revision ?? '<n>'}” in their tools${data.revision ? '.' : ' after the first save is live.'}`),
       pending ? el('p', { class: 'policy-warning' }, `The kit ${pending.action === 'remove' ? 'removal' : 'save'} is waiting for approval. `,
         el('a', { href: '#/approvals' }, `Open request ${pending.approvalId}`)) : null);
 
@@ -5890,7 +5894,7 @@ function companyKitCard(base, company, data, settings = {}, chains = []) {
       const label = el('input', { value: current.label, required: 'required', maxlength: limits.maxLabel, 'aria-label': 'Kit label' });
       const rows = current.colours.map((colour) => {
         const name = el('input', { value: colour.name, required: 'required', maxlength: limits.maxColourName, 'aria-label': `Name for ${colour.value}` });
-        const role = el('select', { 'aria-label': `Role for ${colour.value}` }, ...limits.colourRoles.map((r) => el('option', { value: r, ...(r === colour.role ? { selected: 'selected' } : {}) }, r)));
+        const role = el('select', { 'aria-label': `Role for ${colour.value}` }, ...limits.colourRoles.map((r) => el('option', { value: r, ...(r === colour.role ? { selected: 'selected' } : {}) }, r[0].toUpperCase() + r.slice(1))));
         const row = { name, role, value: colour.value, removed: false };
         row.element = el('div', { class: 'programme-actions' },
           el('span', { class: 'bedit-value' }, el('span', { class: 'bedit-swatch', style: `background:${colour.value}` }), el('span', { class: 'mono' }, colour.value)),
@@ -5904,6 +5908,7 @@ function companyKitCard(base, company, data, settings = {}, chains = []) {
       const mm = number(rules.minSize?.mm, limits.maxMinMm, 'Minimum size in mm');
       const treatments = limits.treatments.map((t) => ({ value: t, input: el('input', { type: 'checkbox', ...(rules.treatments?.includes(t) ? { checked: 'checked' } : {}) }) }));
       const ruleNote = el('p', { class: 'sub flush' });
+      const treatmentsLabel = `fld-${++_fieldSeq}`;
       const syncRules = () => { ruleNote.textContent = !clear.value && !px.value && !mm.value && !treatments.some((t) => t.input.checked)
         ? 'Lolly does not know the partner’s rules. Empty fields store no rule.'
         : 'Empty fields store no rule. Lolly does not know the partner’s rules for those fields.'; };
@@ -5939,26 +5944,24 @@ function companyKitCard(base, company, data, settings = {}, chains = []) {
         el('h3', {}, 'Colours'), ...rows.map((r) => r.element),
         !rows.length ? el('p', { class: 'muted' }, 'No colours.') : null,
         el('h3', {}, 'Logo pins'),
-        ...limits.logoSurfaces.map((surface) => el('p', { class: 'bedit-line' }, `${surface}: `,
-          el('span', { class: 'bedit-value mono' }, current.logos[surface] ? `${current.logos[surface].id} · version ${current.logos[surface].version}` : 'No pin'))),
+        ...limits.logoSurfaces.map((surface) => el('p', { class: 'bedit-line' }, `${KIT_SURFACE_LABELS[surface] ?? surface}: `,
+          current.logos[surface] ? `version ${current.logos[surface].version} ` : 'No pin',
+          current.logos[surface] ? el('span', { class: 'muted mono' }, current.logos[surface].id) : null)),
         el('h3', {}, 'Placement rules'), ruleNote,
-        el('div', { class: 'grant-fields' }, field('Clear space (of the mark’s height)', clear), field('Minimum size (px)', px), field('Minimum size (mm)', mm)),
-        el('div', { class: 'chk-list', role: 'group', 'aria-label': 'Allowed treatments' }, ...treatments.map((t) => el('label', { class: 'chk' }, t.input, t.value === 'on-photo' ? 'On photo' : t.value[0].toUpperCase() + t.value.slice(1)))),
+        el('div', { class: 'grant-fields' }, field('Clear space (of the mark’s height)', clear), field('Minimum size (px)', px), field('Minimum size (mm)', mm),
+          el('div', { style: 'grid-column: 1 / -1' }, el('span', { class: 'field-label', id: treatmentsLabel }, 'Allowed treatments'),
+            el('div', { class: 'chk-list', role: 'group', 'aria-labelledby': treatmentsLabel }, ...treatments.map((t) => el('label', { class: 'chk' }, t.input, t.value === 'on-photo' ? 'On photo' : t.value[0].toUpperCase() + t.value.slice(1)))))),
         el('p', { class: 'programme-actions' }, el('button', { class: 'primary' }, 'Save'),
-          proposal ? el('button', { type: 'button', onclick: () => { proposal = null; warnings = []; render(); } }, 'Cancel proposal') : null));
+          proposal ? el('button', { type: 'button', onclick: () => { proposal = null; warnings = []; render(); } }, 'Cancel proposal') : null,
+          data.kit && !proposal ? armConfirmButton({ class: 'danger', type: 'button' }, 'Remove', 'Really remove?', () => run(async () => {
+            const out = await api(base, { method: 'DELETE' });
+            data = out.pending ? { ...data, pending: { ...out.pending, action: 'remove' } } : { kit: null, limits: data.limits };
+            render();
+            toast(out.pending ? 'The kit removal is waiting for approval.' : 'Removed the partner kit');
+          })) : null));
       if (pending) for (const control of form.querySelectorAll('input, select, button')) control.disabled = true;
       card.append(form);
     } else card.append(el('p', { class: 'sub flush' }, 'Lolly does not know the partner’s rules.'));
-    if (data.kit && !proposal) {
-      const remove = armConfirmButton({ class: 'danger', type: 'button' }, 'Remove', 'Really remove?', () => run(async () => {
-        const out = await api(base, { method: 'DELETE' });
-        data = out.pending ? { ...data, pending: { ...out.pending, action: 'remove' } } : { kit: null, limits: data.limits };
-        render();
-        toast(out.pending ? 'The kit removal is waiting for approval.' : 'Removed the partner kit');
-      }));
-      remove.disabled = !!pending;
-      card.append(el('p', { class: 'programme-actions' }, remove));
-    }
     const approvalOn = el('input', { type: 'checkbox', ...(waits ? { checked: 'checked' } : {}), ...(!chains.length && !waits ? { disabled: 'disabled' } : {}) });
     const choices = settings.kitApprovalChain && !chains.some((c) => c.id === settings.kitApprovalChain)
       ? [{ id: settings.kitApprovalChain, name: `${settings.kitApprovalChain} (unavailable)` }, ...chains] : chains;
@@ -5975,7 +5978,7 @@ function companyKitCard(base, company, data, settings = {}, chains = []) {
       policyNote.textContent = on ? 'Save and Remove submit a change that waits for approval.' : 'Off by default. Save and Remove apply as soon as you confirm the change.';
     };
     syncPolicy();
-    card.append(
+    add(
       el('label', { class: 'chk' }, approvalOn, 'Kit changes need approval', status), policyNote,
       !choices.length ? el('p', { class: 'sub flush' }, 'Add an approval chain to turn this on.') : null,
       chainHost, el('button', { onclick: () => run(async () => {

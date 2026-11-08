@@ -73,6 +73,7 @@ test('the empty card explains the kit, reads every bound and keeps approval off'
   try {
     assert.match(h.card.textContent, /logos, colours and placement rules, offered to the company’s people and checked in Design/);
     assert.match(h.card.textContent, /No kit yet/);
+    assert.doesNotMatch(h.card.textContent, /null/);
     for (const text of ['7 colours, 32 KB', '51 characters', '99 characters', '111 characters', '150 characters', '1 to 123', 'up to 9', '3 mark heights', '900 px and 90 mm', '1.0 KB', '2.0 KB', '3.0 KB', '18 JSON parts', '4.0 KB per logo']) assert.ok(h.card.textContent.includes(text), text);
     assert.match(h.card.textContent, /Lolly does not know the partner’s rules/);
     assert.match(h.card.textContent, /Partner kit: Northwind IT · revision <n>/);
@@ -98,11 +99,12 @@ test('making from logos is a proposal with editable colours, read-only pins and 
     assert.ok(h.card.textContent.includes('Proposal'));
     assert.equal(h.calls.some((c) => c.method === 'PUT'), false);
     assert.deepEqual([...h.card.querySelectorAll('input[type=number]')].map((n: any) => n.value), ['', '', '']);
-    assert.equal(h.card.querySelector('[aria-label="Allowed treatments"] input:checked'), null);
+    assert.equal(h.card.querySelector('[role=group][aria-labelledby] input:checked'), null);
     assert.equal(h.input('Name for #0b3d91').maxLength, KIT_LIMITS.maxColourName);
     assert.equal(h.input('Kit label').maxLength, KIT_LIMITS.maxLabel);
     assert.deepEqual([...h.input('Role for #0b3d91').options].map((o: any) => o.value), [...KIT_LIMITS.colourRoles]);
-    assert.match(h.card.textContent, /light: inst\/logo-light · version 2dark: inst\/logo-dark · version 1mark: inst\/mark · version 3/);
+    assert.match(h.card.textContent, /Logo for light surfaces: version 2 inst\/logo-lightLogo for dark surfaces: version 1 inst\/logo-darkMark: version 3 inst\/mark/);
+    assert.doesNotMatch(h.card.textContent, /null/);
     assert.equal(h.card.querySelectorAll('input[value^="inst/"]').length, 0);
     h.input('Name for #0b3d91').value = 'Partner blue';
     h.input('Role for #0b3d91').value = 'accent';
@@ -148,13 +150,13 @@ test('a saved kit shows its revision, saves explicit rule units and can clear ev
     h.input('Clear space').value = '0.5';
     h.input('Minimum size in px').value = '40';
     h.input('Minimum size in mm').value = '10.5';
-    const ticks = h.card.querySelectorAll('[aria-label="Allowed treatments"] input');
+    const ticks = h.card.querySelectorAll('[role=group][aria-labelledby] input');
     ticks[0].click(); ticks[3].click();
     h.button('Save').click(); await settle();
     assert.deepEqual(h.calls.find((c) => c.method === 'PUT')!.body.rules, { clearSpace: { value: 0.5, unit: 'mark-height' }, minSize: { px: 40, mm: 10.5 }, treatments: ['colour', 'on-photo'] });
     assert.match(h.card.textContent, /Revision 3/);
     for (const n of h.card.querySelectorAll('input[type=number]')) n.value = '';
-    for (const tick of h.card.querySelectorAll('[aria-label="Allowed treatments"] input:checked')) tick.click();
+    for (const tick of h.card.querySelectorAll('[role=group][aria-labelledby] input:checked')) tick.click();
     h.button('Save').click(); await settle();
     assert.equal('rules' in h.calls.filter((c) => c.method === 'PUT').at(-1)!.body, false);
     assert.match(h.card.textContent, /Revision 4/);
