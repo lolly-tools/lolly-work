@@ -388,20 +388,65 @@ export function catalogIdOf(value: string): string {
   return m[1]!.toLowerCase() === 'cms' ? `ext/${rest}` : rest;
 }
 
+/** How far a gate check reads into values: past this, the values are refused, never half read. */
+export const ASSET_SCAN_MAX_NODES = 200_000;
+export const ASSET_SCAN_MAX_DEPTH = 64;
+
+/** Values too large or too deep for every file in them to be checked. */
+export class AssetScanBoundExceeded extends Error {
+  constructor() { super('These values are too large for every file they name to be checked.'); this.name = 'AssetScanBoundExceeded'; }
+}
+
 /**
  * Every catalog asset id some values name: a bare id string, a provider ref
- * (`catalog://`, `library://`), or an asset reference's `id`, anywhere inside
- * them. Only ids in `known` count, so free text that happens to contain a
- * slash is never read as a file. Bounded.
+ * (`catalog://`, `library://`, `cms://`), or an asset reference's `id`,
+ * anywhere inside them. Only ids in `known` count, so free text that happens
+ * to contain a slash is never read as a file. Every row and key is read, up
+ * to a node and depth bound; past it a strict reading throws rather than
+ * check part of the values, and a lenient one (a report) stops.
  */
-export function referencedAssetIds(values: unknown, known: ReadonlySet<string>, depth = 0): string[] {
-  if (depth > 8 || values === null || values === undefined) return [];
-  if (typeof values === 'string') { const id = catalogIdOf(values); return known.has(id) ? [id] : []; }
-  if (Array.isArray(values)) return [...new Set(values.slice(0, 500).flatMap((v) => referencedAssetIds(v, known, depth + 1)))];
-  if (typeof values === 'object') {
-    return [...new Set(Object.values(values as Record<string, unknown>).slice(0, 500).flatMap((v) => referencedAssetIds(v, known, depth + 1)))];
-  }
-  return [];
+export function referencedAssetIds(values: unknown, known: ReadonlySet<string>, opts: { strict?: boolean } = {}): string[] {
+  const out = new Set<string>();
+  let budget = ASSET_SCAN_MAX_NODES;
+  let stopped = false;
+  const walk = (value: unknown, depth: number): void => {
+    if (stopped || value === null || value === undefined) return;
+    if (--budget < 0 || depth > ASSET_SCAN_MAX_DEPTH) {
+      if (opts.strict) throw new AssetScanBoundExceeded();
+      stopped = true;
+      return;
+    }
+    if (typeof value === 'string') { const id = catalogIdOf(value); if (known.has(id)) out.add(id); return; }
+    if (Array.isArray(value)) { for (const v of value) walk(v, depth + 1); return; }
+    if (typeof value === 'object') for (const v of Object.values(value as Record<string, unknown>)) walk(v, depth + 1);
+  };
+  walk(values, 0);
+  return [...out];
+}
+
+/**
+ * A copy of a payload with every reference to a catalog file the caller may
+ * not draw replaced by null: a bare id, a provider ref or an asset reference.
+ * A compiled document keeps its tool's manifest and model, whose defaults may
+ * name such a file even when the caller chose another; the caller receives
+ * neither the file nor its id. Strict: past the scan bound it throws.
+ */
+export function withoutRefusedRefs<T>(payload: T, known: ReadonlySet<string>, allows: (id: string) => boolean): T {
+  let budget = ASSET_SCAN_MAX_NODES;
+  const refused = (id: string): boolean => known.has(id) && !allows(id);
+  const walk = (value: unknown, depth: number): unknown => {
+    if (value === null || value === undefined) return value;
+    if (--budget < 0 || depth > ASSET_SCAN_MAX_DEPTH) throw new AssetScanBoundExceeded();
+    if (typeof value === 'string') return refused(catalogIdOf(value)) ? null : value;
+    if (Array.isArray(value)) return value.map((v) => walk(v, depth + 1));
+    if (typeof value === 'object') {
+      const o = value as Record<string, unknown>;
+      if (typeof o.id === 'string' && refused(catalogIdOf(o.id))) return null;
+      return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, walk(v, depth + 1)]));
+    }
+    return value;
+  };
+  return walk(payload, 0) as T;
 }
 
 /**
@@ -409,13 +454,15 @@ export function referencedAssetIds(values: unknown, known: ReadonlySet<string>, 
  * reference whose `id` the catalog knows and that holds its bytes inline (a
  * `data:` url) or marks them baked. A compiled document carries these in its
  * manifest's defaults and its values, whether or not a read happened, so the
- * gate checks them before the document leaves. The walk is bounded.
+ * gate checks them before the document leaves. Past the scan bound it
+ * throws, so a document is never passed on half checked.
  */
 export function embeddedAssetIds(payload: unknown, known: ReadonlySet<string>): string[] {
   const out = new Set<string>();
-  let budget = 200_000;
+  let budget = ASSET_SCAN_MAX_NODES;
   const walk = (value: unknown, depth: number): void => {
-    if (--budget < 0 || depth > 64 || value === null || typeof value !== 'object') return;
+    if (value === null || typeof value !== 'object') return;
+    if (--budget < 0 || depth > ASSET_SCAN_MAX_DEPTH) throw new AssetScanBoundExceeded();
     if (Array.isArray(value)) { for (const v of value) walk(v, depth + 1); return; }
     const o = value as Record<string, unknown>;
     const id = typeof o.id === 'string' ? catalogIdOf(o.id) : '';

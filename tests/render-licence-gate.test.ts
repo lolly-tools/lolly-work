@@ -28,6 +28,11 @@ import { instanceAssetEntry } from '../server/src/catalog/instance-assets.ts';
 import { seededAssetIds } from '../server/src/programmes/rights-routes.ts';
 import { renderTool, type RenderRequest } from '../server/src/render/pipeline.ts';
 import { AssetHeldError, withRenderHost } from '../server/src/render/host.ts';
+import { ASSET_SCAN_MAX_NODES, AssetScanBoundExceeded, referencedAssetIds } from '../server/src/catalog/rights.ts';
+
+const ENGINE_SPEC: string = '@lolly/engine';
+const readZip = async (bytes: Uint8Array): Promise<Array<{ name: string; bytes: Uint8Array }>> =>
+  ((await import(ENGINE_SPEC)) as { readZip: (b: Uint8Array) => Array<{ name: string; bytes: Uint8Array }> }).readZip(bytes);
 
 const SVG = (fill: string) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="${fill}"/></svg>`;
 const PACK = [
@@ -84,6 +89,13 @@ before(async () => {
     id: 'inst/tpl-price',
     entry: { ...instanceAssetEntry('inst/tpl-price', { name: 'Partner price sheet', type: 'template' }, [{ format: 'json', size: stat.size, checksum: stat.checksum }]), meta: { toolId: 'price-sheet', version: 1 } },
     blobs: { json: 'inst/tpl-price/json' }, groups: ['programme-resellers-emea'], createdAt: new Date().toISOString(),
+  });
+  // A template that seeds a DAM file its partner cannot see.
+  const cms = await blobs.put('inst/tpl-cms/json', Buffer.from(JSON.stringify({ values: { photo: 'cms://dam/secret-photo' } })), 'application/json');
+  await store.putInstanceAsset({
+    id: 'inst/tpl-cms',
+    entry: { ...instanceAssetEntry('inst/tpl-cms', { name: 'Partner photo card', type: 'template' }, [{ format: 'json', size: cms.size, checksum: cms.checksum }]), meta: { toolId: 'photo-card', version: 1 } },
+    blobs: { json: 'inst/tpl-cms/json' }, groups: ['programme-resellers-emea'], createdAt: new Date().toISOString(),
   });
   await store.putGrant({ principal: 'group:programme-resellers-emea', action: 'export.server', resource: '*', effect: 'allow' });
   await store.putGrant({ principal: 'group:marketing', action: 'export.server', resource: '*', effect: 'allow' });
@@ -278,4 +290,38 @@ test('a tool link a partner made draws only what that partner may draw now, and 
   assert.equal(withdraw.status, 200);
   assert.equal((await fetch(url)).status, 422, 'withdrawn: the link is held again on its next fetch');
   assert.equal((await fetch(direct, { headers: { cookie: rita } })).status, 422, 'and the cached render is not served');
+});
+
+test('a gate check reads every row of a value, and refuses values too large to read whole', () => {
+  const known = new Set(['acme/held']);
+  const rows = Array.from({ length: 501 }, (_, i) => ({ title: `row ${i}`, ...(i === 500 ? { image: { source: 'library', id: 'acme/held', url: 'data:image/png;base64,AA==', meta: { baked: true } } } : {}) }));
+  assert.deepEqual(referencedAssetIds({ blocks: rows }, known, { strict: true }), ['acme/held'], 'row 501 is read');
+  const huge = Array.from({ length: ASSET_SCAN_MAX_NODES + 1 }, () => 'x');
+  assert.throws(() => referencedAssetIds({ blocks: huge }, known, { strict: true }), AssetScanBoundExceeded);
+  let deep: unknown = 'acme/held';
+  for (let i = 0; i < 80; i++) deep = [deep];
+  assert.throws(() => referencedAssetIds(deep, known, { strict: true }), AssetScanBoundExceeded, 'and values too deep');
+});
+
+test('a compiled document and its package name no file the caller may not draw, defaults included', async () => {
+  const rita = await login('rita@northwind.test', gateBase);
+  const body = JSON.stringify({ toolId: 'photo-card', inputs: { photo: 'acme/photo/open' } });
+  const compiled = await fetch(`${gateBase}/api/v1/compile`, { method: 'POST', headers: { cookie: rita, 'content-type': 'application/json' }, body });
+  const text = await compiled.text();
+  assert.equal(compiled.status, 200, text);
+  assert.doesNotMatch(text, /acme\/photo\/unrecorded/, 'the manifest default she chose against is not named');
+  const pkg = await fetch(`${gateBase}/api/v1/package`, { method: 'POST', headers: { cookie: rita, 'content-type': 'application/json' }, body });
+  assert.equal(pkg.status, 200);
+  const entries = await readZip(new Uint8Array(await pkg.arrayBuffer()));
+  for (const e of entries) assert.doesNotMatch(new TextDecoder().decode(e.bytes), /acme\/photo\/unrecorded/, `${e.name} names no held file`);
+  const staff = await (await fetch(`${gateBase}/api/v1/compile`, { method: 'POST', headers: { cookie: await login('mia@test', gateBase), 'content-type': 'application/json' }, body })).text();
+  assert.match(staff, /acme\/photo\/unrecorded/, 'staff documents are unchanged');
+});
+
+test('a template\'s DAM ref the partner cannot reach is refused without being named', async () => {
+  const res = await fetch(`${gateBase}/api/v1/render`, { method: 'POST', headers: { cookie: await login('rita@northwind.test', gateBase), 'content-type': 'application/json' },
+    body: JSON.stringify({ toolId: 'photo-card', format: 'svg', inputs: { template: 'inst/tpl-cms' } }) });
+  const text = await res.text();
+  assert.equal(res.status, 422, text);
+  assert.doesNotMatch(text, /secret-photo/, 'the template\'s file is not named to the partner');
 });

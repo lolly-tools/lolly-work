@@ -36,7 +36,7 @@ import { applyPreviewWatermark, shouldWatermark, untilApprovedNote } from './wat
 import { renderInputsDigest } from './inputs-digest.ts';
 import { templateFixedValues, templateOpenInputs, templateVariantDigest, type ExportReviewKey } from '../approvals/export-review-match.ts';
 import { AssetHeldError, assetHeldReport, withRenderHost, type RenderAssetGate } from './host.ts';
-import { referencedAssetIds } from '../catalog/rights.ts';
+import { ASSET_SCAN_MAX_DEPTH, ASSET_SCAN_MAX_NODES, AssetScanBoundExceeded, referencedAssetIds } from '../catalog/rights.ts';
 import { createVmHookExecutor } from './vm-hooks.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import {
@@ -215,7 +215,22 @@ export interface RenderOutput {
   partner?: RenderPartner;
 }
 
-async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedResolver']): Promise<unknown> {
+/** Every string inside some values, read to the same bound a gate check reads to. */
+function stringsIn(values: unknown): string[] {
+  const out: string[] = [];
+  let budget = ASSET_SCAN_MAX_NODES;
+  const walk = (v: unknown, depth: number): void => {
+    if (v === null || v === undefined) return;
+    if (--budget < 0 || depth > ASSET_SCAN_MAX_DEPTH) throw new AssetScanBoundExceeded();
+    if (typeof v === 'string') out.push(v);
+    else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1);
+    else if (typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) walk(x, depth + 1);
+  };
+  walk(values, 0);
+  return out;
+}
+
+async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedResolver'], named?: (raw: string) => boolean): Promise<unknown> {
   if (!resolve) return value;
   // URL mode wraps asset inputs as {source,id,_unresolved}; resolve the whole
   // reference. Recursing into its id would replace that string with an object
@@ -223,13 +238,20 @@ async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedR
   const asset = value && typeof value === 'object' && !Array.isArray(value) ? value as { source?: unknown; id?: unknown } : null;
   const ref = parseHostedProviderRef(value) ?? (asset && ['library', 'remote', 'user'].includes(String(asset.source)) ? parseHostedProviderRef(asset.id) : null);
   if (ref && (ref.provider === 'cms' || ref.provider === 'net')) {
-    const result = await resolve(ref);
-    if (!result) throw new RenderError('ASSET_PROVIDER_UNAVAILABLE', 422, `No hosted resolver could resolve ${ref.raw}`);
+    // A gated caller hears about a ref only when they gave it themselves; a
+    // template's or a policy's ref is not theirs to learn of (plans/82 M4).
+    const unnamed = named && !named(ref.raw);
+    let result: Awaited<ReturnType<NonNullable<RenderDeps['hostedResolver']>>>;
+    try { result = await resolve(ref); } catch (e) {
+      if (unnamed) throw new RenderError('ASSET_PROVIDER_UNAVAILABLE', 422, 'A file this render uses could not be resolved.');
+      throw e;
+    }
+    if (!result) throw new RenderError('ASSET_PROVIDER_UNAVAILABLE', 422, unnamed ? 'A file this render uses could not be resolved.' : `No hosted resolver could resolve ${ref.raw}`);
     return result.asset;
   }
-  if (Array.isArray(value)) return Promise.all(value.map((item) => resolveHostedValues(item, resolve)));
+  if (Array.isArray(value)) return Promise.all(value.map((item) => resolveHostedValues(item, resolve, named)));
   if (value && typeof value === 'object') {
-    const entries = await Promise.all(Object.entries(value).map(async ([key, item]) => [key, await resolveHostedValues(item, resolve)] as const));
+    const entries = await Promise.all(Object.entries(value).map(async ([key, item]) => [key, await resolveHostedValues(item, resolve, named)] as const));
     return Object.fromEntries(entries);
   }
   return value;
@@ -543,25 +565,38 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     throw new RenderError(violations[0]!.code, 422,
       `Policy forbids these params for your access: ${params}`, violations);
   }
-  const bakedValues = await resolveHostedValues(
-    { ...seed, ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
-  ) as Record<string, unknown>;
   // What the caller may draw (plans/82 M4 and M6): a file their own feed
   // leaves out is never drawn. Every file the values or the tool's defaults
-  // name is checked here, before either render tier runs; the in-process host
-  // answers every lookup, read and listing from the same feed, and the worker
-  // reads the catalog as this caller. A refusal names only files the caller
-  // named themselves.
+  // name is checked here, before either render tier runs and before a seeded
+  // provider ref is resolved; the in-process host answers every lookup, read
+  // and listing from the same feed, and the worker reads the catalog as this
+  // caller. A refusal names only files the caller named themselves, and a
+  // provider that cannot resolve a ref the caller did not give says so
+  // without naming it.
   const scope = req.assetScope ?? { groups, ...(req.principal?.role ? { role: req.principal.role } : {}) };
   const gate = await deps.assetGate?.(scope.groups, scope.role) ?? null;
   const hostGate: RenderAssetGate | undefined = gate ? { allows: (id) => gate.allows(id), held: new Set(), catalogIds: gate.catalogIds } : undefined;
   const supplied: ReadonlySet<string> = gate ? new Set(referencedAssetIds(st.values, gate.catalogIds)) : new Set();
+  const defaults = Object.fromEntries((tool.manifest.inputs as Array<{ id: string; default?: unknown }>).map((i) => [i.id, i.default]));
+  const strictly = <T>(check: () => T): T => {
+    try { return check(); } catch (e) {
+      if (e instanceof AssetScanBoundExceeded) throw new RenderError('VALUES_TOO_LARGE', 422, e.message);
+      throw e;
+    }
+  };
+  const unresolved = { ...seed, ...st.values, ...lockedValues(overlay, groups) };
   if (gate) {
-    const defaults = Object.fromEntries((tool.manifest.inputs as Array<{ id: string; default?: unknown }>).map((i) => [i.id, i.default]));
     // A rules tool from the feed reaches a catalog file only through an asset
     // input (rules-tools.ts refuses a linked picture), so its defaults and the
     // values cover it as they do a pack tool.
-    const named = referencedAssetIds({ ...defaults, ...bakedValues }, gate.catalogIds).filter((id) => !gate.allows(id));
+    const named = strictly(() => referencedAssetIds({ ...defaults, ...unresolved }, gate.catalogIds, { strict: true })).filter((id) => !gate.allows(id));
+    if (named.length) throw assetHeld(named, supplied);
+  }
+  const callerRefs = gate ? new Set(strictly(() => stringsIn(st.values))) : null;
+  const bakedValues = await resolveHostedValues(unresolved, hostedResolver, callerRefs ? (raw) => callerRefs.has(raw) : undefined) as Record<string, unknown>;
+  if (gate) {
+    // A resolved provider file names its catalog id: the same check again.
+    const named = strictly(() => referencedAssetIds({ ...defaults, ...bakedValues }, gate.catalogIds, { strict: true })).filter((id) => !gate.allows(id));
     if (named.length) throw assetHeld(named, supplied);
   }
   const initialValues = deps.managedRules ? Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues }).map(i => [i.id, i.value])) : {};

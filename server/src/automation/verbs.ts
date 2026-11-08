@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { loadEngine, type LoadedTool, type Profile } from '../render/contract.ts';
 import { loadToolOrRefuse } from '../render/tool-load.ts';
 import { AssetHeldError, withRenderHost, type RenderAssetGate } from '../render/host.ts';
-import { embeddedAssetIds, referencedAssetIds } from '../catalog/rights.ts';
+import { embeddedAssetIds, referencedAssetIds, withoutRefusedRefs } from '../catalog/rights.ts';
 import { designRuleIssues, vectorFieldParams } from '../render/pipeline.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { isSvgTemplate, toolServerFormats, type RenderCapabilities, type ToolServerFormats } from '../render/capabilities.ts';
@@ -108,8 +108,12 @@ export async function compileVerb(ctx: AutomationContext, req: ToolRequest): Pro
     // inline or marked baked, in its manifest and its values. Every one is
     // checked before the document leaves, and /package compiles through here.
     const document = (compiled as { document?: { values?: unknown } } | null)?.document;
-    const carried = [...embeddedAssetIds(compiled, known), ...referencedAssetIds(document?.values, known)].filter((id) => !gate.allows(id));
+    const carried = [...embeddedAssetIds(compiled, known), ...referencedAssetIds(document?.values, known, { strict: true })].filter((id) => !gate.allows(id));
     if (gate.held.size || carried.length) throw new AssetHeldError([...gate.held, ...carried], supplied);
+    // What is left can still name a file the caller may not draw: a default
+    // in the tool's manifest or model they chose something else for. The
+    // document they receive names none of them.
+    compiled = withoutRefusedRefs(compiled, known, (id) => gate.allows(id));
   }
   return compiled;
 }

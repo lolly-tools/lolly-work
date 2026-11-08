@@ -108,7 +108,7 @@ import { entryInFolders, foldersFor } from '../programmes/folders.ts';
 import { registerFolderRoutes } from '../programmes/folder-routes.ts';
 import { linksThatWouldLose, registerRightsRoutes } from '../programmes/rights-routes.ts';
 import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
-import { composeRightsRecords, loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
+import { AssetScanBoundExceeded, composeRightsRecords, loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
 import { decidePartnerRightsDefault, partnerRightsState, type PartnerRightsState } from '../catalog/rights-mode.ts';
 import { partnerRightsCheck } from '../setup/checks.ts';
 import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
@@ -12251,6 +12251,7 @@ export function buildApp(deps: AppDeps): App {
         if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
         if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
         if (e instanceof AssetHeldError) { const r = e.report('document'); return sendError(res, 422, 'ASSET_HELD', r.message, { assets: r.assets, ...(r.more ? { more: r.more } : {}) }); }
+        if (e instanceof AssetScanBoundExceeded) return sendError(res, 422, 'VALUES_TOO_LARGE', e.message);
         return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
       }
     });
@@ -12287,6 +12288,7 @@ export function buildApp(deps: AppDeps): App {
       if (e instanceof PolicyRefusal) return sendPolicyRefusal(res, e);
       if (e instanceof ToolLoadRefusal) return sendError(res, e.status, e.code, e.message);
       if (e instanceof AssetHeldError) { const r = e.report('document'); return sendError(res, 422, 'ASSET_HELD', r.message, { assets: r.assets, ...(r.more ? { more: r.more } : {}) }); }
+      if (e instanceof AssetScanBoundExceeded) return sendError(res, 422, 'VALUES_TOO_LARGE', e.message);
       return sendError(res, 400, 'DOCUMENT_API_ERROR', withoutServerPaths((e as Error).message));
     }
   });
