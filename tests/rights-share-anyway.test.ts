@@ -54,12 +54,18 @@ test('a choice binds every rendition the file serves, and no file without an ide
   const hex = 'b0f828b84c15ab6d5672a124034ddfef24eebb070bee4ae2a662541d36c96058';
   assert.equal(assetIdentity({ id: 'inst/a', formats: [f('png', hex)] }), assetIdentity({ id: 'inst/a', formats: [f('png', `sha256-${Buffer.from(hex, 'hex').toString('base64')}`)] }));
   // A pinned federated file is served from the pin, so the pin's checksums stand for it.
-  const pins = (c: string) => pinLookup([{ id: 'inst/pin', origin: { provider: 'git', remoteId: 'x' }, entry: { id: 'inst/pin', formats: [f('jpg', c)] }, headVersion: 1 }]);
-  const git = { id: 'ext/git/x', version: 'abcd', formats: [f('jpg')] };
+  // The feed serves each rendition at /catalog/ext/<provider>/<id>/<remoteRef>; the pin maps that remoteRef to its own file.
+  const pins = (c: string, c2 = 'sha256-second') => pinLookup([{ id: 'inst/pin', origin: { provider: 'git', remoteId: 'x' },
+    entry: { id: 'inst/pin', formats: [f('jpg', c), f('png', 'sha256-p1'), f('png-2', c2)] }, refMap: { r1: 'jpg', r2: 'png', r3: 'png-2' }, headVersion: 1 }]);
+  const git = { id: 'ext/git/x', version: 'abcd', formats: [f('jpg', undefined, '/catalog/ext/git/x/r1')] };
   assert.ok(assetIdentity(git, pins('sha256-a')), 'a pin gives a file with no revision an identity');
   assert.notEqual(assetIdentity(git, pins('sha256-a')), assetIdentity(git, pins('sha256-b')), 'and moves when the pinned bytes do');
-  const upstream = { ...dated, id: 'ext/git/x', version: 'v2' };
+  const upstream = { ...dated, id: 'ext/git/x', version: 'v2', formats: [f('jpg', undefined, '/catalog/ext/git/x/r1')] };
   assert.notEqual(assetIdentity(upstream as never, pins('sha256-a')), assetIdentity(upstream as never), 'pinned v1 bytes are not the provider\'s v2');
+  // Two renditions of one format are two pinned files: re-pinning the second moves the identity.
+  const twoPngs = { id: 'ext/git/x', version: 'abcd', formats: [f('png', undefined, '/catalog/ext/git/x/r2'), f('png', undefined, '/catalog/ext/git/x/r3')] };
+  assert.ok(assetIdentity(twoPngs, pins('sha256-a')));
+  assert.notEqual(assetIdentity(twoPngs, pins('sha256-a', 'sha256-second')), assetIdentity(twoPngs, pins('sha256-a', 'sha256-CHANGED')), 'the second png is its own file');
 });
 
 let server: Server;

@@ -56,12 +56,14 @@ export function canonicalChecksum(c: string): string {
   return /^[0-9a-f]{64}$/i.test(c) ? `sha256-${Buffer.from(c, 'hex').toString('base64')}` : c;
 }
 
-/** The bytes a local pin serves for a federated file (plans/27): checksum by format, and the pin's version. */
-export interface PinnedBytes { checksums: ReadonlyMap<string, string>; version: number }
+/** The bytes a local pin serves for a federated file (plans/27): checksum by
+ *  local format key, the provider's remoteRef → key map the bytes route
+ *  follows, and the pin's version. */
+export interface PinnedBytes { checksums: ReadonlyMap<string, string>; refMap: Readonly<Record<string, string>>; version: number }
 export type PinLookup = (assetId: string) => PinnedBytes | undefined;
 
 /** The pins among instance records, as the federated bytes route finds them. */
-export function pinLookup(records: Iterable<{ id: string; origin?: { provider: string; remoteId: string }; entry: AssetIndexEntry; headVersion?: number }>): PinLookup {
+export function pinLookup(records: Iterable<{ id: string; origin?: { provider: string; remoteId: string }; entry: AssetIndexEntry; refMap?: Record<string, string>; headVersion?: number }>): PinLookup {
   const pins = new Map<string, PinnedBytes>();
   for (const r of records) {
     if (!r.origin) continue;
@@ -70,7 +72,7 @@ export function pinLookup(records: Iterable<{ id: string; origin?: { provider: s
       const c = (f as { checksum?: unknown }).checksum;
       if (typeof c === 'string' && c) checksums.set(String((f as { format?: unknown }).format ?? ''), canonicalChecksum(c));
     }
-    pins.set(`ext/${r.origin.provider}/${r.origin.remoteId}`, { checksums, version: r.headVersion ?? 1 });
+    pins.set(`ext/${r.origin.provider}/${r.origin.remoteId}`, { checksums, refMap: r.refMap ?? {}, version: r.headVersion ?? 1 });
   }
   return (id) => pins.get(id);
 }
@@ -92,10 +94,15 @@ export function assetIdentity(entry: AssetIndexEntry, pins?: PinLookup): string 
   const renditions: Rendition[] = [];
   const add = (f: unknown, locale?: string): void => {
     if (!f || typeof f !== 'object') return;
-    const r = f as { format?: unknown; checksum?: unknown };
+    const r = f as { format?: unknown; url?: unknown; checksum?: unknown };
     const format = String(r.format ?? '');
     const own = typeof r.checksum === 'string' && r.checksum ? canonicalChecksum(r.checksum) : null;
-    renditions.push({ format, checksum: (!locale ? pin?.checksums.get(format) : undefined) ?? own, ...(locale ? { locale } : {}) });
+    // Each rendition is matched to its own pinned file, as the bytes route
+    // matches it: by its remoteRef through the pin's map. Two of one format
+    // are two files.
+    const remoteRef = String(r.url ?? '').split(/[?#]/, 1)[0]!.split('/').pop() ?? '';
+    const pinned = pin && !locale ? pin.checksums.get(pin.refMap[remoteRef] ?? remoteRef) : undefined;
+    renditions.push({ format, checksum: pinned ?? own, ...(locale ? { locale } : {}) });
   };
   for (const f of Array.isArray(entry.formats) ? entry.formats : []) add(f);
   const locales = (entry as { locales?: unknown }).locales;
