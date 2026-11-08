@@ -194,6 +194,7 @@ export interface OrgConfigPartner {
   company?: {
     id: string; name: string; revision: number;
     logos: { light?: string; dark?: string; mark?: string };
+    kit?: { id: string; revision: number; label: string };
     website?: string; contact?: { name?: string; email?: string; phone?: string };
     address?: string; currency?: string; taxNote?: string;
   };

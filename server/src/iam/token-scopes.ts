@@ -129,6 +129,8 @@ const ROUTE_SCOPES: Readonly<Record<string, typeof ANY | readonly TokenScope[]>>
   'GET /api/v1/context/brand/skills/:slug/*': ['catalog.read'],
   'GET /api/v1/context/partner/company': ['catalog.read'],
   'GET /api/v1/context/partner/company/logo/:surface': ['catalog.read'],
+  'GET /api/v1/context/partner/kit': ['catalog.read'],
+  'GET /api/v1/context/partner/kit/logo/:surface': ['catalog.read'],
   'GET /api/v1/context/partner/templates': ['catalog.read'],
 
   'GET /api/v1/discovery/tools': WORK,

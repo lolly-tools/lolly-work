@@ -242,6 +242,9 @@ export interface C2paEmbedOptions {
   /** The Lolly record's flat scalar keys (the `tools.lolly.export` assertion):
    *  the design system, its theme choices and the partner (plans/82 M3). */
   environment?: Record<string, string>;
+  /** The approval of a template's variants that a clean variant render carries
+   *  (the `tools.lolly.approval` assertion, plans/82 M7, decision 5). */
+  approval?: import('./record.ts').TemplateApprovalRecord;
 }
 
 // string-typed (non-literal) so tsc doesn't resolve the sibling .ts source.
