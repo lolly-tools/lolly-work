@@ -61,7 +61,8 @@ function dataSheetFile(ossDir: string): Buffer {
     compilerVersion: 1, rendererDigest: sha256(RENDERER), css: face(400) + face(600),
     dependencies: [{ path: fontPath, digest, credit: 'Outfit, SIL Open Font License 1.1: embedded font for editable artwork.' }],
   };
-  const compiled = compileDesignTool(def, { source: RENDERER, styles: '' }, { [fontPath]: font }) as { files: Record<string, string | Uint8Array> };
+  // The fixture is written as plain data; the compiler checks its shape itself.
+  const compiled = compileDesignTool(def as unknown as Parameters<typeof compileDesignTool>[0], { source: RENDERER, styles: '' }, { [fontPath]: font }) as unknown as { files: Record<string, string | Uint8Array> };
   const files: Record<string, Buffer> = {};
   for (const [path, value] of Object.entries(compiled.files)) files[`tool/${path}`] = Buffer.from(value as string);
   const integrity = Object.fromEntries(Object.entries(files).map(([path, bytes]) => [path, sha256(bytes)]));
@@ -133,4 +134,22 @@ export async function seedPartnerShots(base: string, ownerEmail: string, ossDir:
     toolId: 'pricing-table', name: 'Reseller price list', values: { heading: 'Lolly Demo Cloud plans', subheading: 'Prices for resellers in EMEA', cta: 'Ask Northwind IT' } });
   await send(base, owner, 'POST', `${P}/templates`, { from: tpl.assetId, groups: [`programme-${PROGRAMME}`], editable: ['data', 'cta'] });
   await send(base, owner, 'PUT', `${P}/templates-only/pricing-table`, { on: true });
+
+  // An agent token for Northwind IT, and a little of what an agent does with
+  // it, so the Agent tokens and What agents did cards have figures to show.
+  const minted = await send(base, owner, 'POST', `${P}/tokens`, { label: "Rita's agent", company: COMPANY }) as { token: string };
+  const agent = { authorization: `Bearer ${minted.token}`, 'content-type': 'application/json' };
+  for (let i = 0; i < 6; i++) await fetch(`${base}/api/v1/context/me`, { headers: agent }).then((r) => r.text());
+  await fetch(`${base}/api/v1/context/partner/company`, { headers: agent }).then((r) => r.text());
+  for (const url of ['https://northwind.example/', 'https://northwind.example/offers']) {
+    await fetch(`${base}/api/v1/render`, { method: 'POST', headers: agent, body: JSON.stringify({ toolId: 'qr-code', format: 'svg', inputs: { url } }) }).then((r) => r.arrayBuffer());
+  }
+  const durable = await fetch(`${base}/api/v1/renders`, { method: 'POST', headers: agent, body: JSON.stringify({ toolId: 'qr-code', format: 'svg', inputs: { url: 'https://northwind.example/contact' } }) });
+  const job = await durable.json().catch(() => null) as { id?: string } | null;
+  // Wait for the durable render to finish, so it counts by tool.
+  for (let i = 0; job?.id && i < 40; i++) {
+    const r = await fetch(`${base}/api/v1/renders/${job.id}`, { headers: agent }).then((x) => x.json()).catch(() => null) as { state?: string } | null;
+    if (r?.state && !['queued', 'running'].includes(r.state)) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 }

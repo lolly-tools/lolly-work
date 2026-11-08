@@ -171,10 +171,13 @@ const RECIPES: Recipe[] = [
   } },
   { slug: 'partner-company', route: `programmes?id=${PROGRAMME}&company=${COMPANY}`, cropSelector: '#main', page: 'partner-programmes.md', partner: true, prepare: async page => {
     await page.getByText('Revision history: every revision is kept').waitFor();
-    // The End card on this page has a shot of its own (partner-end-dry-run), so
-    // this one frames the details, logos and contacts.
-    await page.locator('.card > h2', { hasText: 'End the partnership with' }).first()
-      .evaluate((h: Element) => { (h.closest('.card') as HTMLElement).style.display = 'none'; }).catch(() => {});
+    // The other cards on this page (agent tokens, the end of the partnership)
+    // have shots of their own, so this one frames the details, logos and contacts.
+    await page.evaluate(() => {
+      for (const h of document.querySelectorAll('#main .card > h2')) {
+        if (!/^(Details|Logos|Contacts who may edit)$/.test((h.textContent ?? '').trim())) (h.closest('.card') as HTMLElement).style.display = 'none';
+      }
+    });
   } },
   { slug: 'partner-licences', route: `programmes?id=${PROGRAMME}`, cropSelector: '#cap-licences', page: 'partner-programmes.md', partner: true, prepare: async page => {
     await markCard(page, 'Licences', 'cap-licences');
@@ -188,6 +191,20 @@ const RECIPES: Recipe[] = [
     await card.getByLabel('End date', { exact: true }).fill(new Date(Date.now() + 21 * 86_400_000).toISOString().slice(0, 10));
     await card.getByRole('button', { name: 'See what ending it does', exact: true }).click();
     await card.locator('table').first().waitFor();
+  } },
+  { slug: 'partner-agent-tokens', route: `programmes?id=${PROGRAMME}&company=${COMPANY}`, cropSelector: '#cap-tokens', page: 'partner-programmes.md', partner: true, prepare: async page => {
+    await markCard(page, 'Agent tokens for', 'cap-tokens');
+    await page.locator('#cap-tokens').getByText("Rita's agent").first().waitFor();
+  } },
+  { slug: 'partner-agent-usage', route: `programmes?id=${PROGRAMME}`, cropSelector: '#cap-usage', page: 'partner-programmes.md', partner: true, prepare: async page => {
+    await markCard(page, 'What agents did', 'cap-usage');
+    await page.locator('#cap-usage').getByText("Rita's agent").first().waitFor();
+  } },
+  { slug: 'partner-limits', route: 'instance?tab=limits', cropSelector: '#cap-limits-partners', page: 'partner-programmes.md', partner: true, prepare: async page => {
+    await markCard(page, 'Partner programmes', 'cap-limits-partners');
+  } },
+  { slug: 'partner-limits-tokens', route: 'instance?tab=limits', cropSelector: '#cap-limits-tokens', page: 'partner-programmes.md', partner: true, prepare: async page => {
+    await markCard(page, 'Agent tokens', 'cap-limits-tokens');
   } },
   // The app as Rita Ortiz at Northwind IT sees it, served by this instance.
   { slug: 'partner-home', route: '', path: '/', persona: 'rita@northwind.example', cropSelector: '.published-shelf', page: 'run-a-partner-programme.md', partner: true, prepare: async page => {
