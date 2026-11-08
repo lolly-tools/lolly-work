@@ -89,3 +89,36 @@ export function collectionCredits(engine: RightsEngine, members: readonly Credit
     ],
   };
 }
+
+/** The credit line a collection link page prints under one file. */
+export interface PageCreditLine {
+  /** The recorded credit, or '' when none was recorded. */
+  text: string;
+  licenceName: string;
+  licenceUrl: string;
+  sourceUrl?: string;
+}
+
+/**
+ * The line under a file whose licence asks for a credit (plans/82 M4): the
+ * recorded credit, the licence's name linked to its text, and the source when
+ * the record names a public address. A licence asks when its reviewed profile
+ * makes attribution the obligation, or, for one recognised and not yet
+ * interpreted (NC, ND), when Attribution is among its recorded conditions:
+ * printing the credit interprets nothing. No line for a dedication, a
+ * courtesy credit, an owner-published file or a file with no licence.
+ */
+export function pageCreditLine(engine: RightsEngine, entry: AssetIndexEntry): PageCreditLine | null {
+  const declared = engine.assetLicenceDeclaration(entry as Record<string, unknown>);
+  if (!declared) return null;
+  const id = engine.normaliseLicence(declared).id;
+  const profile = id ? engine.licenceProfile(id) : null;
+  if (!profile || profile.courtesyCredit) return null;
+  const asks = profile.reviewed ? profile.obligation === 'attribution' : profile.conditions.includes('Attribution');
+  const licenceUrl = engine.publicLocator(profile.url);
+  if (!asks || !licenceUrl) return null;
+  const text = typeof entry.attribution === 'string' ? entry.attribution.trim().slice(0, 300) : '';
+  const work = (entry.rights as { works?: Array<{ sourceUrl?: unknown }> } | undefined)?.works?.[0];
+  const sourceUrl = engine.publicLocator(work?.sourceUrl ?? entry.sourceUrl);
+  return { text, licenceName: profile.name, licenceUrl, ...(sourceUrl ? { sourceUrl } : {}) };
+}

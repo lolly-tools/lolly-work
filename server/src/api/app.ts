@@ -114,7 +114,7 @@ import { AssetScanBoundExceeded, composeRightsRecords, loadRightsEngine, rightsA
 import { decidePartnerRightsDefault, partnerRightsState, type PartnerRightsState } from '../catalog/rights-mode.ts';
 import { partnerRightsCheck } from '../setup/checks.ts';
 import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
-import { collectionCredits } from '../links/credits.ts';
+import { collectionCredits, pageCreditLine } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
 import { createOwnerMarks } from '../programmes/owner-mark.ts';
 import { templatesOnlyFor } from '../programmes/templates-only.ts';
@@ -8175,8 +8175,12 @@ export function buildApp(deps: AppDeps): App {
       return;
     }
 
+    // The credit each file's licence asks for, read as the link's maker sees the file (plans/82 M4).
+    const [pageEngine, pageEntries] = await Promise.all([loadRightsEngine(), linkMakerEntries(link)]);
     const items: CollectionPageItem[] = members.map((m) => {
       const source = m.source;
+      const entry = pageEntries.get(m.assetId);
+      const credit = entry ? pageCreditLine(pageEngine, entry) : null;
       // No password rides in these addresses: a password link's cookie,
       // scoped to this link's path, opens each item and the zip.
       const base = `/l/${link.id}?s=${encodeURIComponent(url.searchParams.get('s') ?? '')}`;
@@ -8188,6 +8192,7 @@ export function buildApp(deps: AppDeps): App {
         ...(sizeText(m.size) ? { sizeText: sizeText(m.size) as string } : {}),
         ...(isPreviewableFormat(source.format) ? { previewHref: `${base}${asset}` } : {}),
         downloadHref: `${base}${asset}&dl=1`,
+        ...(credit ? { credit } : {}),
       };
     });
     const s = encodeURIComponent(url.searchParams.get('s') ?? '');
