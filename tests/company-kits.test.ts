@@ -406,3 +406,10 @@ test('a collection shared with the programme never carries one company\'s kit to
   const forA = applyProgrammeScope(index, new Set(['programme-resellers', 'company-a']), sources);
   assert.ok((forA.assets ?? []).some((a) => a.id === 'inst/kit-a'));
 });
+
+test('under the licence gate a kit is its own company\'s file, exempt for that company only', async () => {
+  const { exemptWhy } = await import('../server/src/catalog/rights.ts');
+  const entry = { id: 'inst/kit', type: 'partner-kit', meta: { company: 'northwind' } } as never;
+  assert.equal(exemptWhy(entry, new Set(['northwind'])), 'company-own');
+  assert.equal(exemptWhy(entry, new Set(['contoso'])), null, 'never exempt as a brand-team file or a design system');
+});
