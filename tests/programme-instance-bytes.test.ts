@@ -103,8 +103,8 @@ const bytes = (cookie: string, id: string, query = '') => fetch(`${base}/catalog
 test('a partner gets the bytes their programme includes and never an internal asset shared with everyone', async () => {
   const rita = await login('rita@reseller.test');
   assert.equal((await bytes(rita, 'inst/kit')).status, 200, 'their programme includes the kit');
-  assert.equal((await bytes(rita, 'inst/internal')).status, 403, 'published to everyone, but not to their programme');
-  assert.equal((await bytes(rita, 'inst/internal', '?v=1')).status, 403, 'nor a prior version of it');
+  assert.equal((await bytes(rita, 'inst/internal')).status, 404, 'published to everyone, but not to their programme: not available');
+  assert.equal((await bytes(rita, 'inst/internal', '?v=1')).status, 404, 'nor a prior version of it');
 });
 
 test('staff are unchanged: everyone means everyone inside the workspace', async () => {
@@ -116,7 +116,7 @@ test('staff are unchanged: everyone means everyone inside the workspace', async 
 test('a live internal submission shared with everyone is not a partner\'s to download', async () => {
   const rita = await login('rita@reseller.test');
   const staff = await login('staff@test');
-  assert.equal((await fetch(`${base}/api/v1/catalog/submissions/sub1/bytes`, { headers: { cookie: rita } })).status, 403);
+  assert.equal((await fetch(`${base}/api/v1/catalog/submissions/sub1/bytes`, { headers: { cookie: rita } })).status, 404);
   assert.equal((await fetch(`${base}/api/v1/catalog/submissions/sub1/bytes`, { headers: { cookie: staff } })).status, 200);
 });
 
@@ -126,7 +126,7 @@ test('a submitter reads their own upload while it waits, and only what their fee
   const preview = (cookie: string, id: string) => fetch(`${base}/api/v1/catalog/submissions/${id}/bytes`, { headers: { cookie } });
   assert.equal((await preview(rita, 'rita-pending')).status, 200, 'their own upload, before the decision');
   assert.equal((await preview(staff, 'rita-pending')).status, 403, 'not staff\'s while it waits');
-  assert.equal((await preview(rita, 'rita-live')).status, 403, 'live and shared with everyone, but not in their programme');
+  assert.equal((await preview(rita, 'rita-live')).status, 404, 'live and shared with everyone, but not in their programme');
   assert.equal((await preview(staff, 'rita-live')).status, 200, 'live: the ordinary rule');
   assert.equal((await preview(staff, 'staff-live')).status, 200, 'staff keep their own live submission, published to a group they are not in');
 });
@@ -174,5 +174,5 @@ test('answers that depend on who asks make the browser ask again, and the check 
   assert.equal(again.status, 304);
   assert.equal(again.headers.get('cache-control'), 'private, no-cache, no-transform');
   const borrowed = await fetch(`${base}/catalog/inst/internal/png`, { headers: { cookie: rita, 'if-none-match': etag } });
-  assert.equal(borrowed.status, 403, 'a copy cached for someone else is never confirmed for a partner');
+  assert.equal(borrowed.status, 404, 'a copy cached for someone else is never confirmed for a partner');
 });

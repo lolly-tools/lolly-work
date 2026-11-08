@@ -68,7 +68,9 @@ export interface DiscoveryDeps {
   /** The current pack has a design tokens head, so the in-process host has `tokens`. */
   tokens(): boolean;
   designRevision(): string;
-  catalogVersion(): Promise<string>;
+  /** The catalog's version for this caller: the instance's own for staff, and one
+   *  derived from their own feed for a partner programme member (plans/82 M1). */
+  catalogVersion(groups: string[], role?: string): Promise<string>;
   /** The design-system rules for a format, or with none the rules every format
    *  shares (brand/rules.ts requestRuleContext), as compile and validate apply them. */
   managedRules(toolId: string, format?: string): Promise<ManagedRuleContext | undefined>;
@@ -288,7 +290,7 @@ export function registerDiscoveryRoutes(router: ReturnType<typeof createRouter>,
     sendWithEtag(req, res, {
       apiVersion: described.apiVersion, schema: contract.schema, view, toolId, tool,
       versions: { engine: described.engineVersion, tool: described.version, policy: contract.overlay?.version ?? 0,
-        design: deps.designRevision(), catalog: await deps.catalogVersion(), ...(contract.rules ? { rules: contract.rules.rulesDigest.slice(0, 16) } : {}) },
+        design: deps.designRevision(), catalog: await deps.catalogVersion(caller.groups, caller.user?.role), ...(contract.rules ? { rules: contract.rules.rulesDigest.slice(0, 16) } : {}) },
       policy: contract.effects,
       render: { renderer: described.server.renderer, formats: contract.formats, ...(contract.format ? { format: contract.format } : {}) },
       unavailable: [...contract.unavailable, ...(render ? [] : [RENDER_FORBIDDEN])],

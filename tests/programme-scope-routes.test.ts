@@ -27,6 +27,8 @@ import { ZipBuilder } from '../server/src/links/zip.ts';
 let server: Server;
 let base = '';
 let store: ReturnType<typeof createMemoryStore>;
+let logoId = '';
+let agentToken = '';
 const INTERNAL_BYTES = Buffer.from('internal-bytes-only-staff-hold');
 const PNG = (text: string) => Buffer.from(text);
 const TOKENS = JSON.stringify({ lolly: { foundation: { radius: { sm: { $type: 'dimension', $value: '8px' } } } } });
@@ -109,6 +111,20 @@ before(async () => {
   // and one still waiting for its decision.
   await put('inst/rita-live', PNG('rita-live'), '*', { state: 'live', by: `user:${ritaId}` });
   await put('inst/rita-pending', PNG('rita-pending'), '*', { state: 'submitted', by: `user:${ritaId}` });
+  // Staff submissions a partner must learn nothing about: one waiting, one live.
+  const staffId = (await login('staff@test'), (await store.getUserBySub('dev:staff@test'))!.id);
+  await put('inst/staff-pending', PNG('staff-pending'), ['marketing'], { state: 'submitted', by: `user:${staffId}` });
+  await put('inst/staff-live', PNG('staff-live'), ['marketing'], { state: 'live', by: `user:${staffId}` });
+  // Northwind IT, a company in the programme, with a light logo, and its agent's token.
+  await fetch(`${base}/api/v1/programmes/resellers/companies/northwind`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Northwind IT' }) });
+  const profile = '/api/v1/programmes/resellers/companies/northwind/profile';
+  await fetch(`${base}${profile}`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ contact: { name: 'Rita', email: 'rita@reseller.test' } }) });
+  const logo = await fetch(`${base}${profile}/logo?surface=light`, { method: 'POST', headers: { cookie: admin, 'content-type': 'image/svg+xml' },
+    body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 4"><path d="M0 0H10V4H0Z" fill="#0b3d91"/></svg>' });
+  assert.equal(logo.status, 200, await logo.text());
+  logoId = ((await (await fetch(`${base}${profile}`, { headers: { cookie: admin } })).json()) as { profile: { logoLight: string } }).profile.logoLight;
+  const minted = await (await fetch(`${base}/api/v1/programmes/resellers/tokens`, { method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ label: 'Northwind agent', company: 'northwind' }) })).json() as { secret?: string; token?: string };
+  agentToken = (minted.secret ?? minted.token)!;
   // A partner trusted with the catalog's curation tools, delegated by grant.
   for (const action of ['catalog.submit', 'catalog.collection.manage', 'catalog.expire', 'catalog.hold', 'catalog.scan']) {
     await store.putGrant({ principal: 'group:programme-resellers', action, resource: '*', effect: 'allow' } as never);
@@ -232,4 +248,59 @@ test('federated bytes answer a partner no-cache, and staff keep five minutes', a
   const own = await get(staff, url!);
   assert.equal(own.status, 200);
   assert.equal(own.headers.get('cache-control'), 'private, max-age=300, no-transform', 'plan 80 D6, unchanged for staff');
+});
+
+test('a company logo the context route serves passes the feed and the lifecycle gate', async () => {
+  const read = () => fetch(`${base}/api/v1/context/partner/company/logo/light`, { headers: { authorization: `Bearer ${agentToken}` } });
+  assert.equal((await read()).status, 200, 'the agent reads its own company\'s logo');
+  await store.putLifecycle({ assetId: logoId, onExpiry: 'hide', validFrom: new Date(Date.now() + 86_400_000).toISOString() });
+  try {
+    assert.equal((await read()).status, 404, 'a scheduled logo is not served yet');
+  } finally { await store.putLifecycle({ assetId: logoId, onExpiry: 'hide' }); }
+});
+
+test('a project-file retry answers with the earlier asset only while the submitter may be handed it', async () => {
+  const { submitAsset } = await import('../server/src/catalog/submit.ts');
+  const { createMemoryBlobStore: blobsFor } = await import('../server/src/blobs/memory.ts');
+  const local = createMemoryStore();
+  const source = { projectId: 'p1', fileId: 'f1', checksum: 'c'.repeat(64) };
+  await local.putInstanceAsset({
+    id: 'inst/earlier', entry: instanceAssetEntry('inst/earlier', { name: 'earlier', type: 'image' }, [{ format: 'png', size: 3, checksum: 'x' }]),
+    blobs: { png: 'inst/earlier/png' }, groups: ['programme-resellers'] as never, createdAt: 'x',
+    submission: { state: 'live', by: 'user:rita', at: 'x', checksum: 'x', size: 3, contentType: 'image/png', projectSource: source },
+  } as never);
+  const policy = parseConfig(JSON.stringify({ instance: { name: 'x', baseUrl: 'http://localhost', pack: '/nonexistent' }, dev: { enabled: true } })).policy.submit;
+  const out = await submitAsset({ store: local, blobs: blobsFor(), policy, duplicateVisible: async () => false }, {
+    bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), name: 'again.svg', groups: ['programme-resellers'],
+    submitter: { id: 'rita', groups: ['programme-resellers'] }, projectSource: source, sourceStillReadable: async () => true,
+  });
+  assert.ok(out.ok);
+  assert.notEqual(out.ok && out.record.id, 'inst/earlier', 'left their feed: the retry is a new submission, saying nothing of the earlier one');
+});
+
+test('a partner gets one plain answer whether a thing is missing or kept from them', async () => {
+  const rita = await login('rita@reseller.test');
+  const same = async (a: Response, b: Response, what: string) => {
+    assert.equal(a.status, 404, `${what}: hidden`);
+    assert.equal(b.status, 404, `${what}: missing`);
+    assert.equal(await a.text(), await b.text(), `${what}: the same body`);
+  };
+  await same(await get(rita, '/catalog/inst/internal/png'), await get(rita, '/catalog/inst/no-such-thing/png'), 'instance bytes');
+  await same(await get(rita, '/api/v1/catalog/submissions/staff-pending/bytes'), await get(rita, '/api/v1/catalog/submissions/no-such-thing/bytes'), 'submission bytes');
+  await same(await send(rita, 'PATCH', '/api/v1/catalog/submissions/staff-live', { name: 'x' }), await send(rita, 'PATCH', '/api/v1/catalog/submissions/no-such-thing', { name: 'x' }), 'submission edit');
+  await same(await send(rita, 'POST', '/api/v1/catalog/submissions/staff-live/act', { action: 'approve' }), await send(rita, 'POST', '/api/v1/catalog/submissions/no-such-thing/act', { action: 'approve' }), 'submission act');
+  await same(await get(rita, '/api/v1/catalog/assets/inst/internal/versions'), await get(rita, '/api/v1/catalog/assets/inst/no-such-thing/versions'), 'versions');
+  await same(await get(rita, '/catalog/assets/internal.png'), await get(rita, '/catalog/assets/no-such-file.png'), 'pack file, refused before the file system is read');
+});
+
+test('a partner\'s design-system inventory carries no whole-pack fingerprint', async () => {
+  const rita = await login('rita@reseller.test');
+  const staff = await login('staff@test');
+  const inventory = await (await get(rita, '/api/v1/brand/profiles')).json() as { revision?: unknown; contentRevision?: unknown; sources: Array<{ kind?: string; revision?: unknown }> };
+  assert.equal(inventory.revision, undefined);
+  assert.equal(inventory.contentRevision, undefined);
+  assert.ok(!inventory.sources.some((s) => s.kind === 'download' || s.kind === 'provider'), 'no hosted download and no provider rows');
+  assert.ok(inventory.sources.every((s) => s.revision === undefined), 'no source checksum');
+  const own = await (await get(staff, '/api/v1/brand/profiles')).json() as { sources: Array<{ kind?: string }> };
+  assert.ok(own.sources.some((s) => s.kind === 'download'), 'staff keep the full inventory');
 });

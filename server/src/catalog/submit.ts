@@ -448,7 +448,11 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       r.submission.projectSource.fileId === source.fileId && r.submission.projectSource.checksum === source.checksum &&
       JSON.stringify([...(r.groups ?? [])].sort()) === JSON.stringify([...(input.groups ?? [])].sort()));
     if (prior?.submission?.state === 'submitted' && !prior.submission.approvalId) return { ok: false, code: 'SUBMISSION_INCOMPLETE', detail: 'The earlier admission did not finish. Ask a workspace administrator to inspect the pending submission before retrying.' };
-    if (prior) return { ok: true, duplicate: true, record: prior, checksum: source.checksum, scan: 'skipped', credential: (await store.getCredential(prior.id))?.status ?? 'none' };
+    // Their own pending admission answers the retry. A live one answers only while the
+    // submitter may still be handed it (duplicateVisible); otherwise the retry goes on
+    // as a new submission and says nothing about the earlier one.
+    const handable = prior && (!submissionServable(prior) || !deps.duplicateVisible || await deps.duplicateVisible(input.submitter, prior));
+    if (prior && handable) return { ok: true, duplicate: true, record: prior, checksum: source.checksum, scan: 'skipped', credential: (await store.getCredential(prior.id))?.status ?? 'none' };
   }
   const nowIso = new Date(deps.now?.() ?? Date.now()).toISOString();
   let size = input.bytes.length;

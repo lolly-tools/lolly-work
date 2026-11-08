@@ -7,6 +7,7 @@ import type { InstanceConfig } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { evaluate, type Role } from '../rbac/evaluate.ts';
+import { isProgrammeScoped } from '../programmes/types.ts';
 import { canonicalJson } from '../lib/crypto.ts';
 import { deriveInstancePack, inspectInstancePack, instancePackTokensChecksum, PACK_BLOB_ID, PACK_META_BLOB_ID, type InstancePackMeta, type PackSigner } from '../catalog/instance-pack.ts';
 import { createBrandSources, describeSource, type BrandEditView, type BrandSource } from './sources.ts';
@@ -167,10 +168,17 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
       sources.push({ id: `provider:${provider.id}`, kind: 'provider', label: provider.label, active: provider.enabled,
         operations: {}, diagnostics: ['Provider assets are governed through Sources. They do not select the mounted design system.'] });
     }
+    // A partner programme member sees which design system is active and nothing that
+    // fingerprints the whole pack: no source or download checksums, no hosted download
+    // and no provider rows (plans/82 M1).
+    const scoped = isProgrammeScoped(actor.groups, actor.role);
+    const shown = scoped
+      ? sources.filter((s) => s.kind !== 'download' && s.kind !== 'provider').map(({ revision: _revision, ...rest }) => { void _revision; return rest; })
+      : sources;
     return { available: found.profilesAvailable, active: found.profilesAvailable ? snap.source.name : null,
       profiles: found.sources.filter(s => s.kind === 'profile' && !snap.state.retired.includes(s.id)).map(s => ({ name: s.name, active: s.id === snap.source.id })),
-      activeSource: snap.source.id, revision: snap.state.revision, contentRevision: snap.revision,
-      persistence: store.brandPersistence, mutable, sources,
+      activeSource: snap.source.id, ...(scoped ? {} : { revision: snap.state.revision, contentRevision: snap.revision }),
+      persistence: store.brandPersistence, mutable, sources: shown,
       limitation: mutable ? (store.brandPersistence === 'ephemeral' ? 'Development changes last only while this process runs.' : null)
         : 'This deployment cannot persist administrator changes. Configure Postgres or update the mounted source and redeploy.',
     };

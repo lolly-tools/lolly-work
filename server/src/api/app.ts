@@ -7092,6 +7092,7 @@ export function buildApp(deps: AppDeps): App {
       const [, sid, formatRef] = parts as [string, string, string];
       const id = `${INST_PREFIX}${sid}`;
       const rec = await store.getInstanceAsset(id);
+      if (scopedCaller(user) && (!rec || !(await instanceAssetReadable(user, rec)))) return notAvailable(res);
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
       // A partner programme member reads exactly what their feed holds (plans/82 M1),
       // the same rule as their federated bytes, links and asset records: an internal
@@ -7390,6 +7391,12 @@ export function buildApp(deps: AppDeps): App {
       if (!first?.hash || owners.size !== 1 || hashes.size !== 1 || first.hash.slice(0, 16) !== address[2]) return sendError(res, 404, 'NOT_FOUND', 'no currently accessible asset release');
       addressedAssetId = first.id; addressedAssetSha = first.hash;
     }
+    // A partner programme member: ownership and the feed are asked before the file system
+    // is, so neither the answer nor its timing says whether a file is there (plans/82 M1).
+    if (scopedCaller(user)) {
+      const owner = addressedAssetId ?? (await loadAssetPathMap(config.instance.pack)).get(actualRel);
+      if (!(owner ? await feedHolds(user!.groups, owner) : await feedNamesFile(user!.groups, rel))) return notAvailable(res);
+    }
     let file = await safeFile(join(config.instance.pack, 'catalog'), actualRel);
     if (!file && address) {
       actualRel = `${address[1]}${address[3]}`; file = await safeFile(join(config.instance.pack, 'catalog'), actualRel);
@@ -7408,7 +7415,7 @@ export function buildApp(deps: AppDeps): App {
     const assetId = addressedAssetId ?? (await loadAssetPathMap(config.instance.pack)).get(actualRel);
     // A partner programme member is told nothing about a file their feed leaves out,
     // its lifecycle included: the feed is asked first, and the denial is plain (plans/82 M1).
-    if (assetId && user && isProgrammeScoped(user.groups, user.role) && !(await feedHolds(user.groups, assetId))) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+    if (assetId && user && isProgrammeScoped(user.groups, user.role) && !(await feedHolds(user.groups, assetId))) return notAvailable(res);
     if (assetId) {
       const { state, blocked } = await catalogBytesGate(assetId, false);
       if (blocked) {
@@ -7421,7 +7428,7 @@ export function buildApp(deps: AppDeps): App {
       // A partner programme member reads only what their feed names: a pack file no
       // asset owns (a release inventory, a rendition, a licence text) answers only when
       // an entry in their own feed points at it (plans/82 M1).
-      return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      return notAvailable(res);
     }
     sendBytes(req, res, bytes, { contentType: contentType(rel), ranges: true,
       modified: file!.modified, headers: { ...INERT_BYTES, 'cache-control': cachePolicy('instance-private').cacheControl } });
@@ -7493,6 +7500,10 @@ export function buildApp(deps: AppDeps): App {
    *  the asset's own groups. One rule for every instance-asset route. */
   const instanceAssetReadable = async (user: UserRecord | null | undefined, rec: InstanceAssetRecord): Promise<boolean> =>
     user && isProgrammeScoped(user.groups, user.role) ? callerSeesAsset(user, rec.id) : instanceAssetVisible(rec, user?.groups ?? []);
+  /** One answer for a partner programme member, whether a thing is missing or kept from
+   *  them, so a refusal never says that something exists (plans/82 M1). */
+  const notAvailable = (res: ServerResponse): void => sendError(res, 404, 'NOT_FOUND', 'not available');
+  const scopedCaller = (user: { groups: string[]; role?: string } | null | undefined): boolean => !!user && isProgrammeScoped(user.groups, user.role);
   /** Whether a group set's served feed holds an asset, under its current id. The one
    *  question every partner programme check asks (plans/82 M1). */
   const feedHolds = async (groups: string[], rawId: string): Promise<boolean> => {
@@ -7994,6 +8005,7 @@ export function buildApp(deps: AppDeps): App {
       // asset are versioned where they live, and claiming otherwise here would
       // invent a history this instance does not have.
       if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+      if (scopedCaller(user) && (!instAsset || !(await callerSeesAsset(user, id)))) return notAvailable(res);
       if (!instAsset) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
       const head = headVersionOf(instAsset);
@@ -9203,7 +9215,7 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
-    if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
+    if (!rec?.submission) return scopedCaller(user) ? notAvailable(res) : sendError(res, 404, 'NOT_FOUND', 'no such submission');
     // Only the submitter and whoever may act on the step see a PENDING
     // submission's bytes, which are the submitter's own upload: nothing can
     // replace them before the decision. Once it is live, staff keep that
@@ -9215,7 +9227,7 @@ export function buildApp(deps: AppDeps): App {
       : isProgrammeScoped(user.groups, user.role) ? await instanceAssetReadable(user, rec)
         : !!(await submissionRelation(rec, user)) || instanceAssetVisible(rec, user.groups);
     if (!allowed) {
-      return sendError(res, 403, 'FORBIDDEN', 'not yours to review');
+      return scopedCaller(user) ? notAvailable(res) : sendError(res, 403, 'FORBIDDEN', 'not yours to review');
     }
     // Once it is published this row is an ordinary catalog asset, so it answers
     // to the ordinary lifecycle gate: a revoked, expired or scheduled asset
@@ -9251,6 +9263,8 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
+    // A partner learns a submission's state only from one of their own.
+    if (scopedCaller(user) && (!rec?.submission || !(await submissionRelation(rec, user)))) return notAvailable(res);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     if (rec.submission.state !== 'submitted') {
       return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
@@ -9354,6 +9368,8 @@ export function buildApp(deps: AppDeps): App {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
+    // A partner never acts on a submission's review, so nothing about one is said to them.
+    if (scopedCaller(user)) return notAvailable(res);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     if (rec.submission.state !== 'submitted') return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
     const approvalId = rec.submission.approvalId;
@@ -11897,7 +11913,8 @@ export function buildApp(deps: AppDeps): App {
     caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
-    designRevision: () => brand.current()!.revision, catalogVersion: instanceCatalogVersion,
+    designRevision: () => brand.current()!.revision,
+    catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
     caps: renderCaps, allowHooksInFastPath: config.render.allowHooksInFastPath,
@@ -11985,8 +12002,9 @@ export function buildApp(deps: AppDeps): App {
     },
     companyLogo: async (groups, id) => {
       const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
-      if (!rec || !submissionServable(rec) || !instanceAssetVisible(rec, groups)) return null;
-      if ((await store.getLifecycle(id))?.revokedAt) return null;
+      // The same answer as the logo's bytes route: what the caller's feed holds, through
+      // the lifecycle gate, so a scheduled, expired or revoked logo stays put.
+      if (!rec || !submissionServable(rec) || !(await feedHolds(groups, id)) || (await catalogBytesGate(id, false)).blocked) return null;
       const [format, blobId] = Object.entries(rec.blobs)[0] ?? [];
       const blob = blobId ? await blobs.get(blobId) : null;
       if (!format || !blob) return null;
