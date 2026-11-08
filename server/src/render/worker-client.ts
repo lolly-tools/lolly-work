@@ -179,11 +179,13 @@ export const tcpConnectProbe: ConnectProbe = (endpoint, timeoutMs, signal) => {
   const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80);
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
-    const socket = connect({ host: url.hostname.replace(/^\[|\]$/g, ''), port, timeout: timeoutMs });
-    const onAbort = (): void => { socket.destroy(); reject(signal!.reason); };
-    const done = (value: string | null): void => { signal?.removeEventListener('abort', onAbort); socket.destroy(); resolve(value); };
+    const socket = connect({ host: url.hostname.replace(/^\[|\]$/g, ''), port });
+    // One timer for name lookup and connect together; a socket timeout would
+    // start again once the lookup finished.
+    const timer = setTimeout(() => done('UND_ERR_CONNECT_TIMEOUT'), timeoutMs);
+    const onAbort = (): void => { clearTimeout(timer); socket.destroy(); reject(signal!.reason); };
+    function done(value: string | null): void { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); socket.destroy(); resolve(value); }
     socket.once('connect', () => done(null));
-    socket.once('timeout', () => done('UND_ERR_CONNECT_TIMEOUT'));
     socket.once('error', (e: NodeJS.ErrnoException) => done(e.code && CONNECT_FAILURE_CODES.has(e.code) ? e.code : null));
     signal?.addEventListener('abort', onAbort, { once: true });
   });
@@ -222,6 +224,7 @@ async function pushExchange(cfg: WorkerConfig, path: WorkerPath, job: Record<str
   const probe = opts.probe ?? tcpConnectProbe;
   for (let attempt = 1; ; attempt++) {
     let failed: string | null = attempt === 1 ? null : await probe(workerEndpoint(cfg, path), until - Date.now(), opts.signal);
+    if (failed === null && attempt > 1 && Date.now() >= until) failed = 'UND_ERR_CONNECT_TIMEOUT';
     if (failed === null) {
       try {
         return await pushOnce(cfg, path, job, opts, readBody);
