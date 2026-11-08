@@ -91,7 +91,7 @@ test('(b) brand-team member (grant, not role) locks a preset, restricts a choice
   const brand = await login('brand@test');
   const body = {
     inputAccess: {
-      title: [{ groups: ['*'], level: 'locked', value: 'SUSE Summit 2026' }],
+      title: [{ groups: ['*'], level: 'locked', value: 'Lolly Summit 2026' }],
       accent: [
         { groups: ['brand'], level: 'editable' },
         { groups: ['*'], level: 'choice', allow: ['#0C322C', '#30BA78'] },
@@ -140,7 +140,7 @@ test('(c) the saved policy bites: tools feed filtered by visibility, org-config 
   const inputs = org.tools['event-badge']?.inputs ?? [];
   assert.deepEqual(inputs.map((i) => i.id).sort(), ['accent', 'title'], 'hidden input is ABSENT');
   assert.equal(inputs.find((i) => i.id === 'title')?.access?.level, 'locked');
-  assert.equal(inputs.find((i) => i.id === 'title')?.access?.value, 'SUSE Summit 2026');
+  assert.equal(inputs.find((i) => i.id === 'title')?.access?.value, 'Lolly Summit 2026');
   assert.deepEqual(inputs.find((i) => i.id === 'accent')?.access?.allow, ['#0C322C', '#30BA78'],
     'first-match-wins: marketing hits the * choice rule, brand would stay editable');
 });

@@ -56,7 +56,7 @@
   --grid: hsl(214 28% 88%);                    /* hairline dividers: table/section rules, stepper connectors */
   --baseline: hsl(214 28% 84%);                /* control borders — shell --border/--input */
   --hairline: rgba(2, 6, 23, 0.10);            /* faint card/tooltip/panel border (NOT the focus ring — that's --accent) */
-  --accent: var(--pack-accent-light, hsl(171 62% 12%)); /* shell --primary (SUSE dark teal #0c322c); white text ~15:1 */
+  --accent: var(--pack-accent-light, hsl(171 62% 12%)); /* shell --primary (dark teal #0c322c); white text ~15:1 */
   --on-accent: var(--pack-on-accent-light, #fff); /* primary-button text — flips to black for a light accent */
   --series-1: #2a78d6;
   --series-2: #eb6834;
@@ -91,7 +91,7 @@
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) {
     color-scheme: dark;
-    /* Shell dark palette: near-black navy plane, Pine Green accent w/ dark ink. */
+    /* Shell dark palette: near-black navy plane, mid-green accent w/ dark ink. */
     --plane: var(--pack-plane-dark, hsl(224 71% 4%));
     --surface: var(--pack-surface-dark, hsl(222 47% 7%));
     --ink: hsl(213 31% 91%);
@@ -100,8 +100,8 @@
     --grid: hsl(217 33% 14%);
     --baseline: hsl(217 33% 18%);
     --hairline: rgba(255, 255, 255, 0.10);
-    --accent: var(--pack-accent-dark, hsl(151 57% 46%)); /* shell dark --primary (Pine Green #30ba78) */
-    --on-accent: var(--pack-on-accent-dark, hsl(171 62% 5%)); /* dark teal ink over Pine, per the shell */
+    --accent: var(--pack-accent-dark, hsl(151 57% 46%)); /* shell dark --primary (mid green #30ba78) */
+    --on-accent: var(--pack-on-accent-dark, hsl(171 62% 5%)); /* dark teal ink over the green, per the shell */
     --series-1: #3987e5;
     --series-2: #d95926;
     --series-3: #199e70;
@@ -137,12 +137,12 @@
    colored, mid-toned dark chrome tinted by the instance's own accent: surfaces
    are the accent hue pulled down to near-black via color-mix, so a green pack
    yields green-tinted chrome and the no-pack default a blue-tinted one — the
-   same "Pine surfaces, Jungle accent" construction as the shell, made generic.
+   same "dark teal surfaces, green accent" construction as the shell, made generic.
    Viz series + status colors stay the hardcoded validated palette (never tinted).
    color-mix is pure CSS — no external asset, air-gap-safe. */
 :root[data-theme="brand"] {
   color-scheme: dark;
-  /* No-pack default is now the shell's own brand chrome: Pine Green accent
+  /* No-pack default is now the shell's own brand chrome: a mid-green accent
      over teal-tinted near-black surfaces (shell [data-theme="brand"]). A pack
      accent swaps the tint wholesale, same construction. */
   --accent: var(--pack-accent-dark, hsl(151 57% 46%));

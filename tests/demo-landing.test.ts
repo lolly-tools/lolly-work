@@ -8,11 +8,11 @@ import type { InstanceConfig } from '../server/src/config/instance.ts';
 test('the landing page offers the configured persona sign-in', () => {
   const config = {
     instance: { name: 'Test Sandbox', baseUrl: 'https://fallback.example' },
-    dev: { enabled: true, users: [{ email: 'admin@suse.example', groups: ['admin'] }] },
+    dev: { enabled: true, users: [{ email: 'admin@lolly.example', groups: ['admin'] }] },
   } as InstanceConfig;
 
   const html = demoLandingHtml(config);
-  assert.ok(html.includes('/api/auth/dev?email=admin%40suse.example'), 'persona sign-in link');
+  assert.ok(html.includes('/api/auth/dev?email=admin%40lolly.example'), 'persona sign-in link');
 });
 
 test('every docs link on the landing page opens a page the bundle lists', () => {

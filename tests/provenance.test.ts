@@ -13,8 +13,8 @@ import {
 
 const INGREDIENTS: ProvenanceIngredient[] = [
   {
-    title: 'Summit Logo', assetId: 'ext/suse-bf/a1', relationship: 'componentOf',
-    source: { kind: 'provider', provider: 'suse-bf', providerKind: 'brandfolder', label: 'SUSE Resource Library', remoteId: 'a1', filename: 'SUSE Summit Tokyo_pos-green.svg' },
+    title: 'Summit Logo', assetId: 'ext/acme-bf/a1', relationship: 'componentOf',
+    source: { kind: 'provider', provider: 'acme-bf', providerKind: 'brandfolder', label: 'Acme Resource Library', remoteId: 'a1', filename: 'Summit Tokyo_pos-green.svg' },
     c2pa: null,
   },
   {
@@ -24,23 +24,23 @@ const INGREDIENTS: ProvenanceIngredient[] = [
   {
     // A federated asset whose bytes were detected to carry a credential the DAM
     // API never named (plans/27 §4): c2pa upgrades null → { kind: 'embedded' }.
-    title: 'Detected Cred', assetId: 'ext/suse-bf/a2', relationship: 'componentOf',
-    source: { kind: 'provider', provider: 'suse-bf', providerKind: 'brandfolder', label: 'SUSE Resource Library', remoteId: 'a2' },
+    title: 'Detected Cred', assetId: 'ext/acme-bf/a2', relationship: 'componentOf',
+    source: { kind: 'provider', provider: 'acme-bf', providerKind: 'brandfolder', label: 'Acme Resource Library', remoteId: 'a2' },
     c2pa: { kind: 'embedded' },
   },
 ];
 
 test('collectCatalogRefs: SVG hrefs + nested baked params, deduped, queries shed, traversal ignored', () => {
-  const svg = `<svg><image href="/catalog/ext/suse-bf/a1/att1?x=1"/><image href="/catalog/assets/acme/logo/primary.svg"/></svg>`;
+  const svg = `<svg><image href="/catalog/ext/acme-bf/a1/att1?x=1"/><image href="/catalog/assets/acme/logo/primary.svg"/></svg>`;
   const params = {
-    logo: '/catalog/ext/suse-bf/a1/att1',
+    logo: '/catalog/ext/acme-bf/a1/att1',
     nested: { list: ['/catalog/fonts/webfonts/x.woff2'] },
     evil: '/catalog/../../etc/passwd',
     plain: 'no refs here',
   };
   const refs = collectCatalogRefs(svg, params);
   assert.deepEqual(refs.sort(), [
-    'assets/acme/logo/primary.svg', 'ext/suse-bf/a1/att1', 'fonts/webfonts/x.woff2',
+    'assets/acme/logo/primary.svg', 'ext/acme-bf/a1/att1', 'fonts/webfonts/x.woff2',
   ]);
 });
 
@@ -51,7 +51,7 @@ test('embedSvgProvenance: JSON island lands after the opening tag, CDATA-safe, p
   const m = /<!\[CDATA\[([\s\S]*?)\]\]><\/metadata>/.exec(out);
   const parsed = JSON.parse(m?.[1] ?? '');
   assert.equal(parsed.generator, 'lolly-work');
-  assert.equal(parsed.ingredients[0].source.filename, 'SUSE Summit Tokyo_pos-green.svg');
+  assert.equal(parsed.ingredients[0].source.filename, 'Summit Tokyo_pos-green.svg');
   assert.equal(parsed.ingredients[0].c2pa, null, 'no upstream manifest is stated, not omitted');
   assert.deepEqual(parsed.ingredients[2].c2pa, { kind: 'embedded' }, 'a detected embedded credential travels with the export');
   // A non-SVG string is returned untouched.

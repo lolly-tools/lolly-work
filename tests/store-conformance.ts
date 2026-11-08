@@ -1358,7 +1358,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   // record is a file on disk. A driver that could only key the first would make
   // org metadata an instance-assets-only feature.
   assert.equal(await store.getAssetMeta('inst/abc'), null);
-  for (const assetId of ['inst/meta1', 'ext/dam1/a1', 'suse/tokens/brand']) {
+  for (const assetId of ['inst/meta1', 'ext/dam1/a1', 'lolly/tokens/demo']) {
     await store.putAssetMeta({
       assetId, fields: { region: 'EMEA' }, updatedBy: 'user:usr_1', updatedAt: '2026-08-19T00:00:00.000Z',
     });
@@ -1378,7 +1378,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteCatalogField('region');
   assert.equal((await store.getAssetMeta('ext/dam1/a1'))?.fields.region, 'EMEA');
   await store.deleteAssetMeta('ext/dam1/a1');
-  await store.deleteAssetMeta('suse/tokens/brand');
+  await store.deleteAssetMeta('lolly/tokens/demo');
 
   // Collections (plans/31 section 5, migrations/0019). Two properties are the
   // whole storage contract, and both are ones a join table would lose: MEMBER
@@ -1391,7 +1391,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
     id: 'launch',
     name: 'Launch kit',
     description: 'Everything for the spring launch.',
-    members: ['ext/dam1/a1', 'inst/hero', 'suse/tokens/brand'],
+    members: ['ext/dam1/a1', 'inst/hero', 'lolly/tokens/demo'],
     groups: ['design', 'sales'],
     curator: 'user:usr_1',
     createdAt: '2026-08-20T00:00:00.000Z',
@@ -1400,7 +1400,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.putCollection(launch);
   await store.putCollection({ ...launch, id: 'archive', name: 'Archive', members: [], groups: '*' as const });
   const readBack = await store.getCollection('launch');
-  assert.deepEqual(readBack?.members, ['ext/dam1/a1', 'inst/hero', 'suse/tokens/brand'], 'member ORDER round-trips exactly');
+  assert.deepEqual(readBack?.members, ['ext/dam1/a1', 'inst/hero', 'lolly/tokens/demo'], 'member ORDER round-trips exactly');
   assert.deepEqual(readBack?.groups, ['design', 'sales']);
   assert.equal(readBack?.curator, 'user:usr_1');
   assert.equal(readBack?.description, 'Everything for the spring launch.');
@@ -1477,11 +1477,11 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(await store.listAssetRightsMarks(), []);
   const mark = { scope: 'folder:dam/event-photos', holder: 'SUSE', terms: 'Published by SUSE. Not an open licence.', statedBy: 'usr_1', statedAt: '2026-11-07T00:00:00.000Z', coveredAtStatement: 180 };
   await store.putAssetRightsMark(mark);
-  await store.putAssetRightsMark({ ...mark, scope: 'prefix:suse/logo/' });
+  await store.putAssetRightsMark({ ...mark, scope: 'prefix:lolly/logo/' });
   await store.putAssetRightsMark({ ...mark, note: 'the photo team shot these' });
-  assert.deepEqual((await store.listAssetRightsMarks()).map((m) => [m.scope, m.note ?? '']), [['folder:dam/event-photos', 'the photo team shot these'], ['prefix:suse/logo/', '']], 'put is an upsert');
+  assert.deepEqual((await store.listAssetRightsMarks()).map((m) => [m.scope, m.note ?? '']), [['folder:dam/event-photos', 'the photo team shot these'], ['prefix:lolly/logo/', '']], 'put is an upsert');
   await store.deleteAssetRightsMark('provider:nope');
-  await store.deleteAssetRightsMark('prefix:suse/logo/');
+  await store.deleteAssetRightsMark('prefix:lolly/logo/');
   assert.deepEqual(await store.listAssetRightsMarks(), [{ ...mark, note: 'the photo team shot these' }]);
   await store.deleteAssetRightsMark('folder:dam/event-photos');
   assert.deepEqual(await store.listAssetRightsMarks(), []);

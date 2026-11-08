@@ -199,7 +199,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
       slides: [{ id: 'row-a', heading: 'One' }, { id: 'row-b', heading: 'Two' }],
       // Not expressible in canvas-op v1.1 (rooms.ts reports it as `unsynced`);
       // the write-back must carry it through untouched.
-      logo: { assetId: 'suse/logo/primary', width: 120 },
+      logo: { assetId: 'lolly/logo/primary', width: 120 },
     });
     const registry = registryFor();
     const room = await registry.acquire(session);
@@ -221,7 +221,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     assert.equal(stored.inputs['title'], 'Final');
     assert.equal(stored.inputs['accent'], '#0c322c', 'an untouched param survives the write-back');
     assert.deepEqual(
-      stored.inputs['logo'], { assetId: 'suse/logo/primary', width: 120 },
+      stored.inputs['logo'], { assetId: 'lolly/logo/primary', width: 120 },
       'an input the document cannot express is preserved verbatim, never dropped',
     );
     const slides = stored.inputs['slides'] as Array<Record<string, unknown>>;

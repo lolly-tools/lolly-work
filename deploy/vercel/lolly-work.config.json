@@ -6,7 +6,7 @@
     "name": "Lolly Work \u2014 Demo",
     "baseUrl": "https://lolly.work",
     "pack": "packs/demo",
-    "connectPack": "suse-brand-1.0.0.lolly"
+    "connectPack": "lolly-demo-brand-1.1.3.lolly"
   },
   "idp": {
     "issuer": "",
@@ -37,14 +37,14 @@
     "enabled": true,
     "users": [
       {
-        "email": "admin@suse.example",
+        "email": "admin@lolly.example",
         "name": "Ada (Admin)",
         "groups": [
           "admin"
         ]
       },
       {
-        "email": "brand@suse.example",
+        "email": "brand@lolly.example",
         "name": "Bruno (Brand lead)",
         "groups": [
           "brand-team",
@@ -52,14 +52,14 @@
         ]
       },
       {
-        "email": "marketer@suse.example",
+        "email": "marketer@lolly.example",
         "name": "Mira (Marketer)",
         "groups": [
           "marketing"
         ]
       },
       {
-        "email": "contractor@suse.example",
+        "email": "contractor@lolly.example",
         "name": "Cveta (Contractor)",
         "groups": [
           "contractors"

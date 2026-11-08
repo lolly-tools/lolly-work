@@ -139,7 +139,7 @@ test('brand.profile names the active profile, and the card refreshes on a switch
   // The plans/29 fixture: brands/<name>/catalog, a marker, a catalog symlink.
   const pack = await mkdtemp(join(tmpdir(), 'lw-brandcard-profiles-'));
   await writeTokensCatalog(join(pack, 'brands', 'suse', 'catalog'), {
-    id: 'suse/tokens/brand', label: 'SUSE tokens', checksum: 'sha256-SUSE', locked: true, marker: '#30ba78',
+    id: 'lolly/tokens/demo', label: 'Lolly Demo tokens', checksum: 'sha256-LOLLY', locked: true, marker: '#30ba78',
   });
   await writeTokensCatalog(join(pack, 'brands', 'lolly-start', 'catalog'), {
     id: 'lolly/tokens/brand', label: 'Lolly Starter Tokens', checksum: 'sha256-START', locked: false, marker: '#7c3aed',
@@ -150,8 +150,8 @@ test('brand.profile names the active profile, and the card refreshes on a switch
 
   const before = await brandOf(base);
   assert.equal(before?.profile, 'suse');
-  assert.equal(before?.label, 'SUSE tokens');
-  assert.equal(before?.checksum, 'sha256-SUSE');
+  assert.equal(before?.label, 'Lolly Demo tokens');
+  assert.equal(before?.checksum, 'sha256-LOLLY');
   assert.equal(before?.locked, true);
 
   const admin = await login(base, 'admin@test');
