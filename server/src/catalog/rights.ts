@@ -63,7 +63,9 @@ export interface RightsEngine {
   redistribution(meta: Record<string, unknown>): EngineRedistribution;
   assetLicenceDeclaration(meta: Record<string, unknown>): string;
   normaliseLicence(text: string): { id: string | null; reviewed: boolean };
-  licenceProfile(id: string | null): { name: string; reviewed: boolean; conditions: string[] } | null;
+  licenceProfile(id: string | null): { name: string; url: string; reviewed: boolean; conditions: string[]; obligation: 'none' | 'attribution' | 'notice'; courtesyCredit: boolean } | null;
+  /** An ordinary public http(s) address, or '' for anything else. */
+  publicLocator(value: unknown): string;
   readLicenceExpression(text: string): { operator: 'single' | 'or' | 'and'; terms: Array<{ id: string | null }> };
   RIGHTS_RULES_VERSION: string;
   /** The `.lolly` credits text, for a collection ZIP. */
