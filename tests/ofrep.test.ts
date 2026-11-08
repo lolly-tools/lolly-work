@@ -55,7 +55,7 @@ test('request shape: one POST per governed flag with the spec path, JSON headers
   const svc = await double(t, answer(true));
   const resolver = createOfrepResolver({ config: config(svc.url), token: 'tok-123' });
   const out = await resolver.evaluate(PERSON);
-  assert.deepEqual(resolver.flags, ['neurospicy', 'jelly-effects', 'strip-upload-metadata', 'export-preflight', 'private-collab', 'nearby-discovery']);
+  assert.deepEqual(resolver.flags, ['neurospicy', 'jelly-effects', 'strip-upload-metadata', 'export-preflight', 'private-collab', 'nearby-discovery', 'colourway-asset-treatments']);
   assert.equal(svc.seen.length, resolver.flags.length);
   assert.deepEqual(svc.seen.map((s) => s.url).sort(), resolver.flags.map((f) => `/ofrep/v1/evaluate/flags/${f}`).sort());
   for (const s of svc.seen) {
