@@ -277,7 +277,7 @@ test('setup is owner gated, readiness describes the actual store, and a reviewer
     const production = await fetch(base + '/readyz');
     assert.equal(production.status, 503);
     const held = (await production.json() as { checks: Record<string, string> }).checks;
-    assert.deepEqual(Object.keys(held), ['store', 'migrations', 'setup', 'catalog'], 'production adds the migration and setup checks');
+    assert.deepEqual(Object.keys(held), ['store', 'migrations', 'setup', 'catalog', 'licenceGate'], 'production adds the migration and setup checks');
     assert.ok(Object.values(held).some((value) => value !== 'ok'), `a check names what holds readiness back: ${JSON.stringify(held)}`);
     assert.equal((await fetch(base + '/healthz')).status, 200);
     config.deployment.mode = 'evaluation';
