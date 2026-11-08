@@ -173,7 +173,7 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     // and no provider rows (plans/82 M1).
     const scoped = isProgrammeScoped(actor.groups, actor.role);
     const shown = scoped
-      ? sources.filter((s) => s.kind !== 'download' && s.kind !== 'provider').map(({ revision: _revision, ...rest }) => { void _revision; return rest; })
+      ? sources.filter((s) => s.kind !== 'download' && s.kind !== 'provider').map(({ revision: _revision, namespaces: _namespaces, ...rest }) => { void _revision; void _namespaces; return rest; })
       : sources;
     return { available: found.profilesAvailable, active: found.profilesAvailable ? snap.source.name : null,
       profiles: found.sources.filter(s => s.kind === 'profile' && !snap.state.retired.includes(s.id)).map(s => ({ name: s.name, active: s.id === snap.source.id })),

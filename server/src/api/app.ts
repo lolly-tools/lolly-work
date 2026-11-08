@@ -38,7 +38,7 @@ import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConf
 import type { ApiTokenRecord, InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, servesPublicOnly, setDeliveryClass, setDeliveryTags, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
+import { carriesCredential, createRouter, deliveryClassOf, guardDelivery, readJson, readRaw, sendError, sendJson, servesPublicOnly, setDeliveryClass, setDeliveryTags, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
 import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
 import { cachePolicy, publicStaticDeliveryClass, tag as deliveryTag, type DeliveryClass, type TagPrefix } from '@lolly-tools/core/delivery-v1';
 import { shellDirectories } from '../lib/shell-release.ts';
@@ -479,7 +479,13 @@ export function buildApp(deps: AppDeps): App {
         },
         templatesRequired: toolId => templatesRequiredFor(args[1].principal?.groups ?? [], args[1].principal?.role, toolId),
         toolFiles: async id => (await instanceToolsFor(args[1].principal?.groups ?? [])).get(id)?.files ?? null,
-        ...args[0], approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
+        ...args[0],
+        ...(scopedCaller(args[1].principal) ? {
+          resolveProvenance: (refs: string[]) => resolveProvenance(refs, args[1].principal!.groups),
+          // Scoped provenance must never share cached bytes with a staff render.
+          instanceCatalogVersion: async () => `programme:${(await servedIndex.forCaller({ groups: args[1].principal!.groups })).version}`,
+        } : {}),
+        approvedExportReview: key => approvedExportReview(store, key), brandRevision: snap.revision, managedRules, workerFiles: files,
         workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal, deadlineAt });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
@@ -809,8 +815,10 @@ export function buildApp(deps: AppDeps): App {
    *  catalog, which holds only the pack's own assets. */
   const companyLogoRef = async (groups: string[], id: string): Promise<unknown | null> => {
     const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
-    if (!rec || !submissionServable(rec) || !instanceAssetVisible(rec, groups)) return null;
-    if ((await store.getLifecycle(id))?.revokedAt) return null;
+    if (!rec || !submissionServable(rec)) return null;
+    if (isProgrammeScoped(groups, roleFromGroups(groups, config.idp.roleGroups))) {
+      if (!(await feedHolds(groups, id)) || (await catalogBytesGate(id, false)).blocked) return null;
+    } else if (!instanceAssetVisible(rec, groups) || (await store.getLifecycle(id))?.revokedAt) return null;
     const [format, blobId] = Object.entries(rec.blobs)[0] ?? [];
     const blob = blobId ? await blobs.get(blobId) : null;
     if (!format || !blob) return null;
@@ -6299,7 +6307,7 @@ export function buildApp(deps: AppDeps): App {
       return read;
     },
     submitLogo: async (submitter, input) => {
-      const outcome = await submitAsset(submitDeps(), { ...input, submitter });
+      const outcome = await submitAsset(submitDeps(submitter), { ...input, submitter });
       if (outcome.ok) await trimVersionHistory(outcome.record).catch(() => 0);
       return outcome;
     },
@@ -6341,7 +6349,7 @@ export function buildApp(deps: AppDeps): App {
     },
     toolOpenTo: async (group, toolId) => toolVisibleWithGrants((await store.listOverlays()).get(toolId), toolId, { groups: [group, PARTNER_GROUP], role: 'member' }, await store.listGrants()),
     submitVersion: async (actor, target, bytes) => {
-      const outcome = await submitAsset(submitDeps(), {
+      const outcome = await submitAsset(submitDeps(actor), {
         bytes, target, name: String(target.entry.name ?? target.id).slice(0, 200), submitter: { id: actor.id, groups: actor.groups },
       });
       if (!outcome.ok) {
@@ -6352,7 +6360,7 @@ export function buildApp(deps: AppDeps): App {
       return { ok: true, ...(outcome.version ? { version: outcome.version } : {}) };
     },
     submitRulesFile: async (actor, bytes, groups) => {
-      const outcome = await submitAsset(submitDeps(), {
+      const outcome = await submitAsset(submitDeps(actor), {
         bytes, type: 'rules-tool', groups, name: 'Share with rules file', submitter: { id: actor.id, groups: actor.groups },
       });
       if (!outcome.ok) {
@@ -6737,12 +6745,13 @@ export function buildApp(deps: AppDeps): App {
   // upstream filename; `c2pa: null` states honestly that the source shipped no
   // manifest of its own (none of the current providers do) while the
   // attribution still travels with the export.
-  const resolveProvenance = async (refs: string[]): Promise<ProvenanceIngredient[]> => {
+  const resolveProvenance = async (refs: string[], scopedGroups?: string[]): Promise<ProvenanceIngredient[]> => {
     await providersReady;
     const out: ProvenanceIngredient[] = [];
     const seen = new Set<string>();
     let fragments: Awaited<ReturnType<typeof federation.fragments>> | undefined;
     const pathMap = await loadAssetPathMap(config.instance.pack);
+    const held = scopedGroups ? new Set((await servedIndex.forCaller({ groups: scopedGroups })).index.assets?.map(asset => asset.id)) : null;
     // A detection upgrades `c2pa: null` → `{ kind: 'embedded' }` for the
     // consumed asset - the export can then distinguish "source said nothing"
     // from "source carries a credential" (plans/27 §4). Detection, never a verdict.
@@ -6753,6 +6762,7 @@ export function buildApp(deps: AppDeps): App {
         const [, pid, rid, fmtRef] = rel.split('/');
         if (!pid || !rid) continue;
         const assetId = extAssetId(pid, rid);
+        if (held && !held.has(assetId)) continue;
         if (seen.has(assetId)) continue;
         seen.add(assetId);
         const rec = await store.getProvider(pid, { includeFragment: false });
@@ -6773,7 +6783,7 @@ export function buildApp(deps: AppDeps): App {
         });
       } else {
         const assetId = pathMap.get(rel);
-        if (!assetId || seen.has(assetId)) continue;
+        if (!assetId || seen.has(assetId) || (held && !held.has(assetId))) continue;
         seen.add(assetId);
         out.push({
           title: assetId.split('/').pop() ?? assetId, assetId, relationship: 'componentOf',
@@ -7184,23 +7194,22 @@ export function buildApp(deps: AppDeps): App {
       if (parts.length !== 4) return sendError(res, 404, 'NOT_FOUND', 'bad federated asset path');
       const [, providerId, remoteId, formatRef] = parts as [string, string, string, string];
       await providersReady;
+      const assetId = extAssetId(providerId, remoteId);
+      const scopedReader = scopedCaller(user);
+      if (scopedReader && !(await feedHolds(user!.groups, assetId))) return notAvailable(res);
       const rec = await store.getProvider(providerId, { includeFragment: false });
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
       if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
-      const assetId = extAssetId(providerId, remoteId);
       // A partner programme member reads only the federated assets their feed
       // holds: a granted collection can name one asset of a provider they do
       // not otherwise see (plans/82 M1).
-      const scopedReader = !!user && isProgrammeScoped(user.groups, user.role);
       // Staff keep the bytes for five minutes (plan 80 D6). A partner programme
       // member, and an admin viewing as one, is answered no-cache instead (Andy,
       // 2026-11-07, D6 changed for programme members only): what they may read
       // follows their feed, and a browser cache is not keyed by person, so the
       // browser asks again and the checks run for whoever asks.
       const extBytesCache = scopedReader ? cachePolicy('instance-private').cacheControl : 'private, max-age=300';
-      if (scopedReader
-        ? !(await servedIndex.forCaller({ groups: user!.groups })).index.assets?.some((entry) => entry.id === assetId)
-        : !callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
+      if (!scopedReader && !callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const filePreview = ctx.url.searchParams.get('preview') === '1';
       const convertedPreview = ctx.url.searchParams.get('view') === '1';
       if (convertedPreview && filePreview) return sendError(res, 400, 'INVALID_INPUT', 'choose one preview representation');
@@ -8904,7 +8913,7 @@ export function buildApp(deps: AppDeps): App {
   // DAM already holds. Bytes ride the raw body and the declared metadata rides
   // query params, exactly like publish-out one surface over.
 
-  const submitDeps = () => ({
+  const submitDeps = (submitter: { id: string; groups: string[]; role?: string }) => ({
     store, blobs, policy: config.policy.submit,
     duplicateVisible: async (submitter: { groups: string[]; role?: string }, rec: InstanceAssetRecord) =>
       !isProgrammeScoped(submitter.groups, submitter.role ?? roleFromGroups(submitter.groups, config.idp.roleGroups)) || feedHolds(submitter.groups, rec.id),
@@ -8914,6 +8923,8 @@ export function buildApp(deps: AppDeps): App {
     // same manifest reader the policy editor uses answers it, plus the name
     // the review queue shows.
     toolLookup: async (toolId: string) => {
+      if (isProgrammeScoped(submitter.groups, submitter.role ?? roleFromGroups(submitter.groups, config.idp.roleGroups))
+        && !callerCanSeeTool(await catalogCallerOf(submitter), toolId)) return null;
       const inputs = await readToolManifestInputs(toolId);
       if (!inputs) return null;
       let name: string | undefined;
@@ -8978,10 +8989,11 @@ export function buildApp(deps: AppDeps): App {
    * disagree about who is looking at a pending asset.
    */
   const submissionRelation = async (
-    rec: InstanceAssetRecord, user: { id: string; groups: string[] },
+    rec: InstanceAssetRecord, user: { id: string; groups: string[]; role?: string },
   ): Promise<'mine' | 'inbox' | null> => {
     const s = rec.submission as AssetSubmission;
     if (s.by === `user:${user.id}`) return 'mine';
+    if (scopedCaller(user)) return null;
     if (!s.approvalId) return null;
     const approval = await store.getApproval(s.approvalId);
     return approval && eligibleForCurrentStep(approval, user.groups) ? 'inbox' : null;
@@ -9132,7 +9144,7 @@ export function buildApp(deps: AppDeps): App {
     // A submission that finished while this one read the bytes has used the upload.
     if (uploaded && !await store.getUpload(uploaded.upload.id)) { await release?.(); return sendError(res, 404, 'NOT_FOUND', 'no such finished upload'); }
     let outcome: Awaited<ReturnType<typeof submitAsset>>;
-    try { outcome = await submitAsset(submitDeps(), {
+    try { outcome = await submitAsset(submitDeps(user), {
       bytes,
       ...(projectInput ? { projectSource: projectInput.source, sourceStillReadable: projectInput.stillReadable } : {}),
       ...(target ? { target } : {}),
@@ -9292,8 +9304,9 @@ export function buildApp(deps: AppDeps): App {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
     const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
-    // A partner learns a submission's state only from one of their own.
-    if (scopedCaller(user) && (!rec?.submission || !(await submissionRelation(rec, user)))) return notAvailable(res);
+    // A partner reads their own pending submission, or a submission in their feed.
+    if (scopedCaller(user) && (!rec?.submission || !(rec.submission.state === 'submitted' && rec.submission.by === `user:${user.id}`)
+      && !(await feedHolds(user.groups, rec.id)))) return notAvailable(res);
     if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
     if (rec.submission.state !== 'submitted') {
       return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
@@ -11973,7 +11986,7 @@ export function buildApp(deps: AppDeps): App {
     caller: automationCaller, overlays: () => store.listOverlays(), grants: () => store.listGrants(),
     accessMode: config.policy.defaultAccessMode, pack: () => config.instance.pack,
     toolIds: () => brand.current()!.source.toolIds, tokens: () => !!brand.current()!.source.tokensHead,
-    designRevision: () => brand.current()!.revision,
+    designRevision: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version : brand.current()!.revision,
     catalogVersion: async (groups, role) => isProgrammeScoped(groups, role) ? (await servedIndex.forCaller({ groups })).version.slice(0, 16) : instanceCatalogVersion(),
     managedRules: (toolId, format) => requestRuleContext(brand.current()!, toolId, format),
     companyOverlay: (toolId, groups, overlay) => companyOverlayFor(overlay, toolId, groups),
@@ -13108,9 +13121,13 @@ export function buildApp(deps: AppDeps): App {
     if (renewed) res.setHeader('set-cookie', renewed);
     try {
       const matched = await brand.run(async () => {
-        res.setHeader('x-lolly-brand-revision', brand.current()!.revision);
+        // A partner programme member is told a revision of their own feed, never the
+        // whole pack's (plans/82 M1). Only a request that carries a credential can be one.
+        const user = carriesCredential(req) ? await memberOf(req) ?? await serviceAccountOf(req) : null;
+        const revision = scopedCaller(user) ? (await servedIndex.forCaller({ groups: user!.groups })).version : brand.current()!.revision;
+        res.setHeader('x-lolly-brand-revision', revision);
         const expected = req.headers['x-lolly-brand-revision'];
-        if (expected && expected !== brand.current()!.revision) throw new BrandError('The design system changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
+        if (expected && expected !== revision) throw new BrandError('The design system changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
         return router.dispatch(req, res);
       });
       if (matched) routeClass = matched;
