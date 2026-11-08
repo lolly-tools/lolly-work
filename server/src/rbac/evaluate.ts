@@ -153,6 +153,25 @@ export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role
   return 'member';
 }
 
+/**
+ * A view as a partner (programmes/view-as.ts) answers as a synthetic member whose id
+ * names the real admin (`view-as:<admin id>`). A view never shows the admin anything
+ * they could not see themselves: the admin's own explicit denies apply to that member
+ * here, the admin's tool visibility in policy/overlay.ts and the admin's own feed in
+ * catalog/served-index.ts (through rbac/view-context.ts). view-as.ts records the admin
+ * on every request it admits. Only view-as.ts makes that id, so no account, group or
+ * grant can name it.
+ */
+export interface ViewAsViewer { userId: string; groups: string[]; role: Role }
+const viewers = new Map<string, ViewAsViewer>();
+export function setViewAsViewer(subjectId: string, viewer: ViewAsViewer): void {
+  viewers.set(subjectId, { userId: viewer.userId, groups: [...viewer.groups], role: viewer.role });
+}
+/** The admin behind a view's subject id, or undefined for anyone else. */
+export function viewAsViewerOf(userId: string | undefined): ViewAsViewer | undefined {
+  return userId ? viewers.get(userId) : undefined;
+}
+
 function principalMatches(selector: string, ctx: Pick<PrincipalCtx, 'userId' | 'groups'>): boolean {
   if (selector === '*') return true;
   if (selector.startsWith('group:')) return ctx.groups.includes(selector.slice(6));
@@ -175,11 +194,13 @@ export function grantDecision(
   grants: Grant[],
 ): 'allow' | 'deny' | 'none' {
   let allowed = false;
+  const viewer = viewAsViewerOf(ctx.userId);
   for (const g of grants) {
     if (g.action !== action) continue;
-    if (!principalMatches(g.principal, ctx)) continue;
     if (g.resource !== '*' && !resourceSelectors.includes(g.resource)) continue;
-    if (g.effect === 'deny') return 'deny';
+    const own = principalMatches(g.principal, ctx);
+    if (g.effect === 'deny' && (own || (viewer !== undefined && principalMatches(g.principal, viewer)))) return 'deny';
+    if (!own) continue;
     allowed = true;
   }
   return allowed ? 'allow' : 'none';

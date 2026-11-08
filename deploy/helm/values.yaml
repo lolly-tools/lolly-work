@@ -225,8 +225,8 @@ renderWorker:
   # open at once (plans/22 §5, plans/23 §3.C). Beyond this, the worker answers
   # 503 RENDER_BUSY immediately instead of queueing — an in-worker queue would
   # hide saturation from the HPA below, so scale REPLICAS/autoscaling.maxReplicas
-  # to add capacity, not this number. /readyz flips to 503 at the same
-  # threshold so a saturated pod is pulled from the Service.
+  # to add capacity, not this number. A full pod stays ready (/readyz reports
+  # atCapacity: true) so a job already under way can make its next call.
   maxConcurrent: 4
   # Chromium must start with its sandbox. A failed or timed-out launch stops the
   # worker; no browser sandbox bypass is available. Range: 1000 to 120000 ms.

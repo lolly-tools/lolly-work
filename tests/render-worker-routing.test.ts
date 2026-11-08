@@ -85,7 +85,7 @@ test('a completed SVG waits for its pending fetch response to be fulfilled befor
   const response = request({ brandRevision: 'revision-a' });
   await f.started.promise; await tick(); await tick();
   assert.equal(f.closes(), 0, 'export completion must not dispose the in-flight fetch response');
-  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: false, active: 1, capacity: 1 });
+  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: true, active: 1, capacity: 1, atCapacity: true });
   f.finish.release();
   const result = await response;
   assert.equal(result.status, 200);
@@ -189,7 +189,7 @@ test('caller cancellation closes once and consumes a response disposed by that e
   for (let n = 0; n < 50 && !f.closes(); n++) await new Promise(resolve => setTimeout(resolve, 10));
   await f.callback();
   assert.equal(f.closes(), 1); assert.deepEqual(f.escaped, []);
-  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: true, active: 0, capacity: 1 });
+  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: true, active: 0, capacity: 1, atCapacity: false });
 });
 
 test('cancellation during normal drain retains capacity until close, without waiting for an unsettled callback', { timeout: 5000 }, async t => {
@@ -204,13 +204,13 @@ test('cancellation during normal drain retains capacity until close, without wai
   controller.abort(); await canceled;
   for (let n = 0; n < 50 && !f.closes(); n++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(f.closes(), 1);
-  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: false, active: 1, capacity: 1 });
+  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: true, active: 1, capacity: 1, atCapacity: true });
   closeHold.release(); // deliberately does NOT settle the route
   for (let n = 0; n < 50; n++) {
     const ready = await (await fetch(`${base}/readyz`)).json() as { active: number };
     if (ready.active === 0) break;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: true, active: 0, capacity: 1 });
+  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: true, active: 0, capacity: 1, atCapacity: false });
   f.finish.release(); await f.callback(); assert.deepEqual(f.escaped, []);
 });

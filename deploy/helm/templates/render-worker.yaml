@@ -170,8 +170,9 @@ spec:
             httpGet: { path: /healthz, port: https, scheme: HTTPS }
             initialDelaySeconds: 10
             periodSeconds: 20
-          # Readiness requires a connected sandboxed browser and free capacity.
-          # Browser startup or recovery keeps the pod out of the Service.
+          # Readiness requires a connected sandboxed browser. Browser startup or
+          # recovery keeps the pod out of the Service; a full pod stays in it
+          # and answers each new job with 503 RENDER_BUSY.
           readinessProbe:
             httpGet: { path: /readyz, port: https, scheme: HTTPS }
             initialDelaySeconds: 5
