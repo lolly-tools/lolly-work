@@ -514,20 +514,23 @@ test('an approved first save paused in its scan never lands on a company made ag
   assert.equal((await call(manager, 'GET', `${AT}/${id}/kit`)).status, 404);
 });
 
-test('an approval overturned by a stored rejection while its scan ran commits nothing and sends no second message', async () => {
+test('an approval overturned by a rejection while its scan ran commits nothing, and the requester hears the rejection once', async () => {
   const id = 'overturned';
   const approved = await approvedSave(id, true);
   const before = await read(id);
   const { kits, open, paused } = await pausedKitRoutes();
   const settling = kits.settleApproval(approved);
   await paused();
+  const messages = (await store.listMessages()).length;
+  // The second reviewer's rejection is stored and settles in the same process while the approval scans.
   await store.putApproval({ ...approved, state: 'rejected' });
-  const messages = (await store.listMessages?.() ?? []).length;
+  assert.equal(await kits.settleApproval({ ...approved, state: 'rejected' }), true);
   open();
   await settling;
   assert.equal((await read(id)).revision, before.revision);
   assert.equal((await read(id)).kit.label, before.kit.label);
-  if (store.listMessages) assert.equal((await store.listMessages()).length, messages);
+  const told = (await store.listMessages()).slice(messages);
+  assert.deepEqual(told.map((m) => m.body), ['The request was rejected, so the kit did not change.'], 'the requester hears the rejection once');
 });
 
 test('one approved request settled by two processes at once becomes one revision', async () => {
@@ -544,6 +547,45 @@ test('one approved request settled by two processes at once becomes one revision
   assert.equal((await read(id)).revision, before.revision + 1);
   assert.equal((await read(id)).kit.label, 'Proposed');
   assert.equal((await store.listAssetVersions((await read(id)).assetId)).length, before.revision + 1);
+});
+
+test('a request filed without a base, settled by two processes at once, still becomes one revision', async () => {
+  const id = 'twice-unbased';
+  const { base: _filed, ...subject } = (await approvedSave(id, true)).partnerKit!;
+  const approved = { ...(await store.getApproval((await store.listApprovals()).find((a) => a.partnerKit?.companyId === id)!.id))!, partnerKit: subject };
+  await store.putApproval(approved);
+  const before = await read(id);
+  const a = await pausedKitRoutes();
+  const b = await pausedKitRoutes();
+  const first = a.kits.settleApproval(approved);
+  const again = b.kits.settleApproval(approved);
+  await a.paused(); await b.paused();
+  a.open(); b.open();
+  await Promise.all([first, again]);
+  assert.equal((await read(id)).revision, before.revision + 1);
+});
+
+test('a settlement whose cleanup failed can settle again', async () => {
+  const id = 'cleanup';
+  await company(id);
+  await settings(id, { kitApprovalChain: 'kit-review' });
+  const asked = await call(manager, 'PUT', `${AT}/${id}/kit`, kit(id, 'Proposed'));
+  const rejected = { ...(await store.getApproval(asked.body.pending.approvalId))!, state: 'rejected' as const };
+  await store.putApproval(rejected);
+  const { registerCompanyKitRoutes } = await import('../server/src/programmes/kit-routes.ts');
+  let fail = true;
+  const flaky = { ...blobs, get: blobs.get.bind(blobs), put: blobs.put.bind(blobs),
+    delete: async (key: string) => { if (fail) { fail = false; throw new Error('storage unavailable'); } return blobs.delete(key); } };
+  const kits = registerCompanyKitRoutes({ add: () => undefined } as never, {
+    store, blobs: flaky, notifier: { email: () => undefined, event: () => undefined } as never, baseUrl: 'http://localhost',
+    requireAction: async () => null, memberOf: async () => null, audit: async () => undefined, kitVisible: async () => true,
+    submitKit: async () => { throw new Error('a rejected request is never published'); },
+  } as never);
+  await assert.rejects(kits.settleApproval(rejected), /storage unavailable/);
+  const messages = (await store.listMessages()).length;
+  assert.equal(await kits.settleApproval(rejected), true);
+  assert.equal(await blobs.get(rejected.partnerKit!.blobId!), null, 'the waiting bytes are gone');
+  assert.equal((await store.listMessages()).length, messages + 1);
 });
 
 test('a contact files a kit change for review while contact profile changes also need approval', async () => {
