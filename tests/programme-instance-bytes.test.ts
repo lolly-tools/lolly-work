@@ -188,8 +188,8 @@ test('an admin viewing as the partner gets exactly the partner\'s bytes, records
   const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: token } });
   const own = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin } });
   assert.equal((await viewed('/catalog/inst/kit/png')).status, 200, 'the kit their programme includes');
-  assert.equal((await viewed('/catalog/inst/internal/png')).status, 403, 'not an internal asset shared with everyone');
-  assert.equal((await viewed('/catalog/inst/internal/png?v=1')).status, 403, 'nor a prior version of it');
+  assert.equal((await viewed('/catalog/inst/internal/png')).status, 404, 'not an internal asset shared with everyone: not available');
+  assert.equal((await viewed('/catalog/inst/internal/png?v=1')).status, 404, 'nor a prior version of it');
   assert.equal((await viewed('/api/v1/catalog/assets/inst/internal')).status, 404, 'nor its record');
   assert.equal((await viewed('/api/v1/catalog/assets/inst/kit')).status, 200);
   assert.equal((await viewed('/catalog/delivery-manifest.json')).status, 404, 'not the release inventory');
@@ -207,7 +207,7 @@ test('a view never shows the admin an asset their own groups would not: the part
   const started = await fetch(`${base}/api/v1/programmes/resellers/view-as`, { method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: '{}' });
   const { token } = await started.json() as { token: string };
   const viewed = (path: string) => fetch(`${base}${path}`, { headers: { cookie: admin, [VIEW_AS_HEADER]: token } });
-  assert.equal((await viewed('/catalog/inst/emea-only/png')).status, 403, 'refused in the view, as for anyone who may not see it');
+  assert.equal((await viewed('/catalog/inst/emea-only/png')).status, 404, 'refused in the view, with the partner\'s plain answer');
   assert.equal((await viewed('/api/v1/catalog/assets/inst/emea-only')).status, 404);
   const feed = (await (await viewed('/catalog/assets/index.json')).json()) as { assets: Array<{ id: string }>; collections?: Array<{ id: string; members: string[] }> };
   assert.ok(!feed.assets.some((a) => a.id === 'inst/emea-only'), 'nor in the view\'s feed');
