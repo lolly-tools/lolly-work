@@ -385,8 +385,10 @@ const SESSION_VERSIONS_LOCK_KEY = 0x1011_0007;
 /** The first half of the two-key lock that charges one token's renders at a
  *  time (plans/82 M7); the second half is the token id's hashtext. */
 const TOKEN_USAGE_LOCK_KEY = 0x1011_0011;
-/** One instance asset's mark statements, withdrawals and head changes (programmes/owner-mark.ts). */
-const ASSET_MARK_LOCK_KEY = 0x1011_0082;
+/** The first half of the two-key lock on one instance asset's mark statements,
+ *  withdrawals and head changes (programmes/owner-mark.ts); the second half is the
+ *  asset id's hashtext. */
+const ASSET_MARK_LOCK_KEY = 0x1011_0012;
 
 // Appends a `column = $n` clause + its bound value - shared by the two
 // filtered list queries below so the param-numbering logic lives in one place.
