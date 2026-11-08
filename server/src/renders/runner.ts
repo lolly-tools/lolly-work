@@ -246,6 +246,7 @@ export class RenderRunner {
           ...(output.partner ? { partner: {
             ...(output.partner.company ? { company: output.partner.company.id } : {}),
             ...(output.partner.programme ? { programme: output.partner.programme.id } : {}),
+            ...(output.partner.company && output.partner.kit ? { kit: output.partner.kit.id, kitRevision: output.partner.kit.revision } : {}),
             ...(partnerLine(output.partner) ? { line: partnerLine(output.partner)! } : {}),
           } } : {}),
         } });

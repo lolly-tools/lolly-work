@@ -917,6 +917,8 @@ export function buildApp(deps: AppDeps): App {
     return { plan, ...(ctx ? { company: { id: ctx.company.id, name: ctx.company.name, revision: ctx.revision } } : {}),
       ...(ctx?.programme ? { programme: ctx.programme } : {}), logo: (id) => companyLogoRef(args.groups, id) };
   };
+  const kitVisible = async (groups: string[], assetId: string): Promise<boolean> =>
+    !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit');
   /** org-config's `partner` block: the caller's company, with the details its
    *  pieces carry, and its programme (the company's own, else the caller's only one). */
   const partnerBlock = async (ctx: CompanyContext | null, groups: string[], companies: CompanyRecord[], programmes: ProgrammeRecord[]): Promise<OrgConfigPartner | undefined> => {
@@ -950,9 +952,11 @@ export function buildApp(deps: AppDeps): App {
     const programmeId = picked.company?.programmeId ?? pickProgramme(args.groups, companies, publishedTo);
     const programme = programmeId ? await store.getProgramme(programmeId) : null;
     const profile = picked.company ? await store.getCompanyProfile(picked.company.id) : null;
+    const kit = picked.company ? await readCompanyKit(store, blobs, picked.company.id) : null;
     const out: RenderPartner = {
       ...(picked.company ? { company: { id: picked.company.id, name: picked.company.name, revision: profile?.revision ?? 0 } } : {}),
       ...(programme ? { programme: { id: programme.id, name: programme.name } } : {}),
+      ...(kit && await kitVisible(args.groups, kit.assetId) ? { kit: { id: kit.assetId, revision: kit.revision } } : {}),
     };
     return out.company || out.programme ? out : null;
   };
@@ -6470,7 +6474,6 @@ export function buildApp(deps: AppDeps): App {
     },
   });
   companyProfiles.register(router);
-  const kitVisible = async (groups: string[], assetId: string) => !!(await servedIndex.forCaller({ groups })).index.assets?.some((a) => a.id === assetId && a.type === 'partner-kit');
   const companyKits = registerCompanyKitRoutes(router, {
     store, blobs, notifier, baseUrl: config.instance.baseUrl, requireAction, memberOf, audit,
     kitVisible,
