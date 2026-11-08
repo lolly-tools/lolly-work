@@ -31,8 +31,8 @@ const request = (over: Req): Req => ({
 const BRAND = { id: 'prj_1', name: 'Brand refresh' };
 const OPEN = [
   request({ id: 'req_join', kind: 'join', email: 'sam.k@gmail.example', name: 'Sam K', provider: 'GitHub', note: '<script>window.pwned = 1</script>', createdAt: ago(60_000) }),
-  request({ id: 'req_proj', kind: 'project', email: 'ana@suse.com', name: 'Ana', provider: 'Google', role: 'editor', currentRole: 'viewer', project: BRAND, session: { id: 'ses_1', name: 'Spring poster' }, createdAt: ago(3 * 3_600_000) }),
-  request({ id: 'req_sw', kind: 'switch', email: 'sam.k@gmail.example', provider: 'GitHub', project: BRAND, invitation: { id: 'inv_1', maskedEmail: 'an•••@suse.com', inviter: 'Andy' }, createdAt: ago(3_600_000) }),
+  request({ id: 'req_proj', kind: 'project', email: 'ana@lolly.example', name: 'Ana', provider: 'Google', role: 'editor', currentRole: 'viewer', project: BRAND, session: { id: 'ses_1', name: 'Spring poster' }, createdAt: ago(3 * 3_600_000) }),
+  request({ id: 'req_sw', kind: 'switch', email: 'sam.k@gmail.example', provider: 'GitHub', project: BRAND, invitation: { id: 'inv_1', maskedEmail: 'an•••@lolly.example', inviter: 'Andy' }, createdAt: ago(3_600_000) }),
 ];
 type Reply = { status: number; data: unknown };
 
@@ -86,12 +86,12 @@ test('the Requests card lists open requests oldest first, says what each asks fo
   const rows = [...node.querySelectorAll('tbody tr')] as any[];
   assert.deepEqual(rows.map((r) => textOf(r.children[1]).split(' Someone')[0]), [
     'Edit Brand refresh (from the Spring poster link)',
-    'Use this account for an•••@suse.com’s invitation (Brand refresh)',
+    'Use this account for an•••@lolly.example’s invitation (Brand refresh)',
     'Join lolly.ing',
   ], 'oldest first');
-  assert.equal(textOf(rows[0].children[0]), 'Ana ana@suse.com Google', 'name, email and the provider tag');
+  assert.equal(textOf(rows[0].children[0]), 'Ana ana@lolly.example Google', 'name, email and the provider tag');
   assert.equal(textOf(rows[1].children[0]), 'sam.k@gmail.example GitHub', 'no name: the email once');
-  assert.ok(textOf(rows[1]).includes('Someone with the invitation for an•••@suse.com signed in as sam.k@gmail.example. Approve only if you know the address belongs to the same person.'));
+  assert.ok(textOf(rows[1]).includes('Someone with the invitation for an•••@lolly.example signed in as sam.k@gmail.example. Approve only if you know the address belongs to the same person.'));
   assert.equal(rows[2].children[2].textContent, '<script>window.pwned = 1</script>', 'the note is text');
   assert.equal(node.querySelector('script'), null);
   assert.equal(p.w.pwned, undefined);
@@ -109,7 +109,7 @@ test('Approve on a project request sends the chosen role, and the row then says 
       : undefined),
   });
   const node = await card(p);
-  const row = rowFor(node, 'ana@suse.com', 'Edit Brand refresh');
+  const row = rowFor(node, 'ana@lolly.example', 'Edit Brand refresh');
   const roleSel = row.querySelector('select') as any;
   roleSel.value = 'viewer';
   buttonsByText(row, 'Approve')[0].click();
@@ -189,7 +189,7 @@ test('a request someone else answered first shows who did (409); Decline posts a
   await pause(20);
   assert.deepEqual(p.calls.find((c) => c.path === '/api/v1/access-requests/req_join/decline')?.body, {});
   assert.equal(textOf(join.lastElementChild), 'Andy declined this just now');
-  const proj = rowFor(node, 'ana@suse.com', 'Edit Brand refresh');
+  const proj = rowFor(node, 'ana@lolly.example', 'Edit Brand refresh');
   buttonsByText(proj, 'Approve')[0].click();
   await pause(20);
   assert.equal(textOf(proj.lastElementChild), 'Not approved. The project is archived, so the request is closed.');
@@ -255,19 +255,19 @@ test('Activity has a sentence for each invite and access event', () => {
     host.append(...p.helpers.activityLine({ action, payload, actor, subject }, {}).flat(Infinity).filter((x: unknown) => x !== '' && x != null));
     return textOf(host);
   };
-  assert.equal(line('invite.create', { email: 'sam@suse.com' }), 'Andy invited sam@suse.com');
-  assert.match(line('invite.create', { email: 'sam@suse.com', projects: [{ projectId: 'prj_1', role: 'editor' }] }), /^Andy invited sam@suse\.com to prj_1$/);
-  assert.equal(line('invite.extend', { email: 'sam@suse.com', project: { projectId: 'prj_1' } }), 'Andy added prj_1 to the invitation for sam@suse.com');
-  assert.equal(line('invite.accept', { email: 'sam@suse.com' }), 'Andy accepted the invitation for sam@suse.com');
-  assert.equal(line('invite.revoke', { email: 'sam@suse.com' }), 'Andy revoked the invitation for sam@suse.com');
-  assert.equal(line('invite.link', { email: 'sam@suse.com', version: 2 }), 'Andy made a new invite link for sam@suse.com');
-  assert.equal(line('invite.open', { email: 'sam@suse.com', provider: 'oidc' }, nobody), 'Someone opened the invitation for sam@suse.com');
+  assert.equal(line('invite.create', { email: 'sam@lolly.example' }), 'Andy invited sam@lolly.example');
+  assert.match(line('invite.create', { email: 'sam@lolly.example', projects: [{ projectId: 'prj_1', role: 'editor' }] }), /^Andy invited sam@lolly\.example to prj_1$/);
+  assert.equal(line('invite.extend', { email: 'sam@lolly.example', project: { projectId: 'prj_1' } }), 'Andy added prj_1 to the invitation for sam@lolly.example');
+  assert.equal(line('invite.accept', { email: 'sam@lolly.example' }), 'Andy accepted the invitation for sam@lolly.example');
+  assert.equal(line('invite.revoke', { email: 'sam@lolly.example' }), 'Andy revoked the invitation for sam@lolly.example');
+  assert.equal(line('invite.link', { email: 'sam@lolly.example', version: 2 }), 'Andy made a new invite link for sam@lolly.example');
+  assert.equal(line('invite.open', { email: 'sam@lolly.example', provider: 'oidc' }, nobody), 'Someone opened the invitation for sam@lolly.example');
   assert.equal(line('invite.open', { provider: 'oidc' }, nobody), 'Someone opened an invitation');
   assert.equal(line('invite.wrong-account', { email: 'sam.k@gmail.example', admitted: false }, nobody), 'sam.k@gmail.example opened an invitation with another account');
   assert.equal(line('auth.denied', { email: 'eve@x.example', reason: 'not-invited' }, nobody, 'session'), 'eve@x.example could not sign in (not invited)');
   assert.equal(line('auth.denied', { email: 'eve@x.example', reason: 'email-unverified' }, nobody, 'session'), 'eve@x.example could not sign in (email address not verified)');
   assert.equal(line('access.request', { kind: 'join', email: 'sam.k@gmail.example' }, nobody, 'request:r1'), 'sam.k@gmail.example asked to join lolly.ing');
-  assert.equal(line('access.request', { kind: 'project', email: 'ana@suse.com', role: 'editor', projectId: 'prj_1' }, { kind: 'user', id: 'usr_2', name: 'Ana' }, 'request:r2'), 'Ana asked to edit prj_1');
+  assert.equal(line('access.request', { kind: 'project', email: 'ana@lolly.example', role: 'editor', projectId: 'prj_1' }, { kind: 'user', id: 'usr_2', name: 'Ana' }, 'request:r2'), 'Ana asked to edit prj_1');
   assert.equal(line('access.request', { kind: 'switch', email: 'sam.k@gmail.example' }, nobody, 'request:r3'), 'sam.k@gmail.example asked to use their own account for an invitation');
   assert.equal(line('access.approve', { kind: 'join', email: 'sam.k@gmail.example' }, user, 'request:r1'), 'Andy approved a request from sam.k@gmail.example');
   assert.equal(line('access.decline', { kind: 'join', email: 'sam.k@gmail.example' }, user, 'request:r1'), 'Andy declined a request from sam.k@gmail.example');

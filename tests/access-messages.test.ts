@@ -66,12 +66,12 @@ test('a join request names the workspace and is answered in the console', () => 
 test('a switch request carries the forwarded-link warning with the invited address masked', () => {
   const m = requestNotice({
     request: req({ kind: 'switch', userId: undefined, invitationId: 'inv_1', role: undefined, currentRole: undefined }),
-    approverIds: ['usr_a'], provider: 'GitHub', maskedInvitee: 'an•••@suse.com',
+    approverIds: ['usr_a'], provider: 'GitHub', maskedInvitee: 'an•••@lolly.example',
   }, ctx);
   assert.equal(m.title, 'Sam Kim asks to use their own account for an invitation');
-  assert.equal(m.body, 'sam.k@gmail.com · GitHub\nSomeone with the invitation for an•••@suse.com signed in as sam.k@gmail.com. '
+  assert.equal(m.body, 'sam.k@gmail.com · GitHub\nSomeone with the invitation for an•••@lolly.example signed in as sam.k@gmail.com. '
     + 'Approve only if you know the address belongs to them.');
-  assert.ok(!m.body?.includes('suse.com signed in as an'), 'the invited address appears only masked');
+  assert.ok(!m.body?.includes('lolly.example signed in as an'), 'the invited address appears only masked');
   assert.equal(m.data?.invitationId, 'inv_1');
   assert.equal(m.cta?.url, 'https://lolly.ing/admin#/users');
 });
@@ -112,18 +112,18 @@ test('an approval names the approver and opens the project; a refusal names nobo
 });
 
 test('an accepted invitation tells each inviter once, about their own project', () => {
-  const invitee = { id: 'usr_t1', firstname: 'Tess', email: 'andy.fitzsimon+t1@suse.com' };
+  const invitee = { id: 'usr_t1', firstname: 'Tess', email: 'andy.fitzsimon+t1@lolly.example' };
   const withProject = acceptedNotice({ invitationId: 'inv_1', inviterId: 'usr_andy', invitee, project: { id: 'prj_a', name: 'Weekend A' } }, ctx);
   assert.equal(withProject.id, acceptedNoticeId('inv_1', 'usr_andy'));
   assert.match(withProject.id, /^msg_acc_[0-9a-f]{24}$/);
   assert.notEqual(withProject.id, acceptedNoticeId('inv_1', 'usr_priya'), 'one per inviter');
   assert.deepEqual(withProject.audience, { users: ['usr_andy'] });
   assert.equal(withProject.title, 'Tess accepted your invitation');
-  assert.equal(withProject.body, 'andy.fitzsimon+t1@suse.com can now open Weekend A.');
+  assert.equal(withProject.body, 'andy.fitzsimon+t1@lolly.example can now open Weekend A.');
   assert.deepEqual(withProject.cta, { label: 'Open', url: '/#/team/project/prj_a' });
   assert.equal(withProject.endsAt, '2026-11-03T10:00:00.000Z');
   const fromConsole = acceptedNotice({ invitationId: 'inv_1', inviterId: 'usr_andy', invitee, console: true }, ctx);
-  assert.equal(fromConsole.body, 'andy.fitzsimon+t1@suse.com joined lolly.ing.');
+  assert.equal(fromConsole.body, 'andy.fitzsimon+t1@lolly.example joined lolly.ing.');
   assert.deepEqual(fromConsole.cta, { label: 'Open People', url: 'https://lolly.ing/admin#/users?focus=usr_t1' });
   assert.equal(acceptedNotice({ invitationId: 'inv_1', inviterId: 'u', invitee }, ctx).cta, undefined);
   assert.equal(acceptedNotice({ invitationId: 'inv_1', inviterId: 'u', invitee: { id: 'x', email: 'sam@work.com' } }, ctx).title,

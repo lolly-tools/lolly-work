@@ -27,12 +27,12 @@ test('seedStore populates the store across every governance feature', async () =
   // Overlays - all four real tools, with the qr-code lock actually enforcing.
   const overlays = await store.listOverlays();
   assert.equal(overlays.size, 4);
-  for (const id of ['qr-code', 'event-name-badge', 'countdown-timer', 'deck-builder']) assert.ok(overlays.has(id));
+  for (const id of ['qr-code', 'certificate', 'countdown-timer', 'deck-studio']) assert.ok(overlays.has(id));
   const qr = overlays.get('qr-code');
   assert.equal(resolveInputAccess(qr, 'color', ['marketing']).level, 'locked');
   assert.equal(resolveInputAccess(qr, 'color', ['brand-team']).level, 'editable');
   assert.equal(resolveInputAccess(qr, 'background', ['marketing']).level, 'hidden');
-  assert.equal(overlays.get('event-name-badge')?.enforce?.escalation, 'brand-review');
+  assert.equal(overlays.get('certificate')?.enforce?.escalation, 'brand-review');
   assert.equal(overlays.get('countdown-timer')?.enforce?.watermark, 'always');
 
   // Chain - brand-review, two steps.
@@ -49,8 +49,8 @@ test('seedStore populates the store across every governance feature', async () =
   const sessions = await store.listSessionsFiltered({});
   assert.equal(sessions.length, seeded.sessionIds.length);
   assert.ok(sessions.length >= 4);
-  // At least two event-name-badge sessions in one project → multi-edit is demoable.
-  assert.ok(sessions.filter((s) => s.toolId === 'event-name-badge').length >= 2);
+  // At least two certificate sessions in one project → multi-edit is demoable.
+  assert.ok(sessions.filter((s) => s.toolId === 'certificate').length >= 2);
 
   // Catalog lifecycle - a hide, a warn, and a scheduled row all present.
   const lifecycle = await store.listLifecycle();
@@ -87,7 +87,7 @@ test('seedActivity populates the runtime dashboards a signed-in visitor lands on
   assert.ok(summary.sessions.tool.count > 0 && summary.sessions.shell.count > 0, 'seat-utility durations present');
 
   // Consent recorded for the two attributed personas (opt-in attribution).
-  const marketer = await store.getUser(seeded.users['marketer@suse.example']!.id);
+  const marketer = await store.getUser(seeded.users['marketer@lolly.example']!.id);
   assert.equal(marketer?.telemetryConsent, true);
 
   // Fleet - every client bucket recorded, with real counts, incl. a tauri shell.
@@ -110,7 +110,7 @@ test('seedActivity populates the runtime dashboards a signed-in visitor lands on
   assert.ok(approvals.some((a) => a.state === 'in_review' && a.stepIndex === 0), 'one pending at brand sign-off');
   assert.ok(approvals.some((a) => a.state === 'in_review' && a.stepIndex === 1), 'one pending at legal sign-off');
   // Separation of duties held: the submitter never acted on their own request.
-  const submitter = seeded.users['marketer@suse.example']!.id;
+  const submitter = seeded.users['marketer@lolly.example']!.id;
   assert.ok(approvals.every((a) => a.actions.every((act) => act.actor !== submitter)));
 });
 

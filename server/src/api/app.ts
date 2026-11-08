@@ -7923,7 +7923,7 @@ export function buildApp(deps: AppDeps): App {
   // Metadata only - never bytes; the console links to the existing gated
   // /catalog/ preview path for the thumbnail. Merges the pack index entry with
   // the asset's lifecycle row + resolved state. 404 when the id is in neither.
-  // The id carries slashes (e.g. 'suse/tokens/brand'), so it rides the trailing
+  // The id carries slashes (e.g. 'lolly/tokens/demo'), so it rides the trailing
   // wildcard, same as the lifecycle admin route.
   // ── paged asset browse (catalog/asset-browse.ts) ──────────────────────────
   // One page of the caller's feed at a time, filtered and faceted, for a
@@ -8250,7 +8250,7 @@ export function buildApp(deps: AppDeps): App {
   /**
    * Edit one asset's metadata: `PUT /api/v1/catalog/assets/<id>/meta`.
    *
-   * The id carries slashes ('suse/tokens/brand'), so it rides the trailing
+   * The id carries slashes ('lolly/tokens/demo'), so it rides the trailing
    * wildcard with '/meta' as its last segment, the same shape the inspect and
    * lifecycle routes use.
    *
@@ -8724,7 +8724,7 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // The wildcard is the assetId, which itself contains slashes (e.g.
-  // 'suse/tokens/brand') - same trailing-wildcard support the catalog/admin
+  // 'lolly/tokens/demo') - same trailing-wildcard support the catalog/admin
   // static routes use. Body merges onto any existing row; `revoke: true`
   // stamps revokedAt=now and is audited under its own action so "stop
   // sharing" reads distinctly from an ordinary expiry-date edit.

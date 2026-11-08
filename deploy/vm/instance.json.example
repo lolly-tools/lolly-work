@@ -5,7 +5,7 @@
     "baseUrl": "https://lolly.ing",
     "pack": "packs/lolly-ing",
     "homeView": "projects",
-    "inviteNote": "If your organisation blocks Google sign-in (for example @suse.com), use GitHub or email and password."
+    "inviteNote": "If your organisation blocks Google sign-in (for example @example.com), use GitHub or email and password."
   },
   "idp": {
     "issuer": "https://accounts.google.com",
@@ -36,7 +36,7 @@
     "guestLinks": { "enabled": false },
     "nearby": { "enabled": false },
     "sessionTtlHours": 72,
-    "invites": { "passwordDomains": ["suse.com"] },
+    "invites": { "passwordDomains": ["example.com"] },
     "requests": { "join": true, "project": true, "ttlDays": 14, "joinOpenMax": 50 },
     "projectFiles": {
       "enabled": true,

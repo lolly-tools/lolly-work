@@ -645,7 +645,7 @@ button:hover:not(:disabled):not(.tab):not(.rail-toggle):not(.act-time):not(.act-
 .tab, .rail-toggle, .act-time, .act-tag, .link-btn, button.chip,
 .tab:active, .rail-toggle:active, .act-time:active, .act-tag:active, .link-btn:active, button.chip:active { box-shadow: none; }
 /* --on-accent: white by default (matches the built-in accents); a pack whose
-   accent is light-toned (e.g. a mid-green "jungle") gets black text instead —
+   accent is light-toned (e.g. a mid green) gets black text instead —
    applyPackTheme() picks whichever reads better against the resolved color. */
 .primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #fff); font-weight: 600; }
 .primary:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--accent); }

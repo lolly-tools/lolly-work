@@ -31,11 +31,19 @@ export function authThemeCss(tokens: unknown, font: { family: string; file: stri
     for (const [key, child] of Object.entries(record)) if (!key.startsWith('$')) flatten(child, prefix ? `${prefix}.${key}` : key, out, depth + 1);
   };
   const maps: Record<string, Map<string, string>> = {};
+  // A design system with axes (Lolly Demo: modes x colourways) names its colourway themes
+  // with a `com.suse.lolly` axis of kind "colourway". The mode themes alias into the
+  // colourway sets (`{color.colourway.light.primary}`), so each mode reads with the
+  // canonical colourway's sets selected too. A file with no colourway axis reads as before.
+  const themes = Array.isArray(sets.$themes) ? sets.$themes : [];
+  const axisOf = (t: unknown) => (t as { $extensions?: Record<string, { axis?: { kind?: unknown; canonical?: unknown } }> } | null)?.$extensions?.['com.suse.lolly']?.axis;
+  const colourways = themes.filter(t => axisOf(t)?.kind === 'colourway');
+  const colourway = colourways.find(t => axisOf(t)?.canonical === true) ?? colourways[0];
+  const colourwaySets = colourway?.selectedTokenSets && typeof colourway.selectedTokenSets === 'object' ? colourway.selectedTokenSets : {};
   for (const mode of ['light', 'dark']) {
     const out = new Map<string, string>();
-    const themes = Array.isArray(sets.$themes) ? sets.$themes : [];
-    const theme = themes.find(t => t && typeof t === 'object' && typeof t.name === 'string' && new RegExp(mode, 'i').test(t.name));
-    const selected = theme?.selectedTokenSets && typeof theme.selectedTokenSets === 'object' ? theme.selectedTokenSets : null;
+    const theme = themes.find(t => t && typeof t === 'object' && axisOf(t)?.kind !== 'colourway' && typeof t.name === 'string' && new RegExp(mode, 'i').test(t.name));
+    const selected = theme?.selectedTokenSets && typeof theme.selectedTokenSets === 'object' ? { ...theme.selectedTokenSets, ...colourwaySets } : null;
     for (const [name, set] of Object.entries(sets)) if (!name.startsWith('$') && (selected ? ['enabled', 'source'].includes(selected[name]) : name !== (mode === 'light' ? 'dark' : 'light'))) flatten(set, '', out);
     maps[mode] = out;
   }

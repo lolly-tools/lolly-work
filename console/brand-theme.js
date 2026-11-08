@@ -58,7 +58,7 @@ function resolveAliases(map) {
 }
 
 /** Build {light, dark} flattened+resolved token maps, honouring the file's
- *  $themes/selectedTokenSets when present (so `{color.brand.pine}` aliases
+ *  $themes/selectedTokenSets when present (so `{color.brand.spearmint}` aliases
  *  from a shared "base" set resolve inside each theme); a pack with no
  *  $themes gets one merged map used for both — the "pack gives one accent,
  *  use it for both" case. */
@@ -69,9 +69,18 @@ function buildThemeMaps(tokens) {
   // theme's resolved value when an alias points at a dark override.
   const copyEntries = (map) => Object.fromEntries(Object.entries(map).map(([key, value]) => [key, { ...value }]));
   const maps = {};
-  for (const t of Array.isArray(tokens.$themes) ? tokens.$themes : []) {
+  // A design system with axes (Lolly Demo: modes x colourways) names its colourway themes
+  // with a `com.suse.lolly` axis of kind "colourway". Those are not modes: each mode theme
+  // reads with the canonical colourway's sets on top, because the mode sets alias into
+  // them (`{color.colourway.light.primary}`). A file with no colourway axis reads as before.
+  const themes = Array.isArray(tokens.$themes) ? tokens.$themes : [];
+  const axisOf = (t) => t?.$extensions?.['com.suse.lolly']?.axis;
+  const colourways = themes.filter((t) => axisOf(t)?.kind === 'colourway');
+  const colourway = colourways.find((t) => axisOf(t)?.canonical === true) ?? colourways[0];
+  for (const t of themes) {
+    if (axisOf(t)?.kind === 'colourway') continue;
     const merged = {};
-    for (const [setName, state] of Object.entries(t.selectedTokenSets ?? {})) {
+    for (const [setName, state] of Object.entries({ ...(t.selectedTokenSets ?? {}), ...(colourway?.selectedTokenSets ?? {}) })) {
       if ((state === 'enabled' || state === 'source') && flat[setName]) Object.assign(merged, flat[setName]);
     }
     maps[/dark/i.test(t.name ?? '') ? 'dark' : 'light'] = copyEntries(merged);
@@ -215,7 +224,7 @@ async function themeFromTokens(tokens, fontUrlFor) {
   if (!okLight && !okDark) return;
 
   // Primary buttons paint white text over --accent (styles.css); a light-
-  // toned accent (e.g. a mid-green "jungle") reads better with black text —
+  // toned accent (e.g. a mid green) reads better with black text —
   // pick whichever wins, per mode, off the same contrast math as the guard.
   const BLACK = { r: 0, g: 0, b: 0 };
   const WHITE = { r: 255, g: 255, b: 255 };
