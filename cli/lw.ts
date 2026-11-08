@@ -150,9 +150,10 @@ const OPTIONS = {
     'keep-projects': { type: 'boolean' },
     'move-staff': { type: 'string' },
     whole: { type: 'boolean' },
-    // `lw companies profile settings`: contacts who may edit, and the chain they wait for.
+    // `lw companies profile settings`: editors and separate profile and kit chains.
     editors: { type: 'string' },
     chain: { type: 'string' },
+    'kit-chain': { type: 'string' },
     // `lw programmes limits` and `lw tokens limits` (plans/82 M7): a whole number,
     // `none` for no cap, or `default` to take the next level's figure.
     'calls-per-minute': { type: 'string' },
@@ -1035,12 +1036,19 @@ switch (cmd) {
       const company = positionals[4];
       if (!verb || !programme || !company || !['show', 'import', 'set', 'remove'].includes(verb)) fail(usage);
       const at = `/api/v1/programmes/${encodeURIComponent(programme)}/companies/${encodeURIComponent(company)}/kit`;
-      type KitView = { assetId: string; revision: number; kit: { label: string; colours: unknown[] }; source?: { kind: string; reference?: string } };
+      type KitView = { assetId?: string; revision?: number; kit?: { label: string; colours: unknown[] } | null;
+        source?: { kind: string; reference?: string }; pending?: { approvalId: string; action?: 'save' | 'remove' } };
+      const showKit = (r: KitView): void => {
+        if (values.json) return;
+        if (r.kit) console.log(`${r.kit.label}  ${r.assetId}  revision ${r.revision}${r.source ? `  from ${r.source.reference ?? r.source.kind}` : ''}`);
+        if (r.pending) console.log(`kit change waiting for approval ${r.pending.approvalId}`);
+      };
       if (verb === 'show' || verb === 'remove') {
         if (positionals.length !== 5) fail(usage);
         const r = await call(at, { method: verb === 'show' ? 'GET' : 'DELETE' }) as KitView;
         out(r);
-        if (!values.json) console.log(verb === 'remove' ? `removed the kit for ${company}` : `${r.kit.label}  ${r.assetId}  revision ${r.revision}${r.source ? `  from ${r.source.reference ?? r.source.kind}` : ''}`);
+        showKit(r);
+        if (!values.json && verb === 'remove' && !r.pending) console.log(`removed the kit for ${company}`);
         break;
       }
       const file = positionals[5];
@@ -1050,7 +1058,7 @@ switch (cmd) {
         try { body = JSON.parse(readFileSync(file, 'utf8')); } catch { fail('the kit file must contain valid JSON'); }
         const r = await call(at, { method: 'PUT', body }) as KitView;
         out(r);
-        if (!values.json) console.log(`${r.kit.label}  ${r.assetId}  revision ${r.revision}`);
+        showKit(r);
         break;
       }
       const from = values.from;
@@ -1105,7 +1113,7 @@ switch (cmd) {
     if (!verb || !programme || !company) fail(usage);
     const at = `/api/v1/programmes/${encodeURIComponent(programme)}/companies/${encodeURIComponent(company)}/profile`;
     type View = { company: { name: string }; programme: { name: string }; revision: number; profile: Record<string, unknown>;
-      logos: Record<string, { id: string; format: string; version: number }>; settings?: { editors: Array<{ email: string }>; approvalChain: string | null } };
+      logos: Record<string, { id: string; format: string; version: number }>; settings?: { editors: Array<{ email: string }>; approvalChain: string | null; kitApprovalChain: string | null } };
     const show = (v: View): void => {
       if (values.json) return;
       console.log(`${v.company.name} (${v.programme.name})  revision ${v.revision}`);
@@ -1120,6 +1128,7 @@ switch (cmd) {
       console.log(`  currency    ${p.currency ?? '-'}`);
       console.log(`  tax note    ${p.taxNote ?? '-'}`);
       if (v.settings) console.log(`  contacts who may edit: ${v.settings.editors.map((e) => e.email).join(', ') || 'none'}; their changes ${v.settings.approvalChain ? `wait for ${v.settings.approvalChain}` : 'apply at once'}`);
+      if (v.settings) console.log(`  kit changes ${v.settings.kitApprovalChain ? `wait for ${v.settings.kitApprovalChain}` : 'apply at once'}`);
     };
     if (verb === 'show') {
       const v = await call(at) as View;
@@ -1184,7 +1193,8 @@ switch (cmd) {
       const body: Record<string, unknown> = {};
       if (values.editors !== undefined) body.editors = values.editors === 'none' ? [] : values.editors.split(',').map((e) => e.trim()).filter(Boolean);
       if (values.chain !== undefined) body.approvalChain = values.chain === 'none' ? null : values.chain;
-      if (!Object.keys(body).length) fail('usage: lw companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <chain-id>|none]');
+      if (values['kit-chain'] !== undefined) body.kitApprovalChain = values['kit-chain'] === 'none' ? null : values['kit-chain'];
+      if (!Object.keys(body).length) fail('usage: lw companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <chain-id>|none] [--kit-chain <id>|none]');
       const v = await call(`${at}/settings`, { method: 'PUT', body }) as View;
       out(v); show(v);
       break;
@@ -2684,7 +2694,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   companies kit set <programme> <company> <kit.json> [--json]   save a kit as the next asset revision
   companies kit remove <programme> <company> [--json]   retire the kit and clear its pointer
   companies profile show|history <programme> <company> · companies profile set <programme> <company> --field website=… [--field contact.email=…] [--name "…"]   a partner company's details, set up once by the brand team
-  companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none]   its logos, checked on upload, and who else may edit
+  companies profile logo <programme> <company> <light|dark|mark> <file> [--dry-run] | --rm · companies profile settings <programme> <company> [--editors <email,…>|none] [--chain <id>|none] [--kit-chain <id>|none]   its logos, checked on upload, and who else may edit
   templates [ls] <programme>   list the templates published to a programme and its companies
   templates publish <programme> --from <inst/id> --groups g1,g2 [--editable a,b|all] [--bindings input=field,…]   publish a catalog template with audience and input rules
   templates upload <programme> <file.lolly> --groups g1,g2   publish a Share with rules file to partner groups
