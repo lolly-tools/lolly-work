@@ -260,7 +260,7 @@ async function seedFixtures(): Promise<void> {
       { id: 'row-b', heading: 'Two', body: 'second' },
     ],
     // Not expressible in canvas-op v1.1 - must be reported, never silently dropped.
-    logo: { assetId: 'suse/logo/primary', width: 120 },
+    logo: { assetId: 'lolly/logo/primary', width: 120 },
   });
 }
 

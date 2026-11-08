@@ -11,6 +11,8 @@ import {
 } from '../server/src/render/read-ticket.ts';
 import { mintToken, verifyToken } from '../server/src/iam/tokens.ts';
 import { loadEngine } from '../server/src/render/contract.ts';
+import { signBody } from '../server/src/render/worker-client.ts';
+import { sha256Hex } from '../server/src/lib/crypto.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
@@ -181,10 +183,15 @@ async function bootRender() {
     let raw = '';
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {
-      const job = JSON.parse(raw) as { readToken?: string; brandRevision?: string };
+      const job = JSON.parse(raw) as { readToken?: string; brandRevision?: string; evidence?: boolean };
       tickets.push(job.readToken);
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>', ...(job.brandRevision ? { brandRevision: job.brandRevision } : {}) }));
+      // Evidence and a signature like the real worker's reply: a pack whose design system
+      // carries brand rules (the demo pack's Lolly Demo does) asks the worker for them.
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>';
+      const body = JSON.stringify({ svg, ...(job.brandRevision ? { brandRevision: job.brandRevision } : {}),
+        ...(job.evidence ? { evidence: { version: 1, requestSha256: sha256Hex(raw), outputSha256: sha256Hex(svg), resources: [], limitations: [] } } : {}) });
+      res.writeHead(200, { 'content-type': 'application/json', 'x-lw-output-sig': signBody(body, 'render-worker') });
+      res.end(body);
     });
   });
   servers.push(worker);

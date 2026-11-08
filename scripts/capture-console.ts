@@ -334,7 +334,9 @@ async function main(): Promise<void> {
   let ok = 0;
   const failures: string[] = [];
   try {
-    const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, serviceWorkers: 'block' });
+    // bypassCSP: the console's CSP refuses inline scripts, and the walker bundle is
+    // injected as one. The capture is a local tool driving its own demo server.
+    const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, serviceWorkers: 'block', bypassCSP: true });
     // Sign in as the capture owner once (plants lw_session for the whole context).
     const auth = await context.newPage();
     await auth.goto(`${BASE}/api/auth/dev?email=${encodeURIComponent(ADMIN_PERSONA)}&returnTo=/admin`, { waitUntil: 'domcontentloaded' });

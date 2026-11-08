@@ -85,7 +85,7 @@ test('slow signed startup holds readiness, first catalog reads and worker dispat
   await started;
   const waiting = await fetch(base + '/readyz');
   assert.equal(waiting.status, 503);
-  assert.deepEqual(await waiting.json(), { ok: false, store: 'memory', checks: { store: 'ok', catalog: 'preparing' } }, 'readiness names the check it waits on');
+  assert.deepEqual(await waiting.json(), { ok: false, store: 'memory', checks: { store: 'ok', catalog: 'preparing', licenceGate: 'ok' } }, 'readiness names the check it waits on');
   assert.equal((await fetch(base + '/healthz')).status, 200, 'Liveness remains independent of source verification');
   let catalogFinished = false, renderFinished = false;
   const catalog = fetch(base + '/catalog/tools/index.sig.json', { headers: { cookie } }).then(response => { catalogFinished = true; return response; });
@@ -117,7 +117,7 @@ test('a forged source signature never advertises readiness or dispatches a rende
   assert.equal(render.status, 503); assert.match(await render.text(), /publication could not be verified/);
   for (let i = 0; i < 3; i++) assert.equal((await fetch(base + '/readyz')).status, 503);
   const refused = await (await fetch(base + '/readyz')).json() as { checks: Record<string, string> };
-  assert.deepEqual(refused.checks, { store: 'ok', catalog: 'failed' }, 'a refused source reads as a failed catalog check, with no error text');
+  assert.deepEqual(refused.checks, { store: 'ok', catalog: 'failed', licenceGate: 'ok' }, 'a refused source reads as a failed catalog check, with no error text');
   assert.equal((await fetch(base + '/catalog/tools/index.sig.json', { headers: { cookie } })).status, 503);
   assert.equal((await fetch(base + '/healthz')).status, 200); assert.equal(workerRequests, 0);
 });

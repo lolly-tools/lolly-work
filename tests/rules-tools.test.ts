@@ -106,7 +106,7 @@ test('a file that reaches outside itself, a damaged file and a session file are 
   refused(lollyFile(definition(), { session: true }), /another tool's session/);
   refused(Buffer.from('not a zip at all'), /not a \.lolly file/);
   assert.equal(outsideReference({ image: { url: 'data:image/png;base64,AAAA' } }), null);
-  assert.equal(outsideReference({ text: 'a link <a href="https://suse.com">here</a>' }), null, 'a link is not a load');
+  assert.equal(outsideReference({ text: 'a link <a href="https://lolly.example">here</a>' }), null, 'a link is not a load');
   assert.match(outsideReference({ text: '<img src="https://x.example/p.png">' }) ?? '', /linked/);
   assert.match(outsideReference({ text: '<script>alert(1)</script>' }) ?? '', /markup/);
 });

@@ -98,7 +98,7 @@ export async function boot(opts: {
   const config = parseConfig(JSON.stringify({
     instance: {
       name: 'lolly.ing', baseUrl: 'http://team.example', pack,
-      inviteNote: 'If your organisation blocks Google sign-in (for example @suse.com), use GitHub or email and password.',
+      inviteNote: 'If your organisation blocks Google sign-in (for example @lolly.example), use GitHub or email and password.',
       ...opts.instance,
     },
     rateLimit: { enabled: false },

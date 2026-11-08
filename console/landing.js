@@ -25,7 +25,9 @@ async function loadBrand() {
     for (const mode of ['light', 'dark']) {
       const img = document.querySelector(`[data-brand-logo="${mode}"]`);
       const path = brand?.logos?.[mode] ?? brand?.logos?.[mode === 'light' ? 'dark' : 'light'];
-      if (img && /^\/api\/brand\/logo\/(light|dark)$/.test(path ?? '')) {
+      // /api/brand names a revision-addressed route (/api/brand/r/<sha256>/logo/<mode>); the
+      // unaddressed /api/brand/logo/<mode> is accepted too.
+      if (img && /^\/api\/brand\/(?:r\/[0-9a-f]{64}\/)?logo\/(light|dark)$/.test(path ?? '')) {
         img.src = path;
         img.addEventListener('error', () => { img.hidden = true; }, { once: true });
         img.hidden = false;

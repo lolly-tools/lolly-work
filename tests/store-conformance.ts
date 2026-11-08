@@ -1358,7 +1358,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   // record is a file on disk. A driver that could only key the first would make
   // org metadata an instance-assets-only feature.
   assert.equal(await store.getAssetMeta('inst/abc'), null);
-  for (const assetId of ['inst/meta1', 'ext/dam1/a1', 'suse/tokens/brand']) {
+  for (const assetId of ['inst/meta1', 'ext/dam1/a1', 'lolly/tokens/demo']) {
     await store.putAssetMeta({
       assetId, fields: { region: 'EMEA' }, updatedBy: 'user:usr_1', updatedAt: '2026-08-19T00:00:00.000Z',
     });
@@ -1378,7 +1378,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteCatalogField('region');
   assert.equal((await store.getAssetMeta('ext/dam1/a1'))?.fields.region, 'EMEA');
   await store.deleteAssetMeta('ext/dam1/a1');
-  await store.deleteAssetMeta('suse/tokens/brand');
+  await store.deleteAssetMeta('lolly/tokens/demo');
 
   // Collections (plans/31 section 5, migrations/0019). Two properties are the
   // whole storage contract, and both are ones a join table would lose: MEMBER
@@ -1391,7 +1391,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
     id: 'launch',
     name: 'Launch kit',
     description: 'Everything for the spring launch.',
-    members: ['ext/dam1/a1', 'inst/hero', 'suse/tokens/brand'],
+    members: ['ext/dam1/a1', 'inst/hero', 'lolly/tokens/demo'],
     groups: ['design', 'sales'],
     curator: 'user:usr_1',
     createdAt: '2026-08-20T00:00:00.000Z',
@@ -1400,7 +1400,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.putCollection(launch);
   await store.putCollection({ ...launch, id: 'archive', name: 'Archive', members: [], groups: '*' as const });
   const readBack = await store.getCollection('launch');
-  assert.deepEqual(readBack?.members, ['ext/dam1/a1', 'inst/hero', 'suse/tokens/brand'], 'member ORDER round-trips exactly');
+  assert.deepEqual(readBack?.members, ['ext/dam1/a1', 'inst/hero', 'lolly/tokens/demo'], 'member ORDER round-trips exactly');
   assert.deepEqual(readBack?.groups, ['design', 'sales']);
   assert.equal(readBack?.curator, 'user:usr_1');
   assert.equal(readBack?.description, 'Everything for the spring launch.');
@@ -1477,11 +1477,11 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(await store.listAssetRightsMarks(), []);
   const mark = { scope: 'folder:dam/event-photos', holder: 'SUSE', terms: 'Published by SUSE. Not an open licence.', statedBy: 'usr_1', statedAt: '2026-11-07T00:00:00.000Z', coveredAtStatement: 180 };
   await store.putAssetRightsMark(mark);
-  await store.putAssetRightsMark({ ...mark, scope: 'prefix:suse/logo/' });
+  await store.putAssetRightsMark({ ...mark, scope: 'prefix:lolly/logo/' });
   await store.putAssetRightsMark({ ...mark, note: 'the photo team shot these' });
-  assert.deepEqual((await store.listAssetRightsMarks()).map((m) => [m.scope, m.note ?? '']), [['folder:dam/event-photos', 'the photo team shot these'], ['prefix:suse/logo/', '']], 'put is an upsert');
+  assert.deepEqual((await store.listAssetRightsMarks()).map((m) => [m.scope, m.note ?? '']), [['folder:dam/event-photos', 'the photo team shot these'], ['prefix:lolly/logo/', '']], 'put is an upsert');
   await store.deleteAssetRightsMark('provider:nope');
-  await store.deleteAssetRightsMark('prefix:suse/logo/');
+  await store.deleteAssetRightsMark('prefix:lolly/logo/');
   assert.deepEqual(await store.listAssetRightsMarks(), [{ ...mark, note: 'the photo team shot these' }]);
   await store.deleteAssetRightsMark('folder:dam/event-photos');
   assert.deepEqual(await store.listAssetRightsMarks(), []);
@@ -1518,6 +1518,43 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(await store.recordInstanceDefault({ ...decided, value: 'report', why: 'upgrade-with-accounts' }), decided, 'never revisited');
   assert.deepEqual(await store.getInstanceDefault('conformance.default'), decided);
   assert.equal(typeof await store.hasAccounts(), 'boolean');
+
+  // A choice and its audit row commit together, after the audience is read
+  // again under the choices' lock (plans/82 M4): an ended or missing audience
+  // refuses the write and nothing is kept; a withdrawal writes one row each.
+  const prog = { id: 'conf-rights', name: 'Conformance', createdBy: 'usr_1', createdAt: '2026-11-07T00:00:00.000Z', updatedAt: '2026-11-07T00:00:00.000Z', version: 1 };
+  await store.putProgramme(prog);
+  const confCompany = { id: 'conf-co', programmeId: 'conf-rights', name: 'Conf Co', createdBy: 'usr_1', createdAt: '2026-11-07T00:00:00.000Z', updatedAt: '2026-11-07T00:00:00.000Z' };
+  await store.putCompany(confCompany);
+  const atomic = { ...choice, assetId: 'conf/asset', group: 'company-conf-co', programmeId: 'conf-rights', companyId: 'conf-co' };
+  const event = (action: string, assetId: string) => ({ at: '2026-11-07T00:00:00.000Z', actor: 'user:usr_1', action, subject: 'programme:conf-rights', payload: { assetId } });
+  const auditCount = async (action: string) => (await store.listAudit()).filter((e) => e.action === action && e.subject === 'programme:conf-rights').length;
+  const aud = { programmeId: 'conf-rights', programmeCreatedAt: prog.createdAt, companyId: 'conf-co', companyCreatedAt: confCompany.createdAt };
+  assert.equal(await store.putRightsChoicesAudited([atomic], aud, [event('programme.rights.share-anyway', 'conf/asset')]), null);
+  assert.deepEqual((await store.listRightsChoices()).map((c) => c.assetId), ['conf/asset']);
+  assert.equal(await auditCount('programme.rights.share-anyway'), 1, 'the choice and its row together');
+  assert.equal(await store.putRightsChoicesAudited([{ ...atomic, assetId: 'conf/other' }], { ...aud, companyId: 'nope' }, [event('programme.rights.share-anyway', 'conf/other')]), 'AUDIENCE_GONE');
+  assert.equal(await store.putRightsChoicesAudited([{ ...atomic, assetId: 'conf/other' }], { ...aud, companyCreatedAt: '2026-01-01T00:00:00.000Z' }, [event('programme.rights.share-anyway', 'conf/other')]), 'AUDIENCE_GONE',
+    'a company made again with the same id is another audience');
+  await store.putCompany({ ...confCompany, endedAt: '2026-11-07T01:00:00.000Z' });
+  assert.equal(await store.putRightsChoicesAudited([{ ...atomic, assetId: 'conf/other' }], aud, [event('programme.rights.share-anyway', 'conf/other')]), 'AUDIENCE_ENDED');
+  assert.deepEqual((await store.listRightsChoices()).map((c) => c.assetId), ['conf/asset'], 'a refused write keeps nothing');
+  assert.equal(await auditCount('programme.rights.share-anyway'), 1, 'and writes no row');
+  const withdrawn = await store.withdrawRightsChoicesAudited({ companyId: 'conf-co' }, (c) => event('programme.rights.withdraw', c.assetId));
+  assert.deepEqual(withdrawn.map((c) => c.assetId), ['conf/asset']);
+  assert.equal(await auditCount('programme.rights.withdraw'), 1);
+  assert.deepEqual(await store.listRightsChoices(), []);
+  assert.deepEqual(await store.withdrawRightsChoicesAudited({ programmeId: 'conf-rights' }, (c) => event('programme.rights.withdraw', c.assetId)), []);
+  // A delete takes the record and its choices together, with their rows.
+  await store.putCompany({ ...confCompany, endedAt: undefined as unknown as string });
+  assert.equal(await store.putRightsChoicesAudited([atomic], aud, [event('programme.rights.share-anyway', 'conf/asset')]), null);
+  const withdrawnBefore = await auditCount('programme.rights.withdraw');
+  assert.deepEqual((await store.deleteAudienceWithChoices({ companyId: 'conf-co' }, (c) => event('programme.rights.withdraw', c.assetId))).map((c) => c.assetId), ['conf/asset']);
+  assert.equal(await auditCount('programme.rights.withdraw'), withdrawnBefore + 1);
+  assert.ok(!(await store.listCompanies()).some((c) => c.id === 'conf-co'), 'the record went with them');
+  assert.deepEqual(await store.listRightsChoices(), []);
+  assert.deepEqual(await store.deleteAudienceWithChoices({ programmeId: 'conf-rights' }, (c) => event('programme.rights.withdraw', c.assetId)), []);
+  assert.equal(await store.getProgramme('conf-rights'), null);
 
   // Partnership exit receipts (plans/82 M5, migrations/0093): one record per
   // exit, newest first, filtered by programme, company or state, upserted

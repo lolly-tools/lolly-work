@@ -37,6 +37,7 @@ import type { PartnerDomainRecord } from '../programmes/domains.ts';
 import type { PartnerFolderRecord } from '../programmes/folders.ts';
 import type { AssetLicenceRecord, AssetRightsMarkRecord } from '../catalog/rights.ts';
 import type { RightsChoiceRecord } from '../programmes/rights.ts';
+import { rightsChoicePicked } from '../programmes/rights-pick.ts';
 import type { InstanceDefaultRecord } from '../catalog/rights-mode.ts';
 import type { ProgrammeExitRecord } from '../programmes/exit.ts';
 import type { CompanyProfile, CompanyProfileRecord, CompanyProfileRevision, CompanyProfileSettings } from '../programmes/profile.ts';
@@ -365,6 +366,8 @@ interface PgClient {
 }
 
 const AUDIT_LOCK_KEY = 0x1011_0001;
+/** Every write and withdrawal of share anyway choices (plans/82 M4) takes this lock. */
+const RIGHTS_CHOICES_LOCK_KEY = 0x1011_0082;
 /** Serializes project-file reservations (plans/74); distinct from the audit
  *  key above, the test suites' 0x1011_0003, and migrate.ts's 0x1011_0004 (and
  *  its former 0x1011_0002), so a reservation never waits on a migration. */
@@ -1722,6 +1725,20 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
          link.projectId ?? null, link.createdBy, link.createdAt],
       );
     },
+    async putLinkAudited(link, body) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query(
+          `insert into links (id, kind, target, exp, pw_hash, project_id, created_by, created_at)
+           values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8)`,
+          [link.id, link.kind, JSON.stringify(link.target), link.exp, link.pwHash ?? null, link.projectId ?? null, link.createdBy, link.createdAt],
+        );
+        await appendAuditInTransaction(client, body);
+        await client.query('commit');
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
     getLink: getLinkById,
     async revokeLink(id, at) {
       await pool.query('update links set revoked_at = $2 where id = $1', [id, at]);
@@ -2482,6 +2499,69 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteRightsChoice(key) {
       await pool.query('delete from programme_rights_choices where asset_id = $1 and audience_group = $2', [key.assetId, key.group]);
     },
+    // A choice and its audit event commit together, under one lock that every
+    // write and withdrawal of choices takes, and the audience is read inside
+    // it: an exit or a delete that ended it first refuses the write.
+    async putRightsChoicesAudited(records, audience, events) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select pg_advisory_xact_lock($1)', [RIGHTS_CHOICES_LOCK_KEY]);
+        const programme = (await client.query('select record from partner_programmes where id = $1', [audience.programmeId])).rows[0]?.record as ProgrammeRecord | undefined;
+        const company = audience.companyId
+          ? (await client.query('select record from partner_companies where id = $1', [audience.companyId])).rows[0]?.record as CompanyRecord | undefined : undefined;
+        const refusal = !programme || programme.createdAt !== audience.programmeCreatedAt
+          || (audience.companyId && (!company || company.programmeId !== audience.programmeId || company.createdAt !== audience.companyCreatedAt)) ? 'AUDIENCE_GONE' as const
+          : programme.endedAt || company?.endedAt ? 'AUDIENCE_ENDED' as const : null;
+        if (refusal) { await client.query('rollback'); return refusal; }
+        for (const rec of records) {
+          await client.query(
+            `insert into programme_rights_choices (asset_id, audience_group, programme_id, record, updated_at) values ($1, $2, $3, $4::jsonb, now())
+             on conflict (asset_id, audience_group) do update set programme_id = excluded.programme_id, record = excluded.record, updated_at = now()`,
+            [rec.assetId, rec.group, rec.programmeId, JSON.stringify(rec)],
+          );
+        }
+        for (const body of events) await appendAuditInTransaction(client, body);
+        await client.query('commit');
+        return null;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async deleteAudienceWithChoices(target, event) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select pg_advisory_xact_lock($1)', [RIGHTS_CHOICES_LOCK_KEY]);
+        const pick = 'companyId' in target ? { companyId: target.companyId } : { programmeId: target.programmeId };
+        const { rows } = await client.query('select record from programme_rights_choices order by asset_id, audience_group');
+        const gone = rows.map((r) => r.record as RightsChoiceRecord).filter((c) => rightsChoicePicked(c, pick));
+        for (const c of gone) {
+          await client.query('delete from programme_rights_choices where asset_id = $1 and audience_group = $2', [c.assetId, c.group]);
+          await appendAuditInTransaction(client, event(c));
+        }
+        if ('companyId' in target) await client.query('delete from partner_companies where id = $1', [target.companyId]);
+        else await client.query('delete from partner_programmes where id = $1', [target.programmeId]);
+        await client.query('commit');
+        return gone;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async withdrawRightsChoicesAudited(pick, event) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select pg_advisory_xact_lock($1)', [RIGHTS_CHOICES_LOCK_KEY]);
+        const { rows } = await client.query('select record from programme_rights_choices order by asset_id, audience_group');
+        const gone = rows.map((r) => r.record as RightsChoiceRecord).filter((c) => rightsChoicePicked(c, pick));
+        for (const c of gone) {
+          await client.query('delete from programme_rights_choices where asset_id = $1 and audience_group = $2', [c.assetId, c.group]);
+          await appendAuditInTransaction(client, event(c));
+        }
+        await client.query('commit');
+        return gone;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
     // Defaults an instance decides once (migrations/0098): insert once, never update.
     async getInstanceDefault(key) {
       const { rows } = await pool.query('select record from instance_defaults where key = $1', [key]);
@@ -2493,7 +2573,8 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return rows[0]!.record as InstanceDefaultRecord;
     },
     async hasAccounts() {
-      const { rows } = await pool.query('select exists (select 1 from users) as found');
+      // A person, or a stored service token: service principals have no users row.
+      const { rows } = await pool.query('select (exists (select 1 from users) or exists (select 1 from api_tokens)) as found');
       return rows[0]?.found === true;
     },
     // Partnership exit receipts (migrations/0093): one jsonb record per exit.

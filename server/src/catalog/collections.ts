@@ -23,7 +23,7 @@ import type { AssetIndex } from './lifecycle.ts';
 
 /** A collection id is a slug: it rides a URL path and a link target. */
 const COLLECTION_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
-/** A member is a catalog asset id: `inst/x`, `ext/dam/a1`, `suse/tokens/brand`. */
+/** A member is a catalog asset id: `inst/x`, `ext/dam/a1`, `lolly/tokens/demo`. */
 const MEMBER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
 /** Bounds. A collection is a curated set, not a second catalog: the cap keeps

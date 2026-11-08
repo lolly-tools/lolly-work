@@ -14,7 +14,7 @@
 export interface ProvenanceIngredient {
   /** Human name of the asset ("Summit Logo"). */
   title: string;
-  /** Catalog id - pack ('suse/logos/primary') or federated ('ext/dam1/a1'). */
+  /** Catalog id - pack ('lolly/logos/primary') or federated ('ext/dam1/a1'). */
   assetId: string;
   relationship: 'componentOf';
   source:

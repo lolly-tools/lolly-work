@@ -2,7 +2,7 @@
 /**
  * Masked addresses (plans/74 invite spec 2.6, plans/75 5.13). The invite
  * page, the wrong-account page and a switch request name the invited
- * address without spelling it out: "an•••@suse.com". A link can be
+ * address without spelling it out: "an•••@lolly.example". A link can be
  * forwarded, so the page never holds the full address.
  *
  * The local part keeps its first two characters, or only its first when it
