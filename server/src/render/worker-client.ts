@@ -9,6 +9,8 @@
  * Chromium and returns SVG, which the plane then watermarks / provenances /
  * rasterises exactly like an in-process render (policy stays in the plane).
  */
+import { connect } from 'node:net';
+import { setTimeout as pause } from 'node:timers/promises';
 import { hmac, macEquals, canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { serviceUrl } from '../lib/service-url.ts';
 
@@ -17,6 +19,42 @@ export interface WorkerConfig {
   /** Set when render.worker.dispatch is "pull": render and raster jobs then
    *  wait for a worker to lease them instead of being POSTed to `url`. */
   dispatch?: WorkerDispatch;
+  /** Push only: how long, in milliseconds, a job keeps trying a worker it cannot
+   *  connect to before it fails as RENDER_BUSY. Default WORKER_CONNECT_RETRY_MS. */
+  connectRetryMs?: number;
+}
+
+/** How long a push job keeps trying a worker that refuses connections. A worker
+ *  restarting, or out of its Service for a moment, comes back within this. */
+export const WORKER_CONNECT_RETRY_MS = 30_000;
+/** Retry-After, in seconds, when the worker could not be reached at all. */
+export const WORKER_UNREACHABLE_RETRY_AFTER_S = 5;
+const CONNECT_BACKOFF_FIRST_MS = 250;
+const CONNECT_BACKOFF_MAX_MS = 2_000;
+
+/** Socket errors raised before a request reaches the worker. Sending the same
+ *  job again after one of these cannot run it twice. */
+const CONNECT_FAILURE_CODES = new Set(['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT']);
+
+/** True when `e` is a failure to connect: fetch throws `TypeError('fetch failed')`
+ *  with the socket error as its `cause`, and an AggregateError when every
+ *  address of the host was tried. A reset after the request was sent is not one. */
+export function isWorkerConnectFailure(e: unknown, depth = 0): boolean {
+  if (!e || typeof e !== 'object' || depth > 4) return false;
+  const code = (e as { code?: unknown }).code;
+  if (typeof code === 'string' && CONNECT_FAILURE_CODES.has(code)) return true;
+  const errors = (e as { errors?: unknown }).errors;
+  if (Array.isArray(errors) && errors.length > 0 && errors.every(inner => isWorkerConnectFailure(inner, depth + 1))) return true;
+  return isWorkerConnectFailure((e as { cause?: unknown }).cause, depth + 1);
+}
+
+function connectFailureCode(e: unknown, depth = 0): string {
+  if (!e || typeof e !== 'object' || depth > 4) return 'unknown';
+  const code = (e as { code?: unknown }).code;
+  if (typeof code === 'string' && CONNECT_FAILURE_CODES.has(code)) return code;
+  const errors = (e as { errors?: unknown }).errors;
+  if (Array.isArray(errors) && errors.length > 0) return connectFailureCode(errors[0], depth + 1);
+  return connectFailureCode((e as { cause?: unknown }).cause, depth + 1);
 }
 
 export function workerEndpoint(cfg: WorkerConfig, path: string): string {
@@ -71,9 +109,10 @@ export class WorkerError extends Error {
    *  which keep the existing behavior of that call site. */
   readonly code?: string;
   /** Seconds the caller should wait before retrying, echoed straight through
-   *  from the worker's Retry-After header (503 RENDER_BUSY only). No retry
-   *  loop lives here - renders are idempotent-by-cache-key, so retrying, if
-   *  at all, is the caller's call, not this client's. */
+   *  from the worker's Retry-After header (503 RENDER_BUSY only), or
+   *  WORKER_UNREACHABLE_RETRY_AFTER_S when no connection could be made. The
+   *  client itself retries only connection refusals (pushExchange); a 503 the
+   *  worker answers is passed to the caller on the first attempt. */
   readonly retryAfter?: number;
   constructor(message: string, status = 502, opts: { code?: string; retryAfter?: number } = {}) {
     super(message);
@@ -123,16 +162,88 @@ export interface WorkerReply {
  *  the payload, so the caller needs both. */
 export interface WorkerExchange { payload: string; reply: WorkerReply }
 
+/** Per-call options. `now`, `fetchImpl` and `probe` are injectable for tests;
+ *  `deadlineAt` is when the caller's render deadline falls (epoch ms). */
+export interface WorkerCallOpts { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal; deadlineAt?: number; probe?: ConnectProbe }
+
+/** Resolves null once a connection to `endpoint` opens, or the failure's code
+ *  when it is refused or not open within `timeoutMs`. */
+export type ConnectProbe = (endpoint: string, timeoutMs: number, signal?: AbortSignal) => Promise<string | null>;
+
+/** A plain TCP connect to the worker's host and port, closed at once. Any
+ *  failure other than a connect failure resolves null, so the request that
+ *  follows reports it as it always has. */
+export const tcpConnectProbe: ConnectProbe = (endpoint, timeoutMs, signal) => {
+  if (timeoutMs <= 0) return Promise.resolve('UND_ERR_CONNECT_TIMEOUT');
+  const url = new URL(endpoint);
+  const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80);
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    const socket = connect({ host: url.hostname.replace(/^\[|\]$/g, ''), port });
+    // One timer for name lookup and connect together; a socket timeout would
+    // start again once the lookup finished.
+    const timer = setTimeout(() => done('UND_ERR_CONNECT_TIMEOUT'), timeoutMs);
+    const onAbort = (): void => { clearTimeout(timer); socket.destroy(); reject(signal!.reason); };
+    function done(value: string | null): void { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); socket.destroy(); resolve(value); }
+    socket.once('connect', () => done(null));
+    socket.once('error', (e: NodeJS.ErrnoException) => done(e.code && CONNECT_FAILURE_CODES.has(e.code) ? e.code : null));
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+};
+
+/** Retrying a refused connection stops this long before the render deadline,
+ *  so RENDER_BUSY reaches the caller rather than RENDER_TIMEOUT. */
+const DEADLINE_MARGIN_MS = 500;
+
 /** Pull dispatch plugs in here (render.worker.dispatch "pull"); absent means
  *  push. It signs the job when a worker takes it and resolves with that
  *  worker's reply. */
 export type WorkerDispatch = (path: WorkerPath, job: Record<string, unknown>,
   opts: { signal?: AbortSignal; timeoutMs: number }) => Promise<WorkerExchange>;
 
-/** Push: sign the job now and POST it to the worker Service. The timeout spans
- *  the request and its whole body, as it always has. */
+/** Push: POST the job to the worker Service. A worker that refuses the
+ *  connection is treated as busy: a single worker leaves its Service while its
+ *  one slot is taken, so the second call of a two-call render (an SVG, then its
+ *  raster) can find no endpoint for a few seconds. Each attempt is a new
+ *  request, signed afresh and connected afresh, with a short backoff, until
+ *  `connectRetryMs` has passed; then the job fails as 503 RENDER_BUSY with
+ *  Retry-After. The retrying also stops DEADLINE_MARGIN_MS before the caller's
+ *  render deadline, and no attempt starts once the time is up. Before each
+ *  retry a TCP connect, bounded by the time left, checks that the worker
+ *  accepts connections, so a connect that hangs cannot carry the job past the
+ *  budget or the deadline. Every other failure, and every answer the worker
+ *  gives, is returned on the first attempt as before. */
 async function pushExchange(cfg: WorkerConfig, path: WorkerPath, job: Record<string, unknown>,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal }, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
+  opts: WorkerCallOpts, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
+  const started = Date.now();
+  const until = Math.min(started + (cfg.connectRetryMs ?? WORKER_CONNECT_RETRY_MS),
+    opts.deadlineAt !== undefined ? opts.deadlineAt - DEADLINE_MARGIN_MS : Number.POSITIVE_INFINITY);
+  const busy = (tries: number, code: string): WorkerError => new WorkerError(
+    `render worker not accepting connections (${code}) after ${tries} attempt${tries === 1 ? '' : 's'} over ${Math.round((Date.now() - started) / 1000)} s; retry shortly`,
+    503, { code: 'RENDER_BUSY', retryAfter: WORKER_UNREACHABLE_RETRY_AFTER_S });
+  const probe = opts.probe ?? tcpConnectProbe;
+  for (let attempt = 1; ; attempt++) {
+    let failed: string | null = attempt === 1 ? null : await probe(workerEndpoint(cfg, path), until - Date.now(), opts.signal);
+    if (failed === null && attempt > 1 && Date.now() >= until) failed = 'UND_ERR_CONNECT_TIMEOUT';
+    if (failed === null) {
+      try {
+        return await pushOnce(cfg, path, job, opts, readBody);
+      } catch (e) {
+        if (opts.signal?.aborted || !isWorkerConnectFailure(e)) throw e;
+        failed = connectFailureCode(e);
+      }
+    }
+    // Wait a little less than the time left, so the last try starts before it runs out.
+    const wait = Math.min(CONNECT_BACKOFF_FIRST_MS * 2 ** (attempt - 1), CONNECT_BACKOFF_MAX_MS, until - Date.now() - CONNECT_BACKOFF_FIRST_MS);
+    if (wait <= 0) throw busy(attempt, failed);
+    await pause(wait, undefined, opts.signal ? { signal: opts.signal } : {});
+    if (Date.now() >= until) throw busy(attempt, failed);
+  }
+}
+
+/** One signed POST. The timeout spans the request and its whole body, as it always has. */
+async function pushOnce(cfg: WorkerConfig, path: WorkerPath, job: Record<string, unknown>,
+  opts: WorkerCallOpts, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
   const payload = canonicalJson({ ...job, ts: opts.now ?? Date.now() });
   const sig = signBody(payload, cfg.secret);
   const ctrl = new AbortController();
@@ -156,7 +267,7 @@ async function pushExchange(cfg: WorkerConfig, path: WorkerPath, job: Record<str
 }
 
 function exchange(cfg: WorkerConfig, path: WorkerPath, job: Record<string, unknown>,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal }, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
+  opts: WorkerCallOpts, readBody: (res: Response) => Promise<string>): Promise<WorkerExchange> {
   return cfg.dispatch
     ? cfg.dispatch(path, job, { ...(opts.signal ? { signal: opts.signal } : {}), timeoutMs: cfg.timeoutMs })
     : pushExchange(cfg, path, job, opts, readBody);
@@ -187,7 +298,7 @@ function replyError(reply: WorkerReply, what: string): WorkerError {
 export async function renderViaWorker(
   cfg: WorkerConfig,
   job: WorkerJob,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal; onEvidence?: (evidence: WorkerEvidence) => void } = {},
+  opts: WorkerCallOpts & { onEvidence?: (evidence: WorkerEvidence) => void } = {},
 ): Promise<string> {
   opts.signal?.throwIfAborted();
   try {
@@ -228,7 +339,7 @@ export async function renderViaWorker(
 export async function rasteriseViaWorker(
   cfg: WorkerConfig,
   job: RasterJob,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
+  opts: WorkerCallOpts = {},
 ): Promise<RasterResult> {
   opts.signal?.throwIfAborted();
   try {

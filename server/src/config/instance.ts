@@ -333,9 +333,11 @@ export interface InstanceConfig {
      * still serves file previews. `pull.leaseMs` is how long a lease lasts
      * without renewal; `pull.queueTimeoutMs` is how long a job waits for a
      * worker before it fails as RENDER_BUSY, the answer a full worker gives
-     * under push.
+     * under push. `connectRetryMs` is how long a push job keeps trying a worker
+     * that refuses the connection (restarting, or out of its Service while its
+     * slots are full) before it fails as RENDER_BUSY.
      */
-    worker: { url: string; timeoutMs: number; dispatch: 'push' | 'pull'; pull: { leaseMs: number; queueTimeoutMs: number } };
+    worker: { url: string; timeoutMs: number; connectRetryMs: number; dispatch: 'push' | 'pull'; pull: { leaseMs: number; queueTimeoutMs: number } };
     /**
      * Instance C2PA signing identity (plans/17 §16). When `certFile` (a public
      * cert-chain PEM, leaf first) is set AND LW_C2PA_SIGNING_KEY (the PKCS#8
@@ -683,7 +685,7 @@ const DEFAULTS: InstanceConfig = {
     approvalArtifacts: { ...APPROVAL_ARTIFACT_DEFAULTS },
     requests: { join: false, project: true, ttlDays: 14, joinOpenMax: 50 },
   },
-  render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000, dispatch: 'push', pull: { leaseMs: 15000, queueTimeoutMs: 30000 } }, c2pa: { certFile: '', claimGenerator: '' } },
+  render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000, connectRetryMs: 30000, dispatch: 'push', pull: { leaseMs: 15000, queueTimeoutMs: 30000 } }, c2pa: { certFile: '', claimGenerator: '' } },
   audit: { headLog: { onBoot: true, intervalMinutes: 60 } },
   rateLimit: {
     enabled: true, trustedProxyHops: 0, maxBuckets: 50000,
@@ -1239,6 +1241,8 @@ export function parseConfig(json: string): InstanceConfig {
     catch { throw new Error('render.worker.url requires HTTPS; HTTP is only for explicit loopback evaluation'); }
   }
   if (cfg.render.worker.url && (!Number.isFinite(wt) || wt <= 0)) throw new Error(`invalid render.worker.timeoutMs: ${wt}`);
+  const cr = cfg.render.worker.connectRetryMs;
+  if (!Number.isInteger(cr) || cr < 0 || cr > 120_000) throw new Error('render.worker.connectRetryMs must be an integer from 0 to 120000');
   if (cfg.render.worker.dispatch !== 'push' && cfg.render.worker.dispatch !== 'pull') throw new Error('render.worker.dispatch must be "push" or "pull"');
   const pull = cfg.render.worker.pull;
   if (!pull || typeof pull !== 'object' || !Number.isInteger(pull.leaseMs) || pull.leaseMs < 1000 || pull.leaseMs > 120_000
