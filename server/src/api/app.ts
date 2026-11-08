@@ -6575,7 +6575,15 @@ export function buildApp(deps: AppDeps): App {
       return blob ? templateValues(await readBlobBody(blob.body, MAX_DATA_SUBMISSION_BYTES)) : null;
     },
   });
-  registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark });
+  registerCatalogRightsRoutes(router, {
+    store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark,
+    holdsAny: async (req, actions) => {
+      const user = (await memberOf(req)) ?? (await serviceAccountOf(req));
+      if (!user) return null;
+      const grants = await store.listGrants();
+      return actions.some((action) => evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], grants)) ? user : null;
+    },
+  });
 
   registerDomainRoutes(router, {
     store, requireAction, audit, resolveTxt,
