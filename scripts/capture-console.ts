@@ -171,6 +171,10 @@ const RECIPES: Recipe[] = [
   } },
   { slug: 'partner-company', route: `programmes?id=${PROGRAMME}&company=${COMPANY}`, cropSelector: '#main', page: 'partner-programmes.md', partner: true, prepare: async page => {
     await page.getByText('Revision history: every revision is kept').waitFor();
+    // The End card on this page has a shot of its own (partner-end-dry-run), so
+    // this one frames the details, logos and contacts.
+    await page.locator('.card > h2', { hasText: 'End the partnership with' }).first()
+      .evaluate((h: Element) => { (h.closest('.card') as HTMLElement).style.display = 'none'; }).catch(() => {});
   } },
   { slug: 'partner-licences', route: `programmes?id=${PROGRAMME}`, cropSelector: '#cap-licences', page: 'partner-programmes.md', partner: true, prepare: async page => {
     await markCard(page, 'Licences', 'cap-licences');
@@ -179,6 +183,9 @@ const RECIPES: Recipe[] = [
     await markCard(page, 'End this partnership', 'cap-end');
     const card = page.locator('#cap-end');
     await card.getByLabel('Whose access ends', { exact: true }).selectOption(`company:${COMPANY}`);
+    // A planned end, three weeks out, with the notice before it.
+    await card.locator('.exit-when input[type=radio][value=date]').check();
+    await card.getByLabel('End date', { exact: true }).fill(new Date(Date.now() + 21 * 86_400_000).toISOString().slice(0, 10));
     await card.getByRole('button', { name: 'See what ending it does', exact: true }).click();
     await card.locator('table').first().waitFor();
   } },
@@ -187,13 +194,19 @@ const RECIPES: Recipe[] = [
     // Frame the shelf to its cards: room below for their edges, and no empty
     // width beyond the last card.
     await page.locator('.published-shelf .published-card').first().waitFor();
-    await page.locator('.published-shelf').evaluate((shelf: HTMLElement) => {
-      const cards = [...shelf.querySelectorAll('.published-card, .company-card')] as HTMLElement[];
-      const left = shelf.getBoundingClientRect().left;
-      const right = Math.max(...cards.map((c) => c.getBoundingClientRect().right));
-      shelf.style.width = `${Math.ceil(right - left + 16)}px`;
-      shelf.style.paddingBottom = '16px';
-    });
+    // The shelf draws again once the copies and the company card arrive, so
+    // frame it, wait, and frame it again until the framing holds.
+    for (let tries = 0; tries < 8; tries++) {
+      await page.locator('.published-shelf').evaluate((shelf: HTMLElement) => {
+        const cards = [...shelf.querySelectorAll('.published-card, .company-card')] as HTMLElement[];
+        const left = shelf.getBoundingClientRect().left;
+        const right = Math.max(...cards.map((c) => c.getBoundingClientRect().right));
+        shelf.style.width = `${Math.ceil(right - left + 16)}px`;
+        shelf.style.paddingBottom = '16px';
+      });
+      await page.waitForTimeout(1500);
+      if (await page.locator('.published-shelf').evaluate((shelf: HTMLElement) => !!shelf.style.width)) break;
+    }
   } },
   { slug: 'partner-company-sheet', route: '', path: '/', persona: 'rita@northwind.example', cropSelector: '.modal.company-sheet', page: 'run-a-partner-programme.md', partner: true, prepare: async page => {
     await page.locator('.published-shelf button', { hasText: 'Details' }).first().click();
@@ -501,7 +514,7 @@ async function captureGroup(browser: any, recipes: Recipe[], walkerSrc: string, 
         // its body via the UA closed-state, which the walker doesn't honor - it
         // would draw the table on top of the chart. Hide the body explicitly so the
         // walker skips it and the shot matches what a reader actually sees.
-        await page.evaluate((sel) => {
+        await page.evaluate(({ sel, app }) => {
           document.querySelectorAll('details:not([open])').forEach((d) => {
             d.querySelectorAll(':scope > *:not(summary)').forEach((c) => {
               (c as HTMLElement).style.display = 'none';
@@ -510,14 +523,20 @@ async function captureGroup(browser: any, recipes: Recipe[], walkerSrc: string, 
           // A subtree crop omits its ancestors' paint. Carry the visible backdrop
           // onto the crop root before walking so standalone dark SVGs retain it.
           const crop = document.querySelector(sel) as HTMLElement;
-          for (let ancestor: Element | null = crop; ancestor; ancestor = ancestor.parentElement) {
-            const color = getComputedStyle(ancestor).backgroundColor;
-            if (color && color !== 'transparent' && !/rgba\([^)]*,\s*0\)$/.test(color)) {
-              crop.style.backgroundColor = color;
-              break;
+          // The Lolly shell layers translucent panels over the body's colour, so
+          // an app shot takes the body's opaque backdrop rather than the nearest tint.
+          if (app && !getComputedStyle(crop).backgroundColor.match(/^rgb\(/)) {
+            crop.style.backgroundColor = getComputedStyle(document.body).backgroundColor;
+          } else {
+            for (let ancestor: Element | null = crop; ancestor; ancestor = ancestor.parentElement) {
+              const color = getComputedStyle(ancestor).backgroundColor;
+              if (color && color !== 'transparent' && !/rgba\([^)]*,\s*0\)$/.test(color)) {
+                crop.style.backgroundColor = color;
+                break;
+              }
             }
           }
-        }, recipe.cropSelector);
+        }, { sel: recipe.cropSelector, app: !!recipe.path });
 
         await page.addScriptTag({ content: walkerSrc });
         const result = await withTimeout(page.evaluate(async (sel) => {
