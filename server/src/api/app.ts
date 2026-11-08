@@ -7280,7 +7280,7 @@ export function buildApp(deps: AppDeps): App {
         // A partner sent this file anyway receives the bytes it was chosen
         // against, never an older version of it (plans/82 M4).
         const allowed = await versionsAllowedFor(user, id);
-        if (allowed && !allowed(row!)) return sendError(res, 403, 'FORBIDDEN', 'this version was not shared with you');
+        if (allowed && !allowed(row!)) return notAvailable(res);
         blobId = fmt.blobId;
       }
       const stat = blobId ? await blobs.head(blobId) : null;

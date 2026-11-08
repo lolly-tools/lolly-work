@@ -321,7 +321,7 @@ test('instance and pack file bytes follow the gate through the feed checks (#346
   const status = async (base: string, email: string, path: string) => (await fetch(`${base}${path}`, { headers: { cookie: await login(base, email) } })).status;
   // An instance file: instanceAssetReadable reads the caller's feed, which the gate shapes.
   assert.equal(await status(gate, 'rita@northwind.test', '/catalog/inst/open-shot/png'), 200, 'a file whose licence travels');
-  assert.equal(await status(gate, 'rita@northwind.test', '/catalog/inst/plain-shot/png'), 403, 'a file with no licence record is held');
+  assert.equal(await status(gate, 'rita@northwind.test', '/catalog/inst/plain-shot/png'), 404, 'a file with no licence record is held, with the one plain answer a partner gets (#353)');
   assert.equal(await status(report, 'rita@northwind.test', '/catalog/inst/plain-shot/png'), 200, 'report mode changes nothing a partner receives');
   assert.equal(await status(gate, 'staff@test', '/catalog/inst/plain-shot/png'), 200, 'staff unchanged');
   // A pack file: feedNamesFile answers only for a file the caller's gated feed names.
@@ -350,7 +350,7 @@ test('a share anyway choice names the head\'s bytes: an older version of the fil
   const head = await fetch(`${gate}/catalog/inst/versioned/png`, { headers: { cookie: rita } });
   assert.equal(head.status, 200, 'head');
   assert.equal(await head.text(), 'png:NEW', 'the bytes chosen');
-  assert.equal((await fetch(`${gate}/catalog/inst/versioned/png?v=1`, { headers: { cookie: rita } })).status, 403, 'not the version before them');
+  assert.equal((await fetch(`${gate}/catalog/inst/versioned/png?v=1`, { headers: { cookie: rita } })).status, 404, 'not the version before them, with the one plain answer');
   assert.equal((await fetch(`${gate}/catalog/inst/versioned/png?v=2`, { headers: { cookie: rita } })).status, 200, 'the head by number');
   const history = await call(gate, rita, 'GET', '/api/v1/catalog/assets/inst/versioned/versions');
   assert.deepEqual(history.body.versions.map((v: { version: number }) => v.version), [2], 'the history lists only the chosen bytes');
