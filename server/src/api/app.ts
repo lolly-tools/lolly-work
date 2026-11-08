@@ -8551,6 +8551,11 @@ export function buildApp(deps: AppDeps): App {
       return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
     }
     await providersReady;
+    // A partner kit (plans/82 M8) changes only through its company's kit route,
+    // which audits the revision and holds a change when the kit's review switch is on.
+    if (id.startsWith(INST_PREFIX) && (await store.getInstanceAsset(id))?.entry.type === 'partner-kit') {
+      return sendError(res, 409, 'PARTNER_KIT', 'a partner kit changes through its company kit route');
+    }
     // ROLLBACK (plans/31 §6): point the head at a version that already exists.
     // Nothing is copied and nothing is deleted - the version that was head
     // stays in the history, so a rollback is itself reversible. It is a
