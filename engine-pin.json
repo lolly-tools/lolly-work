@@ -1,17 +1,17 @@
 {
-  "generatedFrom": "e47127c03ae1b24a1a413e2bf3a0992b2bbccc01",
+  "generatedFrom": "8be2ceaf828c22f14e9d8067d8b8805b5d0ea921",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.6.0",
     "tarball": "lolly-tools-core-1.6.0.tgz",
-    "tarballSha256": "5758ea753dfb16d04501f7bfe375f0d06e31533e5a55ecfa0925c94837d890f8",
-    "contentHash": "e1306d91b7e544b20655df2791826653580a8c021c6dec41a374945f24ef3ba4"
+    "tarballSha256": "a4b459c90d85ee1ae72b409d824738e48d1e1ee45ce3fc173c44132663ed1fe1",
+    "contentHash": "d11200840c71d75accecebc963426e8e23d17555d71bcabfd1a516777bb10ded"
   },
   "engine": {
-    "version": "1.333.0",
-    "tarball": "lolly-engine-1.333.0.tgz",
-    "tarballSha256": "273b72eb14a28b876c1554eb5605361d4fe8cd8f88bcba617b92674a52f56d74",
-    "contentHash": "eaa4858292dc8f71678b0518efafabdf61cb5e28eb98710719180c382b35f61b"
+    "version": "1.334.0",
+    "tarball": "lolly-engine-1.334.0.tgz",
+    "tarballSha256": "1f6979a821e44a5986b7706a46b4c752d55586c9487285e77d9012743f835667",
+    "contentHash": "c967e2bfbf22d9bc3a390945bf76a6787a2876a54b783b66b976c5e51729efc2"
   },
   "schemas": {
     "asset-ref.schema.json": "1e610bd8369b1f4756306709af95bb009aa39981a9776343f92f1c00c51bc3cd",

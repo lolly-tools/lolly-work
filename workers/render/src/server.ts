@@ -16,10 +16,12 @@ import { observeWorkerResources } from './evidence.ts';
  *                    when LW_RENDER_MAX_CONCURRENT contexts are already open
  *   POST /rasterise  same envelope/backpressure; body: { svg, format, width?, ts }
  *   GET  /healthz  → 200 { ok } - liveness, independent of load
- *   GET  /readyz   → { ok, active, capacity }, HTTP 200 with a connected browser
- *                    below capacity, 503 otherwise, so k8s pulls the pod from
- *                    the Service instead of routing new work to it (plans/22
- *                    §5). Unauthenticated by design (no HMAC on a probe path).
+ *   GET  /readyz   → { ok, active, capacity, atCapacity }, HTTP 200 while the
+ *                    browser is connected, 503 otherwise. Capacity is not part
+ *                    of readiness: a full worker answers each new job with 503
+ *                    RENDER_BUSY, and `atCapacity` reports the full state to
+ *                    whatever reads it. Unauthenticated by design (no HMAC on a
+ *                    probe path).
  *
  * Pull dispatch (plan 324 M3, off by default): with LW_RENDER_PULL_URL set,
  * the worker also leases /render and /rasterise jobs from Work (./pull.ts) and
@@ -417,11 +419,15 @@ export async function runJob(path: '/render' | '/rasterise', raw: string, sig: u
 const transport = workerTransport((req, res) => {
   void (async () => {
     if (req.method === 'GET' && req.url === '/healthz') return send(res, json(200, { ok: true }));
-    // A process with no connected browser cannot take work. Capacity remains
-    // part of readiness while liveness is independent of both conditions.
+    // A process with no connected browser cannot take work. A full worker
+    // stays ready: when readiness followed capacity, a lone worker left its
+    // Service for every long render, and the plane's next call (the raster of
+    // the SVG it had just rendered) found no endpoint at all. A full worker
+    // answers each new job with 503 RENDER_BUSY instead; `atCapacity` carries
+    // the full state for discovery and anything else that reads it.
     if (req.method === 'GET' && req.url === '/readyz') {
-      const ok = (!!browserGetterOverride || browserLifecycle.ready) && !sem.atCapacity;
-      return send(res, json(ok ? 200 : 503, { ok, active: sem.inUse, capacity: sem.limit }));
+      const ok = !!browserGetterOverride || browserLifecycle.ready;
+      return send(res, json(ok ? 200 : 503, { ok, active: sem.inUse, capacity: sem.limit, atCapacity: sem.atCapacity }));
     }
     const path = (req.url ?? '').split('?')[0];
     if (req.method !== 'POST' || (path !== '/render' && path !== '/rasterise' && path !== '/file-preview')) {
