@@ -8,8 +8,8 @@
  *
  * What a `helm template` CAN prove: the templates render, the YAML is well-formed,
  * and the topology invariants hold (worker off by default; HPA owns scale when on;
- * readiness is the /readyz saturation gate while liveness stays load-independent - 
- * plans/23 §3.C). What it can NOT prove: admission, RBAC, ingress behaviour - that
+ * readiness is the /readyz browser check while liveness stays load-independent;
+ * a full worker answers each job with 503 RENDER_BUSY instead of leaving its Service). What it can NOT prove: admission, RBAC, ingress behaviour - that
  * is day-one-on-cluster work, runbook'd in deploy/helm/DAY-ONE-RKE2.md.
  */
 import { test } from 'node:test';
@@ -179,7 +179,7 @@ test('worker topology: /readyz readiness vs /healthz liveness, concurrency env, 
   const dep = workerDeployment(r.out);
   assert.ok(dep, 'worker Deployment renders when enabled');
   assert.match(dep!, /livenessProbe:[\s\S]*?path: \/healthz/, 'liveness stays load-independent');
-  assert.match(dep!, /readinessProbe:[\s\S]*?path: \/readyz/, 'readiness is the saturation gate (plans/23 §3.C)');
+  assert.match(dep!, /readinessProbe:[\s\S]*?path: \/readyz/, 'readiness is the browser check on /readyz');
   assert.match(dep!, /LW_RENDER_MAX_CONCURRENT[\s\S]*?value: "4"/, 'per-pod cap reaches the pod');
   assert.match(dep!, /^\s*replicas:/m, 'without the HPA, the Deployment owns its replica count');
 });
