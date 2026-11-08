@@ -55,7 +55,7 @@ function harness(initial: Record<string, any> = {}, settings: Record<string, any
     data = method === 'DELETE' ? { kit: null, limits } : { kit: body, revision: (data.revision ?? 0) + 1, source: body.source, limits };
     return response(200, data);
   };
-  w.eval(`${source}; window.kitHelpers = { companyKitCard, readCompanyKit, companyPage };`);
+  w.eval(`${source}; window.kitHelpers = { companyKitCard, readCompanyKit, companyPage, renderPreview };`);
   const card = w.kitHelpers.companyKitCard(base, company, data, policy, chains);
   doc.getElementById('app').append(card);
   return { w, doc, card, calls, helpers: w.kitHelpers,
@@ -258,5 +258,19 @@ test('the company page includes the card and does not turn a storage error into 
     h.readError(false);
     card.querySelector('button').click(); await settle();
     assert.match(card.textContent, /No kit yet/);
+  } finally { h.close(); }
+});
+
+test('Preview as the company shows the kit line its people read, and None yet without a kit', () => {
+  const h = harness();
+  try {
+    const data = (kit?: Record<string, unknown>) => ({
+      preview: { groups: ['programme-resellers', 'company-northwind'], scoped: true },
+      orgConfig: { can: {}, tools: {}, profilePolicy: {}, inboxUnread: 0, session: { role: 'member' },
+        partner: { company: { id: 'northwind', name: 'Northwind IT', revision: 4, logos: {}, ...(kit ? { kit } : {}) } } },
+    });
+    const row = (node: any) => [...node.querySelectorAll('tr')].find((tr: any) => tr.firstChild?.textContent === 'Partner kit')?.lastChild?.textContent;
+    assert.equal(row(h.helpers.renderPreview(data({ id: 'inst/kit', revision: 2, label: 'Northwind IT' }))), 'Northwind IT · revision 2');
+    assert.equal(row(h.helpers.renderPreview(data())), 'None yet');
   } finally { h.close(); }
 });

@@ -7269,6 +7269,8 @@ function renderPreview(data) {
       : el('p', { class: 'muted' }, 'These groups are in no single company, so no company details fill their templates.'),
     company ? dataTable(['Detail', 'Value'], [
       ['Logos', ['light', 'dark', 'mark'].filter((k) => company.logos?.[k]).map((k) => ({ light: 'light surfaces', dark: 'dark surfaces', mark: 'mark' }[k])).join(', ') || 'None yet'],
+      // The kit line the company's people read under Design system in their tools.
+      ['Partner kit', company.kit ? `${company.kit.label} · revision ${company.kit.revision}` : 'None yet'],
       ['Website', company.website ?? '—'],
       ['Contact', company.contact ? [company.contact.name, company.contact.email, company.contact.phone].filter(Boolean).join(', ') : '—'],
       ['Address', company.address ? company.address.split('\n').join(', ') : '—'], ['Currency', company.currency ?? '—'], ['Tax note', company.taxNote ?? '—'],
