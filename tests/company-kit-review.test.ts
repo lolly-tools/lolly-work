@@ -12,6 +12,15 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
+import { PARTNER_KIT_LIMITS, PARTNER_KIT_MAX_ASSET_ID, PARTNER_KIT_MAX_SOURCE_REFERENCE, PARTNER_KIT_COLOUR_ROLES, PARTNER_KIT_TREATMENTS } from '@lolly-tools/core/partner-kit-v1';
+import { KIT_DESIGN_SYSTEM_MAX_BYTES, KIT_LOLLY_MAX_BYTES, KIT_SVG_MAX_BYTES, KIT_TOKENS_MAX_BYTES, KIT_TOKENS_MAX_PARTS } from '../server/src/programmes/kit.ts';
+import { KIT_LIMITS } from '../server/src/programmes/kit-routes.ts';
+import { ZipBuilder } from '../server/src/links/zip.ts';
+
+const expectedLimits = { ...PARTNER_KIT_LIMITS, maxAssetId: PARTNER_KIT_MAX_ASSET_ID, maxSourceReference: PARTNER_KIT_MAX_SOURCE_REFERENCE,
+  colourRoles: [...PARTNER_KIT_COLOUR_ROLES], treatments: [...PARTNER_KIT_TREATMENTS],
+  imports: { tokensMaxBytes: KIT_TOKENS_MAX_BYTES, lollyMaxBytes: KIT_LOLLY_MAX_BYTES, designSystemMaxBytes: KIT_DESIGN_SYSTEM_MAX_BYTES,
+    tokensMaxParts: KIT_TOKENS_MAX_PARTS, svgMaxBytes: KIT_SVG_MAX_BYTES } };
 
 let app: ReturnType<typeof buildApp>;
 let pack = '';
@@ -28,7 +37,7 @@ const kit = (id: string, label = id) => ({ schemaVersion: 1, id, label, logos: {
 const call = async (cookie: string, method: string, path: string, body?: unknown, token?: string) => {
   const req = new IncomingMessage(new Socket());
   req.method = method; req.url = path;
-  const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+  const bytes = body === undefined ? undefined : Buffer.isBuffer(body) ? body : Buffer.from(JSON.stringify(body));
   req.headers = { host: 'localhost', cookie, ...(token ? { authorization: `Bearer ${token}` } : {}), 'content-type': 'application/json', ...(bytes ? { 'content-length': String(bytes.length) } : {}) };
   if (bytes) req.push(bytes);
   req.push(null);
@@ -88,6 +97,26 @@ before(async () => {
   assert.equal((await call(manager, 'PUT', '/api/v1/programmes/partners', { name: 'Partners' })).status, 201);
 });
 after(async () => { await rm(pack, { recursive: true, force: true }); });
+
+test('empty and saved GETs and imports return the SDK and import limits', async () => {
+  const at = await company('limits', false);
+  const empty = await call(manager, 'GET', at);
+  assert.equal(empty.status, 404);
+  assert.deepEqual(empty.body.limits, expectedLimits);
+  const tokens = { color: { brand: { $type: 'color', $value: '#0b3d91' } } };
+  const zip = new ZipBuilder();
+  const share = Buffer.concat([zip.add('design-system.json', Buffer.from(JSON.stringify(tokens))), zip.end()]);
+  for (const [from, body] of [['logos', undefined], ['tokens', tokens], ['lolly', share]] as const) {
+    const imported = await call(manager, 'POST', `${at}/import?from=${from}`, body);
+    assert.equal(imported.status, 200, JSON.stringify(imported.body));
+    assert.deepEqual(imported.body.limits, expectedLimits);
+  }
+  const saved = await call(manager, 'PUT', at, kit('limits'));
+  assert.equal(saved.status, 200);
+  const view = await call(manager, 'GET', at);
+  assert.equal(view.status, 200);
+  assert.deepEqual(view.body.limits, expectedLimits);
+});
 
 test('kit approval is off by default and settings are independent of profile revisions', async () => {
   const at = await company('defaults', false);
@@ -158,7 +187,8 @@ test('a first save waits without an asset and GET exposes the pending request', 
   const asked = await call(manager, 'PUT', at, kit('first'));
   assert.equal(asked.status, 202);
   assert.equal((await store.getCompanyProfile('first'))?.kit, undefined);
-  assert.deepEqual(await read('first'), { kit: null, pending: { approvalId: asked.body.pending.approvalId, action: 'save' } });
+  assert.deepEqual(await read('first'), { kit: null, limits: KIT_LIMITS, pending: { approvalId: asked.body.pending.approvalId, action: 'save' } });
+  assert.deepEqual((await read('first')).limits, expectedLimits);
   assert.ok(!(await store.listInstanceAssets()).some((a) => (a.entry.meta as { company?: string })?.company === 'first'));
   await decide(asked.body.pending.approvalId, 'approve');
   assert.equal((await read('first')).revision, 1);
@@ -277,6 +307,7 @@ test('an allowed contact is held by the kit switch while profile editing stays d
   for (const [cookie, path] of [[manager, at], [contact, OWN]]) {
     const imported = await call(cookie!, 'POST', `${path}/import?from=logos`);
     assert.equal(imported.status, 200);
+    assert.deepEqual(imported.body.limits, expectedLimits);
     assert.equal(imported.body.pending, undefined);
     assert.equal(imported.body.kit.id, 'contact');
   }
