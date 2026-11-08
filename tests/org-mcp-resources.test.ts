@@ -21,10 +21,13 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { PartnerKitV1 } from '@lolly-tools/core/partner-kit-v1';
+import sharp from 'sharp';
 
 import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
+import { readBlobBody } from '../server/src/blobs/types.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { createMetrics } from '../server/src/observability/metrics.ts';
 import { RESOURCE_TEMPLATES, resourceRoute } from '../server/src/automation/org-mcp.ts';
@@ -37,6 +40,10 @@ const SECRET_SKILL = '---\nname: launch-plans\ndescription: Internal\n---\nNot f
 const WORDS = '# Words we use\n';
 const SVG = (fill: string) => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400"><rect width="800" height="400" fill="${fill}"/></svg>`);
 const sha = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+const SURFACES = ['light', 'dark', 'mark'] as const;
+const COMPANY = '/api/v1/programmes/resellers/companies/northwind';
+const KIT = 'lolly-work://partner/kit';
+const KIT_URIS = [KIT, ...SURFACES.map((surface) => `${KIT}/logo/${surface}`)];
 
 let pack = '';
 let server: Server;
@@ -48,6 +55,8 @@ let blobs: ReturnType<typeof createMemoryBlobStore>;
 const secrets: Record<string, string> = {};
 const ids: Record<string, string> = {};
 let template = '';
+let kitView: { assetId: string; revision: number; kit: PartnerKitV1 };
+const logoBytes: Partial<Record<typeof SURFACES[number], Buffer>> = {};
 
 const manifest = {
   id: 'price-card', name: 'Price card', version: '1.0.0', engineVersion: '^1.0.0', status: 'official',
@@ -91,11 +100,11 @@ before(async () => {
   // The same store on an instance with brand pages off: a live page stays out of reach there.
   const pagesOff = buildApp({ config: { ...config, brandPages: { ...config.brandPages, enabled: false } }, store, blobs, metrics: createMetrics(), secrets: { session: 'sR', link: 'lR' } });
   offServer = createServer((req, res) => void pagesOff(req, res));
-  await new Promise<void>((r) => offServer.listen(0, '127.0.0.1', () => r()));
+  await new Promise<void>((resolve, reject) => { offServer.once('error', reject); offServer.listen(0, '127.0.0.1', resolve); });
   const offAddr = offServer.address();
   offBase = `http://127.0.0.1:${typeof offAddr === 'object' && offAddr ? offAddr.port : 0}`;
   server = createServer((req, res) => void app(req, res));
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const addr = server.address();
   base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
 
@@ -103,8 +112,21 @@ before(async () => {
   assert.equal((await call(owner, 'PUT', '/api/v1/programmes/resellers', { name: 'Resellers, EMEA', tools: ['price-card'] })).status, 201);
   for (const [id, name] of [['northwind', 'Northwind IT'], ['globex', 'Globex']]) assert.ok((await call(owner, 'PUT', `/api/v1/programmes/resellers/companies/${id}`, { name })).status < 300);
   assert.equal((await call(owner, 'PUT', '/api/v1/programmes/resellers/companies/northwind/profile', { website: 'https://northwind.example', currency: 'EUR' })).status, 200);
-  const logo = await fetch(`${base}/api/v1/programmes/resellers/companies/northwind/profile/logo?surface=light`, { method: 'POST', headers: { cookie: owner, 'content-type': 'image/svg+xml' }, body: new Uint8Array(SVG('#204080')) });
-  assert.ok(logo.status < 300, await logo.text());
+  const logos: PartnerKitV1['logos'] = {};
+  for (const [i, surface] of SURFACES.entries()) {
+    const bytes = surface === 'mark' ? await sharp({ create: { width: 400, height: 400, channels: 4, background: '#102040' } }).png().toBuffer() : SVG(['#204080', '#ffffff'][i]!);
+    const logo = await uploadLogo(owner, surface, bytes);
+    logos[surface] = { id: logo.id, version: logo.version };
+    const rec = (await store.getInstanceAsset(logo.id))!;
+    logoBytes[surface] = await readBlobBody((await blobs.get(Object.values(rec.blobs)[0]!))!.body);
+  }
+  const kit: PartnerKitV1 = { schemaVersion: 1, id: 'northwind', label: 'Northwind IT', logos,
+    colours: [{ role: 'primary', name: 'Northwind blue', value: '#204080' }], source: { kind: 'manual' } };
+  assert.equal((await call(owner, 'PUT', `${COMPANY}/kit`, kit)).status, 200);
+  const saved = await call(owner, 'PUT', `${COMPANY}/kit`, { ...kit, rules: { treatments: ['colour', 'mono'] } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  kitView = { assetId: saved.body.assetId, revision: saved.body.revision, kit: saved.body.kit };
+  assert.equal(kitView.revision, 2);
   // Both skills reach the programme through a collection; the reader still keeps the internal one back.
   await store.putCollection({ id: 'guidance', name: 'Guidance', members: ['acme/skills/voice', 'acme/skills/launch-plans'], groups: ['programme-resellers'], curator: 'user:x', createdAt: 'x', updatedAt: 'x' });
   const submitted = await fetch(`${base}/api/v1/catalog/submit?type=template&toolId=price-card`, { method: 'POST', headers: { cookie: owner, 'content-type': 'application/json' },
@@ -124,11 +146,13 @@ before(async () => {
   await mint('northwind', { scopes: ['render', 'catalog.read'] }, { programme: 'resellers', company: 'northwind' });
   await mint('globex', { scopes: ['render', 'catalog.read'] }, { programme: 'resellers', company: 'globex' });
   await mint('internal', { scopes: ['render', 'catalog.read'] });
+  await mint('programme', { scopes: ['catalog.read'] }, { programme: 'resellers' });
+  await mint('kit-reader', { scopes: ['catalog.read'] }, { programme: 'resellers', company: 'northwind' });
   await mint('render-only', { scopes: ['render'] }, { programme: 'resellers', company: 'northwind' });
 });
 after(async () => {
-  server.close();
-  offServer.close();
+  server?.close();
+  offServer?.close();
   await rm(pack, { recursive: true, force: true });
 });
 
@@ -140,6 +164,13 @@ const call = async (cookie: string, method: string, path: string, body?: unknown
   const res = await fetch(`${base}${path}`, { method, headers: { cookie, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   return { status: res.status, body: await res.json().catch(() => null) as Record<string, any> };
 };
+async function uploadLogo(cookie: string, surface: typeof SURFACES[number], bytes: Buffer) {
+  const res = await fetch(`${base}${COMPANY}/profile/logo?surface=${surface}`, { method: 'POST', headers: { cookie, 'content-type': 'application/octet-stream' }, body: new Uint8Array(bytes) });
+  const body = await res.json() as { asset: { id: string; version: number } };
+  assert.equal(res.status, 200, JSON.stringify(body));
+  return body.asset;
+}
+const context = (who: string, path = '') => fetch(`${base}/api/v1/context${path}`, { headers: { authorization: `Bearer ${secrets[who]}` } });
 let rpcId = 0;
 const rpc = async (who: string, method: string, params?: unknown) => {
   const res = await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: { authorization: `Bearer ${secrets[who]}`, 'content-type': 'application/json' },
@@ -163,10 +194,14 @@ test('addresses map to routes, and nothing outside the list maps at all', () => 
   assert.equal(resourceRoute('lolly-work://brand/tokens/day.dark.json'), '/api/v1/context/brand/tokens?colourway=day&mode=dark');
   assert.equal(resourceRoute('lolly-work://brand/skills/voice/references/words.md'), '/api/v1/context/brand/skills/voice/references/words.md');
   assert.equal(resourceRoute('lolly-work://partner/company/logo/dark'), '/api/v1/context/partner/company/logo/dark');
-  for (const bad of ['lolly-work://brand/skills/voice/../../etc', 'lolly-work://partner/kit', 'lolly-work://brand/design/Day.light.DESIGN.md', 'lolly-work://partner/company/logo/gold', 'https://example.test/me', 'lolly-work://me/']) {
+  assert.equal(resourceRoute(KIT), '/api/v1/context/partner/kit');
+  for (const surface of SURFACES) assert.equal(resourceRoute(`${KIT}/logo/${surface}`), `/api/v1/context/partner/kit/logo/${surface}`);
+  for (const bad of ['lolly-work://brand/skills/voice/../../etc', 'lolly-work://brand/design/Day.light.DESIGN.md', 'lolly-work://partner/company/logo/gold', 'https://example.test/me', 'lolly-work://me/',
+    `${KIT}/logo/gold`, `${KIT}/logo/../light`, `${KIT}/logo/%2e%2e/light`, `${KIT}/logo/%6cight`, `${KIT}/logo/light/`, `${KIT}/logo/light?version=2`, `${KIT}/logo/light#dark`, `${KIT}/logo/light%2fdark`, `${KIT}/logo/..\\light`, `${KIT}/../company`, `${KIT}/`]) {
     assert.equal(resourceRoute(bad), null, bad);
   }
   assert.ok(RESOURCE_TEMPLATES.every((t) => t.uriTemplate.startsWith('lolly-work://')));
+  assert.ok(RESOURCE_TEMPLATES.some((t) => t.uriTemplate === `${KIT}/logo/{surface}`));
 });
 
 test('initialize offers resources, and a partner token lists what it can read and nothing more', async () => {
@@ -176,7 +211,7 @@ test('initialize offers resources, and a partner token lists what it can read an
   const uris = await listed('northwind');
   for (const uri of ['lolly-work://me', 'lolly-work://brand', 'lolly-work://brand/tokens.json', 'lolly-work://brand/skills', 'lolly-work://partner/company', 'lolly-work://partner/templates']) assert.ok(uris.includes(uri), uri);
   assert.ok(!uris.includes('lolly-work://brand/AGENTS.md') && !uris.includes('lolly-work://brand/checks.json'), 'no page, so no rules files');
-  assert.ok(!uris.includes('lolly-work://partner/kit'), 'the kit is reserved and absent');
+  assert.equal(uris[uris.indexOf('lolly-work://partner/company') + 1], KIT);
   assert.deepEqual((await rpc('northwind', 'resources/templates/list')).result!.resourceTemplates.map((t: { uriTemplate: string }) => t.uriTemplate), RESOURCE_TEMPLATES.map((t) => t.uriTemplate));
   // Without catalog.read: who it is and which brand, and no files.
   assert.deepEqual(await listed('render-only'), ['lolly-work://me', 'lolly-work://brand']);
@@ -240,16 +275,159 @@ test('a token reads its own company and logos, never another company\'s', async 
   assert.equal(company.name, 'Northwind IT');
   assert.equal(company.website, 'https://northwind.example/');
   assert.equal(company.currency, 'EUR');
-  assert.deepEqual(company.logos.map((l: { surface: string }) => l.surface), ['light']);
+  assert.deepEqual(company.logos.map((l: { surface: string }) => l.surface), SURFACES);
   const logo = await text('northwind', 'lolly-work://partner/company/logo/light');
   assert.equal(logo.mimeType, 'image/svg+xml');
   assert.match(logo.text!, /#204080/);
-  assert.equal((await read('northwind', 'lolly-work://partner/company/logo/dark')).error!.code, -32002);
+  assert.equal((await text('northwind', 'lolly-work://partner/company/logo/dark')).text, logoBytes.dark!.toString('utf8'));
   const other = JSON.parse((await text('globex', 'lolly-work://partner/company')).text!);
   assert.equal(other.name, 'Globex');
   assert.deepEqual(other.logos, []);
   assert.equal((await read('globex', 'lolly-work://partner/company/logo/light')).error!.code, -32002, 'Northwind\'s logo is not Globex\'s');
   assert.equal((await read('internal', 'lolly-work://partner/company')).error!.code, -32002);
+});
+
+test('a company token reads the stored kit and every pinned logo through MCP and REST', async () => {
+  const rec = (await store.getInstanceAsset(kitView.assetId))!;
+  const stored = JSON.parse((await readBlobBody((await blobs.get(rec.blobs.json!))!.body)).toString('utf8'));
+  assert.deepEqual(kitView.kit, stored);
+  const answer = await text('kit-reader', KIT);
+  assert.equal(answer.mimeType, 'application/json');
+  assert.deepEqual(JSON.parse(answer.text!), { ...kitView, note: CONTEXT_DATA_NOTE });
+  const rest = await context('kit-reader', '/partner/kit');
+  assert.equal(rest.status, 200);
+  assert.match(rest.headers.get('cache-control')!, /\bno-store\b/);
+  assert.deepEqual(await rest.json(), JSON.parse(answer.text!));
+  for (const surface of SURFACES) {
+    const pin = kitView.kit.logos[surface]!;
+    // A head can serve its own blobs without a version row.
+    const row = await store.getAssetVersion(pin.id, pin.version);
+    await store.deleteAssetVersion(pin.id, pin.version);
+    try {
+      const logo = await text('kit-reader', `${KIT}/logo/${surface}`);
+      assert.equal(logo.mimeType, surface === 'mark' ? 'image/png' : 'image/svg+xml');
+      assert.deepEqual(logo.blob ? Buffer.from(logo.blob, 'base64') : Buffer.from(logo.text!), logoBytes[surface]);
+      assert.equal(surface === 'mark' ? logo.text : logo.blob, undefined);
+      const bytes = await context('kit-reader', `/partner/kit/logo/${surface}`);
+      assert.equal(bytes.status, 200);
+      assert.equal(bytes.headers.get('content-type'), logo.mimeType);
+      assert.equal(bytes.headers.get('x-lolly-data-note'), CONTEXT_DATA_NOTE);
+      assert.deepEqual(Buffer.from(await bytes.arrayBuffer()), logoBytes[surface]);
+    } finally { if (row) await store.putAssetVersion(row); }
+  }
+});
+
+test('a kit keeps exact logo versions after every company logo moves to a new head', async () => {
+  const owner = await login('owner@test');
+  for (const surface of SURFACES) {
+    const pin = kitView.kit.logos[surface]!;
+    const updated = await uploadLogo(owner, surface, SVG('#305090'));
+    assert.equal(updated.id, pin.id);
+    assert.equal(updated.version, pin.version + 1);
+    const head = await text('kit-reader', `lolly-work://partner/company/logo/${surface}`);
+    assert.equal(head.mimeType, 'image/svg+xml');
+    assert.match(head.text!, /#305090/);
+    const pinned = await text('kit-reader', `${KIT}/logo/${surface}`);
+    assert.equal(pinned.mimeType, surface === 'mark' ? 'image/png' : 'image/svg+xml');
+    assert.deepEqual(pinned.blob ? Buffer.from(pinned.blob, 'base64') : Buffer.from(pinned.text!), logoBytes[surface]);
+  }
+  assert.deepEqual(JSON.parse((await text('kit-reader', KIT)).text!), { ...kitView, note: CONTEXT_DATA_NOTE });
+});
+
+test('another company, a programme without a company and an internal token get no kit', async () => {
+  for (const who of ['globex', 'programme', 'internal']) {
+    assert.ok(!(await listed(who)).includes(KIT));
+    for (const uri of KIT_URIS) {
+      const refused = await read(who, uri);
+      assert.equal(refused.error!.code, -32002, `${who}: ${uri}`);
+      assert.equal(refused.error!.data!.status, 404);
+      assert.match(refused.error!.message, /Your company has no kit/);
+      const rest = await context(who, uri.replace('lolly-work://', '/'));
+      assert.equal(rest.status, 404);
+    }
+  }
+});
+
+test('catalog.read gates both kit routes through MCP and REST', async () => {
+  assert.ok(!(await listed('render-only')).includes(KIT));
+  for (const uri of KIT_URIS) {
+    const refused = await read('render-only', uri);
+    assert.equal(refused.error!.code, -32000);
+    assert.equal(refused.error!.data!.code, 'TOKEN_SCOPE');
+    assert.deepEqual(refused.error!.data!.requiredScopes, ['catalog.read']);
+    const rest = await context('render-only', uri.replace('lolly-work://', '/'));
+    assert.equal(rest.status, 403);
+    assert.equal((await rest.json() as { error: { code: string } }).error.code, 'TOKEN_SCOPE');
+  }
+});
+
+test('a kit outside the served feed or revoked at its pointer is neither listed nor read', async () => {
+  const rec = (await store.getInstanceAsset(kitView.assetId))!;
+  const life = await store.getLifecycle(rec.id);
+  try {
+    for (const hidden of ['feed', 'revoked']) {
+      if (hidden === 'feed') await store.putInstanceAsset({ ...rec, groups: ['company-globex'] });
+      else {
+        await store.putInstanceAsset(rec);
+        await store.putLifecycle({ assetId: rec.id, onExpiry: 'hide', revokedAt: new Date().toISOString() });
+      }
+      assert.deepEqual((await store.getCompanyProfile('northwind'))?.kit, { assetId: rec.id });
+      assert.ok(!(await listed('kit-reader')).includes(KIT), hidden);
+      for (const uri of KIT_URIS) assert.equal((await read('kit-reader', uri)).error!.code, -32002, `${hidden}: ${uri}`);
+    }
+  } finally {
+    await store.putInstanceAsset(rec);
+    if (life) await store.putLifecycle(life); else await store.deleteLifecycle(rec.id);
+  }
+});
+
+test('pinned logos still require company ownership, feed visibility and a live asset', async () => {
+  const pin = kitView.kit.logos.light!;
+  const rec = (await store.getInstanceAsset(pin.id))!;
+  const life = await store.getLifecycle(rec.id);
+  try {
+    for (const hidden of ['feed', 'company', 'revoked']) {
+      await store.putInstanceAsset(hidden === 'feed' ? { ...rec, groups: ['company-globex'] }
+        : hidden === 'company' ? { ...rec, entry: { ...rec.entry, meta: { ...(rec.entry.meta as Record<string, unknown>), company: 'globex' } } } : rec);
+      if (hidden === 'revoked') await store.putLifecycle({ assetId: rec.id, onExpiry: 'hide', revokedAt: new Date().toISOString() });
+      assert.ok((await listed('kit-reader')).includes(KIT));
+      assert.equal((await read('kit-reader', `${KIT}/logo/light`)).error!.code, -32002, hidden);
+    }
+  } finally {
+    await store.putInstanceAsset(rec);
+    if (life) await store.putLifecycle(life); else await store.deleteLifecycle(rec.id);
+  }
+});
+
+test('a missing pinned version or blob never falls back to the current logo', async () => {
+  const pin = kitView.kit.logos.light!;
+  const row = (await store.getAssetVersion(pin.id, pin.version))!;
+  await store.deleteAssetVersion(pin.id, pin.version);
+  try { assert.equal((await read('kit-reader', `${KIT}/logo/light`)).error!.code, -32002); }
+  finally { await store.putAssetVersion(row); }
+  const blobId = row.formats[0]!.blobId;
+  const blob = (await blobs.get(blobId))!;
+  const bytes = await readBlobBody(blob.body);
+  await blobs.delete(blobId);
+  try { assert.equal((await read('kit-reader', `${KIT}/logo/light`)).error!.code, -32002); }
+  finally { await blobs.put(blobId, bytes, blob.stat.contentType); }
+});
+
+test('deleting the company kit removes every kit resource at once', async () => {
+  const owner = await login('owner@test');
+  const assetId = kitView.assetId;
+  assert.equal((await call(owner, 'DELETE', `${COMPANY}/kit`)).status, 200);
+  assert.ok((await store.getLifecycle(assetId))?.revokedAt);
+  assert.ok(!(await listed('kit-reader')).includes(KIT));
+  for (const uri of KIT_URIS) {
+    assert.equal((await read('kit-reader', uri)).error!.code, -32002);
+    assert.equal((await context('kit-reader', uri.replace('lolly-work://', '/'))).status, 404);
+  }
+  const saved = await call(owner, 'PUT', `${COMPANY}/kit`, kitView.kit);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  kitView = { assetId: saved.body.assetId, revision: saved.body.revision, kit: saved.body.kit };
+  assert.notEqual(kitView.assetId, assetId);
+  assert.ok((await listed('kit-reader')).includes(KIT));
 });
 
 test('the templates published to the caller, with what each lets a partner change', async () => {
@@ -330,4 +508,20 @@ test('one resources/read is one call: the route it dispatches counts nothing mor
   await read('globex', 'lolly-work://brand/tokens.json');
   const after = (await call(await login('owner@test'), 'GET', '/api/v1/tokens')).body.tokens.find((t: { id: string }) => t.id === ids.globex).usage.today.calls;
   assert.equal(after - before, 2);
+});
+
+test('ending the partnership retires the kit and refuses the former company token', async () => {
+  const ended = await call(await login('owner@test'), 'POST', '/api/v1/programmes/exit', { company: 'northwind', apply: true });
+  assert.equal(ended.status, 200, JSON.stringify(ended.body));
+  assert.equal((await store.getCompanyProfile('northwind'))?.kit, undefined);
+  assert.ok((await store.getLifecycle(kitView.assetId))?.revokedAt);
+  assert.ok((await store.getApiToken(ids['kit-reader']!))?.revokedAt);
+  for (const path of ['', '/partner/kit', ...SURFACES.map((surface) => `/partner/kit/logo/${surface}`)]) {
+    const refused = await context('kit-reader', path);
+    assert.equal(refused.status, 401);
+    assert.equal((await refused.json() as { error: { code: string } }).error.code, 'UNAUTHORIZED');
+  }
+  const listed = await rpc('kit-reader', 'resources/list');
+  assert.equal(listed.result, undefined);
+  for (const uri of KIT_URIS) assert.equal((await read('kit-reader', uri)).result, undefined);
 });

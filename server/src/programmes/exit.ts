@@ -22,6 +22,8 @@
  *   are retired, a template also published elsewhere keeps its other
  *   audiences, the selection's provider folder rules end and its share-anyway
  *   choices are withdrawn.
+ * - Each selected company's kit is retired. Its pointer stays in the receipt
+ *   so Reopen can restore the same asset and revision.
  * - The programme or company is marked ended. Ended is a state, not a
  *   deletion: the record, the profile and its history stay, and list imports
  *   and new domain rules answer 409 PROGRAMME_ENDED until it is reopened.
@@ -114,6 +116,7 @@ export interface ExitResult {
   invitations: Array<{ id: string; email: string }>;
   tokens: Array<{ id: string; label: string }>;
   templates: Array<{ id: string; name: string; action: 'retire' | 'narrow'; groupsBefore: string[]; groupsAfter: string[] }>;
+  companyKits?: Array<{ companyId: string; assetId: string; revision: number }>;
   folders: PartnerFolderRecord[];
   domainRules: Array<{ domain: string; rule: DomainRule }>;
   /** Domain records removed because the exit left them no rule, kept whole. */
@@ -195,6 +198,7 @@ export interface ExitPlan {
   tokens: ApiTokenRecord[];
   rulesEnding: Array<{ domain: string; programme: { id: string; name: string }; company?: { id: string; name: string } }>;
   templates: Array<{ rec: InstanceAssetRecord; action: 'retire' | 'narrow'; groupsAfter: string[] }>;
+  companyKits: Array<{ companyId: string; assetId: string; revision: number }>;
   folders: PartnerFolderRecord[];
   rightsChoices: ExitRightsChoice[];
   withdraw?: { domain?: string; programmeId?: string; companyId?: string };
@@ -365,9 +369,16 @@ export async function planExit(
   // What a programme or company owns beyond its people: templates published
   // to it, its folder rules and its share-anyway choices.
   const templates: ExitPlan['templates'] = [];
+  const companyKits: ExitPlan['companyKits'] = [];
   let folders: PartnerFolderRecord[] = [];
   let rightsChoices: ExitRightsChoice[] = [];
   if (inside.size) {
+    for (const profile of await store.listCompanyProfiles()) {
+      if (!profile.kit || !inside.has(companyGroup(profile.companyId))) continue;
+      const rec = await store.getInstanceAsset(profile.kit.assetId);
+      if (!rec || (await store.getLifecycle(rec.id))?.revokedAt) continue;
+      companyKits.push({ companyId: profile.companyId, assetId: rec.id, revision: rec.headVersion ?? 1 });
+    }
     for (const rec of await store.listInstanceAssets()) {
       const groups = Array.isArray(rec.groups) ? rec.groups : [];
       if (!PUBLISHED_TYPES.has(String(rec.entry.type)) || rec.publication?.retiredAt || !groups.some((g) => inside.has(g))) continue;
@@ -383,7 +394,7 @@ export async function planExit(
     ok: true,
     plan: {
       selection, programme, company, ...(selectGroup ? { selectGroup } : {}), ...(selection.domain ? { selectDomain: selection.domain } : {}),
-      inside, projectsMode, transferTo, ...(team ? { team } : {}), accounts, skipped, pending, tokens, rulesEnding, templates, folders, rightsChoices,
+      inside, projectsMode, transferTo, ...(team ? { team } : {}), accounts, skipped, pending, tokens, rulesEnding, templates, companyKits, folders, rightsChoices,
       ...(withdraw ? { withdraw } : {}),
     },
   };
@@ -406,6 +417,7 @@ export function exitPreview(plan: ExitPlan): Record<string, unknown> {
     domainRules: plan.rulesEnding,
     tokens: plan.tokens.map((t) => ({ id: t.id, label: t.label })),
     templates: plan.templates.map((t) => ({ id: t.rec.id, name: String(t.rec.entry.name ?? t.rec.id), action: t.action, ...(t.action === 'narrow' ? { keeps: t.groupsAfter } : {}) })),
+    companyKits: plan.companyKits,
     folders: plan.folders.map((f) => ({ provider: f.provider, path: f.path, ...(f.companyId ? { company: f.companyId } : {}) })),
     rightsChoices: plan.rightsChoices.map((c) => ({ assetId: c.assetId, group: c.group, ...(c.licence ? { licence: c.licence } : {}) })),
     rowBound: EXIT_ROW_BOUND,
@@ -499,6 +511,7 @@ export async function applyExit(
   const result: ExitResult = {
     accounts: [], skipped: plan.skipped, invitations: [], tokens: [], templates: [], folders: [], domainRules: [], domainsRemoved: [], rightsChoices: [],
     ended: { companies: [] },
+    companyKits: [],
   };
   // First, so nobody new joins through a domain while the rest runs.
   if (plan.withdraw) {
@@ -563,6 +576,13 @@ export async function applyExit(
     await audit(actorRef, 'token.revoke', `token:${t.id}`, { via: 'programme-exit', group: plan.selectGroup ?? (t.groups ?? []).find((g) => g !== PARTNER_GROUP) });
   }
   const programmeId = plan.programme?.id;
+  for (const kit of plan.companyKits) {
+    const life = await store.getLifecycle(kit.assetId);
+    if (life?.revokedAt || !await store.putCompanyKit(kit.companyId, null, kit.assetId)) continue;
+    await store.putLifecycle({ ...(life ?? { assetId: kit.assetId, onExpiry: 'hide' as const }), revokedAt: at });
+    result.companyKits!.push(kit);
+    await audit(actorRef, 'programme.company.kit', `company:${kit.companyId}`, { revisionBefore: kit.revision, revisionAfter: null, source: null });
+  }
   for (const t of plan.templates) {
     const rec = await store.getInstanceAsset(t.rec.id);
     if (!rec || rec.publication?.retiredAt || !programmeId) continue;
@@ -643,6 +663,7 @@ export function exitDone(record: ProgrammeExitRecord, plan: ExitPlan): Record<st
     skipped: r.skipped, invitationsRevoked: r.invitations.length,
     domainRules: r.domainRules.length ? plan.rulesEnding : [], tokensRevoked: r.tokens.length,
     templates: r.templates.map((t) => ({ id: t.id, name: t.name, action: t.action })),
+    companyKits: r.companyKits ?? [],
     foldersEnded: r.folders.length, rightsChoicesWithdrawn: r.rightsChoices.length,
     ended: r.ended,
   };
