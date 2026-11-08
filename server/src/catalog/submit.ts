@@ -702,7 +702,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     }
     // A kit's company is asked again: one deleted or ended while the scan ran,
     // with its kit, gets no new revision and nothing comes back.
-    if (input.companyKit && (!await kitStillLive(store, input.companyKit) || !await store.getInstanceAsset(target.id))) {
+    if (input.companyKit && (!await store.getInstanceAsset(target.id) || !await kitStillLive(store, input.companyKit))) {
       await blobs.delete(blobId).catch(() => undefined);
       await release();
       return { ok: false, code: 'INVALID_SUBMISSION', detail: 'the company was removed or its partnership ended while the kit was being saved' };

@@ -247,11 +247,14 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
       // Asked before the change and again where it commits, after the scan: the
       // stored decision still says approved, the same company record is live,
       // and the kit is still that base.
+      // The decision is read last, right before the write, to keep the window
+      // for a racing rejection as small as the approvals store allows: decisions
+      // are not compare-and-set (a follow-up for the approvals engine).
       const stillValid = async (): Promise<boolean> => {
-        if ((await store.getApproval(approval.id))?.state !== 'approved') return false;
         if (!await sameLiveCompany(subject.companyId, subject.companyCreatedAt)) return false;
         const now = await kitBase(subject.companyId);
-        return base === null ? now === null : now?.assetId === base.assetId && now.revision === base.revision;
+        if (base === null ? now !== null : now?.assetId !== base.assetId || now.revision !== base.revision) return false;
+        return (await store.getApproval(approval.id))?.state === 'approved';
       };
       if (approval.state === 'approved' && await stillValid()) {
         const company = (await store.listCompanies()).find((c) => c.id === subject.companyId)!;
