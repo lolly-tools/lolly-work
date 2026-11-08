@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Partner kit readers and proposals (plans/82 M8). Imports store no bytes. */
 import {
-  PARTNER_KIT_MAX_BYTES, type PartnerKitV1, type PartnerKitIssueV1,
+  PARTNER_KIT_MAX_BYTES, PARTNER_KIT_MAX_SOURCE_REFERENCE, type PartnerKitV1, type PartnerKitIssueV1,
 } from '@lolly-tools/core/partner-kit-v1';
 import { readBlobBody, type BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
@@ -16,6 +16,10 @@ export const KIT_TOKENS_MAX_BYTES = 2 * 1024 * 1024;
 export const KIT_LOLLY_MAX_BYTES = MAX_RULES_FILE_BYTES;
 /** A share's design system, inflated: a tokens document with room for embedded data, far below the pack budget. */
 export const KIT_DESIGN_SYSTEM_MAX_BYTES = 8 * 1024 * 1024;
+export const KIT_TOKENS_MAX_PARTS = 512;
+/** The SVG logo bound, the same as logo-checks.ts SVG_MAX_BYTES (a test holds them equal).
+ *  Not imported from there: logo-checks reaches this module through submit.ts. */
+export const KIT_SVG_MAX_BYTES = 512 * 1024;
 const SURFACES = ['light', 'dark', 'mark'] as const;
 
 interface TokensExtraction { doc: unknown; warnings: string[] }
@@ -36,7 +40,7 @@ const loadKitEngine = (): Promise<KitEngine> => engine ??= (import(ENGINE) as Pr
 
 /** A source reference is a file name or a short label, never a path or URL. */
 export function kitReference(value: string): boolean {
-  return !!value.trim() && value.length <= 200 && !/[\\/:\u0000-\u001f\u007f]/.test(value);
+  return !!value.trim() && value.length <= PARTNER_KIT_MAX_SOURCE_REFERENCE && !/[\\/:\u0000-\u001f\u007f]/.test(value);
 }
 
 export async function readKit(value: unknown): Promise<{ ok: true; kit: PartnerKitV1; bytes: Buffer } | { ok: false; detail: string }> {
@@ -129,7 +133,7 @@ export async function proposeCompanyKit(store: Store, blobs: BlobStore, company:
     logos[surface] = { id: rec.id, version: rec.headVersion ?? 1 };
     if (kind === 'logos' && rec.blobs.svg) {
       const blob = await blobs.get(rec.blobs.svg);
-      if (blob) inks.push(...e.extractSvgColors((await readBlobBody(blob.body, 512 * 1024)).toString('utf8')));
+      if (blob) inks.push(...e.extractSvgColors((await readBlobBody(blob.body, KIT_SVG_MAX_BYTES)).toString('utf8')));
     }
   }
   let colours: PartnerKitV1['colours'] = [];
@@ -144,7 +148,7 @@ export async function proposeCompanyKit(store: Store, blobs: BlobStore, company:
       else warnings.push('This share has no design-system.json part, so no colours were proposed.');
     } else if (bytes.length >= 4 && bytes.readUInt32LE(0) === 0x04034b50) {
       const entries = centralEntries(bytes).filter((part) => part.name.endsWith('.json') && !part.name.startsWith('__MACOSX/'));
-      if (entries.length > 512) throw new Error('token archive has more than 512 JSON parts');
+      if (entries.length > KIT_TOKENS_MAX_PARTS) throw new Error(`token archive has more than ${KIT_TOKENS_MAX_PARTS} JSON parts`);
       const parts: Record<string, Uint8Array> = Object.create(null);
       let size = 0;
       for (const entry of entries) {

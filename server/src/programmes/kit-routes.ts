@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Company kit routes (plans/82 M8), beside the profile and logo routes. */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { PARTNER_KIT_LIMITS, PARTNER_KIT_MAX_ASSET_ID, PARTNER_KIT_MAX_SOURCE_REFERENCE, PARTNER_KIT_COLOUR_ROLES, PARTNER_KIT_TREATMENTS } from '@lolly-tools/core/partner-kit-v1';
 import { readRaw, sendError, sendJson, type createRouter } from '../api/router.ts';
 import type { SubmitInput, SubmitOutcome } from '../catalog/submit.ts';
 import { submissionServable } from '../catalog/instance-assets.ts';
@@ -10,7 +11,18 @@ import { randomId } from '../lib/crypto.ts';
 import type { UserRecord } from '../store/types.ts';
 import type { CompanyProfileDeps } from './profile-routes.ts';
 import { companyGroup, type CompanyRecord } from './people.ts';
-import { KIT_LOLLY_MAX_BYTES, KIT_MAX_BYTES, KIT_TOKENS_MAX_BYTES, kitCompanyLive, prepareCompanyKit, proposeCompanyKit, readCompanyKit, storedKit } from './kit.ts';
+import { KIT_DESIGN_SYSTEM_MAX_BYTES, KIT_LOLLY_MAX_BYTES, KIT_MAX_BYTES, KIT_SVG_MAX_BYTES, KIT_TOKENS_MAX_BYTES, KIT_TOKENS_MAX_PARTS, kitCompanyLive, prepareCompanyKit, proposeCompanyKit, readCompanyKit, storedKit } from './kit.ts';
+
+/** The same constants that the kit reader and import paths enforce. */
+export const KIT_LIMITS = {
+  ...PARTNER_KIT_LIMITS,
+  maxAssetId: PARTNER_KIT_MAX_ASSET_ID,
+  maxSourceReference: PARTNER_KIT_MAX_SOURCE_REFERENCE,
+  colourRoles: PARTNER_KIT_COLOUR_ROLES,
+  treatments: PARTNER_KIT_TREATMENTS,
+  imports: { tokensMaxBytes: KIT_TOKENS_MAX_BYTES, lollyMaxBytes: KIT_LOLLY_MAX_BYTES,
+    designSystemMaxBytes: KIT_DESIGN_SYSTEM_MAX_BYTES, tokensMaxParts: KIT_TOKENS_MAX_PARTS, svgMaxBytes: KIT_SVG_MAX_BYTES },
+};
 
 export interface CompanyKitDeps extends Pick<CompanyProfileDeps, 'store' | 'blobs' | 'requireAction' | 'memberOf' | 'audit' | 'notifier' | 'baseUrl'> {
   submitKit(input: SubmitInput): Promise<SubmitOutcome>;
@@ -90,8 +102,10 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
   const show = async (res: ServerResponse, context: Context, own = false) => {
     const view = await read(context.company);
     const pending = await pendingFor(context.company.id);
-    if ((!view && !pending) || (view && own && !await d.kitVisible(context.actor.groups, view.assetId))) return sendError(res, 404, 'NOT_FOUND', 'this company has no kit');
-    sendJson(res, 200, { ...(view ?? { kit: null }), ...(pending ? { pending: { approvalId: pending.id, action: pending.partnerKit!.action } } : {}) }, { 'cache-control': 'no-store' });
+    if ((!view && !pending) || (view && own && !await d.kitVisible(context.actor.groups, view.assetId))) {
+      return sendJson(res, 404, { error: { code: 'NOT_FOUND', message: 'this company has no kit' }, limits: KIT_LIMITS }, { 'cache-control': 'no-store' });
+    }
+    sendJson(res, 200, { ...(view ?? { kit: null }), limits: KIT_LIMITS, ...(pending ? { pending: { approvalId: pending.id, action: pending.partnerKit!.action } } : {}) }, { 'cache-control': 'no-store' });
   };
   /** Direct saves and approved saves use the same validation and submit path. */
   const publish = async (actor: Pick<UserRecord, 'id' | 'groups'>, company: CompanyRecord, bytes: Buffer, via?: { approval: string }, stillValid?: () => Promise<boolean>) => {
@@ -107,7 +121,7 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
       revisionBefore: target ? target.headVersion ?? 1 : null, revisionAfter: revision, source: kit?.source ?? null,
       ...(via ? { via } : {}),
     });
-    return { view: { kit, assetId: outcome.record.id, revision, source: kit?.source ?? null } };
+    return { view: { kit, assetId: outcome.record.id, revision, source: kit?.source ?? null, limits: KIT_LIMITS } };
   };
   const remove = async (actorId: string, company: CompanyRecord, via?: { approval: string }, stillValid?: () => Promise<boolean>) => {
     const pointer = (await store.getCompanyProfile(company.id))?.kit;
@@ -187,7 +201,7 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     const bytes = from === 'logos' ? Buffer.alloc(0) : await readRaw(req, from === 'tokens' ? KIT_TOKENS_MAX_BYTES : KIT_LOLLY_MAX_BYTES);
     const reference = from === 'logos' ? 'Company logos' : url.searchParams.get('name') ?? (from === 'lolly' ? 'share.lolly' : 'tokens.json');
     try {
-      sendJson(res, 200, await proposeCompanyKit(store, blobs, context.company, from, bytes, reference), { 'cache-control': 'no-store' });
+      sendJson(res, 200, { ...await proposeCompanyKit(store, blobs, context.company, from, bytes, reference), limits: KIT_LIMITS }, { 'cache-control': 'no-store' });
     } catch (error) {
       sendError(res, 422, 'INVALID_IMPORT', error instanceof SyntaxError ? 'the import must contain valid JSON' : error instanceof Error ? error.message : 'the import could not be read');
     }

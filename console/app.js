@@ -5918,12 +5918,13 @@ async function programmeLicences(p, host) {
 // surfaces is the check a person actually makes.
 async function companyPage(p, companyId, main) {
   const base = `/api/v1/programmes/${encodeURIComponent(p.id)}/companies/${encodeURIComponent(companyId)}/profile`;
-  let view, people, chains;
+  let view, people, chains, kitView;
   try {
-    [view, people, chains] = await Promise.all([
+    [view, people, chains, kitView] = await Promise.all([
       api(base),
       api(`/api/v1/programmes/${encodeURIComponent(p.id)}/people`).catch(() => ({ people: [] })),
       api('/api/v1/chains').then((r) => r.chains ?? []).catch(() => []),
+      readCompanyKit(base.replace(/\/profile$/, '/kit')).catch((e) => ({ error: e.message })),
     ]);
   } catch (e) { main.append(el('h1', {}, 'Company'), el('p', { class: 'form-err' }, e.message), el('p', {}, el('a', { href: `#/programmes?id=${encodeURIComponent(p.id)}` }, `Back to ${p.name}`))); return; }
   const reload = () => { main.replaceChildren(); void companyPage(p, companyId, main); };
@@ -6113,7 +6114,180 @@ async function companyPage(p, companyId, main) {
     el('p', { class: 'programme-actions' },
       el('a', { class: 'btn', href: `#/preview?groups=${encodeURIComponent(`programme-${p.id},company-${companyId}`)}` }, 'See what they get'),
       el('a', { class: 'btn', href: `#/programmes?id=${encodeURIComponent(p.id)}` }, 'Back')),
-    ...[detailsCard, logosCard, contactsCard, tokensHost, endCard].filter(Boolean));
+    ...[detailsCard, logosCard, companyKitCard(base.replace(/\/profile$/, '/kit'), company, kitView, view.settings, chains), contactsCard, tokensHost, endCard].filter(Boolean));
+}
+
+async function readCompanyKit(base) {
+  try { return await api(base); }
+  catch (e) {
+    if (e.status === 404 && e.code === 'NOT_FOUND' && e.body?.limits) return { kit: null, limits: e.body.limits };
+    throw e;
+  }
+}
+
+// Partner kits (plans/82 M8): imports are proposals until a person saves.
+const KIT_SURFACE_LABELS = { light: 'Logo for light surfaces', dark: 'Logo for dark surfaces', mark: 'Mark' };
+function companyKitCard(base, company, data, settings = {}, chains = []) {
+  const card = el('div', { class: 'card stack company-kit' });
+  let proposal = null, warnings = [], busy = false;
+  const err = errSpan();
+  const run = async (action) => {
+    if (busy) return;
+    busy = true; err.textContent = '';
+    const controls = [...card.querySelectorAll('input, select, button')].map((node) => [node, node.disabled]);
+    for (const [node] of controls) node.disabled = true;
+    try { await action(); }
+    catch (e) { err.textContent = e.message; }
+    finally {
+      for (const [node, disabled] of controls) if (card.contains(node)) node.disabled = disabled;
+      busy = false;
+    }
+  };
+  const render = () => {
+    card.replaceChildren(el('h2', {}, 'Partner kit'),
+      el('p', { class: 'sub flush' }, 'The partner’s logos, colours and placement rules, offered to the company’s people and checked in Design.'));
+    if (data.error) {
+      card.append(el('p', { class: 'form-err' }, data.error), el('button', { onclick: () => run(async () => { data = await readCompanyKit(base); render(); }) }, 'Try again'), err);
+      return;
+    }
+    const limits = data.limits;
+    const current = proposal ?? data.kit;
+    const waits = !!settings.kitApprovalChain;
+    const pending = data.pending;
+    // Element.append writes a null child as the text "null", so optional parts go through add().
+    const add = (...nodes) => card.append(...nodes.filter((node) => node != null));
+    add(
+      el('p', { class: 'sub flush' }, `Up to ${limits.maxColours} colours, ${fmtBytes(limits.maxBytes)}, logos pinned by version.`),
+      el('details', { class: 'tbl' }, el('summary', {}, 'All limits'),
+      el('p', { class: 'sub flush' }, `Colour names: up to ${limits.maxColourName} characters. Kit label: up to ${limits.maxLabel} characters. Source file name: up to ${limits.maxSourceReference} characters, without paths or URLs.`),
+      el('p', { class: 'sub flush' }, `Clear space: above 0 up to ${limits.maxClearSpace} mark heights. Minimum size: above 0 up to ${limits.maxMinPx} px and ${limits.maxMinMm} mm.`),
+      el('p', { class: 'sub flush' }, `Logo ids: up to ${limits.maxAssetId} characters. Logo versions: 1 to ${limits.maxLogoVersion}. Reserved skill ids: up to ${limits.maxSkills}.`),
+      el('p', { class: 'sub flush' }, `Imports: tokens up to ${fmtBytes(limits.imports.tokensMaxBytes)}, including expanded archives with up to ${limits.imports.tokensMaxParts} JSON parts. .lolly shares up to ${fmtBytes(limits.imports.lollyMaxBytes)}, with design-system.json up to ${fmtBytes(limits.imports.designSystemMaxBytes)}. SVG colour reading: up to ${fmtBytes(limits.imports.svgMaxBytes)} per logo.`)),
+      data.revision ? el('p', { class: 'muted' }, `Revision ${data.revision}${data.source?.reference ? ` · from ${data.source.reference}` : ''}`) : null,
+      el('p', { class: 'sub' }, `The company’s people see “Partner kit: ${company.name} · revision ${data.revision ?? '<n>'}” in their tools${data.revision ? '.' : ' after the first save is live.'}`),
+      pending ? el('p', { class: 'policy-warning' }, `The kit ${pending.action === 'remove' ? 'removal' : 'save'} is waiting for approval. `,
+        el('a', { href: '#/approvals' }, `Open request ${pending.approvalId}`)) : null);
+
+    if (!current && !pending) card.append(el('p', { class: 'muted' }, 'No kit yet. Import a tokens file or a .lolly share, or make a proposal from the logos.'));
+    if (!pending) {
+      const fileIn = el('input', { type: 'file', accept: '.json,.zip,.lolly,application/json,application/zip', class: 'sr-only', 'aria-label': 'Import a tokens file or a .lolly share' });
+      const propose = (from, file) => run(async () => {
+        const maxBytes = from === 'lolly' ? limits.imports.lollyMaxBytes : limits.imports.tokensMaxBytes;
+        if (file && file.size > maxBytes) throw new Error(`This import can be up to ${fmtBytes(maxBytes)}.`);
+        const res = await fetch(`${base}/import?from=${from}${file ? `&name=${encodeURIComponent(file.name)}` : ''}`, {
+          method: 'POST', credentials: 'same-origin', headers: { 'content-type': file?.type || 'application/octet-stream' }, ...(file ? { body: file } : {}),
+        });
+        const out = await res.json();
+        if (!res.ok) throw new Error(out?.error?.message ?? res.statusText);
+        proposal = out.kit; warnings = out.warnings ?? []; data = { ...data, limits: out.limits }; render();
+      });
+      const importFile = (file) => { if (file) void propose(file.name.toLowerCase().endsWith('.lolly') ? 'lolly' : 'tokens', file); fileIn.value = ''; };
+      fileIn.addEventListener('change', () => importFile(fileIn.files?.[0]));
+      const drop = el('label', { class: 'verify-drop company-drop' }, fileIn, el('strong', {}, 'Import'), el('span', {}, 'Drop a tokens file or a .lolly share here, or choose a file'));
+      drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('is-drag'); });
+      drop.addEventListener('dragleave', () => drop.classList.remove('is-drag'));
+      drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('is-drag'); importFile(e.dataTransfer?.files?.[0]); });
+      card.append(drop, el('p', { class: 'programme-actions' },
+        el('button', { onclick: () => propose('logos') }, 'Make from the logos'), el('span', { class: 'muted' }, 'Colours come only from SVG logos.')));
+    }
+    if (current) {
+      const label = el('input', { value: current.label, required: 'required', maxlength: limits.maxLabel, 'aria-label': 'Kit label' });
+      const rows = current.colours.map((colour) => {
+        const name = el('input', { value: colour.name, required: 'required', maxlength: limits.maxColourName, 'aria-label': `Name for ${colour.value}` });
+        const role = el('select', { 'aria-label': `Role for ${colour.value}` }, ...limits.colourRoles.map((r) => el('option', { value: r, ...(r === colour.role ? { selected: 'selected' } : {}) }, r[0].toUpperCase() + r.slice(1))));
+        const row = { name, role, value: colour.value, removed: false };
+        row.element = el('div', { class: 'programme-actions kit-colour-row' },
+          el('span', { class: 'bedit-value' }, el('span', { class: 'bedit-swatch', style: `background:${colour.value}` }), el('span', { class: 'mono' }, colour.value)),
+          field('Name', name), field('Role', role), el('button', { type: 'button', 'aria-label': `Remove ${colour.name}`, onclick: () => { row.removed = true; row.element.remove(); } }, 'Remove'));
+        return row;
+      });
+      const rules = current.rules ?? {};
+      const number = (value, bound, name) => el('input', { type: 'number', step: 'any', min: '0', max: bound, value: value ?? '', 'aria-label': name });
+      const clear = number(rules.clearSpace?.value, limits.maxClearSpace, 'Clear space');
+      const px = number(rules.minSize?.px, limits.maxMinPx, 'Minimum size in px');
+      const mm = number(rules.minSize?.mm, limits.maxMinMm, 'Minimum size in mm');
+      const treatments = limits.treatments.map((t) => ({ value: t, input: el('input', { type: 'checkbox', ...(rules.treatments?.includes(t) ? { checked: 'checked' } : {}) }) }));
+      const ruleNote = el('p', { class: 'sub flush' });
+      const treatmentsLabel = `fld-${++_fieldSeq}`;
+      const syncRules = () => { ruleNote.textContent = !clear.value && !px.value && !mm.value && !treatments.some((t) => t.input.checked)
+        ? 'Lolly does not know the partner’s rules. Empty fields store no rule.'
+        : 'Empty fields store no rule. Lolly does not know the partner’s rules for those fields.'; };
+      for (const control of [clear, px, mm, ...treatments.map((t) => t.input)]) control.addEventListener('input', syncRules);
+      syncRules();
+      const form = el('form', { class: 'stack', onsubmit: (e) => {
+        e.preventDefault();
+        if (pending) return;
+        void run(async () => {
+          const nextRules = {}, minSize = {};
+          for (const [control, name] of [[clear, 'Clear space'], [px, 'Minimum size in px'], [mm, 'Minimum size in mm']]) {
+            if (control.value && (!Number.isFinite(Number(control.value)) || Number(control.value) <= 0)) throw new Error(`${name} must be above 0, or empty for no rule.`);
+          }
+          if (clear.value) nextRules.clearSpace = { value: Number(clear.value), unit: 'mark-height' };
+          if (px.value) minSize.px = Number(px.value);
+          if (mm.value) minSize.mm = Number(mm.value);
+          if (Object.keys(minSize).length) nextRules.minSize = minSize;
+          const ticks = treatments.filter((t) => t.input.checked).map((t) => t.value);
+          if (ticks.length) nextRules.treatments = ticks;
+          const next = { ...current, label: label.value.trim(), colours: rows.filter((r) => !r.removed).map((r) => ({ name: r.name.value.trim(), role: r.role.value, value: r.value })) };
+          delete next.rules;
+          if (Object.keys(nextRules).length) next.rules = nextRules;
+          const out = await api(base, { method: 'PUT', body: next });
+          data = out.pending ? { ...data, pending: { ...out.pending, action: 'save' } } : out;
+          proposal = null; warnings = []; render();
+          toast(out.pending ? 'The kit save is waiting for approval.' : `Saved kit revision ${out.revision}`);
+        });
+      } },
+        proposal ? el('h3', {}, 'Proposal') : null,
+        proposal ? el('p', { class: 'sub flush' }, 'Review the proposal and edit the rules before Save.') : null,
+        ...warnings.map((w) => el('p', { class: 'policy-warning' }, w)),
+        field('Kit label', label),
+        el('h3', {}, 'Colours'), ...rows.map((r) => r.element),
+        !rows.length ? el('p', { class: 'muted' }, 'No colours.') : null,
+        el('h3', {}, 'Logo pins'),
+        ...limits.logoSurfaces.map((surface) => el('p', { class: 'bedit-line' }, `${KIT_SURFACE_LABELS[surface] ?? surface}: `,
+          current.logos[surface] ? `version ${current.logos[surface].version} ` : 'No pin',
+          current.logos[surface] ? el('span', { class: 'muted mono' }, current.logos[surface].id) : null)),
+        el('h3', {}, 'Placement rules'), ruleNote,
+        el('div', { class: 'grant-fields' }, field('Clear space (of the mark’s height)', clear), field('Minimum size (px)', px), field('Minimum size (mm)', mm),
+          el('div', { style: 'grid-column: 1 / -1' }, el('span', { class: 'field-label', id: treatmentsLabel }, 'Allowed treatments'),
+            el('div', { class: 'chk-list', role: 'group', 'aria-labelledby': treatmentsLabel }, ...treatments.map((t) => el('label', { class: 'chk' }, t.input, t.value === 'on-photo' ? 'On photo' : t.value[0].toUpperCase() + t.value.slice(1)))))),
+        el('p', { class: 'programme-actions' }, el('button', { class: 'primary' }, 'Save'),
+          proposal ? el('button', { type: 'button', onclick: () => { proposal = null; warnings = []; render(); } }, 'Cancel proposal') : null,
+          data.kit && !proposal ? armConfirmButton({ class: 'danger', type: 'button' }, 'Remove', 'Really remove?', () => run(async () => {
+            const out = await api(base, { method: 'DELETE' });
+            data = out.pending ? { ...data, pending: { ...out.pending, action: 'remove' } } : { kit: null, limits: data.limits };
+            render();
+            toast(out.pending ? 'The kit removal is waiting for approval.' : 'Removed the partner kit');
+          })) : null));
+      if (pending) for (const control of form.querySelectorAll('input, select, button')) control.disabled = true;
+      card.append(form);
+    } else card.append(el('p', { class: 'sub flush' }, 'Lolly does not know the partner’s rules.'));
+    const approvalOn = el('input', { type: 'checkbox', ...(waits ? { checked: 'checked' } : {}), ...(!chains.length && !waits ? { disabled: 'disabled' } : {}) });
+    const choices = settings.kitApprovalChain && !chains.some((c) => c.id === settings.kitApprovalChain)
+      ? [{ id: settings.kitApprovalChain, name: `${settings.kitApprovalChain} (unavailable)` }, ...chains] : chains;
+    const chain = el('select', { 'aria-label': 'Kit approval chain' }, ...choices.map((c) => el('option', { value: c.id, ...(c.id === settings.kitApprovalChain ? { selected: 'selected' } : {}) }, c.name || c.id)));
+    const chainHost = el('div', {}, choices.length ? field('Kit approval chain', chain) : el('p', { class: 'muted' }, 'No approval chains yet. Make one in Approvals first.'));
+    chainHost.hidden = !approvalOn.checked;
+    approvalOn.addEventListener('change', () => { chainHost.hidden = !approvalOn.checked; });
+    const status = el('span');
+    const policyNote = el('p', { class: 'sub flush' });
+    const syncPolicy = () => {
+      const on = !!settings.kitApprovalChain;
+      status.className = `status ${on ? 'live' : 'expired'}`;
+      status.textContent = on ? 'On' : 'Off';
+      policyNote.textContent = on ? 'Save and Remove submit a change that waits for approval.' : 'Off by default. Save and Remove apply as soon as you confirm the change.';
+    };
+    syncPolicy();
+    add(
+      el('label', { class: 'chk' }, approvalOn, 'Kit changes need approval', status), policyNote,
+      !choices.length ? el('p', { class: 'sub flush' }, 'Add an approval chain to turn this on.') : null,
+      chainHost, el('button', { onclick: () => run(async () => {
+        const out = await api(`${base.replace(/\/kit$/, '/profile')}/settings`, { method: 'PUT', body: { kitApprovalChain: approvalOn.checked ? chain.value : null } });
+        settings = out.settings; syncPolicy(); toast('Saved the kit approval setting');
+      }) }, 'Save approval setting'), err);
+  };
+  render();
+  return card;
 }
 
 // Templates published to a programme (plans/82 M2): a template of one of your
@@ -7876,6 +8050,8 @@ function renderPreview(data) {
       : el('p', { class: 'muted' }, 'These groups are in no single company, so no company details fill their templates.'),
     company ? dataTable(['Detail', 'Value'], [
       ['Logos', ['light', 'dark', 'mark'].filter((k) => company.logos?.[k]).map((k) => ({ light: 'light surfaces', dark: 'dark surfaces', mark: 'mark' }[k])).join(', ') || 'None yet'],
+      // The kit line the company's people read under Design system in their tools.
+      ['Partner kit', company.kit ? `${company.kit.label} · revision ${company.kit.revision}` : 'None yet'],
       ['Website', company.website ?? '—'],
       ['Contact', company.contact ? [company.contact.name, company.contact.email, company.contact.phone].filter(Boolean).join(', ') : '—'],
       ['Address', company.address ? company.address.split('\n').join(', ') : '—'], ['Currency', company.currency ?? '—'], ['Tax note', company.taxNote ?? '—'],
