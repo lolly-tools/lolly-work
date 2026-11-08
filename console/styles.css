@@ -1569,3 +1569,5 @@ html.account-inspector-open { overflow: hidden; }
 
 /* A table cell of several lines (agent tokens, plans/82 M7): one block, so a narrow screen stacks them. */
 .cell-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* A limit's id can be long; it wraps on a narrow screen rather than widening the table. */
+.limit-id { overflow-wrap: anywhere; font-size: 12px; }

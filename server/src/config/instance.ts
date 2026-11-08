@@ -660,7 +660,7 @@ export interface Secrets {
   catalogSigningKey?: string;
 }
 
-const DEFAULTS: InstanceConfig = {
+export const DEFAULTS: InstanceConfig = {
   deployment: { mode: 'auto', application: 'api', requireServerRendering: false },
   // The default pack is the small demo pack committed at packs/demo, so an
   // unconfigured instance serves a real catalog instead of an empty one.

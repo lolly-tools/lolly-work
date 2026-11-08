@@ -30,7 +30,7 @@ const SYNC_LIMIT_MS = 10_000;
 /** Placid documents 10 simultaneous `create_now` requests. */
 const MAX_WAITERS = 10;
 const WAIT_STEP_MS = 100;
-const MAX_BODY_BYTES = 1024 * 1024;
+export const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_URL_QUERY = 8192;
 /** A record whose renders never appeared after this long lost its submitter. */
 const INCOMPLETE_AFTER_MS = 300_000;

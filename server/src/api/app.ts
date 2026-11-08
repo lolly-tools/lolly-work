@@ -249,6 +249,7 @@ import { createRulesToolBuilder, createRulesToolSubmitter, loadDesignRenderer, r
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, validateVerb } from '../automation/verbs.ts';
 import { ToolLoadRefusal, withoutServerPaths } from '../render/tool-load.ts';
 import { BATCH_LIMITS, createWorkerProbe, registerDiscoveryRoutes, type DiscoveryDeps } from '../automation/discovery.ts';
+import { registerLimitsRoute } from '../observability/limits-route.ts';
 import { checkTemplateIntents, registerIntentRoutes, templateDrawable, type TemplateIntentManifest } from '../automation/intents.ts';
 import { registerOrgMcp } from '../automation/org-mcp.ts';
 import { registerContextRoutes, type ContextSkill } from '../automation/context-routes.ts';
@@ -12129,6 +12130,12 @@ export function buildApp(deps: AppDeps): App {
       await currentRenderCaller(record.principal, record.request);
       return result;
     }),
+  });
+  // Every limit Work enforces, with its value and source, for the Limits and quotas panel (plans/82 M7).
+  registerLimitsRoute(router, {
+    requireAction, config,
+    partnerRightsMode: async () => (await partnerRightsReady).mode,
+    runner: () => ({ concurrency: durableRenders.concurrency, leaseMs: durableRenders.leaseMs, timeoutMs: durableRenders.timeoutMs }),
   });
   const durable = registerRenderRoutes(router, {
     store, blobs,

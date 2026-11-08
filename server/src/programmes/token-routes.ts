@@ -44,7 +44,7 @@ export interface ProgrammeTokenRouteDeps {
 }
 
 const TOOL_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
-const MAX_TOKEN_TOOLS = 64;
+export const MAX_TOKEN_TOOLS = 64;
 
 export function registerProgrammeTokenRoutes(router: Router, deps: ProgrammeTokenRouteDeps): void {
   const { store } = deps;

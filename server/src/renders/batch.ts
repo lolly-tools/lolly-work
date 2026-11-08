@@ -11,7 +11,7 @@ export function batchRowRequest(request: RenderBatchSpec, inputs: Record<string,
 }
 
 const ROW_KEY = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
-const MAX_ROWS = 200;
+export const MAX_ROWS = 200;
 
 /** Shape only: whether the source resolves, and for whom, is decided at submission. */
 export function parseBatchBinding(value: unknown): RenderBatchBinding {
