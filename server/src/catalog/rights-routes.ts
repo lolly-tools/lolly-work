@@ -36,6 +36,9 @@ export interface CatalogRightsDeps {
   workspaceName(): string;
   /** Every catalog entry as its source records it (pack, providers, instance), before any mark. */
   catalogEntries(): Promise<AssetIndexEntry[]>;
+  /** Whether this person may state or withdraw an owner mark: staff with catalog.edit,
+   *  never a partner programme member (programmes/owner-mark.ts). Every write here asks. */
+  mayStateMark?(actor: UserRecord): Promise<boolean>;
 }
 
 const DATE = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
@@ -85,6 +88,15 @@ const text = (raw: unknown, max: number): string | null | undefined => {
 export function registerCatalogRightsRoutes(router: Router, deps: CatalogRightsDeps): void {
   const { store, audit } = deps;
   const editor = (req: IncomingMessage, res: ServerResponse) => deps.requireAction(req, res, 'catalog.edit');
+  /** A write: catalog.edit, and someone who may state a mark at all. */
+  const writer = async (req: IncomingMessage, res: ServerResponse): Promise<UserRecord | null> => {
+    const actor = await editor(req, res);
+    if (actor && deps.mayStateMark && !(await deps.mayStateMark(actor))) {
+      sendError(res, 403, 'FORBIDDEN', 'owner marks and licence records are stated by this workspace\'s own staff');
+      return null;
+    }
+    return actor;
+  };
   const people = async () => new Map((await store.listUsers()).map((u) => [u.id, u]));
 
   router.add('GET', '/api/v1/catalog/rights/marks', async (req, res) => {
@@ -105,7 +117,7 @@ export function registerCatalogRightsRoutes(router: Router, deps: CatalogRightsD
 
   /** Record or change one mark. Body: `{ scope, holder?, terms?, note? }`. */
   router.add('PUT', '/api/v1/catalog/rights/marks', async (req, res) => {
-    const actor = await editor(req, res); if (!actor) return;
+    const actor = await writer(req, res); if (!actor) return;
     const body = ((await readJson(req)) ?? {}) as { scope?: unknown; holder?: unknown; terms?: unknown; note?: unknown };
     const scope = parseMarkScope(body.scope);
     if (!scope) return sendError(res, 400, 'INVALID_INPUT', 'scope is asset:<id>, folder:<provider>/<path>, provider:<id> or prefix:<id prefix ending in />');
@@ -144,12 +156,15 @@ export function registerCatalogRightsRoutes(router: Router, deps: CatalogRightsD
 
   /** Withdraw one mark: `?scope=`. Its files fall back to what they record themselves. */
   router.add('DELETE', '/api/v1/catalog/rights/marks', async (req, res, ctx) => {
-    const actor = await editor(req, res); if (!actor) return;
+    const actor = await writer(req, res); if (!actor) return;
     const scope = parseMarkScope(ctx.url.searchParams.get('scope') ?? '');
     const key = scope ? markScopeKey(scope) : '';
-    const prior = key ? (await store.listAssetRightsMarks()).find((m) => m.scope === key) : undefined;
+    if (!key) return sendError(res, 404, 'NOT_FOUND', 'no mark on that scope');
+    // One step that removes and returns the mark, under the asset's lock for an asset
+    // scope: only the call that removed it audits (programmes/owner-mark.ts).
+    const take = () => store.takeAssetRightsMark(key);
+    const prior = scope!.kind === 'asset' ? await store.withAssetLock(scope!.id, take) : await take();
     if (!prior) return sendError(res, 404, 'NOT_FOUND', 'no mark on that scope');
-    await store.deleteAssetRightsMark(key);
     await audit(`user:${actor.id}`, 'catalog.rights.unmark', `rights-mark:${key}`, {
       scope: key, before: { holder: prior.holder, terms: prior.terms, ...(prior.note ? { note: prior.note } : {}), statedBy: prior.statedBy, statedAt: prior.statedAt },
     });
@@ -172,7 +187,7 @@ export function registerCatalogRightsRoutes(router: Router, deps: CatalogRightsD
 
   /** Record or change the licence of one file that records none. Body: `{ assetId, declaration, attribution?, note? }`. */
   router.add('PUT', '/api/v1/catalog/rights/licences', async (req, res) => {
-    const actor = await editor(req, res); if (!actor) return;
+    const actor = await writer(req, res); if (!actor) return;
     const body = ((await readJson(req)) ?? {}) as { assetId?: unknown; declaration?: unknown; attribution?: unknown; note?: unknown };
     const assetId = typeof body.assetId === 'string' ? body.assetId : '';
     const declaration = text(body.declaration, LICENCE_DECLARATION_MAX);
@@ -205,7 +220,7 @@ export function registerCatalogRightsRoutes(router: Router, deps: CatalogRightsD
 
   /** Remove one licence record: `?assetId=`. */
   router.add('DELETE', '/api/v1/catalog/rights/licences', async (req, res, ctx) => {
-    const actor = await editor(req, res); if (!actor) return;
+    const actor = await writer(req, res); if (!actor) return;
     const assetId = ctx.url.searchParams.get('assetId') ?? '';
     const prior = (await store.listAssetLicences()).find((l) => l.assetId === assetId);
     if (!prior) return sendError(res, 404, 'NOT_FOUND', 'no licence record for that asset');

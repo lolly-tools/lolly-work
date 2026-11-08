@@ -381,6 +381,8 @@ const SESSION_VERSIONS_LOCK_KEY = 0x1011_0007;
 /** The first half of the two-key lock that charges one token's renders at a
  *  time (plans/82 M7); the second half is the token id's hashtext. */
 const TOKEN_USAGE_LOCK_KEY = 0x1011_0011;
+/** One instance asset's mark statements, withdrawals and head changes (programmes/owner-mark.ts). */
+const ASSET_MARK_LOCK_KEY = 0x1011_0082;
 
 // Appends a `column = $n` clause + its bound value - shared by the two
 // filtered list queries below so the param-numbering logic lives in one place.
@@ -2448,6 +2450,21 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
          on conflict (scope) do update set record = excluded.record, updated_at = now()`,
         [rec.scope, JSON.stringify(rec)],
       );
+    },
+    async withAssetLock(assetId, fn) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select pg_advisory_xact_lock($1, hashtext($2))', [ASSET_MARK_LOCK_KEY, assetId]);
+        try {
+          const out = await fn();
+          await client.query('commit');
+          return out;
+        } catch (error) {
+          await client.query('rollback').catch(() => undefined);
+          throw error;
+        }
+      } finally { client.release(); }
     },
     async takeAssetRightsMark(scope) {
       const { rows } = await pool.query('delete from asset_rights_marks where scope = $1 returning record', [scope]);

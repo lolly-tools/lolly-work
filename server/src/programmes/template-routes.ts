@@ -43,7 +43,8 @@ import { COMPANY_GROUP_PREFIX, isPartnerGroup, programmeGroup, type ProgrammeRec
 import { isTemplatesOnlyToolId, withTemplatesOnly } from './templates-only.ts';
 import { COMPANY_FIELDS, FIELD_LABELS, LOGO_FIELDS, normalizeBindings } from './company-values.ts';
 import { markScopeKey, type AssetRightsMarkRecord } from '../catalog/rights.ts';
-import type { OwnerMarks } from './owner-mark.ts';
+import { recordedScope, type OwnerMarks } from './owner-mark.ts';
+import { headVersionOf, type CopiedFrom } from '../catalog/versions.ts';
 
 type Router = ReturnType<typeof createRouter>;
 type Audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => Promise<unknown>;
@@ -62,7 +63,7 @@ export interface TemplateRouteDeps {
   toolOpenTo(group: string, toolId: string): Promise<boolean>;
   /** New bytes for a published template, through the submit pipeline's
    *  version path, so the same checks run as for any version. */
-  submitVersion(actor: UserRecord, target: InstanceAssetRecord, bytes: Buffer, from?: string): Promise<{ ok: true; version?: number } | { ok: false; status: number; code: string; detail: string }>;
+  submitVersion(actor: UserRecord, target: InstanceAssetRecord, bytes: Buffer, from?: CopiedFrom): Promise<{ ok: true; version?: number } | { ok: false; status: number; code: string; detail: string }>;
   /** A Share with rules file, through the submit pipeline (catalog/rules-tools.ts),
    *  published to these groups by someone who manages programmes. */
   submitRulesFile(actor: UserRecord, bytes: Buffer, groups: string[]): Promise<{ ok: true; id: string; state: string; duplicate?: boolean } | { ok: false; status: number; code: string; detail: string }>;
@@ -304,12 +305,12 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       // Already live in the catalog, so publishing it is curation, not a new
       // contribution: no review runs again, as for a new version.
       submission: {
-        state: 'live', by: `user:${actor.id}`, at, checksum: stat.checksum, size: stat.size, contentType: 'application/json',
+        state: 'live', by: `user:${actor.id}`, byScoped: recordedScope(actor), at, checksum: stat.checksum, size: stat.size, contentType: 'application/json',
         ...(source.submission?.data ? { data: source.submission.data } : {}), note: `Published from ${source.id}`,
       },
       publication: {
         ...(editable.editable ? { editable: editable.editable } : {}), ...(body.fixedTheme ? { fixedTheme: true } : {}),
-        ...(bindings.bindings ? { bindings: bindings.bindings } : {}), from: source.id,
+        ...(bindings.bindings ? { bindings: bindings.bindings } : {}), from: { id: source.id, version: headVersionOf(source) },
       },
       createdAt: at,
     };
@@ -361,11 +362,15 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
   router.add('PUT', '/api/v1/programmes/:id/templates/:asset', async (req, res, ctx) => {
     const actor = await manager(req, res); if (!actor) return;
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
-    const rec = await publishedHere(res, programme, `${INST_PREFIX}${String(ctx.params.asset)}`); if (!rec) return;
+    const found = await publishedHere(res, programme, `${INST_PREFIX}${String(ctx.params.asset)}`); if (!found) return;
     const body = ((await readJson(req)) ?? {}) as { groups?: unknown; editable?: unknown; fixedTheme?: unknown; bindings?: unknown; ownerMark?: unknown };
     if (body.fixedTheme !== undefined && typeof body.fixedTheme !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'fixedTheme must be true or false');
     if (body.ownerMark !== undefined && typeof body.ownerMark !== 'boolean') return sendError(res, 400, 'INVALID_INPUT', 'ownerMark must be true or false');
     if (body.ownerMark !== undefined && !(await deps.mayStateMark(actor))) return sendError(res, 403, 'FORBIDDEN', 'stating or withdrawing the workspace\'s own mark needs catalog.edit');
+    // Read, change and write under the asset's lock, so neither a version committing
+    // meanwhile nor a mark being stated is lost or misjudged (programmes/owner-mark.ts).
+    return store.withAssetLock(found.id, async () => {
+    const rec = (await store.getInstanceAsset(found.id)) ?? found;
     if (body.ownerMark === true && !(await marks.ownWork(rec))) {
       return sendError(res, 409, 'NOT_OWN_WORK', 'the file this template came from records a licence, came from a provider or a partner, so the workspace does not state it as its own');
     }
@@ -411,10 +416,11 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
       after: { groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme, bindings: next.publication?.bindings ?? null },
     });
     // The card's tick: on records the mark (stated by whoever ticks it), off withdraws it.
-    if (body.ownerMark === true) await marks.state(actor, rec.id);
-    if (body.ownerMark === false) await marks.withdraw(actor, rec.id, rec.id, 'untick');
+    if (body.ownerMark === true) await marks.stateLocked(actor, rec.id);
+    if (body.ownerMark === false) await marks.withdrawLocked(actor, rec.id, rec.id, 'untick');
     sendJson(res, 200, { id: rec.id, groups: groupsOf(next), editable: next.publication?.editable ?? null, fixedTheme: !!next.publication?.fixedTheme, bindings: next.publication?.bindings ?? null,
       ownerMark: await markView(await marks.markOn(rec.id)) });
+    });
   });
 
   /** A new version of a tool template from another catalog template of the
@@ -445,7 +451,7 @@ export function registerTemplateRoutes(router: Router, deps: TemplateRouteDeps):
     const bytes = await readTemplate(source);
     if (!bytes) return sendError(res, 409, 'TEMPLATE_UNREADABLE', 'the template\'s bytes could not be read');
     // The version row records `source`, and the commit checks the mark against it.
-    const out = await deps.submitVersion(actor, rec, bytes, source.id);
+    const out = await deps.submitVersion(actor, rec, bytes, { id: source.id, version: headVersionOf(source) });
     if (!out.ok) return sendError(res, out.status, out.code, out.detail);
     await audit(`user:${actor.id}`, 'programme.template.version', `programme:${programme.id}`, { template: rec.id, from: source.id, version: out.version ?? null });
     sendJson(res, 201, { id: rec.id, version: out.version ?? rec.headVersion ?? 1 });

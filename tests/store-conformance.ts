@@ -1493,6 +1493,18 @@ export async function runStoreConformance(store: Store): Promise<void> {
   // Take: one step that removes and returns, so a second take finds nothing.
   assert.deepEqual(await store.takeAssetRightsMark('asset:inst/sheet'), own);
   assert.equal(await store.takeAssetRightsMark('asset:inst/sheet'), null);
+  // One asset's lock runs its callers one at a time; another asset's does not wait.
+  const lockOrder: string[] = [];
+  let openLock!: () => void;
+  const lockGate = new Promise<void>((r) => { openLock = r; });
+  const lockFirst = store.withAssetLock('inst/sheet', async () => { lockOrder.push('first:start'); await lockGate; lockOrder.push('first:end'); return 1; });
+  const lockSecond = store.withAssetLock('inst/sheet', async () => { lockOrder.push('second'); return 2; });
+  const lockOther = await store.withAssetLock('inst/other', async () => { lockOrder.push('other'); return 3; });
+  openLock();
+  assert.deepEqual([await lockFirst, await lockSecond, lockOther], [1, 2, 3]);
+  assert.deepEqual(lockOrder, ['first:start', 'other', 'first:end', 'second'], 'the same asset waits, another does not');
+  await assert.rejects(store.withAssetLock('inst/sheet', async () => { throw new Error('boom'); }), /boom/);
+  assert.equal(await store.withAssetLock('inst/sheet', async () => 'after'), 'after', 'a failure releases the lock');
   await store.deleteAssetRightsMark('asset:inst/sheet');
   assert.deepEqual(await store.listAssetRightsMarks(), []);
   assert.deepEqual(await store.listAssetLicences(), []);

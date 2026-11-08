@@ -349,27 +349,22 @@ test('every head change answers to the mark: a new version through the catalog, 
   assert.equal((unmark.at(-1)?.payload as { why?: string } | undefined)?.why, 'not-own');
 });
 
-test('a head that moves while the mark is being stated is checked again before the mark stands', async () => {
+test('a mark statement and a version from a licensed file, at once, never leave a mark on that head', async () => {
   const admin = await login('admin@test');
   const licensed = await submitTemplate(admin, 'Fifth photo sheet', 'Licensed, racing');
   assert.ok((await call(admin, 'PUT', '/api/v1/catalog/rights/licences', { assetId: licensed, declaration: 'CC-BY-4.0', attribution: 'Photo by Someone' })).status < 300);
   const plain = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
   const id = plain.body.id as string;
-  // Between the check and the insert, a new version from the licensed file becomes the head.
-  const add = store.addAssetRightsMark.bind(store);
-  store.addAssetRightsMark = async (rec) => {
-    store.addAssetRightsMark = add;
-    const head = (await store.getInstanceAsset(id))!;
-    const v1 = (await store.listAssetVersions(id))[0] ?? { assetId: id, version: 1, formats: [], by: `user:x`, at: 'x' };
-    await store.putAssetVersion(v1 as never);
-    await store.putAssetVersion({ ...v1, version: 2, from: licensed, by: v1.by } as never);
-    await store.putInstanceAsset({ ...head, headVersion: 2 });
-    return add(rec);
-  };
+  const list = store.listAssetRightsMarks.bind(store);
+  store.listAssetRightsMarks = async () => { const rows = await list(); await new Promise((r) => setTimeout(r, 15)); return rows; };
   try {
-    await call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(id)}`, { ownerMark: true });
-  } finally { store.addAssetRightsMark = add; }
-  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${id}`), 'the head moved to a licensed file: no mark stands');
+    await Promise.all([
+      call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(id)}`, { ownerMark: true }),
+      call(admin, 'POST', `/api/v1/programmes/resellers/templates/${bare(id)}/versions`, { from: licensed }),
+    ]);
+  } finally { store.listAssetRightsMarks = list; }
+  assert.equal((await store.getInstanceAsset(id))?.headVersion, 2, 'the licensed version is the head');
+  assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${id}`), 'so no mark stands on it');
 });
 
 test('a source whose author can no longer be found is not the workspace\'s own', async () => {
@@ -392,6 +387,91 @@ test('two unticks at once withdraw the mark once, audited once', async () => {
   store.listAssetRightsMarks = async () => { const rows = await list(); await new Promise((r) => setTimeout(r, 30)); return rows; };
   try {
     await Promise.all([1, 2].map(() => call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(marked.body.id)}`, { ownerMark: false })));
+  } finally { store.listAssetRightsMarks = list; }
+  assert.equal((await store.listAudit()).filter((a) => a.action === 'catalog.rights.unmark' && a.subject === `rights-mark:${scope}`).length, 1);
+});
+
+test('an author who cannot be resolved is never staff, whatever was recorded', async () => {
+  const admin = await login('admin@test');
+  const source = (await store.getInstanceAsset(catalogTemplate))!;
+  await store.putInstanceAsset({ ...source, id: 'inst/ghost-staff', submission: { ...source.submission!, by: 'user:gone-for-good', byScoped: false } });
+  const published = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: 'inst/ghost-staff', groups: ['programme-resellers'] });
+  assert.equal(published.status, 201);
+  assert.equal(published.body.ownerMark, null);
+});
+
+test('a first version keeps where it came from, so returning to it is judged on that', async () => {
+  const { createOwnerMarks } = await import('../server/src/programmes/owner-mark.ts');
+  const { backfillVersionOne, applyVersionToRecord } = await import('../server/src/catalog/versions.ts');
+  const admin = await login('admin@test');
+  const adminId = (await store.getUserBySub('dev:admin@test'))!.id;
+  const licensed = await submitTemplate(admin, 'Sixth photo sheet', 'Licensed, first');
+  assert.ok((await call(admin, 'PUT', '/api/v1/catalog/rights/licences', { assetId: licensed, declaration: 'CC-BY-4.0', attribution: 'Photo by Someone' })).status < 300);
+  const copy = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: licensed, groups: ['programme-resellers'], ownerMark: false });
+  const rec = (await store.getInstanceAsset(copy.body.id))!;
+  const v1 = backfillVersionOne(rec);
+  assert.equal(v1.from?.id, licensed, 'the backfilled first version names the file it was copied from');
+  assert.equal(v1.byScoped, false);
+  await store.putAssetVersion(v1);
+  await store.putAssetVersion({ ...v1, version: 2, from: undefined, by: `user:${adminId}`, byScoped: false });
+  const marks = createOwnerMarks({ store, audit: async () => undefined, workspaceName: () => 'Partner Hub' });
+  assert.equal(await marks.ownWork(applyVersionToRecord(rec, { ...v1, version: 2, from: undefined })), true, 'v2 is the workspace\'s own');
+  assert.equal(await marks.ownWork({ ...rec, headVersion: 1 }), false, 'back at v1, copied from a licensed file: not own work');
+});
+
+test('a copy is judged on the source version it copied, not on the source\'s head now', async () => {
+  const { createOwnerMarks } = await import('../server/src/programmes/owner-mark.ts');
+  const adminId = (await store.getUserBySub('dev:admin@test'))!.id;
+  const source = (await store.getInstanceAsset(catalogTemplate))!;
+  const ritaId = (await store.getUserBySub('dev:rita@acme.test'))!.id;
+  // v1 by a partner, v2 by staff; the copy took v1.
+  await store.putInstanceAsset({ ...source, id: 'inst/two-hands', submission: { ...source.submission!, by: `user:${ritaId}`, byScoped: true }, headVersion: 2 });
+  await store.putAssetVersion({ assetId: 'inst/two-hands', version: 1, formats: [], by: `user:${ritaId}`, byScoped: true, at: 'x' });
+  await store.putAssetVersion({ assetId: 'inst/two-hands', version: 2, formats: [], by: `user:${adminId}`, byScoped: false, at: 'y' });
+  const copy = { ...source, id: 'inst/copy-of-v1', submission: { ...source.submission!, by: `user:${adminId}`, byScoped: false }, publication: { from: { id: 'inst/two-hands', version: 1 } } };
+  const marks = createOwnerMarks({ store, audit: async () => undefined, workspaceName: () => 'Partner Hub' });
+  assert.equal(await marks.ownWork(copy), false, 'v1, the version copied, was a partner\'s');
+  assert.equal(await marks.ownWork({ ...copy, publication: { from: { id: 'inst/two-hands', version: 2 } } }), true);
+});
+
+test('a partner trusted with catalog.edit cannot state, withdraw or record rights through the rights routes', async () => {
+  const rita = await login('rita@acme.test');
+  const delegated = { principal: 'group:programme-resellers', action: 'catalog.edit', resource: '*', effect: 'allow' };
+  await store.putGrant(delegated as never);
+  try {
+    assert.equal((await call(rita, 'PUT', '/api/v1/catalog/rights/marks', { scope: `asset:${catalogTemplate}` })).status, 403);
+    assert.equal((await call(rita, 'DELETE', `/api/v1/catalog/rights/marks?scope=asset:${catalogTemplate}`)).status, 403);
+    assert.equal((await call(rita, 'PUT', '/api/v1/catalog/rights/licences', { assetId: catalogTemplate, declaration: 'CC0-1.0' })).status, 403);
+  } finally { await store.deleteGrant(delegated as never); }
+});
+
+test('a template edit that read the record before a version committed does not undo the version', async () => {
+  const admin = await login('admin@test');
+  const t = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'], ownerMark: false });
+  const id = t.body.id as string;
+  const stale = (await store.getInstanceAsset(id))!;
+  const newer = await submitTemplate(admin, 'Partner price sheet', 'SLES 16 SP2');
+  assert.equal((await call(admin, 'POST', `/api/v1/programmes/resellers/templates/${bare(id)}/versions`, { from: newer })).status, 201);
+  // The edit's first read is the record from before that version.
+  const read = store.getInstanceAsset.bind(store);
+  let first = true;
+  store.getInstanceAsset = async (wanted) => { if (first && wanted === id) { first = false; return structuredClone(stale); } return read(wanted); };
+  try {
+    assert.equal((await call(admin, 'PUT', `/api/v1/programmes/resellers/templates/${bare(id)}`, { groups: ['programme-resellers', 'company-acme'] })).status, 200);
+  } finally { store.getInstanceAsset = read; }
+  const after = (await store.getInstanceAsset(id))!;
+  assert.equal(after.headVersion, 2, 'the version stays the head');
+  assert.deepEqual(after.groups, ['programme-resellers', 'company-acme'], 'and the edit applied');
+});
+
+test('two deletes of one mark through the rights route withdraw and audit it once', async () => {
+  const admin = await login('admin@test');
+  const marked = await call(admin, 'POST', '/api/v1/programmes/resellers/templates', { from: catalogTemplate, groups: ['programme-resellers'] });
+  const scope = `asset:${marked.body.id}`;
+  const list = store.listAssetRightsMarks.bind(store);
+  store.listAssetRightsMarks = async () => { const rows = await list(); await new Promise((r) => setTimeout(r, 30)); return rows; };
+  try {
+    await Promise.all([1, 2].map(() => call(admin, 'DELETE', `/api/v1/catalog/rights/marks?scope=${encodeURIComponent(scope)}`)));
   } finally { store.listAssetRightsMarks = list; }
   assert.equal((await store.listAudit()).filter((a) => a.action === 'catalog.rights.unmark' && a.subject === `rights-mark:${scope}`).length, 1);
 });

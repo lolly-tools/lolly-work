@@ -6361,7 +6361,7 @@ export function buildApp(deps: AppDeps): App {
     return [...(await loadAssetIndexById(config.instance.pack)).values(), ...frags.flatMap((f) => f.fragment.assets), ...(await store.listInstanceAssets()).map((r) => r.entry)];
   };
   registerRightsRoutes(router, { store, requireAction, audit, catalogEntries: catalogEntriesForRights, feedFor: async (groups) => { await providersReady; return (await servedIndex.forCaller({ groups })).index; } });
-  registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights });
+  registerCatalogRightsRoutes(router, { store, requireAction, audit, workspaceName: () => config.instance.name, catalogEntries: catalogEntriesForRights, mayStateMark });
 
   registerDomainRoutes(router, {
     store, requireAction, audit, resolveTxt,
@@ -8300,11 +8300,17 @@ export function buildApp(deps: AppDeps): App {
     // contribution right.
     if (isHeadOp) {
       if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
-      const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
-      if (!rec) return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset has versions');
+      if (!id.startsWith(INST_PREFIX) || !(await store.getInstanceAsset(id))) return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset has versions');
+      // A file carrying the workspace's own mark changes head only for someone who may withdraw it.
+      if (await ownerMarks.markOn(id) && !(await mayStateMark(user))) {
+        return sendError(res, 403, 'FORBIDDEN', 'this file carries the workspace\'s own mark: a rollback needs catalog.edit');
+      }
       const body = (await readJson(req)) as { version?: unknown } | null;
       const wanted = Number((body ?? {}).version);
       if (!Number.isInteger(wanted) || wanted < 1) return sendError(res, 400, 'INVALID_INPUT', 'version must be a version number');
+      // The head moves under the asset's lock, with the mark checked against it there.
+      const done = await store.withAssetLock(id, async () => {
+      const rec = (await store.getInstanceAsset(id))!;
       const rows = await assetVersionRows(rec);
       const row = rows.find((r) => r.version === wanted);
       if (!row) return sendError(res, 404, 'NOT_FOUND', `no version ${wanted} of this asset`);
@@ -8314,7 +8320,11 @@ export function buildApp(deps: AppDeps): App {
       }
       await store.putInstanceAsset(applyVersionToRecord(rec, row));
       // A rollback is a head change too: the workspace's own mark answers to the head it restored.
-      await ownerMarks.recheck(user, id);
+      await ownerMarks.recheckLocked(user, id);
+      return from;
+      });
+      if (typeof done !== 'number') return;
+      const from = done;
       // The bytes behind a stable id just changed, so every cached render that
       // could have consumed them has to miss (plans/31 §6).
       bustInstanceCatalog();
@@ -8420,9 +8430,14 @@ export function buildApp(deps: AppDeps): App {
 
     let name = instAsset?.entry.name;
     if (instAsset && parsed && !('error' in parsed) && descriptiveTouched(parsed)) {
-      const entry = applyDescriptivePatch(instAsset.entry, parsed);
-      await store.putInstanceAsset({ ...instAsset, entry });
-      name = entry.name;
+      // Written under the asset's lock from a fresh read, so a version committing
+      // meanwhile keeps its head (programmes/owner-mark.ts).
+      name = await store.withAssetLock(instAsset.id, async () => {
+        const current = (await store.getInstanceAsset(instAsset.id)) ?? instAsset;
+        const entry = applyDescriptivePatch(current.entry, parsed);
+        await store.putInstanceAsset({ ...current, entry });
+        return entry.name;
+      });
     }
     if (meta && meta !== stored) await store.putAssetMeta(meta);
     await audit(`user:${user.id}`, 'catalog.edit', `catalog:${id}`, { before, after });
@@ -8840,7 +8855,8 @@ export function buildApp(deps: AppDeps): App {
   const submitDeps = () => ({
     store, blobs, policy: config.policy.submit,
     // Every head change checks the workspace's own mark against the new head.
-    onHeadMoved: (rec: InstanceAssetRecord, submitter: { id: string }) => ownerMarks.recheck(submitter, rec.id),
+    // Called inside the commit's asset lock, so the unlocked recheck.
+    onHeadMoved: (rec: InstanceAssetRecord, submitter: { id: string }) => ownerMarks.recheckLocked(submitter, rec.id),
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     // A template or user tool must seed a tool this pack has (plan 299). The

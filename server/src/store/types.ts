@@ -1906,6 +1906,10 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   /** Remove a mark in one step and return what was removed, or null when the scope
    *  had none, so only the call that removed it acts on it. */
   takeAssetRightsMark(scope: string): Promise<AssetRightsMarkRecord | null>;
+  /** Run `fn` holding one instance asset's lock (programmes/owner-mark.ts): its mark
+   *  statements, withdrawals, head changes and template edits never interleave. Not
+   *  re-entrant: `fn` must not ask for the same asset's lock again. */
+  withAssetLock<T>(assetId: string, fn: () => Promise<T>): Promise<T>;
   /** Unknown scope is a no-op. */
   deleteAssetRightsMark(scope: string): Promise<void>;
   listAssetLicences(): Promise<AssetLicenceRecord[]>;

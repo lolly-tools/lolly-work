@@ -326,8 +326,8 @@ export interface SubmitInput {
   target?: InstanceAssetRecord;
   /** Why these bytes replaced the last - kept on the version row. */
   note?: string;
-  /** The catalog file these bytes were copied from - kept on the version row. */
-  from?: string;
+  /** The catalog file and version these bytes were copied from - kept on the version row. */
+  from?: import('./versions.ts').CopiedFrom;
   /** Declared display name; also the filename hint for sniffing and the hook. */
   name: string;
   description?: string;
@@ -604,7 +604,10 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   //     versioning grows a complete history rather than one starting at 2 -
   //     lazily, here, which is why migration 0020 needs no data backfill.
   if (input.target) {
-    const target = input.target;
+    // The whole commit runs under the asset's lock (programmes/owner-mark.ts): the
+    // version number, the record it moves and the mark check all read what is current.
+    return store.withAssetLock(input.target.id, async () => {
+    const target = (await store.getInstanceAsset(input.target!.id)) ?? input.target!;
     const rows = await store.listAssetVersions(target.id);
     if (!rows.length) {
       const first = backfillVersionOne(target);
@@ -669,7 +672,8 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       ok: true, duplicate: false,
       record: (await store.getInstanceAsset(target.id)) ?? moved,
       checksum: vstat.checksum, scan, credential: detectedNew.status, version: next,
-    };
+    } satisfies SubmitOutcome;
+    });
   }
 
   // 4b. Store the bytes, then the record, in state `submitted`. A failure on
