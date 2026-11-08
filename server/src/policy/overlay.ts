@@ -7,7 +7,7 @@
  * enforcement (422 INPUT_LOCKED), and catalog feed filtering.
  */
 
-import { grantDecision, type Grant } from '../rbac/evaluate.ts';
+import { grantDecision, viewAsViewerOf, type Grant } from '../rbac/evaluate.ts';
 import { isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, programmeOfCompany } from '../programmes/types.ts';
 import { normalizeBindings } from '../programmes/company-values.ts';
 
@@ -267,6 +267,10 @@ export function toolVisibleWithGrants(
   // A partner programme member sees only the tools an allow grant includes for
   // them: the overlay's visibility, `*` included, never adds a tool for them
   // (plans/82 M1, programmes/types.ts).
+  // A view as a partner shows a tool only when the admin behind it sees the tool too
+  // (rbac/evaluate.ts): the partner's answer, then the admin's own.
+  const viewer = viewAsViewerOf(principal.userId);
+  if (viewer && !toolVisibleWithGrants(overlay, toolId, viewer, grants)) return false;
   if (isProgrammeScoped(principal.groups, principal.role)) return decision === 'allow';
   return toolVisibleTo(overlay, principal.groups) || decision === 'allow';
 }

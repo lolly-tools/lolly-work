@@ -6,7 +6,7 @@
  *
  *   LW_BASE=https://lolly.example lw login --email admin@test   # dev provider
  *   lw whoami | summary | fleet | links [--all] | links create <toolId> [key=value ...] [--open] | links revoke <id>
- *   lw msg send --title "…" [--severity action --groups a,b --max-engine 1.52.99]
+ *   lw msg send --title "…" [--severity action --groups a,b --max-engine 1.52.99 --starts <ISO> --ends <ISO>]
  *   lw audit verify
  *
  * Auth: `lw login` runs the device-code flow (print a short code, confirm it in
@@ -140,6 +140,8 @@ const OPTIONS = {
     company: { type: 'string' },
     domain: { type: 'string' },
     ends: { type: 'string' },
+    // `lw msg send --starts <ISO>`: when a message begins to show.
+    starts: { type: 'string' },
     at: { type: 'string' },
     'no-notice': { type: 'boolean' },
     assert: { type: 'boolean' },
@@ -163,6 +165,22 @@ const OPTIONS = {
     by: { type: 'string' },
     csv: { type: 'boolean' },
 } as const;
+
+/** A message's --starts or --ends as the UTC instant the server stores. A time
+ *  must carry its zone (Z or an offset), so it means the same moment wherever
+ *  lw runs. */
+function messageTime(flag: 'starts' | 'ends', raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(raw);
+  const [y, mo, d, h, mi, sec, oh, om] = (m ?? []).slice(1).map((v) => (v === undefined ? 0 : Number(v)));
+  // Date.parse rolls an impossible day forward (02-31 becomes 03-03), so each part is checked first.
+  const calendar = m ? new Date(Date.UTC(y!, mo! - 1, d!)) : null;
+  const real = !!calendar && calendar.getUTCFullYear() === y && calendar.getUTCMonth() === mo! - 1 && calendar.getUTCDate() === d
+    && h! <= 23 && mi! <= 59 && sec! <= 59 && oh! <= 23 && om! <= 59;
+  const ms = Date.parse(raw);
+  if (!real || Number.isNaN(ms)) fail(`--${flag} wants a real date and time with its zone, such as 2026-12-07T09:00:00Z`);
+  return new Date(ms).toISOString();
+}
 
 // parseArgs throws on an unknown flag; catch it so a typo prints one line
 // rather than an unhandled TypeError and a Node stack trace.
@@ -1603,17 +1621,27 @@ switch (cmd) {
   }
 
   case 'msg': {
-    if (sub !== 'send') fail('usage: lw msg send --title "…"');
+    if (sub !== 'send') fail('usage: lw msg send --title "…" [--body "…"] [--kind …] [--severity …] [--groups a,b] [--shells …] [--max-engine …] [--starts <ISO>] [--ends <ISO>]');
     const title = values.title ?? fail('--title required');
     const audience: Record<string, unknown> = {};
     if (values.groups) audience.groups = values.groups.split(',').map((s) => s.trim());
     if (values.shells) audience.shells = values.shells.split(',').map((s) => s.trim());
     if (values['max-engine']) audience.maxEngine = values['max-engine'];
+    // A message shows from --starts and stops at --ends. The server cannot end
+    // a message once it is sent, so --ends is how one is given a last day.
+    const startsAt = messageTime('starts', values.starts);
+    const endsAt = messageTime('ends', values.ends);
+    if (endsAt && Date.parse(endsAt) <= Date.now()) fail('--ends is in the past, so the message would never show');
+    if (startsAt && endsAt && Date.parse(endsAt) <= Date.parse(startsAt)) fail('--ends must be later than --starts');
     const msg = await call('/api/v1/messages', { method: 'POST', body: {
       title, body: values.body, kind: values.kind ?? 'announcement', severity: values.severity ?? 'info', audience,
+      ...(startsAt ? { startsAt } : {}), ...(endsAt ? { endsAt } : {}),
     } });
     out(msg);
-    if (!values.json) console.log(`sent ${(msg as { id: string }).id}`);
+    if (!values.json) {
+      const shown = [startsAt ? `from ${startsAt}` : '', endsAt ? `until ${endsAt}` : ''].filter(Boolean).join(' ');
+      console.log(`sent ${(msg as { id: string }).id}${shown ? ` (shows ${shown})` : ''}`);
+    }
     break;
   }
 
@@ -2668,7 +2696,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   grants [list] · grants add|rm <principal> <action> [<resource>] --effect deny|allow
   scim token create --idp <provider-id> | list | revoke <id>   provisioning bearers for an IdP (SCIM /scim/v2)
   preview --groups a,b   what a member in those groups would receive
-  msg send --title "…" [--body --kind --severity --groups a,b --shells tauri --max-engine 1.52.99]
+  msg send --title "…" [--body --kind --severity --groups a,b --shells tauri --max-engine 1.52.99 --starts <ISO> --ends <ISO>]
   edge [status]              configured CDN providers, credential fingerprints and recent purges (owner)
   edge probe <hostname> [--origin <url>]   read-only: private answers uncached, headers intact, transforms refused, zone settings
   edge purge [--tag t]... [--url u]... [--path p]...   queue a purge on every configured provider (owner)

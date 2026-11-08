@@ -96,6 +96,8 @@ import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, 
 import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
+import { createViewAs, VIEW_AS_HEADER, ViewAsEndedError } from '../programmes/view-as.ts';
+import { currentView, withRequestView } from '../rbac/view-context.ts';
 import { registerProgrammeRoutes } from '../programmes/routes.ts';
 import { registerProgrammePeopleRoutes } from '../programmes/people-routes.ts';
 import { accessEndsFor } from '../programmes/exit-schedule.ts';
@@ -614,6 +616,8 @@ export function buildApp(deps: AppDeps): App {
   // authenticate an `upgrade` request with byte-identical semantics - including
   // the disabled-account and pre-epoch-token refusals.
   const memberOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
+    // A view-as read answers as the partner it names (programmes/view-as.ts).
+    const viewed = await viewAs.member(req); if (viewed) return viewed;
     const delegated = agentRequests.principal(req);
     if (!delegated) return resolveMember(store, req.headers.cookie, sessionVerify);
     const user = await store.getUser(delegated.userId);
@@ -629,6 +633,22 @@ export function buildApp(deps: AppDeps): App {
   };
   const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
     store.appendAudit(auditBody(actor, action, subject, payload));
+  // View as a partner (plans/82 M6): one tab, the admin's session required, and
+  // while viewing, changes are not saved to the partner's account.
+  const viewEndKey = (viewId: string): string => sha256Hex(JSON.stringify(['view-as', 'ended', viewId]));
+  const viewAs = createViewAs({
+    sessionMember: (req) => resolveMember(store, req.headers.cookie, sessionVerify),
+    delegated: (req) => !!agentRequests.principal(req),
+    sessionKey: (req) => { const p = readPrincipal(req.headers.cookie, sessionVerify); return p?.kind === 'member' ? localSessionKey(p) : null; },
+    // An ended view is kept with the sign-out records (31 days, past any token's hour).
+    viewEnded: (viewId) => store.localSessionRevoked(viewEndKey(viewId)),
+    endView: async (viewId) => { const key = viewEndKey(viewId); await store.recordOidcLogout({ replayKey: key, targetKey: key, iat: Math.floor(Date.now() / 1000) }); },
+    mayManage: async (user, programmeId) => evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'programme.manage', [`programme:${programmeId}`, '*'], await store.listGrants()),
+    programme: (id) => store.getProgramme(id),
+    company: async (id) => (await store.listCompanies()).find((c) => c.id === id) ?? null,
+    roleOf: (groups) => roleFromGroups(groups, config.idp.roleGroups),
+    secret: secrets.session, verifySecrets: sessionVerify, audit,
+  });
 
   const revisionActor = (req: IncomingMessage, user: UserRecord): string => {
     const agent = agentRequests.principal(req)?.agent;
@@ -3012,8 +3032,8 @@ export function buildApp(deps: AppDeps): App {
     const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
     let payload;
     try {
-      payload = { ...await buildOrgConfigFor(user, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
-        branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
+      payload = viewAs.decorate(req, { ...await buildOrgConfigFor(user, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
+        branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } });
     } catch (err) {
       metrics.orgConfigError();
       throw err;
@@ -6305,6 +6325,7 @@ export function buildApp(deps: AppDeps): App {
   });
 
   // Templates published to a programme (plans/82 M2).
+  viewAs.register(router);
   registerTemplateRoutes(router, {
     store, blobs, requireAction, audit,
     toolFacts: async (toolId) => {
@@ -7206,6 +7227,9 @@ export function buildApp(deps: AppDeps): App {
       if ((await catalogBytesGate(assetId, true)).blocked) {
         return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
       }
+      // A converted preview is made on request; a view never starts that work, and
+      // none is kept to serve instead, so the app can say the preview is not ready.
+      if (convertedPreview && viewAs.viewing(req)) return sendError(res, 409, 'PREVIEW_NOT_READY', 'This preview is not ready. Previews are not made while viewing as a partner.');
       if (convertedPreview && !renderWorker) return sendError(res, 501, 'PREVIEW_UNAVAILABLE', 'This instance has no preview service.');
       // hold-implies-pin (plans/27 §3, §5): when this asset's bytes have been
       // materialized into the instance's own store, prefer the local copy - the
@@ -7325,6 +7349,7 @@ export function buildApp(deps: AppDeps): App {
         if (cacheKey) body.pipe(extCache.tee(cacheKey, servedType)).pipe(res);
         else body.pipe(res);
       } catch (error) {
+        if (error instanceof ViewAsEndedError) throw error;
         if (error instanceof RangeNotSatisfiableError) return unsatisfiable(error.size);
         return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
       }
@@ -7970,7 +7995,11 @@ export function buildApp(deps: AppDeps): App {
     await providersReady;
     const served = await servedIndex.forCaller({ groups: user?.groups ?? [], background: true });
     const represented = new Set(served.providers.map(provider => provider.id));
-    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)), providerVisibleTo)
+    // In a view as a partner, a source is listed only when the admin behind the view
+    // sees it too (rbac/view-context.ts), pending ones included.
+    const viewer = currentView()?.viewer;
+    const seesSource = (rec: ProviderRecord, groups: string[]): boolean => providerVisibleTo(rec, groups) && (!viewer || providerVisibleTo(rec, viewer.groups));
+    const sourceStatuses = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), await federation.fragments({ background: true }), user?.groups ?? [], new Set((served.index.assets ?? []).map(a => a.id)), seesSource)
       .map(source => !represented.has(source.id) && source.status === 'current' ? { ...source, status: 'pending', count: undefined } : source);
     const sources = query.source ? sourceStatuses.filter(source => source.id === query.source) : sourceStatuses;
     const complete = sources.every(source => source.status === 'current' && !source.truncated && !source.incomplete);
@@ -12904,7 +12933,7 @@ export function buildApp(deps: AppDeps): App {
     res.setHeader('vary', 'Origin');
     if (req.method === 'OPTIONS') {
       res.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-      res.setHeader('access-control-allow-headers', 'content-type, x-lolly-client, if-none-match, idempotency-key');
+      res.setHeader('access-control-allow-headers', `content-type, x-lolly-client, if-none-match, idempotency-key, ${VIEW_AS_HEADER}`);
       res.setHeader('access-control-max-age', '600');
       res.writeHead(204);
       res.end();
@@ -12954,7 +12983,9 @@ export function buildApp(deps: AppDeps): App {
     }
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
-    const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
+    // A tab viewing as a partner (programmes/view-as.ts) writes no fleet record, as the
+    // admin or as anyone: the request is refused or answered as the partner below.
+    const client = req.headers[VIEW_AS_HEADER] === undefined ? parseClientHeader(req.headers['x-lolly-client'] as string | undefined) : null;
     // Histogram writes must not terminate the server when the store is unavailable.
     if (client) void store.recordClient(client).catch(() => log('warn', 'fleet observation failed'));
     // Install identity (plans/34 wave 3): a shell may add `install/<id>` to its
@@ -13036,6 +13067,9 @@ export function buildApp(deps: AppDeps): App {
         return;
       }
     }
+    // View as a partner: refused here unless it is the admin's own session reading
+    // what a partner reads (programmes/view-as.ts).
+    if (await viewAs.gate(req, res, pathname)) { routeClass = 'view-as-refused'; return; }
     // A renewal that cannot be decided (the store is down) is skipped: the
     // session stays as it was and the next request asks again.
     const renewed = await renewedSessionCookie(req, pathname).catch(() => null);
@@ -13054,6 +13088,11 @@ export function buildApp(deps: AppDeps): App {
         if (!res.headersSent) sendCollabActive(res);
         return;
       }
+      // A view that ended mid-request ends the request (programmes/view-as.ts).
+      if (err instanceof ViewAsEndedError) {
+        if (!res.headersSent) sendError(res, 403, err.code, err.message);
+        return;
+      }
       // Too many password checks waiting (lib/crypto.ts): try again shortly.
       if (err instanceof ScryptBusyError) {
         if (!res.headersSent) { res.setHeader('retry-after', '2'); sendError(res, 503, err.code, err.message); }
@@ -13064,7 +13103,8 @@ export function buildApp(deps: AppDeps): App {
     }
   };
   // One server span per request when OTLP traces are on; otherwise the handler directly.
-  const app: App = (req, res) => otel.serve(req, res, (span) => handle(req, res, span));
+  // Each request carries its own view holder (rbac/view-context.ts), empty unless view-as admits one.
+  const app: App = (req, res) => withRequestView(() => otel.serve(req, res, (span) => handle(req, res, span)));
   appRoutes.set(app, router.descriptions);
   return app;
 }

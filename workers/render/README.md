@@ -137,8 +137,9 @@ remove an obsolete Alpine executable override when adopting this image.
 Run as the unprivileged `node` user with a read-only root filesystem, dropped
 capabilities, no-new-privileges and writable ephemeral `/tmp`. Chromium's user-data
 directory, XDG configuration and cache use that temporary mount. Health is HTTPS
-`/healthz`; `/readyz` reports `{ ok, active, capacity }` with HTTP 503 when the
-browser is not connected or capacity is full.
+`/healthz`; `/readyz` reports `{ ok, active, capacity, atCapacity }` with HTTP 503
+when the browser is not connected. A full worker stays ready, reports
+`atCapacity: true` and answers each new job with `503 RENDER_BUSY`.
 `active` includes cancelled requests until their Chromium contexts finish closing.
 Supply the approved
 `LW_RENDER_WORKER_SECRET` and `LOLLY_WEB_BASE` using deployment configuration and

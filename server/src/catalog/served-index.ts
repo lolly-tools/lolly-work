@@ -35,6 +35,7 @@ import { composeCollections } from './collections.ts';
 import { ESSENTIAL_ASSET_TYPES, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf } from '../programmes/types.ts';
 import { entryInFolders, foldersFor, nextFolderRuleEnd } from '../programmes/folders.ts';
 import { composeRightsRecords, loadRightsEngine } from './rights.ts';
+import { currentView } from '../rbac/view-context.ts';
 
 export interface ServedProvider {
   id: string;
@@ -190,6 +191,45 @@ export function nextLifecycleFlip(entries: AssetIndexEntry[], rows: LifecycleRow
     consider(e.availableUntil);
   }
   return next;
+}
+
+/**
+ * A view as a partner's feed: what the partner is served AND the admin behind the view
+ * is served themselves (rbac/evaluate.ts). Collections keep only members still served,
+ * and only providers both feeds show stay listed.
+ */
+export function intersectServed(theirs: ServedIndex, mine: ServedIndex): ServedIndex {
+  // Whatever the pack index's state: a raw or missing pack still serves federated
+  // and instance entries, so the intersection is the answer in every case, and its
+  // bytes are always the intersected feed, never the file on disk.
+  const admitted = new Set((mine.index.assets ?? []).map((entry) => entry.id));
+  const assets = (theirs.index.assets ?? []).filter((entry) => admitted.has(entry.id));
+  const served = new Set(assets.map((entry) => entry.id));
+  const index: AssetIndex = { ...theirs.index, assets };
+  if (Array.isArray(theirs.index.collections)) {
+    index.collections = (theirs.index.collections as Array<{ members: string[] }>).map((c) => ({ ...c, members: c.members.filter((m) => served.has(m)) }));
+  }
+  const mineIds = new Set(mine.providers.map((provider) => provider.id));
+  const providers = theirs.providers.filter((provider) => mineIds.has(provider.id));
+  // Every provider id the feed names is one both sides see: the stale list too.
+  const kept = new Set(providers.map((provider) => provider.id));
+  const stale = (theirs.index as { staleProviders?: unknown }).staleProviders;
+  if (Array.isArray(stale)) {
+    const visible = stale.filter((id): id is string => typeof id === 'string' && kept.has(id));
+    if (visible.length) (index as { staleProviders?: string[] }).staleProviders = visible;
+    else delete (index as { staleProviders?: string[] }).staleProviders;
+  }
+  const bytes = Buffer.from(JSON.stringify(index));
+  const version = sha256Hex(bytes).slice(0, 32);
+  return withSort({ status: theirs.status === 'missing' ? 'missing' : 'composed', sourceFingerprint: sha256Hex(`${theirs.sourceFingerprint}\n${mine.sourceFingerprint}`), bytes, etag: quoted(version), version,
+    index, providers });
+}
+
+/** What a paged feed is built from: the base feed's content, its providers (ids,
+ *  labels and sizes, which decide what is paged and what is named) and the pending
+ *  ones. The paged memo reuses a result only while all three are the same. */
+export function pagedBasis(base: Pick<ServedIndex, 'version' | 'providers'>, pending: readonly string[]): string {
+  return `${base.version}\n${JSON.stringify(base.providers.map((p) => [p.id, p.label, p.size]))}\n${JSON.stringify(pending)}`;
 }
 
 function withSort(result: Omit<ServedIndex, 'sorted'>): ServedIndex {
@@ -377,7 +417,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     if (base.status !== 'composed') return base;
     const large = new Map(base.providers.filter((p) => p.size > threshold).map((p) => [p.id, p]));
     if (!large.size && !pending.length) return base;
-    const basedOn = `${base.version}\n${JSON.stringify(pending)}`;
+    const basedOn = pagedBasis(base, pending);
     const hit = paged.get(key);
     if (hit && hit.basedOn === basedOn) {
       remember(paged, key, hit);
@@ -405,23 +445,43 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     return result;
   };
 
-  return {
+  /** The feed for one group set, with no view applied. */
+  const plain = async ({ groups, paged: wantPaged, background }: { groups: string[]; paged?: boolean; background?: boolean }): Promise<ServedIndex> => {
+    const key = [...new Set(groups)].sort();
+    const base = await full(key, background);
+    if (!wantPaged) return base;
+    return pagedFrom(base, key.join('\n'), await pendingFor(key, base, background));
+  };
+  /** Providers this group set sees that the feed does not represent yet. */
+  const pendingFor = async (key: string[], base: ServedIndex, background?: boolean): Promise<string[]> => {
+    if (!background) return [];
+    const represented = new Set(base.providers.map(provider => provider.id));
+    // The same provider rule the feed applies: a partner programme member
+    // waits only on providers whose groups name one of their programmes.
+    const scoped = isProgrammeScoped(key, deps.roleOf?.(key));
+    const programmeGroups = new Set(partnerGroupsOf(key));
+    const folders = scoped ? foldersFor(await deps.store.listPartnerFolders(), programmeGroups, Date.now()) : new Map<string, string[]>();
+    const sees = (provider: ProviderRecordLike): boolean => scoped ? namesProgrammeGroup(provider.exposure.groups, programmeGroups) || folders.has(provider.id) : callerSeesProvider(provider as never, key);
+    return (await deps.store.listProviders({ includeFragment: false }))
+      .filter(provider => provider.enabled && sees(provider) && !represented.has(provider.id))
+      .map(provider => provider.id).sort();
+  };
+  const indexer: ServedIndexer = {
     async forCaller({ groups, paged: wantPaged, background }) {
+      // A view as a partner (rbac/view-context.ts): the partner's feed AND the admin's
+      // own, for the partner's groups only, with paging built from the intersection.
+      const view = currentView();
       const key = [...new Set(groups)].sort();
-      const base = await full(key, background);
-      if (!wantPaged) return base;
-      const represented = new Set(base.providers.map(provider => provider.id));
-      // The same provider rule the feed applies: a partner programme member
-      // waits only on providers whose groups name one of their programmes.
-      const scoped = isProgrammeScoped(key, deps.roleOf?.(key));
-      const programmeGroups = new Set(partnerGroupsOf(key));
-      const folders = scoped ? foldersFor(await deps.store.listPartnerFolders(), programmeGroups, Date.now()) : new Map<string, string[]>();
-      const sees = (provider: ProviderRecordLike): boolean => scoped ? namesProgrammeGroup(provider.exposure.groups, programmeGroups) || folders.has(provider.id) : callerSeesProvider(provider as never, key);
-      const pending = background ? (await deps.store.listProviders({ includeFragment: false }))
-        .filter(provider => provider.enabled && sees(provider) && !represented.has(provider.id))
-        .map(provider => provider.id).sort() : [];
-      return pagedFrom(base, key.join('\n'), pending);
+      if (!view || key.join('\n') !== [...new Set(view.subjectGroups)].sort().join('\n')) return plain({ groups, paged: wantPaged, background });
+      const viewerKey = [...new Set(view.viewer.groups)].sort();
+      const [theirs, mine] = await Promise.all([full(key, background), full(viewerKey, background)]);
+      const both = intersectServed(theirs, mine);
+      if (!wantPaged) return both;
+      const [theirsPending, minePending] = await Promise.all([pendingFor(key, theirs, background), pendingFor(viewerKey, mine, background)]);
+      const pending = theirsPending.filter((id) => minePending.includes(id));
+      return pagedFrom(both, `view-as\n${view.viewer.userId}\n${key.join('\n')}`, pending);
     },
     compositions: () => compositions,
   };
+  return indexer;
 }
