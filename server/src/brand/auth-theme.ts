@@ -39,7 +39,10 @@ export function authThemeCss(tokens: unknown, font: { family: string; file: stri
   const axisOf = (t: unknown) => (t as { $extensions?: Record<string, { axis?: { kind?: unknown; canonical?: unknown } }> } | null)?.$extensions?.['com.suse.lolly']?.axis;
   const colourways = themes.filter(t => axisOf(t)?.kind === 'colourway');
   const colourway = colourways.find(t => axisOf(t)?.canonical === true) ?? colourways[0];
-  const colourwaySets = colourway?.selectedTokenSets && typeof colourway.selectedTokenSets === 'object' ? colourway.selectedTokenSets : {};
+  // Only the colourway's ENABLED sets join a mode: a colourway that lists a mode set as
+  // disabled must not switch it off.
+  const colourwaySets = Object.fromEntries(Object.entries(colourway?.selectedTokenSets && typeof colourway.selectedTokenSets === 'object' ? colourway.selectedTokenSets : {})
+    .filter(([, state]) => state === 'enabled' || state === 'source'));
   for (const mode of ['light', 'dark']) {
     const out = new Map<string, string>();
     const theme = themes.find(t => t && typeof t === 'object' && axisOf(t)?.kind !== 'colourway' && typeof t.name === 'string' && new RegExp(mode, 'i').test(t.name));

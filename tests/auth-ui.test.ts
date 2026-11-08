@@ -51,6 +51,12 @@ test('server theme reads a mode x colourway design system through its canonical 
   assert.match(css, /--pack-accent-light:#033633/, 'the canonical colourway, not the first one listed');
   assert.match(css, /--pack-accent-dark:#50c369/);
   assert.ok(!css.includes('#7a3d0a'), 'a non-canonical colourway is never read');
+  // A colourway that lists the mode sets as disabled does not switch them off.
+  const listed = { ...tokens, $themes: tokens.$themes.map((t) => t.name === 'Spearmint'
+    ? { ...t, selectedTokenSets: { light: 'disabled', dark: 'disabled', 'colourway/spearmint': 'enabled' } } : t) };
+  const kept = authThemeCss(listed, null);
+  assert.match(kept, /--pack-accent-light:#033633/);
+  assert.match(kept, /--pack-accent-dark:#50c369/);
 });
 
 test('authentication selects the active UI family and maps variable and static weights truthfully', () => {

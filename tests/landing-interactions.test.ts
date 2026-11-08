@@ -293,6 +293,30 @@ test('names are escaped and brand metadata cannot inject an external logo', asyn
   }
 });
 
+test('a colourway that lists the mode sets as disabled leaves the console accents in place', async () => {
+  const axis = (kind: string, canonical = false) => ({ $extensions: { 'com.suse.lolly': { axis: { kind, ...(canonical ? { canonical } : {}) } } } });
+  const tokens = {
+    $themes: [
+      { name: 'light', selectedTokenSets: { base: 'enabled', light: 'enabled' }, ...axis('mode') },
+      { name: 'dark', selectedTokenSets: { base: 'enabled', dark: 'enabled' }, ...axis('mode') },
+      { name: 'Spearmint', selectedTokenSets: { light: 'disabled', dark: 'disabled', 'colourway/spearmint': 'enabled' }, ...axis('colourway', true) },
+    ],
+    base: { color: { brand: { spearmint: { $value: '#033633' }, 'green-apple': { $value: '#50c369' } } } },
+    light: { color: { semantic: { primary: { $value: '{color.colourway.light.primary}' } } } },
+    dark: { color: { semantic: { primary: { $value: '{color.colourway.dark.primary}' } } } },
+    'colourway/spearmint': { color: { colourway: { light: { primary: { $value: '{color.brand.spearmint}' } }, dark: { primary: { $value: '{color.brand.green-apple}' } } } } },
+  };
+  const { dom, document: d } = page({ tokens });
+  try {
+    await pause();
+    await pause();
+    assert.equal(d.documentElement.style.getPropertyValue('--pack-accent-light'), '#033633');
+    assert.equal(d.documentElement.style.getPropertyValue('--pack-accent-dark'), '#50c369');
+  } finally {
+    dom.window.close();
+  }
+});
+
 test('the landing shows the revision-addressed logo routes /api/brand names', async () => {
   const address = 'a'.repeat(64);
   const { dom, document: d } = page({

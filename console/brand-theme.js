@@ -77,11 +77,15 @@ function buildThemeMaps(tokens) {
   const axisOf = (t) => t?.$extensions?.['com.suse.lolly']?.axis;
   const colourways = themes.filter((t) => axisOf(t)?.kind === 'colourway');
   const colourway = colourways.find((t) => axisOf(t)?.canonical === true) ?? colourways[0];
+  const on = (state) => state === 'enabled' || state === 'source';
+  // Only the colourway's ENABLED sets join a mode: a colourway that lists a mode set as
+  // disabled must not switch it off.
+  const colourwaySets = Object.entries(colourway?.selectedTokenSets ?? {}).filter(([, state]) => on(state));
   for (const t of themes) {
     if (axisOf(t)?.kind === 'colourway') continue;
     const merged = {};
-    for (const [setName, state] of Object.entries({ ...(t.selectedTokenSets ?? {}), ...(colourway?.selectedTokenSets ?? {}) })) {
-      if ((state === 'enabled' || state === 'source') && flat[setName]) Object.assign(merged, flat[setName]);
+    for (const [setName, state] of [...Object.entries(t.selectedTokenSets ?? {}), ...colourwaySets]) {
+      if (on(state) && flat[setName]) Object.assign(merged, flat[setName]);
     }
     maps[/dark/i.test(t.name ?? '') ? 'dark' : 'light'] = copyEntries(merged);
   }
