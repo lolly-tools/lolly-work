@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProductionContract, ProductionFacts } from '@lolly/engine/production/types';
-const PRODUCTION_MAX_PIXELS = 16_000_000;
+import { PRODUCTION_MAX_PIXELS } from './production-limits.ts';
 import { collectWorkProduction } from './production-collect.ts';
 const exec = promisify(execFile);
 export async function collectWorkPdf(bytes: Uint8Array, contract: ProductionContract, signal?: AbortSignal): Promise<ProductionFacts> {

@@ -35,6 +35,7 @@ import {
   PROJECT_MEMBER_ROLES, type ProjectGroupGrant, type ProjectMemberRole, type ProjectRecord, type ProjectSharing,
   type ProjectUserStateRecord, type ShareGroupRecord, type Store, type UserRecord,
 } from '../store/types.ts';
+import { JSON_BODY_MEDIUM_BYTES } from '../api/body-limits.ts';
 
 /** The fields a project list row adds so a shell can keep its Projects view to
  *  the person's own work: why they can open the project, its general access, and
@@ -62,7 +63,7 @@ export const SHARE_GROUP_NAME_MAX = 80;
 export const SHARE_GROUP_DESCRIPTION_MAX = 280;
 export const SHARE_GROUP_MEMBER_LIMIT = 500;
 export const SHARE_GROUPS_PER_OWNER = 100;
-const PEOPLE_LIMIT = 20;
+export const PEOPLE_LIMIT = 20;
 const PEOPLE_PROJECT_SCAN = 50;
 /** People lookups one person may make a minute (as `comment-people`). An exact
  *  address answers whether that address has an account here, so the lookup is
@@ -176,7 +177,7 @@ export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: 
     const { user, project, access } = admitted;
     if (!mayShareProject(project, access)) return sendError(res, 403, 'FORBIDDEN', 'you cannot change who has access to this project');
     if (project.archivedAt) return sendError(res, 409, 'PROJECT_ARCHIVED', 'restore the project first');
-    const body = (await readJson(req, 64 * 1024)) as Record<string, unknown> | null;
+    const body = (await readJson(req, JSON_BODY_MEDIUM_BYTES)) as Record<string, unknown> | null;
     if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'INVALID_INPUT', 'body must be a JSON object');
     const limits = policy();
     const roles = allowedRoles();
@@ -427,7 +428,7 @@ export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: 
     const user = await d.requireAction(req, res, 'group.create');
     if (!user) return;
     if (!policy().customGroups) return sendError(res, 403, 'GROUPS_OFF', 'this instance does not allow user-made groups');
-    const body = (await readJson(req, 64 * 1024)) as { name?: unknown; description?: unknown; add?: unknown } | null;
+    const body = (await readJson(req, JSON_BODY_MEDIUM_BYTES)) as { name?: unknown; description?: unknown; add?: unknown } | null;
     const name = label(body?.name, SHARE_GROUP_NAME_MAX);
     if (!name) return sendError(res, 400, 'INVALID_INPUT', `a group needs a name of at most ${SHARE_GROUP_NAME_MAX} characters`, { field: 'name' });
     const description = body?.description === undefined || body.description === null || body.description === '' ? null : label(body.description, SHARE_GROUP_DESCRIPTION_MAX);
@@ -462,7 +463,7 @@ export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: 
     const admitted = await groupFor(req, res, ctx.params.id as string);
     if (!admitted) return;
     const { user, group, role } = admitted;
-    const body = (await readJson(req, 64 * 1024)) as { name?: unknown; description?: unknown; add?: unknown; remove?: unknown; managers?: unknown } | null;
+    const body = (await readJson(req, JSON_BODY_MEDIUM_BYTES)) as { name?: unknown; description?: unknown; add?: unknown; remove?: unknown; managers?: unknown } | null;
     if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'INVALID_INPUT', 'body must be a JSON object');
     const manages = role === 'owner' || role === 'manager' || isAdmin(user);
     const onlyLeaving = body.name === undefined && body.description === undefined && body.add === undefined && body.managers === undefined

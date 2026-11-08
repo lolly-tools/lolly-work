@@ -27,21 +27,31 @@ test('each area is a card, and each limit reads its value and source', async () 
     { id: 'renders.attemptTimeoutMs', area: 'Renders', label: 'Time for one render attempt', value: 120_000, unit: 'ms', source: 'built-in' },
     { id: 'programmes.partnerRightsMode', area: 'Partner programmes', label: 'Partner licence gate', value: 'gate', unit: 'mode', source: 'configuration' },
     { id: 'policy.retention.auditDays', area: 'Retention and purge', label: 'Audit retention', value: 0, unit: 'days', source: 'built-in' },
+    { id: 'collab.nearbyMs', area: 'Renders', label: 'Nearby listing lifetime', value: 12 * 3_600_000, unit: 'ms', source: 'built-in' },
+    { id: 'notices.maxAgeMs', area: 'Renders', label: 'Oldest notice kept', value: 30 * 86_400_000, unit: 'ms', source: 'built-in' },
+    { id: 'auth.deviceCodeSeconds', area: 'Renders', label: 'Device sign-in code lifetime', value: 600, unit: 'seconds', source: 'built-in' },
+    ...Array.from({ length: 40 }, (_, i) => ({ id: `long.${i}`, area: 'Long area', label: `Limit ${i}`, value: i, unit: 'count', source: 'built-in' })),
   ];
   w.fetch = async () => ({ ok: true, status: 200, headers: new w.Headers({ 'content-type': 'application/json' }), json: async () => ({ limits }) });
   w.eval(`${source}; window.viewLimits = viewLimits;`);
   const main = w.document.createElement('main');
   await w.viewLimits(main);
-  assert.deepEqual([...main.querySelectorAll('.limits-area h2')].map((h: any) => h.textContent), ['Agent tokens', 'Renders', 'Partner programmes', 'Retention and purge']);
+  assert.deepEqual([...main.querySelectorAll('.limits-area h2')].map((h: any) => h.textContent), ['Agent tokens', 'Renders', 'Partner programmes', 'Retention and purge', 'Long area']);
+  // A long area shows every row: no pager hides a limit.
+  assert.equal(main.querySelectorAll('tr[data-limit^="long."]').length, 40);
+  assert.ok(main.querySelector('tr[data-limit="long.39"]'));
   const row = (id: string) => main.querySelector(`tr[data-limit="${id}"]`).textContent.replace(/\s+/g, ' ');
   assert.match(row('automation.tokenLimits.rendersPerDay'), /1,000Configuration/);
   assert.match(row('tokens.rendersPerMonth.maximum'), /31,000,000Built-in default/, 'a maximum in full, never 31000K');
   assert.match(row('automation.tokenLimits.rendersPerMonth'), /No cap/);
   assert.match(row('renders.concurrency'), /6Environment/);
   assert.match(row('renders.attemptTimeoutMs'), /2 min/);
+  assert.match(row('collab.nearbyMs'), /12 h/);
+  assert.match(row('notices.maxAgeMs'), /30 days/);
+  assert.match(row('auth.deviceCodeSeconds'), /10 min/);
   assert.match(row('programmes.partnerRightsMode'), /GateConfiguration/);
   assert.match(row('policy.retention.auditDays'), /0 \(kept\)/);
-  assert.match(main.textContent, /7 limits, 3 set by configuration or the environment/);
+  assert.match(main.textContent, /50 limits, 3 set by configuration or the environment/);
   assert.doesNotMatch(main.textContent, /null|undefined/);
   dom.window.close();
 });

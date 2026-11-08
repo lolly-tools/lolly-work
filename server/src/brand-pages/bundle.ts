@@ -20,7 +20,7 @@ const EOCD = 0x06054b50, CENTRAL = 0x02014b50, LOCAL = 0x04034b50;
 const MAX_COMMENT = 0xffff, EOCD_BYTES = 22, CENTRAL_BYTES = 46, LOCAL_BYTES = 30;
 export const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
 /** The manifest's 4096 files, the manifest itself and folder entries a zip tool may add. */
-const MAX_ENTRIES = 8192;
+export const MAX_ENTRIES = 8192;
 
 export interface BundleLimits { maxBundleBytes: number; maxFileBytes: number }
 export interface CheckedBundle { manifest: BrandPageManifest; files: Map<string, Buffer>; size: number }

@@ -18,8 +18,8 @@ import { INST_PREFIX } from './instance-assets.ts';
 
 export const BROWSE_DEFAULT_LIMIT = 100;
 export const BROWSE_MAX_LIMIT = 500;
-const MAX_PARAM = 300;
-const MAX_CURSOR = 1200;
+export const MAX_PARAM = 300;
+export const MAX_CURSOR = 1200;
 const TOP_TAGS = 50;
 const TOP_GROUPS = 200;
 

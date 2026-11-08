@@ -21,9 +21,9 @@
  */
 
 import { processOtel } from '../observability/otel.ts';
+import { PG_CONNECT_TIMEOUT_MS, PG_IDLE_TIMEOUT_MS } from './limits.ts';
+export { PG_CONNECT_TIMEOUT_MS, PG_IDLE_TIMEOUT_MS };
 
-export const PG_CONNECT_TIMEOUT_MS = 15_000;
-export const PG_IDLE_TIMEOUT_MS = 30_000;
 
 export interface PgPoolOptions {
   connectionString: string;

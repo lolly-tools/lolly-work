@@ -10,6 +10,7 @@ import { invalidateAccessTokens } from './oauth.ts';
 import { previewGuidedProvider } from './setup-preview.ts';
 import { validateGuidedProvider } from './setup.ts';
 import type { ProviderRecord } from './types.ts';
+import { JSON_BODY_CONTROL_BYTES } from '../../api/body-limits.ts';
 
 const CALLBACK = '/api/auth/provider-oauth/callback';
 const COOKIE = 'lw_provider_oauth';
@@ -112,7 +113,7 @@ export function registerProviderOAuth(router: ReturnType<typeof createRouter>, d
     const rec = await getGuided(ctx.params.id!);
     if (!rec || rec.id.length > 100) return sendError(res, 409, 'INVALID_PROVIDER', 'Browser consent requires a DB-managed Google Drive source with guided settings and an id of at most 100 characters.');
     if (rec.enabled) return sendError(res, 409, 'PROVIDER_ENABLED', 'Disable this source before reconnecting.');
-    const body = await readJson(req, 4096) as { clientId?: unknown; clientSecret?: unknown } | null;
+    const body = await readJson(req, JSON_BODY_CONTROL_BYTES) as { clientId?: unknown; clientSecret?: unknown } | null;
     if (typeof body?.clientId !== 'string' || !/^[A-Za-z0-9_-]{1,180}\.apps\.googleusercontent\.com$/.test(body.clientId) || typeof body.clientSecret !== 'string' || !body.clientSecret || body.clientSecret.length > 512 || /[\x00-\x20]/.test(body.clientSecret)) return sendError(res, 400, 'INVALID_INPUT', 'Enter the Google web application client id and client secret.');
     const { verifier, challenge } = pkcePair();
     const state: ConsentState = { userId: user.id, sessionHash: binding, providerId: rec.id, revision: providerSetupRevision(rec),

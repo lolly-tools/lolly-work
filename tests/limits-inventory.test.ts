@@ -32,7 +32,10 @@ test('limits have unique ids, plain labels, known sources and each area in order
     assert.ok(['configuration', 'environment', 'built-in'].includes(entry.source), entry.id);
   }
   assert.deepEqual([...new Set(limits.map((entry) => entry.area))], [
-    'Rate limits', 'Agent tokens', 'Renders', 'Uploads and bodies', 'Retention and purge', 'Links', 'Partner programmes',
+    'Rate limits', 'Sign-in and accounts', 'Agent tokens', 'Renders', 'Request bodies', 'Uploads and files', 'Approvals and submissions',
+    'Projects and versions',
+    'Comments and notices', 'Live collaboration', 'Access requests and sharing', 'Retention and purge', 'Links', 'Catalog and rights',
+    'Providers', 'Brand edits and tool policies', 'Brand pages', 'Partner programmes', 'Storage, audit and connections',
   ]);
 });
 

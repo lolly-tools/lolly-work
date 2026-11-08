@@ -24,9 +24,9 @@ export interface MappedRequest {
 
 /** Formats Work's render path makes. Others are refused by name, never swapped. */
 const MAKEABLE = new Set(['svg', 'png', 'jpg', 'pdf']);
-const MAX_METADATA_CHARS = 4096;
+export const MAX_METADATA_CHARS = 4096;
 /** Placid's documented limit on `passthrough`. */
-const MAX_PASSTHROUGH_CHARS = 1024;
+export const MAX_PASSTHROUGH_CHARS = 1024;
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const invalid = (message: string): never => { throw new RenderApiRefusal('INVALID_INPUT', 400, message); };

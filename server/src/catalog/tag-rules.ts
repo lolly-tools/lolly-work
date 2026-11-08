@@ -38,7 +38,7 @@ const PROVIDER_SCOPE_RE = /^provider:[a-z0-9][a-z0-9-]*$/;
 
 /** Bounds: a hidden list is a curated list, not a second taxonomy. */
 export const MAX_HIDDEN_PATTERNS = 2000;
-const MAX_PATTERN_LENGTH = 200;
+export const MAX_PATTERN_LENGTH = 200;
 
 /** One stored rule. `scope` is `*` or `provider:<id>`. */
 export interface CatalogTagRule {

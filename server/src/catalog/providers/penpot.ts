@@ -49,7 +49,7 @@ export interface PenpotOptions {
 }
 
 /** Files scanned per sync/search - a runaway instance can't wedge a request cycle. */
-const FILE_CAP = 200;
+export const FILE_CAP = 200;
 const UUID_RE = /^[A-Za-z0-9-]+$/;
 /** Every Penpot page carries a synthetic root frame (the nil UUID) - not a board. */
 const ROOT_FRAME_ID = '00000000-0000-0000-0000-000000000000';

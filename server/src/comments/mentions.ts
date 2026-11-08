@@ -28,7 +28,7 @@ import type { ProjectRecord, SessionRecord, Store, UserRecord } from '../store/t
 import { mayReadComments } from './access.ts';
 
 /** Longest name a mention carries, matching the core reader's limit. */
-const MAX_MENTION_NAME = 256;
+export const MAX_MENTION_NAME = 256;
 
 /** The shape a request's `mentions` must have: at most ten ids. Anything else
  *  is a 400, so a client bug is visible instead of silently notifying nobody. */

@@ -38,6 +38,7 @@ import {
   COMPANY_ID, companyGroup, membershipEnded, parsePeopleList, planRows,
   type CompanyRecord, type MembershipRecord, type PersonRow, type RowPlan,
 } from './people.ts';
+import { JSON_BODY_LIST_BYTES } from '../api/body-limits.ts';
 
 type Router = ReturnType<typeof createRouter>;
 
@@ -254,7 +255,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
   router.add('POST', '/api/v1/programmes/:id/people', async (req, res, ctx) => {
     const actor = await manager(req, res); if (!actor) return;
     const programme = await programmeOr404(res, String(ctx.params.id)); if (!programme) return;
-    const body = (await readJson(req, 512 * 1024)) as { text?: unknown; rows?: unknown; apply?: unknown } | null;
+    const body = (await readJson(req, JSON_BODY_LIST_BYTES)) as { text?: unknown; rows?: unknown; apply?: unknown } | null;
     let rows: PersonRow[];
     if (typeof body?.text === 'string') rows = parsePeopleList(body.text);
     else if (Array.isArray(body?.rows)) {
@@ -347,7 +348,7 @@ export function registerProgrammePeopleRoutes(router: Router, deps: PeopleRouteD
    *  The apply step answers with the receipt's id as `exit`. */
   router.add('POST', '/api/v1/programmes/exit', async (req, res) => {
     const actor = await manager(req, res); if (!actor) return;
-    const body = (await readJson(req, 512 * 1024)) as Record<string, unknown> | null;
+    const body = (await readJson(req, JSON_BODY_LIST_BYTES)) as Record<string, unknown> | null;
     const selection = readExitSelection(body);
     if ('error' in selection) return sendError(res, 400, selection.code ?? 'INVALID_INPUT', selection.error);
     // A date ends a programme or a company at the end of that day in UTC

@@ -6,6 +6,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { cachePolicy, renderTags, type DeliveryClass, type CachePolicyOptions } from '@lolly-tools/core/delivery-v1';
 import { appendVary, encodeText } from './file-delivery.ts';
+import { JSON_BODY_DEFAULT_BYTES } from './body-limits.ts';
 
 export type Handler = (req: IncomingMessage, res: ServerResponse, ctx: RouteCtx) => void | Promise<void>;
 
@@ -215,7 +216,7 @@ function match(pattern: string[], parts: string[]): Record<string, string> | nul
   return parts.length === pattern.length ? params : null;
 }
 
-export async function readJson(req: IncomingMessage, maxBytes = 512 * 1024): Promise<unknown> {
+export async function readJson(req: IncomingMessage, maxBytes = JSON_BODY_DEFAULT_BYTES): Promise<unknown> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of req) {

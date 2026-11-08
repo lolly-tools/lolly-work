@@ -23,8 +23,8 @@ export interface CatalogDeliveryView {
   toolDirs: Record<string, string>;
   envelope: Buffer | null;
 }
-const RETAIN_MS = 60 * 60 * 1000;
-const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
+export const RETAIN_MS = 60 * 60 * 1000;
+export const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 
 /** Scope comes exclusively from the server's current resolved grants. The
  *  `tool.use` grants that apply to this caller join the groups only when there
