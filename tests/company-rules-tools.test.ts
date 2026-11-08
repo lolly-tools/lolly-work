@@ -60,6 +60,7 @@ let base = '';
 let rulesId = '';
 let logoId = '';
 const store = createMemoryStore();
+const blobs = createMemoryBlobStore();
 
 before(async () => {
   const pack = await mkdtemp(join(tmpdir(), 'lw-company-rules-'));
@@ -80,7 +81,7 @@ before(async () => {
       { email: 'pat@both.test', groups: [] },
     ] },
   }));
-  const app = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'scr', link: 'lcr' } });
+  const app = buildApp({ config, store, blobs, secrets: { session: 'scr', link: 'lcr' } });
   server = createServer((req, res) => void app(req, res));
   await new Promise<void>((r) => server.listen(0, () => r()));
   const addr = server.address();
@@ -146,4 +147,29 @@ test('someone in two companies gets the rules tool with nothing locked', async (
   const tool = config.tools['partner-data-sheet'];
   assert.equal(tool?.inputs, undefined);
   assert.equal(tool?.defaults, undefined);
+});
+
+test('the workspace\'s mark goes only on the rules tool this publish made, never on the same bytes held as another asset', async () => {
+  const admin = await login('admin@test');
+  // The rules tool's own stored data, held again as an ordinary file for the workspace's admins.
+  const rec = (await store.getInstanceAsset(rulesId))!;
+  const blob = (await blobs.get(Object.values(rec.blobs)[0]!))!;
+  const data = Buffer.from(await new Response(blob.body as ReadableStream).arrayBuffer());
+  const held = await fetch(`${base}/api/v1/catalog/submit?name=data.json&groups=admin`, {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/octet-stream' }, body: new Uint8Array(data) });
+  const heldOut = await held.json() as { assetId: string };
+  assert.ok(held.status === 201 || held.status === 200, JSON.stringify(heldOut));
+  // The rules tool is gone, so the same file publishes again and arrives at the same data.
+  await store.deleteInstanceAsset(rulesId);
+  await store.deleteAssetRightsMark(`asset:${rulesId}`);
+  const res = await fetch(`${base}/api/v1/programmes/resellers/templates/rules-file?groups=programme-resellers`, {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/octet-stream' }, body: new Uint8Array(lollyFile(definition)) });
+  const out = await res.json() as { id: string; ownerMark: unknown };
+  assert.equal(res.status, 201, JSON.stringify(out));
+  if (out.id === heldOut.assetId) {
+    assert.equal(out.ownerMark, null, 'the ordinary file held for admins came back: it is not this publish, so no mark');
+    assert.ok(!(await store.listAssetRightsMarks()).some((m) => m.scope === `asset:${heldOut.assetId}`));
+  } else {
+    assert.fail(`the publish did not meet the held bytes (${out.id} vs ${heldOut.assetId}); the fixture no longer reaches the dedup`);
+  }
 });

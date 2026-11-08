@@ -56,6 +56,7 @@ import { MAX_MEMBERS } from './collections.ts';
 import type { SubmitPolicy, SubmitScanHook } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
+import { isProgrammeScoped } from '../programmes/types.ts';
 import { randomId, sha256Hex } from '../lib/crypto.ts';
 
 // ── byte sniffing ───────────────────────────────────────────────────────────
@@ -294,6 +295,10 @@ export interface SubmitDeps {
   /** Reads, checks and rebuilds a Share with rules file (catalog/rules-tools.ts,
    *  plans/82 M2). Absent means this instance takes no rules tools. */
   rulesTools?: RulesToolSubmitter;
+  /** Called once a new version became an asset's head (programmes/owner-mark.ts). */
+  onHeadMoved?: (rec: InstanceAssetRecord, submitter: SubmitInput['submitter']) => Promise<void>;
+  /** Asked under the asset's lock before a head moves: false refuses (MARKED_HEAD). */
+  mayMoveHead?: (rec: InstanceAssetRecord, submitter: SubmitInput['submitter']) => Promise<boolean>;
   /** Narrows the duplicate short-circuit beyond the submitter's groups: a partner
    *  programme member is handed only an asset their feed holds (plans/82 M1).
    *  Absent: the groups rule alone. */
@@ -327,6 +332,8 @@ export interface SubmitInput {
   target?: InstanceAssetRecord;
   /** Why these bytes replaced the last - kept on the version row. */
   note?: string;
+  /** The catalog file and version these bytes were copied from - kept on the version row. */
+  from?: import('./versions.ts').CopiedFrom;
   /** Declared display name; also the filename hint for sniffing and the hook. */
   name: string;
   description?: string;
@@ -368,6 +375,8 @@ export function companyLogoFields(logo: NonNullable<SubmitInput['companyLogo']>,
 
 export type SubmitRefusal =
   | { ok: false; code: 'SUBMISSION_INCOMPLETE'; detail: string }
+  /** The asset carries the workspace's own mark and this submitter may not move its head. */
+  | { ok: false; code: 'MARKED_HEAD'; detail: string }
   | { ok: false; code: 'SOURCE_CHANGED'; detail: string }
   | { ok: false; code: 'QUOTA_EXCEEDED'; detail: string }
   | { ok: false; code: 'SCAN_REJECTED'; detail: string }
@@ -617,7 +626,14 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   //     versioning grows a complete history rather than one starting at 2 -
   //     lazily, here, which is why migration 0020 needs no data backfill.
   if (input.target) {
-    const target = input.target;
+    // The whole commit runs under the asset's lock (programmes/owner-mark.ts): the
+    // version number, the record it moves and the mark check all read what is current.
+    return store.withAssetLock(input.target.id, async () => {
+    const target = (await store.getInstanceAsset(input.target!.id)) ?? input.target!;
+    if (deps.mayMoveHead && !(await deps.mayMoveHead(target, input.submitter))) {
+      await release();
+      return { ok: false, code: 'MARKED_HEAD', detail: 'This file carries the workspace\'s own mark: a new version needs catalog.edit.' } satisfies SubmitOutcome;
+    }
     const rows = await store.listAssetVersions(target.id);
     if (!rows.length) {
       const first = backfillVersionOne(target);
@@ -638,6 +654,8 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       version: next,
       formats: [{ format: sniffed.format, blobId, size: vstat.size, checksum: vstat.checksum, contentType: sniffed.contentType }],
       by: `user:${input.submitter.id}`,
+      byScoped: isProgrammeScoped(input.submitter.groups, input.submitter.role),
+      ...(input.from ? { from: input.from } : {}),
       at: nowIso,
       ...(input.note ? { note: input.note.slice(0, 500) } : {}),
       ...(sniffed.width && sniffed.height ? { width: sniffed.width, height: sniffed.height } : {}),
@@ -665,6 +683,9 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       await release();
       throw err;
     }
+    // Every head change, whichever route made it, is checked against the marks that
+    // depend on the head (programmes/owner-mark.ts).
+    await deps.onHeadMoved?.(moved, input.submitter);
     // Bytes changed, so the credential detection for this id is re-run rather
     // than inherited: a new version may have gained or lost a manifest.
     const detectedNew = await detectCredential(input.bytes);
@@ -677,7 +698,8 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       ok: true, duplicate: false,
       record: (await store.getInstanceAsset(target.id)) ?? moved,
       checksum: vstat.checksum, scan, credential: detectedNew.status, version: next,
-    };
+    } satisfies SubmitOutcome;
+    });
   }
 
   // 4b. Store the bytes, then the record, in state `submitted`. A failure on
@@ -694,6 +716,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     state: 'submitted',
     ...(input.projectSource ? { projectSource: input.projectSource } : {}),
     by: `user:${input.submitter.id}`,
+    byScoped: isProgrammeScoped(input.submitter.groups, input.submitter.role),
     at: nowIso,
     checksum: stat.checksum,
     size: stat.size,
