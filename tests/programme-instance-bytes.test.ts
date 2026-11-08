@@ -150,13 +150,14 @@ test('a pack file no asset owns answers a partner only when their own feed names
   assert.equal((await fetch(`${base}/catalog/delivery-manifest.json`, { headers: { cookie: staff } })).status, 200, 'staff unchanged');
 });
 
-test('free text never opens a pack file, even text a partner wrote into their own feed', async () => {
+test('free text never opens a pack file, even text written into the partner\'s own feed', async () => {
   const rita = await login('rita@reseller.test');
-  const edit = await fetch(`${base}/api/v1/catalog/assets/inst/kit/meta`, {
-    method: 'PUT', headers: { cookie: rita, 'content-type': 'application/json' },
-    body: JSON.stringify({ description: '/catalog/delivery-manifest.json', tags: ['/catalog/delivery-manifest.json'] }),
-  });
-  assert.equal(edit.status, 200, 'their programme includes the kit and they may edit its metadata');
+  const staff = await login('staff@test');
+  // A partner never edits catalog metadata (the partner action allowlist), even with a grant.
+  const body = JSON.stringify({ description: '/catalog/delivery-manifest.json', tags: ['/catalog/delivery-manifest.json'] });
+  assert.equal((await fetch(`${base}/api/v1/catalog/assets/inst/kit/meta`, { method: 'PUT', headers: { cookie: rita, 'content-type': 'application/json' }, body })).status, 403);
+  const edit = await fetch(`${base}/api/v1/catalog/assets/inst/kit/meta`, { method: 'PUT', headers: { cookie: staff, 'content-type': 'application/json' }, body });
+  assert.equal(edit.status, 200, 'staff write the address into the kit their programme includes');
   assert.equal((await fetch(`${base}/catalog/delivery-manifest.json`, { headers: { cookie: rita } })).status, 404,
     'a description, a tag or a free-text meta field is not a file reference');
   assert.equal((await fetch(`${base}/catalog/fonts/OFL.txt`, { headers: { cookie: rita } })).status, 200, 'meta.licenceFile is one');
