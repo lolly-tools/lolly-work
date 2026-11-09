@@ -20,7 +20,7 @@ of record while people make new content from its selected assets. Migration is o
 
 The [1.2.0 release](docs/release-1-2-0.md) records the matched Lolly source,
 component versions, migrations and the checks required before publication. The
-[1.1.2 release](docs/release-1-1-2.md) keeps its own page, and the
+[1.1.3](docs/release-1-1-3.md) and [1.1.2](docs/release-1-1-2.md) releases keep their own pages, and the
 [1.1.1](docs/past-releases.md#111) and [1.1.0](docs/past-releases.md#110) releases keep
 their own records in [past releases](docs/past-releases.md).
 
