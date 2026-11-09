@@ -8449,10 +8449,14 @@ function docTarget(flat, want, anchor) {
 // keeps its title that way, so links into one still reach it).
 function docAnchorNode(prose, anchor) {
   const slugOf = (node) => node.textContent.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-');
+  // Lolly's docs build turns every run of other characters into one hyphen, so a link
+  // written against the published docs spells "company's" as "company-s". Either form lands.
+  const lollySlugOf = (node) => node.textContent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const names = (node) => slugOf(node) === anchor || lollySlugOf(node) === anchor;
   const marker = [...prose.querySelectorAll('[id]')].find(node => node.id === anchor);
   if (marker) return marker.nextElementSibling ?? marker;
-  return [...prose.querySelectorAll('h1,h2,h3,h4')].find(node => slugOf(node) === anchor)
-    ?? [...prose.querySelectorAll('p')].find(node => node.childNodes.length === 1 && node.firstElementChild?.tagName === 'STRONG' && slugOf(node) === anchor)
+  return [...prose.querySelectorAll('h1,h2,h3,h4')].find(names)
+    ?? [...prose.querySelectorAll('p')].find(node => node.childNodes.length === 1 && node.firstElementChild?.tagName === 'STRONG' && names(node))
     ?? null;
 }
 
