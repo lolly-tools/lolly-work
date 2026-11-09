@@ -1,5 +1,5 @@
 {
-  "generatedFrom": "e18354bd54ec35976ccb63f57ee9a0beba45a576",
+  "generatedFrom": "6fe242e5ae81b1b0fa0bd3cd526dd3605529133d",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.8.0",
@@ -10,8 +10,8 @@
   "engine": {
     "version": "1.343.0",
     "tarball": "lolly-engine-1.343.0.tgz",
-    "tarballSha256": "ac8cd9547fe498a03abe014f92ecaa454cf27808569589b777405bb25924482d",
-    "contentHash": "3d957e261a15f4d0951a261cb80188a171cdbc4fdec8eacb4a042e95d1309323"
+    "tarballSha256": "926851cffa33dd9e0b766fe6f46b9d2471899aea7fe7cd98b269bf03d62dd926",
+    "contentHash": "aa1a202ed66df0be5929fb3f5a4411c206a2e6482252cb6ddff8c2c0e1766ba4"
   },
   "schemas": {
     "asset-ref.schema.json": "1e610bd8369b1f4756306709af95bb009aa39981a9776343f92f1c00c51bc3cd",
