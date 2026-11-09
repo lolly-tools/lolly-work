@@ -8,8 +8,11 @@ kind of partner gets. Lolly Work has no fixed list of partner types.
 Someone in a programme sees only what their programmes include. Your own people are unaffected.
 
 This page is the reference. For the team that runs programmes day to day, [Run a partner
-programme](run-a-partner-programme.md) is the short guide: what partners get, and how to set up,
-run and end a programme.
+programme](run-a-partner-programme.md) is the guide: what partners get, and how to set up, run and
+end a programme. It has a page for each subject: [co-branding and partner
+kits](partner-co-branding.md), [templates](partner-templates.md), [approvals](partner-approvals.md),
+[shared assets and licences](partner-shared-assets.md), [agents](partner-agents.md) and [people and
+the partnership](partner-people.md).
 
 ## What a programme does
 
@@ -495,7 +498,8 @@ example "Northwind IT's mark is 48 px high; the kit asks for at least 96 px.", w
 for each thing they could not measure. A finding is for review and never blocks an export. The kit
 is never a design system: your brand still leads, and the app's look stays the same. A piece's
 attachment travels in its share link as `_kit`, and someone the kit is not served to sees the piece
-without the kit.
+without the kit. An export records the kit's id and the revision attached, beside the company
+([The partner record in files](#the-partner-record-in-files)).
 
 ## Add people
 
@@ -779,14 +783,16 @@ system and colourway ([The design-system record](/info/exporting.html#the-design
 
 | Where | What is written |
 | --- | --- |
-| Content Credential | `partnerCompany`, `partnerCompanyLabel`, `partnerProfileRevision`, `partnerProgramme` and `partnerProgrammeLabel`, and nothing more |
-| XMP and SVG metadata | The same five, as `lolly:PartnerCompany` and so on |
+| Content Credential | `partnerCompany`, `partnerCompanyLabel`, `partnerProfileRevision`, `partnerProgramme` and `partnerProgrammeLabel`, plus `partnerKit` and `partnerKitRevision` when a [partner kit](#partner-kits) is attached, and nothing more |
+| XMP and SVG metadata | The same keys, as `lolly:PartnerCompany`, `lolly:PartnerKit` and so on |
 | PDF keywords | "Partner: Northwind IT" |
-| The export panel's **Design system** card | "Records: Lolly Demo · Colourway: Spearmint · Partner: Northwind IT (Resellers, EMEA)" |
-| Lolly Verify | A **Partner** fact: "Northwind IT, Resellers, EMEA programme, details revision 3" ([What Lolly Verify checks](/info/what-verify-checks.html#partner)) |
+| The export panel's **Design system** card | "Records: Lolly Demo · Colourway: Spearmint · Partner: Northwind IT (Resellers, EMEA)", and with a kit attached ", kit revision 2" after the partner |
+| Lolly Verify | A **Partner** fact: "Northwind IT, Resellers, EMEA programme, details revision 3", and with a kit ", kit revision 2" ([What Lolly Verify checks](/info/what-verify-checks.html#partner)) |
 
 **Never recorded:** the person, a contact's email or phone, the address, the currency, a token or
-an agent's name or model.
+an agent's name or model. A kit is recorded by its id and revision only: never its colours, rules
+or files. The kit keys are written only when the record holds the company and the piece carries
+that company's kit.
 
 The app records a company once it has details, with the revision of those details, so a file says
 which details it was made with and the company page's history shows what that revision held; a
@@ -878,6 +884,8 @@ The organisation MCP endpoint offers resources to a service token, each read cou
   [brand page](/info/brand-page.html) supplies these when you serve one; otherwise Lolly Work writes
   them from your design system. Brand skills reach a partner's agent only when marked `public`.
 - `lolly-work://partner/company` and its logos: the token's own company, never another.
+- `lolly-work://partner/kit` and its logos, `lolly-work://partner/kit/logo/{surface}`: the partner
+  kit of the token's own company. Both need `catalog.read`.
 - `lolly-work://partner/templates`: the templates in the token's feed, with what each leaves open,
   what it takes from the company and whether it is retired.
 
@@ -1081,12 +1089,15 @@ lw programmes usage resellers-emea --by week --csv
 
 ## Not yet
 
-- **The kit in exported files**: recording which revision of a company's kit a piece carried.
 - **Share with rules files made from tools other than Design.**
 
 ## Related
 
 - The guide for partner teams: [Run a partner programme](run-a-partner-programme.md)
+- The guide by subject: [Co-branding and partner kits](partner-co-branding.md),
+  [Partner templates](partner-templates.md), [Partner approvals](partner-approvals.md),
+  [Shared assets and licences](partner-shared-assets.md), [Partners' agents](partner-agents.md) and
+  [People and the partnership](partner-people.md)
 - Who can do what: [Roles and grants](permissions.md)
 - Locking inputs per group: [Policy and governance](governance.md)
 - Collections: [Catalog and content](catalog.md#collections)
