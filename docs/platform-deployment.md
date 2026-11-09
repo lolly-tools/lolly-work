@@ -19,9 +19,9 @@ Application Collection subscription is required.
   namespace for every command below; the examples assume you have.
 - **Images.** Multi-architecture images (amd64 and arm64) are published to
   `ghcr.io/lolly-tools/lolly-work-server` and `...-render-worker` for each reviewed
-  `v*` release. The 1.1.3 images are public and need no registry credentials. Pin
+  `v*` release. The 1.2.0 images are public and need no registry credentials. Pin
   their digests for production; the
-  [1.1.3 release notes](release-1-1-3.md#images-and-qualification) say where they are recorded.
+  [1.2.0 release notes](release-1-2-0.md#images-and-qualification) say where they are recorded.
 - **One collaboration owner.** Lolly Work keeps one writable collaboration owner, so run
   one application replica. Separate render workers can scale once you have tested
   the workload. A redundant cluster does not route rooms or fail over the
@@ -37,8 +37,8 @@ To run your own registry or a disconnected mirror, build the image yourself only
 you need to:
 
 ```bash
-docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:1.1.3 .
-docker push <registry>/lolly-work-server:1.1.3
+docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:1.2.0 .
+docker push <registry>/lolly-work-server:1.2.0
 ```
 
 The optional render worker needs a second image, built the same way from
@@ -52,7 +52,7 @@ The optional render worker needs a second image, built the same way from
 # Name the release lolly-work: Helm prefixes every object with it, so the Service
 # is then called lolly-work and the checks below work unchanged.
 helm install lolly-work deploy/helm -f deploy/helm/values-eval.yaml \
-  --set image.repository=ghcr.io/lolly-tools/lolly-work-server --set image.tag=1.1.3
+  --set image.repository=ghcr.io/lolly-tools/lolly-work-server --set image.tag=1.2.0
 ```
 
 You get an in-memory store (a restart is a factory reset), passwordless sample
@@ -96,7 +96,7 @@ directly. Browser sign-in and links need `instance.baseUrl` to match:
 
 ```bash
 helm upgrade lolly-work deploy/helm -f deploy/helm/values-eval.yaml \
-  --set image.repository=ghcr.io/lolly-tools/lolly-work-server --set image.tag=1.1.3 \
+  --set image.repository=ghcr.io/lolly-tools/lolly-work-server --set image.tag=1.2.0 \
   --set config.instance.baseUrl=http://<node-or-lb-ip>
 ```
 
@@ -194,11 +194,11 @@ then add the repository and pick an exact chart version:
 ```bash
 helm repo add lolly-work https://github.com/lolly-tools/lolly-work/releases/download/helm-index
 helm repo update lolly-work
-helm show chart lolly-work/lolly-work --version 1.1.3
+helm show chart lolly-work/lolly-work --version 1.2.0
 ```
 
 In the production command, replace the local `deploy/helm` argument with
-`lolly-work/lolly-work --version 1.1.3` and keep your reviewed values, configuration
+`lolly-work/lolly-work --version 1.2.0` and keep your reviewed values, configuration
 and Secret references. Check the chart's Sigstore bundle and source record, as
 [official installation routes](official-installations.md#release-verification)
 describes, before you apply the chart.

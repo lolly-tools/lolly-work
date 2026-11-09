@@ -33,7 +33,10 @@ if config["architecture"] != "amd64" or config["os"] != "linux" or config["confi
 if config["config"]["Cmd"] != ["node", "src/main.mjs"]:
     raise ValueError("Unexpected runtime command")
 booted = subprocess.check_output(["docker", "image", "inspect", image, "--format", "{{.Id}}"], text=True).strip()
-if booted != config_digest:
+# The classic image store reports an image's config digest as its Id; the containerd image
+# store (Docker 29 runners) reports the manifest digest. The manifest names exactly one config
+# digest, so either equality binds the booted image to the exported one.
+if booted not in (config_digest, image_digest):
     raise ValueError("Booted Docker config differs from exported OCI config")
 sha = hashlib.sha256()
 with open(archive, "rb") as src:

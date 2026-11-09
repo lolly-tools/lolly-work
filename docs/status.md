@@ -5,13 +5,13 @@ their own devices. Lolly Work adds the parts a team shares: one sign-in, shared 
 governed library of brand assets, server renders, links you can turn off, approvals and an
 audit trail.
 
-The current release is Lolly Work 1.1.3, paired with Lolly 1.1.3. The
-[release notes](release-1-1-3.md) list the exact component versions. This page groups what
+The current release is Lolly Work 1.2.0, paired with Lolly 1.2.0. The
+[release notes](release-1-2-0.md) list the exact component versions. This page groups what
 the release does into lists: ready to use, worth checking against your own systems first and not
 built yet. A separate list names work that is finished on Lolly Work's main branch but is not
 in this release.
 
-[Figure: What Lolly Work 1.1.3 does, what to check on your own systems before you rely on it and what is not built](https://lolly.tools/info/figures/work-status-capabilities.html)
+[Figure: What Lolly Work 1.2.0 does, what to check on your own systems before you rely on it and what is not built](https://lolly.tools/info/figures/work-status-capabilities.html)
 
 ## Ready to use
 
@@ -70,7 +70,7 @@ Brandfolder has successful integration use reported at SUSE, including administr
 - **Delivery.** The S3 adapter has been checked live against an S3-compatible host. WebDAV
   and signed HTTPS have wire tests and opt-in checks that have not yet run against a real
   receiver. Brandfolder and Cloudinary are fixture-tested.
-- **Release artifacts.** Lolly Work 1.1.3 ships signed server and render-worker images for Linux
+- **Release artifacts.** Lolly Work 1.2.0 ships signed server and render-worker images for Linux
   amd64 and arm64, and its release record does not claim native arm64 runtime
   qualification. Choose and verify the image digests, client and worker versions, registry
   access and any `imagePullSecrets` before you install.
@@ -159,7 +159,8 @@ or date is set. The pull request numbers are in the
 
 ## Release history
 
-- **1.1.3, 29 October 2026.** The current release, matched to Lolly 1.1.3. [Release notes](release-1-1-3.md).
+- **1.2.0, 9 November 2026.** The current release, matched to Lolly 1.2.0. [Release notes](release-1-2-0.md).
+- **1.1.3, 29 October 2026.** Matched to Lolly 1.1.3. [Release notes](release-1-1-3.md).
 - **1.1.2, 20 October 2026.** Matched to Lolly 1.1.2. [Release notes](release-1-1-2.md).
 - **1.1.1, 15 October 2026.** Matched to Lolly 1.1.1.
 - **1.1.0, 12 October 2026.** Released together with Lolly web 1.1.0.
