@@ -33,6 +33,8 @@ import { parseConfig, type Secrets } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
+import { csrfVerdict } from '../server/src/iam/csrf.ts';
+import { INVITE_PAGE_HEADERS } from '../server/src/access/invite-routes.ts';
 import { startFakeLdap, type FakeLdap } from './fake-ldap.ts';
 import { pinManifest, readPins, renderTemplate, tarballName, RELEASE_HOST } from '../scripts/yunohost-release.ts';
 
@@ -207,6 +209,14 @@ test('instance.json: the rendered configuration boots and a YunoHost sign-in arr
   // Without the secret nginx adds, the same headers are worth nothing.
   const { 'x-lw-proxy-auth': _drop, ...bare } = ssowat;
   assert.equal((await fetch(`${base}/api/auth/proxy`, { headers: bare, redirect: 'manual' })).status, 403);
+
+  // nginx puts the server's own Referrer-Policy back on the control plane's routes
+  // (the Referrer-Policy test below), so every answer carries one: no-referrer by
+  // default, and strict-origin on a page whose forms must keep their Origin.
+  for (const path of ['/healthz', '/api/auth/config', '/l/no-such-link', '/render/no-such-tool']) {
+    assert.equal((await fetch(`${base}${path}`)).headers.get('referrer-policy'), 'no-referrer', path);
+  }
+  assert.equal((await fetch(`${base}/l/invite/no-such-token`)).headers.get('referrer-policy'), 'strict-origin');
 });
 
 test('manifest: whole domain, Node 24, Postgres, and the permission layout the sign-in relies on', () => {
@@ -320,6 +330,25 @@ test('nginx: the includes the scripts write, and a deliberate header set per loc
   assert.match(proxy, /proxy_set_header X-Lw-Proxy-Auth "__PROXY_SECRET__";/);
   assert.match(proxy, /proxy_set_header Upgrade \$http_upgrade;/);
   assert.match(proxy, /proxy_pass http:\/\/127\.0\.0\.1:__PORT__;/);
+});
+
+test('nginx: the control plane keeps the server\'s Referrer-Policy, so a form post keeps its Origin', () => {
+  // The chain this pins. A form post from a no-referrer page carries `Origin: null`
+  // (Fetch, "append a request Origin header"), and the CSRF check refuses that Origin
+  // once the post carries a cookie, as the invitation, access request, link password
+  // and sign-in forms all do. The server sends strict-origin on those pages for that
+  // reason; a fixed no-referrer in nginx replaced it and every such form answered 403.
+  const site = ['https://work.example.org'];
+  assert.match(csrfVerdict('POST', { cookie: 'lw_form=x', origin: 'null' }, site) ?? '', /opaque origin/);
+  assert.equal(csrfVerdict('POST', { cookie: 'lw_form=x', origin: 'https://work.example.org' }, site), null);
+  assert.equal(INVITE_PAGE_HEADERS['referrer-policy'], 'strict-origin');
+  const locations = [...nginx.matchAll(/location\s+(?:=|\^~|~)?\s*([^\s{]+)\s*\{([^{}]*)\}/g)].map((m) => ({ path: m[1]!, body: m[2]! }));
+  const controlPlane = locations.filter((l) => !/shell-headers\.inc;/.test(l.body));
+  assert.ok(controlPlane.some((l) => l.path === '/api/') && controlPlane.some((l) => l.path === '/l/'));
+  for (const l of controlPlane) {
+    const policies = [...l.body.matchAll(/more_set_headers "Referrer-Policy: ([^"]*)";/g)].map((m) => m[1]);
+    assert.deepEqual(policies, ['$upstream_http_referrer_policy'], `${l.path} must put back the server's Referrer-Policy, never a fixed one`);
+  }
 });
 
 test('nginx: the shell header set is the open-source package\'s, directive by directive, when a Lolly checkout is at hand', (t) => {
