@@ -19,7 +19,7 @@ export function mcpConfigText(origin, tokenEnv = 'LW_TOKEN') {
 }
 
 export async function tokensView(main, { el, field, api, can, refresh }) {
-  main.append(el('h1', {}, 'Provisioning and service tokens'),
+  main.append(el('h1', {}, 'Access tokens'),
     el('p', { class: 'sub' }, 'New secrets display once. Store them in the connector or your secret manager before dismissing them. Revocation takes effect on the next request.'));
   for (const kind of ['scim', 'service']) {
     if (!can(kind === 'scim' ? 'scim.manage' : 'token.manage')) continue;

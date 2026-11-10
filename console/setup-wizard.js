@@ -25,7 +25,7 @@ export async function createSetupWizard({ el, field, api }) {
   const controls = {}, groupControls = {}, listControls = {};
   const panels = titles.map((title, index) => el('section', { 'data-step': index, 'aria-labelledby': `setup-title-${index}` },
     el('h2', { id: `setup-title-${index}`, tabindex: '-1' }, `${index + 1}. ${title}`)));
-  const root = el('div', { class: 'setup-wizard' }, el('h1', {}, 'Customer setup'),
+  const root = el('div', { class: 'setup-wizard' }, el('h1', {}, 'Server setup'),
     el('p', { class: 'sub' }, 'Configure this instance, verify owner access and download a checked sample. Your current deployment stays active while you prepare changes.'),
     el('p', {}, guide()), applyStatus);
   const read = () => ({ ...configuration.settings,
