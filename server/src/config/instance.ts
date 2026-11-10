@@ -39,6 +39,7 @@ import { GROUP_NAMED_ROLES, PERSON_ROLES, type RoleGroups } from '../rbac/evalua
 import { validateSharingPolicy } from '../policy/sharing.ts';
 import { EDGE_DEFAULTS, hostOf, validateEdgeConfig, type EdgeConfig } from '../edge/config.ts';
 import { TOKEN_LIMIT_SEED, checkTokenLimitConfig, type TokenLimits } from '../iam/token-limits.ts';
+import { DEFAULT_FEED_URL, validateUpdatesConfig, type InstallConfig, type UpdatesConfig } from '../updates/settings.ts';
 
 /** The project's release host, which serves the shell's on-device models
  *  (instance.modelOrigin's default). */
@@ -470,6 +471,16 @@ export interface InstanceConfig {
    *  decides, with no egress. The credential rides LW_OFREP_TOKEN. */
   featureFlags: { ofrep?: OfrepConfig };
   rateLimit: RateLimitConfig;
+  /** The release notice for owners and admins (updates/). `check` reads the published
+   *  chart repository index once a day, a plain request carrying nothing about this
+   *  instance; `channel` is `stable` or `preview` (pre-releases too); `feedUrl` points
+   *  at an internal mirror for an air-gapped or sovereign install. LW_UPDATES_CHECK,
+   *  LW_UPDATES_CHANNEL and LW_UPDATES_FEED_URL set the same from the environment. */
+  updates: UpdatesConfig;
+  /** How this instance was installed (`helm`, `rancher`, `fleet`, `argocd` or `other`),
+   *  so the release notice shows that route's upgrade steps. LW_INSTALL_ROUTE, which the
+   *  Helm chart sets, wins. */
+  install: InstallConfig;
 }
 
 /**
@@ -734,6 +745,8 @@ export const DEFAULTS: InstanceConfig = {
   siem: { batchSize: 200, intervalSeconds: 30 },
   featureFlags: {},
   submit: {},
+  updates: { check: true, channel: 'stable', feedUrl: DEFAULT_FEED_URL },
+  install: { route: 'other' },
 };
 
 /** Validate `policy.requests` in place: two switches and two whole-number bounds. */
@@ -1233,6 +1246,7 @@ export function parseConfig(json: string): InstanceConfig {
   if (!Number.isInteger(cfg.siem.intervalSeconds) || cfg.siem.intervalSeconds < 5) {
     throw new Error(`invalid siem.intervalSeconds: ${cfg.siem.intervalSeconds} (>= 5)`);
   }
+  validateUpdatesConfig(cfg.updates, cfg.install);
   if (!cfg.featureFlags || typeof cfg.featureFlags !== 'object' || Array.isArray(cfg.featureFlags)
     || Object.keys(cfg.featureFlags).some((key) => key !== 'ofrep')) {
     throw new Error('featureFlags must be an object whose only key is ofrep');

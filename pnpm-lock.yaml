@@ -41,6 +41,9 @@ importers:
       ws:
         specifier: ^8.22.0
         version: 8.22.0
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
       yjs:
         specifier: ^13.6.33
         version: 13.6.33
@@ -57,9 +60,6 @@ importers:
       typescript:
         specifier: ^5.5.0
         version: 5.9.3
-      yaml:
-        specifier: ^2.9.1
-        version: 2.9.1
 
   vendor/@lolly-tools/core:
     dependencies:

@@ -893,6 +893,49 @@ th[aria-sort] { cursor: pointer; }
 .alert-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; }
 .alert-item a { white-space: nowrap; }
 
+/* Release notice (update-notice.js): a newer Lolly Work release, for owners and
+   admins. The faint accent wash of the first-run banner; a release that fixes a
+   vulnerability takes the critical colour as a full border, never one edge. */
+.update-notice, .update-current { display: grid; gap: 12px; min-width: 0; }
+.update-notice { background: color-mix(in oklab, var(--accent) 5%, var(--surface)); }
+.update-notice.is-security { border-color: color-mix(in oklab, var(--critical) 55%, var(--hairline)); }
+.update-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 16px; }
+.update-title { display: grid; gap: 6px; min-width: 0; flex: 1 1 320px; }
+.update-title h2 { overflow-wrap: anywhere; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.update-flags { gap: 6px; }
+.update-date { font-size: 12px; }
+.chip.update-security { color: var(--critical); font-weight: 600;
+  border-color: color-mix(in oklab, var(--critical) 55%, var(--hairline)); background: color-mix(in oklab, var(--critical) 10%, transparent); }
+.chip.update-migrates { border-color: color-mix(in oklab, var(--warning) 70%, var(--hairline)); background: color-mix(in oklab, var(--warning) 16%, transparent); }
+.update-migrate { margin: 0; padding: 8px 12px; border-radius: calc(var(--radius) - 2px); line-height: 1.5;
+  background: color-mix(in oklab, var(--warning) 12%, var(--surface)); border: 1px solid color-mix(in oklab, var(--warning) 55%, var(--hairline)); }
+.update-highlights { display: grid; gap: 10px; }
+.update-highlights .section-h { margin: 0; }
+.update-changes { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; line-height: 1.5; }
+.update-kind { margin-right: 2px; }
+.update-kind.kind-security { color: var(--critical); }
+.update-steps > summary { cursor: pointer; font-weight: 600; width: max-content; max-width: 100%; }
+.update-step-list { margin: 12px 0 0; padding-left: 24px; display: grid; gap: 16px; list-style: decimal; }
+.update-step { display: list-item; min-width: 0; }
+.update-step::marker { font-weight: 600; color: var(--ink-2); }
+.update-step > * + * { margin-top: 4px; }
+.update-step-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.update-code { font-family: var(--font-mono, var(--font-mono-sys)); font-size: .92em; white-space: nowrap;
+  padding: 0 4px; border-radius: 4px; background: color-mix(in oklab, var(--ink) 6%, transparent); }
+.update-cmd-row { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.update-cmd { flex: 1 1 auto; min-width: 0; margin: 4px 0 0; padding: 10px 12px; overflow-x: auto; white-space: pre;
+  border: 1px solid var(--hairline); border-radius: calc(var(--radius) - 2px); background: var(--plane); color: var(--ink); font-size: 12px; line-height: 1.55; }
+.update-cmd-row > button { flex: none; margin-top: 4px; }
+.update-checked { margin: 0; font-size: 12px; }
+@media (max-width: 560px) {
+  /* Show the whole command on a phone; Copy still takes it exactly as written. */
+  .update-cmd { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .update-cmd-row { flex-direction: column; align-items: stretch; }
+  .update-cmd-row > button { align-self: flex-start; margin-top: 0; }
+  .update-step-list { padding-left: 18px; }
+}
+
 /* First-run zero-state banner: a faint accent wash, never a dashed edge, which
    in this language means "drop here". The .card hairline is already the edge. */
 .zero-banner { background: color-mix(in oklab, var(--accent) 5%, var(--surface)); }

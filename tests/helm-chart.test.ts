@@ -19,8 +19,11 @@ import { fileURLToPath } from 'node:url';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parse, parseAllDocuments } from 'yaml';
+import { parse, parseAllDocuments, stringify } from 'yaml';
 import { parseConfig } from '../server/src/config/instance.ts';
+import { parseChartIndex } from '../server/src/updates/feed.ts';
+import { releaseAnnotations, writeAnnotations } from '../scripts/chart-release-annotations.ts';
+import { classifyMigrations } from '../server/src/store/migration-classifier.ts';
 
 const CHART = fileURLToPath(new URL('../deploy/helm', import.meta.url));
 const helm = spawnSync('helm', ['version', '--short'], { encoding: 'utf8' });
@@ -794,4 +797,105 @@ test('OpenTelemetry export is off by default and sets the standard variables on 
     const r = render([...SECRETS, '--set', 'otel.enabled=true', '--set', 'otel.endpoint=http://c:4318', '--set', bad]);
     assert.equal(r.ok, false, `${bad} must be refused by values.schema.json`);
   }
+});
+
+// The release facts Lolly Work's release notice reads from the chart repository index
+// (server/src/updates/feed.ts). scripts/chart-release-annotations.ts sets them each
+// release; this checks their form, and that the server reads back what the chart says.
+test('the chart carries well-formed release annotations that the release notice reads back', async () => {
+  const text = readFileSync(join(CHART, 'Chart.yaml'), 'utf8');
+  const chart = parse(text);
+  const a = chart.annotations as Record<string, string>;
+  assert.match(a['artifacthub.io/containsSecurityUpdates'] ?? '', /^(true|false)$/, 'containsSecurityUpdates is the string "true" or "false"');
+  assert.match(a['lolly.tools/migrations'] ?? '', /^\d{1,5}$/, 'lolly.tools/migrations is a whole number');
+  const classes = /^additive=(\d+),maintenance=(\d+)$/.exec(a['lolly.tools/migration-classes'] ?? '');
+  assert.ok(classes, 'lolly.tools/migration-classes reads additive=<n>,maintenance=<n>');
+  const [additive, maintenance, count] = [Number(classes[1]), Number(classes[2]), Number(a['lolly.tools/migrations'])];
+  assert.equal(additive + maintenance, count, 'the classes add up to the migration count');
+  const verdicts = await classifyMigrations(fileURLToPath(new URL('../migrations', import.meta.url)));
+  assert.ok(count <= verdicts.length, 'no more migrations than the release ships');
+  assert.ok(maintenance <= verdicts.filter(v => v.class === 'maintenance').length, 'no more maintenance migrations than the classifier finds');
+  assert.equal(a['lolly.tools/release-notes'], `https://github.com/lolly-tools/lolly-work/releases/tag/v${chart.version}`, 'the release notes are this version\'s release');
+  const changes = parse(a['artifacthub.io/changes'] ?? '');
+  assert.ok(Array.isArray(changes) && changes.length, 'artifacthub.io/changes is a YAML list');
+  for (const change of changes) {
+    assert.ok(['added', 'changed', 'deprecated', 'removed', 'fixed', 'security'].includes(change.kind), `kind ${change.kind}`);
+    assert.ok(typeof change.description === 'string' && change.description.trim(), 'each change has a description');
+  }
+  // The index `helm repo index` writes keeps Chart.yaml's annotations; read them as the server does.
+  const [release] = parseChartIndex(stringify({ apiVersion: 'v1', entries: { 'lolly-work': [{ ...chart, apiVersion: 'v2', created: '2026-11-10T00:00:00Z' }] } }));
+  assert.equal(release?.version, chart.version);
+  assert.equal(release?.security, a['artifacthub.io/containsSecurityUpdates'] === 'true');
+  assert.equal(release?.migrations, count);
+  assert.deepEqual(release?.migrationClasses, { additive, maintenance });
+  assert.equal(release?.notesUrl, a['lolly.tools/release-notes']);
+  assert.equal(release?.changes.length, changes.length);
+  // The release script rewrites the same lines in place and adds missing ones beside the changes.
+  const same = releaseAnnotations({ version: chart.version, security: a['artifacthub.io/containsSecurityUpdates'] === 'true', additive, maintenance });
+  assert.equal(writeAnnotations(text, same), text, 'writing the current facts changes nothing');
+  const bare = text.split('\n').filter(line => !/^ {2}(lolly\.tools\/|artifacthub\.io\/containsSecurityUpdates)/.test(line)).join('\n');
+  assert.equal(writeAnnotations(bare, same), text, 'missing facts go back where they were');
+});
+
+test('release notice settings reach the server only, with the release, namespace and chart version', { skip: noHelm }, () => {
+  const r = spawnSync('helm', ['template', 'work', CHART, '-n', 'brand', ...SECRETS, ...WORKER], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const env = (doc: { spec: { template: { spec: { containers: { env?: { name: string; value?: string }[] }[] } } } }) =>
+    Object.fromEntries((doc.spec.template.spec.containers[0]!.env ?? []).map(e => [e.name, e.value]));
+  const app = env(deployment(r.stdout));
+  assert.deepEqual({
+    check: app.LW_UPDATES_CHECK, channel: app.LW_UPDATES_CHANNEL, feed: app.LW_UPDATES_FEED_URL, route: app.LW_INSTALL_ROUTE,
+    release: app.LW_RELEASE_NAME, namespace: app.LW_RELEASE_NAMESPACE, fullname: app.LW_RELEASE_FULLNAME, chart: app.LW_CHART_VERSION,
+  }, {
+    check: 'true', channel: 'stable', feed: 'https://github.com/lolly-tools/lolly-work/releases/download/helm-index/index.yaml', route: 'helm',
+    release: 'work', namespace: 'brand', fullname: 'work-lolly-work', chart: parse(readFileSync(join(CHART, 'Chart.yaml'), 'utf8')).version,
+  });
+  const migration = manifests(r.stdout).find(doc => doc?.kind === 'Job');
+  assert.ok(!Object.keys(env(migration)).some(n => n.startsWith('LW_UPDATES_') || n.startsWith('LW_RELEASE_')), 'the migrate Job needs none of it');
+  assert.ok(!Object.keys(env(deployment(r.stdout, true))).some(n => n.startsWith('LW_UPDATES_')), 'nor does the render worker');
+
+  const off = render([...SECRETS, '--set', 'updates.check=false', '--set', 'updates.channel=preview', '--set', 'install.route=argocd',
+    '--set', 'updates.feedUrl=https://charts.internal.example/lolly/index.yaml']);
+  assert.ok(off.ok, off.err);
+  const offEnv = env(deployment(off.out));
+  assert.equal(offEnv.LW_UPDATES_CHECK, 'false');
+  assert.equal(offEnv.LW_UPDATES_CHANNEL, 'preview');
+  assert.equal(offEnv.LW_INSTALL_ROUTE, 'argocd');
+  assert.equal(offEnv.LW_UPDATES_FEED_URL, 'https://charts.internal.example/lolly/index.yaml');
+  for (const bad of ['updates.channel=nightly', 'install.route=kustomize', 'updates.feedUrl=http://charts.example/index.yaml', 'updates.feedUrl=https://charts.example/index.yaml#x', 'updates.check=maybe']) {
+    const refused = render([...SECRETS, '--set-string', bad]);
+    assert.equal(refused.ok, false, `${bad} must be refused by values.schema.json`);
+  }
+});
+
+// Lolly Work never upgrades its own release: that would give the server's account write
+// access to everything the chart owns. The chart grants the app no Kubernetes API rights.
+test('the chart grants the app no Kubernetes API rights, so it cannot change its own release', { skip: noHelm }, () => {
+  for (const args of [SECRETS, [...SECRETS, ...WORKER], [...SECRETS, '--set', 'install.route=rancher']]) {
+    const r = render(args);
+    assert.ok(r.ok, r.err);
+    const kinds = manifests(r.out).map(doc => doc?.kind);
+    for (const kind of ['Role', 'ClusterRole', 'RoleBinding', 'ClusterRoleBinding']) assert.ok(!kinds.includes(kind), `no ${kind}`);
+    assert.equal(deployment(r.out).spec.template.spec.automountServiceAccountToken, false, 'no API token in the server pod');
+  }
+});
+
+test('Rancher questions set the Rancher route and an Updates group that matches the values', () => {
+  const questions = parse(readFileSync(join(CHART, 'questions.yaml'), 'utf8')).questions as { variable: string; type: string; default?: unknown; options?: string[]; group?: string; show_if?: string }[];
+  const values = parse(readFileSync(join(CHART, 'values.yaml'), 'utf8'));
+  const schema = JSON.parse(readFileSync(join(CHART, 'values.schema.json'), 'utf8'));
+  for (const q of questions) {
+    const path = q.variable.split('.');
+    assert.notEqual(path.reduce((node: any, key) => node?.[key], values), undefined, `${q.variable} is a chart value`);
+  }
+  const byVar = new Map(questions.map(q => [q.variable, q]));
+  const route = byVar.get('install.route');
+  assert.equal(route?.default, 'rancher', 'installed from Rancher, the notice shows the Rancher steps');
+  assert.deepEqual([...route!.options!].sort(), [...schema.properties.install.properties.route.enum].sort());
+  assert.equal(byVar.get('updates.check')?.type, 'boolean');
+  assert.equal(byVar.get('updates.check')?.default, true);
+  assert.deepEqual(byVar.get('updates.channel')?.options, schema.properties.updates.properties.channel.enum);
+  assert.equal(byVar.get('updates.channel')?.show_if, 'updates.check=true');
+  for (const v of ['install.route', 'updates.check', 'updates.channel']) assert.equal(byVar.get(v)?.group, 'Updates');
+  assert.equal(values.install.route, 'helm', 'a plain helm install shows the helm steps');
 });

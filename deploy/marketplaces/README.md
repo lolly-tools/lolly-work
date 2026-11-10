@@ -32,7 +32,17 @@ export and the tool gallery in a real browser.
 
 For Lolly and Work release `X.Y.Z`:
 
-1. **The web app archive.** The Lolly release builds and uploads
+1. **The chart's release facts.** When the version moves to `X.Y.Z`, write the
+   chart's release annotations from the previous release's tag:
+   `node scripts/chart-release-annotations.ts --since vW.V.U --write`, with
+   `--security` when the release fixes a vulnerability. It counts the migration
+   files added since that tag, classifies them as `pnpm run migrate:classify` does,
+   and points `lolly.tools/release-notes` at the `vX.Y.Z` release. Write
+   `artifacthub.io/changes` by hand, as before. Artifact Hub and Rancher show the
+   `artifacthub.io` ones, and every Lolly Work server reads all of them from the
+   chart repository index for its release notice; `tests/helm-chart.test.ts` checks
+   their form.
+2. **The web app archive.** The Lolly release builds and uploads
    `lolly-web-X.Y.Z-ynh1.tar.gz` to `lolli.li` with Lolly's
    `node scripts/yunohost-release.ts --build` (it needs the catalogue signing key, so
    the release owner runs it). When a release publishes only the signed web image,
@@ -43,15 +53,15 @@ For Lolly and Work release `X.Y.Z`:
    it reproduces the same bytes on any machine, so a second person can check the
    upload. Every consumer of the archive (this package, Dokploy, both YunoHost
    packages) then pins the same file.
-2. **The pin.** After the Work release has published its images and
+3. **The pin.** After the Work release has published its images and
    `release-source-images.json`, and the archive is on `lolli.li`, run
    `node scripts/marketplace-cohort.ts --version X.Y.Z --shell-url https://lolli.li/lolly-web-X.Y.Z-ynh1.tar.gz`
    (add `--shell-file` to read a local copy instead of downloading it again). Review
    the diff.
-3. **The checks.** Run `node --test tests/marketplace-*.test.ts`, let the Compose CI
+4. **The checks.** Run `node --test tests/marketplace-*.test.ts`, let the Compose CI
    legs boot the package on amd64 and arm64, then dispatch **Helm qualification** with
    `screenshots=true` and replace the captures in [`assets/`](assets/README.md).
-4. **The receipt.** Install the package on a provider VM, run the acceptance with a
+5. **The receipt.** Install the package on a provider VM, run the acceptance with a
    browser check as in [the reference qualification](QUALIFICATION.md), record it
    there, and record the publication in the channel table.
 
@@ -115,6 +125,9 @@ The chart's version is the release version: `Chart.yaml` `version`, its
 so people install one version of everything (`tests/helm-chart.test.ts` fails on
 drift). A chart or template change therefore ships with the next release, and the
 chart is published as part of each release, from that release's `main` commit.
+The published `index.yaml` is also the release feed: Lolly Work servers read it
+once a day to tell their owners and admins about a newer release, so publish the
+chart for every release, with its release annotations set (step 1 of moving to a new release).
 Publication retries compare existing immutable assets, preserve old chart
 versions in the index and refuse different bytes under an existing version. If
 publication fails after the immutable release but before the index update, rerun

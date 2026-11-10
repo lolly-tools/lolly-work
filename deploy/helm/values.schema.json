@@ -235,6 +235,46 @@
         }
       },
       "additionalProperties": false
+    },
+    "updates": {
+      "type": "object",
+      "description": "The release notice for owners and admins: a daily read of the chart repository index.",
+      "properties": {
+        "check": {
+          "type": "boolean",
+          "description": "Read the index daily and on demand. false: no request and no notice."
+        },
+        "channel": {
+          "enum": [
+            "stable",
+            "preview"
+          ],
+          "description": "stable: releases only. preview: pre-releases too."
+        },
+        "feedUrl": {
+          "type": "string",
+          "maxLength": 2048,
+          "pattern": "^(https://[^\\s\"'<>`#\\\\]+|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:[0-9]+)?(/[^\\s\"'<>`#\\\\]*)?)$",
+          "description": "The chart repository index, or an internal mirror's. https, without credentials or a fragment."
+        }
+      },
+      "additionalProperties": false
+    },
+    "install": {
+      "type": "object",
+      "properties": {
+        "route": {
+          "enum": [
+            "helm",
+            "rancher",
+            "fleet",
+            "argocd",
+            "other"
+          ],
+          "description": "Which upgrade steps the release notice shows."
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

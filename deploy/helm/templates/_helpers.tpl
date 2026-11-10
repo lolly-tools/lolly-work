@@ -309,6 +309,29 @@ server's export stays off and the manifest is unchanged.
 {{- end }}
 
 {{/*
+The release notice (server/src/updates): how to check, and which release this is,
+so the console's upgrade steps name the real release, namespace and Deployment.
+*/}}
+{{- define "lolly-work.updatesEnv" -}}
+- name: LW_UPDATES_CHECK
+  value: {{ .Values.updates.check | toString | quote }}
+- name: LW_UPDATES_CHANNEL
+  value: {{ .Values.updates.channel | quote }}
+- name: LW_UPDATES_FEED_URL
+  value: {{ .Values.updates.feedUrl | quote }}
+- name: LW_INSTALL_ROUTE
+  value: {{ .Values.install.route | quote }}
+- name: LW_RELEASE_NAME
+  value: {{ .Release.Name | quote }}
+- name: LW_RELEASE_NAMESPACE
+  value: {{ .Release.Namespace | quote }}
+- name: LW_RELEASE_FULLNAME
+  value: {{ include "lolly-work.fullname" . | quote }}
+- name: LW_CHART_VERSION
+  value: {{ .Chart.Version | quote }}
+{{- end }}
+
+{{/*
 Guardrail: in Mode A (no existingSecret, no database.existingSecret) the two
 required signing secrets must be provided, or the deploy is silently insecure.
 */}}
