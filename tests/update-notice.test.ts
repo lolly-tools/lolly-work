@@ -13,6 +13,8 @@ import { compareSemver, newerReleases, parseChartIndex, parseSemver, readChanges
 import { DEFAULT_FEED_URL, resolveUpdateSettings, type UpdateSettings } from '../server/src/updates/settings.ts';
 import { repositoryUrl, upgradeSteps } from '../server/src/updates/steps.ts';
 import { createUpdateChecker, feedNetworkPolicy } from '../server/src/updates/checker.ts';
+import { parseChartIndexOffThread } from '../server/src/updates/feed-thread.ts';
+import { updatesView } from '../server/src/updates/routes.ts';
 import { parseConfig, DEFAULTS } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
@@ -79,6 +81,9 @@ test('semver precedence follows the spec, pre-releases included', () => {
   }
   assert.equal(compareSemver(parseSemver('1.2.0+build.1')!, parseSemver('1.2.0')!), 0);
   for (const bad of ['v1.2.0', '1.2', '01.2.0', '1.2.0-', '1.2.0;id', '', '1.2.0 ']) assert.equal(parseSemver(bad), null, bad);
+  // Numeric identifiers past Number's precision still order exactly.
+  assert.equal(compareSemver(parseSemver('1.2.0-9007199254740992')!, parseSemver('1.2.0-9007199254740993')!), -1);
+  assert.equal(compareSemver(parseSemver('1.2.0-99999999999999999999')!, parseSemver('1.2.0-100000000000000000000')!), -1);
 });
 
 test('stable skips pre-releases, preview includes them, and only newer releases count', () => {
@@ -256,6 +261,41 @@ test('off: no timer, no request, and the snapshot says so', async () => {
   checker.stop();
 });
 
+test('every newer release counts toward the warnings, not only the ones listed', () => {
+  // 1.0.1 migrates and fixes a vulnerability; twenty quieter releases follow it.
+  const entries = Array.from({ length: 21 }, (_, i) => ({
+    name: 'lolly-work', version: `1.0.${i + 1}`,
+    annotations: i === 0
+      ? { 'artifacthub.io/containsSecurityUpdates': 'true', 'lolly.tools/migrations': '3', 'lolly.tools/migration-classes': 'additive=3,maintenance=0' }
+      : { 'lolly.tools/migrations': '0', 'lolly.tools/migration-classes': 'additive=0,maintenance=0' },
+  }));
+  const releases = parseChartIndex(JSON.stringify({ apiVersion: 'v1', entries: { 'lolly-work': entries } }));
+  assert.equal(newerReleases(releases, '1.0.0', 'stable').length, 21);
+  const checker = { settings: settings(), snapshot: () => ({ status: 'ok', checkedAt: null, attemptedAt: null, error: null, current: '1.0.0', newer: newerReleases(releases, '1.0.0', 'stable') }) };
+  const view = updatesView(checker as never) as Record<string, any>;
+  assert.equal(view.releases.length, 20, 'the list is shortened');
+  assert.equal(view.newer, 21);
+  assert.equal(view.security, true, '1.0.1 is not listed, and still counts');
+  assert.equal(view.migrates, true);
+  assert.equal(view.migrationCount, 3);
+  assert.equal(view.feed, 'https://github.com', 'the feed shows as its origin only');
+  assert.ok(!JSON.stringify(view).includes('index.yaml'), 'never the full feed address');
+});
+
+test('the feed is parsed off the main thread, within a deadline', async () => {
+  assert.deepEqual((await parseChartIndexOffThread(FIXTURE)).map(r => r.version), parseChartIndex(FIXTURE).map(r => r.version));
+  // A large mapping of valid YAML: the main thread keeps answering while it parses.
+  const big = `apiVersion: v1\nentries:\n  lolly-work: []\nx:\n${Array.from({ length: 100_000 }, (_, i) => `  k${i}: ${i}`).join('\n')}\n`;
+  let ticks = 0;
+  const tick = setInterval(() => { ticks++; }, 5);
+  await parseChartIndexOffThread(big, { deadlineMs: 20_000 });
+  clearInterval(tick);
+  assert.ok(ticks > 3, `the event loop kept turning (${ticks} ticks)`);
+  await assert.rejects(parseChartIndexOffThread(big, { deadlineMs: 5 }), { code: 'too-slow' });
+  await assert.rejects(parseChartIndexOffThread('apiVersion: v1\nentries: { other: [] }\n'), { code: 'invalid' });
+  await assert.rejects(parseChartIndexOffThread('{ not yaml'), { code: 'invalid' });
+});
+
 // ── the routes ──────────────────────────────────────────────────────────────
 
 const servers: Server[] = [];
@@ -302,6 +342,8 @@ test('owners and admins read the notice and ask for a check; members and anonymo
   assert.deepEqual(seen, [DEFAULT_FEED_URL]);
   assert.equal(body.status, 'ok');
   assert.deepEqual(body.current, { version: '1.2.0', chartVersion: '1.2.0' });
+  assert.equal(body.feed, 'https://github.com');
+  assert.equal(body.feedUrl, undefined);
   assert.equal(body.latest, '1.3.1');
   assert.deepEqual(body.releases.map((r: { version: string }) => r.version), ['1.3.1', '1.3.0']);
   assert.equal(body.security, true);

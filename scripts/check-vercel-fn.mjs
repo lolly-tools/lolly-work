@@ -114,6 +114,8 @@ process.env.LW_SESSION_SECRET = 'fixture-session-key'.repeat(3);
 process.env.LW_LINK_SECRET = 'fixture-link-key'.repeat(3);
 process.env.LW_CREDENTIAL_SECRET = 'fixture-credential-key'.repeat(3);
 const { default: handler } = await import(pathToFileURL(join(func, 'index.mjs')).href);
+// The release notice compares the bundle's own release with the published ones.
+assert.equal(globalThis.__LW_WORK_VERSION, JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version, 'the bundle states its Lolly Work release');
 const server = createServer((req, res) => {
   void handler(req, res).catch(error => {
     console.error(error);

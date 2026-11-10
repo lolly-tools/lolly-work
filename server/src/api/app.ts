@@ -331,13 +331,14 @@ function safeTags(pairs: Array<[TagPrefix, string]>): string[] {
   return pairs.flatMap(([prefix, value]) => { try { return [deliveryTag(prefix, value)]; } catch { return []; } });
 }
 
-/** This server's Lolly Work version, from package.json beside the source (or the
- *  function bundle). 'unknown' when it cannot be read, which shows no release as newer. */
+/** This server's Lolly Work version: the function bundle states it in its banner
+ *  (scripts/build-vercel-fn.mjs); the server reads package.json beside the source.
+ *  'unknown' when neither answers, which shows no release as newer. */
 function packageVersion(): string {
+  const bundled = (globalThis as { __LW_WORK_VERSION?: unknown }).__LW_WORK_VERSION;
+  if (typeof bundled === 'string' && bundled) return bundled;
   try {
-    const fnRoot = (globalThis as { __LW_FN_ROOT?: string }).__LW_FN_ROOT;
-    const path = fnRoot ? fileURLToPath(new URL('package.json', fnRoot)) : fileURLToPath(new URL('../../../package.json', import.meta.url));
-    return String((JSON.parse(readFileSync(path, 'utf8')) as { version?: unknown }).version ?? 'unknown');
+    return String((JSON.parse(readFileSync(fileURLToPath(new URL('../../../package.json', import.meta.url)), 'utf8')) as { version?: unknown }).version ?? 'unknown');
   } catch {
     return 'unknown';
   }

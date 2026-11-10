@@ -17,6 +17,8 @@ import { repositoryUrl, upgradeSteps } from './steps.ts';
 
 type Router = ReturnType<typeof createRouter>;
 export const UPDATES_ACTION = 'fleet.view';
+/** How many newer releases the answer lists. What they say is read across all of them. */
+export const RELEASES_SHOWN = 20;
 
 export interface UpdateRouteDeps {
   checker: UpdateChecker;
@@ -40,14 +42,16 @@ export function updatesView(checker: UpdateChecker): Record<string, unknown> {
   return {
     check: settings.check,
     channel: settings.channel,
-    feedUrl: settings.feedUrl,
+    // The origin only: a mirror's address may carry a credential in its query.
+    feed: new URL(settings.feedUrl).origin,
     status: snapshot.status,
     checkedAt: snapshot.checkedAt,
     attemptedAt: snapshot.attemptedAt,
     error: snapshot.error,
     current: { version: snapshot.current, chartVersion: settings.release.chartVersion },
     latest: latest?.version ?? null,
-    releases: snapshot.newer.map(r => ({
+    newer: snapshot.newer.length,
+    releases: snapshot.newer.slice(0, RELEASES_SHOWN).map(r => ({
       version: r.version,
       appVersion: r.appVersion,
       created: r.created,
@@ -61,6 +65,8 @@ export function updatesView(checker: UpdateChecker): Record<string, unknown> {
     // Across every newer release, because an upgrade runs each one's migrations.
     security: snapshot.newer.some(r => r.security),
     migrates,
+    // Migrations the newer releases state, across every one of them.
+    migrationCount: snapshot.newer.reduce((sum, r) => sum + (r.migrations ?? 0), 0),
     install: {
       route: settings.route,
       release: settings.release.name,

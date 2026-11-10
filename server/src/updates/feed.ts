@@ -28,6 +28,13 @@ const MAX_ENTRIES = 500;
 const MAX_CHANGES = 25;
 const MAX_CHANGE_CHARS = 400;
 const MAX_URL_CHARS = 2048;
+/** The longest artifacthub.io/changes text read; a release's highlights are a few lines. */
+const MAX_CHANGES_TEXT = 16 * 1024;
+
+/** YAML options for the feed: no aliases, which a chart index never needs and which
+ *  are how a small file grows huge, and no check that mapping keys are unique, which
+ *  costs time quadratic in a mapping's size. A later duplicate key simply wins. */
+export const FEED_YAML = { maxAliasCount: 0, prettyErrors: false, uniqueKeys: false } as const;
 
 export type ChangeKind = 'added' | 'changed' | 'deprecated' | 'removed' | 'fixed' | 'security';
 const CHANGE_KINDS: readonly ChangeKind[] = ['added', 'changed', 'deprecated', 'removed', 'fixed', 'security'];
@@ -55,7 +62,7 @@ export class FeedError extends Error {
 // ── semver 2.0 ──────────────────────────────────────────────────────────────
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
-export interface Semver { major: number; minor: number; patch: number; pre: Array<string | number> }
+export interface Semver { major: number; minor: number; patch: number; pre: string[] }
 
 /** A strict semver version, at most 64 characters, or null. No leading `v`. */
 export function parseSemver(value: unknown): Semver | null {
@@ -64,8 +71,17 @@ export function parseSemver(value: unknown): Semver | null {
   if (!m) return null;
   const nums = [m[1], m[2], m[3]].map(Number);
   if (nums.some(n => !Number.isSafeInteger(n))) return null;
-  const pre = m[4] ? m[4].split('.').map(id => /^\d+$/.test(id) ? Number(id) : id) : [];
-  return { major: nums[0]!, minor: nums[1]!, patch: nums[2]!, pre };
+  return { major: nums[0]!, minor: nums[1]!, patch: nums[2]!, pre: m[4] ? m[4].split('.') : [] };
+}
+
+/** Numeric identifiers carry no leading zeros (the pattern refuses them), so a longer
+ *  one is larger and equal lengths compare as text: exact at any size, where a
+ *  conversion to Number would make two large identifiers equal. */
+function compareIdentifier(x: string, y: string): number {
+  const xn = /^\d+$/.test(x), yn = /^\d+$/.test(y);
+  if (xn && yn) return x.length !== y.length ? (x.length < y.length ? -1 : 1) : x === y ? 0 : x < y ? -1 : 1;
+  if (xn !== yn) return xn ? -1 : 1;
+  return x === y ? 0 : x < y ? -1 : 1;
 }
 
 /** Semver precedence: -1, 0 or 1. Build metadata is ignored, as the spec says. */
@@ -78,11 +94,8 @@ export function compareSemver(a: Semver, b: Semver): number {
     const x = a.pre[i], y = b.pre[i];
     if (x === undefined) return -1;
     if (y === undefined) return 1;
-    if (x === y) continue;
-    if (typeof x === 'number' && typeof y === 'number') return x < y ? -1 : 1;
-    if (typeof x === 'number') return -1;
-    if (typeof y === 'number') return 1;
-    return x < y ? -1 : 1;
+    const order = compareIdentifier(x, y);
+    if (order) return order;
   }
   return 0;
 }
@@ -125,7 +138,8 @@ export function readMigrationClasses(value: unknown): MigrationClasses | null {
 export function readChanges(value: unknown): FeedChange[] {
   let list: unknown = value;
   if (typeof value === 'string') {
-    try { list = parse(value, { maxAliasCount: 0, prettyErrors: false }); } catch { return []; }
+    if (value.length > MAX_CHANGES_TEXT) return [];
+    try { list = parse(value, FEED_YAML); } catch { return []; }
   }
   if (!Array.isArray(list)) return [];
   const out: FeedChange[] = [];
@@ -147,12 +161,34 @@ function created(value: unknown): string | null {
   return date && Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
+function chartEntries(doc: unknown, chart: string): unknown[] | null {
+  const index = doc && typeof doc === 'object' ? doc as Record<string, unknown> : null;
+  const entries = index?.entries && typeof index.entries === 'object' && !Array.isArray(index.entries)
+    ? (index.entries as Record<string, unknown>)[chart] : undefined;
+  return index?.apiVersion === 'v1' && Array.isArray(entries) ? entries : null;
+}
+
+/** Every YAML parse the feed needs: the index, then each kept entry's highlights,
+ *  which are YAML inside a string. Plain data out, so a worker thread can run it
+ *  (feed-worker.ts) and hand the result back. */
+export function parseFeedYaml(text: string, chart = CHART_NAME): unknown {
+  let doc: unknown;
+  try { doc = parse(text, FEED_YAML); }
+  catch { throw new FeedError('invalid', 'The release feed is not valid YAML.'); }
+  for (const entry of chartEntries(doc, chart)?.slice(0, MAX_ENTRIES) ?? []) {
+    const a = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).annotations as Record<string, unknown> | undefined : undefined;
+    if (a && typeof a === 'object' && typeof a['artifacthub.io/changes'] === 'string') a['artifacthub.io/changes'] = readChanges(a['artifacthub.io/changes']);
+  }
+  return doc;
+}
+
 /** Parse a Helm repository index into this chart's releases, newest first. */
 export function parseChartIndex(text: string, chart = CHART_NAME): FeedRelease[] {
-  let doc: unknown;
-  // No aliases: a chart index never needs them, and they are how a small file grows huge.
-  try { doc = parse(text, { maxAliasCount: 0, prettyErrors: false }); }
-  catch { throw new FeedError('invalid', 'The release feed is not valid YAML.'); }
+  return releasesFromIndex(parseFeedYaml(text, chart), chart);
+}
+
+/** The releases a parsed index lists for this chart, newest first. */
+export function releasesFromIndex(doc: unknown, chart = CHART_NAME): FeedRelease[] {
   const index = doc && typeof doc === 'object' ? doc as Record<string, unknown> : null;
   const entries = index?.entries && typeof index.entries === 'object' && !Array.isArray(index.entries)
     ? (index.entries as Record<string, unknown>)[chart] : undefined;
@@ -184,10 +220,12 @@ export function parseChartIndex(text: string, chart = CHART_NAME): FeedRelease[]
   return releases.sort((x, y) => compareSemver(y.semver, x.semver)).map(({ semver: _semver, ...release }) => release);
 }
 
-/** Releases newer than `current` on this channel, newest first. `stable` skips
- *  pre-releases; `preview` includes them. An unreadable current version has
- *  nothing to compare with, so nothing is newer. */
-export function newerReleases(releases: FeedRelease[], current: string, channel: UpdateChannel, limit = 20): FeedRelease[] {
+/** Releases newer than `current` on this channel, newest first, all of them: an
+ *  upgrade runs every one's migrations, so what they say is read across the whole
+ *  span and only the list shown is shortened. `stable` skips pre-releases; `preview`
+ *  includes them. An unreadable current version has nothing to compare with, so
+ *  nothing is newer. */
+export function newerReleases(releases: FeedRelease[], current: string, channel: UpdateChannel): FeedRelease[] {
   const base = parseSemver(current);
   if (!base) return [];
   return releases
@@ -195,6 +233,5 @@ export function newerReleases(releases: FeedRelease[], current: string, channel:
     .map(r => ({ r, v: parseSemver(r.version)! }))
     .filter(({ v }) => compareSemver(v, base) > 0)
     .sort((x, y) => compareSemver(y.v, x.v))
-    .slice(0, limit)
     .map(({ r }) => r);
 }

@@ -45,7 +45,8 @@ function prose(text, el) {
 
 function migrationLine(data, el) {
   if (data.migrates === false) return null;
-  const counted = data.releases.filter((r) => typeof r.migrations === 'number').reduce((sum, r) => sum + r.migrations, 0);
+  // Counted by the server across every newer release, not only the ones listed.
+  const counted = Number(data.migrationCount) || 0;
   const lead = data.migrates === true
     ? `This upgrade migrates the database${counted ? ` (${plural(counted, 'migration', 'migrations')})` : ''}, and going back means restoring a backup. `
     : 'This release does not say whether it migrates the database, so treat it as one that does. ';
@@ -82,7 +83,7 @@ function stepsBlock(data, deps, open) {
 }
 
 function checkedLine(data, { el, relTime }) {
-  const host = (() => { try { return new URL(data.feedUrl).host; } catch { return 'the release feed'; } })();
+  const host = (() => { try { return new URL(data.feed).host; } catch { return 'the release feed'; } })();
   const parts = [];
   if (data.status === 'off') parts.push('Release checks are off in this deployment’s configuration (updates.check).');
   else if (data.status === 'never') parts.push('Not checked yet. The first check runs a few minutes after the server starts.');
@@ -99,7 +100,7 @@ export function updateNotice(data, deps, { banner = false, onDismiss } = {}) {
   const { el } = deps;
   if (!data?.latest) return null;
   const target = data.releases.find((r) => r.version === data.latest) ?? data.releases[0];
-  const newer = data.releases.length;
+  const newer = Number(data.newer) || data.releases.length;
   const card = el('section', { class: `card update-notice${data.security ? ' is-security' : ''}`, 'aria-label': `Lolly Work ${data.latest} is available`, 'data-version': data.latest });
   const actions = el('div', { class: 'update-actions' },
     // The server keeps https links only; checked again here before it becomes an href.

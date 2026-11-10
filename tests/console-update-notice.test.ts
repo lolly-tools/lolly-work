@@ -28,9 +28,9 @@ const STEPS = [
   { id: 'upgrade', title: 'Upgrade to 1.3.1', detail: 'Prefer -f over --reuse-values.', command: 'helm upgrade lolly-work lolly-work/lolly-work -n lolly --version 1.3.1 -f <your-values.yaml>' },
 ];
 const UPDATES = {
-  check: true, channel: 'stable', feedUrl: 'https://github.com/lolly-tools/lolly-work/releases/download/helm-index/index.yaml',
+  check: true, channel: 'stable', feed: 'https://github.com',
   status: 'ok', checkedAt: new Date(Date.now() - 3_600_000).toISOString(), attemptedAt: null, error: null,
-  current: { version: '1.2.0', chartVersion: '1.2.0' }, latest: '1.3.1', security: true, migrates: true,
+  current: { version: '1.2.0', chartVersion: '1.2.0' }, latest: '1.3.1', newer: 2, security: true, migrates: true, migrationCount: 2,
   releases: [
     { version: '1.3.1', created: '2026-12-02T10:15:00.000Z', prerelease: false, security: true, migrations: 2, migrationClasses: { additive: 2, maintenance: 0 },
       notesUrl: 'https://github.com/lolly-tools/lolly-work/releases/tag/v1.3.1',
@@ -41,7 +41,7 @@ const UPDATES = {
   install: { route: 'helm', release: 'lolly-work', namespace: 'lolly', deployment: 'lolly-work', repository: 'https://github.com/lolly-tools/lolly-work/releases/download/helm-index' },
   steps: STEPS,
 };
-const CURRENT = { ...UPDATES, latest: null, security: false, migrates: false, releases: [], steps: [] };
+const CURRENT = { ...UPDATES, latest: null, newer: 0, security: false, migrates: false, migrationCount: 0, releases: [], steps: [] };
 
 function page(opts: { actions?: string[]; updates?: unknown; afterCheck?: unknown } = {}) {
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin#/overview', runScripts: 'outside-only' });
@@ -109,7 +109,7 @@ test('dismissing hides that version; a newer one shows again', async () => {
   await p.helpers.viewOverview(p.main);
   assert.equal(p.main.querySelector('.update-notice'), null, 'stays dismissed for 1.3.1');
 
-  const newer = page({ updates: { ...UPDATES, latest: '1.3.2', releases: [{ ...UPDATES.releases[0], version: '1.3.2' }, ...UPDATES.releases] } });
+  const newer = page({ updates: { ...UPDATES, latest: '1.3.2', newer: 3, releases: [{ ...UPDATES.releases[0], version: '1.3.2' }, ...UPDATES.releases] } });
   newer.w.localStorage.setItem('lw-update-dismissed', '1.3.1');
   await newer.helpers.viewOverview(newer.main);
   assert.equal(newer.main.querySelector('.update-notice')?.dataset.version, '1.3.2');

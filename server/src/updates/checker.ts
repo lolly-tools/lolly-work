@@ -7,16 +7,17 @@
  * with no cookie, no user agent, no version and nothing about this instance or
  * its people. It goes through the provider egress guard (catalog/providers/
  * egress.ts): public addresses only, pinned to the DNS answer, bounded in size
- * and time. The configured feed's own origin may be private, for an internal
- * mirror the operator named; a redirect may leave that origin only for the
- * GitHub release asset hosts (default feed) or the operator's
- * network.providers.redirectOrigins.
+ * and time, and parsed off the main thread (feed-thread.ts). The configured
+ * feed's own origin may be private, for an internal mirror the operator named; a
+ * redirect may leave that origin only for the GitHub release asset hosts (default
+ * feed) or the operator's network.providers.redirectOrigins.
  *
  * A failure is logged once, when the check starts failing, and changes nothing
  * else: readiness never depends on it, and the last good answer stays.
  */
 import { createProviderFetch, ProviderEgressError, type ProviderNetworkPolicy, type ProviderResolver } from '../catalog/providers/egress.ts';
-import { FeedError, newerReleases, parseChartIndex, type FeedRelease } from './feed.ts';
+import { FeedError, newerReleases, type FeedRelease } from './feed.ts';
+import { parseChartIndexOffThread } from './feed-thread.ts';
 import type { UpdateSettings } from './settings.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -28,7 +29,8 @@ const NEXT_FAILED = { base: 6 * 60 * 60 * 1000, jitter: 60 * 60 * 1000 };
 const FIRST = { min: 30_000, max: 5 * 60_000 };
 /** An on-demand check soon after another answers from memory. */
 export const CHECK_COOLDOWN_MS = 30_000;
-const FEED_MAX_BYTES = 4 * 1024 * 1024;
+/** The published index is a few kilobytes a release. */
+const FEED_MAX_BYTES = 2 * 1024 * 1024;
 const FEED_TIMEOUT_MS = 20_000;
 /** Where github.com sends a release asset download. */
 const GITHUB_ASSET_ORIGINS = ['https://release-assets.githubusercontent.com', 'https://objects.githubusercontent.com'];
@@ -68,6 +70,8 @@ export interface CheckerOptions {
   log?: Log;
   now?: () => number;
   random?: () => number;
+  /** How long the off-thread parse may take (feed-thread.ts). */
+  parseDeadlineMs?: number;
 }
 
 /** The network policy for the feed: the operator's, plus the feed's own origin
@@ -122,7 +126,7 @@ export function createUpdateChecker(options: CheckerOptions): UpdateChecker {
       await response.body?.cancel().catch(() => {});
       throw new FeedError('status', `The release feed answered ${response.status}.`);
     }
-    return parseChartIndex(await response.text());
+    return parseChartIndexOffThread(await response.text(), options.parseDeadlineMs ? { deadlineMs: options.parseDeadlineMs } : {});
   }
 
   async function run(): Promise<UpdateSnapshot> {

@@ -254,8 +254,8 @@
         "feedUrl": {
           "type": "string",
           "maxLength": 2048,
-          "pattern": "^(https://[^\\s\"'<>`#\\\\]+|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:[0-9]+)?(/[^\\s\"'<>`#\\\\]*)?)$",
-          "description": "The chart repository index, or an internal mirror's. https, without credentials or a fragment."
+          "pattern": "^(https://[^\\s\"'<>`#\\\\/@]+(/[^\\s\"'<>`#\\\\]*)?|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:[0-9]+)?(/[^\\s\"'<>`#\\\\]*)?)$",
+          "description": "The chart repository index, or an internal mirror's. https (http only on a loopback address), without credentials or a fragment."
         }
       },
       "additionalProperties": false
