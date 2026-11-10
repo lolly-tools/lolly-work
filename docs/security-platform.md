@@ -4,6 +4,7 @@ Lolly helps people make files on their own devices. Lolly Work adds organisation
 
 The [lolly.work](https://lolly.work) demo's landing page shows an interactive version of this overview. It explains the architecture; it does not inspect or change a live deployment, and its offline switch is an explanation rather than a network test.
 
+
 ## Where the work happens
 
 | Workflow | On the device | Across the network |
@@ -13,6 +14,7 @@ The [lolly.work](https://lolly.work) demo's landing page shows an interactive ve
 | Use shared services | The work a person chooses to keep locally | Selected inputs, shared sessions, collaboration changes or server-rendered outputs, according to the service used. |
 
 Offline work needs the app, the tool and every asset or model it uses to be on the device already. New sign-ins and policy updates need a connection, and server rendering, collaboration and sync cannot complete offline. A policy change does not necessarily recall a copy already on a device.
+
 
 ## What each part controls
 
@@ -25,6 +27,7 @@ Offline work needs the app, the tool and every asset or model it uses to be on t
 **The engine** loads the tool and its inputs and makes the output through the host app, and Lolly Work also uses it for server rendering. Catalog signatures authenticate tool files, and Content Credentials record an output's provenance. Neither proves code safe or content true. Read [Content Credentials](c2pa.md) and [server rendering](sharing.md).
 
 **Files and keys** have a lifecycle wherever they live. Device encryption is the endpoint's job, and browser storage is not a promise of disk encryption. Shared sessions, server records, stored files, downloaded copies and backups each need their own retention decision. Read [data lifecycle](data-lifecycle.md).
+
 
 ## What operators should check
 

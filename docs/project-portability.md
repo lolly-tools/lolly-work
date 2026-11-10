@@ -5,10 +5,13 @@ manager preparing to move a project to another Lolly Work instance. The preview 
 project's folders, current sessions, ready shared files and explicit memberships, and makes no
 changes to the project or its collaborators.
 
+**Note: This preview moves nothing**
+
 Export, import and moving a project are not built. A saved preview cannot restore a project or
 grant access on another instance. To prepare the destination, use the [platform deployment
 guide](platform-deployment.md), and for backup and recovery, the [operations
 guide](operations.md).
+
 
 ## Inspect a project
 
@@ -44,6 +47,7 @@ the inventory object. `--out` creates a new JSON file with mode `0600`, and refu
 and symbolic links, so choose a new path for each observation. Preview files contain project and
 access metadata, so keep them with your other private operational records.
 
+
 ## What the preview covers
 
 | Area | Included | Still needed for a transfer |
@@ -73,6 +77,7 @@ session versions have their own paged history, retention rules and space limits,
 samples at most 100 version summaries per visible session, so a full sample may have more rows
 than it shows. Live collaboration also keeps a compacted checkpoint and recovery journal, which is not
 a complete edit history. The preview transfers none of these stores.
+
 
 ## Limits and interpretation
 

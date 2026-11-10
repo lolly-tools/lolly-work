@@ -16,6 +16,7 @@ commands do not make that decision.
 Each operation reports exactly what it covered and what it left for review. Handle personal
 data however your organisation handles personal-data requests.
 
+
 ## Leaving
 
 **Preview.** Start with `GET /api/v1/users/:id/offboarding-preview`, or
@@ -33,6 +34,13 @@ confirmation. One store transaction then:
 - revokes its unrevoked share, guest and invitation links;
 - removes unused password setup or reset links for the account's linked email addresses.
 
+**Warning: Offboarding revokes what the person issued permanently**
+
+Re-enabling the account later brings back none of the revoked credentials and links. To stop
+someone's access while keeping their links for a possible return, disable the account instead:
+links a disabled person made stop serving and serve again if the account is re-enabled
+([Sign-in and sessions](identity.md#offboarding-disable-and-revocation)).
+
 Each issuance category is bounded at 1,000 rows. If any category is over that bound, apply
 refuses without changing the account or anything it issued. Review and revoke the relevant
 pages with the existing credential, link and password-link controls, then retry. An account
@@ -40,9 +48,13 @@ cannot offboard itself. Both this operation and the ordinary disable keep anothe
 owner, with concurrent owner disables serialized in PostgreSQL. How disabling ends sessions
 is on [Sign-in and sessions](identity.md#offboarding-disable-and-revocation).
 
-After offboarding, review what the operation does not cover: credentials minted by a service
-principal that came from a direct credential, queued work, the person's sessions and
-provisioning at your identity provider, delivery destinations and provider connections.
+After offboarding, review what the operation does not cover:
+
+- credentials minted by a service principal that came from a direct credential;
+- queued work;
+- the person's sessions and provisioning at your identity provider;
+- delivery destinations and provider connections.
+
 Requests already authorized, or racing the operation, can leave records that need a second
 review. Disabling an account does not transfer project ownership, remove shared work or erase
 retained records.
@@ -56,6 +68,12 @@ and it refuses while retained references remain. Shared content, original audit 
 external copies and backup restoration need separate handling. An account-row deletion is not
 a complete personal-data erasure or a full subject export.
 
+**Partners.** To end access for everyone at a partner company, in a programme or at a partner
+domain, use **End this partnership** instead. It offboards each partner account the same way,
+can wait for a chosen day with a notice for a programme or a company, and can be reopened within
+30 days ([People and the partnership](partner-people.md#end-a-partnership)).
+
+
 ## Joining and moving
 
 Use your identity provider and its scoped SCIM connector as the authority for identity and
@@ -64,6 +82,7 @@ group changes are separate owner or admin actions ([Invite people and handle
 requests](invitations.md)). Before moving a person to a different responsibility, review their
 project roles, group-derived access and project ownership. Transferring a project or changing
 a credential's owner is a separate, explicit action.
+
 
 ## Account metadata export
 
@@ -99,6 +118,7 @@ What the pages leave out:
 
 Treat the account and identity fields as personal data. The API always sends
 `Cache-Control: no-store`.
+
 
 ## SIEM projection format
 

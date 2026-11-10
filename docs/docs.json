@@ -327,7 +327,7 @@
           "slug": "self-host",
           "path": "self-host.md",
           "title": "Run Lolly Work",
-          "summary": "Pick the path that matches what you have: the public demo, a trial on your computer, one Linux server, YunoHost or Kubernetes. Downloads and checksums for the current release."
+          "summary": "Pick the path that matches what you have: Kubernetes, the public demo, a trial on your computer, one Linux server or YunoHost. Downloads and checksums for the current release."
         },
         {
           "slug": "release-1-2-0",
@@ -360,6 +360,12 @@
           "summary": "Lolly Work in one page: what stays on the device, what the server holds and serves, the two codebases and the trust model."
         },
         {
+          "slug": "platform-deployment",
+          "path": "platform-deployment.md",
+          "title": "Install on Kubernetes",
+          "summary": "Try Lolly Work on a cluster in one command, then install it for production with Helm on K3s, RKE2 or Rancher, and prepare new SLES or openSUSE Leap hosts."
+        },
+        {
           "slug": "install",
           "path": "install.md",
           "title": "Install Lolly Work",
@@ -370,12 +376,6 @@
           "path": "ready-made-package.md",
           "title": "Install the ready-made package",
           "summary": "One Docker Compose folder with Lolly Work, PostgreSQL, the matching web app and automatic HTTPS, for a fresh VM, UpCloud, Dokploy or Coolify, with backup, restore and update steps."
-        },
-        {
-          "slug": "platform-deployment",
-          "path": "platform-deployment.md",
-          "title": "Install on Kubernetes",
-          "summary": "Try Lolly Work on a cluster in one command, then install it for production with Helm on K3s, RKE2 or Rancher, and prepare new SLES or openSUSE Leap hosts."
         },
         {
           "slug": "official-installations",
@@ -423,7 +423,7 @@
           "slug": "aws-compatible",
           "path": "aws-compatible.md",
           "title": "Run Lolly Work on AWS or MulgaDC Spinifex",
-          "summary": "Run Lolly Work on AWS or on MulgaDC Spinifex: one VM, managed PostgreSQL and S3, EKS with the chart or the Lolly appliance, behind a load balancer if you like, with the issues two Spinifex test runs found."
+          "summary": "Run Lolly Work on AWS or on MulgaDC Spinifex: EKS with the chart, the Lolly appliance, one VM or managed PostgreSQL and S3, behind a load balancer if you like, with the issues two Spinifex test runs found."
         },
         {
           "slug": "wasm-deployment",

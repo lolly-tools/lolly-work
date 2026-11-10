@@ -5,9 +5,15 @@ a new release, proving that a backup restores, rotating secrets and keeping an e
 health and storage. This page takes them in that order, then covers the settings you tune
 less often.
 
+- **[Upgrades](#upgrades)** Pick the release operation, then check, back up, migrate, roll out and check again.
+- **[Backup and restore](#backup-and-restore)** What a complete restore needs, and a restore into a separate target.
+- **[Secret rotation](#secret-rotation)** What rotating each secret costs, and the clean break when the old value is gone.
+- **[Monitoring](#monitoring)** The health routes and the gauges worth an alert.
+
 The short version: check pending migrations and take a backup before every upgrade.
 Keep the session and link secrets the same across restarts. Restore into a separate
 database before you trust a backup. Alert on the audit chain and on source errors.
+
 
 ## Upgrades
 
@@ -33,6 +39,8 @@ Then, for every release:
 - **Check what people use.** Sign in, reconnect to a live session and try the exports you have turned on.
 - **Check the audit chain.** Run `lw audit head` and look at the chain gauge.
 
+**Warning: Do not replay an old plan**
+
 A failed or unclear update needs a look at the current resources, then a fresh,
 reviewed forward fix or application rollback. Do not replay an old plan, and do not
 restore an older database over new writes.
@@ -52,17 +60,19 @@ Migrations are the files in `migrations/*.sql`, applied in file-name order, trac
 ```bash
 pnpm run migrate            # apply pending migrations
 pnpm run migrate:status     # exit 1 if anything is pending
-lw migrate [--check]       # same, run where the database is reachable (not via LW_BASE)
-GET /api/v1/system/migrations      # pending list - owner-gated (instance.config)
+lw migrate [--check]        # same, run where the database is reachable (not via LW_BASE)
 ```
 
-- **One node** (local or Compose): leave `LW_AUTO_MIGRATE` unset. The server applies
-  pending migrations at startup, with no separate step.
+The owner-gated route `GET /api/v1/system/migrations` (`instance.config`) returns the
+pending list.
+
 - **Helm with its migration Job**: `migrate.enabled=true` sets `LW_AUTO_MIGRATE=false`.
   The application runs no schema changes and **refuses to start on a pending
   schema**. The chart runs one migrate Job as a pre-install and pre-upgrade hook that
   must succeed before new pods start, so a skipped migration fails loudly instead of
   serving a half-migrated database.
+- **One node** (local or Compose): leave `LW_AUTO_MIGRATE` unset. The server applies
+  pending migrations at startup, with no separate step.
 
 **Notes on migrations 0075 and 0076**
 
@@ -147,6 +157,7 @@ server's certificate fingerprint, so the app can check the key it reads against 
 was given in person. The same limit applies to an
 [edit from the studio](design-system-administration.md#what-apps-get): a store app does not receive one.
 
+
 ## Backup and restore
 
 The database holds durable records and, with `blobs.driver: "pg"`, stored asset
@@ -194,6 +205,7 @@ snapshot beside the backup too ([audit](audit.md)).
 A drill on a new host, and high-availability testing, are separate from recovering a
 dump on an existing cluster.
 
+
 ## Secret rotation
 
 | Secret | Cost of rotating |
@@ -230,8 +242,11 @@ so a rotation there is a clean break:
 - **`LW_LINK_SECRET`**: every issued share and embed link stops verifying; issue again
   the ones still needed.
 
+**Warning: Change every host before any takes traffic**
+
 Set the same new values on every host that serves this database, including each
 replica and any rollback deployment kept elsewhere, before any of them takes traffic.
+
 
 ## Monitoring
 
@@ -273,6 +288,7 @@ by default.
 `instance.modelOrigin`, `https://lolli.li` by default, for any visitor. Set it to
 `null`, or to a mirror you run, where outbound traffic is restricted; see
 [configuration](configuration.md).
+
 
 ## OpenTelemetry export
 
@@ -407,6 +423,7 @@ Three consequences to plan for:
 - **Health checks are requests.** Probes of `/healthz` and `/readyz` produce spans;
   drop them in the collector if you do not want them.
 
+
 ## Blob growth and version retention
 
 Every version of an instance asset keeps its own bytes, and the default
@@ -437,6 +454,7 @@ Two ways to bound it, and they combine:
 Neither replaces watching the store. `GET /metrics` carries the stored and read
 totals, and with `blobs.driver: "pg"` the server raises its own alert at the
 thresholds in the next section.
+
 
 ## Blob offload trigger
 
@@ -474,24 +492,31 @@ listing every object, and the store's own metrics already show its size. Neither
 `s3` driver nor the memory store raises the alert.
 
 An alert changes nothing by itself: it says the move to object storage is due for
-planning. Do not switch `blobs.driver` on a live instance to clear the banner.
-Changing the driver does not copy the existing bytes, and the step that copies and
-checks them is not available yet.
+planning.
+
+**Warning: Do not switch `blobs.driver` to clear the banner**
+
+Changing the driver on a live instance does not copy the existing bytes, and the step that
+copies and checks them is not available yet.
+
 
 ## Rate limiting
 
-Per-address token buckets cover three surfaces: sign-in, telemetry and links. Behind
-a reverse proxy, set `rateLimit.trustedProxyHops` to the number of proxies you actually
-run. `0` means never trust `X-Forwarded-For`. A wrong value either limits the whole
-world as one client or lets a header fool the limiter. Signed-in console and API paths
+Per-address token buckets cover five surfaces: sign-in, telemetry, links, the automation
+API and published brand pages; [configuration](configuration.md#ratelimit) lists each
+bucket. Behind a reverse proxy, set `rateLimit.trustedProxyHops` to the number of proxies
+you actually run. `0` means never trust `X-Forwarded-For`. A wrong value either limits the
+whole world as one client or lets a header fool the limiter. Other console and API paths
 are not throttled.
+
 
 ## Pre-store scan hook for submissions
 
-**No scanner ships, and none runs by default.** An unconfigured instance stores
-whatever a member with `catalog.submit` sends, exactly as it stores whatever a
-federated source hands back. The project ships the hook, never a scanner: wiring one
-up, and keeping it current, is yours.
+**Note: No scanner ships, and none runs by default**
+
+An unconfigured instance stores whatever a member with `catalog.submit` sends, exactly as it
+stores whatever a federated source hands back. The project ships the hook, never a scanner:
+wiring one up, and keeping it current, is yours.
 
 Wire one in `instance.json` under `submit.scanHook`. It is **instance configuration,
 not organisation policy**: it never appears in the policy-as-code document, in
@@ -539,6 +564,7 @@ the scanner's reason. An accepted submission records what the hook did as `scan`
 An outage you chose to ride out never reads as a clean scan, so "which files went in unscanned last
 Tuesday" stays a question you can answer.
 
+
 ## Notifications
 
 Without a `notify` block the instance sends nothing, ever; approvals and reviews live in
@@ -569,6 +595,7 @@ fail on arrival. Delivery tries once more, then counts the failure
 that triggered the delivery. Neither channel reports home: both targets are your own, named in
 your configuration and reached only when your members act.
 
+
 ## SIEM forwarding
 
 `siem.url` streams the audit log to your Splunk, Sentinel or collector as signed JSON
@@ -581,6 +608,7 @@ zero, and a dead receiver makes it grow without losing anything. On a serverless
 deployment, where the forwarding loop cannot run, a service token polling
 `GET /api/v1/audit` is the supported path.
 
+
 ## Retention and erasure
 
 `policy.retention` bounds the two tables that grow with use and says how long deleted
@@ -589,7 +617,10 @@ documents stay before they are purged;
 trims, delivery before deletion, `0` keeps everything).
 [Data lifecycle](data-lifecycle.md#deleted-documents) lists what a purge removes. The long-running server applies
 the policy at startup and daily. On serverless, schedule `lw retention run` (a service
-token works); the route and the timer run the same code.
+token works); the route and the timer run the same code. The same block can also expire
+finished render outputs after a set number of days (`retention.renderOutputDays`): a daily
+sweep on the long-lived server removes their bytes and keeps each render's record and receipt
+([output retention](renders.md#hosting-and-recovery)).
 
 **Account erasure is narrow by design.** Run `lw users erase-preview <id>` first: it
 reports retained references and affected telemetry without changing data.
@@ -602,6 +633,7 @@ changed, and you run it again. What blocks an erasure, and what it leaves behind
 [data lifecycle](data-lifecycle.md). A successful account operation does not prove the
 whole request is fulfilled.
 
+
 ## Console headers
 
 The console loads its assets and API calls from its own address. Its HTML sends a
@@ -609,6 +641,7 @@ Content Security Policy that allows the two preference scripts by their content 
 and blocks other inline scripts, script evaluation and framing. Console responses also
 send `nosniff`, `no-referrer` and `X-Frame-Options: DENY`. The policy allows inline
 styles for the console's existing controls and theme.
+
 
 ## Changing the deployment design system
 
@@ -622,6 +655,7 @@ Update source files by checking and redeploying them, never by deleting them thr
 local Lolly Remove action. [Design-system administration](design-system-administration.md)
 covers restart behaviour, missing-source recovery, reference impact and reversible
 rollback.
+
 
 ## Connecting apps to this instance
 
@@ -712,6 +746,7 @@ Tests, type checks and the SBOM are contributor tasks, covered in the Lolly Work
 [contributing guide](https://github.com/lolly-tools/lolly-work/blob/main/CONTRIBUTING.md).
 The PostgreSQL store tests run only when `LW_TEST_DATABASE_URL` is set, so a pipeline that
 never sets it leaves that driver untested.
+
 
 ## Related
 

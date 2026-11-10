@@ -12,6 +12,7 @@ An existing DAM can remain the source of record. Lolly Work connects its selecte
 
 ![The governed catalog: served assets with lifecycle, expiry and one-click revocation](shots/catalog-assets.svg)
 
+
 ## The pack
 
 `instance.pack` points at a directory, a "brand pack". Everything brand-shaped lives there,
@@ -39,6 +40,7 @@ the mounted catalog, and selection, retirement and suppression persist in Postgr
 changing mounted files. Source layouts, permissions, reference impact and rollback are on
 [Design-system administration](design-system-administration.md).
 
+
 ## Access modes
 
 `policy.defaultAccessMode` decides who may read the catalog at all:
@@ -54,6 +56,7 @@ that should not see them ([governance](governance.md#visibility)). Assets can be
 groups when they are submitted (below), and each provider has its own [exposure
 rules](#exposure-governance).
 
+
 ## Submitting an asset
 
 The pack does not change at runtime and providers are read-only, so submission is how a member
@@ -68,13 +71,15 @@ The file is the raw request body, and the declared metadata travels as query par
 (`name`, `description`, `tags`, `type`, `groups`). The response gives the new `inst/<id>`
 asset, its checksum and the state it arrived in.
 
-**Open to authors by default.** Anyone holding `catalog.submit` can submit, and the asset is
-live the moment it is stored. To require review, set `policy.submit.chain` to an approval
-chain. A submission then waits in state `submitted`, invisible in the feed, unservable at
-`/catalog/*` and not linkable, until an approver publishes the asset. If `policy.submit.chain` gives a
-chain this instance does not have (a rename, a deletion, a first boot in the wrong order),
-submissions are refused with `503 SUBMIT_CHAIN_MISSING`, giving the chain to fix. Lolly Work never
-falls back to publishing without review.
+**Note: Open to authors by default**
+
+Anyone holding `catalog.submit` can submit, and the asset is live the moment it is stored. To
+require review, set `policy.submit.chain` to an approval chain. A submission then waits in state
+`submitted`, invisible in the feed, unservable at `/catalog/*` and not linkable, until an approver
+publishes the asset. If `policy.submit.chain` gives a chain this instance does not have (a rename,
+a deletion, a first boot in the wrong order), submissions are refused with
+`503 SUBMIT_CHAIN_MISSING`, giving the chain to fix. Lolly Work never falls back to publishing
+without review.
 
 What happens to the file, in order:
 
@@ -93,7 +98,8 @@ that says `image/png` and is not one is stored as what it is.
 
 - **Exposure.** `groups` narrows who sees the asset, and only to groups the submitter is in, so
   nobody publishes into a group they are not a member of. With no `groups`, every member sees
-  it, like a pack asset.
+  it, like a pack asset. People in a [partner programme](partner-programmes.md#what-a-programme-does)
+  are the exception: an asset shared with everyone does not reach them.
 - **Quota.** A quota scope is a group name, and a submission is charged to **every** group its
   submitter belongs to, before the file is stored, so extra memberships only tighten a budget.
   A refused submission is refunded; a returned one is not, because the file was still stored.
@@ -189,6 +195,7 @@ Audit records `catalog.submit` on the way in (stored or refused, because a refus
 has nothing else to attach the event to), `catalog.approve-submission` and
 `catalog.return-submission` on the way out, and `catalog.edit-submission` with the before and
 after of every field a correction moved. These are audit actions, not grantable permissions.
+
 
 ## Org-defined metadata
 
@@ -329,6 +336,7 @@ prefix. **Providers → Tags** on a provider's row opens the same list for that 
 provider that `instance.json` manages can declare `mapping.hiddenTags` there, and those show in
 the list as set in `instance.json`.
 
+
 ## Collections
 
 A **collection** is a named, ordered set of catalog assets with its own group visibility: the
@@ -401,10 +409,13 @@ self-registration and no route into the rest of the catalog. Asking the link for
 collection does not hold is `404 NOT_IN_COLLECTION`, even with a valid signature.
 
 The zip is built in the process from Node's own `zlib`, streamed member by member with no temp
-files, and its entries are named for the asset and made unique. A set too large to zip is
+files, and its entries are named for the asset and made unique. Every zip starts with
+`CREDITS.txt` and `credits.json`, listing only the files in that zip, and the listing page shows
+one credit line where a licence asks for a credit. A set too large to zip is
 refused before a byte is sent, rather than cut short silently; download those assets one by
 one. Expiry, passwords, revocation and audit follow the ordinary [link
 rules](sharing.md#turning-a-link-off), and making a link audits as `link.create`.
+
 
 ## Versions
 
@@ -498,6 +509,7 @@ Supersession is advice to consumers, never a takedown: the asset keeps serving u
 lifecycle says otherwise. The two work together: retire it in favour of the new one, then expire
 the old one on a date you choose.
 
+
 ## Content lifecycle
 
 Every asset can carry a lifecycle row, the "stop sharing" control, as one action:
@@ -513,6 +525,11 @@ PUT /api/v1/catalog/lifecycle/<assetId>     # catalog.expire (holds: catalog.hol
 | `validUntil` | expired at or after this instant |
 | `revokedAt` | revoked for good, whatever the dates say |
 | `onExpiry` | `hide` (default) or `warn` |
+
+**Warning: Revoking an asset is for good**
+
+`revokedAt` wins over every date, so a revoked asset never serves again. To take an asset out of
+use for a while, end its window with `validUntil` instead.
 
 [Figure: An asset is scheduled, live, expired or revoked, and revoked always wins](https://lolly.tools/info/figures/work-catalog-lifecycle.html)
 
@@ -576,6 +593,7 @@ separates **where each constraint came from**: local `validFrom`, `validUntil` a
 and the imported `upstream.availableFrom` and `upstream.availableUntil`. The console can then
 label a hidden asset "unavailable upstream" separately from a locally expired one.
 
+
 ## Catalog providers
 
 A provider is an admin-configured, **read-only** connector to a system that stays the source of
@@ -611,6 +629,8 @@ for the kinds that have one registered (`dropbox`, `gdrive`, `o365`). The other 
 capture the same sealed blob through `credential` until their authorize endpoint is confirmed
 against a real tenant. The console equivalent is **This Deploy → Providers**.
 
+**Notes on Cloudinary, Orange Logic, Image Relay, Canto and Optimizely CMP**
+
 A few kinds need a note:
 
 - **Cloudinary and Orange Logic** use the advanced source form and sealed credentials. Their
@@ -642,6 +662,13 @@ The slice filters (`requireApproved`, `includeSections`, `excludeTags`) apply wh
 fragment is built, so excluded assets never enter the feed *or* the store. Group visibility
 applies per caller, when the feed is composed. `requireApproved` maps an upstream flag; it is not
 a general territory or channel check, and not proof that every historical file was approved.
+A provider shared with all members does not reach people in a [partner
+programme](partner-programmes.md#what-a-programme-does): it needs the programme's group. To give a
+programme, or one company in it, a single folder of a source, use [provider
+folders](partner-programmes.md#provider-folders). With the [licence
+gate](partner-programmes.md#licences) on, a file reaches partners only when its licence lets it
+be passed on, your team marked it as your own, its type is exempt or someone chose to share it
+anyway. `lw catalog rights` records marks and licences.
 
 ### Credentials
 
@@ -713,6 +740,7 @@ whole motion, per vendor, with when to start and how to run it, is [Leave a DAM]
 Providers are integrations, not replacements. Every deployment brings its own API tokens and
 OAuth apps (none ship in the repository), and provider names appear descriptively only. Lolly
 Work *includes an integration for* those services and is not affiliated with them.
+
 
 ## Reference
 
@@ -854,6 +882,7 @@ S3 access is hand-written SigV4 (signed GET, PUT, DELETE and multipart uploads),
 `inst/*` bytes stream from `/catalog/inst/<id>/<format>` with an `ETag`, gated by lifecycle like
 any asset. [Blob limits and integrity](configuration.md#blob-limits-and-integrity) covers each
 driver's size limits, memory use, checksums and the S3 permissions and lifecycle rule.
+
 
 ## Related
 

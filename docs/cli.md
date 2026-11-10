@@ -5,11 +5,16 @@ catalog, renders and delivery, audit and governance. It calls the same API as th
 the two stay in step, and anything an admin does in the console can go in a script. To render
 artwork from a terminal, use the `lolly` command instead ([the Lolly CLI](https://lolly.tools/info/build/cli.html)).
 
+
 ## Install and sign in
 
 Run `lw` from a Lolly Work checkout as `pnpm run cli <args>` or `node cli/lw.ts`. Run `npm link`
-once in the checkout to get the plain `lw` the examples use. It is not in the container image or
-the Helm pod, so you drive a deployment from a checkout, not from inside the deployment.
+once in the checkout to get the plain `lw` the examples use.
+
+**Note: Run `lw` from a checkout**
+
+`lw` is not in the container image or the Helm pod, so you drive a deployment from a checkout,
+not from inside the deployment.
 
 ```bash
 export LW_BASE=https://lolly.example.com    # or pass --base <url>
@@ -27,6 +32,7 @@ on every deployment. The session is stored at `~/.config/lolly-work/session` (mo
 lw login --cookie 'lw_session=…'            # paste a browser session (works everywhere)
 lw login --email admin@example.test         # the dev provider (dev.enabled only)
 ```
+
 
 ## Command map
 
@@ -51,6 +57,9 @@ lw login --email admin@example.test         # the dev provider (dev.enabled only
 | Post a message to members | `msg send` | [Messaging](#messaging) |
 | Review design-system sources or a project | `brand`, `projects transfer-preview` | [Design-system sources](#design-system-sources-and-project-transfer) |
 | Run database and signing setup | `migrate`, `audit retire-key`, `c2pa init` | [Local infrastructure](#local-infrastructure-commands) |
+| Run partner programmes: companies, people, domains, folders, templates and licences | `programmes`, `companies`, `people`, `domains`, `folders`, `templates`, `catalog rights` | [Partner programmes](partner-programmes.md) |
+| Put a CDN in front of the instance | `edge` | [Put a CDN in front of Lolly Work](edge-cdn.md) |
+
 
 ## Reading
 
@@ -68,6 +77,17 @@ lw audit head         # seq · hash · count · intact  (exits 2 if broken)
 lw preview --groups marketing,contractors   # what such a member receives
 ```
 
+`lw links create <toolId> [key=value …]` mints a link to a render of that tool with those
+params. `--kind` is `embed` (the default), `share` or `download`; `--format` and `--hours <n>`
+set the format and the lifetime. `--open` lets recipients change the params: each new set they
+put on the link renders a new asset, within the tool's policy. An open link needs
+`export.server` for the tool as well as `link.create` ([open links](api.md#share-links)).
+
+```bash
+lw links create qr-code url=https://example.com --kind share --open
+```
+
+
 ## Hosting the instance pack
 
 ```bash
@@ -84,6 +104,7 @@ Lolly Work treats the pack as a signed byte artifact, not as a second token proc
 It does not parse, rewrite or filter `tokens.json`: the shell-reserved
 `lolly.foundation` and `lolly.ui` namespaces (including aliases between them) download
 exactly as the OSS builder produced them.
+
 
 ## Invitations
 
@@ -110,6 +131,7 @@ comma-separated value also works. An invited person joins the groups at their fi
 sign-in. Groups must already exist as local groups, and the caller needs `grant.edit` as
 well. See [identity](identity.md#who-may-sign-in).
 
+
 ## Service tokens
 
 ```bash
@@ -126,6 +148,15 @@ API (export/apply, providers, fleet, audit); the member-workflow commands refuse
 token reaches only what its scopes open, and other commands answer `403 TOKEN_SCOPE`. The scopes
 are in the [automation guide](automation-api.md#before-you-start-a-token-and-a-permission).
 
+Naming `--scopes` without `--role` gives the token the `automation` role, which carries what
+the scopes need without an admin's other authority; that role always needs scopes. A `--tools`
+list needs the `render` or `documents` scope. `--days <n>` sets the lifetime.
+`lw tokens limits <id>` shows a token's calls a minute and renders a day and a month, and
+`--calls-per-minute`, `--renders-per-day` and `--renders-per-month` set each to a number,
+`none` or `default`. With `--programme <id>`, `create`, `revoke`, `limits` and the list act on
+a partner programme's agent tokens ([partners' agents](partner-agents.md)).
+
+
 ## MCP settings
 
 ```bash
@@ -135,6 +166,7 @@ lw mcp config --name brand --token-env WORK_TOKEN --json
 
 This prints settings for an MCP client to reach the [organisation MCP endpoint](automation-api.md#connect-an-agent-over-mcp). The command makes no request. The settings name an environment variable (`LW_TOKEN` unless you pass `--token-env`) and never hold the token.
 
+
 ## Visual intents
 
 ```bash
@@ -143,6 +175,7 @@ lw intent resolve - --json < intent.json
 ```
 
 This sends a [visual intent](/info/visual-intent.html) to [`POST /api/v1/intents/resolve`](automation-api.md#start-from-what-the-piece-has-to-do) and prints the tool chosen for each surface, what is missing and what went unused. It renders nothing. It exits `0` when every surface is ready and `4` otherwise, with the full answer either way. The answer covers only the tools this caller can render on this instance. A refused request exits `1`.
+
 
 ## Recoverable renders
 
@@ -185,6 +218,7 @@ batch as one ZIP with a manifest of every row, or download each child through
 source with [`bind`](renders.md#fill-the-rows-from-a-data-source) in place of `rows`,
 and `submit` takes `--callback-url <url>` here too.
 
+
 ## Approval files
 
 ```bash
@@ -199,6 +233,7 @@ writing anything, and says whether the approval is recorded in that file. These 
 approvals, because a decision about a file is a person's act. Decide in the console, where the file
 is on screen. See [review an exported file](approvals.md#review-an-exported-file).
 
+
 ## Brand pages
 
 `lw brand-pages` puts a brand page folder at a public address on this instance. [Host a brand page](design-system-administration.md#host-a-brand-page) has the details.
@@ -212,10 +247,15 @@ lw brand-pages unpublish <id> [--remove-files]    # the address then answers 410
 
 `publish` checks the digests here first, and it sends only the files `brand.json` lists. A link in the folder is refused. Run the same command again after an interruption and it sends only the missing parts. With a chain set, the revision waits for a person's approval, and only a person can publish.
 
+
 ## Moving from a hosted render API
 
 `lw render-api` reads a Bannerbear or Placid account, keeps references, checks a mapping and measures a
 render against a reference. [Move from a hosted render API](move-from-render-api.md) has the stages.
+
+**Warning: `sample` spends vendor credits**
+
+`sample` spends credits on your vendor account and refuses to run without `--spend-credits`.
 
 ```bash
 lw render-api inventory --from placid --token-env PLACID_KEY --out ./move
@@ -224,9 +264,11 @@ lw render-api check --mapping mapping.json
 lw render-api compare --from placid --mapping mapping.json --template <id> --reference ./refs/<id>.png --values request.json
 ```
 
-`inventory` and `sample` need no Work server. `sample` spends credits on your vendor account and refuses
-to run without `--spend-credits`. A vendor key is read from the variable `--token-env` names and is never
+`inventory` and `sample` need no Work server.
+
+A vendor key is read from the variable given to `--token-env` and is never
 printed. `check` and `compare` exit `2` when a template cannot run or a render differs.
+
 
 ## Organization delivery
 
@@ -248,6 +290,7 @@ its digest and Content Credential again, and records the relationship on the rec
 optional `--format` is an equality assertion against the completed render, never a conversion
 or override. See [outbound delivery](delivery.md).
 
+
 ## Governance
 
 ```bash
@@ -263,6 +306,7 @@ lw apply governance.json [--dry-run] [--prune]
 hash. `--dry-run` changes nothing; `--prune` also deletes store-only entries. See
 [governance](governance.md).
 
+
 ## SCIM provisioning tokens
 
 ```bash
@@ -271,9 +315,16 @@ lw scim token list                    # metadata only; never the secret
 lw scim token revoke <id>
 ```
 
-Owner-only (`scim.manage`). The secret is stored only as its hash and is unrecoverable, so
-the mint is the one moment you can copy the bearer. The IdP then drives `/scim/v2` with that bearer. See
+Owner-only (`scim.manage`).
+
+**Warning: Copy the secret at once**
+
+The secret is stored only as its hash and is unrecoverable, so the mint is the one moment you
+can copy the bearer.
+
+The IdP then drives `/scim/v2` with that bearer. See
 [SCIM provisioning](enterprise-identity.md#scim-provisioning).
+
 
 ## Data lifecycle
 
@@ -299,6 +350,7 @@ how many as `swept`; the long-lived server does
 that at boot and daily even with no retention policy. `users erase` is owner-only and answers a data-subject
 request - the person's projects must be archived first, and the audit chain keeps its opaque
 user id (the mapping to a person is what is removed). See [operations](operations.md).
+
 
 ## Catalog providers
 
@@ -342,7 +394,7 @@ catalog side is in [catalog](catalog.md).
 **Reading drift output**
 
 ```bash
-lw providers drift acme-canto
+$ lw providers drift acme-canto
 acme-canto: 2 drifted of 118 compared (118 materialized asset(s) in all)
   image:AB12C                  was 2026-06-01T00:00:00.000Z  now 2026-08-01T12:00:00.000Z  inst/9f2c…
   image:DE34F                  was 2026-05-04T09:11:00.000Z  now 2026-08-14T16:02:00.000Z  inst/1ab7…
@@ -357,7 +409,7 @@ instead. It stores nothing and re-materializes nothing.
 `compared` counts only the copies that got a real answer. Every other copy is counted and
 printed under its own reason:
 
-```
+```text
 not compared: 4 copy(ies) whose upstream record carries no change stamp the driver can read - check this kind's UPDATED_AT_KEYS against its live-verify runbook.
 not compared: 2 copy(ies) whose change stamp would not parse as a date (shape NNNNNNNNNN) - drift detection is inoperative for those until the driver reads that format.
 not compared: 1 copy(ies) whose remote id is no longer in the listing at all.
@@ -367,6 +419,7 @@ read with care: 3 comparison(s) used a stamp that names no timezone (shape NN/NN
 The stamp **shapes** are printed, never the stamps: digits become `N` and letters `A`
 (`NNNNNNNNNN` is an epoch integer, `NN/NN/NNNN NN:NN` a local date and time with no zone), so a
 line tells a driver fix the format without leaking an upstream value.
+
 
 ## Catalog submit
 
@@ -387,7 +440,7 @@ lw catalog return  inst/ab12cd34 --body "wrong logo lockup"
 `submitted` and waits for `approve` or `return`. Identical bytes are reported as a duplicate
 and nothing is stored a second time:
 
-```
+```text
 already in the catalog as inst/ab12cd34 (identical bytes; nothing stored)
 ```
 
@@ -397,6 +450,7 @@ returned. `edit` corrects a pending submission's declared metadata before it goe
 type, tags, description and the org's own fields, never the bytes or the exposure - and is
 audited with its before and after. `approve` and `return` go through the approvals engine, so
 you cannot decide your own submission.
+
 
 ## Resumable uploads
 
@@ -420,6 +474,7 @@ upload prints the id and checksum to name it by, for example
 use `--scope`; a project file needs a signed-in person. `--scope` needs an instance that turns
 on `policy.uploads.enabled`; until then it answers `uploads are off`.
 
+
 ## Org-defined metadata
 
 The fields an org defines for itself, on assets it already serves
@@ -437,6 +492,7 @@ one. `meta` needs `catalog.edit`. `--name`, `--tags` and `--label` apply to an i
 a file on disk - while `--field` applies to any asset you can see. Defining the fields
 themselves is `policy.edit` and belongs to the governance document
 ([governance](governance.md#policy-as-code)), not to this command.
+
 
 ## Collections
 
@@ -456,6 +512,7 @@ lw catalog collection launch-kit --rm
 it replaces the whole list rather than appending, so the command is idempotent. `--groups`
 takes group names or `*` for everyone, and `--label` is the description. Both need
 `catalog.collection.manage`, and a save is refused if it identifies an asset you cannot see.
+
 
 ## Versions and supersession
 
@@ -477,6 +534,7 @@ bytes is curation, not contribution), and the descriptive flags are refused with
 `lw catalog meta` for those. `version-rm` answers `409` for the served version and for a held
 asset. `supersede` writes `replacedBy`, which is advice to consumers and not a takedown.
 
+
 ## Messaging
 
 ```bash
@@ -487,9 +545,13 @@ lw msg send --title "Update by Aug 15" \
 ```
 
 `--starts` is when the message begins to show and `--ends` when it stops. Each takes a date and
-time with its zone (`Z` or an offset), so the moment is the same wherever `lw` runs. A message
-cannot be ended once it is sent, so `--ends` is how a message gets its last day. `lw` refuses an
+time with its zone (`Z` or an offset), so the moment is the same wherever `lw` runs. `lw` refuses an
 `--ends` in the past, and one that is not later than `--starts`.
+
+**Warning: A sent message cannot be ended**
+
+A message cannot be ended once it is sent, so `--ends` is how a message gets its last day.
+
 
 ## Design-system sources and project transfer
 
@@ -502,6 +564,7 @@ lw projects transfer-preview <id> [--json] [--out file.json]   # read-only proje
 
 See [design-system administration](design-system-administration.md#review-and-apply) and
 [project transfer preview](project-portability.md).
+
 
 ## Local infrastructure commands
 
@@ -525,6 +588,7 @@ checks, and the audit boundary records the rotation. See [audit](audit.md#rotati
 with zero corporate PKI, and prints exactly what to wire where. If you have a corporate CA,
 skip it and use your own chain. See [c2pa](c2pa.md).
 
+
 ## Global flags
 
 | Flag | Meaning |
@@ -536,3 +600,7 @@ skip it and use your own chain. See [c2pa](c2pa.md).
 Exit codes: `1` on any API error or usage mistake (including `migrate --check` with a
 pending schema), `2` specifically for a broken audit chain or a failing provider health
 check - so both are usable as monitoring checks.
+
+A few commands add their own: `intent resolve` exits `4` when a surface is not ready,
+`render-api check` and `compare` exit `2` when a template cannot run or a render differs,
+and `audit retire-key` exits `2` when it refuses.

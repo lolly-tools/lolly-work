@@ -8,6 +8,12 @@ guest links and the Chromium worker's output. Anyone can check the credential an
 the file was changed. Without an identity, exports keep their unsigned provenance
 metadata. Signing only adds to an export and never breaks one.
 
+**What a signed server render records.** Since 1.2.0, its credential carries the design
+system, its label and the colourway, and for a partner the company, programme and partner kit.
+It never records the person, a token, an agent or the contact's details. With a signing
+identity, an approved file can also carry a signed record of its approval
+([review an exported file](approvals.md#review-an-exported-file)).
+
 A signing identity has two halves:
 
 - a **signing certificate chain**, leaf first, which is *public* and goes in the
@@ -30,6 +36,7 @@ A certificate from the PKI you already run. Signatures check as **trusted** stra
 because the chain ends at a root your verifiers already trust.
 
 Best when people outside your team check your files.
+
 
 ## Option A: one command, no PKI
 
@@ -63,10 +70,16 @@ export LW_C2PA_SIGNING_KEY="$(cat /path/to/c2pa-signing-key.pem)"
 # restart the server
 ```
 
-Exports are now signed. A verifier reports the signature as **valid**, and as **trusted**
-only after you add `c2pa-root-cert.pem` to that verifier's C2PA trust list: nobody trusts
-a root you made yourself until you hand it out, which is what the root file is for.
-Keep `c2pa-signing-key.pem` secret. It is written with mode `0600`; never commit the key.
+**Check: Exports are now signed**
+
+A verifier reports the signature as **valid**, and as **trusted** only after you add
+`c2pa-root-cert.pem` to that verifier's C2PA trust list: nobody trusts a root you made yourself
+until you hand it out, which is what the root file is for.
+
+**Warning: Never commit the signing key**
+
+Keep `c2pa-signing-key.pem` secret. It is written with mode `0600`.
+
 
 ## Option B: your organisation's CA
 
@@ -80,6 +93,7 @@ and skip `lw c2pa init`. The C2PA profile wants an ECDSA P-256 key and the
 Because the chain ends at a root your verifiers already trust, signatures check as
 **trusted** with no trust list to hand out. If your key is not PKCS#8 yet, convert an EC
 key with `openssl pkcs8 -topk8 -nocrypt -in leaf-key.pem -out leaf-key.pkcs8.pem`.
+
 
 ## On Kubernetes (Helm)
 
@@ -109,6 +123,7 @@ extraVolumeMounts:
 You can supply the key through `existingSecret` instead, under the key
 `LW_C2PA_SIGNING_KEY`.
 
+
 ## Rotation and failures
 
 - **Rotation** is a configuration change: swap the certificate and key, then restart.
@@ -119,6 +134,7 @@ You can supply the key through `existingSecret` instead, under the key
 - **Signing at run time is best effort.** If signing itself fails mid-render, the
   unsigned bytes still ship and the failure is logged; a render never fails over a
   signing problem.
+
 
 ## Detecting credentials on imported assets
 
@@ -135,9 +151,10 @@ API, for one, says nothing about C2PA. The catalog can **detect** that.
   (`GET /api/v1/catalog/assets/<id>`) returns the detection record.
 - It **detects and never verifies**. It records only *whether* a manifest is present and
   in which container, never a `valid` or `trusted` verdict and never a parsed claim.
-  Lolly Verify in the console's verify view, against the bytes you received. Detection reuses
-  the bundled engine's container handling, so both repositories share one C2PA
-  implementation, and the engine-pin check makes sure those modules stay present.
+  For a verdict, use Lolly Verify in the console's verify view, against the bytes you
+  received. Detection reuses the bundled engine's container handling, so both
+  repositories share one C2PA implementation, and the engine-pin check makes sure those
+  modules stay present.
 - On **export**, provenance ingredients change from `c2pa: null` to
   `{ kind: 'embedded' }` for any used asset with an embedded detection, so the export can
   tell "the source said nothing" apart from "the source carries a credential".

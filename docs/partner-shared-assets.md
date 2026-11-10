@@ -7,6 +7,7 @@ someone chose to share it anyway.
 
 This page is part of [Run a partner programme](run-a-partner-programme.md).
 
+
 ## What reaches a partner
 
 ![What reaches a partner: your design system's tokens, fonts and palettes reach the person or agent directly; files a programme or a company was given pass the licence gate when it is on, and a file the gate holds back is listed on the Licences card.](/info/diagrams/work-partners/what-reaches-a-partner.svg)
@@ -20,6 +21,7 @@ This page is part of [Run a partner programme](run-a-partner-programme.md).
 - **Nothing shared with everyone.** An asset, collection or provider shared with everyone does not
   reach them, and neither do announcements sent to everyone, projects shared with everyone in the
   workspace or injectables for everyone.
+
 
 ## Choose its tools and share its assets
 
@@ -37,6 +39,7 @@ licence gate on, a render that uses a missing file is refused.
   programme's group, for example
   `lw catalog submit ./price-sheet.pdf --name "Price sheet" --groups programme-resellers-emea`.
 
+
 ## Give one folder of a source
 
 **Provider folders** on the programme's page gives one folder of a connected source, such as your
@@ -50,6 +53,7 @@ never gives the whole source away. When the folder you choose holds other folder
 the button lists them, so you can check what comes with your choice before you press the button.
 When the end date passes, the files go at once. When you give a folder, the form says how many of
 its files record no licence.
+
 
 ## The licence gate
 
@@ -78,8 +82,12 @@ One setting chooses the mode, `policy.catalog.partnerRights`:
 
 Your own people receive exactly what they did before, in either mode. Some files are exempt,
 because every tool needs them or because they are yours by nature: tokens, fonts, palettes,
-templates, rules tools, user tools and brand skills, plus a company's own files for that company. A
-held file is simply absent for partners, and nothing tells a partner that more may come.
+templates, rules tools, user tools and brand skills, plus a company's own files for that company.
+
+**Note: Partners are not told what is held back**
+
+A held file is simply absent for partners, and nothing tells a partner that more may come.
+
 
 ## Mark your own files
 
@@ -101,6 +109,7 @@ lw catalog rights licence ext/partner-dam/a1 CC-BY-4.0 --attribution "Photo by A
 lw catalog rights                                      # the marks and records in force
 ```
 
+
 ## Share a held file anyway
 
 Someone with `programme.manage` can choose to send held files to one programme or one company, up
@@ -109,6 +118,7 @@ a new version of the file, a changed licence record or a new version of the rule
 choice, and the report lists the file as needing a new choice. A choice covers the file it names,
 never a file synced later. Withdraw a choice at any time; ending a partnership withdraws its
 choices.
+
 
 ## Links, ZIPs and credits
 
@@ -120,6 +130,7 @@ choices.
   credits a `.lolly` pack carries.
 - **The collection link page** shows one credit line for a file whose licence asks for a credit,
   with the licence and the source.
+
 
 ## Worked example: Northwind IT
 
@@ -144,6 +155,7 @@ lw catalog collection partner-logos --name "Logos for partners" \
 colours, type and palettes, and the logos in the collection, and nothing else from your catalog.
 
 Next: [3. Add Northwind IT and its details](partner-co-branding.md#3-add-northwind-it-and-its-details).
+
 
 ## Every option
 

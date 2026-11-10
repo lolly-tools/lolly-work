@@ -7,12 +7,12 @@ from a fresh instance to a real owner sign-in and a downloadable, checked sample
 reads the running deployment and walks through the settings that need a restart. Tokens,
 tool policy, brand sources and approval chains link to their own console screens.
 
-- **1. Deployment.** Name the instance, set its public address and choose what it serves.
-- **2. Identity and owner.** Configure OIDC, map groups to roles and prove a real owner can sign in.
-- **3. Provisioning.** Optionally connect SCIM and check one account end to end.
-- **4. Brand and assets.** Point at your pack and connect asset sources.
-- **5. Sample output.** Render a checked sample and download it with its evidence.
-- **6. Finish setup.** See what is configured, what is proved and what is left.
+- **[1. Deployment](#1-deployment).** Name the instance, set its public address and choose what it serves.
+- **[2. Identity and owner](#2-identity-and-owner).** Configure OIDC, map groups to roles and prove a real owner can sign in.
+- **[3. Provisioning](#3-provisioning).** Optionally connect SCIM and check one account end to end.
+- **[4. Brand and assets](#4-brand-and-assets).** Point at your pack and connect asset sources.
+- **[5. Sample output](#5-sample-output).** Render a checked sample and download it with its evidence.
+- **[6. Finish setup](#6-finish-setup).** See what is configured, what is proved and what is left.
 
 The page generates a proposal, never an edit: it does not overwrite a mounted
 configuration file. After you apply the file and restart, the page compares the generated
@@ -24,12 +24,16 @@ discovery, sign-in and sample results are reported separately from configuration
 The screenshots come from a local evaluation instance with example data; copy addresses
 and settings from your own running app.
 
+
 ## Start with a reachable owner
 
 Follow [Install Lolly Work](install.md) for your deployment shape. For the first setup,
 use restricted **evaluation** with a development owner, or configure OIDC and the owner
-mapping before the first production start. Keep evaluation on a private host or behind an
-access boundary, because development sign-in has no password.
+mapping before the first production start.
+
+**Warning: Development sign-in has no password**
+
+Keep evaluation on a private host or behind an access boundary.
 
 For an evaluation start, these are the settings that matter:
 
@@ -54,6 +58,7 @@ The page needs `instance.config`, normally an owner action. Production refuses
 development sign-in and memory storage by design, so do this stage before the production
 cutover.
 
+
 ## 1. Deployment
 
 Set the instance name and public address. That address drives cookies and the OIDC
@@ -71,6 +76,7 @@ secret values. Production needs durable PostgreSQL, current migrations and stabl
 and link secrets of at least 32 bytes. A worker address also needs
 `LW_RENDER_WORKER_SECRET` on both the application and the worker.
 
+
 ## 2. Identity and owner
 
 Select OIDC, then enter the provider's issuer, the registered client ID, the sign-in
@@ -78,10 +84,11 @@ button's name and the groups claim. More issuers, custom profile claims and prox
 are in the [identity reference](identity.md); the assistant keeps those advanced settings.
 
 Map your groups to roles, with **one exact group name per line**: a comma is part of the
-name. The role order is owner, admin, approver, author, member and viewer; the highest
-matching role wins. Accounts that match nothing stay members. An empty role mapping turns
-off that role's literal legacy group; roles left out of a hand-written configuration keep
-the documented legacy defaults.
+name. The role order is owner, admin, brand-manager, approver, author, member and viewer;
+the highest matching role wins. Accounts that match nothing stay members. An empty role
+mapping turns off that role's literal legacy group; roles left out of a hand-written
+configuration keep the documented legacy defaults. `brand-manager` has no legacy group, so
+only the groups you enter for it hold it ([roles](permissions.md#roles)).
 
 Local groups and provider groups share the mapping. Additional issuers keep subjects
 apart, but **not group names**, so use distinct provider group names if two issuers should
@@ -117,6 +124,7 @@ Generate the production cutover from that real owner session. While development 
 on, the preview refuses to remove it until this sign-in has been seen for the same
 installed identity settings.
 
+
 ## 3. Provisioning
 
 SCIM is optional for the first sample. To check it end to end:
@@ -140,6 +148,7 @@ and a SCIM disable also ends existing sessions.
 Service tokens take scopes or a role, expire after 90 days by default, show their last use and can
 be revoked. [Service tokens](enterprise-identity.md#service-tokens) describes the credential
 contract.
+
 
 ## 4. Brand and assets
 
@@ -168,6 +177,7 @@ for outside originals.
   them, trusted central pack publication and exact release handshakes are not built yet.
 
 Pack inspection does not test remote credentials or originals.
+
 
 ## 5. Sample output
 
@@ -212,6 +222,7 @@ tokens, and rereads results from the server. A changed deployment, inspected pac
 governance needs a fresh sample, and so does a change of account. Polling stops after two
 minutes; refresh to pick up a long render.
 
+
 ## Apply
 
 Choose **Generate validated configuration** after editing. Review the patch and the exact
@@ -219,7 +230,7 @@ callback, then download `lolly-setup.json` for an instance-file deployment or
 `lolly-setup.helm.json` for Helm. The files hold non-secret configuration; handle them as
 deployment files.
 
-For an instance JSON file, run from the Lolly Work checkout:
+**An instance JSON file.** Run from the Lolly Work checkout:
 
 ```sh
 pnpm setup:apply ./instance.json ./lolly-setup.json
@@ -232,8 +243,9 @@ Edit the source file before you deploy its read-only mounted copy. If the source
 during validation, or the expected-settings hash is stale or altered, the update refuses;
 generate the proposal again.
 
-For Helm with `config` as an **inline YAML object** in your values file, add the overlay
-**after** your existing values so their secret and storage settings stay:
+**Helm with `config` inline.** When `config` is an **inline YAML object** in your values
+file, add the overlay **after** your existing values so their secret and storage settings
+stay:
 
 ```sh
 helm upgrade --install lw ./deploy/helm \
@@ -245,26 +257,35 @@ through the existing chart settings: the assistant does not choose or publish re
 Apply the chart to your environment and wait for the rollout. For an instance file, deploy
 the updated source and restart the application.
 
-If you pass `config` as a raw JSON string or with `--set-file config=...`, an object
-overlay would replace that string and lose the other settings. Download the setup file
-instead, apply it to your source `instance.json` with the two commands above, then supply
-the complete updated source:
+**Helm with `config` as a string.** If you pass `config` as a raw JSON string or with
+`--set-file config=...`, an object overlay would replace that string and lose the other
+settings. Download the setup file instead, apply it to your source `instance.json` with
+the two commands above, then supply the complete updated source:
 
 ```sh
 helm upgrade --install lw ./deploy/helm \
   -f ./customer-values.yaml --set-file config=./instance.json
 ```
 
+**Check: Generated settings are applied**
+
 Refresh Customer setup. **Generated settings are applied** means the running editable
 settings match the generated configuration, not that every integration test passes. Run
-the identity and sample checks again after relevant changes. If the browser holds a draft
-you have not exported, leaving the page asks whether to keep or discard the draft.
+the identity and sample checks again after relevant changes.
 
-For the production cutover, use the real owner session, choose production and turn off
+If the browser holds a draft you have not exported, leaving the page asks whether to keep or
+discard the draft.
+
+**The production cutover.** Use the real owner session, choose production and turn off
 development sign-in. Generate, apply and restart with PostgreSQL and stable secrets in
 place. Run `pnpm check:setup` against the deployed configuration and check `/readyz`. Keep
 the backup until the new deployment passes, and restore the source backup and redeploy if
-needed. Moving from memory to PostgreSQL does not bring evaluation data across.
+needed.
+
+**Warning: Evaluation data does not move**
+
+Moving from memory to PostgreSQL does not bring evaluation data across.
+
 
 ## 6. Finish setup
 
@@ -277,6 +298,7 @@ owner can use it and a representative sample passes its file checks and download
 acceptance also needs your provider's originals, the matching employee apps and any
 features you require. Approval-bound ordinary exports, central publication, high
 availability and unattended delivery recovery are not part of this milestone.
+
 
 ## Troubleshooting
 

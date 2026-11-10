@@ -5,6 +5,7 @@ Lolly Work catalog for the groups you choose. The console walks you through it: 
 groups, consent in the browser with a Google client you register, a test of one real file, then
 activation. Lolly Work reads the folder and never writes to Drive.
 
+
 ## What you need from Google
 
 - **A Google Cloud OAuth client** you register under *APIs & Services > Credentials*, on a
@@ -15,6 +16,7 @@ activation. Lolly Work reads the folder and never writes to Drive.
   link.
 - The client id and secret are yours. The console or `lw providers auth` captures the refresh
   token.
+
 
 ## Guided connection in the app
 
@@ -50,10 +52,13 @@ activation. Lolly Work reads the folder and never writes to Drive.
 6. Confirm the folder and groups, then choose **Sync and enable source**. A failed sync, or a
    folder with no exposed files, leaves the source disabled.
 
+**Note: What consent needs**
+
 Consent needs an owner signed in to the console, `LW_CREDENTIAL_SECRET` on the server and an
 HTTPS instance URL (loopback HTTP is accepted for evaluation). Finish consent within ten
-minutes in the same signed-in browser; starting again replaces the earlier attempt. A
-config-managed source, or one with advanced settings, uses the
+minutes in the same signed-in browser; starting again replaces the earlier attempt.
+
+A config-managed source, or one with advanced settings, uses the
 [CLI consent flow](README.md#kinds-with-a-registered-consent-flow-dropbox-gdrive-o365) instead.
 
 ### Before you go live
@@ -63,11 +68,14 @@ config-managed source, or one with advanced settings, uses the
   **seven days**. Publishing the app does not promise a token will never expire or be revoked.
   See Google's [app states](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview)
   and [refresh-token expiry rules](https://developers.google.com/identity/protocols/oauth2#expiration).
-- **Scope.** The grant reads the whole Drive of the connected account; the folder setting limits
-  what the catalog exposes, not what Google allows. Connect an account with suitably limited
-  access.
 - **A real check.** Run the [Google Drive check](tenant-check.md#google-drive) against the
   Workspace you will connect. Automated tests and a browser rehearsal do not replace that check.
+
+**Warning: The grant reads the whole Drive of the connected account**
+
+The folder setting limits what the catalog exposes, not what Google allows. Connect an account
+with suitably limited access.
+
 
 ## Recover a saved connection
 
@@ -79,6 +87,8 @@ To change an enabled source, disable it first, save the new folder, groups or cr
 reconnect if needed, test the original again and choose **Sync and enable source**. Any change
 to the settings or the credential cancels the earlier activation check.
 
+**What to check for each symptom**
+
 | Symptom | What to check |
 |---|---|
 | Consent controls are unavailable | Sign in as an owner; set a stable `LW_CREDENTIAL_SECRET` and restart. Use an HTTPS instance URL, or loopback HTTP for evaluation. |
@@ -88,6 +98,7 @@ to the settings or the credential cancels the earlier activation check.
 | Settings changed during consent or activation | Review the source, save it disabled and repeat consent or the original-file test. |
 | Preview or full sync finds no files | Put ordinary files directly in the folder, or turn on `recursive`, and check group and type exposure. Native Google documents are skipped, and so are subfolders unless `recursive` is on. |
 | A working Testing grant stops after seven days | Finish the production consent setup and reconnect. |
+
 
 ## Credential shape
 
@@ -100,6 +111,7 @@ The OAuth credential, captured by the browser or the CLI rather than typed:
 ```bash
 lw providers auth acme-gdrive
 ```
+
 
 ## instance.json / `lw providers add`
 
@@ -120,6 +132,7 @@ lw providers auth acme-gdrive
   at most 10) and `options.maxFolders` (default 500, at most 5,000) limit how far it reads; a
   sync that stops at `maxFolders` says so.
 
+
 ## Verify
 ```bash
 lw providers auth acme-gdrive
@@ -130,9 +143,11 @@ The console's file test reads at most five pages, 1,000 files and one original o
 within 30 seconds, with metadata and token responses capped at 2 MiB. A sample is not a full
 inventory.
 
+
 ## Notes / limits
 
-- **One flat folder.** Subfolders are not walked and native Docs, Sheets and Slides are skipped.
+- **One folder, unless you turn on `recursive`.** Subfolders are walked only with `recursive` on,
+  and native Docs, Sheets and Slides are skipped.
   Shared drive folders work; the request flags follow Google's
   [shared drive guidance](https://developers.google.com/workspace/drive/api/guides/enable-shareddrives).
 - **No approval status or availability dates.** Expose a curated folder of approved files.
@@ -140,8 +155,9 @@ inventory.
 - **Short-lived download links,** fetched on each request, streamed through Lolly Work and pinned to
   Google's hosts.
 
+
 ## Use as an offboarding destination
 
-Export the permitted DAM originals and supporting records, upload ordinary files with Google Drive's own tools, then connect the selected folder using this guide. Lolly Work reads this source and does not copy a DAM library into Drive. Keep files directly in the selected folder: native Google documents and subfolders are skipped. Rebuild access, approval and expiry controls as needed and update references for the new identities.
+Export the permitted DAM originals and supporting records, upload ordinary files with Google Drive's own tools, then connect the selected folder using this guide. Lolly Work reads this source and does not copy a DAM library into Drive. Keep files directly in the selected folder, or turn on `recursive`: native Google documents are skipped, and so are subfolders unless `recursive` is on. Rebuild access, approval and expiry controls as needed and update references for the new identities.
 
 The [path chooser](../offboarding.md#choose-your-offboarding-path) compares this route with self-hosted Lolly Work storage and other destinations, with open-source options first.

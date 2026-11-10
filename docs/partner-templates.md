@@ -9,6 +9,7 @@ the template leaves open is offered; everything else is simply not there, with n
 
 This page is part of [Run a partner programme](run-a-partner-programme.md).
 
+
 ## Publish a template
 
 Someone draws each template: your brand team, or a designer in your own team, depending on how
@@ -38,6 +39,7 @@ logos and pictures a template uses with the programme first
 ([Shared assets and licences](partner-shared-assets.md#choose-its-tools-and-share-its-assets)):
 without them, a template is incomplete for partners.
 
+
 ## Take inputs from the company
 
 Under **Change** on the template's row, **Takes from the company** fills an input from each
@@ -59,6 +61,7 @@ contact email, the phone, the address, the currency or the tax note. A row with 
 Which company a person's values come from, and the order a value is chosen in, are in
 [Company details in templates](partner-programmes.md#company-details-in-templates).
 
+
 ## What a partner sees in a template
 
 In a template, the inputs she may change are the only controls shown. Northwind IT's logo and
@@ -66,6 +69,7 @@ details are already in place, and a logo the template takes by mode follows the 
 light and dark.
 
 ![The Partner data sheet open for Rita: Your price is the only field beside the colourway and mode, and the sheet already shows Northwind IT's logo and contact line](shots/partner-template-tool.svg)
+
 
 ## Keep a tool to its templates
 
@@ -77,6 +81,7 @@ gallery and search, its **Start** chooser offers only the templates published to
 blank canvas, and a server render must name one of those templates. Copies they saved before keep
 opening. If any of a person's programmes turns it on, the tool is templates only for that person,
 and Preview says which programme turned the switch on.
+
 
 ## New versions and retiring
 
@@ -90,6 +95,7 @@ Copies already made keep working; give a replacement and those copies offer the 
 **Publish again** brings a retired template back. To stop a template everywhere straight away,
 revoke it in the catalog.
 
+
 ## Published as your own
 
 When someone with `catalog.edit` publishes a template whose source is your workspace's own work,
@@ -97,6 +103,7 @@ Lolly Work records the workspace's owner-published mark on it, with the default 
 then read "Owner-published, not an open licence" in the template's details
 ([Shared assets and licences](partner-shared-assets.md#mark-your-own-files)). The rest of the
 rules for the mark are in [Templates](partner-programmes.md#templates).
+
 
 ## Worked example: Northwind IT
 
@@ -124,6 +131,7 @@ IT's details and are not offered to her. She types only the price, and may switc
 and between light and dark, which a Share with rules file leaves open.
 
 Next: [5. Check what Northwind IT gets](partner-people.md#5-check-what-northwind-it-gets).
+
 
 ## Every option
 

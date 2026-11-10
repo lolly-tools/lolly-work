@@ -5,6 +5,7 @@ Lolly Work deployment, and how to stop them at once. Managed AI is off by defaul
 service switch for the whole deployment, not a personal preference, and it covers the features
 below.
 
+
 ## What managed AI covers
 
 | Capability | Supported shell paths |
@@ -22,6 +23,7 @@ cached weights and offline pre-downloads. Revoking a capability ends model worke
 downloads and drops late results. The offline profile reports that AI downloads are disabled and
 still allows removing cached model files. Pure image operations and cryptographic Content
 Credentials are separate from neural watermarking and are not governed here.
+
 
 ## Turn it on: two keys
 
@@ -50,6 +52,7 @@ export and apply include the `ai` flag ([governance](governance.md#policy-as-cod
 Approve the models in the exact release as part of the same change. The configuration scopes
 capabilities, not individual model IDs, so withdrawing one model means turning off its whole
 capability or shipping a reviewed replacement.
+
 
 ## How the shell holds permission
 
@@ -85,13 +88,17 @@ deployment's capability list can include `agents` only once both the Lolly Work 
 desktop apps know the capability; an older desktop app refuses a lease that asks for it, which
 leaves every AI capability off there.
 
+
 ## Turn it off
 
 Set the `ai` flag to **Off** (or **Inherit**), or deploy `policy.ai.enabled=false`. Connected
 shells lose permission within one lease, at most 60 seconds, and offline devices lose it when
 their lease expires, because they cannot receive an instant remote command.
 
+
 ## What it does not control
+
+**Note: Enforcement inside the supported app, not a sandbox**
 
 This is enforcement inside the supported application, not a sandbox for arbitrary JavaScript, a
 modified client, an independent CLI or a copied model. Endpoint controls, trusted releases and
@@ -112,9 +119,12 @@ suitable network restrictions are still needed.
 
 Policy changes are audited without prompts or media, and this control adds no logging of
 inference content. Model-specific policy, broader AI execution receipts and approval of an
-AI-enabled service are not built, and a first release can keep AI off. Before turning AI on in
-production, confirm that these audit events reach your central log, and complete whatever review,
-model inventory and assessments your organisation requires.
+AI-enabled service are not built, and a first release can keep AI off.
+
+**Note: Before you turn AI on in production**
+
+Before turning AI on in production, confirm that these audit events reach your central log, and
+complete whatever review, model inventory and assessments your organisation requires.
 
 **Build and release notes for operators**
 

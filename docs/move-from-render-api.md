@@ -8,6 +8,14 @@ Every adapter on this page comes from each vendor's public documentation and fro
 
 [Lolly and rendering APIs](/info/compare-render-apis.html) compares the services. This page is the how.
 
+**What you'll do**, in four steps:
+
+- **[Connect and pin](#connect)** Read the account into a folder, then keep reference renders.
+- **[Recreate and map](#recreate-the-design)** Import or rebuild each design as a tool, then map the vendor's properties to its inputs.
+- **[Compare](#compare-before-you-cut-over)** Measure a render here against the vendor's reference.
+- **[Run both, then cut over](#run-both-then-cut-over)** Turn on the migration API, then move clients one template at a time.
+
+
 ## What each source allows
 
 The move follows the same stages as [leaving a DAM](offboarding.md): connect, pin, recreate, compare, run side by side, then cut over. How much carries across depends on what the vendor's API returns.
@@ -21,6 +29,7 @@ The move follows the same stages as [leaving a DAM](offboarding.md): connect, pi
 | Waiting for a result | Sync host, 10 second limit | Sync host, 10 second limit | `create_now` |
 | Per-request webhook | The API has none | `webhook_url` | `webhook_success` |
 | Dynamic image URLs | Not supported | Not supported | `/u/{uuid}` with its signatures |
+
 
 ## Connect
 
@@ -39,9 +48,14 @@ lw render-api inventory --from bannerbear-v5 --token-env BANNERBEAR_KEY --out ./
 - `previews/`: each preview picture. Your key is not sent with these downloads.
 - `mappings.draft.json`: a first mapping to review.
 
+
 ## Pin
 
-Keep what you would miss after the account ends. The inventory folder is the start. To keep a real render as a reference, use `sample`, which asks the vendor to render and so **spends credits on your account**. It refuses to run without `--spend-credits`.
+Keep what you would miss after the account ends. The inventory folder is the start. To keep a real render as a reference, use `sample`, which asks the vendor to render.
+
+**Warning: `sample` spends credits on your account**
+
+Each sample is a real render, and so **spends credits on your account**. It refuses to run without `--spend-credits`.
 
 ```bash
 lw render-api sample --from placid --template ospo24ysn --token-env PLACID_KEY \
@@ -49,6 +63,7 @@ lw render-api sample --from placid --template ospo24ysn --token-env PLACID_KEY \
 ```
 
 `request.json` is the body you would send the vendor. Re-run `inventory` on a cadence while you move, and compare the folders to see what changed upstream.
+
 
 ## Recreate the design
 
@@ -63,6 +78,7 @@ You can also open the JSON in [Design Import](/info/design-import.html#bannerbea
 **Bannerbear V2 and Placid.** Their APIs return field names and a preview, not a design, so nothing can import the layout. Rebuild each template as a tool, by hand or with an agent, with the preview in view. Keep one input per field in `coverage.md`.
 
 Tools are the part worth taking time over. A rebuilt tool can use your design system's colours, type and rules, and its inputs can be locked or limited by [policy](governance.md).
+
 
 ## Map the template
 
@@ -102,6 +118,7 @@ lw render-api check --mapping mapping.json
 
 It reads each tool's effective schema and reports an input that does not exist, an input policy has locked, or a format this deployment cannot make. It exits `2` if any template cannot run.
 
+
 ## Compare before you cut over
 
 Measure a render here against the vendor's reference, with the same [production comparison](renders.md#production-still-checks-and-permitted-repairs) a durable render can use.
@@ -116,6 +133,7 @@ lw render-api compare --from placid --mapping mapping.json --template ospo24ysn 
 - `--max-changed` and `--tolerance` set the whole-image limits.
 
 The command prints each check and exits `2` when the render differs, naming the region that moved. It renders in the reference's own size and format, and the reference must be a PNG or JPEG of at most 675,000 bytes. A match measures pixels against this reference. It is not an approval of the design.
+
 
 ## Run both, then cut over
 
@@ -146,6 +164,7 @@ Authentication is the same header, `Authorization: Bearer`, carrying a [service 
 
 Move one template at a time, because a template that has no mapping answers `404` here while the vendor keeps serving that template. Send each client to whichever host holds its template, and keep the vendor account until the last one has moved and the references are safe.
 
+
 ## What runs and what is refused
 
 | Request | Here |
@@ -161,6 +180,7 @@ Move one template at a time, because a template that has no mapping answers `404
 
 Formats depend on the deployment: JPG and PDF need the [render worker](configuration.md#render).
 
+
 ## Webhooks
 
 `webhook_url` and `webhook_success` post the vendor's object when the render finishes, through the same durable outbox as native callbacks, with the same retries. A failed render sends the object too, with its failed status.
@@ -168,17 +188,21 @@ Formats depend on the deployment: JPG and PDF need the [render worker](configura
 - List the receiver's origin in `automation.callbacks.allowedOrigins` and set `LW_WEBHOOK_SECRET`. Any other URL is refused with `403 CALLBACK_URL_NOT_ALLOWED`.
 - Each post also carries `x-lolly-signature`, `x-lolly-timestamp` and `x-lolly-delivery-id`, so a receiver can start checking them. Neither vendor documents signing for these webhooks, so a receiver that ignores the headers still works.
 
+
 ## Result URLs
 
 Clients built for hosted APIs store a result URL and embed it, so `image_url` and `files` hold signed URLs that need no token. This is a tradeoff, and the opposite of what [job result tokens](automation-api.md#callbacks) do, which moved out of URLs because a URL ends up in logs.
 
-- **The URL is the credential.** Anyone holding it can fetch the file until it expires.
+**Warning: Treat a result URL as a secret**
+
+**The URL is the credential.** Anyone holding it can fetch the file until it expires. **Revoking a token does not revoke its URLs.** Delete the records as well.
+
 - **It expires.** It works for `resultUrls.signedDays` after the render finished, 30 by default. Polling the record later gives a fresh URL.
 - **Deleting the record revokes the URL.** Use `DELETE /compat/requests/:id` with the token that made the record, or as an admin, and Placid's `DELETE /images/{id}` too. A shared cache may hold a file for up to five minutes after that.
-- **Revoking a token does not revoke its URLs.** Delete the records as well.
 - **`signedDays: 0` turns this off.** Result URLs then need the same bearer token, which suits server-to-server clients.
 
 Output [retention](configuration.md#policy), when configured, also ends a URL: the file then answers `410`.
+
 
 ## Placid's URL API
 
@@ -202,6 +226,7 @@ Existing signed URLs keep working with a host change alone, if you give the temp
 
 Bannerbear's signed base URLs and Instant URLs are not supported, because their signing could not be confirmed from public documentation.
 
+
 ## Leave Lolly too
 
 Nothing here is one-way.
@@ -212,6 +237,7 @@ Nothing here is one-way.
 - **The mappings and inventories are JSON.** They show what you moved and how it maps, and they read just as well in the other direction.
 
 Your vendor account also stays yours for as long as you keep the account open. Moving some templates and keeping others is a fine place to stop.
+
 
 ## Check it on your own account
 
@@ -224,6 +250,7 @@ If you hold an account, this confirms the adapter for your templates. Use a temp
 5. For Placid, sign a URL the way your code does, and request it from `/compat/placid/u/`. Does it verify?
 
 Tell us what you find with [an issue](https://github.com/lolly-tools/lolly-work/issues). Please leave out your key, and any customer data in the requests.
+
 
 ## Related
 

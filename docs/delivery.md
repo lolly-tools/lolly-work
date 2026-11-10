@@ -7,6 +7,7 @@ destination your organisation owns: S3-compatible storage (such as AWS S3, MinIO
 Garage), WebDAV (including Nextcloud and ownCloud), an HMAC-signed HTTPS receiver, Brandfolder
 or Cloudinary.
 
+
 ## How delivery differs from a source
 
 A catalog provider brings remote assets **into** Lolly, normally read-only. Delivery sends a
@@ -34,6 +35,7 @@ into write authority, so the two keep separate contracts, registries and secrets
 - **No lock-in.** S3 is an open protocol adapter, not a privileged hosted service. You bring your
   own endpoint, bucket and key, and can leave without migrating a Lolly-specific format.
 
+
 ## Pick an adapter
 
 | Adapter | Credential | After writing, Lolly Work checks | Revoke |
@@ -48,6 +50,7 @@ S3, WebDAV and signed HTTPS refuse redirects, and Brandfolder refuses API and up
 S3 and WebDAV receipts record
 `transformation: "none"` and the delivered digest. Signed HTTPS derives that status from the
 receiver's digest rather than assuming every publisher keeps bytes unchanged.
+
 
 ## Configure a destination
 
@@ -281,6 +284,7 @@ round trip is needed.
 Raw-body and automation-output sends still need genuine signed Lolly exports; this capability
 does not make arbitrary catalog or device files eligible.
 
+
 ## What happens when you send
 
 A raw body is accepted only when it carries Lolly's C2PA export assertion. Before anything leaves,
@@ -345,6 +349,7 @@ digest, and a final approval sends that exact staged record.
 
 How chains work is on [Approvals](approvals.md).
 
+
 ## Who may send
 
 `delivery.create` is the right to send to a fixed organisation destination. Members carry it by
@@ -370,6 +375,7 @@ lw grants add group:contractors delivery.create 'destination:campaign-archive' -
 
 Grants in general are on [Roles and grants](permissions.md).
 
+
 ## API example
 
 ```bash
@@ -382,6 +388,7 @@ curl -X POST \
 ```
 
 Discovery and history routes are in the [API reference](api.md#outbound-delivery).
+
 
 ## Check a destination against a live system
 
@@ -415,6 +422,7 @@ ids, the test reports the cleanup as unconfirmed, and the operator must check th
 hand. When the receipt carries a digest, it must match the bytes sent. A second HTTPS test sends
 three requests the receiver must refuse with a 4xx status: a signature from another secret, a
 timestamp a day old and a body that does not match its signed digest.
+
 
 ## Not built yet
 

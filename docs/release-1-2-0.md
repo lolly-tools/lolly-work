@@ -526,6 +526,8 @@ Share with rules file, and the DESIGN.md writer. Core 1.8.0 carries the `partner
 
 This release adds 21 SQL migrations since 1.1.3:
 
+**The 21 migrations**
+
 - `0077_edge_purge_outbox.sql` adds `edge_purge_outbox`, the queue of CDN purges, and
   `edge_provider_credentials`, edge credentials sealed with the instance credential key.
 - `0078_token_scopes.sql` adds the `scopes` and `tools` columns to `api_tokens`.
@@ -622,7 +624,7 @@ This section is for Lolly Work maintainers cutting the release.
 The commands are the same as for 1.1.3, with `vendor/lolly` at the Lolly source
 above:
 
-```text
+```bash
 node scripts/vendor-content-resolver.ts --write
 pnpm run repin-engine --apply
 pnpm run verify:engine-pin
@@ -631,7 +633,7 @@ pnpm run typecheck
 
 The packaged documentation comes from a Lolly commit that contains this page:
 
-```text
+```bash
 node scripts/sync-docs-bundle.ts --source=/path/to/lolly --commit=<full-commit-sha>
 pnpm run verify:docs-pin
 ```
@@ -647,7 +649,7 @@ Lolly 1.2.0 publishes a new web archive, and the Lolly Work YunoHost package pin
 `lolly-web-1.2.0-ynh1.tar.gz` archive above. The maintained producer cuts the package on
 the final Lolly Work commit:
 
-```text
+```bash
 node scripts/yunohost-release.ts --ynh-rev 1 --shell-url https://lolli.li/lolly-web-1.2.0-ynh1.tar.gz --shell-sha256 3a324eef05128d32c6154ab88e360c40a8235ee181c3b49abe4ef5b556d1ac0f --out ABS_NEW_ARTIFACT_DIRECTORY
 ```
 

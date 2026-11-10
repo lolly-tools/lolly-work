@@ -8,11 +8,21 @@ the files into your own store when you want them there.
 Canto acquired Image Relay in September 2024, so this kind serves Canto tenants and Image Relay
 tenants that have moved to Canto.
 
+
 ## Onboarding
 
-1. Confirm API access under your contract, the tenant's regional domain and the album to expose. Agree Lolly Work groups, approved states and any custom expiry field, including how records with no approval state should be handled.
-2. Obtain the App ID, Secret and refresh token described below. Use the [four-step connection](README.md#connect-a-source-in-four-steps); this kind uses a pasted credential rather than the CLI consent flow.
-3. Run the [Canto tenant check](tenant-check.md#canto) for every required file scheme. Compare originals with direct Canto downloads and test permitted and refused access before enabling the wider audience. An Image Relay migration needs the driver selection in [Leave a DAM](../offboarding.md#canto-and-image-relay-which-driver-do-you-exit-through).
+1. **Scope.** Confirm API access under your contract, the tenant's regional domain and the album to expose. Agree Lolly Work groups, approved states and any custom expiry field, including how records with no approval state should be handled.
+2. **Connection.** Obtain the App ID, Secret and refresh token described below. Use the [four-step connection](README.md#connect-a-source-in-four-steps); this kind uses a pasted credential rather than the CLI consent flow.
+3. **Tenant check.** Run the [Canto tenant check](tenant-check.md#canto) for every required file scheme. Compare originals with direct Canto downloads and test permitted and refused access before enabling the wider audience. An Image Relay migration needs the driver selection in [Leave a DAM](../offboarding.md#canto-and-image-relay-which-driver-do-you-exit-through).
+
+**Note: Not yet confirmed live**
+
+The driver is not yet confirmed against a live tenant. The endpoint paths and field names come from
+Canto's documentation, and Lolly Work holds no Canto account, so the check runs on your own
+tenant under your contract. [Check a source on your own tenant](tenant-check.md#canto) lists
+what to look at. Contributors changing the driver follow its
+[maintainer runbook](https://github.com/lolly-tools/lolly-work/blob/main/server/src/catalog/providers/live-verify/canto.md) in the Lolly Work repository.
+
 
 ## What you need from Canto
 
@@ -27,6 +37,7 @@ tenants that have moved to Canto.
   OAuth server together.
 - Optionally, **an album id** to federate one album.
 - If you keep expiry dates, **the custom field** that holds them.
+
 
 ## Credential shape
 
@@ -45,6 +56,7 @@ Get the refresh token by running **Canto's own documented OAuth2 authorization-c
 by hand against your App ID and Secret. `lw providers auth` refuses this kind; see
 [OAuth sources](README.md#kinds-whose-consent-flow-is-not-registered-canto-imagerelay-optimizely-cmp).
 
+
 ## instance.json / `lw providers add`
 
 ```json
@@ -57,6 +69,8 @@ by hand against your App ID and Secret. `lw providers auth` refuses this kind; s
   "exposure": { "groups": ["marketing"], "requireApproved": true }
 }
 ```
+
+**Options**
 
 | Option | What it does |
 |---|---|
@@ -73,11 +87,14 @@ by hand against your App ID and Secret. `lw providers auth` refuses this kind; s
 the manual `catalog.expire` control is the only expiry. An Image Relay tenant that already set
 this keeps its settings; only the field name changes.
 
+
 ## Verify
 ```bash
 lw providers preview --kind canto --options '{"tenant":"acme"}'   # dry run, nothing stored
 lw providers health acme-canto
 ```
+
+**What each error means**
 
 | Error | Meaning |
 |---|---|
@@ -87,13 +104,9 @@ lw providers health acme-canto
 | `canto api 403` | The tenant refused the call, most often because API access is not on the contract tier. |
 | `canto url outside allowed hosts` | A `baseUrl` or `tokenUrl` override points outside the Canto hosts. |
 
+
 ## Notes / limits
 
-- **Not yet confirmed against a live tenant.** The endpoint paths and field names come from
-  Canto's documentation, and Lolly Work holds no Canto account, so the check runs on your own
-  tenant under your contract. [Check a source on your own tenant](tenant-check.md#canto) lists
-  what to look at. Contributors changing the driver follow its
-  [maintainer runbook](https://github.com/lolly-tools/lolly-work/blob/main/server/src/catalog/providers/live-verify/canto.md) in the Lolly Work repository.
 - **Listing walks schemes.** Canto lists per scheme (image, video, audio, document,
   presentation, other), so each catalog id carries its scheme (`image:AB12C`). An album-scoped
   sync pages the album once instead.
@@ -101,10 +114,11 @@ lw providers health acme-canto
   `canto.global` and `canto.de` hosts, and never stored. The driver sends its own `User-Agent`
   and keeps to about three requests a second, a cautious default rather than a published limit.
 
+
 ## Off-boarding
 
 Canto is an exit target subject to [tenant qualification](tenant-check.md#canto): the driver has not yet been confirmed against a live tenant, including whether each scheme's download is the true original. A stored checksum alone does not prove that the source supplied an original.
 
-Prepare the destination through the [self-hosting strategy with S3 storage](../offboarding.md#self-host-lolly-work-with-s3-storage), then rehearse materialize, drift and cutover with [Leave a DAM](../offboarding.md). Lolly Verify approval and mapped expiry, keep required rights and history exports separately, and test old references after cutover. For former Image Relay tenants, choose the driver that serves the files today.
+Prepare the destination through the [self-hosting strategy with S3 storage](../offboarding.md#self-host-lolly-work-with-s3-storage), then rehearse materialize, drift and cutover with [Leave a DAM](../offboarding.md). Verify approval and mapped expiry, keep required rights and history exports separately, and test old references after cutover. For former Image Relay tenants, choose the driver that serves the files today.
 
 Compare [offboarding destinations](../offboarding.md#choose-your-offboarding-path), starting with open-source services you can run. Each route remains subject to this source's limits.
