@@ -227,7 +227,7 @@ test('the card is only for people who can answer or invite', async () => {
   assert.ok((await card(broken, true))?.textContent.includes('store down'));
 });
 
-test('the Overview counts the requests waiting and links to People', async () => {
+test('the Overview links waiting access requests to their queue', async () => {
   const p = page({
     route: (path) => (path === '/api/v1/telemetry/summary'
       ? { status: 200, data: { days: [{ date: '2026-10-03', events: 1, exports: 0, users: 1 }], totals: { activeUsers: 1 }, topTools: [], formats: [] } }
@@ -235,15 +235,17 @@ test('the Overview counts the requests waiting and links to People', async () =>
   });
   await p.helpers.viewOverview(p.main);
   const link = [...p.main.querySelectorAll('a.needs-link')].find((a: any) => a.textContent.includes('requests waiting')) as any;
-  assert.equal(link?.textContent, '3 requests waiting');
-  assert.equal(link.getAttribute('href'), '#/users');
+  assert.equal(link?.textContent, '3 access requests waiting');
+  assert.equal(link.getAttribute('href'), '#/users?tab=requests');
 
   const q = page({ open: [], route: (path) => (path === '/api/v1/telemetry/summary'
     ? { status: 200, data: { days: [{ date: '2026-10-03', events: 0, exports: 0, users: 0 }], totals: { activeUsers: 0 }, topTools: [], formats: [] } }
     : undefined) });
   await q.helpers.viewOverview(q.main);
   assert.ok(!q.main.textContent.includes('requests waiting'));
-  assert.ok(q.main.textContent.includes('Invite people from People. Invited people appear in the directory after they first sign in.'), 'the first-run steps');
+  assert.equal(q.main.querySelector('.zero-banner'), null, 'unavailable sources do not imply a new installation');
+  assert.match(q.main.textContent, /Some connection or share-link data is unavailable/);
+  assert.ok(q.main.querySelector('.quick-actions'), 'common tasks stay available without metrics');
 });
 
 test('Activity has a sentence for each invite and access event', () => {
