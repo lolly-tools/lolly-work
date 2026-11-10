@@ -292,8 +292,14 @@ test('scripts: present, executable, valid bash, helpers-2.1 names only', () => {
   const install = read('scripts/install');
   assert.ok(install.indexOf('ynh_setup_source --dest_dir="$install_dir"') < install.indexOf('--source_id="shell"'));
   assert.ok(install.indexOf('lollywork_seed_pack') > install.indexOf('--source_id="shell"'));
-  const common = read('scripts/_common.sh');
-  assert.ok(common.indexOf('proxy.inc') < common.indexOf('ynh_config_add_nginx'), 'the includes must exist before nginx -t runs');
+  assert.match(read('scripts/_common.sh'), /lollywork_add_nginx_includes\(\) \{\n\s+ynh_config_add --template="proxy\.inc"/);
+  for (const name of ['install', 'upgrade']) {
+    const s = read(`scripts/${name}`);
+    // package_check decides the app is a web app (and so runs the URL checks and the
+    // change-URL test) with `grep '^ynh_config_add_nginx' scripts/install`.
+    assert.match(s, /^ynh_config_add_nginx$/m, `${name} must call ynh_config_add_nginx at the top level`);
+    assert.ok(s.indexOf('lollywork_add_nginx_includes') < s.search(/^ynh_config_add_nginx$/m), `${name}: the includes must exist before nginx -t runs`);
+  }
   assert.match(read('scripts/upgrade'), /--keep="instance\.json \.env shell"/, 'upgrade must keep the admin-editable files and the shell');
   assert.match(read('scripts/backup'), /ynh_psql_dump_db > db\.sql/);
   assert.match(read('scripts/restore'), /ynh_psql_db_shell < \.\/db\.sql/);
