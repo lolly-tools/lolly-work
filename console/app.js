@@ -24,6 +24,7 @@ import { createSubmitPanel } from './catalog-submit.js';
 import { buildThemeMaps, themeFromTokens, resolveCssColor } from './brand-theme.js';
 import { dayBound, localDateValue, zoneName } from './lifecycle-dates.js';
 import { renderDocPathChoices } from './docs-path-chooser.js';
+import { releaseCard, shouldShowBanner, updateNotice } from './update-notice.js';
 
 const $app = document.getElementById('app');
 const $tip = document.getElementById('tip');
@@ -1141,8 +1142,14 @@ async function renderActivityFeed(host, params = new URLSearchParams()) {
   render(first, true);
 }
 
+// The release notice's helpers (update-notice.js), from this file's own toolkit.
+const updateDeps = () => ({ el, api, toast, announce, relTime, copy: copyButton });
+// Owners and admins (fleet.view) only: the server refuses anyone else, and the
+// console does not ask on their behalf. Reads memory on the server, never the network.
+const releaseUpdates = () => (canAction('fleet.view') ? api('/api/v1/admin/updates').catch(() => null) : Promise.resolve(null));
+
 async function viewOverview(main) {
-  const [summary, fleet, links, stats, appr, auditHead, asks, agentUse] = await Promise.all([
+  const [summary, fleet, links, stats, appr, auditHead, asks, agentUse, updates] = await Promise.all([
     api('/api/v1/telemetry/summary'),
     canView('fleet') ? api('/api/v1/fleet').catch(() => null) : null,
     canView('links') ? api('/api/v1/links?all=1').catch(() => null) : null,
@@ -1151,6 +1158,7 @@ async function viewOverview(main) {
     canView('audit') ? api('/api/v1/audit?limit=1').catch(() => null) : null,
     canView('users') ? api('/api/v1/access-requests?status=open').catch(() => null) : null,
     canView('agents') ? api('/api/v1/agents/activity?days=14').catch(() => null) : null,
+    releaseUpdates(),
   ]);
   const d14 = summary.days;
   const events14 = d14.reduce((a, d) => a + d.events, 0);
@@ -1162,6 +1170,8 @@ async function viewOverview(main) {
     el('h1', {}, 'Overview'),
     el('p', { class: 'sub' }, 'Review what needs attention and manage your workspace.'),
   );
+  // A newer Lolly Work release, until dismissed for that version (update-notice.js).
+  if (updates && shouldShowBanner(updates)) main.append(updateNotice(updates, updateDeps(), { banner: true }));
 
   // ── what needs me — the role-aware lead. Charts describe the instance; this
   // strip is the task list, so it renders FIRST and only when something is
@@ -1508,6 +1518,9 @@ async function viewLimits(main) {
 
 async function viewInstance(main, params) {
   main.append(el('h1', {}, 'Settings'), el('p', { class: 'sub' }, 'Manage your organisation’s brand, access and app configuration.'));
+  // The release this deployment runs, and a newer one with its upgrade steps.
+  const updates = await releaseUpdates();
+  if (updates) main.append(releaseCard(updates, updateDeps()));
   if (params?.get?.('tab')) {
     main.append(el('p', { class: 'empty' }, 'That settings section is not available. Choose a section below.'));
   }

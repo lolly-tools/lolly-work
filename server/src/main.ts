@@ -15,6 +15,7 @@ import { createS3BlobStore } from './blobs/s3.ts';
 import { runMigrations, pendingMigrations, migrationDatabaseUrl } from './store/migrate.ts';
 import { buildApp } from './api/app.ts';
 import type { EdgePurgeOutbox } from './edge/outbox.ts';
+import type { UpdateChecker } from './updates/checker.ts';
 import { parseBackgroundPollMs, parseRenderConcurrency, type RenderRunner } from './renders/runner.ts';
 import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
@@ -233,6 +234,7 @@ if (renderConcurrency !== undefined) console.log(`[lolly-work] durable render co
 if (config.render.worker.dispatch === 'pull') console.log('[lolly-work] render worker dispatch: pull (workers lease jobs over /api/internal/render/lease)');
 let renderRunner: RenderRunner | undefined;
 let edgeOutbox: EdgePurgeOutbox | undefined;
+let updateChecker: UpdateChecker | undefined;
 const app = buildApp({ config, store, secrets, blobs, otel, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
   // A saved comment write tells the people in that session's live room (plan 76 M4).
   roomEvents: (id, frame) => collab.notifyComment(id, frame),
@@ -241,12 +243,22 @@ const app = buildApp({ config, store, secrets, blobs, otel, listCollabRooms: () 
   collabSocketTicket: (cookie, id) => collab.issueSocketTicket(cookie, id),
   onRenderRunner: (runner) => { renderRunner = runner; },
   onEdgeOutbox: (outbox) => { edgeOutbox = outbox; },
+  onUpdateChecker: (checker) => { updateChecker = checker; },
+  workVersion,
   ...(backgroundPollMs !== undefined ? { backgroundPollMs } : {}),
   ...(renderConcurrency !== undefined ? { renderConcurrency } : {}),
 });
 // Poll persisted requests at boot as well as after submission. Other replicas
 // may run the same loop: the store owns claims and fencing.
 renderRunner?.start();
+// The release check (updates/checker.ts): the published chart index, once a day
+// with jitter, first a few minutes after boot. Off with updates.check false.
+if (updateChecker?.settings.check) {
+  updateChecker.start();
+  console.log(`[lolly-work] release check: daily, ${updateChecker.settings.channel} channel, ${new URL(updateChecker.settings.feedUrl).origin}`);
+} else {
+  console.log('[lolly-work] release check: off');
+}
 // Edge purges (edge/outbox.ts): only when instance.json configures a provider.
 // The outbox wakes itself when a row falls due, so an idle instance sets no timer.
 if (edgeOutbox) {
@@ -407,6 +419,7 @@ const shutdown = async (signal: string): Promise<void> => {
   console.log(`[lolly-work] ${signal} — draining ${collab.rooms()} live collab room(s)`);
   server.close(); // stop accepting; in-flight requests finish
   edgeOutbox?.stop(); // queued purges stay in the outbox for the next process
+  updateChecker?.stop();
   // Save live rooms while render resources drain, including uninterruptible work.
   await Promise.all([renderRunner?.stop(), (async () => {
     try {

@@ -230,6 +230,9 @@ import { renderCapabilities } from '../render/capabilities.ts';
 import { assessSetup, productionMode, type SetupReport } from '../setup/checks.ts';
 import { inspectPack } from '../setup/pack.ts';
 import { consoleAccess } from '../setup/console-access.ts';
+import { createUpdateChecker, type UpdateChecker } from '../updates/checker.ts';
+import { registerUpdateRoutes } from '../updates/routes.ts';
+import { resolveUpdateSettings } from '../updates/settings.ts';
 import { registerSetupRoutes } from '../setup/routes.ts';
 import { identitySettingsHash } from '../setup/configuration.ts';
 import { loadEngine } from '../render/contract.ts';
@@ -328,6 +331,19 @@ function safeTags(pairs: Array<[TagPrefix, string]>): string[] {
   return pairs.flatMap(([prefix, value]) => { try { return [deliveryTag(prefix, value)]; } catch { return []; } });
 }
 
+/** This server's Lolly Work version: the function bundle states it in its banner
+ *  (scripts/build-vercel-fn.mjs); the server reads package.json beside the source.
+ *  'unknown' when neither answers, which shows no release as newer. */
+function packageVersion(): string {
+  const bundled = (globalThis as { __LW_WORK_VERSION?: unknown }).__LW_WORK_VERSION;
+  if (typeof bundled === 'string' && bundled) return bundled;
+  try {
+    return String((JSON.parse(readFileSync(fileURLToPath(new URL('../../../package.json', import.meta.url)), 'utf8')) as { version?: unknown }).version ?? 'unknown');
+  } catch {
+    return 'unknown';
+  }
+}
+
 function pinnedEngineVersion(): string | null {
   if (cachedPinnedEngine !== undefined) return cachedPinnedEngine;
   try {
@@ -419,6 +435,14 @@ export interface AppDeps {
   edgeFetch?: typeof fetch;
   /** Long-lived hosts start the edge purge outbox; function hosts leave purges queued. */
   onEdgeOutbox?: (outbox: EdgePurgeOutbox) => void;
+  /** The release check (updates/checker.ts). main.ts starts its daily schedule;
+   *  without it, as on Vercel and in tests, the feed is read only on demand. */
+  onUpdateChecker?: (checker: UpdateChecker) => void;
+  /** The environment the release notice settings read (LW_UPDATES_*, LW_INSTALL_ROUTE,
+   *  LW_RELEASE_*, LW_CHART_VERSION). Defaults to process.env. */
+  updatesEnv?: NodeJS.ProcessEnv;
+  /** The Lolly Work version this server runs. Defaults to package.json's. */
+  workVersion?: string;
 }
 
 type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -4846,6 +4870,21 @@ export function buildApp(deps: AppDeps): App {
     await audit(`user:${actor.id}`, 'fleet.install.forget', `install:${ctx.params.id}`);
     sendJson(res, 200, { ok: true });
   });
+
+  // ── release notice (updates/) ─────────────────────────────────────────────
+  // Which newer Lolly Work releases the published chart index lists, with the
+  // upgrade steps for how this instance was installed. Information only: the
+  // index is not signed, and nothing here changes the deployment.
+  const updateChecker = createUpdateChecker({
+    settings: resolveUpdateSettings(config, deps.updatesEnv ?? process.env),
+    currentVersion: deps.workVersion ?? packageVersion(),
+    network: config.network.providers,
+    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    ...(deps.providerResolver ? { resolver: deps.providerResolver } : {}),
+    log: (level, message, fields) => log(level, message, fields),
+  });
+  registerUpdateRoutes(router, { checker: updateChecker, requireAction });
+  deps.onUpdateChecker?.(updateChecker);
 
   // ── instance-pack hosting (plans/34 wave 2) ───────────────────────────────
   // The control plane SERVES the signed `.lolly` pack; it never builds one -
