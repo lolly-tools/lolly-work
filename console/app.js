@@ -7889,7 +7889,7 @@ async function viewGrants(main) {
       field('Applies to', kindSel), nameField,
       field('Permission', actionInput), field('Effect', effectSel),
       el('div', { class: 'grant-scope' }, field('Resource scope', resourceInput),
-        el('p', { class: 'sub flush' }, '* matches everything. Some permissions narrow further: tool:<id> for using a tool, exporting from it and linking to it, destination:<id> for delivery, project:<id> or session:<id> for sessions and comments, chain:<id> for approvals.'))),
+        el('p', { class: 'sub flush' }, '* matches everything. Some permissions narrow further: tool:<id> for using a tool, exporting from it and linking to it, destination:<id> for delivery, project:<id> or session:<id> for sessions and comments, programme:<id> for one partner programme, chain:<id> for approvals.'))),
     preview,
     el('p', {}, addBtn),
     err);

@@ -25,6 +25,7 @@ test('the rules that can match are accepted', () => {
     ['tool.use', 'tool:qr-code'], ['tool.use', '*'], ['export.download', 'tool:price-sheet'],
     ['export.server', 'tool:qr-code'], ['link.create-guest', 'tool:event-badge'],
     ['delivery.create', 'destination:campaign-archive'], ['project.manage', 'project:Ab-3_x'],
+    ['programme.manage', 'programme:resellers'],
     ['session.view', 'session:s1'], ['comment.create', 'project:p1'],
     ['approval.act', 'chain:brand-review'], ['approval.act', 'asset:inst/hero'],
     ['catalog.read', '*'], ['policy.edit', '*'], ['catalog.hold', '*'],
@@ -39,11 +40,14 @@ test('the rules that can never match are named, with the reason', () => {
   assert.match(grantNeverMatches({ action: 'export.downlaod', resource: '*' })!, /not a permission/);
   assert.match(grantNeverMatches({ action: 'catalog.hold', resource: 'catalog:inst/hero' })!, /must be "\*"/);
   assert.match(grantNeverMatches({ action: 'tool.use', resource: 'tool:' })!, /never match/);
+  // `programme.manage` is checked against one programme, never a company or a tool.
+  assert.match(grantNeverMatches({ action: 'programme.manage', resource: 'company:northwind' })!, /programme:<id>/);
+  assert.match(grantNeverMatches({ action: 'programme.manage', resource: 'tool:card' })!, /programme:<id>/);
 });
 
 test('every action the table narrows is one the routes check', () => {
   for (const action of ['tool.use', 'export.download', 'export.request', 'export.server', 'link.create', 'link.create-guest',
-    'delivery.create', 'project.manage', 'session.view', 'session.edit', 'comment.view', 'comment.create', 'comment.edit',
+    'delivery.create', 'project.manage', 'programme.manage', 'session.view', 'session.edit', 'comment.view', 'comment.create', 'comment.edit',
     'comment.resolve', 'comment.moderate', 'approval.act']) assert.ok(knownActions().has(action), action);
 });
 
