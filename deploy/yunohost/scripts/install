@@ -17,8 +17,7 @@ ynh_app_setting_set --key=proxy_secret --value="$proxy_secret"
 catalog_signing_key=$(lollywork_new_catalog_key)
 ynh_app_setting_set --key=catalog_signing_key --value="$catalog_signing_key"
 
-# Governance settings the admin can change later in the config panel; the
-# instance.json template reads them, at install and at every upgrade.
+# Governance defaults, editable in the config panel.
 access_mode="gated"
 telemetry="standard"
 guest_links="true"
@@ -27,8 +26,6 @@ ynh_app_setting_set --key=access_mode --value="$access_mode"
 ynh_app_setting_set --key=telemetry --value="$telemetry"
 ynh_app_setting_set --key=guest_links --value="$guest_links"
 ynh_app_setting_set --key=hooks_fast_path --value="$hooks_fast_path"
-# A Nextcloud on this server is detected and its address prefilled; the connection
-# itself is switched on in the config panel once an app password exists.
 lollywork_nextcloud_defaults
 
 #=================================================
