@@ -30,6 +30,9 @@ const RESOURCE_KINDS: Readonly<Record<string, readonly string[]>> = {
   'link.create-guest': ['tool'],
   'delivery.create': ['destination'],
   'project.manage': ['project'],
+  // A programme's tokens, usage, View as and template review check `programme:<id>`;
+  // the rest of the programme routes check `*` only.
+  'programme.manage': ['programme'],
   'session.view': ['session', 'project'],
   'session.edit': ['session', 'project'],
   'comment.view': ['session', 'project'],

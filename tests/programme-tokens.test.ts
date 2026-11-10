@@ -7,6 +7,8 @@
  *  - scopes are capped, and `delivery` and `audit.read` are refused;
  *  - the tools sit inside the programme's own list;
  *  - a manager of one programme is refused on another;
+ *  - a `programme.manage` grant on `programme:<id>`, written through the
+ *    grants route, is accepted and decides that programme alone;
  *  - the list shows limits, use and expiry; a manager changes one token's
  *    limits and revokes one token, only inside their programme;
  *  - a programme token never leaves its programme.
@@ -48,6 +50,7 @@ before(async () => {
       { email: 'owner@test', groups: ['owner'] },
       { email: 'admin@test', groups: ['admin'] },
       { email: 'bruno@test', groups: [] },
+      { email: 'rita@test', groups: ['resellers-team'] },
     ] },
   }));
   const app = buildApp({ config, store, blobs: createMemoryBlobStore(), metrics: createMetrics(), secrets: { session: 'sT', link: 'lT' } });
@@ -56,7 +59,7 @@ before(async () => {
   const address = server.address();
   assert.ok(address && typeof address === 'object');
   base = `http://127.0.0.1:${address.port}`;
-  for (const who of ['owner', 'admin', 'bruno']) {
+  for (const who of ['owner', 'admin', 'bruno', 'rita']) {
     const login = await fetch(`${base}/api/auth/dev?email=${who}@test`, { redirect: 'manual' });
     cookies[who] = login.headers.getSetCookie().find((c) => c.startsWith('lw_session='))!.split(';')[0]!;
   }
@@ -129,6 +132,37 @@ test('what a mint may not ask for is refused', async () => {
   assert.equal(fine.status, 201, JSON.stringify(fine.body));
   assert.deepEqual(fine.body.tools, ['sheet']);
   assert.equal(fine.body.limitSources.rendersPerDay, 'token');
+});
+
+test('an admin grants a group programme.manage on one programme, and it decides that programme\'s routes', async () => {
+  // Written through the grants route, as the console and `lw grants add` write it,
+  // so the shape check sees it: `programme:<id>` is a resource the routes check.
+  const before = await as('rita', 'GET', '/api/v1/programmes/resellers/tokens');
+  assert.equal(before.status, 403, 'no grant yet');
+  const grant = { principal: 'group:resellers-team', action: 'programme.manage', resource: 'programme:resellers', effect: 'allow' };
+  const made = await as('admin', 'POST', '/api/v1/grants', grant);
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const listed = await as('admin', 'GET', '/api/v1/grants');
+  const stored = listed.body.grants.find((g: { principal: string; resource: string }) => g.principal === grant.principal && g.resource === grant.resource);
+  assert.ok(stored, 'the grant is stored');
+  assert.equal(stored.neverMatches, undefined, 'and not marked as one that never matches');
+  // It takes effect on that programme's tokens and usage...
+  assert.equal((await as('rita', 'GET', '/api/v1/programmes/resellers/tokens')).status, 200);
+  const minted = await as('rita', 'POST', '/api/v1/programmes/resellers/tokens', { label: 'team agent', company: 'northwind' });
+  assert.equal(minted.status, 201, JSON.stringify(minted.body));
+  assert.equal((await as('rita', 'GET', '/api/v1/programmes/resellers/usage')).status, 200);
+  // ...and on nothing else: another programme, and what is checked deployment-wide.
+  assert.equal((await as('rita', 'GET', '/api/v1/programmes/distributors/tokens')).status, 403);
+  assert.equal((await as('rita', 'POST', '/api/v1/programmes/distributors/tokens', { label: 'x' })).status, 403);
+  assert.equal((await as('rita', 'GET', '/api/v1/programmes/distributors/usage')).status, 403);
+  assert.equal((await as('rita', 'GET', '/api/v1/programmes')).status, 403);
+  // A company is not a resource programme.manage is checked against.
+  const company = await as('admin', 'POST', '/api/v1/grants', { ...grant, resource: 'company:northwind' });
+  assert.equal(company.status, 400);
+  assert.equal(company.body.error.code, 'GRANT_NEVER_MATCHES');
+  assert.deepEqual(company.body.error.accepted, ['*', 'programme:<id>']);
+  assert.equal((await as('admin', 'DELETE', '/api/v1/grants', grant)).status, 200);
+  assert.equal((await as('rita', 'GET', '/api/v1/programmes/resellers/tokens')).status, 403, 'removed, it stops deciding');
 });
 
 test('a manager of one programme is refused on another, and an admin keeps every programme', async () => {
