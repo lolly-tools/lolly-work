@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# The app takes a whole domain (full_domain), so only the domain can change here;
-# $path stays "/". New values are in $domain, old ones in $old_domain.
+# The app takes a whole domain: only $domain changes, and $path stays "/".
 
 source _common.sh
 source /usr/share/yunohost/helpers
@@ -18,9 +17,7 @@ ynh_systemctl --service="$app" --action="stop"
 #=================================================
 ynh_script_progression "Updating NGINX web server configuration..."
 
-# The includes are per domain: write the new ones first (the regenerated location
-# file refers to them), let the helper move the location file, then drop the
-# includes that belonged to the old domain.
+# The includes are per domain: write the new ones before nginx -t, then drop the old.
 lollywork_add_nginx_includes
 ynh_config_change_url_nginx
 if [ "$old_domain" != "$domain" ]; then
@@ -33,8 +30,7 @@ fi
 #=================================================
 ynh_script_progression "Updating $app's configuration..."
 
-# instance.baseUrl drives the Secure cookie flag and every absolute link the
-# server hands out, so it has to follow the domain.
+# instance.baseUrl sets the Secure cookie flag and absolute links.
 lollywork_add_config
 
 #=================================================

@@ -3,18 +3,14 @@
 source _common.sh
 source /usr/share/yunohost/helpers
 
-# Every question in config_panel.toml is an app setting of the same id (the
-# default binding), and instance.json is a template over those settings. So the
-# only thing to add to the stock apply step is regenerating that file; the panel's
-# `services` entry restarts the server afterwards.
+# The stock step saves the settings; instance.json is rendered from them.
 ynh_app_config_apply() {
     _ynh_app_config_apply
     lollywork_add_config
 }
 
 validate__nextcloud_enabled() {
-    # Only a switched-on connection must be complete. The other fields are read from
-    # the values being applied.
+    # Only a switched-on connection must be complete.
     [[ "${nextcloud_enabled:-false}" == "true" ]] || return 0
     lollywork_nextcloud_check || true
 }

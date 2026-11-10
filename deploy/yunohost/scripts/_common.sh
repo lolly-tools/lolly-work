@@ -4,31 +4,23 @@
 # COMMON VARIABLES AND CUSTOM HELPERS
 #=================================================
 
-# The nginx includes the location file refers to. They are not *.conf, so the
-# domain's server block does not include them a second time on its own.
+# Not *.conf, so the domain's server block does not include them a second time.
 proxy_inc="/etc/nginx/conf.d/$domain.d/$app.proxy.inc"
 shell_headers_inc="/etc/nginx/conf.d/$domain.d/$app.shell-headers.inc"
 
-# Write (or refresh) the nginx includes the location file refers to. nginx -t runs
-# inside ynh_config_add_nginx, so call this first.
+# Call before ynh_config_add_nginx, which runs nginx -t.
 lollywork_add_nginx_includes() {
     ynh_config_add --template="proxy.inc" --destination="$proxy_inc"
     lollywork_add_shell_headers
 }
 
-# The shell header set mirrors the open-source package's security-headers.inc, whose
-# connect-src carries __LOLLY_CSP_MODELS_HOST__: lolli.li while the models come from
-# there, empty when a server keeps its own. This package always uses lolli.li, so the
-# policy it serves is unchanged.
 lollywork_add_shell_headers() {
     # shellcheck disable=SC2034 # read by ynh_config_add as __LOLLY_CSP_MODELS_HOST__
     local lolly_csp_models_host=" https://lolli.li"
     ynh_config_add --template="shell-headers.inc" --destination="$shell_headers_inc"
 }
 
-# The Nextcloud app on this YunoHost, if there is one: prints its address as an https
-# URL (domain and path, no trailing slash), or nothing. `yunohost app list` reports
-# each installed app's id and its domain_path; a second instance is nextcloud__2.
+# Prints the https address of a Nextcloud app on this server, or nothing.
 lollywork_detect_nextcloud() {
     local domain_path
     domain_path=$(yunohost app list --output-as json 2>/dev/null \
@@ -37,10 +29,7 @@ lollywork_detect_nextcloud() {
     printf 'https://%s' "${domain_path%/}"
 }
 
-# Install and upgrade: give the Nextcloud settings their defaults, and when a
-# Nextcloud is on this server, prefill its address. Nothing is switched on here: the
-# connection needs an app password only the admin can create, pasted in the config
-# panel.
+# Prefills a local Nextcloud's address but never switches the connection on.
 lollywork_nextcloud_defaults() {
     ynh_app_setting_set_default --key=nextcloud_enabled --value="false"
     ynh_app_setting_set_default --key=nextcloud_username --value=""
@@ -62,13 +51,12 @@ lollywork_nextcloud_defaults() {
     fi
 }
 
-# A space-separated group list ("*" or names) as a JSON value: "*" or an array.
+# "*" or a space-separated group list, as JSON.
 lollywork_groups_json() {
     if [[ "$1" == "*" ]]; then printf '"*"'; else jq -cn --arg g "$1" '$g | split(" ") | map(select(length > 0))'; fi
 }
 
-# Whether the Nextcloud settings form a complete, valid connection. Prints the first
-# problem and fails otherwise, so the config panel can show it.
+# Fails with the first problem in the Nextcloud settings, for the config panel.
 lollywork_nextcloud_check() {
     local origin_pattern='^https://([A-Za-z0-9-]+\.)*[A-Za-z0-9-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*$'
     local folder_pattern='^[A-Za-z0-9 ._-]+(/[A-Za-z0-9 ._-]+)*$' groups_pattern='^(\*|[a-z0-9_-]+( [a-z0-9_-]+)*)$'
@@ -81,9 +69,7 @@ lollywork_nextcloud_check() {
     [[ "${nextcloud_delivery_groups:-admins}" =~ $groups_pattern ]] || { echo "Delivery groups: * or YunoHost group names separated by spaces."; return 1; }
 }
 
-# Compute the instance.json fragments and the credential for the Nextcloud
-# connection. Disabled or incomplete settings give empty lists and an empty
-# credential, so an upgrade never fails on a half-filled panel.
+# A disabled or incomplete connection renders empty, so an upgrade never fails on it.
 lollywork_nextcloud_vars() {
     nextcloud_providers='[]'
     nextcloud_destinations='[]'
@@ -113,46 +99,33 @@ lollywork_nextcloud_vars() {
     fi
 }
 
-# Write (or refresh) the two files the server reads: its configuration and its
-# environment. Both carry secrets (the proxy secret, the database password), so
-# they are 600 $app:$app, which is what ynh_config_add gives files in $install_dir.
+# Both files hold secrets; ynh_config_add writes them 600 $app:$app in $install_dir.
 lollywork_add_config() {
-    # The publisher's public catalogue key, pinned in this package. It verifies the
-    # signed catalogue of the seeded pack before the server re-signs it per member.
+    # The publisher's public catalogue key, pinned in this package.
     catalog_public_key=$(tr -d '\n' < "$YNH_APP_BASEDIR/conf/catalog-public-key.json")
     lollywork_nextcloud_vars
     ynh_config_add --template="instance.json" --destination="$install_dir/instance.json"
     ynh_config_add --template=".env" --destination="$install_dir/.env"
 }
 
-# A new catalogue signing key for this installation: ECDSA P-256, as a private JWK
-# on one line (the server takes a PKCS#8 PEM or a JWK; .env holds one line). The
-# server signs each member's catalogue with it and publishes the public half at
-# /api/v1/catalog/public-key, which the web app accepts from the origin serving it.
-# Without it the catalogue signature route answers 404 and the app lists no tools.
+# This install's catalogue signing key (P-256 private JWK). Without one the app lists no tools.
 lollywork_new_catalog_key() {
     ynh_exec_as_app node -e 'process.stdout.write(JSON.stringify(require("crypto").generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ format: "jwk" })))'
 }
 
-# The signed catalogue sequence of the shell this package unpacked. The server
-# publishes at no lower a generation, so a browser that has seen one catalogue
-# keeps accepting the next.
+# The unpacked shell's catalogue sequence; the server never publishes below it.
 lollywork_shell_catalog_seq() {
     ynh_exec_as_app node -e 'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).seq; if (!Number.isSafeInteger(s) || s < 1) throw new Error("the shell catalogue has no signed sequence"); process.stdout.write(String(s))' "$install_dir/shell/catalog/tools/index.sig.json"
 }
 
-# Install the server's runtime dependencies. The tarball ships no node_modules;
-# sharp and resvg fetch prebuilt binaries for this architecture.
+# The server archive ships no node_modules.
 lollywork_npm_install() {
     pushd "$install_dir" >/dev/null
     ynh_hide_warnings ynh_exec_as_app npm exec --yes --package=pnpm@11.26.0 -- pnpm install --frozen-lockfile --prod
     popd >/dev/null
 }
 
-# The initial instance pack is the web shell's own tool set and catalog (the build
-# carries the full community tool set with the neutral lolly-start brand). Copy it
-# into data_dir once, so the admin can replace it with their own brand pack without
-# an upgrade putting the default back.
+# Seeded once, so an upgrade never replaces the admin's own brand pack.
 lollywork_seed_pack() {
     if [ ! -f "$data_dir/pack/catalog/tools/index.json" ]; then
         mkdir -p "$data_dir/pack"
@@ -162,21 +135,19 @@ lollywork_seed_pack() {
     fi
 }
 
-# The role permissions have no URL, so nothing else creates their first holder:
-# the chosen first owner gets `owner`. Idempotent (a re-add is ignored).
+# Role permissions have no URL, so the first owner is granted here.
 lollywork_grant_first_owner() {
     if ! ynh_permission_has_user --permission="owner" --user="$admin"; then
         ynh_permission_update --permission="owner" --add="$admin"
     fi
 }
 
-# What `yunohost service add` registers, in one place so install, upgrade and
-# restore describe the service identically.
+# Shared by install, upgrade and restore.
 lollywork_register_service() {
     yunohost service add "$app" --description="Lolly Work: governed Lolly control plane" --log="/var/log/$app/$app.log"
 }
 
-# The server logs one "<name> on :<port>" line once it has migrated and bound.
+# The server logs "<name> on :<port>" once it has migrated and is listening.
 lollywork_wait_started() {
     ynh_systemctl --service="$app" --action="start" --wait_until="on :" --log_path="/var/log/$app/$app.log" --timeout=120
 }
