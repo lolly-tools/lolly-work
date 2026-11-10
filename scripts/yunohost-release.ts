@@ -202,7 +202,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   } else {
     console.log(`[yunohost-release] next: <lolly>/shells/tauri-desktop/release/lolli.py put ${outFile} ${name}`);
   }
-  console.log('[yunohost-release] then mirror deploy/yunohost/ to github.com/lolly-tools/lolly-work_ynh (see deploy/yunohost/README.md)');
+  console.log('[yunohost-release] then mirror deploy/yunohost/ to github.com/lolly-tools/lolly-work_ynh (see deploy/yunohost-package.md)');
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

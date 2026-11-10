@@ -9,12 +9,11 @@
 proxy_inc="/etc/nginx/conf.d/$domain.d/$app.proxy.inc"
 shell_headers_inc="/etc/nginx/conf.d/$domain.d/$app.shell-headers.inc"
 
-# Write (or refresh) the nginx includes, then the location file that needs them.
-# nginx -t runs inside ynh_config_add_nginx, so the includes have to exist first.
-lollywork_add_nginx() {
+# Write (or refresh) the nginx includes the location file refers to. nginx -t runs
+# inside ynh_config_add_nginx, so call this first.
+lollywork_add_nginx_includes() {
     ynh_config_add --template="proxy.inc" --destination="$proxy_inc"
     lollywork_add_shell_headers
-    ynh_config_add_nginx
 }
 
 # The shell header set mirrors the open-source package's security-headers.inc, whose

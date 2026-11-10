@@ -62,7 +62,8 @@ lollywork_seed_pack
 #=================================================
 ynh_script_progression "Adding system configurations related to $app..."
 
-lollywork_add_nginx
+lollywork_add_nginx_includes
+ynh_config_add_nginx
 ynh_config_add_systemd
 lollywork_register_service
 ynh_config_add_logrotate
