@@ -5,7 +5,7 @@
  * console never asks for them.
  *
  * On the Overview it is a banner the admin can dismiss for that version; a newer
- * version shows again. On This deployment it is always there, with the last
+ * version shows again. On Settings it is always there, with the last
  * check and a Check now button. The release feed is not signed, so the notice
  * says it is information only, and the steps check the chart's own signature.
  */
@@ -94,7 +94,7 @@ function checkedLine(data, { el, relTime }) {
 
 /**
  * The notice for a newer release. `banner` adds the Dismiss button (Overview);
- * otherwise the steps open by default (This deployment).
+ * otherwise the steps open by default (Settings).
  */
 export function updateNotice(data, deps, { banner = false, onDismiss } = {}) {
   const { el } = deps;
@@ -121,7 +121,7 @@ export function updateNotice(data, deps, { banner = false, onDismiss } = {}) {
   return card;
 }
 
-/** This deployment's release card: the notice, or the state of the last check. */
+/** The release card on Settings: the notice, or the state of the last check. */
 export function releaseCard(data, deps, { refresh } = {}) {
   const { el, api, toast } = deps;
   const host = el('div', { class: 'update-release' });

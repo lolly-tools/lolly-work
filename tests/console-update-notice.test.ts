@@ -3,7 +3,7 @@
  * The console's release notice (console/update-notice.js), in jsdom: the Overview
  * banner for owners and admins with its flags, migration warning, highlights and
  * copyable steps; dismissal for one version; nothing for members, who are never
- * asked about; and This deployment's release card with Check now.
+ * asked about; and the release card on Settings with Check now.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -122,7 +122,7 @@ test('members never see the notice and the console never asks for it on their be
   assert.ok(!p.calls.some((c) => c.path.startsWith('/api/v1/admin/updates')), 'no request without fleet.view');
 });
 
-test('This deployment: the newest release, Check now, and the notice with its steps open', async () => {
+test('Settings: the newest release, Check now, and the notice with its steps open', async () => {
   const p = page({ updates: CURRENT, afterCheck: UPDATES });
   const card = p.helpers.releaseCard(CURRENT, p.helpers.updateDeps());
   p.main.append(card);
@@ -133,7 +133,7 @@ test('This deployment: the newest release, Check now, and the notice with its st
   assert.ok(p.calls.some((c) => c.path === '/api/v1/admin/updates/check' && c.method === 'POST'));
   const notice = card.querySelector('.update-notice');
   assert.ok(notice, 'the check found 1.3.1');
-  assert.ok(notice.querySelector('details.update-steps').hasAttribute('open'), 'steps open on This deployment');
+  assert.ok(notice.querySelector('details.update-steps').hasAttribute('open'), 'steps open on Settings');
   assert.ok([...notice.querySelectorAll('button')].some((b: any) => textOf(b) === 'Check now'));
   assert.ok(![...notice.querySelectorAll('button')].some((b: any) => /^Dismiss/.test(textOf(b))), 'no dismissal here');
 });

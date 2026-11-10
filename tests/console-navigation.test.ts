@@ -24,17 +24,17 @@ function page() {
   const w = dom.window;
   w.renderDocPathChoices = renderDocPathChoices;
   w.requestAnimationFrame = (fn: () => void) => setTimeout(fn, 0);
-  w.eval(`${source}\nwindow.helpers = { consoleNavigation, sectionTabs, mdToNodes, viewDocs, docAnchorNode, docSlugAliases: DOC_SLUG_ALIASES, el, setSession: s => { session = s; } };`);
+  w.eval(`${source}\nwindow.helpers = { consoleNavigation, consoleRoute, viewInstance, viewBrandPages, viewOverview, applyRailState, views: VIEWS, route, setEditor: e => { activeToolPolicyEditor = e; renderedRouteHash = location.hash; }, sectionTabs, mdToNodes, viewDocs, docAnchorNode, docSlugAliases: DOC_SLUG_ALIASES, el, setSession: s => { session = s; } };`);
   return { dom, w, helpers: w.helpers };
 }
 
 test('task navigation and its mobile picker expose only permitted sections; search finds direct provider access', async () => {
   const p = page();
   try {
-    const views = Object.fromEntries(['overview', 'projects', 'users', 'programmes', 'contractors', 'catalog', 'providers', 'tools', 'injectables', 'approvals', 'chains', 'grants', 'tokens', 'activity', 'rooms', 'links', 'messages', 'audit', 'fleet', 'instance', 'setup', 'preview', 'docs'].map(id => [id, ['users', 'providers'].includes(id)]));
+    const views = Object.fromEntries(Object.keys(p.helpers.views).map(id => [id, ['users', 'providers'].includes(id)]));
     p.helpers.setSession({ console: { views, actions: [] } });
     const nav = p.helpers.consoleNavigation('users'); p.w.document.body.append(nav);
-    assert.deepEqual([...nav.querySelectorAll('a')].map((a: any) => a.textContent), ['People', 'Providers']);
+    assert.deepEqual([...nav.querySelectorAll('a')].map((a: any) => a.textContent), ['People', 'Asset sources']);
     assert.deepEqual([...nav.querySelectorAll('option')].map((o: any) => o.value), ['users', 'providers']);
     assert.equal(nav.querySelector('[aria-current=page]').textContent, 'People');
     const search = nav.querySelector('input');
@@ -245,5 +245,104 @@ Upload separately.
     }
     await p.helpers.viewDocs(main, new URLSearchParams(links[1].slice('#/docs?'.length)));
     assert.equal(main.querySelector('[data-doc-anchor]').textContent, 'Nextcloud library');
+  } finally { p.dom.window.close(); }
+});
+
+test('settings bookmarks resolve to one page and preserve unrelated query parameters', () => {
+  const p = page();
+  try {
+    for (const id of ['tools', 'catalog', 'providers', 'design', 'brand-pages', 'flags', 'injectables', 'limits']) {
+      const route = p.helpers.consoleRoute(`#/instance?tab=${id}&focus=example`);
+      assert.equal(route.id, id);
+      assert.equal(route.params.get('focus'), 'example');
+      assert.equal(route.params.has('tab'), false);
+      assert.equal(typeof p.helpers.views[route.id].render, 'function');
+    }
+    assert.equal(p.helpers.consoleRoute('#/instance?tab=unknown').id, 'instance');
+    assert.equal(p.helpers.consoleRoute('#/users?tab=requests').params.get('tab'), 'requests');
+  } finally { p.dom.window.close(); }
+});
+
+test('settings show only permitted tasks and give each task a direct destination', async () => {
+  const p = page();
+  try {
+    p.helpers.setSession({ console: { views: Object.fromEntries(Object.keys(p.helpers.views).map(id => [id, ['design', 'tokens'].includes(id)])) } });
+    const main = p.w.document.getElementById('app');
+    await p.helpers.viewInstance(main, new URLSearchParams());
+    assert.equal(main.querySelectorAll('h1').length, 1);
+    assert.equal(main.querySelector('h1').textContent, 'Settings');
+    assert.deepEqual([...main.querySelectorAll('a')].map((a: any) => a.getAttribute('href')), ['#/design', '#/tokens']);
+    assert.equal(main.querySelectorAll('[role=tab]').length, 0);
+    assert.equal(main.querySelectorAll('.settings-section').length, 2);
+  } finally { p.dom.window.close(); }
+});
+
+test('search reveals secondary settings, restores disclosures and keeps the active monitoring section open', () => {
+  const p = page();
+  try {
+    const nav = p.helpers.consoleNavigation('fleet'); p.w.document.body.append(nav);
+    const monitoring = nav.querySelector('details[aria-label="Monitoring"]');
+    const administration = nav.querySelector('details[aria-label="Administration"]');
+    assert.equal(monitoring.open, true);
+    assert.equal(administration.open, false);
+    assert.equal(nav.querySelector('[aria-current=page]').textContent, 'Connected apps');
+    const search = nav.querySelector('input');
+    search.value = 'scim'; search.dispatchEvent(new p.w.Event('input'));
+    const tokens = nav.querySelector('a[href="#/tokens"]');
+    assert.equal(tokens.hidden, false); assert.equal(tokens.parentElement.hidden, false);
+    assert.equal(monitoring.open, false);
+    search.dispatchEvent(new p.w.KeyboardEvent('keydown', { key: 'Escape' }));
+    assert.equal(tokens.parentElement.hidden, true);
+    assert.equal(monitoring.open, true); assert.equal(administration.open, false);
+    p.w.localStorage.setItem('lw-rail-collapsed', '1'); p.helpers.applyRailState();
+    assert.equal(administration.open, true, 'the icon rail exposes secondary destinations');
+    p.w.localStorage.removeItem('lw-rail-collapsed'); p.helpers.applyRailState();
+    assert.equal(administration.open, false); assert.equal(monitoring.open, true);
+  } finally { p.dom.window.close(); }
+});
+
+test('overview actions respect permissions, requests open their queue and missing links do not look like zero', async () => {
+  const p = page();
+  try {
+    p.helpers.setSession({ console: { views: { fleet: false, users: true, links: true, audit: false, agents: false, catalog: false, design: false, approvals: true }, actions: [] } });
+    const called: string[] = [];
+    p.w.fetch = async (url: string) => {
+      called.push(url);
+      const data = url === '/api/v1/telemetry/summary' ? { days: [{ date: '2026-11-10', events: 3, exports: 1, users: 1 }], totals: { activeUsers: 1 }, topTools: [], formats: [] }
+        : url === '/api/v1/access-requests?status=open' ? { requests: [{ id: 'ask' }] }
+        : url === '/api/v1/approvals' ? { approvals: [] } : null;
+      return { ok: data !== null, status: data ? 200 : 503, json: async () => data, text: async () => 'Unavailable' };
+    };
+    const main = p.w.document.getElementById('app'); await p.helpers.viewOverview(main);
+    assert.deepEqual([...main.querySelectorAll('.quick-actions a')].map((a: any) => a.textContent), ['Review approvals']);
+    assert.equal(main.querySelector('.needs-link').getAttribute('href'), '#/users?tab=requests');
+    assert.match(main.textContent, /Live share links nowUnavailable/);
+    assert.equal(main.querySelector('.zero-banner'), null);
+    assert.ok(!called.some(path => /fleet|audit|agents/.test(path)));
+    assert.equal(main.querySelector('details.overview-detail').open, false);
+  } finally { p.dom.window.close(); }
+});
+
+test('following a legacy settings bookmark still asks before discarding a draft', async () => {
+  const p = page();
+  try {
+    let asked = false; let disposed = false;
+    p.helpers.setEditor({ isDirty: () => true, isBusy: () => false, dispose: () => { disposed = true; }, requestDiscard: () => { asked = true; } });
+    p.w.history.replaceState(null, '', '#/instance?tab=design');
+    await p.helpers.route();
+    assert.equal(asked, true); assert.equal(disposed, false);
+    assert.equal(p.w.location.hash, '#/users');
+  } finally { p.dom.window.close(); }
+});
+
+
+test('brand pages keep a page heading when publication is disabled', async () => {
+  const p = page();
+  try {
+    p.w.fetch = async () => ({ ok: false, status: 404, json: async () => ({ error: { message: 'Disabled' } }) });
+    const main = p.w.document.getElementById('app'); await p.helpers.viewBrandPages(main);
+    assert.equal(main.querySelectorAll('h1').length, 1);
+    assert.equal(main.querySelector('h1').textContent, 'Brand pages');
+    assert.match(main.textContent, /Brand pages are off/);
   } finally { p.dom.window.close(); }
 });

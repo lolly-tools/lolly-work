@@ -1151,24 +1151,24 @@ const releaseUpdates = () => (canAction('fleet.view') ? api('/api/v1/admin/updat
 async function viewOverview(main) {
   const [summary, fleet, links, stats, appr, auditHead, asks, agentUse, updates] = await Promise.all([
     api('/api/v1/telemetry/summary'),
-    api('/api/v1/fleet').catch(() => ({ clients: [] })),
-    api('/api/v1/links?all=1').catch(() => ({ links: [] })),
+    canView('fleet') ? api('/api/v1/fleet').catch(() => null) : null,
+    canView('links') ? api('/api/v1/links?all=1').catch(() => null) : null,
     api('/api/v1/stats/overview').catch(() => null),
     api('/api/v1/approvals').catch(() => null),
-    api('/api/v1/audit?limit=1').catch(() => null),
-    api('/api/v1/access-requests?status=open').catch(() => null),
+    canView('audit') ? api('/api/v1/audit?limit=1').catch(() => null) : null,
+    canView('users') ? api('/api/v1/access-requests?status=open').catch(() => null) : null,
     canView('agents') ? api('/api/v1/agents/activity?days=14').catch(() => null) : null,
     releaseUpdates(),
   ]);
   const d14 = summary.days;
   const events14 = d14.reduce((a, d) => a + d.events, 0);
   const exports14 = d14.reduce((a, d) => a + d.exports, 0);
-  const liveLinks = links.links.filter((l) => l.status === 'live').length;
-  const clients = fleet.clients.reduce((a, c) => a + c.count, 0);
+  const liveLinks = (links?.links ?? []).filter((l) => l.status === 'live').length;
+  const clients = (fleet?.clients ?? []).reduce((a, c) => a + c.count, 0);
 
   main.append(
     el('h1', {}, 'Overview'),
-    el('p', { class: 'sub' }, 'Activity across the last 14 days, from connected shells and server traffic.'),
+    el('p', { class: 'sub' }, 'Review what needs attention and manage your workspace.'),
   );
   // A newer Lolly Work release, until dismissed for that version (update-notice.js).
   if (updates && shouldShowBanner(updates)) main.append(updateNotice(updates, updateDeps(), { banner: true }));
@@ -1192,10 +1192,10 @@ async function viewOverview(main) {
   // Access requests the viewer may answer (plans/74 invite spec 4.4).
   const asking = asks?.requests?.length ?? 0;
   if (asking) {
-    needs.push({ level: 'review', icon: 'users', href: '#/users', text: `${fmt(asking)} request${asking === 1 ? '' : 's'} waiting` });
+    needs.push({ level: 'review', icon: 'users', href: '#/users?tab=requests', text: `${fmt(asking)} access request${asking === 1 ? '' : 's'} waiting` });
   }
   const soon = Date.now() + 7 * 86400e3;
-  const expiring = links.links.filter((l) => l.status === 'live' && l.expiresAt && Date.parse(l.expiresAt) < soon).length;
+  const expiring = (links?.links ?? []).filter((l) => l.status === 'live' && l.expiresAt && Date.parse(l.expiresAt) < soon).length;
   if (expiring) {
     needs.push({ level: 'warning', icon: 'links', href: '#/links', text: `${fmt(expiring)} live link${expiring === 1 ? '' : 's'} expire${expiring === 1 ? 's' : ''} within 7 days` });
   }
@@ -1207,39 +1207,44 @@ async function viewOverview(main) {
           el('a', { class: `needs-link needs-${n.level}`, href: n.href },
             navIcon(n.icon), n.text))))));
   }
-  // First-run zero-state: an empty dashboard on a fresh instance reads as
-  // "broken" without this — orient the admin toward the first useful steps.
-  if (events14 === 0 && clients === 0 && liveLinks === 0) {
-    main.append(el('div', { class: 'card zero-banner' },
-      el('h2', { class: 'flush' }, 'Nothing here yet'),
-      el('p', { class: 'sub' }, 'That is expected on a new deployment. Numbers fill in as people sign in and apps connect. To get going:'),
-      el('ul', { class: 'zero-steps' },
-        el('li', {}, 'Invite people from ', el('a', { href: '#/users' }, 'People'), '. Invited people appear in the directory after they first sign in.'),
-        el('li', {}, 'Confirm the mounted brand pack in ', el('a', { href: '#/instance?tab=design' }, 'This Deploy → Design system'), '.'),
-        el('li', {}, 'Mint a time-boxed guest link under ', el('a', { href: '#/contractors' }, 'Contractors'), '. Every link this deployment mints, from here or from the apps, is tracked under ', el('a', { href: '#/links' }, 'Links'), '.'))));
+  const actions = [
+    ...(canView('users') && canAction('user.invite') ? [['users?tab=invitations', 'Invite people', 'users']] : []),
+    ...(canView('approvals') ? [['approvals', 'Review approvals', 'approvals']] : []),
+    ...(canView('catalog') ? [['catalog', 'Manage assets', 'catalog']] : []),
+    ...(canView('design') ? [['design', 'Review design system', 'design']] : []),
+  ];
+  if (actions.length) main.append(el('section', { class: 'overview-actions', 'aria-label': 'Quick actions' },
+    el('h2', {}, 'Quick actions'), el('div', { class: 'quick-actions' }, ...actions.map(([path, label, icon]) =>
+      el('a', { class: 'btn', href: `#/${path}` }, navIcon(icon), label)))));
+  if (events14 === 0 && clients === 0 && liveLinks === 0 && fleet && links) {
+    main.append(el('p', { class: 'card zero-banner' }, 'Activity appears here as people use Lolly. Start by reviewing the design system and inviting your team.'));
+  }
+  if ((canView('fleet') && !fleet) || (canView('links') && !links)) {
+    main.append(el('p', { class: 'sub', role: 'status' }, 'Some connection or share-link data is unavailable. Refresh the page to try again.'));
   }
   main.append(
     el('div', { class: 'grid tiles' },
-      tile('Events (14 days)', fmt(events14)),
       tile('Exports (14 days)', fmt(exports14)),
-      tile('Active people', fmt(summary.totals.activeUsers)),
-      tile('Live links', fmt(liveLinks)),
-      tile('Client requests seen', fmt(clients)),
+      tile('Active people (14 days)', fmt(summary.totals.activeUsers)),
+      ...(canView('links') ? [tile('Live share links now', links ? fmt(liveLinks) : 'Unavailable')] : []),
     ),
-    el('div', { class: 'grid two' },
-      el('div', { class: 'card' }, el('h2', {}, 'Activity per day'),
+    el('details', { class: 'ov-section overview-detail' },
+      el('summary', {}, el('h2', { class: 'section-h' }, 'Usage and exports'), el('span', { class: 'muted' }, 'Last 14 days')),
+      el('div', { class: 'grid two' },
+      el('div', { class: 'card' }, el('h3', {}, 'Activity per day'),
         lineChart(d14, [{ key: 'events', label: 'Events' }, { key: 'exports', label: 'Exports' }, { key: 'users', label: 'Users' }])),
-      el('div', { class: 'card' }, el('h2', {}, 'Top tools'),
+      el('div', { class: 'card' }, el('h3', {}, 'Top tools'),
         hbarChart(summary.topTools.map((t) => ({ label: t.toolId, value: t.count })), { empty: 'No tool usage in the last 14 days.' })),
-      el('div', { class: 'card' }, el('h2', {}, 'Exports by format'),
+      el('div', { class: 'card' }, el('h3', {}, 'Exports by format'),
         hbarChart(summary.formats.map((f) => ({ label: f.format, value: f.count })), { color: SERIES[1], empty: 'No exports yet. They appear once an app renders one.' })),
-      el('div', { class: 'card' }, el('h2', {}, 'Fleet by client'),
-        hbarChart(fleetChartRows(fleet.clients), { colorOf: shellColorOf, empty: 'No shells have connected yet.' })),
-    ),
+      ...(fleet ? [el('div', { class: 'card' }, el('h3', {}, 'Requests by app'),
+        hbarChart(fleetChartRows(fleet.clients), { colorOf: shellColorOf, empty: 'No apps have connected yet.' }))] : []),
+    )),
   );
 
-  if (agentUse) main.append(el('div', { class: 'card agent-overview' },
-    el('div', { class: 'agent-heading' }, el('h2', {}, navIcon('agents'), 'Agents'), el('a', { class: 'btn', href: '#/agents' }, 'View agent activity')),
+  if (agentUse) main.append(el('details', { class: 'ov-section overview-detail agent-overview' },
+    el('summary', {}, el('h2', { class: 'section-h' }, 'Agent activity'), el('span', { class: 'muted' }, 'Last 14 days')),
+    el('div', { class: 'agent-heading' }, el('h3', {}, navIcon('agents'), 'Agents'), el('a', { class: 'btn', href: '#/agents' }, 'View agent activity')),
     el('p', { class: 'sub' }, 'Delegated work across the last 14 days. Each agent acts under the access of the person who invited it.'),
     el('div', { class: 'grid tiles' }, tile('Agents used', fmt(agentUse.summary.agentsUsed)), tile('Tool calls', fmt(agentUse.summary.toolCalls)),
       tile('Rejected calls', fmt(agentUse.summary.rejected)), tile('In document rooms now', agentUse.summary.connected === null ? 'Unavailable' : fmt(agentUse.summary.connected))),
@@ -1259,14 +1264,13 @@ async function viewOverview(main) {
   // Secondary analytics live behind a disclosure so the landing view leads with
   // the headline activity numbers instead of an undifferentiated wall of charts.
   main.append(
-    el('details', { class: 'ov-section' },
+    el('details', { class: 'ov-section overview-detail' },
       el('summary', {}, el('h2', { class: 'section-h' }, 'Session time')),
-      el('p', { class: 'sub' }, 'Editor and web-shell session time across the last 14 days. This is an internal deployment, so utilisation is shown in full.'),
+      el('p', { class: 'sub' }, 'Time spent in tools and the app over the last 14 days.'),
       el('div', { class: 'grid tiles' },
         tile('Total session time', fmtDuration(totalSecs)),
         tile('Avg session length', fmtDuration(avgSecs)),
         tile('Sessions per person', perUser ? perUser.toFixed(1) : '—'),
-        tile('Active users', fmt(activeUsers)),
         tile('Tool sessions', fmt(sess.tool.count)),
         tile('Shell sessions', fmt(sess.shell.count)),
       ),
@@ -1293,8 +1297,8 @@ async function viewOverview(main) {
   const byState = cat.byState ?? { live: 0, scheduled: 0, expired: 0, revoked: 0 };
 
   main.append(
-    el('details', { class: 'ov-section' },
-      el('summary', {}, el('h2', { class: 'section-h' }, 'Catalog and content')),
+    el('details', { class: 'ov-section overview-detail' },
+      el('summary', {}, el('h2', { class: 'section-h' }, 'Assets and projects')),
       el('p', { class: 'sub' }, 'What this deployment serves, how it gets used, and where the work lives. Popularity and export figures cover the last 14 days; inventory is current.'),
       el('div', { class: 'grid tiles' },
         tile('Catalog items', fmt(cat.total)),
@@ -1325,7 +1329,7 @@ async function viewOverview(main) {
           destinations.length
             ? hbarChart(destinations.map((d) => ({ label: d.destination, value: d.count })), { color: SERIES[1] })
             : el('p', { class: 'empty' }, 'No exports recorded yet.')),
-        el('div', { class: 'card' }, el('h2', {}, 'Catalog by state'),
+        el('div', { class: 'card' }, el('h2', {}, 'Assets by state'),
           cat.total
             ? hbarChart([
                 { label: 'live', value: byState.live },
@@ -1433,19 +1437,38 @@ async function viewAgents(main) {
   await load(true);
 }
 
-// ── This Deploy — a tabbed home combining the per-deployment surfaces. The tabs
-//    reuse the existing view renderers (and their sidebar icons) inside one
-//    panel; the design-system tab is new. Tab state rides ?tab= for deep links. ─
-const INSTANCE_TABS = [
-  { key: 'tools', label: 'Tools', icon: 'tools', render: (h) => viewTools(h) },
-  { key: 'catalog', label: 'Catalog', icon: 'catalog', render: (h) => viewCatalog(h) },
-  { key: 'providers', label: 'Providers', icon: 'providers', render: (h) => viewProviders(h) },
-  { key: 'design', label: 'Design system', icon: 'design', render: (h) => viewDesignSystem(h) },
-  { key: 'brand-pages', label: 'Brand pages', icon: 'brandPages', render: (h) => viewBrandPages(h) },
-  { key: 'flags', label: 'Feature flags', icon: 'flags', render: (h) => viewFeatureFlags(h) },
-  { key: 'injectables', label: 'Injectables', icon: 'injectables', render: (h) => viewInjectables(h) },
-  { key: 'limits', label: 'Limits and quotas', icon: 'limits', render: (h) => viewLimits(h) },
+// Settings link to the same routes as search and saved bookmarks.
+const LEGACY_INSTANCE_VIEWS = ['tools', 'catalog', 'providers', 'design', 'brand-pages', 'flags', 'injectables', 'limits'];
+const SETTINGS_SECTIONS = [
+  { title: 'Brand and app', items: [
+    ['design', 'Review brand colours, typography and design rules.'],
+    ['flags', 'Choose which optional features people can use.'],
+    ['injectables', 'Publish banners, resources and extra tools to the app.'],
+  ] },
+  { title: 'Access and approvals', items: [
+    ['grants', 'Allow or deny actions for people and groups.'],
+    ['tokens', 'Connect provisioning services and automation.'],
+    ['chains', 'Set the review steps for an approval.'],
+    ['preview', 'Check what selected groups can access.'],
+  ] },
+  { title: 'Server', items: [
+    ['setup', 'Configure sign-in, storage and server services.'],
+    ['limits', 'Check usage limits and where they are set.'],
+  ] },
 ];
+const SETTINGS_ROUTES = SETTINGS_SECTIONS.flatMap(section => section.items.map(([id]) => id)).filter(id => id !== 'design');
+
+function consoleRoute(hash) {
+  const raw = hash.replace(/^#\/?/, '');
+  const qi = raw.indexOf('?');
+  let id = (qi >= 0 ? raw.slice(0, qi) : raw) || 'overview';
+  const params = new URLSearchParams(qi >= 0 ? raw.slice(qi + 1) : '');
+  if (id === 'instance' && LEGACY_INSTANCE_VIEWS.includes(params.get('tab'))) {
+    id = params.get('tab'); params.delete('tab');
+  }
+  return { id, params };
+}
+
 // Limits and quotas (plans/82 M7; Andy, 2026-11-07): every limit Work enforces, with
 // its value and where it comes from. Each figure is read by the server from the
 // constant or the setting its own check reads, so this page cannot drift from the code.
@@ -1494,91 +1517,22 @@ async function viewLimits(main) {
 }
 
 async function viewInstance(main, params) {
-  const tabs = INSTANCE_TABS.filter(tab => canView(tab.key));
-  if (!tabs.length || (params?.get?.('tab') && !tabs.some(tab => tab.key === params.get('tab')))) {
-    main.append(el('h1', {}, 'This deployment'), el('p', {}, 'This section needs a permission your account does not have.')); return;
-  }
-  let active = params?.get?.('tab');
-  if (!tabs.some((t) => t.key === active)) active = tabs[0].key;
-  const panel = el('div', { class: 'inst-panel', id: 'inst-panel', role: 'tabpanel', tabindex: '0' });
-  const tabbar = el('div', { class: 'tabbar', role: 'tablist', 'aria-label': 'This Deploy sections' });
-  const buttons = new Map();
-  let selectSeq = 0;
-  const tabId = (key) => `inst-tab-${key}`;
-
-  async function select(key) {
-    if (activeToolPolicyEditor) {
-      const proceed = () => { activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null; void select(key); };
-      if (activeToolPolicyEditor.isDirty() || activeToolPolicyEditor.isBusy()) { activeToolPolicyEditor.requestDiscard(proceed); return; }
-      activeToolPolicyEditor.dispose(); activeToolPolicyEditor = null;
-    }
-    active = key;
-    // Complete the WAI-ARIA tabs pattern: selected + roving tabindex, and the
-    // panel is labelled by (and only focusably reached from) its active tab.
-    for (const [k, b] of buttons) {
-      const sel = k === key;
-      b.setAttribute('aria-selected', sel ? 'true' : 'false');
-      b.setAttribute('tabindex', sel ? '0' : '-1');
-    }
-    panel.setAttribute('aria-labelledby', tabId(key));
-    // Deep-linkable without a full re-route (replaceState fires no hashchange).
-    try { history.replaceState(null, '', `#/instance?tab=${key}`); } catch { /* ignore */ }
-    renderedRouteHash = location.hash;
-    const tab = tabs.find((t) => t.key === key);
-    const run = ++selectSeq;
-    panel.replaceChildren(loadingCard(tab.label));
-    // Each tab renderer appends into the host it is given, so a slower earlier
-    // render must never reach the live panel: build into a detached host and
-    // drop the result if a newer selection started while this one was waiting.
-    const host = el('div', {});
-    let body;
-    try { await tab.render(host); body = [...host.childNodes]; }
-    catch (e) {
-      body = [e.status === 403
-        ? el('p', { class: 'sub' }, 'This section needs a permission your account does not have. An administrator can grant it.')
-        : el('div', {}, el('p', { class: 'sub' }, 'This section did not load.'),
-            el('p', {}, el('button', { class: 'primary', onclick: () => select(key) }, 'Try again')),
-            el('p', { class: 'muted mono', style: 'margin-top:8px;font-size:12px' }, e.message || ''))];
-    }
-    if (run !== selectSeq) return;
-    panel.replaceChildren(...body);
-  }
-
-  // Arrow-key roving between tabs (WAI-ARIA tabs keyboard model).
-  const keys = tabs.map((t) => t.key);
-  tabbar.addEventListener('keydown', (e) => {
-    const i = keys.indexOf(active);
-    let next = -1;
-    if (e.key === 'ArrowRight') next = (i + 1) % keys.length;
-    else if (e.key === 'ArrowLeft') next = (i - 1 + keys.length) % keys.length;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = keys.length - 1;
-    if (next < 0) return;
-    e.preventDefault();
-    const key = keys[next];
-    select(key);
-    buttons.get(key).focus();
-  });
-
-  for (const t of tabs) {
-    const b = el('button', { class: 'tab', role: 'tab', type: 'button', id: tabId(t.key),
-      'aria-controls': 'inst-panel',
-      'aria-selected': t.key === active ? 'true' : 'false',
-      tabindex: t.key === active ? '0' : '-1',
-      onclick: () => { if (t.key !== active) select(t.key); } },
-      navIcon(t.icon), el('span', {}, t.label));
-    buttons.set(t.key, b);
-    tabbar.append(b);
-  }
-
+  main.append(el('h1', {}, 'Settings'), el('p', { class: 'sub' }, 'Manage your organisation’s brand, access and app configuration.'));
   // The release this deployment runs, and a newer one with its upgrade steps.
   const updates = await releaseUpdates();
-  main.replaceChildren(
-    el('h1', {}, 'This deployment'),
-    el('p', { class: 'sub' }, 'Everything this deployment serves and governs, in one place: its tools, catalog, connected providers, design system, feature flags and the capability it adds to the app.'),
-    ...(updates ? [releaseCard(updates, updateDeps())] : []),
-    tabbar, panel);
-  await select(active);
+  if (updates) main.append(releaseCard(updates, updateDeps()));
+  if (params?.get?.('tab')) {
+    main.append(el('p', { class: 'empty' }, 'That settings section is not available. Choose a section below.'));
+  }
+  for (const section of SETTINGS_SECTIONS) {
+    const items = section.items.filter(([id]) => canView(id));
+    if (!items.length) continue;
+    main.append(el('section', { class: 'settings-section', 'aria-label': section.title },
+      el('h2', {}, section.title),
+      el('div', { class: 'settings-grid' }, ...items.map(([id, description]) =>
+        el('a', { class: 'settings-link', href: `#/${id}` }, navIcon(id),
+          el('span', {}, el('strong', {}, VIEWS[id].title), el('span', { class: 'muted' }, description)))))));
+  }
 }
 
 // Read the live value of a chrome token (resolves the pack override + theme).
@@ -1862,8 +1816,8 @@ async function viewInjectables(main) {
     { key: 'b', label: 'Revoked', match: ['catalog.injectable.revoke'] },
   ]);
   main.append(
-    el('h1', {}, 'Injectables'),
-    el('p', { class: 'sub' }, 'Add tools, feature flags, catalog resources and banners to the app this deployment governs, and take them away again. Each one is data the app reads, scoped to the groups you name, and connected apps pick up a change on their next poll.'),
+    el('h1', {}, 'App additions'),
+    el('p', { class: 'sub' }, 'Publish banners, resources and extra tools for selected groups. Connected apps receive changes on their next update.'),
     ...(hdr ? [hdr] : []),
     publishCard,
     el('div', { class: 'card stack' },
@@ -2069,7 +2023,7 @@ async function viewFleet(main) {
     { key: 'b', label: 'Guest sessions', match: ['guest.admit'] },
   ]);
   main.append(
-    el('h1', {}, 'Fleet'),
+    el('h1', {}, 'Connected apps'),
     el('p', { class: 'sub' }, 'Which Lolly versions are talking to this deployment. Publish checks and upgrade nudges start here.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'grid tiles' },
@@ -2279,7 +2233,7 @@ async function renderRooms(main) {
     { key: 'c', label: 'Write-backs', match: ['collab.quiesce'] },
   ]);
   main.replaceChildren(
-    el('h1', {}, 'Rooms'),
+    el('h1', {}, 'Live rooms'),
     el('p', { class: 'sub' }, 'Who is collaborating on this deployment right now, and whether they can write. Counters and display names only: no input value, cursor position or keystroke ever reaches this view.'),
     ...(hdr ? [hdr] : []),
     el('p', {}, el('button', { onclick: () => renderRooms(main) }, 'Refresh')),
@@ -2328,7 +2282,7 @@ async function viewLinks(main) {
     { key: 'b', label: 'Revoked', match: ['link.revoke'] },
   ]);
   main.replaceChildren(
-    el('h1', {}, 'Links'),
+    el('h1', {}, 'Share links'),
     el('p', { class: 'sub' }, 'Every share, embed, download and guest link this deployment has minted, with its full signed URL. Links are minted elsewhere: the apps and the API mint share, embed and download links, and guest links are minted under Contractors. Copy a link to hand it over; revoking kills it immediately, including live guest sessions.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
@@ -3233,8 +3187,8 @@ async function viewCatalog(main) {
     return card;
   })() : null;
   main.append(
-    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Catalog'),
-      el('p', { class: 'sub' }, 'Every asset this deployment serves, with a thumbnail, its expiry and its revocation state. Inspect an asset for its full metadata and a larger preview. Revoking an asset, or hiding it on expiry, drops it from the feed at once. It stays listed here, without its catalog metadata, so you can still manage it.')),
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Assets'),
+      el('p', { class: 'sub' }, 'Manage shared assets, expiry dates and availability. Open an asset for its preview and details.')),
       submitAction),
     ...(hdr ? [hdr] : []),
     submitHost,
@@ -3488,16 +3442,16 @@ async function viewBrandPages(main) {
   try { answer = await api('/api/v1/brand-pages'); }
   catch (e) {
     if (e.status !== 404) throw e;
-    main.append(el('div', { class: 'card stack' },
+    main.append(el('h1', {}, 'Brand pages'), el('div', { class: 'card stack' },
       el('h2', { class: 'flush' }, 'Brand pages are off'),
       el('p', {}, 'A brand page puts one design system at a public address, for people and for agents.'),
       el('p', { class: 'sub' }, 'Turn this on with brandPages.enabled in the instance config. A published page is public even when this instance needs a sign-in.')));
     return;
   }
   const { pages, limits, approvalChain } = answer;
-  main.append(el('div', { class: 'card stack' },
+  main.append(el('h1', {}, 'Brand pages'), el('div', { class: 'card stack' },
     el('div', { class: 'list-bar' },
-      el('h2', { class: 'flush' }, 'Brand pages'),
+      el('h2', { class: 'flush' }, 'Published pages'),
       el('span', { class: 'muted' }, `${fmtBytes(limits.usedBytes) || '0 B'} of ${fmtBytes(limits.instanceBudgetBytes)} used`)),
     el('p', { class: 'sub' }, 'Each page is public, even when this instance needs a sign-in. Anyone can read its files and its read-only MCP endpoint.'),
     approvalChain ? el('p', { class: 'sub' }, 'A new revision goes live when its approval chain approves it.') : null,
@@ -3735,7 +3689,7 @@ async function viewProviders(main, params = new URLSearchParams()) {
     connections.open = true; scrollIntoViewMotionSafe(connections); connections.querySelector('button')?.focus();
   } }, navIcon('providers'), 'Connect a source') : null;
   main.append(...[
-    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Providers'),
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Asset sources'),
       el('p', { class: 'sub' }, 'Connect asset libraries and manage what your workspace can use.')), connectAction),
     ...(hdr ? [hdr] : []),
     providers.length
@@ -7920,7 +7874,7 @@ async function viewGrants(main) {
     { key: 'b', label: 'Other governance', match: ['policy.', 'chain.edit', 'config.apply'] },
   ]);
   main.append(
-    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Grants'),
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Permissions'),
       el('p', { class: 'sub' }, 'Allow or deny a permission for a group, a person or everyone.')), openComposer),
     el('details', { class: 'ov-section grant-help' }, el('summary', {}, 'How permissions are decided'),
       el('p', { class: 'sub' }, 'A matching deny always wins, then a matching allow, then the member’s role decides. Deny export.download to a group to route them through approvals; allow policy.edit to your brand group to delegate tool governance. Owner-only actions can only be granted by an owner.')),
@@ -8158,8 +8112,8 @@ async function viewPreview(main, params) {
   }
 
   main.append(
-    el('h1', {}, 'Preview'),
-    el('p', { class: 'sub' }, 'See what someone in these groups gets: their role, what they are allowed to do, which tools and inputs they can change, and which profile fields are managed for them. It is worked out by the same code a signed-in app asks, so what you see here is what they see. Nothing is signed in and nothing is saved.'),
+    el('h1', {}, 'Access preview'),
+    el('p', { class: 'sub' }, 'Check the role, permissions and tools available to selected groups. This preview does not change anyone’s access.'),
     el('div', { class: 'card' },
       el('div', { class: 'formrow' }, field('Groups (comma-separated)', groupsInput)),
       el('p', {}, previewBtn),
@@ -8588,7 +8542,7 @@ function navIcon(id) {
   s.setAttribute('stroke-linecap', 'round');
   s.setAttribute('stroke-linejoin', 'round');
   s.setAttribute('aria-hidden', 'true');
-  s.innerHTML = NAV_ICONS[{ setup: 'instance', tokens: 'grants', chains: 'approvals' }[id] ?? id] ?? '';
+  s.innerHTML = NAV_ICONS[{ setup: 'instance', tokens: 'grants', chains: 'approvals', 'brand-pages': 'brandPages' }[id] ?? id] ?? '';
   return s;
 }
 
@@ -8696,11 +8650,11 @@ async function viewVerify(main, params) {
 }
 
 const VIEWS = {
-  setup: { title: 'Customer setup', render: async main => {
+  setup: { title: 'Server setup', render: async main => {
     const editor = await setupView(main, { el, field, api });
     if (main.isConnected) activeToolPolicyEditor = editor; else editor.dispose();
   } },
-  tokens: { title: 'Tokens', render: main => tokensView(main, { el, field, api, can: action => session?.console?.actions.includes(action), refresh: route }) },
+  tokens: { title: 'Access tokens', render: main => tokensView(main, { el, field, api, can: action => session?.console?.actions.includes(action), refresh: route }) },
   chains: { title: 'Approval chains', render: async main => {
     const { chains } = await api('/api/v1/chains');
     const host = el('div');
@@ -8722,15 +8676,19 @@ const VIEWS = {
   overview: { title: 'Overview', render: viewOverview },
   activity: { title: 'Activity', render: viewActivity },
   agents: { title: 'Agents', render: viewAgents },
-  instance: { title: 'This deployment', render: viewInstance },
-  fleet: { title: 'Fleet', render: viewFleet },
-  rooms: { title: 'Rooms', render: viewRooms },
-  links: { title: 'Links', render: viewLinks },
-  // Deployment tabs and the task-grouped navigation share the same renderers.
+  instance: { title: 'Settings', render: viewInstance },
+  design: { title: 'Design system', render: viewDesignSystem },
+  'brand-pages': { title: 'Brand pages', render: viewBrandPages },
+  flags: { title: 'Feature flags', render: viewFeatureFlags },
+  limits: { title: 'Limits and quotas', render: viewLimits },
+  fleet: { title: 'Connected apps', render: viewFleet },
+  rooms: { title: 'Live rooms', render: viewRooms },
+  links: { title: 'Share links', render: viewLinks },
+  // Navigation and saved bookmarks share the same view renderers.
   tools: { title: 'Tools', render: viewTools },
-  catalog: { title: 'Catalog', render: viewCatalog },
-  providers: { title: 'Providers', render: viewProviders },
-  injectables: { title: 'Injectables', render: viewInjectables },
+  catalog: { title: 'Assets', render: viewCatalog },
+  providers: { title: 'Asset sources', render: viewProviders },
+  injectables: { title: 'App additions', render: viewInjectables },
   approvals: { title: 'Approvals', render: viewApprovals },
   messages: { title: 'Messages', render: viewMessages },
   audit: { title: 'Audit', render: viewAudit },
@@ -8738,8 +8696,8 @@ const VIEWS = {
   users: { title: 'People', render: viewUsers },
   contractors: { title: 'Contractors', render: viewContractors },
   programmes: { title: 'Partner programmes', render: viewProgrammes },
-  grants: { title: 'Grants', render: viewGrants },
-  preview: { title: 'Preview', render: viewPreview },
+  grants: { title: 'Permissions', render: viewGrants },
+  preview: { title: 'Access preview', render: viewPreview },
   docs: { title: 'Docs', render: viewDocs },
   verify: { title: 'Verify', render: viewVerify, hidden: true },
 };
@@ -8784,49 +8742,66 @@ function brandLogoEl(cls) {
 }
 
 const NAV_GROUPS = [
-  { title: 'Workspace', ids: ['overview', 'projects', 'users', 'programmes', 'contractors'] },
-  { title: 'Assets & tools', ids: ['catalog', 'providers', 'tools', 'injectables'] },
-  { title: 'Governance', ids: ['approvals', 'chains', 'grants', 'tokens'] },
-  { title: 'Operations', ids: ['agents', 'activity', 'rooms', 'links', 'messages', 'audit', 'fleet'] },
-  { title: 'Instance', ids: ['instance', 'setup', 'preview', 'docs'] },
+  { title: 'Workspace', ids: ['overview', 'projects', 'users', 'approvals', 'messages'] },
+  { title: 'Assets & tools', ids: ['catalog', 'tools', 'design', 'brand-pages', 'providers'] },
+  { title: 'Administration', collapsible: true, ids: ['programmes', 'contractors', 'links'] },
+  { title: 'Monitoring', collapsible: true, ids: ['agents', 'activity', 'rooms', 'audit', 'fleet'] },
+  { title: 'Settings', ids: ['instance', 'docs'] },
+  { title: 'Settings sections', searchOnly: true, ids: SETTINGS_ROUTES },
 ];
+const NAV_TERMS = {
+  catalog: 'catalog library images files', providers: 'providers integrations connectors assets',
+  users: 'invite invitations accounts requests', grants: 'grants roles rights',
+  tokens: 'api scim service provisioning credentials', instance: 'deployment configuration preferences',
+  injectables: 'injectables banners resources', fleet: 'fleet clients versions', rooms: 'collaboration sessions',
+  design: 'brand palette colour typography logo tokens', flags: 'features toggles',
+};
 
 function consoleNavigation(current) {
+  const active = SETTINGS_ROUTES.includes(current) ? 'instance' : current;
+  const available = NAV_GROUPS.map(group => ({ ...group, ids: group.ids.filter(id => VIEWS[id] && !VIEWS[id].hidden && canView(id)) })).filter(group => group.ids.length);
   const picker = el('select', { class: 'mobile-section-picker', 'aria-label': 'Console section', onchange: event => { location.hash = `#/${event.target.value}`; } },
-    ...NAV_GROUPS.map(group => el('optgroup', { label: group.title },
-      ...group.ids.filter(id => VIEWS[id] && !VIEWS[id].hidden && canView(id)).map(id =>
-        el('option', { value: id, selected: id === current ? 'selected' : null }, VIEWS[id].title)))));
-  const groups = NAV_GROUPS.map(group => {
-    const ids = group.ids.filter(id => VIEWS[id] && !VIEWS[id].hidden && canView(id));
-    if (!ids.length) return null;
-    return el('section', { class: 'rail-group', 'aria-label': group.title },
-      el('h2', { class: 'rail-group-title' }, group.title),
-      ...ids.map(id => el('a', { href: `#/${id}`, 'aria-current': id === current ? 'page' : null, title: VIEWS[id].title },
-        navIcon(id), el('span', {}, VIEWS[id].title))));
-  }).filter(Boolean);
-  const empty = el('p', { class: 'nav-empty', role: 'status', hidden: 'true' }, 'No sections match.');
+    ...available.map(group => el('optgroup', { label: group.title },
+      ...group.ids.map(id => el('option', { value: id, selected: id === current ? 'selected' : null }, VIEWS[id].title)))));
+  const groups = available.map(group => {
+    const opened = group.ids.includes(current);
+    const node = el(group.collapsible ? 'details' : 'section', {
+      class: 'rail-group', 'aria-label': group.title, open: group.collapsible && opened ? '' : null,
+      hidden: group.searchOnly ? '' : null,
+    }, group.title === 'Settings' ? null : el(group.collapsible ? 'summary' : 'h2', { class: 'rail-group-title' }, group.title),
+    ...group.ids.map(id => el('a', { href: `#/${id}`, 'aria-current': id === active && !group.searchOnly ? 'page' : null,
+      title: VIEWS[id].title, 'data-search': NAV_TERMS[id] ?? '' }, navIcon(id), el('span', {}, VIEWS[id].title))));
+    return { node, group, beforeSearch: opened };
+  });
+  const empty = el('p', { class: 'nav-empty', role: 'status', hidden: 'true' }, 'No sections match. Try “people”, “assets” or “settings”.');
   const search = el('input', { type: 'search', class: 'nav-search', placeholder: 'Find a section…', 'aria-label': 'Find a console section', autocomplete: 'off' });
+  let searching = false;
   search.addEventListener('input', () => {
     const query = search.value.trim().toLowerCase();
     let count = 0;
-    for (const group of groups) {
+    for (const entry of groups) {
+      const { node, group } = entry;
+      if (!searching && query) entry.beforeSearch = node.open;
       let found = 0;
-      for (const link of group.querySelectorAll('a')) {
-        link.hidden = !`${group.getAttribute('aria-label')} ${link.textContent}`.toLowerCase().includes(query);
+      for (const link of node.querySelectorAll('a')) {
+        link.hidden = !`${group.title} ${link.textContent} ${link.dataset.search}`.toLowerCase().includes(query);
         if (!link.hidden) found++;
       }
-      group.hidden = !found; count += found;
+      node.hidden = !found || (group.searchOnly && !query);
+      if (group.collapsible) node.open = query ? found > 0 : entry.beforeSearch;
+      if (!node.hidden) count += found;
     }
+    searching = !!query;
     empty.hidden = count > 0;
   });
   search.addEventListener('keydown', event => {
     if (event.key === 'Escape') { search.value = ''; search.dispatchEvent(new Event('input')); }
     if (event.key === 'Enter') {
-      const first = groups.find(group => !group.hidden)?.querySelector('a:not([hidden])');
+      const first = groups.find(({ node, group }) => !node.hidden && (!group.collapsible || node.open))?.node.querySelector('a:not([hidden])');
       if (first) { event.preventDefault(); first.click(); }
     }
   });
-  return el('nav', { id: 'rail-nav', 'aria-label': 'Console sections' }, picker, search, ...groups, empty);
+  return el('nav', { id: 'rail-nav', 'aria-label': 'Console sections' }, picker, search, ...groups.map(({ node }) => node), empty);
 }
 
 function shell(current, content) {
@@ -8835,7 +8810,7 @@ function shell(current, content) {
     el('aside', { class: 'rail' },
       logo
         ? el('div', { class: 'brand brand--logo' }, logo, el('small', { class: 'brand-sub' }, instanceName))
-        : el('div', { class: 'brand' }, el('span', { class: 'brand-name' }, instanceName), el('small', {}, 'Control plane console')),
+        : el('div', { class: 'brand' }, el('span', { class: 'brand-name' }, instanceName), el('small', {}, 'Administration')),
       el('a', { class: 'back', href: lollyHref('/') }, 'Open Lolly →'),
       railToggleBtn(),
       consoleNavigation(current),
@@ -8895,7 +8870,7 @@ function gate(inner) {
             logo ?? el('div', { class: 'gate-mark', 'aria-hidden': 'true' }),
             el('div', {},
               el('div', { class: 'gate-name' }, instanceName),
-              el('div', { class: 'gate-kicker' }, 'Control plane console')));
+              el('div', { class: 'gate-kicker' }, 'Administration')));
         })(),
         ...inner)));
 }
@@ -9005,10 +8980,12 @@ async function route() {
   }
   // Hash is '#/<view>' with an optional '?query' (deep links: #/users?focus=<id>,
   // #/overview?day=<date>). Split the two; params reach the view as a 2nd arg.
-  const raw = location.hash.replace(/^#\/?/, '');
-  const qi = raw.indexOf('?');
-  const id = (qi >= 0 ? raw.slice(0, qi) : raw) || 'overview';
-  const params = new URLSearchParams(qi >= 0 ? raw.slice(qi + 1) : '');
+  const { id, params } = consoleRoute(location.hash);
+  if (currentRouteId() === 'instance' && id !== 'instance') {
+    const query = params.toString();
+    history.replaceState(null, '', `#/${id}${query ? `?${query}` : ''}`);
+    renderedRouteHash = location.hash;
+  }
   // Public (anonymous) mode: only the public views are reachable; any other route
   // drops to the sign-in gate — that's how a visitor crosses from docs into admin.
   if (publicMode && !PUBLIC_VIEWS.has(id)) { await signInGate(); return; }
@@ -9034,14 +9011,15 @@ async function route() {
   main.append(loading);
   const alerts = publicMode ? Promise.resolve([]) : deploymentAlerts();
   try {
+    if (!publicMode && (id === 'instance' || LEGACY_INSTANCE_VIEWS.includes(id)) && !canView(id)) throw Object.assign(new Error('Permission required'), { status: 403 });
     await view.render(main, params);
   } catch (err) {
     loading.remove();
     if (err.status === 403) {
       main.append(el('h1', {}, view.title),
         el('p', { class: 'sub' }, 'This section needs a permission your account does not have. An administrator can grant it.'),
-        el('p', {}, el('a', { class: 'btn', href: '#/approvals' }, 'Go to Approvals'), ' ',
-          el('a', { class: 'btn', href: '#/projects' }, 'Open Projects')));
+        el('p', {}, canView('approvals') ? el('a', { class: 'btn', href: '#/approvals' }, 'Go to Approvals') : null, ' ',
+          canView('projects') ? el('a', { class: 'btn', href: '#/projects' }, 'Open Projects') : null));
     } else {
       main.append(
         el('h1', {}, view.title),
@@ -9052,6 +9030,9 @@ async function route() {
   }
   loading.remove();
   showAlertBanner(main, await alerts);
+  if (!main.isConnected) return;
+  if (SETTINGS_ROUTES.includes(id) && canView('instance')) main.prepend(el('p', { class: 'settings-back' }, el('a', { href: '#/instance' }, '← Settings')));
+  document.title = `${view.title} · ${instanceName}`;
   // Focus the view heading and announce it, so keyboard/SR users re-orient after
   // a navigation (or a mutation-triggered re-render) instead of losing focus.
   const focusHeading = main.querySelector('[data-doc-anchor]') ?? main.querySelector('h1');
@@ -9100,6 +9081,13 @@ function applyRailState() {
   const c = railCollapsed();
   if (c) document.documentElement.setAttribute('data-rail', 'collapsed');
   else document.documentElement.removeAttribute('data-rail');
+  for (const group of document.querySelectorAll('details.rail-group')) {
+    if (c && !group.hasAttribute('data-expanded-before-collapse')) {
+      group.dataset.expandedBeforeCollapse = String(group.open); group.open = true;
+    } else if (!c && group.hasAttribute('data-expanded-before-collapse')) {
+      group.open = group.dataset.expandedBeforeCollapse === 'true'; delete group.dataset.expandedBeforeCollapse;
+    }
+  }
   const b = document.getElementById('rail-toggle');
   if (b) {
     b.setAttribute('aria-expanded', String(!c));
