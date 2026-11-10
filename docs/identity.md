@@ -4,6 +4,7 @@ This page is for the person who decides how colleagues sign in to Lolly Work. By
 will know which sign-in methods to offer, who gets in, how long someone stays signed in and
 how to end their access.
 
+
 ## How a sign-in works
 
 Every sign-in answers two questions. Your identity provider answers the first: who is this?
@@ -25,6 +26,7 @@ Cookies are `HttpOnly`, `SameSite=Lax`, `Path=/` and `Secure` whenever `instance
 uses https. A member session wins when both cookies are present. Every token carries a `typ`
 domain in its signed payload, so a session token can never be replayed as a guest token, a
 link signature or an OAuth state.
+
 
 ## Choose how people sign in
 
@@ -71,6 +73,8 @@ A forgotten password works the same way: ask the person who invited you for a ne
 old password keeps working until the new one is set. Setting it ends every session the
 account had, so a password that got out stops working everywhere at once.
 
+**Warning: A password link signs in whoever holds it**
+
 Whoever holds a link can sign in as its address, so some links are owner-only:
 
 - a link that leads to an owner: an owner's account, a `bootstrapOwners` address or an
@@ -97,6 +101,8 @@ Removing the email and password sign-in from a person, from their profile or in 
 deletes the password; a new one needs a new link. The sign-in an account was created with
 cannot be removed. **Disable access** is the way to stop that one, and it also cancels the
 person's unused links.
+
+**How password guessing is slowed, and how passwords are stored**
 
 Guessing is slowed twice over:
 
@@ -142,11 +148,14 @@ URL that is an IP address turns them off.
   `POST /api/auth/passkeys/authenticate/options` and `.../authenticate/verify`, and
   `POST /api/auth/passkeys/:id/remove`.
 
+**Warning: Signing out everywhere leaves a passkey working**
+
 A passkey is a local credential with no provider session. A provider logout or **Sign out on
 all devices** leaves the passkey in place. To stop passkey sign-in, disable the account or
-send SCIM `active=false`. [Set up enterprise
-identity](enterprise-identity.md#5-operate-and-upgrade) explains how passkeys behave during
-offboarding.
+send SCIM `active=false`.
+
+[Set up enterprise identity](enterprise-identity.md#5-operate-and-upgrade) explains how
+passkeys behave during offboarding.
 
 ### Device-code sign-in
 
@@ -164,6 +173,7 @@ account closed during the flow gets nothing (`denied`). Codes last ten minutes a
 Pending codes are listed in the console's Fleet view, where an admin can deny one but never
 approve one. Codes are database rows, so any replica answers the poll: high availability
 needs no sticky sessions, and function-only deployments have the flow too.
+
 
 ## Who may sign in
 
@@ -205,6 +215,8 @@ The checks run in this order, and the first one that applies decides:
    admitted while that membership lasts. Both count for new accounts and partner accounts only.
    An existing staff account is admitted by the steps above or not at all. Both are kept in the database, not in this
    configuration ([Partner programmes](partner-programmes.md#add-people-by-domain)).
+
+**Note: A hostedDomain pin refuses invited people outside it**
 
 With `hostedDomain` set, only accounts in that Google Workspace get past step 2, invited
 people included. To let in people from outside it, add a second Google registration without
@@ -280,6 +292,7 @@ Once real owner groups exist, empty the list.
 - Invitations and requests write `invite.*` and `access.*` rows, listed in [Invite people and
   handle requests](invitations.md#audit-actions-for-invitations-and-requests).
 
+
 ## Session length and renewal
 
 A member session lasts `policy.sessionTtlHours`. With `policy.sessionMaxHours` set, a person
@@ -320,6 +333,7 @@ and the cap at a few days, for example `sessionTtlHours: 12` with `sessionMaxHou
   first gives it the full lifetime.
 - Removing one of your own sign-ins ends every session you hold and keeps the browser you
   acted from signed in, with a cookie in the same chain and cut the same way.
+
 
 ## One person, several sign-ins
 
@@ -423,10 +437,13 @@ an existing account that reaches it through a newly linked sign-in. Adding a sig
 profile accepts it at once when that provider vouches for the invited address and links by
 email (`invite.accept` with `via: "link"`).
 
+**Accounts from before migration 0039**
+
 **Upgrading.** Migration 0039 writes one identity row per existing account from `users.sub`
 (the provider is the prefix before the first `:`, or `primary` when there is none), with the
 email marked unconfirmed. Nothing links by email to a backfilled row until that person signs
 in again through the same identity and the provider confirms the address.
+
 
 ## Groups → role
 
@@ -476,6 +493,7 @@ displaying tokens.
 Group membership is also how governance targets people: overlay visibility, approval-chain
 eligibility, provider exposure and grant principals (`group:<name>`) all read groups. What
 each role may do is in [Roles and grants](permissions.md).
+
 
 ## Offboarding, disable and revocation
 
@@ -529,6 +547,7 @@ Details that matter:
 Ownership transfer, retained content and personal-data review are separate actions; see
 [Account data controls](account-lifecycle.md).
 
+
 ## Guest sessions
 
 A guest-edit link admits someone with no account. The server sets an `lw_guest` cookie scoped
@@ -539,6 +558,7 @@ access comes entirely from the link. `policy.guestLinks.maxTtlHours` caps the li
 
 How a guest joins is in [Share renders and links](sharing.md#guest-links-in-a-browser), and
 what a guest can do in a live room is in [Roles and grants](permissions.md#guest-write-authority).
+
 
 ## Machine credentials
 

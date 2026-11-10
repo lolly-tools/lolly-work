@@ -8,6 +8,12 @@ The kind is the protocol, not a vendor. Nextcloud is the documented path; ownClo
 `mod_dav`, Sabre/DAV and any other server that answers RFC 4918 `PROPFIND` use the same kind
 with `flavor: "generic"`.
 
+On YunoHost, the Lolly Work package finds a Nextcloud on the same server and prefills
+**Configuration > Nextcloud**. Once you paste the account's login name and app password and switch
+it on, it writes this source, and a matching delivery destination, to `instance.json` as
+config-managed entries ([YunoHost](../install.md#7-yunohost)).
+
+
 ## What you need from the server
 
 ## Nextcloud
@@ -41,6 +47,7 @@ with `flavor: "generic"`.
 - **HTTPS.** The credential is HTTP Basic, so a plain HTTP hop hands the password to the
   network.
 
+
 ## Guided connection in the app
 
 1. Open **Assets & tools > Providers** at `/admin#/providers` and choose **Guided connection**
@@ -60,7 +67,7 @@ with `flavor: "generic"`.
    or when the panel closes. Nothing goes into browser storage.
 4. Choose **Test files and original**. The preview lists a sample of the folder and reads one
    original, showing its byte count, content type and SHA-256. Compare that checksum with a
-   copy of the same file you trust. The preview's limits are under [Lolly Verify](#verify).
+   copy of the same file you trust. The preview's limits are under [Verify](#verify).
 5. An owner chooses **Save source and seal credential**. This creates a disabled source and
    checks the credential again before sealing the credential; the server needs
    `LW_CREDENTIAL_SECRET` set first. If sealing fails, the panel keeps the disabled source and
@@ -75,13 +82,14 @@ An admin can save a disabled source and hand the credential and the enable to an
 Disabling the source from its row stops federation. A config-managed source stays read-only
 here: change your deployment and redeploy.
 
+
 ## Credential shape
 
 One string: the login and the password joined by a colon, or a bearer token for a server behind
 a token-issuing proxy. For Nextcloud the password must be the app password. The driver accepts nothing else and refuses before sending a
 request.
 
-```
+```text
 "<username>:<app password>"
 "bearer:<token>"
 ```
@@ -91,6 +99,7 @@ lw providers credential acme-nextcloud   # hidden prompt; never argv, never shel
 ```
 
 To rotate, run the same command with a new app password, then revoke the old one in Nextcloud.
+
 
 ## instance.json / `lw providers add`
 
@@ -118,6 +127,8 @@ Generic WebDAV:
 }
 ```
 
+**Options**
+
 | Option | What it does |
 |---|---|
 | `baseUrl` (required) | The server URL. Its host is the pin: an `<href>` naming another host is refused, and a redirect is an error naming its target, never followed. |
@@ -134,6 +145,7 @@ If your server returns a custom DAV property carrying a date, name it in
 the namespace prefix (`embargo-until`, not `x:embargo-until`). Setting it switches the listing
 to `<d:allprop/>` so the custom property comes back, which is a more expensive call.
 
+
 ## Verify
 ```bash
 lw providers preview --kind webdav --options '{"baseUrl":"https://cloud.example","flavor":"nextcloud","username":"lolly-federation","root":"Brand"}'
@@ -146,6 +158,8 @@ both the URL and the credential. The console's preview follows up to five direct
 inspects at most 1,000 files and reads one original of up to 32 MiB. Each listing is capped at
 2 MiB and the whole preview at 30 seconds. A partial response, an empty original, a size
 mismatch or a refused download fails the check. A sample is not a full inventory.
+
+**What each error means**
 
 | Symptom | What it means |
 |---|---|
@@ -164,13 +178,17 @@ To see which properties your server returns (names and value types, never values
 lw providers preview --kind webdav --shape --options '{"baseUrl":"https://cloud.example","flavor":"nextcloud","username":"lolly-federation"}'
 ```
 
+
 ## Notes / limits
 
-- **Not yet confirmed against a running server.** The URL templates, property names and
-  response layout come from RFC 4918 and Nextcloud's documentation, so treat the first sync as
-  the check. [Check a source on your own tenant](tenant-check.md#webdav-nextcloud) lists what to
-  look at. Contributors changing the driver follow its
-  [maintainer runbook](https://github.com/lolly-tools/lolly-work/blob/main/server/src/catalog/providers/live-verify/webdav.md) in the Lolly Work repository.
+**Note: Not yet confirmed live**
+
+The driver is not yet confirmed against a running server. The URL templates, property names and
+response layout come from RFC 4918 and Nextcloud's documentation, so treat the first sync as
+the check. [Check a source on your own tenant](tenant-check.md#webdav-nextcloud) lists what to
+look at. Contributors changing the driver follow its
+[maintainer runbook](https://github.com/lolly-tools/lolly-work/blob/main/server/src/catalog/providers/live-verify/webdav.md) in the Lolly Work repository.
+
 - **No search, thumbnails or expiring links.** Nextcloud's SEARCH method is not used and there
   is no rendition endpoint. Files stream through Lolly Work on each request.
 - **A rename arrives as a new file.** The catalog id is the file's path under the root, so
@@ -184,6 +202,7 @@ lw providers preview --kind webdav --shape --options '{"baseUrl":"https://cloud.
 - **A destination as much as a source.** You run this server yourself, so there is no vendor
   to leave. It is more often where an [exit](../offboarding.md#exit-readiness-by-kind) copies
   files to than where one starts.
+
 
 ## Use as an offboarding destination
 

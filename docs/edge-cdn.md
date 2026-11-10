@@ -12,6 +12,14 @@ sign-ins, session cookies, tokens and private files on their way through, even w
 none of them. Lolly Work therefore decides which provider may front which hostname before anything else,
 and refuses to start when a configuration breaks that rule.
 
+**What you'll do**, in four steps:
+
+- **[Choose the hostnames](#the-jurisdiction-rule)** Decide which provider may front which hostname.
+- **[Configure a provider](#configure-a-provider)** Add it under `edge` in `instance.json`, with its credential kept outside the file.
+- **[Turn off rewriting](#settings-that-must-stay-off)** Switch off the provider features that change bytes or skip Lolly Work's checks.
+- **[Check the edge](#check-the-edge)** Run `lw edge probe` after every change.
+
+
 ## What a CDN may cache
 
 Lolly Work labels every response with a delivery class. A CDN may store only the public classes, and only
@@ -27,9 +35,12 @@ Everything else is private: sessions, projects, the catalog feed, member renders
 and every answer to a signed-in person. Those responses say `Cache-Control: private, no-store`
 and `CDN-Cache-Control: no-store`, whatever the CDN's own defaults are.
 
-This release covers public classes only. Edge tokens for private catalog bytes (`/e/`) and
-presigned downloads from object storage (`/o/`) are not built, so no CDN setting here makes a
-private file cacheable.
+**Note: Public files only**
+
+Lolly Work 1.2.0, the first release with edge support, covers public classes only. Edge tokens
+for private catalog bytes (`/e/`) and presigned downloads from object storage (`/o/`) are not
+built, so no CDN setting here makes a private file cacheable.
+
 
 ## The jurisdiction rule
 
@@ -58,9 +69,12 @@ A `publicOnly` hostname, such as `assets.example.org`, answers public reads and 
   a byte of it leaves the server;
 - writes answer `405`.
 
+**Warning: Keep the original Host header**
+
 Lolly Work recognises the hostname from the request's `Host` header. Keep the provider forwarding the
 original `Host`, which is Cloudflare's default; an origin rule that rewrites it to the instance
 hostname defeats this check, and `lw edge probe` reports that.
+
 
 ## Configure a provider
 
@@ -100,7 +114,8 @@ and Cloudflare in front of a public assets hostname:
 | `options` | Bunny: `pullZoneId` and optionally `regions: ["europe"]`. Cloudflare: `zoneId` and optionally `plan` (`free`, `pro`, `business` or `enterprise`, default `free`), which sets the purge budget. |
 | `jurisdiction` | Facts you state about the provider. A statement may fill in what Lolly Work cannot know (Bunny's log location), never contradict what it does know: Cloudflare cannot be declared an EU company. |
 
-Unknown keys are refused, so a typo cannot leave a setting silently off.
+Unknown keys are refused, so a typo cannot leave a setting silently off. Every `edge` key is in
+[configuration](configuration.md#edge).
 
 ### Credentials
 
@@ -117,13 +132,14 @@ a key with the least access the provider offers: for Cloudflare, an API token wi
 Zone Settings Read on that zone only. Bunny's account API key reaches the whole account, so keep it
 to the server that runs Lolly Work.
 
+
 ## Settings that must stay off
 
 These features rewrite bytes, strip Content Credentials, break the Content Security Policy or serve
 files without Lolly Work's checks. `lw edge probe` reads each one through the provider's API and fails
 when one is on.
 
-Bunny:
+**Bunny:**
 
 - **Bunny Optimizer** off. It rewrites images and strips their metadata.
 - **Smart Cache** off. It caches by file type instead of the origin's headers.
@@ -134,7 +150,7 @@ Bunny:
 - **Regions** limited to Europe for an EU hostname, and the origin shield in Europe if you use one.
 - **Log IP anonymisation** on; check where forwarded or stored logs go.
 
-Cloudflare:
+**Cloudflare:**
 
 - **Polish**, **Mirage** (retired by Cloudflare in 2025), **Rocket Loader**, **Email Address
   Obfuscation**, **Automatic HTTPS Rewrites** and **Always Online** off.
@@ -143,6 +159,7 @@ Cloudflare:
 - No **cache rule** that overrides the origin's edge cache time. A rule that sets "Ignore cache-control
   header and use this TTL" can store responses Lolly Work marks private.
 - Files above 512 MB are not cached on Free, Pro and Business plans; they pass through to Lolly Work.
+
 
 ## Tags and purges
 
@@ -158,7 +175,9 @@ With a provider configured, Lolly Work adds purge tags to public answers: `CDN-T
 | `o_<instance>` | everything this instance put on the edge |
 
 A private or signed-in answer never carries a tag, and without a configured provider no answer
-does.
+does. Before 1.2.0, brand chrome and the hashed connect pack sent `Cache-Tag` and `Surrogate-Key`
+on every answer, so a CDN that purged by those tags without an `edge` provider loses them on
+upgrade.
 
 Lolly Work queues a purge when public bytes change meaning: a brand change (`b_` of the old revision), a
 new or withdrawn connect pack (`h_` of the old pack), and a tool's visibility changing through the
@@ -174,6 +193,13 @@ lw edge purge --tag t_qr-code               # every configured provider
 lw edge purge --url https://assets.example.org/catalog/og/qr-code.png
 lw edge purge --tag o_<instance>            # everything this instance put on the edge
 ```
+
+An owner can do the same over the API, under `instance.config`: `GET /api/v1/edge` for providers
+and recent purges, `GET /api/v1/edge/providers/:id/verify` for the zone checks,
+`POST /api/v1/edge/purge`, and `PUT` or `DELETE /api/v1/edge/providers/:id/credential`. The
+[1.2.0 release notes](release-1-2-0.md#changes-for-api-clients-and-operators) list them with the
+other new routes.
+
 
 ## Check the edge
 
@@ -198,5 +224,8 @@ each setting above. It exits non-zero on any failure.
 Some provider behaviour is not settled by the providers' documentation, so the probe measures it
 rather than trusting it: how Bunny separates several tags in `CDN-Tag` and how its tag purge
 matches them, whether Bunny honours `private` and `no-store` and reads `CDN-Cache-Control`, and
-whether Cloudflare honours `no-transform`. Until a live check has confirmed Bunny's tag matching,
-purge important URLs with `--url` as well.
+whether Cloudflare honours `no-transform`.
+
+**Warning: Purge important URLs by address too**
+
+Until a live check has confirmed Bunny's tag matching, purge important URLs with `--url` as well.

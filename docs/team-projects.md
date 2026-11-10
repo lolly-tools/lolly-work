@@ -8,6 +8,7 @@ saved on a laptop opens on a phone after sign-in.
 By the end you will know who sees a project, what each project role allows, how saving and
 shared files work and what happens when two people save at once.
 
+
 ## Who sees a project
 
 Each project is either **private** (its owner and the people added to it) or shared with one
@@ -15,6 +16,8 @@ or more **groups**. A member sees a project they own, one they were added to or 
 with any group they belong to. Admins and owners see every project. Group membership is the
 member's effective set: groups from the identity provider plus local groups added in the
 console.
+
+**Which groups Lolly offers when you share a project**
 
 When Lolly offers a visibility choice, it reads the list from `sharing.groups` in
 `GET /api/v1/org-config`. That list holds the member's own groups, sorted, minus the groups
@@ -36,7 +39,10 @@ manager of the project.
 `project.manage`. The previous owner stays on the project as a manager, audited as
 `project.member.add` with `via: 'transfer'`, so they can still work there, leave or be
 removed. A previous owner whose account is disabled is not kept, so offboarding (disable, then
-transfer) leaves no row that re-enabling the account would bring back.
+transfer) leaves no row that re-enabling the account would bring back. Ending a partner
+programme can move its people's projects to the programme's owning team, archived and read-only
+([End a partnership](partner-people.md#end-a-partnership)).
+
 
 ## People and roles
 
@@ -118,6 +124,7 @@ the transfer applies: the project's owner, or a holder of `project.manage`. Loll
 **Make owner** only then, so an admin denied `project.manage` is not offered it and a member
 granted it is.
 
+
 ## Saving from Lolly
 
 Signed in to an instance, the Share dialog offers a **Team** section:
@@ -129,7 +136,11 @@ Signed in to an instance, the Share dialog offers a **Team** section:
 - **Copy team link** copies the session's [team link](#team-links).
 
 A session body may be up to 4 MiB, enough for a large Lolly Design document; a larger one is refused
-with `413`. Images uploaded on one device are stored on that device. Where shared files are on,
+with `413`.
+
+**Note: Without shared files, a session's images stay on one device**
+
+Images uploaded on one device are stored on that device. Where shared files are on,
 saving to a team project copies the images a session uses into the project's files, so the
 session opens elsewhere with them. Where they are off, the session opens elsewhere without
 those images, and Lolly warns about that when you save.
@@ -154,6 +165,7 @@ both survive. Every refused save is recorded as `session.conflict` in the audit 
 revisions only, never input values). The routes are in the [API
 reference](api.md#projects-and-sessions).
 
+
 ## Shared files
 
 A project can hold files: the images and other uploads its sessions use, kept by the instance
@@ -172,6 +184,8 @@ while files are off every file route answers `404`.
 | editor and up, with `session.edit` | rename a finished file in a project that is not archived; the bytes and id stay the same, so sessions that use the file still open. Service tokens cannot |
 | the person who uploaded the file | delete it, or cancel their own unfinished upload |
 | manager and up (owner, manager member, `project.manage`) | delete any file in the project |
+
+**How an upload works**
 
 **How an upload works.** An upload is reserved first, then sent in parts of 1 MiB, then
 finished. Each part is checked against the digest declared at the start, and the whole file is
@@ -212,6 +226,7 @@ between them. A move changes only the folder listing, so open documents, their l
 assets they use keep working. Personal folders stay on the person's device until they choose
 to share them.
 
+
 ## Who changed what
 
 Project rows in `GET /api/v1/projects` carry `updatedAt` and `updatedByName`: the newest of the
@@ -219,6 +234,7 @@ last session save and the last rename, visibility or archive change, and the nam
 who made it (`null` when nobody has changed the project since it was created). Session rows in
 `GET /api/v1/projects/:id/sessions` carry `updatedByName` beside `updatedBy`. Lolly shows these
 in its lists, so a team working one after another can see who saved last.
+
 
 ## Team links
 

@@ -10,6 +10,7 @@ agents make from a template that takes them. Each file records the company it wa
 This page is part of [Run a partner programme](run-a-partner-programme.md). Your design system
 leads every piece, and the company's mark goes into the artwork as a picture.
 
+
 ## Add a company and its details
 
 Under **Companies** on the programme's page, add each partner organisation. On the company's page,
@@ -34,6 +35,7 @@ minimum size, keep them on the company page's **Partner kit** card.
 The file types, sizes and field lengths are in
 [Company details and logos](partner-programmes.md#company-details-and-logos).
 
+
 ## Contacts who may edit
 
 **Contacts who may edit** is off by default: your team keeps the company's details. Tick **People
@@ -42,6 +44,7 @@ people who already sign in. Each of them gets **Edit** on their company card, wi
 and checks and the two logos; the mark stays with your team. A contact cannot rename the company.
 A contact's change applies at once. To review contact changes first, turn on **Changes by contacts
 need approval** ([Partner approvals](partner-approvals.md#changes-by-a-company-s-contacts)).
+
 
 ## What partners see of their company
 
@@ -58,11 +61,13 @@ the card mentions a rule or a policy.
 A template takes the company's details where its inputs are bound to them, so partners never type
 their own logo or contact line ([Partner templates](partner-templates.md#take-inputs-from-the-company)).
 
+
 ## Change a company's details
 
 Change them on the company's page and press **Save details**. Every revision is kept. New pieces
 take the new details, and a file already made keeps the details it was made with, along with the
 revision it records. A contact who may edit makes the same change from their home.
+
 
 ## Keep a company's partner kit
 
@@ -120,11 +125,13 @@ example "Northwind IT's mark is 48 px high; the kit asks for at least 96 px.", w
 for each thing they could not measure. A finding is for review and never blocks an export. The kit
 is never a design system: your brand still leads, and the app's look stays the same.
 
+
 ## Lockups
 
 Lolly does not generate a lockup from two marks for a "with", "in partnership with" or "by"
 arrangement. Add a finished lockup as a custom mark
 ([Place a partner's mark](/info/partners.html#place-a-partner-s-mark)).
+
 
 ## What a co-branded file records
 
@@ -148,6 +155,7 @@ A kit is recorded by its id and revision only: never its colours, rules or files
 partner's agent makes over the API or MCP records the same keys as a file made in the app. Every
 place the record is written, and who records no company, is in
 [The partner record in files](partner-programmes.md#the-partner-record-in-files).
+
 
 ## Worked example: Northwind IT
 
@@ -199,6 +207,7 @@ and one for dark: the light-surface logo looks faint on the dark preview.
 **Rita** still sees nothing, but every piece she makes from now on can carry these details.
 
 Next: [4. Publish the data sheet](partner-templates.md#4-publish-the-data-sheet).
+
 
 ## Every option
 

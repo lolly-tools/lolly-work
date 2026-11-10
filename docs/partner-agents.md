@@ -9,15 +9,22 @@ and the files it makes record the company and programme, never the agent.
 
 This page is part of [Run a partner programme](run-a-partner-programme.md).
 
+
 ## Give an agent a token
 
 On the programme's page, or a company's, the **Agent tokens** card mints a token for the agent,
-for the programme or one company, and shows its secret once. **Mint token** takes a label, the
+for the programme or one company. **Mint token** takes a label, the
 company, the scopes, the days until the token expires and any limits, then shows the secret once,
 with **Copy**. Anyone with `programme.manage` for a programme issues its tokens; a grant of
-`programme.manage` on `programme:<id>` lets its holder manage that programme's tokens only. The
+`programme.manage` on `programme:<id>` covers only that programme's tokens, its usage report,
+View as and template review. The
 server sets what the request cannot: the `automation` role, the programme's and company's groups and
 the `partner` group.
+
+**Warning: The secret is shown once**
+
+The card shows a new token's secret once. Copy the secret and hand it to the partner's agent
+before you close the card.
 
 - **Scopes.** `render` and `catalog.read` by default; `documents` and `files` may be added, and so
   may `approvals.request` ([Partner approvals](partner-approvals.md#requests-from-partners-agents)).
@@ -28,6 +35,7 @@ the `partner` group.
   left as expiring; no notice is sent.
 - **Revoke** on the card, in two steps. A programme token is never moved out of its programme,
   only revoked. Ending the programme or company revokes its tokens.
+
 
 ## Limits and usage
 
@@ -58,6 +66,7 @@ The counts hold no input values, prompts, titles, file names or agent names.
 
 ![What agents did over the last 4 weeks: calls, renders, batches, deliveries, approvals and refusals for Rita's agent, for Northwind IT and for Resellers, EMEA, then renders by tool](shots/partner-agent-usage.svg)
 
+
 ## What an agent reads
 
 The organisation MCP endpoint offers resources to a service token, each read counted as one call:
@@ -74,6 +83,7 @@ The organisation MCP endpoint offers resources to a service token, each read cou
 
 The same answers are at `GET /api/v1/context/*` for REST callers.
 
+
 ## Templates by purpose
 
 An agent can ask for a piece by what the piece is for, with `resolve_intent`, rather than by tool.
@@ -82,6 +92,7 @@ with **Purposes** on the programme's **Templates** card, which then reads, for e
 template is for: Promote · Banner, Social landscape". Inputs the company fills count as given, so an
 agent for Northwind IT is never asked for the partner's mark or the company name. A retired
 template is never offered.
+
 
 ## Worked example: Northwind IT
 
@@ -117,6 +128,7 @@ sees, renders the data sheet with only the price, colourway and mode open, and i
 Northwind IT, never the agent.
 
 Next: [8. End the partnership on a date](partner-people.md#8-end-the-partnership-on-a-date).
+
 
 ## Every option
 

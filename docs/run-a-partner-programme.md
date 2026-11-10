@@ -9,6 +9,7 @@ company it was made for.
 **Start here:** [Set up a programme](#set-up-a-programme) · [What partners see](#what-partners-see)
 · [Every option, route and audit event](partner-programmes.md)
 
+
 ## What partners get
 
 Partners start with nothing internal. They get what you give their programme and their company,
@@ -38,6 +39,7 @@ unaffected, and admins and owners are never narrowed.
 | **Their agents** | A token you issue sees what the company's people see, within limits you set. | The **Agent tokens** card |
 | **When they leave** | Access ends at once, or on a date you choose with a notice before. Links they made stop working. | **End this partnership** |
 
+
 ## Four words
 
 - A **programme** is your own name for one kind of partner, such as *Resellers, EMEA*. Lolly
@@ -46,6 +48,7 @@ unaffected, and admins and owners are never narrowed.
 - A **partner** is a person in a programme, or an agent working for one.
 - A **template** is a ready piece you publish to a programme, such as a product data sheet where a
   reseller adds only their price.
+
 
 ## How a programme fits together
 
@@ -60,6 +63,7 @@ A programme is co-branding: your design system leads, and the partner's mark goe
 as a picture. [Brand architectures](/info/brand-architectures.html#co-branding) shows how
 co-branding relates to the other ways organisations arrange their brands.
 
+
 ## Guides by subject
 
 - **[Co-branding and partner kits](partner-co-branding.md)** Each company's details, logos and kit, what partners see of their company, and what a co-branded file records.
@@ -68,6 +72,7 @@ co-branding relates to the other ways organisations arrange their brands.
 - **[Shared assets and licences](partner-shared-assets.md)** Collections, provider folders, the licence gate, files marked as your own, sharing a held file anyway and credits.
 - **[Partners' agents](partner-agents.md)** Tokens, scopes, limits and usage, and what an agent reads over your MCP endpoint.
 - **[People and the partnership](partner-people.md)** Create a programme, check what partners get, invite people, then end a partnership on a date and reopen an end.
+
 
 ## What partners see
 
@@ -98,6 +103,7 @@ A phone shows the same home in the same order. What she sees inside a template i
 [Partner templates](partner-templates.md#what-a-partner-sees-in-a-template), and what her exports
 record is on [Co-branding and partner kits](partner-co-branding.md#what-a-co-branded-file-records).
 
+
 ## Set up a programme
 
 <a id="worked-example-northwind-it"></a>
@@ -119,6 +125,7 @@ Example ids such as `resellers-emea` are yours to choose.
 - **7. Give Rita's agent a token.** The default scopes and limits, for 90 days. [Partners' agents →](partner-agents.md#give-an-agent-a-token)
 - **8. End the partnership on a date.** Northwind IT alone, on 30 June 2027, with a notice. [People and the partnership →](partner-people.md#end-on-a-date)
 
+
 ## Day to day
 
 - **A new version of a template, or retiring one:** [New versions and retiring](partner-templates.md#new-versions-and-retiring).
@@ -127,6 +134,7 @@ Example ids such as `resellers-emea` are yours to choose.
 - **A file the licence gate holds back:** [The licence gate](partner-shared-assets.md#the-licence-gate).
 - **Checking a limit:** [Limits and quotas](partner-people.md#limits-and-quotas).
 - **Ending a partnership, ending on a date or undoing an end:** [End a partnership](partner-people.md#end-a-partnership).
+
 
 ## Related
 

@@ -11,6 +11,7 @@ its own resources and render credential. Pick the install path at
 [Run Lolly Work](self-host.md); the [ready-made package](ready-made-package.md) has an
 UpCloud reference qualification.
 
+
 ## What the modules give you
 
 | Part | Supported today | Still to qualify before a new deployment |
@@ -33,6 +34,7 @@ larger needs, provider storage and Longhorn for qualified multi-node storage. A 
 still uses the underlying VM or bare-metal capacity: sharing services on it reduces
 separate guest and service overhead, but not the cloud's compute charges.
 
+
 ## How the two providers differ
 
 | Contract | UpCloud | Evroc |
@@ -47,8 +49,12 @@ separate guest and service overhead, but not the cloud's compute charges.
 | Object storage | Qualify bucket access, recovery and endpoint behaviour | Qualify the documented S3 feature compatibility, bucket access and recovery |
 | Application release | Signed web app, configured Lolly Work, worker and relay, database migrations, smoke checks | The same files, configuration, migration and acceptance contracts |
 
+**Note: A mocked plan proves the configuration only**
+
 A provider mock checks configuration against the schema; it cannot prove an image is
-available, or quota, compliance or performance. Both targets need real boot, SSH and
+available, or quota, compliance or performance.
+
+Both targets need real boot, SSH and
 reboot, host security, capacity and recovery checks before production. The openSUSE
 `provision.sh` does not support Ubuntu, so read the target runbook before choosing an
 image.
@@ -56,6 +62,7 @@ image.
 Keep public and private apart on either provider. Public APIs must not publish private
 packs, uploaded assets or member cookies, and the public CA, MCP and Penpot containers
 receive no private Lolly Work secrets.
+
 
 ## Custom instance domain
 
@@ -72,6 +79,7 @@ system, brand or extra Compose files, use the matching host preparation and the 
 list of release files. Generating a host name does not register an OIDC client or move
 DNS. Keep real image, SSH, reboot, owner sign-in, shared editing and export checks as the
 acceptance gates.
+
 
 ## Move a PostgreSQL database
 
@@ -152,12 +160,17 @@ Add the override to the complete Compose file list only for the reviewed server 
 Later deployments must use that same file list; the existing `push.sh` base-only path
 does not manage this optional database. Keep the render and relay overlays in place.
 
+**Warning: Never open a public PostgreSQL port for the helper**
+
 For managed PostgreSQL, use its reviewed TLS connection or a temporary tunnel you
-control; never add a public PostgreSQL port for the helper.
+control.
 
 **Accepting the target** means checking owners and project memberships, session
 revisions, uploaded asset bytes on another device, sealed source credentials,
 Brandfolder queries, agent grants and activity, audit continuity and real exports.
+
+**Warning: Rolling back after writes resume**
+
 After writes resume on the target, rolling back means reconciling those writes:
 changing the URL alone would throw them away.
 
@@ -166,6 +179,7 @@ session, link and credential-sealing secrets, the exact application and web app
 versions, source settings and independently kept audit heads. With the default `pg`
 asset driver the database includes uploaded asset bytes; with `s3`, back up the bucket
 and its versions separately. See [backup and restore](operations.md#backup-and-restore).
+
 
 ## What your instance serves at /info
 
@@ -195,6 +209,7 @@ rather than the app. Check the root robots file, the sitemap redirect and its XM
 type, empty HEAD bodies, 404 answers for missing documents and refusals for private API
 and catalog routes. The server's own HTTP tests exercise these boundaries.
 
+
 ## Capacity and recovery
 
 Leave room for the current signed web app, rollback copies, container layers, database
@@ -214,5 +229,8 @@ the asset driver and your backup needs. Evroc documents its
 [S3 compatibility](https://docs.evroc.com/products/storage/object-storage/s3compat.html),
 including the features it lacks. Prove private reads, original-byte hashes, version
 recovery, retention, CORS and Range and HEAD behaviour on a throwaway bucket before you
-change asset or archive addresses. A backup inside the same cloud is not independent of
-that cloud account or region.
+change asset or archive addresses.
+
+**Warning: Keep one backup outside the cloud**
+
+A backup inside the same cloud is not independent of that cloud account or region.

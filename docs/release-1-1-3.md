@@ -132,7 +132,7 @@ This section is for Lolly Work maintainers cutting the release.
 The commands are the same as for 1.1.2, with `vendor/lolly` at the Lolly source
 above:
 
-```text
+```bash
 node scripts/vendor-content-resolver.ts --write
 pnpm run repin-engine --apply
 pnpm run verify:engine-pin
@@ -141,7 +141,7 @@ pnpm run typecheck
 
 The packaged documentation comes from a Lolly commit that contains this page:
 
-```text
+```bash
 node scripts/sync-docs-bundle.ts --source=/path/to/lolly --commit=<full-commit-sha>
 pnpm run verify:docs-pin
 ```
@@ -157,7 +157,7 @@ Lolly 1.1.3 publishes a new web archive, and the Lolly Work YunoHost package pin
 `lolly-web-1.1.3-ynh1.tar.gz` archive above. The maintained producer cuts the package on
 the final Lolly Work commit:
 
-```text
+```bash
 node scripts/yunohost-release.ts --ynh-rev 1 --shell-url https://lolli.li/lolly-web-1.1.3-ynh1.tar.gz --shell-sha256 1ff9a26889d10984ce377e6890283859a9ba7bca2981d8df1e49e572e792925d --out ABS_NEW_ARTIFACT_DIRECTORY
 ```
 
