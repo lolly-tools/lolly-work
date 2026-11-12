@@ -184,6 +184,7 @@ import {
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
 import { listSubmissions, settleSubmission, submissionNotice, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
+import { previewKindOf } from '../catalog/sniff.ts';
 import { isDataSubmissionType, MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
@@ -9419,6 +9420,10 @@ export function buildApp(deps: AppDeps): App {
       size: s.size,
       checksum: s.checksum,
       ...(s.contentType ? { contentType: s.contentType } : {}),
+      // What the review panel can show for the stored bytes: a picture, a player,
+      // a PDF link or nothing. Read from the stored type, so a file kept as
+      // application/octet-stream before the table grew still shows none.
+      ...(s.contentType ? { previewKind: previewKindOf(s.contentType) } : {}),
       ...(s.width && s.height ? { width: s.width, height: s.height } : {}),
       ...(s.approvalId ? { approvalId: s.approvalId } : {}),
       ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),

@@ -621,6 +621,8 @@ td .lc-actions { justify-content: flex-end; }
 .cat-detail { display: flex; gap: 16px; align-items: flex-start; }
 .cat-detail-meta { flex: 1 1 auto; min-width: 0; }
 @media (max-width: 560px) { .cat-detail { flex-direction: column; } }
+/* A submitted video, sound or PDF takes the preview's place, wide enough to play. */
+.sub-file-stage { flex: none; width: min(100%, 360px); box-sizing: border-box; }
 
 /* ── projects + multi-edit ─────────────────────────────────────────────── */
 .link-btn { color: var(--accent); text-decoration: none; cursor: pointer; font-weight: 500; }

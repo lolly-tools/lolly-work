@@ -2328,8 +2328,11 @@ function catalogPreviewUrl(entry) {
  *  exists, degrading to a neutral placeholder tile on none/onerror (air-gapped —
  *  no remote fetch). `onOpen` makes the tile a keyboard-reachable inspect trigger. */
 function catalogThumb(entry, size, onOpen) {
+  // A served entry lists format objects; the submissions view lists bare names.
+  const first = entry?.formats?.[0];
+  const label = (typeof first === 'string' ? first : first?.format) ?? entry?.contentType ?? '';
   const ph = () => el('span', { class: 'cat-thumb-ph', 'aria-hidden': 'true' },
-    el('span', { class: 'cat-thumb-ext' }, (String(entry?.formats?.[0]?.format ?? entry?.contentType ?? '').split('/').pop().split(/[@+;]/)[0] || '').slice(0, 4) || null));
+    el('span', { class: 'cat-thumb-ext' }, (String(label).split('/').pop().split(/[@+;]/)[0] || '').slice(0, 4) || null));
   const box = el(onOpen ? 'button' : 'div', {
     class: `cat-thumb${onOpen ? ' cat-thumb--btn' : ''}`,
     style: `--cat-thumb:${size}px`,
@@ -2457,7 +2460,48 @@ function dataSubmissionSummary(d) {
   return `${what}, ${values}${extra}`;
 }
 
+// Object URLs for the submission on screen, released when another is opened.
+let submissionFileUrls = [];
+const releaseSubmissionFiles = () => {
+  for (const url of submissionFileUrls) URL.revokeObjectURL(url);
+  submissionFileUrls = [];
+};
+
+// A submission whose bytes are not a picture is drawn as its placeholder, so the
+// table does not fetch a whole video for an <img> that cannot draw one.
+const submissionThumbEntry = (s) => (s.previewKind && s.previewKind !== 'image' ? { ...s, preview: null } : s);
+
+/**
+ * What a reviewer sees of a submission's bytes: a video or audio player, or a
+ * link that opens a PDF, the way an export review's file is shown. The console
+ * plays media from blob: URLs only, so the bytes are fetched first, at once up to
+ * the same size an export review loads by itself and on a click above that.
+ * Null for a picture, which keeps its thumbnail, and for a file with no preview.
+ */
+function submissionStage(s) {
+  const kind = s.previewKind === 'document' && /^application\/pdf\b/i.test(s.contentType ?? '') ? 'pdf' : s.previewKind;
+  if (kind !== 'video' && kind !== 'audio' && kind !== 'pdf') return null;
+  const stage = el('div', { class: 'appr-file-stage sub-file-stage' });
+  const say = (text, role) => { stage.replaceChildren(el('p', { class: 'muted', ...(role ? { role } : {}) }, text)); };
+  const label = `${kind === 'video' ? 'Video' : kind === 'audio' ? 'Sound' : 'PDF'} submitted as ${s.name ?? s.id}`;
+  const load = async () => {
+    say('Loading the file…', 'status');
+    let res;
+    try { res = await fetch(s.preview); } catch { say('The file could not be loaded. Reload to try again.', 'alert'); return; }
+    if (!res.ok) { say(res.status === 410 ? 'This file is no longer available.' : 'The file could not be loaded. Reload to try again.', 'alert'); return; }
+    const url = URL.createObjectURL(await res.blob());
+    submissionFileUrls.push(url);
+    if (kind === 'pdf') stage.replaceChildren(el('a', { href: url, target: '_blank', rel: 'noopener', class: 'btn' }, 'Open the PDF in a new tab'));
+    else stage.replaceChildren(el(kind, { src: url, controls: '', preload: 'metadata', 'aria-label': label }));
+  };
+  if (typeof s.size === 'number' && s.size > ARTWORK_AUTOLOAD_BYTES) {
+    stage.replaceChildren(el('button', { class: 'btn', onclick: load }, `Load the file (${fmtBytes(s.size)})`));
+  } else void load();
+  return stage;
+}
+
 function renderSubmissionReview(s, host, opener, fieldDefs, collections = null) {
+  releaseSubmissionFiles();
   const short = String(s.id).replace(/^inst\//, '');
   const err = errSpan();
   const mine = s.relation === 'mine';
@@ -2541,9 +2585,9 @@ function renderSubmissionReview(s, host, opener, fieldDefs, collections = null) 
   return el('div', { class: 'card stack' },
     el('div', { class: 'list-bar' },
       heading,
-      el('button', { onclick: () => { host.replaceChildren(); opener?.focus?.(); } }, 'Close')),
+      el('button', { onclick: () => { releaseSubmissionFiles(); host.replaceChildren(); opener?.focus?.(); } }, 'Close')),
     el('div', { class: 'cat-detail' },
-      catalogThumb(s, 120, null),
+      submissionStage(s) ?? catalogThumb(submissionThumbEntry(s), 120, null),
       el('div', { class: 'cat-detail-meta' },
         el('div', { class: 'idy-grid' },
           cell('Id', el('span', { class: 'mono' }, s.id)),
@@ -2608,6 +2652,7 @@ async function submissionQueue() {
       return (await api(`/api/v1/catalog/submissions${state ? `?state=${state}` : ''}`)).submissions ?? [];
     } catch { return null; }
   };
+  releaseSubmissionFiles();
   const pending = await load('submitted');
   if (!pending?.length) return null;
   // The org's field DEFINITIONS, fetched once for the whole queue: an instance
@@ -2630,7 +2675,7 @@ async function submissionQueue() {
     const openBtn = el('button', { ...(waiting && s.relation === 'inbox' ? { class: 'primary' } : {}), onclick: () => open(s, openBtn) },
       waiting && s.relation === 'inbox' ? 'Review' : 'View');
     return el('tr', {},
-      el('td', {}, catalogThumb(s, 40, () => open(s, openBtn))),
+      el('td', {}, catalogThumb(submissionThumbEntry(s), 40, () => open(s, openBtn))),
       el('td', {}, s.name, el('div', { class: 'muted mono' }, s.id)),
       el('td', {}, s.byName, el('div', { class: 'muted' }, s.relation === 'mine' ? 'your submission' : 'waiting on you')),
       whenCell(s.at),
