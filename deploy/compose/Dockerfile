@@ -5,7 +5,7 @@
 # signed+attested release image is reproducible and the tag can't shift under a
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
 # /deploy/compose) keeps the pin moving as node:26-alpine is rebuilt.
-FROM node:26.12.1-alpine3.24@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797
+FROM node:26.13.0-alpine3.24@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
 WORKDIR /app
 
 # Keep the reviewed security floor while accepting newer patched revisions.
