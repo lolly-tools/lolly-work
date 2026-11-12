@@ -249,14 +249,24 @@ test('a submitted asset answers to the older and the newer name for its type; ot
   assert.deepEqual(words(inst('raster', 'png')), ['image', 'raster']);
   assert.deepEqual(words(inst('video', 'mp4')), ['image', 'video']);
   assert.deepEqual(words(inst('data', 'psd')), ['data', 'image']);
+  // Every medium the table can give a format pairs with its older word: an
+  // audio-only WebM is typed audio, and was an image to the older submit.
+  assert.deepEqual(words(inst('audio', 'webm')), ['audio', 'image']);
+  assert.deepEqual(words(inst('lottie', 'lottie')), ['image', 'lottie']);
+  // An older record's bytes say what it is; an older WebM may be either medium.
+  assert.deepEqual(words(inst('image', 'webm')), ['audio', 'image', 'video']);
+  // The pairing follows the stored word through a version in another format:
+  // a new SVG replaced by a PNG keeps vector, so it still answers to icon.
+  assert.deepEqual(words(inst('vector', 'png')), ['icon', 'vector']);
+  assert.deepEqual(words(inst('icon', 'png')), ['icon', 'raster'], 'an icon that is now a PNG reads as raster');
   // A word someone chose keeps its own meaning.
   assert.deepEqual(words(inst('template', 'json')), ['template']);
-  assert.deepEqual(words(inst('icon', 'png')), ['icon', 'raster'], 'a declared icon PNG is not an image');
-  assert.deepEqual(words(inst('raster', 'svg')), ['raster']);
+  assert.deepEqual(words(inst('logo', 'svg')), ['logo']);
   // Pack and provider entries never had the older defaults.
   assert.deepEqual(words({ id: 'acme/logo', type: 'vector', formats: [{ format: 'svg' }] }), ['vector']);
   assert.deepEqual(words({ id: 'ext/dam/1', type: 'image', formats: [{ format: 'png' }] }), ['image']);
-  assert.deepEqual(words({ id: 'inst/x', type: 'image' }), ['image'], 'no format, no second name');
+  assert.deepEqual(words({ id: 'inst/x', type: 'image' }), ['image'], 'an older word with no format has nothing to read');
+  assert.deepEqual(words({ id: 'inst/x', type: 'vector' }), ['icon', 'vector']);
   assert.deepEqual(words({ id: 'inst/x' }), []);
 });
 

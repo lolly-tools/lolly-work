@@ -9422,8 +9422,10 @@ export function buildApp(deps: AppDeps): App {
       ...(s.contentType ? { contentType: s.contentType } : {}),
       // What the review panel can show for the stored bytes: a picture, a player,
       // a PDF link or nothing. Read from the stored type, so a file kept as
-      // application/octet-stream before the table grew still shows none.
-      ...(s.contentType ? { previewKind: previewKindOf(s.contentType) } : {}),
+      // application/octet-stream before the table grew still shows none. The
+      // recorded type describes the first version only, so a record now serving
+      // a later one, which may be another kind of file, names no preview.
+      ...(s.contentType && (rec.headVersion ?? 1) === 1 ? { previewKind: previewKindOf(s.contentType) } : {}),
       ...(s.width && s.height ? { width: s.width, height: s.height } : {}),
       ...(s.approvalId ? { approvalId: s.approvalId } : {}),
       ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),

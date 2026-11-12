@@ -24,7 +24,10 @@ const submission = (over: Record<string, unknown> = {}) => ({
   contentType: 'video/mp4', previewKind: 'video', relation: 'inbox', preview: '/api/v1/catalog/submissions/abc/bytes', ...over,
 });
 
-function page() {
+/** The bytes route as the console sees it: the type it answers with, the bytes,
+ *  how long it takes, and whether an aborted request stops (a real fetch does;
+ *  `ignoreAbort` stands for one whose body was already on its way). */
+function page(served: { type?: string; body?: string; delay?: number; ignoreAbort?: boolean } = {}) {
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin#/catalog', runScripts: 'outside-only' });
   const w = dom.window;
   w.matchMedia = () => ({ matches: false });
@@ -32,15 +35,21 @@ function page() {
   w.HTMLElement.prototype.scrollIntoView = () => {};
   let minted = 0;
   const revoked: string[] = [];
-  w.URL.createObjectURL = () => `blob:file-${++minted}`;
+  const blobTypes: string[] = [];
+  w.URL.createObjectURL = (blob: Blob) => { blobTypes.push(blob.type); return `blob:file-${++minted}`; };
   w.URL.revokeObjectURL = (url: string) => { revoked.push(url); };
   const fetched: string[] = [];
-  w.fetch = async (path: string) => {
+  const signals: AbortSignal[] = [];
+  const type = served.type ?? 'video/mp4';
+  w.fetch = async (path: string, init: { signal?: AbortSignal } = {}) => {
     fetched.push(path);
-    return { ok: true, status: 200, headers: new Headers({ 'content-type': 'video/mp4' }), blob: async () => new Blob([new Uint8Array([1, 2, 3])], { type: 'video/mp4' }), json: async () => ({}) };
+    if (init.signal) signals.push(init.signal);
+    if (served.delay) await pause(served.delay);
+    if (init.signal?.aborted && !served.ignoreAbort) throw new DOMException('The operation was aborted.', 'AbortError');
+    return { ok: true, status: 200, headers: new Headers({ 'content-type': type }), blob: async () => new Blob([served.body ?? '\0\0\0\x18ftypisom'], { type }), json: async () => ({}) };
   };
   w.eval(`${source}; window.panel = (s) => renderSubmissionReview(s, document.getElementById('app'), null, [], null);`);
-  return { w, fetched, revoked, panel: (s: unknown) => w.panel(s), close: () => dom.window.close() };
+  return { w, fetched, revoked, blobTypes, signals, minted: () => minted, panel: (s: unknown) => w.panel(s), close: () => dom.window.close() };
 }
 
 test('a pending video plays in the panel from its fetched bytes', async () => {
@@ -58,7 +67,7 @@ test('a pending video plays in the panel from its fetched bytes', async () => {
 });
 
 test('a pending sound gets an audio player', async () => {
-  const p = page();
+  const p = page({ type: 'audio/mpeg' });
   const node = p.panel(submission({ name: 'Sting', contentType: 'audio/mpeg', previewKind: 'audio', formats: ['mp3'] }));
   await until(() => node.querySelector('.sub-file-stage audio'));
   assert.equal(node.querySelector('.sub-file-stage audio').getAttribute('aria-label'), 'Sound submitted as Sting');
@@ -66,11 +75,14 @@ test('a pending sound gets an audio player', async () => {
   p.close();
 });
 
-test('a PDF opens from a link, and a picture keeps its thumbnail with no player', async () => {
-  const p = page();
-  const pdf = p.panel(submission({ contentType: 'application/pdf', previewKind: 'document', formats: ['pdf'] }));
+const pdfSubmission = submission({ contentType: 'application/pdf', previewKind: 'document', formats: ['pdf'] });
+
+test('a PDF opens from a link to a blob typed as a PDF, and a picture keeps its thumbnail with no player', async () => {
+  const p = page({ type: 'application/pdf', body: '%PDF-1.7\n%%EOF' });
+  const pdf = p.panel(pdfSubmission);
   await until(() => pdf.querySelector('.sub-file-stage a'));
   assert.equal(pdf.querySelector('.sub-file-stage a').textContent, 'Open the PDF in a new tab');
+  assert.deepEqual(p.blobTypes, ['application/pdf']);
 
   const q = page();
   const picture = q.panel(submission({ contentType: 'image/png', previewKind: 'image', formats: ['png'] }));
@@ -79,6 +91,30 @@ test('a PDF opens from a link, and a picture keeps its thumbnail with no player'
   assert.equal(picture.querySelector('.cat-thumb img').getAttribute('src'), '/api/v1/catalog/submissions/abc/bytes');
   assert.deepEqual(q.fetched, [], 'the thumbnail is the <img>, not a fetch');
   p.close(); q.close();
+});
+
+test('bytes that are no longer a PDF are never opened as a blob: an SVG, or a PDF type over other bytes', async () => {
+  // A published PDF replaced by an SVG: the submission still records a PDF, and
+  // the bytes route answers with what the asset holds now.
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script href="/admin/app.js"/></svg>';
+  for (const served of [{ type: 'image/svg+xml', body: svg }, { type: 'application/pdf', body: svg }, { type: 'text/html', body: '%PDF-1.7' }]) {
+    const p = page(served);
+    const node = p.panel(pdfSubmission);
+    await until(() => node.querySelector('.sub-file-stage [role="alert"]'));
+    assert.match(node.querySelector('.sub-file-stage').textContent, /no longer the kind it was submitted as/, served.type);
+    assert.equal(node.querySelector('.sub-file-stage a'), null, `${served.type}: no link`);
+    assert.equal(p.minted(), 0, `${served.type}: no blob URL is made`);
+    p.close();
+  }
+});
+
+test('a video whose bytes are now another kind of file gets no player', async () => {
+  const p = page({ type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' });
+  const node = p.panel(submission());
+  await until(() => node.querySelector('.sub-file-stage [role="alert"]'));
+  assert.equal(node.querySelector('video'), null);
+  assert.equal(p.minted(), 0);
+  p.close();
 });
 
 test('a large video waits for a click before its bytes are fetched', async () => {
@@ -116,4 +152,18 @@ test('opening another submission releases the last one\'s file', async () => {
   p.panel(submission({ id: 'inst/def', name: 'Sting', previewKind: 'audio', contentType: 'audio/mpeg' }));
   assert.deepEqual(p.revoked, ['blob:file-1']);
   p.close();
+});
+
+test('closing the panel while the file loads aborts the load and keeps nothing', async () => {
+  for (const ignoreAbort of [false, true]) {
+    const p = page({ delay: 200, ignoreAbort });
+    const node = p.panel(submission());
+    const close = [...node.querySelectorAll('button')].find((b: any) => b.textContent === 'Close') as any;
+    close.click();
+    assert.equal(p.signals[0]?.aborted, true, 'the request is aborted');
+    await pause(300);
+    assert.equal(p.minted(), 0, `${ignoreAbort ? 'a body that arrived anyway' : 'an aborted request'}: no blob URL is made`);
+    assert.equal(node.querySelector('video'), null);
+    p.close();
+  }
 });

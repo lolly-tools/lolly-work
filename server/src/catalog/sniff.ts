@@ -144,29 +144,39 @@ export function schemaTypeOf(type: string, format: string): string {
   return LEGACY_TYPE_WORDS.has(type) ? schemaTypeForFormat(format) : type;
 }
 
-/** The word submit wrote for a file of this format before the table: `icon` for an SVG, `image` for the rest. */
-const legacyDefaultFor = (format: string): string => (format === 'svg' ? 'icon' : 'image');
+/** The schema words the table can give a file of this format: one for most, two
+ *  for WebM and Matroska (a picture track, or sound only), `data` for an unknown one. */
+function schemaTypesForFormat(format: string): SchemaType[] {
+  const words = new Set(Object.values(MEDIA_FORMATS).filter((m) => m.format === format).map((m) => m.schemaType));
+  return words.size ? [...words] : ['data'];
+}
+
+/** Every word this table writes for a new submission without a declared type. */
+const SCHEMA_DEFAULT_WORDS: ReadonlySet<string> = new Set<SchemaType>(['raster', 'vector', 'video', 'audio', 'lottie', 'data']);
 
 /**
  * Every `type` word a served entry answers to when a reader filters or counts
  * by type. Only instance assets (`inst/`) have two names for one meaning, since
  * only catalog submit ever wrote the older defaults, so every other entry
- * answers to its own word alone. An instance asset answers to its own word and
- * to the other name for the same file: an older `image` PNG also to `raster`,
- * an older `icon` SVG also to `vector`, a newer `raster` PNG also to `image` and
- * a newer `vector` SVG also to `icon`. A word someone chose that is neither the
- * older default nor the table's word for the format, such as `template`, `logo`
- * or a declared `icon` on a PNG, gains only the schema reading of an older word.
+ * answers to its own word alone.
+ *
+ * The pairing follows the record's stored word, so it survives a new version in
+ * another format. A newer word answers to the older word that meant the same:
+ * `vector` to `icon`, and every other schema word to `image`. An older word
+ * answers to what its current bytes are, read from the format the record now
+ * serves: an `image` PNG to `raster`, an `icon` SVG to `vector`, and an `image`
+ * WebM to both `video` and `audio`, because the older record does not say which.
+ * A word someone chose, such as `template` or `logo`, answers to itself alone.
  */
 export function typeWordsOf(entry: { id?: unknown; type?: unknown; formats?: unknown }): string[] {
   if (typeof entry.type !== 'string' || !entry.type) return [];
+  if (typeof entry.id !== 'string' || !entry.id.startsWith('inst/')) return [entry.type];
   const first: unknown = Array.isArray(entry.formats) ? entry.formats[0] : undefined;
   const format = first && typeof first === 'object' && typeof (first as { format?: unknown }).format === 'string'
     ? ((first as { format: string }).format).toLowerCase() : '';
-  if (typeof entry.id !== 'string' || !entry.id.startsWith('inst/') || !format) return [entry.type];
   const words = new Set([entry.type]);
-  if (LEGACY_TYPE_WORDS.has(entry.type)) words.add(schemaTypeForFormat(format));
-  else if (entry.type === schemaTypeForFormat(format)) words.add(legacyDefaultFor(format));
+  if (SCHEMA_DEFAULT_WORDS.has(entry.type)) words.add(entry.type === 'vector' ? 'icon' : 'image');
+  if (LEGACY_TYPE_WORDS.has(entry.type) && format) for (const word of schemaTypesForFormat(format)) words.add(word);
   return [...words];
 }
 

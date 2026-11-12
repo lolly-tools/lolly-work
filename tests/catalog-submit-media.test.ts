@@ -33,6 +33,13 @@ const MP4 = Buffer.concat([
   box('moov', box('trak', box('mdia', box('hdlr', u32(0), u32(0), Buffer.from('vide', 'latin1'), Buffer.alloc(13))))),
   box('mdat', Buffer.alloc(32)),
 ]);
+/** A WebM whose one track is sound, as a browser's voice recorder writes one. */
+const ebml = (id: number[], body: Buffer) => Buffer.concat([Buffer.from(id), Buffer.from([0x80 | body.length]), body]);
+const WEBM_AUDIO = Buffer.concat([
+  ebml([0x1a, 0x45, 0xdf, 0xa3], ebml([0x42, 0x82], Buffer.from('webm', 'latin1'))),
+  Buffer.from([0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+  ebml([0x16, 0x54, 0xae, 0x6b], ebml([0xae], ebml([0x83], Buffer.from([2])))),
+]);
 /** An ID3 tag, then one MPEG-1 Layer III frame. */
 const MP3 = Buffer.concat([Buffer.from('ID3', 'latin1'), Buffer.from([3, 0, 0, 0, 0, 0, 0, 0xff, 0xfb, 0x14, 0x00]), Buffer.alloc(92)]);
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c636000000200010005fe02fea7c1cd0e0000000049454e44ae426082', 'hex');
@@ -48,6 +55,7 @@ async function boot(overrides: Record<string, unknown> = {}, packAssets: unknown
     dev: { enabled: true, users: [
       { email: 'author@test', groups: ['author', 'design'] },
       { email: 'brand@test', groups: ['approver', 'brand'] },
+      { email: 'admin@test', groups: ['admin'] },
     ] },
     ...overrides,
   }));
@@ -184,6 +192,17 @@ test('a type filter on the older or the newer name finds submitted records of bo
   const oldSvg = (await submit(base, author, Buffer.concat([SVG, Buffer.from('\n')]), 'Old mark', {}, 'image/svg+xml')).body.assetId;
   const oldPng = (await submit(base, author, Buffer.concat([PNG, Buffer.from([0])]), 'Old hero', {}, 'image/png')).body.assetId;
   const film = (await submit(base, author, MP4, 'Launch film')).body.assetId;
+  const voice = await submit(base, author, WEBM_AUDIO, 'Voice note');
+  assert.equal(voice.body.type, 'audio');
+  // A new SVG replaced by a PNG keeps its stored word, vector.
+  const swapped = (await submit(base, author, Buffer.concat([SVG, Buffer.from('  ')]), 'Swapped mark', {}, 'image/svg+xml')).body.assetId;
+  const admin = await login(base, 'admin@test');
+  const version = await fetch(`${base}/api/v1/catalog/submit?assetId=${encodeURIComponent(swapped)}`, {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'image/png' }, body: new Uint8Array(Buffer.concat([PNG, Buffer.from([1])])),
+  });
+  assert.equal(version.status, 201, await version.clone().text());
+  const swappedRec = (await store.getInstanceAsset(swapped))!;
+  assert.deepEqual([swappedRec.entry.type, swappedRec.entry.formats?.[0]?.format], ['vector', 'png']);
   // Two records as the older submit wrote them.
   for (const [id, type] of [[oldSvg, 'icon'], [oldPng, 'image']] as const) {
     const rec = (await store.getInstanceAsset(id))!;
@@ -194,18 +213,42 @@ test('a type filter on the older or the newer name finds submitted records of bo
   };
   const ids = async (q: string) => (await browse(q)).assets.map((a) => a.id).sort();
 
-  // The older names find the newer records ...
-  assert.deepEqual(await ids('type=icon'), [newSvg, oldSvg].sort());
-  assert.deepEqual(await ids('type=image'), [film, newPng, oldPng].sort(), 'image was also the older word for a video');
+  // The older names find the newer records, an audio-only WebM and a vector
+  // now holding a PNG included ...
+  assert.deepEqual(await ids('type=icon'), [newSvg, oldSvg, swapped].sort());
+  assert.deepEqual(await ids('type=image'), [film, newPng, oldPng, voice.body.assetId].sort(), 'image was also the older word for a video or a sound');
   // ... and the newer names find the older records. The pack's own vector is
   // only ever a vector: the older names were never written for it.
-  assert.deepEqual(await ids('type=vector'), ['acme/logo', newSvg, oldSvg].sort());
+  assert.deepEqual(await ids('type=vector'), ['acme/logo', newSvg, oldSvg, swapped].sort());
   assert.deepEqual(await ids('type=raster'), [newPng, oldPng].sort());
-  assert.deepEqual(await ids('types=icon,video'), [film, newSvg, oldSvg].sort());
+  assert.deepEqual(await ids('type=audio'), [voice.body.assetId]);
+  assert.deepEqual(await ids('types=icon,video'), [film, newSvg, oldSvg, swapped].sort());
 
   // A type's count is what a filter on that type returns.
   const all = await browse('');
   const counts = Object.fromEntries(all.facets.types.map((t) => [t.name, t.count]));
   for (const [name, n] of Object.entries(counts)) assert.equal((await browse(`type=${name}`)).total, n, name);
-  assert.deepEqual(counts, { vector: 3, image: 3, raster: 2, icon: 2, video: 1 });
+  assert.deepEqual(counts, { vector: 4, image: 4, raster: 2, icon: 3, video: 1, audio: 1 });
+});
+
+test('a submission now serving a later version names no preview, because its recorded type describes the first', async () => {
+  const { base } = await boot();
+  const author = await login(base, 'author@test');
+  const film = (await submit(base, author, MP4, 'Launch film')).body.assetId;
+  const rows = async () => ((await (await fetch(`${base}/api/v1/catalog/submissions?state=live`, { headers: { cookie: author } })).json()) as {
+    submissions: Array<{ id: string; contentType: string; previewKind?: string }>;
+  }).submissions.find((s) => s.id === film)!;
+  assert.equal((await rows()).previewKind, 'video');
+  // The video is replaced by an SVG. The submission still records video/mp4 and
+  // the bytes route now answers with the SVG.
+  const version = await fetch(`${base}/api/v1/catalog/submit?assetId=${encodeURIComponent(film)}`, {
+    method: 'POST', headers: { cookie: await login(base, 'admin@test'), 'content-type': 'video/mp4' }, body: new Uint8Array(SVG),
+  });
+  assert.equal(version.status, 201, await version.clone().text());
+  const row = await rows();
+  assert.equal(row.contentType, 'video/mp4');
+  assert.equal(row.previewKind, undefined, 'no player or link is offered for bytes the record does not describe');
+  const bytes = await fetch(`${base}/api/v1/catalog/submissions/${film.slice('inst/'.length)}/bytes`, { headers: { cookie: author } });
+  assert.equal(bytes.headers.get('content-type'), 'image/svg+xml');
+  assert.match(bytes.headers.get('content-security-policy') ?? '', /sandbox/, 'the route keeps its sandbox');
 });

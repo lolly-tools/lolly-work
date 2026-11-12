@@ -2460,9 +2460,14 @@ function dataSubmissionSummary(d) {
   return `${what}, ${values}${extra}`;
 }
 
-// Object URLs for the submission on screen, released when another is opened.
+// Object URLs for the submission on screen, and the loads still under way. Both
+// end when another submission opens or the panel closes: a pending load is
+// aborted, and one that finishes anyway keeps nothing.
 let submissionFileUrls = [];
+let submissionLoads = [];
 const releaseSubmissionFiles = () => {
+  for (const loading of submissionLoads) loading.abort();
+  submissionLoads = [];
   for (const url of submissionFileUrls) URL.revokeObjectURL(url);
   submissionFileUrls = [];
 };
@@ -2471,12 +2476,23 @@ const releaseSubmissionFiles = () => {
 // table does not fetch a whole video for an <img> that cannot draw one.
 const submissionThumbEntry = (s) => (s.previewKind && s.previewKind !== 'image' ? { ...s, preview: null } : s);
 
+// What the served bytes must be for each kind of stage. The bytes route answers
+// with the type of what the asset holds now, which a later version can change,
+// so the answer is checked rather than the type recorded at submission.
+const SUBMISSION_STAGE_TYPES = { video: /^video\//i, audio: /^audio\//i, pdf: /^application\/pdf\s*(?:;|$)/i };
+
 /**
  * What a reviewer sees of a submission's bytes: a video or audio player, or a
  * link that opens a PDF, the way an export review's file is shown. The console
  * plays media from blob: URLs only, so the bytes are fetched first, at once up to
  * the same size an export review loads by itself and on a click above that.
  * Null for a picture, which keeps its thumbnail, and for a file with no preview.
+ *
+ * A blob: URL opened in a tab has this origin and none of the bytes route's
+ * sandbox, so only a real PDF is ever opened that way: the response must say
+ * application/pdf, the bytes must open with %PDF-, and the blob is typed as a
+ * PDF whatever the response said. Anything else, an SVG or HTML above all, gets
+ * no link. A player only ever plays, so it needs the matching media type alone.
  */
 function submissionStage(s) {
   const kind = s.previewKind === 'document' && /^application\/pdf\b/i.test(s.contentType ?? '') ? 'pdf' : s.previewKind;
@@ -2484,12 +2500,29 @@ function submissionStage(s) {
   const stage = el('div', { class: 'appr-file-stage sub-file-stage' });
   const say = (text, role) => { stage.replaceChildren(el('p', { class: 'muted', ...(role ? { role } : {}) }, text)); };
   const label = `${kind === 'video' ? 'Video' : kind === 'audio' ? 'Sound' : 'PDF'} submitted as ${s.name ?? s.id}`;
+  const changed = 'This file is no longer the kind it was submitted as, so the console does not show the file here. Download the file to check what it holds.';
   const load = async () => {
+    const loading = new AbortController();
+    submissionLoads.push(loading);
     say('Loading the file…', 'status');
-    let res;
-    try { res = await fetch(s.preview); } catch { say('The file could not be loaded. Reload to try again.', 'alert'); return; }
+    let res, blob;
+    try {
+      res = await fetch(s.preview, { signal: loading.signal });
+      if (res.ok) blob = await res.blob();
+    } catch {
+      if (!loading.signal.aborted) say('The file could not be loaded. Reload to try again.', 'alert');
+      return;
+    }
+    if (loading.signal.aborted) return;
     if (!res.ok) { say(res.status === 410 ? 'This file is no longer available.' : 'The file could not be loaded. Reload to try again.', 'alert'); return; }
-    const url = URL.createObjectURL(await res.blob());
+    if (!SUBMISSION_STAGE_TYPES[kind].test(res.headers.get('content-type') ?? '')) { say(changed, 'alert'); return; }
+    if (kind === 'pdf') {
+      const head = new Uint8Array(await blob.slice(0, 5).arrayBuffer());
+      if (loading.signal.aborted) return;
+      if (String.fromCharCode(...head) !== '%PDF-') { say(changed, 'alert'); return; }
+      blob = new Blob([blob], { type: 'application/pdf' });
+    }
+    const url = URL.createObjectURL(blob);
     submissionFileUrls.push(url);
     if (kind === 'pdf') stage.replaceChildren(el('a', { href: url, target: '_blank', rel: 'noopener', class: 'btn' }, 'Open the PDF in a new tab'));
     else stage.replaceChildren(el(kind, { src: url, controls: '', preload: 'metadata', 'aria-label': label }));
@@ -9023,6 +9056,7 @@ async function route() {
     activeToolPolicyEditor.dispose(); activeToolPolicyEditor = null;
   }
   disposeAgentView?.(); disposeAgentView = null;
+  releaseSubmissionFiles();
   renderedRouteHash = location.hash;
   if (session?.console) {
     try { session = await api('/api/auth/session'); }
