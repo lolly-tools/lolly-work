@@ -264,6 +264,65 @@ test('retention removes a rejected request\'s file after its days and leaves the
   } finally { w.server.close(); }
 });
 
+test('a withdrawal whose bytes cannot be deleted yet is finished by the retention sweep', async () => {
+  const w = await boot();
+  try {
+    const { approval } = await raise(w);
+    const realDelete = w.blobs.delete.bind(w.blobs);
+    w.blobs.delete = async () => { throw new Error('synthetic blob outage'); };
+    assert.equal((await json(w, `/api/v1/approvals/${approval.id}/withdraw`, {}, w.author)).status, 200, 'the withdrawal stands');
+    w.blobs.delete = realDelete;
+    const pending = (await w.store.getApproval(approval.id))!;
+    assert.equal(pending.state, 'withdrawn');
+    assert.equal(pending.exportReview!.removedBecause, 'withdrawn');
+    assert.equal(pending.exportReview!.removalPending, true, 'the removal is recorded as unfinished');
+    assert.ok(await w.blobs.head(artifactPartId(approval.id, 0)), 'the bytes are still there');
+    assert.equal((await read(w, approval.id, w.reviewer)).status, 410, 'and nobody is sent to them');
+    assert.equal(heldArtifactBytes(await w.store.listApprovals()), 0);
+    assert.equal(await sweepApprovalArtifacts(w.store, w.blobs, APPROVAL_ARTIFACT_DEFAULTS), 1, 'no retention age applies');
+    assert.equal(await w.blobs.head(artifactPartId(approval.id, 0)), null);
+    assert.equal((await w.store.getApproval(approval.id))!.exportReview!.removalPending, undefined);
+    assert.equal(await sweepApprovalArtifacts(w.store, w.blobs, APPROVAL_ARTIFACT_DEFAULTS), 0, 'done once');
+  } finally { w.server.close(); }
+});
+
+test('a withdrawn request that still holds its file, from before removals were recorded first, is removed by the sweep', async () => {
+  const w = await boot();
+  try {
+    const { approval } = await raise(w);
+    const stored = (await w.store.getApproval(approval.id))!;
+    await w.store.putApproval({ ...stored, state: 'withdrawn' });
+    assert.equal(await sweepApprovalArtifacts(w.store, w.blobs, APPROVAL_ARTIFACT_DEFAULTS), 1);
+    const swept = (await w.store.getApproval(approval.id))!;
+    assert.equal(swept.exportReview!.removedBecause, 'withdrawn');
+    assert.equal(swept.exportReview!.removalPending, undefined);
+    assert.equal(await w.blobs.head(artifactPartId(approval.id, 0)), null);
+  } finally { w.server.close(); }
+});
+
+test('a retention sweep that loses its write to another change deletes nothing', async () => {
+  const w = await boot();
+  try {
+    const { approval } = await raise(w);
+    await json(w, `/api/v1/approvals/${approval.id}/act`, { action: 'reject', comment: 'No', artifactFingerprint: approval.exportReview.fingerprint }, w.reviewer);
+    const later = Date.now() + (APPROVAL_ARTIFACT_DEFAULTS.closedRetentionDays + 1) * 24 * 60 * 60 * 1000;
+    // Another write comes between the sweep's read and its own, as a settlement would.
+    const realCas = w.store.casApproval.bind(w.store);
+    w.store.casApproval = async (next, expected) => {
+      w.store.casApproval = realCas;
+      const current = (await w.store.getApproval(next.id))!;
+      assert.ok(await realCas({ ...current, title: 'Changed meanwhile', revision: expected + 1 }, expected));
+      return realCas(next, expected);
+    };
+    assert.equal(await sweepApprovalArtifacts(w.store, w.blobs, APPROVAL_ARTIFACT_DEFAULTS, { now: later }), 0);
+    const kept = (await w.store.getApproval(approval.id))!;
+    assert.equal(kept.exportReview!.removedAt, undefined, 'the record still says the file is held');
+    assert.ok(await w.blobs.head(artifactPartId(approval.id, 0)), 'and it is');
+    assert.equal(await sweepApprovalArtifacts(w.store, w.blobs, APPROVAL_ARTIFACT_DEFAULTS, { now: later }), 1, 'the next sweep removes it');
+    assert.equal(await w.blobs.head(artifactPartId(approval.id, 0)), null);
+  } finally { w.server.close(); }
+});
+
 test('the instance budget and the off switch hold', async () => {
   const small = await boot({ approvalArtifacts: { maxFileBytes: 4096, instanceBudgetBytes: 4096 } });
   try {

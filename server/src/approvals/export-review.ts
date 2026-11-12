@@ -116,6 +116,10 @@ export interface ExportReviewSubject {
   credentialRecord?: ApprovalCredentialRecord;
   removedAt?: string;
   removedBecause?: 'withdrawn' | 'retention';
+  /** Set with `removedAt` and cleared once every part is deleted. A removal is
+   *  recorded before its parts go, so a deletion that fails is finished by the
+   *  next retention sweep rather than left behind. Never sent to clients. */
+  removalPending?: boolean;
   /** The transfer manifest for reading the stored parts back. Never sent to clients. */
   parts: TransferPart[];
 }
@@ -455,7 +459,7 @@ export function checkArtifactReviewToken(token: unknown, secrets: Array<string |
 
 /** What a client sees of the subject: everything but the part table. */
 export function exportReviewWire(approval: Approval) {
-  const { parts: _parts, credentialRecord, ...subject } = approval.exportReview!;
+  const { parts: _parts, credentialRecord, removalPending: _pending, ...subject } = approval.exportReview!;
   let record: Record<string, unknown> | undefined;
   if (credentialRecord?.state === 'recorded') {
     const { parts: _recordParts, ...facts } = credentialRecord;
@@ -474,16 +478,34 @@ export function heldArtifactBytes(approvals: Approval[]): number {
   }, 0);
 }
 
-/** Take back the bytes and keep the record: id, facts and digest stay as evidence
- *  of what was reviewed. */
-export async function removeArtifactBytes(
-  blobs: BlobStore, approval: Approval, because: NonNullable<ExportReviewSubject['removedBecause']>, now: string,
-): Promise<Approval> {
+/** The request with its file recorded as removed, before any part is deleted:
+ *  downloads answer 410 from this write on. The id, facts and digest stay as
+ *  evidence of what was reviewed. `removalPending` holds until the parts are gone. */
+export function markArtifactRemoved(approval: Approval, because: NonNullable<ExportReviewSubject['removedBecause']>, now: string): Approval {
+  return { ...approval, exportReview: { ...approval.exportReview!, removedAt: now, removedBecause: because, removalPending: true } };
+}
+
+/** Delete a marked request's parts, the reviewed file's and any signed update's,
+ *  then clear its pending mark. Deleting a part that is already gone is not an
+ *  error, so a second run finishes what a failed one left. Returns the request
+ *  as stored. */
+export async function finishArtifactRemoval(store: ApprovalWriter, blobs: BlobStore, approval: Approval): Promise<Approval> {
   const subject = approval.exportReview!;
   await removeTransferParts({ blobs, partId: n => artifactPartId(approval.id, n) }, subject.parts.length);
   const record = subject.credentialRecord;
   if (record?.state === 'recorded') await removeTransferParts({ blobs, partId: n => approvedPartId(approval.id, record.sha256, n) }, record.parts.length);
-  return { ...approval, exportReview: { ...subject, removedAt: now, removedBecause: because } };
+  const { removalPending: _done, ...rest } = subject;
+  // Lost to another write, the mark stays and the next sweep deletes again.
+  return (await replaceApproval(store, approval, { ...approval, exportReview: rest })) ?? approval;
+}
+
+/** Record the removal, then delete the parts. Null when another write got there
+ *  first: then nothing was deleted, and the next sweep reads the request again. */
+export async function retireArtifact(
+  store: ApprovalWriter, blobs: BlobStore, approval: Approval, because: NonNullable<ExportReviewSubject['removedBecause']>, now: string,
+): Promise<Approval | null> {
+  const marked = await replaceApproval(store, approval, markArtifactRemoved(approval, because, now));
+  return marked ? finishArtifactRemoval(store, blobs, marked) : null;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -491,7 +513,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const decidedAt = (approval: Approval): number => Date.parse(approval.actions.at(-1)?.at ?? approval.createdAt);
 
 /** Remove files past their retention, at most `limit` per call. A request still in
- *  review is never touched. */
+ *  review is never touched. A withdrawn request that still holds its file, and a
+ *  removal whose deletion did not finish, are completed whatever their age. */
 export async function sweepApprovalArtifacts(
   store: { listApprovals(): Promise<Approval[]> } & ApprovalWriter, blobs: BlobStore, policy: ApprovalArtifactPolicy,
   { now = Date.now(), limit = 100 }: { now?: number; limit?: number } = {},
@@ -499,14 +522,27 @@ export async function sweepApprovalArtifacts(
   let removed = 0;
   for (const approval of await store.listApprovals()) {
     if (removed >= limit) break;
-    if (!approval.exportReview || approval.exportReview.removedAt) continue;
-    const days = approval.state === 'rejected' ? policy.closedRetentionDays : approval.state === 'approved' ? policy.approvedRetentionDays : 0;
-    if (days <= 0 || now - decidedAt(approval) < days * DAY_MS) continue;
-    // A request that changed after the list was read (its approved file was
-    // settled meanwhile) is left for the next sweep, which reads it again and
-    // removes every part it then names.
-    if (!await replaceApproval(store, approval, await removeArtifactBytes(blobs, approval, 'retention', new Date(now).toISOString()))) continue;
-    removed++;
+    const subject = approval.exportReview;
+    if (!subject || (subject.removedAt && !subject.removalPending)) continue;
+    try {
+      if (subject.removalPending) {
+        await finishArtifactRemoval(store, blobs, approval);
+        removed++;
+        continue;
+      }
+      if (approval.state !== 'withdrawn') {
+        const days = approval.state === 'rejected' ? policy.closedRetentionDays : approval.state === 'approved' ? policy.approvedRetentionDays : 0;
+        if (days <= 0 || now - decidedAt(approval) < days * DAY_MS) continue;
+      }
+      // The removal is recorded before any part is deleted. A request that
+      // changed after the list was read (its approved file was settled
+      // meanwhile) loses that write, keeps every byte, and is read again by
+      // the next sweep.
+      if (!await retireArtifact(store, blobs, approval, approval.state === 'withdrawn' ? 'withdrawn' : 'retention', new Date(now).toISOString())) continue;
+      removed++;
+    } catch (error) {
+      console.error(`[approvals] could not remove the file of ${approval.id}; the next sweep tries again: ${(error as Error).message}`);
+    }
   }
   return removed;
 }

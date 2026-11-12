@@ -144,7 +144,7 @@ import { brandPagesConfig } from '../brand-pages/types.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
 import {
   approvalArtifactPolicy, approvedArtifactBytes, artifactRefusal, artifactRelation, artifactReviewToken, checkArtifactReviewToken, describeExportReview, exportReviewWire,
-  freezeArtifactBytes, freezeRenderBytes, describeRenderReview, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
+  freezeArtifactBytes, freezeRenderBytes, describeRenderReview, finishArtifactRemoval, heldArtifactBytes, markArtifactRemoved, parseExportReview, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
 } from '../approvals/export-review.ts';
 import { renderInputsDigest } from '../render/inputs-digest.ts';
 import { approvedExportReview, registerExportReviewMatch, templateFixedValues, templateOpenInputs, templateVariantDigest } from '../approvals/export-review-match.ts';
@@ -6990,20 +6990,19 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    // Written against the approval as read, so a decision made at the same
-    // moment is never overwritten by the withdrawal, nor the other way round.
+    // Nobody will decide on a withdrawn file, so the withdrawal also records
+    // that its file is removed; the record and digest stay. Written against the
+    // approval as read, so a decision made at the same moment is never
+    // overwritten by the withdrawal, nor the other way round.
+    if (next.exportReview) next = markArtifactRemoved(next, 'withdrawn', new Date().toISOString());
     const written = await replaceApproval(store, approval, next);
     if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
     next = written;
-    // Nobody will decide on a withdrawn file, so its bytes go now, once the
-    // withdrawal is stored. The record and digest stay. Should another write
-    // come between the two, the bytes are still removed and the retention
-    // sweep leaves a withdrawn request alone, which is why the error is logged.
+    // The parts go once the withdrawal is stored. A deletion that fails leaves
+    // the removal pending, and the retention sweep finishes it.
     if (next.exportReview) {
-      const removed = await removeArtifactBytes(blobs, next, 'withdrawn', new Date().toISOString());
-      const kept = await replaceApproval(store, next, removed);
-      if (kept) next = kept;
-      else console.error(`[approvals] ${next.id} changed while its withdrawn file was removed; its record does not say the bytes are gone`);
+      try { next = await finishArtifactRemoval(store, blobs, next); }
+      catch (error) { console.error(`[approvals] the withdrawn file of ${next.id} is not deleted yet; the retention sweep finishes it: ${(error as Error).message}`); }
     }
     await audit(user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
     // Withdrawing the review of a catalog submission returns the asset too:
@@ -9884,13 +9883,24 @@ export function buildApp(deps: AppDeps): App {
       after.collectionId = collectionId ?? null;
     }
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
-    const { collectionId: _prior, ...submissionRest } = rec.submission;
-    const next: InstanceAssetRecord = {
-      ...rec, entry: applyDescriptivePatch(rec.entry, parsed),
-      submission: { ...submissionRest, ...(collectionId ? { collectionId } : {}) },
-    };
-    await store.putInstanceAsset(next);
-    if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
+    // The record is read again under the asset's lock, which settlement also
+    // holds, and the edit applies to that copy. A decision that published or
+    // returned the asset while this request was checked is never written back
+    // to `submitted` from the copy read at the start.
+    const next = await store.withAssetLock(rec.id, async (): Promise<InstanceAssetRecord | string> => {
+      const current = await store.getInstanceAsset(rec.id);
+      if (!current?.submission) return 'removed';
+      if (current.submission.state !== 'submitted') return current.submission.state;
+      const { collectionId: _prior, ...submissionRest } = current.submission;
+      const edited: InstanceAssetRecord = {
+        ...current, entry: applyDescriptivePatch(current.entry, parsed),
+        submission: { ...submissionRest, ...(collectionId ? { collectionId } : {}) },
+      };
+      await store.putInstanceAsset(edited);
+      if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
+      return edited;
+    });
+    if (typeof next === 'string') return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${next}`);
     await audit(`user:${user.id}`, 'catalog.edit-submission', `catalog:${rec.id}`, { before, after, relation });
     sendJson(res, 200, {
       ok: true,

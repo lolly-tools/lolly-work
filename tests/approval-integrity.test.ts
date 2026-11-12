@@ -230,11 +230,80 @@ test('an approval that cannot be stored leaves no record, no bytes and no charge
   const res = await fetch(`${w.base}/api/v1/catalog/submit?name=Campaign%20Hero`, { method: 'POST', headers: { cookie: author, 'content-type': 'image/png' }, body: new Uint8Array(PNG) });
   assert.equal(res.status, 500);
   assert.deepEqual(await w.store.listInstanceAssets(), [], 'no record waits for an approval that does not exist');
-  assert.equal((await w.blobs.usage!()).storedBytes, 0, 'the bytes went too');
+  assert.equal(((await w.blobs.usage!())?.storedBytes ?? 0), 0, 'the bytes went too');
   for (const scope of ['design', 'author']) {
     const row = await w.store.getSubmitQuota(scope);
     assert.equal(row?.count ?? 0, 0, `${scope}: the charge was released`);
     assert.equal(row?.bytes ?? 0, 0);
   }
   assert.deepEqual(await w.store.listCredentials(), []);
+});
+
+test('an approval write that committed but reported an error keeps the submission whole', async () => {
+  const w = await boot(ONE_STEP);
+  const author = await w.login('author@test');
+  const real = w.store.putApproval.bind(w.store);
+  w.store.putApproval = async (approval) => { await real(approval); throw new Error('synthetic lost acknowledgement'); };
+  const { assetId, approvalId } = await w.submit(author);
+  assert.ok(await w.store.getApproval(approvalId), 'the approval a reviewer may already act on');
+  const record = (await w.store.getInstanceAsset(assetId))!;
+  assert.equal(record.submission?.approvalId, approvalId);
+  assert.ok(((await w.blobs.usage!())?.storedBytes ?? 0) > 0, 'the bytes stay');
+  assert.equal((await w.store.getSubmitQuota('design'))?.count, 1, 'charged once, and kept');
+});
+
+test('an approval write whose outcome cannot be read keeps everything for an administrator', async () => {
+  const w = await boot(ONE_STEP);
+  const author = await w.login('author@test');
+  const realGet = w.store.getApproval.bind(w.store);
+  w.store.putApproval = async () => { throw new Error('synthetic approval store failure'); };
+  w.store.getApproval = async () => { throw new Error('synthetic read failure'); };
+  const res = await fetch(`${w.base}/api/v1/catalog/submit?name=Campaign%20Hero`, { method: 'POST', headers: { cookie: author, 'content-type': 'image/png' }, body: new Uint8Array(PNG) });
+  assert.equal(res.status, 500);
+  w.store.getApproval = realGet;
+  const records = await w.store.listInstanceAssets();
+  assert.equal(records.length, 1, 'nothing is deleted on a guess');
+  assert.equal(records[0]!.submission?.state, 'submitted');
+  assert.equal(await w.store.getApproval(records[0]!.submission!.approvalId!), null);
+  assert.ok(((await w.blobs.usage!())?.storedBytes ?? 0) > 0);
+});
+
+test('a credential write that fails leaves no record, bytes or charge', async () => {
+  const w = await boot(ONE_STEP);
+  const author = await w.login('author@test');
+  w.store.putCredential = async () => { throw new Error('synthetic credential store failure'); };
+  const res = await fetch(`${w.base}/api/v1/catalog/submit?name=Campaign%20Hero`, { method: 'POST', headers: { cookie: author, 'content-type': 'image/png' }, body: new Uint8Array(PNG) });
+  assert.equal(res.status, 500);
+  assert.deepEqual(await w.store.listInstanceAssets(), []);
+  assert.deepEqual(await w.store.listApprovals(), [], 'no review was asked for');
+  assert.equal(((await w.blobs.usage!())?.storedBytes ?? 0), 0);
+  for (const scope of ['design', 'author']) assert.equal((await w.store.getSubmitQuota(scope))?.count ?? 0, 0, scope);
+});
+
+test('a metadata edit read before a decision never writes the published asset back to submitted', async () => {
+  const w = await boot(ONE_STEP);
+  const author = await w.login('author@test');
+  const ana = await w.login('ana@test');
+  const { assetId, approvalId } = await w.submit(author);
+  // Hold the edit after it has read the pending record and passed its checks.
+  const realMeta = w.store.getAssetMeta.bind(w.store);
+  let arrived!: () => void, release!: () => void;
+  const atGate = new Promise<void>((resolve) => { arrived = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  w.store.getAssetMeta = async (id) => { w.store.getAssetMeta = realMeta; arrived(); await gate; return realMeta(id); };
+  const edit = fetch(`${w.base}/api/v1/catalog/submissions/${assetId.slice('inst/'.length)}`, {
+    method: 'PATCH', headers: { cookie: author, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Renamed late' }),
+  });
+  await atGate;
+  const decided = await w.post(ana, `/api/v1/approvals/${approvalId}/act`, { action: 'approve' });
+  assert.equal(decided.status, 200);
+  assert.equal((await w.store.getInstanceAsset(assetId))?.submission?.state, 'live');
+  release();
+  const edited = await edit;
+  assert.equal(edited.status, 409);
+  assert.equal(await errorCode(edited), 'ALREADY_SETTLED');
+  const record = (await w.store.getInstanceAsset(assetId))!;
+  assert.equal(record.submission?.state, 'live', 'the asset agrees with the approval');
+  assert.equal((await w.store.getApproval(approvalId))?.state, 'approved');
+  assert.equal(record.entry.name, 'Campaign Hero', 'the late edit wrote nothing');
 });

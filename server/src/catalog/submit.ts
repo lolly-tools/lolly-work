@@ -467,7 +467,9 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       r.submission.projectSource?.projectId === source.projectId &&
       r.submission.projectSource.fileId === source.fileId && r.submission.projectSource.checksum === source.checksum &&
       JSON.stringify([...(r.groups ?? [])].sort()) === JSON.stringify([...(input.groups ?? [])].sort()));
-    if (prior?.submission?.state === 'submitted' && !prior.submission.approvalId) return { ok: false, code: 'SUBMISSION_INCOMPLETE', detail: 'The earlier admission did not finish. Ask a workspace administrator to inspect the pending submission before retrying.' };
+    // A pending record whose approval was never stored did not finish either:
+    // the record names its approval from its first write.
+    if (prior?.submission?.state === 'submitted' && (!prior.submission.approvalId || !await store.getApproval(prior.submission.approvalId))) return { ok: false, code: 'SUBMISSION_INCOMPLETE', detail: 'The earlier admission did not finish. Ask a workspace administrator to inspect the pending submission before retrying.' };
     // Their own pending admission answers the retry. A live one answers only while the
     // submitter may still be handed it (duplicateVisible); otherwise the retry goes on
     // as a new submission and says nothing about the earlier one.
@@ -799,6 +801,31 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     await release();
     throw err;
   }
+  // Undo a new asset that nothing can have published: no approval for it is
+  // stored and it has not gone live.
+  const discard = async (): Promise<void> => {
+    await blobs.delete(`${id}/${sniffed.format}`).catch(() => undefined);
+    await store.deleteCredential(id).catch(() => undefined);
+    await store.deleteInstanceAsset(id).catch(() => undefined);
+    await release();
+  };
+
+  // 5. Content credentials: DETECTION only. A submission is an arbitrary org
+  //    file, so unlike publish-out there is no lolly export assertion to verify
+  //    and nothing is refused for the absence of one (plans/27 section 4).
+  //    Written before a kit claims its company and before review starts, so a
+  //    failure here leaves nothing behind.
+  let detected: Awaited<ReturnType<typeof detectCredential>>;
+  try {
+    detected = await detectCredential(input.bytes);
+    await store.putCredential({
+      assetId: id, status: detected.status, ...(detected.container ? { container: detected.container } : {}),
+      sniffedAt: nowIso,
+    });
+  } catch (err) {
+    await discard();
+    throw err;
+  }
 
   // Claim the company's pointer before publishing, so a losing first save
   // never appears as a second live kit in the company's feed. The company is
@@ -814,30 +841,27 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     return { ok: false, code: 'INVALID_SUBMISSION', detail: 'this company already has one kit; submit a new version of that asset' };
   }
 
-  // 5. Content credentials: DETECTION only. A submission is an arbitrary org
-  //    file, so unlike publish-out there is no lolly export assertion to verify
-  //    and nothing is refused for the absence of one (plans/27 section 4).
-  const detected = await detectCredential(input.bytes);
-  await store.putCredential({
-    assetId: id, status: detected.status, ...(detected.container ? { container: detected.container } : {}),
-    sniffedAt: nowIso,
-  });
-
   // 6. Review, or live. With no chain configured the asset is live the moment
   //    it is stored - the resolved default of record (plans/31 section 11.1).
   //    A chain named but missing never reaches here: it was refused at 1b.
-  //    An approval that cannot be stored leaves a submission nobody could ever
-  //    decide, so its bytes, record and credential row go, and the charge is
-  //    released, before the error is passed on.
+  //    An approval that was not stored leaves a submission nobody could ever
+  //    decide, so it is discarded before the error is passed on. A write that
+  //    reports an error may still have committed, with its answer lost, and a
+  //    reviewer may already be acting on it. So only a read that finds no
+  //    approval leads to the discard. Found, the submission stands. A read
+  //    that fails as well keeps everything: an unfinished submission an
+  //    administrator can inspect, and never a published asset deleted.
   if (approval) {
     try {
       await store.putApproval(approval);
     } catch (err) {
-      await blobs.delete(`${id}/${sniffed.format}`).catch(() => undefined);
-      await store.deleteCredential(id).catch(() => undefined);
-      await store.deleteInstanceAsset(id).catch(() => undefined);
-      await release();
-      throw err;
+      const stored = await store.getApproval(approval.id).then((found) => found, () => undefined);
+      if (stored === undefined) throw err;
+      if (stored === null) {
+        await discard();
+        throw err;
+      }
+      console.error(`[catalog] the approval for ${id} was stored although its write reported an error: ${(err as Error).message}`);
     }
   } else {
     record = await goLive(store, record, nowIso);
@@ -923,6 +947,12 @@ async function joinChosenCollection(store: Store, record: InstanceAssetRecord, n
  */
 export async function settleSubmission(store: Store, approval: Approval, nowIso: string): Promise<SubmissionDecision | null> {
   if (approval.subjectType !== 'asset' || !approval.subjectRef.startsWith(INST_PREFIX)) return null;
+  // Under the asset's lock, which a metadata edit of the pending submission
+  // also holds, so neither writes over the other.
+  return store.withAssetLock(approval.subjectRef, () => settleLocked(store, approval, nowIso));
+}
+
+async function settleLocked(store: Store, approval: Approval, nowIso: string): Promise<SubmissionDecision | null> {
   const record = await store.getInstanceAsset(approval.subjectRef);
   if (!record?.submission || record.submission.approvalId !== approval.id) return null;
   if (record.submission.state !== 'submitted') return null; // already settled
