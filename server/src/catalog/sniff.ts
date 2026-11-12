@@ -144,6 +144,32 @@ export function schemaTypeOf(type: string, format: string): string {
   return LEGACY_TYPE_WORDS.has(type) ? schemaTypeForFormat(format) : type;
 }
 
+/** The word submit wrote for a file of this format before the table: `icon` for an SVG, `image` for the rest. */
+const legacyDefaultFor = (format: string): string => (format === 'svg' ? 'icon' : 'image');
+
+/**
+ * Every `type` word a served entry answers to when a reader filters or counts
+ * by type. Only instance assets (`inst/`) have two names for one meaning, since
+ * only catalog submit ever wrote the older defaults, so every other entry
+ * answers to its own word alone. An instance asset answers to its own word and
+ * to the other name for the same file: an older `image` PNG also to `raster`,
+ * an older `icon` SVG also to `vector`, a newer `raster` PNG also to `image` and
+ * a newer `vector` SVG also to `icon`. A word someone chose that is neither the
+ * older default nor the table's word for the format, such as `template`, `logo`
+ * or a declared `icon` on a PNG, gains only the schema reading of an older word.
+ */
+export function typeWordsOf(entry: { id?: unknown; type?: unknown; formats?: unknown }): string[] {
+  if (typeof entry.type !== 'string' || !entry.type) return [];
+  const first: unknown = Array.isArray(entry.formats) ? entry.formats[0] : undefined;
+  const format = first && typeof first === 'object' && typeof (first as { format?: unknown }).format === 'string'
+    ? ((first as { format: string }).format).toLowerCase() : '';
+  if (typeof entry.id !== 'string' || !entry.id.startsWith('inst/') || !format) return [entry.type];
+  const words = new Set([entry.type]);
+  if (LEGACY_TYPE_WORDS.has(entry.type)) words.add(schemaTypeForFormat(format));
+  else if (entry.type === schemaTypeForFormat(format)) words.add(legacyDefaultFor(format));
+  return [...words];
+}
+
 // ── dimensions ───────────────────────────────────────────────────────────────
 
 const SVG_DIM = (svg: string, attr: 'width' | 'height'): number | undefined => {

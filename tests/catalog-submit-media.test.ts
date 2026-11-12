@@ -38,10 +38,10 @@ const MP3 = Buffer.concat([Buffer.from('ID3', 'latin1'), Buffer.from([3, 0, 0, 0
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c636000000200010005fe02fea7c1cd0e0000000049454e44ae426082', 'hex');
 const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="48" height="24"/>');
 
-async function boot(overrides: Record<string, unknown> = {}) {
+async function boot(overrides: Record<string, unknown> = {}, packAssets: unknown[] = []) {
   const pack = await mkdtemp(join(tmpdir(), 'lw-submit-media-'));
   await mkdir(join(pack, 'catalog', 'assets'), { recursive: true });
-  await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
+  await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: packAssets }));
   const config = parseConfig(JSON.stringify({
     instance: { name: 'Media Hub', baseUrl: 'http://localhost', pack },
     rateLimit: { enabled: false },
@@ -173,4 +173,39 @@ test('a reviewer\'s queue row names the player a pending MP4 or MP3 gets, and th
   assert.equal(bytes.status, 200);
   assert.equal(bytes.headers.get('content-type'), 'video/mp4');
   assert.equal(Buffer.from(await bytes.arrayBuffer()).equals(MP4), true);
+});
+
+test('a type filter on the older or the newer name finds submitted records of both ages, and counts agree', async () => {
+  const packLogo = { id: 'acme/logo', name: 'Acme Logo', type: 'vector', version: '1', tier: 'core', formats: [{ format: 'svg', url: '/catalog/assets/acme/logo.svg' }] };
+  const { base, store } = await boot({}, [packLogo]);
+  const author = await login(base, 'author@test');
+  const newSvg = (await submit(base, author, SVG, 'New mark', {}, 'image/svg+xml')).body.assetId;
+  const newPng = (await submit(base, author, PNG, 'New hero', {}, 'image/png')).body.assetId;
+  const oldSvg = (await submit(base, author, Buffer.concat([SVG, Buffer.from('\n')]), 'Old mark', {}, 'image/svg+xml')).body.assetId;
+  const oldPng = (await submit(base, author, Buffer.concat([PNG, Buffer.from([0])]), 'Old hero', {}, 'image/png')).body.assetId;
+  const film = (await submit(base, author, MP4, 'Launch film')).body.assetId;
+  // Two records as the older submit wrote them.
+  for (const [id, type] of [[oldSvg, 'icon'], [oldPng, 'image']] as const) {
+    const rec = (await store.getInstanceAsset(id))!;
+    await store.putInstanceAsset({ ...rec, entry: { ...rec.entry, type } });
+  }
+  const browse = async (q: string) => await (await fetch(`${base}/api/v1/catalog/assets?${q}`, { headers: { cookie: author } })).json() as {
+    assets: Array<{ id: string }>; total: number; facets: { types: Array<{ name: string; count: number }> };
+  };
+  const ids = async (q: string) => (await browse(q)).assets.map((a) => a.id).sort();
+
+  // The older names find the newer records ...
+  assert.deepEqual(await ids('type=icon'), [newSvg, oldSvg].sort());
+  assert.deepEqual(await ids('type=image'), [film, newPng, oldPng].sort(), 'image was also the older word for a video');
+  // ... and the newer names find the older records. The pack's own vector is
+  // only ever a vector: the older names were never written for it.
+  assert.deepEqual(await ids('type=vector'), ['acme/logo', newSvg, oldSvg].sort());
+  assert.deepEqual(await ids('type=raster'), [newPng, oldPng].sort());
+  assert.deepEqual(await ids('types=icon,video'), [film, newSvg, oldSvg].sort());
+
+  // A type's count is what a filter on that type returns.
+  const all = await browse('');
+  const counts = Object.fromEntries(all.facets.types.map((t) => [t.name, t.count]));
+  for (const [name, n] of Object.entries(counts)) assert.equal((await browse(`type=${name}`)).total, n, name);
+  assert.deepEqual(counts, { vector: 3, image: 3, raster: 2, icon: 2, video: 1 });
 });

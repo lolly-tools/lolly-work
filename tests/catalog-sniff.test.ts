@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
-  LEGACY_TYPE_WORDS, MEDIA_FORMATS, previewKindOf, schemaTypeForFormat, schemaTypeOf, sniffBytes,
+  LEGACY_TYPE_WORDS, MEDIA_FORMATS, previewKindOf, schemaTypeForFormat, schemaTypeOf, sniffBytes, typeWordsOf,
 } from '../server/src/catalog/sniff.ts';
 import { artifactMedia } from '../server/src/approvals/export-review.ts';
 
@@ -234,6 +234,30 @@ test('the older type words and the schema words agree in both directions', () =>
   // Any other word is already the record's own and passes through.
   for (const word of ['raster', 'vector', 'video', 'template', 'user-tool', 'partner-kit', 'logo']) assert.equal(schemaTypeOf(word, 'png'), word);
   assert.deepEqual([...LEGACY_TYPE_WORDS].sort(), ['icon', 'image']);
+});
+
+test('a submitted asset answers to the older and the newer name for its type; other entries to their own', () => {
+  const inst = (type: string, format: string) => ({ id: 'inst/x', type, formats: [{ format, url: `/catalog/inst/x/${format}` }] });
+  const words = (e: Parameters<typeof typeWordsOf>[0]) => typeWordsOf(e).sort();
+  // Older records answer to the schema word as well.
+  assert.deepEqual(words(inst('icon', 'svg')), ['icon', 'vector']);
+  assert.deepEqual(words(inst('image', 'png')), ['image', 'raster']);
+  assert.deepEqual(words(inst('image', 'mp4')), ['image', 'video']);
+  assert.deepEqual(words(inst('image', 'psd')), ['data', 'image']);
+  // Newer records answer to the word the older submit would have written.
+  assert.deepEqual(words(inst('vector', 'svg')), ['icon', 'vector']);
+  assert.deepEqual(words(inst('raster', 'png')), ['image', 'raster']);
+  assert.deepEqual(words(inst('video', 'mp4')), ['image', 'video']);
+  assert.deepEqual(words(inst('data', 'psd')), ['data', 'image']);
+  // A word someone chose keeps its own meaning.
+  assert.deepEqual(words(inst('template', 'json')), ['template']);
+  assert.deepEqual(words(inst('icon', 'png')), ['icon', 'raster'], 'a declared icon PNG is not an image');
+  assert.deepEqual(words(inst('raster', 'svg')), ['raster']);
+  // Pack and provider entries never had the older defaults.
+  assert.deepEqual(words({ id: 'acme/logo', type: 'vector', formats: [{ format: 'svg' }] }), ['vector']);
+  assert.deepEqual(words({ id: 'ext/dam/1', type: 'image', formats: [{ format: 'png' }] }), ['image']);
+  assert.deepEqual(words({ id: 'inst/x', type: 'image' }), ['image'], 'no format, no second name');
+  assert.deepEqual(words({ id: 'inst/x' }), []);
 });
 
 // ── export review keeps its classification ──────────────────────────────────
