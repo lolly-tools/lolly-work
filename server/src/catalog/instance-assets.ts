@@ -72,6 +72,10 @@ export interface AssetSubmission {
    *  returning the asset. The state is still `returned`; no reviewer's name or
    *  comment is copied. */
   withdrawn?: boolean;
+  /** Set when the submission failed part-way and its bytes could not be
+   *  deleted at once. The state is `returned`, no queue lists it, and
+   *  sweepDiscardedSubmissions removes the bytes and then the record. */
+  discarded?: boolean;
   /** A template or user tool (plan 299): what the JSON seeds, so a reviewer
    *  reads "Template for Design, 12 values" where a picture would show. */
   data?: DataSubmissionSummary;

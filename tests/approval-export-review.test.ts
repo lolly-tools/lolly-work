@@ -15,7 +15,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import {
-  APPROVAL_ARTIFACT_DEFAULTS, approvedArtifactBytes, artifactMedia, artifactPartId, heldArtifactBytes, parseExportReview, sweepApprovalArtifacts,
+  APPROVAL_ARTIFACT_DEFAULTS, approvedArtifactBytes, artifactMedia, artifactPartId, heldArtifactBytes, parseExportReview, scheduleApprovalArtifactSweep, sweepApprovalArtifacts,
 } from '../server/src/approvals/export-review.ts';
 import { renderInputsDigest } from '../server/src/render/inputs-digest.ts';
 import { loadEngine } from '../server/src/render/contract.ts';
@@ -278,11 +278,50 @@ test('a withdrawal whose bytes cannot be deleted yet is finished by the retentio
     assert.equal(pending.exportReview!.removalPending, true, 'the removal is recorded as unfinished');
     assert.ok(await w.blobs.head(artifactPartId(approval.id, 0)), 'the bytes are still there');
     assert.equal((await read(w, approval.id, w.reviewer)).status, 410, 'and nobody is sent to them');
-    assert.equal(heldArtifactBytes(await w.store.listApprovals()), 0);
+    assert.ok(heldArtifactBytes(await w.store.listApprovals()) > 0, 'bytes still stored still count toward the budget');
     assert.equal(await sweepApprovalArtifacts(w.store, w.blobs, APPROVAL_ARTIFACT_DEFAULTS), 1, 'no retention age applies');
+    assert.equal(heldArtifactBytes(await w.store.listApprovals()), 0);
     assert.equal(await w.blobs.head(artifactPartId(approval.id, 0)), null);
     assert.equal((await w.store.getApproval(approval.id))!.exportReview!.removalPending, undefined);
     assert.equal(await sweepApprovalArtifacts(w.store, w.blobs, APPROVAL_ARTIFACT_DEFAULTS), 0, 'done once');
+  } finally { w.server.close(); }
+});
+
+test('bytes a withdrawal could not delete still count, so failed deletions cannot grow storage past the budget', async () => {
+  const w = await boot({ approvalArtifacts: { maxFileBytes: 4096, instanceBudgetBytes: 4096 } });
+  try {
+    const { approval } = await raise(w, png(3000));
+    const realDelete = w.blobs.delete.bind(w.blobs);
+    w.blobs.delete = async () => { throw new Error('synthetic blob outage'); };
+    assert.equal((await json(w, `/api/v1/approvals/${approval.id}/withdraw`, {}, w.author)).status, 200);
+    w.blobs.delete = realDelete;
+    const bytes = png(3000);
+    const refused = await json(w, '/api/v1/approvals', request(await send(w, bytes), bytes), w.author);
+    assert.equal(refused.status, 413, 'the withdrawn file is still stored');
+    assert.equal((await refused.json() as { error: { code: string } }).error.code, 'APPROVAL_ARTIFACT_BUDGET');
+    assert.equal(await sweepApprovalArtifacts(w.store, w.blobs, APPROVAL_ARTIFACT_DEFAULTS), 1);
+    const again = png(3000);
+    assert.equal((await json(w, '/api/v1/approvals', request(await send(w, again), again), w.author)).status, 201, 'room again once the bytes are gone');
+  } finally { w.server.close(); }
+});
+
+test('the artifact sweep is scheduled with retention off, and finishes a pending removal', async () => {
+  const w = await boot();
+  try {
+    const { approval } = await raise(w);
+    const realDelete = w.blobs.delete.bind(w.blobs);
+    w.blobs.delete = async () => { throw new Error('synthetic blob outage'); };
+    assert.equal((await json(w, `/api/v1/approvals/${approval.id}/withdraw`, {}, w.author)).status, 200);
+    w.blobs.delete = realDelete;
+    const off = { ...APPROVAL_ARTIFACT_DEFAULTS, closedRetentionDays: 0, approvedRetentionDays: 0 };
+    const quiet = { log: () => undefined, error: () => undefined };
+    const schedule = scheduleApprovalArtifactSweep(w.store, w.blobs, off, { log: quiet });
+    await schedule.first;
+    schedule.stop();
+    assert.equal(await w.blobs.head(artifactPartId(approval.id, 0)), null, 'the boot pass deleted the bytes');
+    assert.equal((await w.store.getApproval(approval.id))!.exportReview!.removalPending, undefined);
+    const main = await readFile(new URL('../server/src/main.ts', import.meta.url), 'utf8');
+    assert.match(main, /^scheduleApprovalArtifactSweep\(store, blobs, approvalArtifactPolicy\(config\)\);$/m, 'main.ts schedules it unconditionally');
   } finally { w.server.close(); }
 });
 

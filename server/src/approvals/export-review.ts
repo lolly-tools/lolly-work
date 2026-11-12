@@ -468,11 +468,12 @@ export function exportReviewWire(approval: Approval) {
   return { ...subject, ...(record ? { credentialRecord: record } : {}), artifactUrl: `/api/v1/approvals/${encodeURIComponent(approval.id)}/artifact` };
 }
 
-/** Bytes every request still holding its file holds. A linear read, which request
- *  volume keeps small; the creating request pays for it, not a reader. */
+/** Bytes every request still holding its file holds, including a removal whose
+ *  parts are not deleted yet: those bytes are still stored. A linear read, which
+ *  request volume keeps small; the creating request pays for it, not a reader. */
 export function heldArtifactBytes(approvals: Approval[]): number {
   return approvals.reduce((sum, a) => {
-    if (!a.exportReview || a.exportReview.removedAt) return sum;
+    if (!a.exportReview || (a.exportReview.removedAt && !a.exportReview.removalPending)) return sum;
     const record = a.exportReview.credentialRecord;
     return sum + a.exportReview.size + (record?.state === 'recorded' ? record.size : 0);
   }, 0);
@@ -545,4 +546,27 @@ export async function sweepApprovalArtifacts(
     }
   }
   return removed;
+}
+
+/** Run the sweep at boot and then daily, whatever the retention settings: with
+ *  both periods at 0 it still finishes removals whose deletion failed and
+ *  removes the files of withdrawn requests. */
+export function scheduleApprovalArtifactSweep(
+  store: { listApprovals(): Promise<Approval[]> } & ApprovalWriter, blobs: BlobStore, policy: ApprovalArtifactPolicy,
+  { intervalMs = DAY_MS, log = console }: { intervalMs?: number; log?: Pick<Console, 'log' | 'error'> } = {},
+): { first: Promise<void>; stop: () => void } {
+  let running = false;
+  const pass = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    try {
+      const removed = await sweepApprovalArtifacts(store, blobs, policy);
+      if (removed) log.log(`[lolly-work] approval files removed: ${removed}`);
+    } catch (error) {
+      log.error(`[lolly-work] approval file sweep failed: ${(error as Error).message}`);
+    } finally { running = false; }
+  };
+  const timer = setInterval(() => void pass(), intervalMs);
+  timer.unref();
+  return { first: pass(), stop: () => clearInterval(timer) };
 }

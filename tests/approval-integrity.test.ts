@@ -25,7 +25,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { submissionNotice } from '../server/src/catalog/submit.ts';
+import { submissionNotice, sweepDiscardedSubmissions } from '../server/src/catalog/submit.ts';
 import { withdraw, createApproval, applyAction, type Approval, type Chain } from '../server/src/approvals/engine.ts';
 import type { InstanceAssetRecord } from '../server/src/catalog/instance-assets.ts';
 
@@ -307,3 +307,53 @@ test('a metadata edit read before a decision never writes the published asset ba
   assert.equal((await w.store.getApproval(approvalId))?.state, 'approved');
   assert.equal(record.entry.name, 'Campaign Hero', 'the late edit wrote nothing');
 });
+
+test('bytes a failed submission could not delete keep a record until the sweep removes them', async () => {
+  const w = await boot(ONE_STEP);
+  const author = await w.login('author@test');
+  const realDelete = w.blobs.delete.bind(w.blobs);
+  w.store.putCredential = async () => { throw new Error('synthetic credential store failure'); };
+  w.blobs.delete = async () => { throw new Error('synthetic blob outage'); };
+  const res = await fetch(`${w.base}/api/v1/catalog/submit?name=Campaign%20Hero`, { method: 'POST', headers: { cookie: author, 'content-type': 'image/png' }, body: new Uint8Array(PNG) });
+  assert.equal(res.status, 500);
+  w.blobs.delete = realDelete;
+  const [kept] = await w.store.listInstanceAssets();
+  assert.ok(kept, 'the record still names the bytes');
+  assert.equal(kept!.submission?.discarded, true);
+  assert.equal(kept!.submission?.state, 'returned', 'never published, never pending');
+  assert.ok(((await w.blobs.usage!())?.storedBytes ?? 0) > 0);
+  assert.equal((await w.store.getSubmitQuota('design'))?.count ?? 0, 0, 'the charge was released');
+  const queue = await (await fetch(`${w.base}/api/v1/catalog/submissions`, { headers: { cookie: author } })).json() as { submissions: unknown[] };
+  assert.deepEqual(queue.submissions, [], 'no queue lists a submission that never finished');
+  assert.equal(await sweepDiscardedSubmissions(w.store, w.blobs), 1);
+  assert.deepEqual(await w.store.listInstanceAssets(), []);
+  assert.equal(((await w.blobs.usage!())?.storedBytes ?? 0), 0);
+  assert.equal(await sweepDiscardedSubmissions(w.store, w.blobs), 0, 'done once');
+});
+
+test('a record write that committed but reported an error finishes the submission', async () => {
+  const w = await boot(ONE_STEP);
+  const author = await w.login('author@test');
+  const real = w.store.putInstanceAsset.bind(w.store);
+  w.store.putInstanceAsset = async (rec) => { w.store.putInstanceAsset = real; await real(rec); throw new Error('synthetic lost acknowledgement'); };
+  const { assetId, approvalId } = await w.submit(author);
+  const record = (await w.store.getInstanceAsset(assetId))!;
+  assert.equal(record.submission?.state, 'submitted');
+  assert.equal(record.submission?.approvalId, approvalId);
+  assert.ok(await w.store.getApproval(approvalId), 'review started, so a retry is not told the admission is unfinished');
+  assert.ok(await w.store.getCredential(assetId));
+  assert.ok(((await w.blobs.usage!())?.storedBytes ?? 0) > 0, 'the bytes the record names are there');
+});
+
+test('a record write that did not commit leaves no bytes and no charge', async () => {
+  const w = await boot(ONE_STEP);
+  const author = await w.login('author@test');
+  w.store.putInstanceAsset = async () => { throw new Error('synthetic record store failure'); };
+  const res = await fetch(`${w.base}/api/v1/catalog/submit?name=Campaign%20Hero`, { method: 'POST', headers: { cookie: author, 'content-type': 'image/png' }, body: new Uint8Array(PNG) });
+  assert.equal(res.status, 500);
+  assert.deepEqual(await w.store.listInstanceAssets(), []);
+  assert.deepEqual(await w.store.listApprovals(), []);
+  assert.equal(((await w.blobs.usage!())?.storedBytes ?? 0), 0);
+  assert.equal((await w.store.getSubmitQuota('design'))?.count ?? 0, 0);
+});
+

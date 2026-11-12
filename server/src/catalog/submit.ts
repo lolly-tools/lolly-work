@@ -794,21 +794,40 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     submission,
     createdAt: nowIso,
   };
+  // Undo a new asset that nothing can have published: no approval for it is
+  // stored and it has not gone live. The charge is released at once. The
+  // record goes only once the bytes are gone: bytes that cannot be deleted yet
+  // keep the record, marked `discarded` and returned, and
+  // sweepDiscardedSubmissions deletes both later.
+  const discard = async (): Promise<void> => {
+    await release();
+    try {
+      await blobs.delete(`${id}/${sniffed.format}`);
+    } catch (err) {
+      console.error(`[catalog] the bytes of ${id} are not deleted yet; the discarded-submission sweep finishes the removal: ${(err as Error).message}`);
+      await store.putInstanceAsset({ ...record, submission: { ...submission, state: 'returned', decidedAt: nowIso, discarded: true } })
+        .catch((markErr: Error) => console.error(`[catalog] ${id} could not be marked for removal, and its bytes remain at ${id}/${sniffed.format}: ${markErr.message}`));
+      await store.deleteCredential(id).catch(() => undefined);
+      return;
+    }
+    await store.deleteCredential(id).catch(() => undefined);
+    await store.deleteInstanceAsset(id).catch(() => undefined);
+  };
+  // A write that reports an error may still have committed, with its answer
+  // lost. The record is read back: found, the submission goes on as if the
+  // write had answered; absent, it is discarded; unreadable as well, nothing
+  // is deleted on a guess and the error is passed on.
   try {
     await store.putInstanceAsset(record);
   } catch (err) {
-    await blobs.delete(`${id}/${sniffed.format}`).catch(() => undefined);
-    await release();
-    throw err;
+    const stored = await store.getInstanceAsset(id).then((found) => found, () => undefined);
+    if (stored === undefined) throw err;
+    if (stored === null) {
+      await discard();
+      throw err;
+    }
+    console.error(`[catalog] the record for ${id} was stored although its write reported an error: ${(err as Error).message}`);
   }
-  // Undo a new asset that nothing can have published: no approval for it is
-  // stored and it has not gone live.
-  const discard = async (): Promise<void> => {
-    await blobs.delete(`${id}/${sniffed.format}`).catch(() => undefined);
-    await store.deleteCredential(id).catch(() => undefined);
-    await store.deleteInstanceAsset(id).catch(() => undefined);
-    await release();
-  };
 
   // 5. Content credentials: DETECTION only. A submission is an arbitrary org
   //    file, so unlike publish-out there is no lolly export assertion to verify
@@ -1008,9 +1027,53 @@ export function submissionNotice(settled: SubmissionDecision): { severity: 'info
   return { severity: 'action', title: `Returned: ${name}`, body, email: body };
 }
 
-/** The review queue's rows, newest first. */
+/** The review queue's rows, newest first. A discarded submission never
+ *  finished, so it is not a row. */
 export function listSubmissions(records: InstanceAssetRecord[], state?: 'submitted' | 'live' | 'returned'): InstanceAssetRecord[] {
   return records
-    .filter((r) => r.submission && (!state || r.submission.state === state))
+    .filter((r) => r.submission && !r.submission.discarded && (!state || r.submission.state === state))
     .sort((a, b) => ((a.submission as AssetSubmission).at < (b.submission as AssetSubmission).at ? 1 : -1));
+}
+
+/**
+ * Finish the removal of submissions that failed part-way and kept their bytes
+ * (submitAsset's discard): delete every blob the record names, then its
+ * credential row and the record. A blob that still cannot be deleted keeps its
+ * record for the next pass. Returns how many were removed.
+ */
+export async function sweepDiscardedSubmissions(store: Store, blobs: BlobStore): Promise<number> {
+  let removed = 0;
+  for (const rec of await store.listInstanceAssets()) {
+    if (!rec.submission?.discarded) continue;
+    try {
+      for (const blobId of new Set(Object.values(rec.blobs ?? {}))) await blobs.delete(blobId);
+      await store.deleteCredential(rec.id);
+      await store.deleteInstanceAsset(rec.id);
+      removed++;
+    } catch (error) {
+      console.error(`[catalog] could not finish removing ${rec.id}; the next sweep tries again: ${(error as Error).message}`);
+    }
+  }
+  return removed;
+}
+
+/** sweepDiscardedSubmissions at boot and then daily. */
+export function scheduleDiscardedSubmissionSweep(
+  store: Store, blobs: BlobStore,
+  { intervalMs = 24 * 60 * 60 * 1000, log = console }: { intervalMs?: number; log?: Pick<Console, 'log' | 'error'> } = {},
+): { first: Promise<void>; stop: () => void } {
+  let running = false;
+  const pass = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    try {
+      const removed = await sweepDiscardedSubmissions(store, blobs);
+      if (removed) log.log(`[lolly-work] unfinished submissions removed: ${removed}`);
+    } catch (error) {
+      log.error(`[lolly-work] unfinished submission sweep failed: ${(error as Error).message}`);
+    } finally { running = false; }
+  };
+  const timer = setInterval(() => void pass(), intervalMs);
+  timer.unref();
+  return { first: pass(), stop: () => clearInterval(timer) };
 }
