@@ -6232,14 +6232,16 @@ export function buildApp(deps: AppDeps): App {
    * list. A programme token asks through the same two (submitTokenReview), so a
    * partner, in person or as an agent, never reaches an internal chain by name.
    * `partnerActionClosed` cannot draw this line, because reading a chain and
-   * asking for review are not actions a role or grant names.
+   * asking for review are not actions a role or grant names. A rules tool their
+   * feed carries counts as one they may use, with no grant, by the rule
+   * automationMayUse applies when they render or ask about one.
    */
   const partnerChains = async (user: UserRecord): Promise<ReadonlySet<string>> => {
-    const [overlays, grants] = await Promise.all([store.listOverlays(), store.listGrants()]);
+    const [overlays, grants, published] = await Promise.all([store.listOverlays(), store.listGrants(), instanceToolsFor(user.groups)]);
     const own = new Set<string>();
     for (const [toolId, overlay] of overlays) {
       const bound = overlay.enforce?.escalation;
-      if (bound && mayUseTool(user, toolId, overlays, grants, config.policy.defaultAccessMode)) own.add(bound);
+      if (bound && mayUseTool(user, toolId, overlays, grants, config.policy.defaultAccessMode, published.has(toolId))) own.add(bound);
     }
     for (const group of programmeGroupsOf(user.groups)) {
       for (const id of (await store.getProgramme(group.slice(PROGRAMME_GROUP_PREFIX.length)))?.approvalChains ?? []) own.add(id);
@@ -6864,7 +6866,10 @@ export function buildApp(deps: AppDeps): App {
     const subject = { userId: user.id, groups: user.groups, role: user.role as Role };
     const mayAct = evaluate(subject, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*'], await store.listGrants());
     const relation = artifactRelation(approval, user, mayAct);
-    if (!relation) return sendError(res, 404, 'NOT_FOUND', 'no such file');
+    // A partner programme member reads only the file of their own request. An
+    // action recorded before they joined a programme opens nothing, and the
+    // refusal reads as a missing file (plans/357 W1).
+    if (!relation || (scopedCaller(user) && relation !== 'requester')) return sendError(res, 404, 'NOT_FOUND', 'no such file');
     const refusal = artifactRefusal(approval, relation);
     if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message);
     // An approved request hands out the approved file, and `?file=reviewed` the bytes
@@ -6891,6 +6896,10 @@ export function buildApp(deps: AppDeps): App {
   router.add('POST', '/api/v1/approvals/:id/act', async (req, res, ctx) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    // A partner never decides a request, so nothing about one is said to them:
+    // an existing id, a missing one and a source review all get one answer
+    // (plans/357 W1), as the catalog review queue's act already does.
+    if (scopedCaller(user)) return notAvailable(res);
     const approval = await store.getApproval(ctx.params.id as string);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
     if (approval.sourceReview && !await sourceReviewAvailable(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no available source subject');
@@ -6960,6 +6969,12 @@ export function buildApp(deps: AppDeps): App {
     const user = (await memberOf(req)) ?? (await approvalAskingToken(req))?.user ?? null;
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const approval = await store.getApproval(ctx.params.id as string);
+    // A partner programme member and a token only ever withdraw their own
+    // request, so anyone else's reads exactly as a missing one (plans/357 W1).
+    // Staff keep the plainer refusal below.
+    if (scopedCaller(user) || user.id.startsWith('svc_')) {
+      if (!approval || approval.createdBy !== user.id) return notAvailable(res);
+    }
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
     if (approval.sourceReview && !await seesSourceReview(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
     if (approval.createdBy !== user.id) return sendError(res, 403, 'FORBIDDEN', 'only the submitter can withdraw this request');
