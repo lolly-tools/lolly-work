@@ -137,6 +137,11 @@ before(async () => {
   for (const principal of ['group:programme-resellers', 'group:marketing']) {
     for (const action of ['catalog.submit', 'export.server']) await store.putGrant({ principal, action, resource: '*', effect: 'allow' });
   }
+  // Staff in the step's group review only while they may decide (plans/357 W2).
+  // The same grant reaches the partner too, and still opens nothing for them.
+  for (const principal of ['group:programme-resellers', 'group:marketing']) {
+    await store.putGrant({ principal, action: 'approval.act', resource: 'chain:partner-review', effect: 'allow' });
+  }
   assert.equal((await send(admin, 'PUT', '/api/v1/programmes/resellers/companies/northwind', { name: 'Northwind IT' })).status, 201);
   assert.equal((await send(admin, 'POST', '/api/v1/programmes/resellers/people', { rows: [{ email: 'rita@reseller.test', company: 'northwind' }], apply: true })).status, 200);
   await store.setLocalGroups(staffId, ['company-northwind']);
