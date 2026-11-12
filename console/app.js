@@ -2735,6 +2735,7 @@ async function submissionQueue() {
     el('option', { value: '' }, 'All'));
   stateSel.onchange = async () => {
     stateSel.disabled = true;
+    releaseSubmissionFiles();
     panelHost.replaceChildren();
     body.replaceChildren(table((await load(stateSel.value)) ?? []));
     stateSel.disabled = false;

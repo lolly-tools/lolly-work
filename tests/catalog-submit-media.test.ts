@@ -203,8 +203,14 @@ test('a type filter on the older or the newer name finds submitted records of bo
   assert.equal(version.status, 201, await version.clone().text());
   const swappedRec = (await store.getInstanceAsset(swapped))!;
   assert.deepEqual([swappedRec.entry.type, swappedRec.entry.formats?.[0]?.format], ['vector', 'png']);
+  // The same history for a record the older submit wrote: an icon SVG, now a PNG.
+  const oldSwapped = (await submit(base, author, Buffer.concat([SVG, Buffer.from('   ')]), 'Old swapped mark', {}, 'image/svg+xml')).body.assetId;
+  const oldVersion = await fetch(`${base}/api/v1/catalog/submit?assetId=${encodeURIComponent(oldSwapped)}`, {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'image/png' }, body: new Uint8Array(Buffer.concat([PNG, Buffer.from([2])])),
+  });
+  assert.equal(oldVersion.status, 201, await oldVersion.clone().text());
   // Two records as the older submit wrote them.
-  for (const [id, type] of [[oldSvg, 'icon'], [oldPng, 'image']] as const) {
+  for (const [id, type] of [[oldSvg, 'icon'], [oldPng, 'image'], [oldSwapped, 'icon']] as const) {
     const rec = (await store.getInstanceAsset(id))!;
     await store.putInstanceAsset({ ...rec, entry: { ...rec.entry, type } });
   }
@@ -215,20 +221,20 @@ test('a type filter on the older or the newer name finds submitted records of bo
 
   // The older names find the newer records, an audio-only WebM and a vector
   // now holding a PNG included ...
-  assert.deepEqual(await ids('type=icon'), [newSvg, oldSvg, swapped].sort());
+  assert.deepEqual(await ids('type=icon'), [newSvg, oldSvg, swapped, oldSwapped].sort());
   assert.deepEqual(await ids('type=image'), [film, newPng, oldPng, voice.body.assetId].sort(), 'image was also the older word for a video or a sound');
   // ... and the newer names find the older records. The pack's own vector is
   // only ever a vector: the older names were never written for it.
-  assert.deepEqual(await ids('type=vector'), ['acme/logo', newSvg, oldSvg, swapped].sort());
+  assert.deepEqual(await ids('type=vector'), ['acme/logo', newSvg, oldSvg, swapped, oldSwapped].sort(), 'an older icon now holding a PNG is still found as vector');
   assert.deepEqual(await ids('type=raster'), [newPng, oldPng].sort());
   assert.deepEqual(await ids('type=audio'), [voice.body.assetId]);
-  assert.deepEqual(await ids('types=icon,video'), [film, newSvg, oldSvg, swapped].sort());
+  assert.deepEqual(await ids('types=icon,video'), [film, newSvg, oldSvg, swapped, oldSwapped].sort());
 
   // A type's count is what a filter on that type returns.
   const all = await browse('');
   const counts = Object.fromEntries(all.facets.types.map((t) => [t.name, t.count]));
   for (const [name, n] of Object.entries(counts)) assert.equal((await browse(`type=${name}`)).total, n, name);
-  assert.deepEqual(counts, { vector: 4, image: 4, raster: 2, icon: 3, video: 1, audio: 1 });
+  assert.deepEqual(counts, { vector: 5, image: 4, raster: 2, icon: 4, video: 1, audio: 1 });
 });
 
 test('a submission now serving a later version names no preview, because its recorded type describes the first', async () => {

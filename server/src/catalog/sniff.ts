@@ -161,12 +161,14 @@ const SCHEMA_DEFAULT_WORDS: ReadonlySet<string> = new Set<SchemaType>(['raster',
  * answers to its own word alone.
  *
  * The pairing follows the record's stored word, so it survives a new version in
- * another format. A newer word answers to the older word that meant the same:
- * `vector` to `icon`, and every other schema word to `image`. An older word
- * answers to what its current bytes are, read from the format the record now
- * serves: an `image` PNG to `raster`, an `icon` SVG to `vector`, and an `image`
- * WebM to both `video` and `audio`, because the older record does not say which.
- * A word someone chose, such as `template` or `logo`, answers to itself alone.
+ * another format, and a record written before the table answers to the same
+ * words as one written after. `icon` and `vector` always answer to each other,
+ * since `icon` was only ever the older word for what is now `vector`. Every
+ * other schema word answers to `image`, and an older `image` answers to what its
+ * current bytes are, read from the format the record now serves: an `image` PNG
+ * to `raster`, and an `image` WebM to both `video` and `audio`, because the
+ * older record does not say which. A word someone chose, such as `template` or
+ * `logo`, answers to itself alone.
  */
 export function typeWordsOf(entry: { id?: unknown; type?: unknown; formats?: unknown }): string[] {
   if (typeof entry.type !== 'string' || !entry.type) return [];
@@ -176,7 +178,8 @@ export function typeWordsOf(entry: { id?: unknown; type?: unknown; formats?: unk
     ? ((first as { format: string }).format).toLowerCase() : '';
   const words = new Set([entry.type]);
   if (SCHEMA_DEFAULT_WORDS.has(entry.type)) words.add(entry.type === 'vector' ? 'icon' : 'image');
-  if (LEGACY_TYPE_WORDS.has(entry.type) && format) for (const word of schemaTypesForFormat(format)) words.add(word);
+  if (entry.type === 'icon') words.add('vector');
+  else if (entry.type === 'image' && format) for (const word of schemaTypesForFormat(format)) words.add(word);
   return [...words];
 }
 

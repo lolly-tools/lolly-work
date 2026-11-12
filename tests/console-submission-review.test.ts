@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import { compareValues } from '../console/table-sort.js';
 
 const require = createRequire(import.meta.url);
 const { JSDOM } = require('jsdom');
@@ -41,15 +42,22 @@ function page(served: { type?: string; body?: string; delay?: number; ignoreAbor
   const fetched: string[] = [];
   const signals: AbortSignal[] = [];
   const type = served.type ?? 'video/mp4';
+  w.compareValues = compareValues;
   w.fetch = async (path: string, init: { signal?: AbortSignal } = {}) => {
+    // The queue's own JSON reads, for the tests that build the whole card.
+    const listed = /^\/api\/v1\/catalog\/submissions\?state=(\w*)/.exec(path);
+    if (listed || path === '/api/v1/catalog/fields' || path === '/api/v1/catalog/collections') {
+      const json = listed ? { submissions: listed[1] === 'submitted' ? [submission()] : [] } : { fields: [], collections: [] };
+      return { ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }), json: async () => json };
+    }
     fetched.push(path);
     if (init.signal) signals.push(init.signal);
     if (served.delay) await pause(served.delay);
     if (init.signal?.aborted && !served.ignoreAbort) throw new DOMException('The operation was aborted.', 'AbortError');
     return { ok: true, status: 200, headers: new Headers({ 'content-type': type }), blob: async () => new Blob([served.body ?? '\0\0\0\x18ftypisom'], { type }), json: async () => ({}) };
   };
-  w.eval(`${source}; window.panel = (s) => renderSubmissionReview(s, document.getElementById('app'), null, [], null);`);
-  return { w, fetched, revoked, blobTypes, signals, minted: () => minted, panel: (s: unknown) => w.panel(s), close: () => dom.window.close() };
+  w.eval(`${source}; window.panel = (s) => renderSubmissionReview(s, document.getElementById('app'), null, [], null); window.queue = submissionQueue;`);
+  return { w, fetched, revoked, blobTypes, signals, minted: () => minted, panel: (s: unknown) => w.panel(s), queue: () => w.queue(), close: () => dom.window.close() };
 }
 
 test('a pending video plays in the panel from its fetched bytes', async () => {
@@ -166,4 +174,34 @@ test('closing the panel while the file loads aborts the load and keeps nothing',
     assert.equal(node.querySelector('video'), null);
     p.close();
   }
+});
+
+test('changing which submissions are listed while a file loads aborts the load, and releases one already loaded', async () => {
+  // A load still running when the list changes.
+  const p = page({ delay: 200 });
+  const card = await p.queue();
+  p.w.document.getElementById('app').append(card);
+  const review = [...card.querySelectorAll('button')].find((b: any) => b.textContent === 'Review') as any;
+  review.click();
+  assert.ok(card.querySelector('.sub-file-stage'), 'the panel opened and its file is loading');
+  const which = card.querySelector('select[aria-label="Which submissions to list"]');
+  which.value = 'returned';
+  which.dispatchEvent(new p.w.Event('change'));
+  assert.equal(p.signals[0]?.aborted, true, 'the request is aborted');
+  await pause(300);
+  assert.equal(card.querySelector('.sub-file-stage'), null, 'the panel is gone');
+  assert.equal(p.minted(), 0, 'no blob URL is made');
+  p.close();
+
+  // A file already loaded when the list changes.
+  const q = page();
+  const loaded = await q.queue();
+  q.w.document.getElementById('app').append(loaded);
+  ([...loaded.querySelectorAll('button')].find((b: any) => b.textContent === 'Review') as any).click();
+  await until(() => loaded.querySelector('.sub-file-stage video'));
+  const list = loaded.querySelector('select[aria-label="Which submissions to list"]');
+  list.value = 'live';
+  list.dispatchEvent(new q.w.Event('change'));
+  assert.deepEqual(q.revoked, ['blob:file-1']);
+  q.close();
 });

@@ -258,14 +258,18 @@ test('a submitted asset answers to the older and the newer name for its type; ot
   // The pairing follows the stored word through a version in another format:
   // a new SVG replaced by a PNG keeps vector, so it still answers to icon.
   assert.deepEqual(words(inst('vector', 'png')), ['icon', 'vector']);
-  assert.deepEqual(words(inst('icon', 'png')), ['icon', 'raster'], 'an icon that is now a PNG reads as raster');
+  // An older icon answers to the same words as the newer vector, whatever
+  // format the record serves now, so a record's age never changes what finds it.
+  for (const format of ['svg', 'png', 'pdf']) assert.deepEqual(words(inst('icon', format)), words(inst('vector', format)), `icon and vector as ${format}`);
+  assert.deepEqual(words(inst('image', 'png')), words(inst('raster', 'png')));
   // A word someone chose keeps its own meaning.
   assert.deepEqual(words(inst('template', 'json')), ['template']);
   assert.deepEqual(words(inst('logo', 'svg')), ['logo']);
   // Pack and provider entries never had the older defaults.
   assert.deepEqual(words({ id: 'acme/logo', type: 'vector', formats: [{ format: 'svg' }] }), ['vector']);
   assert.deepEqual(words({ id: 'ext/dam/1', type: 'image', formats: [{ format: 'png' }] }), ['image']);
-  assert.deepEqual(words({ id: 'inst/x', type: 'image' }), ['image'], 'an older word with no format has nothing to read');
+  assert.deepEqual(words({ id: 'inst/x', type: 'image' }), ['image'], 'an older image with no format has nothing to read');
+  assert.deepEqual(words({ id: 'inst/x', type: 'icon' }), ['icon', 'vector']);
   assert.deepEqual(words({ id: 'inst/x', type: 'vector' }), ['icon', 'vector']);
   assert.deepEqual(words({ id: 'inst/x' }), []);
 });
