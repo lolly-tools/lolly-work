@@ -23,7 +23,7 @@ import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { loadEngine } from '../server/src/render/contract.ts';
 import { buildSigner } from '../server/src/render/c2pa-signer.ts';
 import { createApprovalRecorder, type ApprovalRecorder } from '../server/src/approvals/approval-recorder.ts';
-import { heldArtifactBytes, removeArtifactBytes } from '../server/src/approvals/export-review.ts';
+import { heldArtifactBytes, retireArtifact } from '../server/src/approvals/export-review.ts';
 
 const PACK = fileURLToPath(new URL('../packs/demo', import.meta.url));
 const PART = 1024 * 1024;
@@ -241,8 +241,9 @@ test('retention removes the update with the reviewed file', async () => {
   const stored = (await w.store.getApproval(a.id))!;
   const record = stored.exportReview!.credentialRecord!;
   assert.equal(record.state, 'recorded');
-  const removed = await removeArtifactBytes(w.blobs, stored, 'retention', new Date().toISOString());
+  const removed = (await retireArtifact(w.store, w.blobs, stored, 'retention', new Date().toISOString()))!;
   assert.equal(removed.exportReview!.removedBecause, 'retention');
+  assert.equal(removed.exportReview!.removalPending, undefined, 'the removal finished');
   const keys = record.state === 'recorded' ? record.parts.map((_, n) => `approval-artifact/${a.id}/approved/${record.sha256.slice(0, 16)}/${n}`) : [];
   for (const key of keys) assert.equal(await w.blobs.head(key), null, key);
   assert.equal(heldArtifactBytes([removed]), 0);

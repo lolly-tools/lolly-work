@@ -144,7 +144,7 @@ import { brandPagesConfig } from '../brand-pages/types.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
 import {
   approvalArtifactPolicy, approvedArtifactBytes, artifactRefusal, artifactRelation, artifactReviewToken, checkArtifactReviewToken, describeExportReview, exportReviewWire,
-  freezeArtifactBytes, freezeRenderBytes, describeRenderReview, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
+  freezeArtifactBytes, freezeRenderBytes, describeRenderReview, finishArtifactRemoval, heldArtifactBytes, markArtifactRemoved, parseExportReview, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
 } from '../approvals/export-review.ts';
 import { renderInputsDigest } from '../render/inputs-digest.ts';
 import { approvedExportReview, registerExportReviewMatch, templateFixedValues, templateOpenInputs, templateVariantDigest } from '../approvals/export-review-match.ts';
@@ -183,7 +183,7 @@ import {
   applyVersionToRecord, backfillVersionOne, headVersionOf, orphanBlobIds, parseReplacedBy,
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
-import { listSubmissions, settleSubmission, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
+import { listSubmissions, settleSubmission, submissionNotice, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
 import { isDataSubmissionType, MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
@@ -264,6 +264,7 @@ import { mayRenderTool, mayUseTool, PolicyRefusal, policyErrors } from '../autom
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
 import { createApprovalRecorder, type ApprovalRecorder } from '../approvals/approval-recorder.ts';
+import { APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE, replaceApproval } from '../approvals/revision.ts';
 import { registerRenderRoutes } from '../renders/routes.ts';
 import { prepareRenderApi, registerRenderApi } from '../render-api/routes.ts';
 import { renderOutputTokens } from '../renders/output-token.ts';
@@ -6926,7 +6927,11 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    await store.putApproval(next);
+    // Written against the approval as read: a decision made by someone else in
+    // the meantime wins, and this one settles nothing.
+    const written = await replaceApproval(store, approval, next);
+    if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
+    next = written;
     await audit(`user:${user.id}`, body.action === 'approve' ? 'approval.approve' : 'approval.reject',
       `approval:${next.id}`, { state: next.state, step: approval.stepIndex });
     // The decision stands whatever happens next. A failure here leaves the file
@@ -6985,10 +6990,20 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    // Nobody will decide on a withdrawn file, so its bytes go now. The record and
-    // digest stay.
-    if (next.exportReview) next = await removeArtifactBytes(blobs, next, 'withdrawn', new Date().toISOString());
-    await store.putApproval(next);
+    // Nobody will decide on a withdrawn file, so the withdrawal also records
+    // that its file is removed; the record and digest stay. Written against the
+    // approval as read, so a decision made at the same moment is never
+    // overwritten by the withdrawal, nor the other way round.
+    if (next.exportReview) next = markArtifactRemoved(next, 'withdrawn', new Date().toISOString());
+    const written = await replaceApproval(store, approval, next);
+    if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
+    next = written;
+    // The parts go once the withdrawal is stored. A deletion that fails leaves
+    // the removal pending, and the retention sweep finishes it.
+    if (next.exportReview) {
+      try { next = await finishArtifactRemoval(store, blobs, next); }
+      catch (error) { console.error(`[approvals] the withdrawn file of ${next.id} is not deleted yet; the retention sweep finishes it: ${(error as Error).message}`); }
+    }
     await audit(user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
     // Withdrawing the review of a catalog submission returns the asset too:
     // leaving it `submitted` behind a closed approval would strand it.
@@ -9409,6 +9424,7 @@ export function buildApp(deps: AppDeps): App {
       ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),
       ...(s.decidedAt ? { decidedAt: s.decidedAt } : {}),
       ...(s.comment ? { comment: s.comment } : {}),
+      ...(s.withdrawn ? { withdrawn: true } : {}),
       // A template or user tool (plan 299): what it seeds, for the reviewer.
       ...(s.data ? { data: s.data } : {}),
       ...(s.collectionId ? { collectionId: s.collectionId } : {}),
@@ -9462,37 +9478,30 @@ export function buildApp(deps: AppDeps): App {
   const settleAssetSubmission = async (approval: Approval, actorId: string): Promise<boolean> => {
     const settled = await settleSubmission(store, approval, new Date().toISOString());
     if (!settled) return false;
-    const action = settled.state === 'live' ? 'catalog.approve-submission' : 'catalog.return-submission';
-    await audit(`user:${actorId}`, action, `catalog:${settled.record.id}`, {
+    const action = settled.state === 'live' ? 'catalog.approve-submission'
+      : settled.withdrawn ? 'catalog.withdraw-submission' : 'catalog.return-submission';
+    await audit(actorId.startsWith('svc_') ? `service:${actorId}` : `user:${actorId}`, action, `catalog:${settled.record.id}`, {
       approvalId: approval.id, ...(settled.comment ? { comment: settled.comment } : {}),
       ...(settled.collection ? { collection: settled.collection } : {}),
     });
     const submitterId = (settled.record.submission?.by ?? '').replace(/^user:/, '');
     if (!submitterId) return true;
+    const notice = submissionNotice(settled);
     await store.putMessage({
       id: `msg_${randomId(8)}`,
-      kind: 'approval', severity: settled.state === 'live' ? 'info' : 'action',
+      kind: 'approval', severity: notice.severity,
       audience: { users: [submitterId] },
-      title: settled.state === 'live'
-        ? `Published: ${settled.record.entry.name ?? settled.record.id}`
-        : `Returned: ${settled.record.entry.name ?? settled.record.id}`,
-      body: settled.state === 'live'
-        ? 'Your catalog submission was approved and is live.'
-        : `Your catalog submission was returned${settled.comment ? `: “${settled.comment}”` : '.'}`,
+      title: notice.title,
+      body: notice.body,
       cta: { label: 'View', url: '/admin#/catalog' },
       data: { assetId: settled.record.id, state: settled.state },
       dismissible: true,
     });
-    const submitter = await store.getUser(submitterId);
-    notifier.email([submitter?.email],
-      settled.state === 'live'
-        ? `Published: ${settled.record.entry.name ?? settled.record.id}`
-        : `Returned: ${settled.record.entry.name ?? settled.record.id}`,
-      (settled.state === 'live'
-        ? 'Your catalog submission was approved and is live.'
-        : `Your catalog submission was returned${settled.comment ? `: “${settled.comment}”` : '.'}`)
-      + `\n\nView it: ${config.instance.baseUrl}/admin#/catalog`);
-    notifier.event('submission.decided', { assetId: settled.record.id, state: settled.state });
+    if (notice.email !== null) {
+      const submitter = await store.getUser(submitterId);
+      notifier.email([submitter?.email], notice.title, `${notice.email}\n\nView it: ${config.instance.baseUrl}/admin#/catalog`);
+    }
+    notifier.event('submission.decided', { assetId: settled.record.id, state: settled.state, ...(settled.withdrawn ? { withdrawn: true } : {}) });
     return true;
   };
 
@@ -9874,13 +9883,24 @@ export function buildApp(deps: AppDeps): App {
       after.collectionId = collectionId ?? null;
     }
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
-    const { collectionId: _prior, ...submissionRest } = rec.submission;
-    const next: InstanceAssetRecord = {
-      ...rec, entry: applyDescriptivePatch(rec.entry, parsed),
-      submission: { ...submissionRest, ...(collectionId ? { collectionId } : {}) },
-    };
-    await store.putInstanceAsset(next);
-    if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
+    // The record is read again under the asset's lock, which settlement also
+    // holds, and the edit applies to that copy. A decision that published or
+    // returned the asset while this request was checked is never written back
+    // to `submitted` from the copy read at the start.
+    const next = await store.withAssetLock(rec.id, async (): Promise<InstanceAssetRecord | string> => {
+      const current = await store.getInstanceAsset(rec.id);
+      if (!current?.submission) return 'removed';
+      if (current.submission.state !== 'submitted') return current.submission.state;
+      const { collectionId: _prior, ...submissionRest } = current.submission;
+      const edited: InstanceAssetRecord = {
+        ...current, entry: applyDescriptivePatch(current.entry, parsed),
+        submission: { ...submissionRest, ...(collectionId ? { collectionId } : {}) },
+      };
+      await store.putInstanceAsset(edited);
+      if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
+      return edited;
+    });
+    if (typeof next === 'string') return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${next}`);
     await audit(`user:${user.id}`, 'catalog.edit-submission', `catalog:${rec.id}`, { before, after, relation });
     sendJson(res, 200, {
       ok: true,
@@ -9919,7 +9939,11 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    await store.putApproval(next);
+    // A reviewer who decided the same submission a moment earlier, here or in
+    // the approvals inbox, wins: this decision is not stored and settles nothing.
+    const written = await replaceApproval(store, approval, next);
+    if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
+    next = written;
     await audit(`user:${user.id}`, body.action === 'approve' ? 'approval.approve' : 'approval.reject',
       `approval:${next.id}`, { state: next.state, step: approval.stepIndex });
     if (isTerminal(next.state)) await settleAssetSubmission(next, user.id);

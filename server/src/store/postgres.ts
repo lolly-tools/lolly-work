@@ -2195,6 +2195,17 @@ export async function createPostgresStore(databaseUrl: string, opts: { poolMax?:
         [approval.id, approval.state, approval.stepIndex, approval.createdBy, approval.createdAt, JSON.stringify(approval)],
       );
     },
+    async casApproval(next, expectedRevision) {
+      if (next.revision !== expectedRevision + 1) throw new TypeError('approval-revision');
+      // One statement: a second writer from the same read waits on the row
+      // lock, then finds the revision moved and matches nothing.
+      const result = await pool.query(
+        `update approvals set state = $2, step_index = $3, doc = $4::jsonb
+         where id = $1 and coalesce((doc->>'revision')::integer, 0) = $5`,
+        [next.id, next.state, next.stepIndex, JSON.stringify(next), expectedRevision],
+      );
+      return result.rowCount === 1;
+    },
     async getApproval(id) {
       const { rows } = await pool.query('select doc from approvals where id = $1', [id]);
       return rows[0] ? (rows[0].doc as Approval) : null;

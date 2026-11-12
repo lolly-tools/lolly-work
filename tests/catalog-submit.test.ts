@@ -133,6 +133,10 @@ test('a pending shared admission is returned on retry, and simultaneous attempts
   const record = (await b.store.listInstanceAssets())[0]!;
   await b.store.putInstanceAsset({ ...record, submission: { ...record.submission!, approvalId: undefined } });
   assert.equal((await b.send()).status, 503, 'an interrupted admission cannot claim that review has started');
+  // The record names its approval from its first write, so one that names an
+  // approval that was never stored is unfinished too.
+  await b.store.putInstanceAsset({ ...record, submission: { ...record.submission!, approvalId: 'apr_never_stored' } });
+  assert.equal((await b.send()).status, 503, 'nor can one whose approval was never stored');
   assert.equal((await b.store.listInstanceAssets()).length, 1);
 });
 

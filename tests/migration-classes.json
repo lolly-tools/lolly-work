@@ -86,5 +86,6 @@
   "0096_asset_rights_marks.sql": "additive",
   "0097_programme_rights_choices.sql": "additive",
   "0098_instance_defaults.sql": "additive",
-  "0099_company_kits.sql": "additive"
+  "0099_company_kits.sql": "additive",
+  "0100_approval_token_requesters.sql": "maintenance"
 }

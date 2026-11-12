@@ -23,7 +23,7 @@ import type { ProjectUserStateRecord, ShareGroupRecord } from './types.ts';
 import { canonicalJson, randomId } from '../lib/crypto.ts';
 import { nextEvent, type AuditAnchor, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
 import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
-import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
+import { approvalRevision, eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
 import { roleFromGroups, type Grant, type RoleGroups } from '../rbac/evaluate.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
 import { hasFlagOpinion, type FlagGovernance } from '../policy/feature-flags.ts';
@@ -1357,6 +1357,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async putApproval(approval) {
       approvals.set(approval.id, approval);
+    },
+    async casApproval(next, expectedRevision) {
+      if (next.revision !== expectedRevision + 1) throw new TypeError('approval-revision');
+      const stored = approvals.get(next.id);
+      if (!stored || approvalRevision(stored) !== expectedRevision) return false;
+      approvals.set(next.id, next);
+      return true;
     },
     async getApproval(id) {
       return approvals.get(id) ?? null;

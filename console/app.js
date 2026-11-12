@@ -2578,7 +2578,9 @@ function renderSubmissionReview(s, host, opener, fieldDefs, collections = null) 
       el('h3', { class: 'detail-h' }, 'Decision'),
       !pending
         ? el('p', { class: 'sub', style: 'margin:0' },
-            `${s.state === 'live' ? 'Published' : 'Returned'}${s.decidedAt ? ` ${when(s.decidedAt)}` : ''}${s.decidedBy ? ` by ${s.decidedBy.replace(/^user:/, '')}` : ''}${s.comment ? `: “${s.comment}”` : '.'}`)
+            s.withdrawn
+              ? `Withdrawn by the submitter${s.decidedAt ? ` ${when(s.decidedAt)}` : ''}.`
+              : `${s.state === 'live' ? 'Published' : 'Returned'}${s.decidedAt ? ` ${when(s.decidedAt)}` : ''}${s.decidedBy ? ` by ${s.decidedBy.replace(/^user:/, '')}` : ''}${s.comment ? `: “${s.comment}”` : '.'}`)
         : mine
           ? el('p', { class: 'sub', style: 'margin:0' }, 'This is your own submission, so someone on the review chain decides it. You can still correct its metadata while it waits.')
           : el('div', { class: 'stack' },
@@ -2633,7 +2635,7 @@ async function submissionQueue() {
       el('td', {}, s.byName, el('div', { class: 'muted' }, s.relation === 'mine' ? 'your submission' : 'waiting on you')),
       whenCell(s.at),
       el('td', { class: 'muted' }, s.data ? dataSubmissionSummary(s.data) : [s.contentType, dims, fmtBytes(s.size)].filter(Boolean).join(' · ')),
-      el('td', {}, el('span', { class: `status ${s.state === 'live' ? 'live' : s.state === 'returned' ? 'revoked' : 'review'}` }, s.state === 'live' ? 'published' : s.state === 'returned' ? 'returned' : 'waiting on review')),
+      el('td', {}, el('span', { class: `status ${s.state === 'live' ? 'live' : s.state === 'returned' ? 'revoked' : 'review'}` }, s.state === 'live' ? 'published' : s.withdrawn ? 'withdrawn' : s.state === 'returned' ? 'returned' : 'waiting on review')),
       el('td', {}, openBtn));
   };
 
@@ -3800,7 +3802,8 @@ function actQuote(x) {
 function renderStep(a, i, { actionable }) {
   const step = stepsOf(a)[i];
   const st = nodeState(a, i);
-  const acts = (a.actions || []).filter((x) => x.step === i);
+  // A withdrawal is shown on the terminal cap, not on the step it froze.
+  const acts = (a.actions || []).filter((x) => x.step === i && x.action !== 'withdraw');
   const approvedCount = new Set(acts.filter((x) => x.action === 'approve').map((x) => x.actor)).size;
   const quorum = step.rule && typeof step.rule === 'object' ? step.rule.quorum : null;
   const groups = (step.groups || []).join(', ');
@@ -3839,9 +3842,11 @@ function renderStepper(a, opts) {
         el('div', { class: 'step-name' }, 'Approved'),
         final ? el('div', { class: 'step-sub' }, el('span', { class: 'muted' }, `by ${final.actorName ?? final.actor}`)) : null)));
   } else if (a.state === 'withdrawn') {
+    const by = [...(a.actions || [])].reverse().find((x) => x.action === 'withdraw');
     nodes.push(el('li', { class: 'step cap-withdrawn', 'aria-label': 'Withdrawn' },
       el('div', { class: 'step-rail' }, stepMarker('frozen', '–')),
-      el('div', { class: 'step-body' }, el('div', { class: 'step-name muted' }, 'Withdrawn'))));
+      el('div', { class: 'step-body' }, el('div', { class: 'step-name muted' }, 'Withdrawn'),
+        by ? el('div', { class: 'step-sub' }, el('span', { class: 'muted' }, `by ${by.actorName ?? by.actor}`)) : null)));
   }
   return el('ol', { class: 'stepper' }, ...nodes);
 }

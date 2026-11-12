@@ -467,7 +467,9 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       r.submission.projectSource?.projectId === source.projectId &&
       r.submission.projectSource.fileId === source.fileId && r.submission.projectSource.checksum === source.checksum &&
       JSON.stringify([...(r.groups ?? [])].sort()) === JSON.stringify([...(input.groups ?? [])].sort()));
-    if (prior?.submission?.state === 'submitted' && !prior.submission.approvalId) return { ok: false, code: 'SUBMISSION_INCOMPLETE', detail: 'The earlier admission did not finish. Ask a workspace administrator to inspect the pending submission before retrying.' };
+    // A pending record whose approval was never stored did not finish either:
+    // the record names its approval from its first write.
+    if (prior?.submission?.state === 'submitted' && (!prior.submission.approvalId || !await store.getApproval(prior.submission.approvalId))) return { ok: false, code: 'SUBMISSION_INCOMPLETE', detail: 'The earlier admission did not finish. Ask a workspace administrator to inspect the pending submission before retrying.' };
     // Their own pending admission answers the retry. A live one answers only while the
     // submitter may still be handed it (duplicateVisible); otherwise the retry goes on
     // as a new submission and says nothing about the earlier one.
@@ -734,7 +736,8 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   }
 
   // 4b. Store the bytes, then the record, in state `submitted`. A failure on
-  //     either releases the charge: nothing was kept, so nothing was spent.
+  //     either releases the charge and removes what was written: nothing was
+  //     kept, so nothing was spent.
   const id = `${INST_PREFIX}${randomId(8)}`;
   let stat: Awaited<ReturnType<BlobStore['put']>>;
   try {
@@ -743,6 +746,16 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     await release();
     throw err;
   }
+  // The approval is built before the record, so the record names its approval
+  // from the first write. The approval is stored last, once the bytes, the
+  // record and the credential row are.
+  const approval: Approval | undefined = chain && chain.steps.length ? createApproval({
+    id: `apr_${randomId(8)}`,
+    subjectType: 'asset',
+    subjectRef: id,
+    title: `Catalog submission: ${input.name}`.slice(0, 200),
+    chain, nominees: [], createdBy: input.submitter.id, now: nowIso,
+  }) : undefined;
   const submission: AssetSubmission = {
     state: 'submitted',
     ...(input.projectSource ? { projectSource: input.projectSource } : {}),
@@ -759,6 +772,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     // On a new asset the note is the submitter's word to the reviewer; on a
     // version it stays on the version row, as before.
     ...(input.note ? { note: input.note.slice(0, 500) } : {}),
+    ...(approval ? { approvalId: approval.id } : {}),
   };
   const logo = input.companyLogo ? companyLogoFields(input.companyLogo, sniffed.format) : undefined;
   const tags = input.companyKit ? ['partner', 'kit'] : [...new Set([...(input.tags ?? []), ...(logo?.tags ?? [])].map((t) => t.trim()).filter(Boolean))];
@@ -780,10 +794,55 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     submission,
     createdAt: nowIso,
   };
+  // Undo a new asset that nothing can have published: no approval for it is
+  // stored and it has not gone live. The charge is released at once. The
+  // record goes only once the bytes are gone: bytes that cannot be deleted yet
+  // keep the record, marked `discarded` and returned, and
+  // sweepDiscardedSubmissions deletes both later.
+  const discard = async (): Promise<void> => {
+    await release();
+    try {
+      await blobs.delete(`${id}/${sniffed.format}`);
+    } catch (err) {
+      console.error(`[catalog] the bytes of ${id} are not deleted yet; the discarded-submission sweep finishes the removal: ${(err as Error).message}`);
+      await store.putInstanceAsset({ ...record, submission: { ...submission, state: 'returned', decidedAt: nowIso, discarded: true } })
+        .catch((markErr: Error) => console.error(`[catalog] ${id} could not be marked for removal, and its bytes remain at ${id}/${sniffed.format}: ${markErr.message}`));
+      await store.deleteCredential(id).catch(() => undefined);
+      return;
+    }
+    await store.deleteCredential(id).catch(() => undefined);
+    await store.deleteInstanceAsset(id).catch(() => undefined);
+  };
+  // A write that reports an error may still have committed, with its answer
+  // lost. The record is read back: found, the submission goes on as if the
+  // write had answered; absent, it is discarded; unreadable as well, nothing
+  // is deleted on a guess and the error is passed on.
   try {
     await store.putInstanceAsset(record);
   } catch (err) {
-    await release();
+    const stored = await store.getInstanceAsset(id).then((found) => found, () => undefined);
+    if (stored === undefined) throw err;
+    if (stored === null) {
+      await discard();
+      throw err;
+    }
+    console.error(`[catalog] the record for ${id} was stored although its write reported an error: ${(err as Error).message}`);
+  }
+
+  // 5. Content credentials: DETECTION only. A submission is an arbitrary org
+  //    file, so unlike publish-out there is no lolly export assertion to verify
+  //    and nothing is refused for the absence of one (plans/27 section 4).
+  //    Written before a kit claims its company and before review starts, so a
+  //    failure here leaves nothing behind.
+  let detected: Awaited<ReturnType<typeof detectCredential>>;
+  try {
+    detected = await detectCredential(input.bytes);
+    await store.putCredential({
+      assetId: id, status: detected.status, ...(detected.container ? { container: detected.container } : {}),
+      sniffedAt: nowIso,
+    });
+  } catch (err) {
+    await discard();
     throw err;
   }
 
@@ -801,30 +860,28 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     return { ok: false, code: 'INVALID_SUBMISSION', detail: 'this company already has one kit; submit a new version of that asset' };
   }
 
-  // 5. Content credentials: DETECTION only. A submission is an arbitrary org
-  //    file, so unlike publish-out there is no lolly export assertion to verify
-  //    and nothing is refused for the absence of one (plans/27 section 4).
-  const detected = await detectCredential(input.bytes);
-  await store.putCredential({
-    assetId: id, status: detected.status, ...(detected.container ? { container: detected.container } : {}),
-    sniffedAt: nowIso,
-  });
-
   // 6. Review, or live. With no chain configured the asset is live the moment
   //    it is stored - the resolved default of record (plans/31 section 11.1).
   //    A chain named but missing never reaches here: it was refused at 1b.
-  let approval: Approval | undefined;
-  if (chain && chain.steps.length) {
-    approval = createApproval({
-      id: `apr_${randomId(8)}`,
-      subjectType: 'asset',
-      subjectRef: id,
-      title: `Catalog submission: ${input.name}`.slice(0, 200),
-      chain, nominees: [], createdBy: input.submitter.id, now: nowIso,
-    });
-    await store.putApproval(approval);
-    record = { ...record, submission: { ...submission, approvalId: approval.id } };
-    await store.putInstanceAsset(record);
+  //    An approval that was not stored leaves a submission nobody could ever
+  //    decide, so it is discarded before the error is passed on. A write that
+  //    reports an error may still have committed, with its answer lost, and a
+  //    reviewer may already be acting on it. So only a read that finds no
+  //    approval leads to the discard. Found, the submission stands. A read
+  //    that fails as well keeps everything: an unfinished submission an
+  //    administrator can inspect, and never a published asset deleted.
+  if (approval) {
+    try {
+      await store.putApproval(approval);
+    } catch (err) {
+      const stored = await store.getApproval(approval.id).then((found) => found, () => undefined);
+      if (stored === undefined) throw err;
+      if (stored === null) {
+        await discard();
+        throw err;
+      }
+      console.error(`[catalog] the approval for ${id} was stored although its write reported an error: ${(err as Error).message}`);
+    }
   } else {
     record = await goLive(store, record, nowIso);
   }
@@ -869,6 +926,8 @@ async function goLive(store: Store, record: InstanceAssetRecord, nowIso: string,
 export interface SubmissionDecision {
   record: InstanceAssetRecord;
   state: 'live' | 'returned';
+  /** The submitter withdrew it: returned, with no reviewer's comment. */
+  withdrawn?: boolean;
   comment?: string;
   /** The collection the asset joined on approval, when a reviewer chose one. */
   collection?: string;
@@ -894,9 +953,11 @@ async function joinChosenCollection(store: Store, record: InstanceAssetRecord, n
 
 /**
  * Apply a terminal approval to the submission it gates: approved goes `live`
- * (lifecycle row minted), rejected and withdrawn go `returned` carrying the
- * reviewer's comment. Returns null when the approval is not a catalog
- * submission, which is how the generic approvals route can call it blindly.
+ * (lifecycle row minted), rejected goes `returned` carrying the reviewer's
+ * comment, and withdrawn goes `returned` with `withdrawn: true`, naming the
+ * person who withdrew it and carrying no reviewer's words. Returns null when
+ * the approval is not a catalog submission, which is how the generic approvals
+ * route can call it blindly.
  *
  * It lives here rather than in either route because BOTH decide submissions -
  * the catalog review queue and the plain approvals inbox - and an approval that
@@ -905,12 +966,23 @@ async function joinChosenCollection(store: Store, record: InstanceAssetRecord, n
  */
 export async function settleSubmission(store: Store, approval: Approval, nowIso: string): Promise<SubmissionDecision | null> {
   if (approval.subjectType !== 'asset' || !approval.subjectRef.startsWith(INST_PREFIX)) return null;
+  // Under the asset's lock, which a metadata edit of the pending submission
+  // also holds, so neither writes over the other.
+  return store.withAssetLock(approval.subjectRef, () => settleLocked(store, approval, nowIso));
+}
+
+async function settleLocked(store: Store, approval: Approval, nowIso: string): Promise<SubmissionDecision | null> {
   const record = await store.getInstanceAsset(approval.subjectRef);
   if (!record?.submission || record.submission.approvalId !== approval.id) return null;
   if (record.submission.state !== 'submitted') return null; // already settled
-  const last = [...approval.actions].reverse()[0];
-  const comment = last?.comment;
-  const decidedBy = last ? `user:${last.actor}` : undefined;
+  // The action that closed the approval: the decision, or the withdrawal. An
+  // older withdrawn row has no withdrawal action, and an earlier reviewer's
+  // action is never read in its place.
+  const withdrawn = approval.state === 'withdrawn';
+  const last = approval.actions.at(-1);
+  const closing = withdrawn ? (last?.action === 'withdraw' ? last : undefined) : last;
+  const comment = withdrawn ? undefined : closing?.comment;
+  const decidedBy = closing ? `user:${closing.actor}` : undefined;
   if (approval.state === 'approved') {
     let live = await goLive(store, record, nowIso, decidedBy, comment);
     const collection = await joinChosenCollection(store, live, nowIso);
@@ -920,7 +992,7 @@ export async function settleSubmission(store: Store, approval: Approval, nowIso:
     }
     return { record: live, state: 'live', ...(comment ? { comment } : {}), ...(collection ? { collection } : {}) };
   }
-  if (approval.state !== 'rejected' && approval.state !== 'withdrawn') return null;
+  if (approval.state !== 'rejected' && !withdrawn) return null;
   const next: InstanceAssetRecord = {
     ...record,
     submission: {
@@ -929,15 +1001,79 @@ export async function settleSubmission(store: Store, approval: Approval, nowIso:
       ...(decidedBy ? { decidedBy } : {}),
       decidedAt: nowIso,
       ...(comment ? { comment } : {}),
+      ...(withdrawn ? { withdrawn: true } : {}),
     },
   };
   await store.putInstanceAsset(next);
-  return { record: next, state: 'returned', ...(comment ? { comment } : {}) };
+  return { record: next, state: 'returned', ...(withdrawn ? { withdrawn: true } : {}), ...(comment ? { comment } : {}) };
 }
 
-/** The review queue's rows, newest first. */
+/**
+ * What the submitter is told once their submission settles: the inbox message
+ * and the email text, which is null when no email goes. A withdrawal is the
+ * submitter's own act, so its message names nobody else, quotes nobody, and is
+ * not followed by an email.
+ */
+export function submissionNotice(settled: SubmissionDecision): { severity: 'info' | 'action'; title: string; body: string; email: string | null } {
+  const name = settled.record.entry.name ?? settled.record.id;
+  if (settled.state === 'live') {
+    const body = 'Your catalog submission was approved and is live.';
+    return { severity: 'info', title: `Published: ${name}`, body, email: body };
+  }
+  if (settled.withdrawn) {
+    return { severity: 'info', title: `Withdrawn: ${name}`, body: 'You withdrew this catalog submission, so it was not published.', email: null };
+  }
+  const body = `Your catalog submission was returned${settled.comment ? `: “${settled.comment}”` : '.'}`;
+  return { severity: 'action', title: `Returned: ${name}`, body, email: body };
+}
+
+/** The review queue's rows, newest first. A discarded submission never
+ *  finished, so it is not a row. */
 export function listSubmissions(records: InstanceAssetRecord[], state?: 'submitted' | 'live' | 'returned'): InstanceAssetRecord[] {
   return records
-    .filter((r) => r.submission && (!state || r.submission.state === state))
+    .filter((r) => r.submission && !r.submission.discarded && (!state || r.submission.state === state))
     .sort((a, b) => ((a.submission as AssetSubmission).at < (b.submission as AssetSubmission).at ? 1 : -1));
+}
+
+/**
+ * Finish the removal of submissions that failed part-way and kept their bytes
+ * (submitAsset's discard): delete every blob the record names, then its
+ * credential row and the record. A blob that still cannot be deleted keeps its
+ * record for the next pass. Returns how many were removed.
+ */
+export async function sweepDiscardedSubmissions(store: Store, blobs: BlobStore): Promise<number> {
+  let removed = 0;
+  for (const rec of await store.listInstanceAssets()) {
+    if (!rec.submission?.discarded) continue;
+    try {
+      for (const blobId of new Set(Object.values(rec.blobs ?? {}))) await blobs.delete(blobId);
+      await store.deleteCredential(rec.id);
+      await store.deleteInstanceAsset(rec.id);
+      removed++;
+    } catch (error) {
+      console.error(`[catalog] could not finish removing ${rec.id}; the next sweep tries again: ${(error as Error).message}`);
+    }
+  }
+  return removed;
+}
+
+/** sweepDiscardedSubmissions at boot and then daily. */
+export function scheduleDiscardedSubmissionSweep(
+  store: Store, blobs: BlobStore,
+  { intervalMs = 24 * 60 * 60 * 1000, log = console }: { intervalMs?: number; log?: Pick<Console, 'log' | 'error'> } = {},
+): { first: Promise<void>; stop: () => void } {
+  let running = false;
+  const pass = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    try {
+      const removed = await sweepDiscardedSubmissions(store, blobs);
+      if (removed) log.log(`[lolly-work] unfinished submissions removed: ${removed}`);
+    } catch (error) {
+      log.error(`[lolly-work] unfinished submission sweep failed: ${(error as Error).message}`);
+    } finally { running = false; }
+  };
+  const timer = setInterval(() => void pass(), intervalMs);
+  timer.unref();
+  return { first: pass(), stop: () => clearInterval(timer) };
 }

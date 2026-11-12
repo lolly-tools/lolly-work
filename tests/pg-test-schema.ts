@@ -18,16 +18,20 @@ import type { Store } from '../server/src/store/types.ts';
  *  deadlock against the code it is testing. */
 const SUITE_LOCK_KEY = 0x1011_0003;
 
-/** Run `body` against a freshly migrated Postgres store, alone. */
-export async function withFreshPostgres(url: string, body: (store: Store) => Promise<void>, opts: { poolMax?: number } = {}): Promise<void> {
+/** Run `body` against a freshly migrated Postgres store, alone. `migrate`
+ *  replaces the plain run of every migration, for a test that seeds rows
+ *  part-way (an upgrade); it runs under the same lock. */
+export async function withFreshPostgres(url: string, body: (store: Store) => Promise<void>,
+  opts: { poolMax?: number; migrate?: (url: string) => Promise<void> } = {}): Promise<void> {
   const { default: pg } = await import('pg');
   const admin = new pg.Client({ connectionString: url });
   await admin.connect();
   try {
     await admin.query('select pg_advisory_lock($1)', [SUITE_LOCK_KEY]);
     await admin.query('drop schema public cascade; create schema public;');
-    await runMigrations(url);
-    const store = await createPostgresStore(url, opts);
+    if (opts.migrate) await opts.migrate(url);
+    else await runMigrations(url);
+    const store = await createPostgresStore(url, { ...(opts.poolMax ? { poolMax: opts.poolMax } : {}) });
     try {
       await body(store);
     } finally {
