@@ -31,6 +31,7 @@ import { removeTransferParts, sha256 as sha256Bytes, transferChunks, TRANSFER_MA
 import { uploadPartId, uploadParts, type UploadRecord } from '../uploads/scoped.ts';
 import type { Approval } from './engine.ts';
 import type { ApprovalRecorder } from './approval-recorder.ts';
+import { replaceApproval, type ApprovalWriter } from './revision.ts';
 
 const MIB = 1024 * 1024;
 
@@ -310,7 +311,7 @@ export function reviewedArtifactBytes(blobs: BlobStore, approval: Approval): Art
 
 export interface ApprovedFileDeps {
   blobs: BlobStore;
-  store: { getApproval(id: string): Promise<Approval | null>; putApproval(approval: Approval): Promise<void> };
+  store: { getApproval(id: string): Promise<Approval | null> } & ApprovalWriter;
   policy: ApprovalArtifactPolicy;
   recorder: ApprovalRecorder;
   /** Told once when a request's approved file is settled. */
@@ -376,18 +377,30 @@ export function settleApprovedFile(deps: ApprovedFileDeps, approval: Approval): 
   if (running) return running;
   const work = (async () => {
     const record = await settleRecord(deps, approval);
-    const fresh = await deps.store.getApproval(approval.id) ?? approval;
-    const winner = fresh.exportReview?.credentialRecord;
-    if (winner) {
-      if (record.state === 'recorded' && (winner.state !== 'recorded' || winner.sha256 !== record.sha256)) {
+    const dropOwnParts = async (winner: ApprovalCredentialRecord | undefined): Promise<void> => {
+      if (record.state === 'recorded' && (winner?.state !== 'recorded' || winner.sha256 !== record.sha256)) {
         await removeTransferParts({ blobs: deps.blobs, partId: n => approvedPartId(approval.id, record.sha256, n) }, record.parts.length);
       }
-      return fresh;
+    };
+    // Written against the request as read. Another write in between (the other
+    // replica's record, or the retention sweep) makes this one read again; a
+    // record found there wins and this one's parts go.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const fresh = await deps.store.getApproval(approval.id);
+      if (!fresh) break;
+      const winner = fresh.exportReview?.credentialRecord;
+      if (winner || fresh.exportReview?.removedAt) {
+        await dropOwnParts(winner);
+        return fresh;
+      }
+      const next = await replaceApproval(deps.store, fresh, { ...fresh, exportReview: { ...fresh.exportReview!, credentialRecord: record } });
+      if (next) {
+        await deps.onSettled?.(next);
+        return next;
+      }
     }
-    const next: Approval = { ...fresh, exportReview: { ...fresh.exportReview!, credentialRecord: record } };
-    await deps.store.putApproval(next);
-    await deps.onSettled?.(next);
-    return next;
+    await dropOwnParts(undefined);
+    return (await deps.store.getApproval(approval.id)) ?? approval;
   })().finally(() => settling.delete(approval.id));
   settling.set(approval.id, work);
   return work;
@@ -480,7 +493,7 @@ const decidedAt = (approval: Approval): number => Date.parse(approval.actions.at
 /** Remove files past their retention, at most `limit` per call. A request still in
  *  review is never touched. */
 export async function sweepApprovalArtifacts(
-  store: { listApprovals(): Promise<Approval[]>; putApproval(approval: Approval): Promise<void> }, blobs: BlobStore, policy: ApprovalArtifactPolicy,
+  store: { listApprovals(): Promise<Approval[]> } & ApprovalWriter, blobs: BlobStore, policy: ApprovalArtifactPolicy,
   { now = Date.now(), limit = 100 }: { now?: number; limit?: number } = {},
 ): Promise<number> {
   let removed = 0;
@@ -489,7 +502,10 @@ export async function sweepApprovalArtifacts(
     if (!approval.exportReview || approval.exportReview.removedAt) continue;
     const days = approval.state === 'rejected' ? policy.closedRetentionDays : approval.state === 'approved' ? policy.approvedRetentionDays : 0;
     if (days <= 0 || now - decidedAt(approval) < days * DAY_MS) continue;
-    await store.putApproval(await removeArtifactBytes(blobs, approval, 'retention', new Date(now).toISOString()));
+    // A request that changed after the list was read (its approved file was
+    // settled meanwhile) is left for the next sweep, which reads it again and
+    // removes every part it then names.
+    if (!await replaceApproval(store, approval, await removeArtifactBytes(blobs, approval, 'retention', new Date(now).toISOString()))) continue;
     removed++;
   }
   return removed;

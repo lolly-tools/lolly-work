@@ -1768,7 +1768,16 @@ export interface Store extends OidcLogoutStore, RenderStore, RenderApiStore, Bra
   /** Remove a chain DEFINITION (policy-as-code prune). Safe: in-flight approvals
    *  carry a chain snapshot, so they're unaffected. Unknown id is a no-op. */
   deleteChain(id: string): Promise<void>;
+  /** Create an approval, or overwrite one whole without a check (seeding and
+   *  test fixtures). A change to an approval that is already stored goes
+   *  through casApproval (approvals/revision.ts), so two decisions made at the
+   *  same moment cannot both be kept. */
   putApproval(approval: Approval): Promise<void>;
+  /** Write `next` only while the stored approval is still at `expectedRevision`
+   *  (an absent revision reads as 0). `next.revision` must be
+   *  `expectedRevision + 1`. False, with nothing written, when another write
+   *  got there first or the approval is gone. */
+  casApproval(next: Approval, expectedRevision: number): Promise<boolean>;
   getApproval(id: string): Promise<Approval | null>;
   listApprovals(filter?: { createdBy?: string; eligibleGroups?: string[]; state?: ApprovalState }): Promise<Approval[]>;
   /** Export reviews for this tool, format and inputs digest: approved first, then

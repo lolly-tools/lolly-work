@@ -21,6 +21,10 @@
  *  - A reject at any step is terminal (`rejected`). onReject
  *    'return-to-submitter' means the submitter opens a NEW approval - there is
  *    no resume in v1.
+ *  - Every change to a stored approval names the revision it was read at
+ *    (`revision`, written by the store's casApproval), so two decisions made
+ *    at the same moment cannot both be kept. The engine only computes the
+ *    next state, and approvals/revision.ts stores that state.
  */
 
 export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery' | 'source-review' | 'export-review' | 'brand-page' | 'brand-edit' | 'company-profile' | 'partner-kit';
@@ -49,7 +53,9 @@ export interface ApprovalAction {
   origin?: 'member-session' | 'agent-delegated';
   actor: string;
   step: number;
-  action: 'approve' | 'reject';
+  /** A withdrawal is the submitter's own act. It carries no comment and never
+   *  counts toward a step. */
+  action: 'approve' | 'reject' | 'withdraw';
   comment?: string;
   at: string;
 }
@@ -82,6 +88,10 @@ export interface Approval {
   actions: ApprovalAction[];
   createdBy: string;
   createdAt: string;
+  /** How many times the stored approval has been changed since it was created.
+   *  Absent on a new approval and on rows written before changes were counted;
+   *  both read as 0 (approvalRevision). */
+  revision?: number;
 }
 
 export type ApprovalErrorCode =
@@ -240,11 +250,21 @@ export function applyAction(
   return { ...approval, state: 'in_review', actions };
 }
 
-/** Withdraw - submitter only, only while not terminal. */
-export function withdraw(approval: Approval, actorId: string, _now: string): Approval {
+/**
+ * Withdraw - submitter only, only while not terminal. The withdrawal goes on
+ * the trail as its own action, so the last action of a withdrawn approval
+ * names the person who withdrew it and when, never an earlier reviewer.
+ */
+export function withdraw(approval: Approval, actorId: string, now: string): Approval {
   if (actorId !== approval.createdBy) fail('NOT_ELIGIBLE', 'only the submitter can withdraw this request');
   if (isTerminal(approval.state)) fail('TERMINAL', `this approval is already ${approval.state}`);
-  return { ...approval, state: 'withdrawn' };
+  const entry: ApprovalAction = { actor: actorId, step: approval.stepIndex, action: 'withdraw', at: now };
+  return { ...approval, state: 'withdrawn', actions: [...approval.actions, entry] };
+}
+
+/** The revision a stored approval was read at. */
+export function approvalRevision(approval: Approval): number {
+  return approval.revision ?? 0;
 }
 
 /** Parse a step rule from loose input (`"any"`, `"all"`, `"quorum(2)"`, or `{ quorum: 2 }`). */

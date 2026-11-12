@@ -183,7 +183,7 @@ import {
   applyVersionToRecord, backfillVersionOne, headVersionOf, orphanBlobIds, parseReplacedBy,
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
-import { listSubmissions, settleSubmission, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
+import { listSubmissions, settleSubmission, submissionNotice, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
 import { isDataSubmissionType, MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
@@ -264,6 +264,7 @@ import { mayRenderTool, mayUseTool, PolicyRefusal, policyErrors } from '../autom
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
 import { createApprovalRecorder, type ApprovalRecorder } from '../approvals/approval-recorder.ts';
+import { APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE, replaceApproval } from '../approvals/revision.ts';
 import { registerRenderRoutes } from '../renders/routes.ts';
 import { prepareRenderApi, registerRenderApi } from '../render-api/routes.ts';
 import { renderOutputTokens } from '../renders/output-token.ts';
@@ -6926,7 +6927,11 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    await store.putApproval(next);
+    // Written against the approval as read: a decision made by someone else in
+    // the meantime wins, and this one settles nothing.
+    const written = await replaceApproval(store, approval, next);
+    if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
+    next = written;
     await audit(`user:${user.id}`, body.action === 'approve' ? 'approval.approve' : 'approval.reject',
       `approval:${next.id}`, { state: next.state, step: approval.stepIndex });
     // The decision stands whatever happens next. A failure here leaves the file
@@ -6985,10 +6990,21 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    // Nobody will decide on a withdrawn file, so its bytes go now. The record and
-    // digest stay.
-    if (next.exportReview) next = await removeArtifactBytes(blobs, next, 'withdrawn', new Date().toISOString());
-    await store.putApproval(next);
+    // Written against the approval as read, so a decision made at the same
+    // moment is never overwritten by the withdrawal, nor the other way round.
+    const written = await replaceApproval(store, approval, next);
+    if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
+    next = written;
+    // Nobody will decide on a withdrawn file, so its bytes go now, once the
+    // withdrawal is stored. The record and digest stay. Should another write
+    // come between the two, the bytes are still removed and the retention
+    // sweep leaves a withdrawn request alone, which is why the error is logged.
+    if (next.exportReview) {
+      const removed = await removeArtifactBytes(blobs, next, 'withdrawn', new Date().toISOString());
+      const kept = await replaceApproval(store, next, removed);
+      if (kept) next = kept;
+      else console.error(`[approvals] ${next.id} changed while its withdrawn file was removed; its record does not say the bytes are gone`);
+    }
     await audit(user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
     // Withdrawing the review of a catalog submission returns the asset too:
     // leaving it `submitted` behind a closed approval would strand it.
@@ -9409,6 +9425,7 @@ export function buildApp(deps: AppDeps): App {
       ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),
       ...(s.decidedAt ? { decidedAt: s.decidedAt } : {}),
       ...(s.comment ? { comment: s.comment } : {}),
+      ...(s.withdrawn ? { withdrawn: true } : {}),
       // A template or user tool (plan 299): what it seeds, for the reviewer.
       ...(s.data ? { data: s.data } : {}),
       ...(s.collectionId ? { collectionId: s.collectionId } : {}),
@@ -9462,37 +9479,30 @@ export function buildApp(deps: AppDeps): App {
   const settleAssetSubmission = async (approval: Approval, actorId: string): Promise<boolean> => {
     const settled = await settleSubmission(store, approval, new Date().toISOString());
     if (!settled) return false;
-    const action = settled.state === 'live' ? 'catalog.approve-submission' : 'catalog.return-submission';
-    await audit(`user:${actorId}`, action, `catalog:${settled.record.id}`, {
+    const action = settled.state === 'live' ? 'catalog.approve-submission'
+      : settled.withdrawn ? 'catalog.withdraw-submission' : 'catalog.return-submission';
+    await audit(actorId.startsWith('svc_') ? `service:${actorId}` : `user:${actorId}`, action, `catalog:${settled.record.id}`, {
       approvalId: approval.id, ...(settled.comment ? { comment: settled.comment } : {}),
       ...(settled.collection ? { collection: settled.collection } : {}),
     });
     const submitterId = (settled.record.submission?.by ?? '').replace(/^user:/, '');
     if (!submitterId) return true;
+    const notice = submissionNotice(settled);
     await store.putMessage({
       id: `msg_${randomId(8)}`,
-      kind: 'approval', severity: settled.state === 'live' ? 'info' : 'action',
+      kind: 'approval', severity: notice.severity,
       audience: { users: [submitterId] },
-      title: settled.state === 'live'
-        ? `Published: ${settled.record.entry.name ?? settled.record.id}`
-        : `Returned: ${settled.record.entry.name ?? settled.record.id}`,
-      body: settled.state === 'live'
-        ? 'Your catalog submission was approved and is live.'
-        : `Your catalog submission was returned${settled.comment ? `: “${settled.comment}”` : '.'}`,
+      title: notice.title,
+      body: notice.body,
       cta: { label: 'View', url: '/admin#/catalog' },
       data: { assetId: settled.record.id, state: settled.state },
       dismissible: true,
     });
-    const submitter = await store.getUser(submitterId);
-    notifier.email([submitter?.email],
-      settled.state === 'live'
-        ? `Published: ${settled.record.entry.name ?? settled.record.id}`
-        : `Returned: ${settled.record.entry.name ?? settled.record.id}`,
-      (settled.state === 'live'
-        ? 'Your catalog submission was approved and is live.'
-        : `Your catalog submission was returned${settled.comment ? `: “${settled.comment}”` : '.'}`)
-      + `\n\nView it: ${config.instance.baseUrl}/admin#/catalog`);
-    notifier.event('submission.decided', { assetId: settled.record.id, state: settled.state });
+    if (notice.email !== null) {
+      const submitter = await store.getUser(submitterId);
+      notifier.email([submitter?.email], notice.title, `${notice.email}\n\nView it: ${config.instance.baseUrl}/admin#/catalog`);
+    }
+    notifier.event('submission.decided', { assetId: settled.record.id, state: settled.state, ...(settled.withdrawn ? { withdrawn: true } : {}) });
     return true;
   };
 
@@ -9919,7 +9929,11 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    await store.putApproval(next);
+    // A reviewer who decided the same submission a moment earlier, here or in
+    // the approvals inbox, wins: this decision is not stored and settles nothing.
+    const written = await replaceApproval(store, approval, next);
+    if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
+    next = written;
     await audit(`user:${user.id}`, body.action === 'approve' ? 'approval.approve' : 'approval.reject',
       `approval:${next.id}`, { state: next.state, step: approval.stepIndex });
     if (isTerminal(next.state)) await settleAssetSubmission(next, user.id);
