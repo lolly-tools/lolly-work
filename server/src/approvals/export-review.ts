@@ -27,6 +27,7 @@ import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { canonicalJson, deriveKey, hmac, macEquals, sha256Hex } from '../lib/crypto.ts';
 import { UNSAFE_TEXT } from '../projects/files.ts';
+import { namedMediaFormat, type PreviewKind } from '../catalog/sniff.ts';
 import { removeTransferParts, sha256 as sha256Bytes, transferChunks, TRANSFER_MAX_BYTES, TRANSFER_PART_BYTES, type TransferPart, type TransferParts } from '../uploads/parts.ts';
 import { uploadPartId, uploadParts, type UploadRecord } from '../uploads/scoped.ts';
 import type { Approval } from './engine.ts';
@@ -175,36 +176,29 @@ export function parseExportReview(value: unknown): ExportReviewRequest | null {
   return out;
 }
 
-const ascii = (bytes: Uint8Array, from: number, to: number): string => Buffer.from(bytes.subarray(from, to)).toString('latin1');
-const opensWith = (bytes: Uint8Array, ...lead: number[]): boolean => lead.every((byte, i) => bytes[i] === byte);
-const isMp4Family = (b: Uint8Array): boolean => ascii(b, 4, 8) === 'ftyp';
-/** Text, then an <svg root, allowing a BOM, an XML declaration and comments first. */
-const isSvg = (b: Uint8Array): boolean => /^(?:﻿)?\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*|<!DOCTYPE[^>]*>\s*)*<svg[\s/>]/i.test(Buffer.from(b.subarray(0, 64 * 1024)).toString('utf8'));
-const isZip = (b: Uint8Array): boolean => opensWith(b, 0x50, 0x4b, 0x03, 0x04) || opensWith(b, 0x50, 0x4b, 0x05, 0x06);
+/**
+ * The formats an export review recognises. Their media type, preview and
+ * opening-bytes check come from the catalog's one table (catalog/sniff.ts),
+ * which catalog submit reads too. The list itself is the one export review had
+ * before the table was shared, so every request is classified as it was: a
+ * format that is not listed is stored as opaque bytes, offers no preview and
+ * has no opening bytes to contradict. Adding a format here is a change in what
+ * a Lolly app's export is refused for, so each one needs that format's exports
+ * checked first.
+ */
+const EXPORT_REVIEW_FORMATS: ReadonlySet<string> = new Set(['png', 'jpg', 'gif', 'webp', 'avif', 'svg', 'pdf', 'mp4', 'mov', 'webm', 'mp3', 'wav', 'zip']);
 
-/** The formats whose opening bytes can be checked and whose media type this table
- *  states. Anything else is stored as opaque bytes and offers no preview. */
-const FORMATS: Record<string, { mediaType: string; preview: ArtifactPreview; check: (b: Uint8Array) => boolean }> = {
-  png: { mediaType: 'image/png', preview: 'image', check: b => opensWith(b, 0x89, 0x50, 0x4e, 0x47) },
-  jpg: { mediaType: 'image/jpeg', preview: 'image', check: b => opensWith(b, 0xff, 0xd8, 0xff) },
-  gif: { mediaType: 'image/gif', preview: 'image', check: b => ascii(b, 0, 4) === 'GIF8' },
-  webp: { mediaType: 'image/webp', preview: 'image', check: b => ascii(b, 0, 4) === 'RIFF' && ascii(b, 8, 12) === 'WEBP' },
-  avif: { mediaType: 'image/avif', preview: 'image', check: isMp4Family },
-  svg: { mediaType: 'image/svg+xml', preview: 'image', check: isSvg },
-  pdf: { mediaType: 'application/pdf', preview: 'pdf', check: b => ascii(b, 0, 5) === '%PDF-' },
-  mp4: { mediaType: 'video/mp4', preview: 'video', check: isMp4Family },
-  mov: { mediaType: 'video/quicktime', preview: 'video', check: isMp4Family },
-  webm: { mediaType: 'video/webm', preview: 'video', check: b => opensWith(b, 0x1a, 0x45, 0xdf, 0xa3) },
-  mp3: { mediaType: 'audio/mpeg', preview: 'audio', check: b => ascii(b, 0, 3) === 'ID3' || opensWith(b, 0xff) },
-  wav: { mediaType: 'audio/wav', preview: 'audio', check: b => ascii(b, 0, 4) === 'RIFF' && ascii(b, 8, 12) === 'WAVE' },
-  zip: { mediaType: 'application/zip', preview: 'none', check: isZip },
-};
+/** The table's preview, in the words the approval card and the app's review sheet read. */
+function artifactPreview(format: string, preview: PreviewKind): ArtifactPreview {
+  if (preview === 'image' || preview === 'video' || preview === 'audio') return preview;
+  return preview === 'document' && format === 'pdf' ? 'pdf' : 'none';
+}
 
 /** What the file is, or null when its opening bytes contradict the named format. */
 export function artifactMedia(format: string, head: Uint8Array): { mediaType: string; preview: ArtifactPreview } | null {
-  const known = FORMATS[format];
+  const known = EXPORT_REVIEW_FORMATS.has(format) ? namedMediaFormat(format) : undefined;
   if (!known) return { mediaType: 'application/octet-stream', preview: 'none' };
-  return known.check(head) ? { mediaType: known.mediaType, preview: known.preview } : null;
+  return known.opens(head) ? { mediaType: known.mediaType, preview: artifactPreview(format, known.preview) } : null;
 }
 
 export const artifactPartId = (approvalId: string, n: number): string => `approval-artifact/${approvalId}/${n}`;

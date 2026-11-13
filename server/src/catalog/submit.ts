@@ -57,100 +57,16 @@ import type { SubmitPolicy, SubmitScanHook } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
 import { isProgrammeScoped } from '../programmes/types.ts';
+import { sniffBytes, type SniffResult } from './sniff.ts';
 import { randomId, sha256Hex } from '../lib/crypto.ts';
 import { deleteKitAsset, kitCompanyLive, prepareCompanyKit } from '../programmes/kit.ts';
 
 // ── byte sniffing ───────────────────────────────────────────────────────────
 
-export interface SniffResult {
-  contentType: string;
-  /** Lowercase format name; doubles as the blob key and the URL segment. */
-  format: string;
-  width?: number;
-  height?: number;
-}
-
-const SVG_DIM = (svg: string, attr: 'width' | 'height'): number | undefined => {
-  const m = new RegExp(`\\b${attr}\\s*=\\s*["']\\s*([0-9.]+)`, 'i').exec(svg);
-  const n = m ? Number(m[1]) : NaN;
-  return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined;
-};
-
-/** JPEG carries its dimensions in a start-of-frame segment, which sits after a
- *  variable number of metadata segments, so it has to be walked. */
-function jpegSize(buf: Buffer): { width: number; height: number } | undefined {
-  let i = 2;
-  while (i + 9 < buf.length) {
-    if (buf[i] !== 0xff) { i++; continue; }
-    const marker = buf[i + 1] as number;
-    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-      return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
-    }
-    if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd9)) { i += 2; continue; }
-    const len = buf.readUInt16BE(i + 2);
-    if (len < 2) return undefined;
-    i += 2 + len;
-  }
-  return undefined;
-}
-
-function webpSize(buf: Buffer): { width: number; height: number } | undefined {
-  const chunk = buf.toString('ascii', 12, 16);
-  if (chunk === 'VP8X' && buf.length >= 30) {
-    return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
-  }
-  if (chunk === 'VP8 ' && buf.length >= 30) {
-    return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
-  }
-  if (chunk === 'VP8L' && buf.length >= 25) {
-    const bits = buf.readUInt32LE(21);
-    return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
-  }
-  return undefined;
-}
-
-/**
- * Identify submitted bytes from the bytes themselves. The submitter's declared
- * content-type and filename are hints of last resort only: a client that lies
- * about a file's type must not decide what the catalog serves it as, and
- * `x-content-type-options: nosniff` on the blob routes only helps if what we
- * stored was honest in the first place.
- */
-export function sniffBytes(buf: Buffer, declared?: { contentType?: string; filename?: string }): SniffResult {
-  const magic = (hex: string, at = 0): boolean => buf.length >= at + hex.length / 2 && buf.toString('hex', at, at + hex.length / 2) === hex;
-  if (magic('89504e470d0a1a0a')) {
-    const png: SniffResult = { contentType: 'image/png', format: 'png' };
-    if (buf.length >= 24) { png.width = buf.readUInt32BE(16); png.height = buf.readUInt32BE(20); }
-    return png;
-  }
-  if (magic('ffd8ff')) return { contentType: 'image/jpeg', format: 'jpg', ...jpegSize(buf) };
-  if (buf.toString('ascii', 0, 4) === 'GIF8' && buf.length >= 10) {
-    return { contentType: 'image/gif', format: 'gif', width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
-  }
-  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
-    return { contentType: 'image/webp', format: 'webp', ...webpSize(buf) };
-  }
-  if (magic('25504446')) return { contentType: 'application/pdf', format: 'pdf' };
-  const head = buf.toString('utf8', 0, Math.min(buf.length, 1024));
-  if (/^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!DOCTYPE svg[^>]*>\s*)?<svg[\s>]/i.test(head)) {
-    const svg = buf.toString('utf8', 0, Math.min(buf.length, 4096));
-    const open = svg.slice(svg.search(/<svg[\s>]/i));
-    const tag = open.slice(0, open.indexOf('>') + 1 || open.length);
-    const box = /viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(tag);
-    const width = SVG_DIM(tag, 'width') ?? (box ? Math.round(Number(box[1])) : undefined);
-    const height = SVG_DIM(tag, 'height') ?? (box ? Math.round(Number(box[2])) : undefined);
-    return {
-      contentType: 'image/svg+xml', format: 'svg',
-      ...(width ? { width } : {}), ...(height ? { height } : {}),
-    };
-  }
-  // Unrecognized container: keep the bytes, stay honest about not knowing what
-  // they are. The extension names the format so the URL is readable; the served
-  // content-type falls back to the generic one rather than to the client's word.
-  const ext = (declared?.filename ?? '').split('.').pop() ?? '';
-  const format = /^[a-z0-9]{1,12}$/i.test(ext) ? ext.toLowerCase() : 'bin';
-  return { contentType: 'application/octet-stream', format };
-}
+// The sniffer and its table are shared with export review (catalog/sniff.ts).
+// Re-exported here because the delivery route, the logo checks and the tests
+// have always read them from this module.
+export { sniffBytes, type SniffResult } from './sniff.ts';
 
 // ── the pre-store scan hook ─────────────────────────────────────────────────
 
@@ -339,7 +255,7 @@ export interface SubmitInput {
   name: string;
   description?: string;
   tags?: string[];
-  /** Declared asset type; defaults from the sniff (svg reads as an icon). */
+  /** Declared asset type; defaults to the open schema's word for the sniffed format. */
   type?: string;
   /** Exposure groups for the new asset. Absent means every member sees it. */
   groups?: string[];
@@ -593,7 +509,7 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   }
 
   const sniffed: SniffResult = data?.ok || kit?.ok
-    ? { contentType: 'application/json', format: 'json' }
+    ? { contentType: 'application/json', format: 'json', preview: 'none', schemaType: 'data' }
     : sniffBytes(input.bytes, { ...(input.contentType ? { contentType: input.contentType } : {}), filename: input.name });
 
   // 3. The pre-store scan hook. Before BlobStore.put, so a veto means the bytes
@@ -782,7 +698,9 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     entry: instanceAssetEntry(id, {
       name: input.name,
       ...(data?.ok && data.description ? { description: data.description } : input.description ? { description: input.description } : {}),
-      type: logo?.type ?? dataKind ?? (input.type || (sniffed.format === 'svg' ? 'icon' : 'image')),
+      // The open schema's word for what the bytes are (catalog/sniff.ts). Records
+      // written before the table keep the `icon` or `image` they were given.
+      type: logo?.type ?? dataKind ?? (input.type || sniffed.schemaType),
       tags,
       ...(sniffed.width && sniffed.height ? { width: sniffed.width, height: sniffed.height } : {}),
       // What a shell needs to offer a template or user tool before fetching

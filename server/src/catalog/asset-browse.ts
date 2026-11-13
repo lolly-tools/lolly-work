@@ -15,6 +15,7 @@ import { compareKeys, sortKey, type ServedIndex } from './served-index.ts';
 import type { AssetIndexEntry } from './lifecycle.ts';
 import { extractedHaystack, fieldHaystack, type AssetMetaRecord } from './asset-meta.ts';
 import { INST_PREFIX } from './instance-assets.ts';
+import { typeWordsOf } from './sniff.ts';
 
 export const BROWSE_DEFAULT_LIMIT = 100;
 export const BROWSE_MAX_LIMIT = 500;
@@ -179,8 +180,11 @@ function matchAndCount(served: ServedIndex, query: BrowseQuery, metaById: Map<st
   const matches = (e: AssetIndexEntry): boolean => {
     if (query.scope === 'shared' && entrySource(e) === 'pack') return false;
     if (query.source && entrySource(e) !== query.source) return false;
-    if (query.type && e.type !== query.type) return false;
-    if (query.types && !query.types.split(',').includes(String(e.type))) return false;
+    // A submitted asset answers to the older and the newer name for its type
+    // (catalog/sniff.ts), so a filter on either finds records of both ages.
+    const typeWords = typeWordsOf(e);
+    if (query.type && !typeWords.includes(query.type)) return false;
+    if (query.types && !query.types.split(',').some((t) => typeWords.includes(t))) return false;
     if (query.tag && !strings(e.tags).includes(query.tag)) return false;
     const meta = metaOf(e);
     if (query.taxonomyKind && !taxonomyOf(e).some(node => node.kind === query.taxonomyKind && node.id === query.taxonomyId)) return false;
@@ -204,7 +208,9 @@ function matchAndCount(served: ServedIndex, query: BrowseQuery, metaById: Map<st
   const taxonomy = new Map<string, { source: string; kind: string; id: string; name: string; count: number; parentId?: string }>();
   for (const e of matched) {
     count(sources, entrySource(e));
-    if (typeof e.type === 'string') count(types, e.type);
+    // Each word an entry answers to is counted, so a type's count is the number
+    // of entries a filter on that type returns.
+    for (const word of typeWordsOf(e)) count(types, word);
     for (const t of new Set(strings(e.tags))) count(tags, t);
     const meta = metaOf(e);
     for (const s of new Set(strings(meta.providerSections))) count(sections, s);
