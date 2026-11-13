@@ -92,7 +92,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { acceptedResources, grantNeverMatches } from '../rbac/grant-shape.ts';
-import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, programmeGroup, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
+import { PARTNER_GROUP, PROGRAMME_GROUP_PREFIX, isCompanyGroup, isPartnerGroup, isProgrammeGroup, isProgrammeScoped, namesProgrammeGroup, partnerGroupsOf, programmeGroup, programmeGroupsOf, reservedGroupName, setCompanyProgrammes } from '../programmes/types.ts';
 import { bindOverlay, defaultsFor, fieldValue, pickCompany, pickProgramme, planBindings, FIELD_LABELS, type Bindings, type CompanyContext, type Theme } from '../programmes/company-values.ts';
 import type { CompanyRecord } from '../programmes/people.ts';
 import type { ProgrammeRecord } from '../programmes/types.ts';
@@ -144,7 +144,7 @@ import { brandPagesConfig } from '../brand-pages/types.ts';
 import { registerUploadRoutes } from '../uploads/routes.ts';
 import {
   approvalArtifactPolicy, approvedArtifactBytes, artifactRefusal, artifactRelation, artifactReviewToken, checkArtifactReviewToken, describeExportReview, exportReviewWire,
-  freezeArtifactBytes, freezeRenderBytes, describeRenderReview, heldArtifactBytes, parseExportReview, removeArtifactBytes, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
+  freezeArtifactBytes, freezeRenderBytes, describeRenderReview, finishArtifactRemoval, heldArtifactBytes, markArtifactRemoved, parseExportReview, reviewedArtifactBytes, settleApprovedFile, type ApprovedFileDeps, type ExportReviewSubject,
 } from '../approvals/export-review.ts';
 import { renderInputsDigest } from '../render/inputs-digest.ts';
 import { approvedExportReview, registerExportReviewMatch, templateFixedValues, templateOpenInputs, templateVariantDigest } from '../approvals/export-review-match.ts';
@@ -183,7 +183,8 @@ import {
   applyVersionToRecord, backfillVersionOne, headVersionOf, orphanBlobIds, parseReplacedBy,
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
-import { listSubmissions, settleSubmission, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
+import { listSubmissions, settleSubmission, submissionNotice, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
+import { previewKindOf } from '../catalog/sniff.ts';
 import { isDataSubmissionType, MAX_DATA_SUBMISSION_BYTES } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
@@ -230,6 +231,9 @@ import { renderCapabilities } from '../render/capabilities.ts';
 import { assessSetup, productionMode, type SetupReport } from '../setup/checks.ts';
 import { inspectPack } from '../setup/pack.ts';
 import { consoleAccess } from '../setup/console-access.ts';
+import { createUpdateChecker, type UpdateChecker } from '../updates/checker.ts';
+import { registerUpdateRoutes } from '../updates/routes.ts';
+import { resolveUpdateSettings } from '../updates/settings.ts';
 import { registerSetupRoutes } from '../setup/routes.ts';
 import { identitySettingsHash } from '../setup/configuration.ts';
 import { loadEngine } from '../render/contract.ts';
@@ -261,6 +265,7 @@ import { mayRenderTool, mayUseTool, PolicyRefusal, policyErrors } from '../autom
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
 import { createApprovalRecorder, type ApprovalRecorder } from '../approvals/approval-recorder.ts';
+import { APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE, replaceApproval } from '../approvals/revision.ts';
 import { registerRenderRoutes } from '../renders/routes.ts';
 import { prepareRenderApi, registerRenderApi } from '../render-api/routes.ts';
 import { renderOutputTokens } from '../renders/output-token.ts';
@@ -316,6 +321,12 @@ const QUERY_CREDENTIAL_DEPRECATION = '@1792195200';
 /** The header a job result token rides in instead of `?token=`. */
 const JOB_TOKEN_HEADER = 'x-lw-job-token';
 const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link', 'source-review', 'export-review'];
+/** What a partner programme member may ask about (plans/357 W1): an export with
+ *  its file (`export-review`) or without (`asset`, the app's request when the
+ *  instance takes no file), and the source of a file in their feed. The others
+ *  are about the workspace's own settings, tools and guest links, which no
+ *  partner action reaches. */
+const PARTNER_SUBJECT_TYPES: ReadonlySet<SubjectType> = new Set(['asset', 'source-review', 'export-review']);
 
 /** The vendored engine version, read off engine-pin.json (the manifest the
  *  re-pin cadence maintains). Read once and cached; null when the file is not
@@ -326,6 +337,19 @@ let cachedPinnedEngine: string | null | undefined;
 /** Delivery tags for values that pass the delivery-v1 grammar; any other value is left out rather than failing the response. */
 function safeTags(pairs: Array<[TagPrefix, string]>): string[] {
   return pairs.flatMap(([prefix, value]) => { try { return [deliveryTag(prefix, value)]; } catch { return []; } });
+}
+
+/** This server's Lolly Work version: the function bundle states it in its banner
+ *  (scripts/build-vercel-fn.mjs); the server reads package.json beside the source.
+ *  'unknown' when neither answers, which shows no release as newer. */
+function packageVersion(): string {
+  const bundled = (globalThis as { __LW_WORK_VERSION?: unknown }).__LW_WORK_VERSION;
+  if (typeof bundled === 'string' && bundled) return bundled;
+  try {
+    return String((JSON.parse(readFileSync(fileURLToPath(new URL('../../../package.json', import.meta.url)), 'utf8')) as { version?: unknown }).version ?? 'unknown');
+  } catch {
+    return 'unknown';
+  }
 }
 
 function pinnedEngineVersion(): string | null {
@@ -419,6 +443,14 @@ export interface AppDeps {
   edgeFetch?: typeof fetch;
   /** Long-lived hosts start the edge purge outbox; function hosts leave purges queued. */
   onEdgeOutbox?: (outbox: EdgePurgeOutbox) => void;
+  /** The release check (updates/checker.ts). main.ts starts its daily schedule;
+   *  without it, as on Vercel and in tests, the feed is read only on demand. */
+  onUpdateChecker?: (checker: UpdateChecker) => void;
+  /** The environment the release notice settings read (LW_UPDATES_*, LW_INSTALL_ROUTE,
+   *  LW_RELEASE_*, LW_CHART_VERSION). Defaults to process.env. */
+  updatesEnv?: NodeJS.ProcessEnv;
+  /** The Lolly Work version this server runs. Defaults to package.json's. */
+  workVersion?: string;
 }
 
 type App = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -4847,6 +4879,21 @@ export function buildApp(deps: AppDeps): App {
     sendJson(res, 200, { ok: true });
   });
 
+  // ── release notice (updates/) ─────────────────────────────────────────────
+  // Which newer Lolly Work releases the published chart index lists, with the
+  // upgrade steps for how this instance was installed. Information only: the
+  // index is not signed, and nothing here changes the deployment.
+  const updateChecker = createUpdateChecker({
+    settings: resolveUpdateSettings(config, deps.updatesEnv ?? process.env),
+    currentVersion: deps.workVersion ?? packageVersion(),
+    network: config.network.providers,
+    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    ...(deps.providerResolver ? { resolver: deps.providerResolver } : {}),
+    log: (level, message, fields) => log(level, message, fields),
+  });
+  registerUpdateRoutes(router, { checker: updateChecker, requireAction });
+  deps.onUpdateChecker?.(updateChecker);
+
   // ── instance-pack hosting (plans/34 wave 2) ───────────────────────────────
   // The control plane SERVES the signed `.lolly` pack; it never builds one -
   // the format belongs to the OSS builder (see catalog/instance-pack.ts). The
@@ -6181,11 +6228,39 @@ export function buildApp(deps: AppDeps): App {
     return token && token.record.scopes?.includes('approvals.request') ? token : null;
   };
 
+  /**
+   * The approval chains that belong to a partner programme member (plans/357 W1):
+   * the chain bound to each tool they may use, and the chains their programmes
+   * list. A programme token asks through the same two (submitTokenReview), so a
+   * partner, in person or as an agent, never reaches an internal chain by name.
+   * `partnerActionClosed` cannot draw this line, because reading a chain and
+   * asking for review are not actions a role or grant names. A rules tool their
+   * feed carries counts as one they may use, with no grant, by the rule
+   * automationMayUse applies when they render or ask about one.
+   */
+  const partnerChains = async (user: UserRecord): Promise<ReadonlySet<string>> => {
+    const [overlays, grants, published] = await Promise.all([store.listOverlays(), store.listGrants(), instanceToolsFor(user.groups)]);
+    const own = new Set<string>();
+    for (const [toolId, overlay] of overlays) {
+      const bound = overlay.enforce?.escalation;
+      if (bound && mayUseTool(user, toolId, overlays, grants, config.policy.defaultAccessMode, published.has(toolId))) own.add(bound);
+    }
+    for (const group of programmeGroupsOf(user.groups)) {
+      for (const id of (await store.getProgramme(group.slice(PROGRAMME_GROUP_PREFIX.length)))?.approvalChains ?? []) own.add(id);
+    }
+    return own;
+  };
+
   // Chains: any member may read the catalogue of chains; editing one is policy.edit.
+  // A partner programme member reads only the chains of their own programme, the
+  // way a partner's catalog list holds only what their feed holds.
   router.add('GET', '/api/v1/chains', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
-    sendJson(res, 200, { chains: await store.listChains() });
+    const chains = await store.listChains();
+    if (!scopedCaller(user)) return sendJson(res, 200, { chains });
+    const own = await partnerChains(user);
+    sendJson(res, 200, { chains: chains.filter((chain) => own.has(chain.id)) });
   });
 
   router.add('PUT', '/api/v1/chains/:id', async (req, res, ctx) => {
@@ -6221,11 +6296,15 @@ export function buildApp(deps: AppDeps): App {
   // dialog searches. Member-accessible: it reveals ONLY people already designated
   // as approvers for that step (id + display name), never the wider directory, so
   // a requester can nominate without `catalog`/admin visibility into everyone.
+  // A partner programme member asks only about their own programme's chains
+  // (partnerChains); any other chain answers as missing, so the reply never says
+  // which internal chains exist.
   router.add('GET', '/api/v1/approvals/approvers', async (req, res, ctx) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const chainId = ctx.url.searchParams.get('chainId');
     if (!chainId) return sendError(res, 400, 'INVALID_INPUT', 'chainId required');
+    if (scopedCaller(user) && !(await partnerChains(user)).has(chainId)) return notAvailable(res);
     const chain = await store.getChain(chainId);
     if (!chain) return sendError(res, 404, 'NOT_FOUND', 'no such chain');
     const stepIndex = Math.max(0, Number(ctx.url.searchParams.get('step') ?? 0) || 0);
@@ -6640,6 +6719,18 @@ export function buildApp(deps: AppDeps): App {
     }
     if (!body?.title || typeof body.title !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'title required');
     if (!body?.chainId || typeof body.chainId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'chainId required');
+    // A partner programme member asks about their own work, through a chain of
+    // their own programme (plans/357 W1), as a programme token does. The check
+    // comes before the chain is read, so a missing chain and an internal one get
+    // the same refusal.
+    if (scopedCaller(user)) {
+      if (!PARTNER_SUBJECT_TYPES.has(body.subjectType as SubjectType)) {
+        return sendError(res, 403, 'FORBIDDEN', 'A partner asks for review of their own export, file or source, never of settings, tool changes or guest links.');
+      }
+      if (!(await partnerChains(user)).has(body.chainId)) {
+        return sendError(res, 403, 'CHAIN_NOT_FOR_PROGRAMME', 'Ask through the chain your tool names, or one your programme lists.');
+      }
+    }
     const chain = await store.getChain(body.chainId);
     if (!chain) return sendError(res, 404, 'NOT_FOUND', 'no such chain');
     if (body.nominees !== undefined && (!Array.isArray(body.nominees) || body.nominees.some(id => typeof id !== 'string' || !id))) {
@@ -6777,7 +6868,10 @@ export function buildApp(deps: AppDeps): App {
     const subject = { userId: user.id, groups: user.groups, role: user.role as Role };
     const mayAct = evaluate(subject, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*'], await store.listGrants());
     const relation = artifactRelation(approval, user, mayAct);
-    if (!relation) return sendError(res, 404, 'NOT_FOUND', 'no such file');
+    // A partner programme member reads only the file of their own request. An
+    // action recorded before they joined a programme opens nothing, and the
+    // refusal reads as a missing file (plans/357 W1).
+    if (!relation || (scopedCaller(user) && relation !== 'requester')) return sendError(res, 404, 'NOT_FOUND', 'no such file');
     const refusal = artifactRefusal(approval, relation);
     if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message);
     // An approved request hands out the approved file, and `?file=reviewed` the bytes
@@ -6804,6 +6898,10 @@ export function buildApp(deps: AppDeps): App {
   router.add('POST', '/api/v1/approvals/:id/act', async (req, res, ctx) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    // A partner never decides a request, so nothing about one is said to them:
+    // an existing id, a missing one and a source review all get one answer
+    // (plans/357 W1), as the catalog review queue's act already does.
+    if (scopedCaller(user)) return notAvailable(res);
     const approval = await store.getApproval(ctx.params.id as string);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
     if (approval.sourceReview && !await sourceReviewAvailable(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no available source subject');
@@ -6830,7 +6928,11 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    await store.putApproval(next);
+    // Written against the approval as read: a decision made by someone else in
+    // the meantime wins, and this one settles nothing.
+    const written = await replaceApproval(store, approval, next);
+    if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
+    next = written;
     await audit(`user:${user.id}`, body.action === 'approve' ? 'approval.approve' : 'approval.reject',
       `approval:${next.id}`, { state: next.state, step: approval.stepIndex });
     // The decision stands whatever happens next. A failure here leaves the file
@@ -6873,6 +6975,12 @@ export function buildApp(deps: AppDeps): App {
     const user = (await memberOf(req)) ?? (await approvalAskingToken(req))?.user ?? null;
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const approval = await store.getApproval(ctx.params.id as string);
+    // A partner programme member and a token only ever withdraw their own
+    // request, so anyone else's reads exactly as a missing one (plans/357 W1).
+    // Staff keep the plainer refusal below.
+    if (scopedCaller(user) || user.id.startsWith('svc_')) {
+      if (!approval || approval.createdBy !== user.id) return notAvailable(res);
+    }
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
     if (approval.sourceReview && !await seesSourceReview(user, approval.sourceReview)) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
     if (approval.createdBy !== user.id) return sendError(res, 403, 'FORBIDDEN', 'only the submitter can withdraw this request');
@@ -6883,10 +6991,20 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    // Nobody will decide on a withdrawn file, so its bytes go now. The record and
-    // digest stay.
-    if (next.exportReview) next = await removeArtifactBytes(blobs, next, 'withdrawn', new Date().toISOString());
-    await store.putApproval(next);
+    // Nobody will decide on a withdrawn file, so the withdrawal also records
+    // that its file is removed; the record and digest stay. Written against the
+    // approval as read, so a decision made at the same moment is never
+    // overwritten by the withdrawal, nor the other way round.
+    if (next.exportReview) next = markArtifactRemoved(next, 'withdrawn', new Date().toISOString());
+    const written = await replaceApproval(store, approval, next);
+    if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
+    next = written;
+    // The parts go once the withdrawal is stored. A deletion that fails leaves
+    // the removal pending, and the retention sweep finishes it.
+    if (next.exportReview) {
+      try { next = await finishArtifactRemoval(store, blobs, next); }
+      catch (error) { console.error(`[approvals] the withdrawn file of ${next.id} is not deleted yet; the retention sweep finishes it: ${(error as Error).message}`); }
+    }
     await audit(user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
     // Withdrawing the review of a catalog submission returns the asset too:
     // leaving it `submitted` behind a closed approval would strand it.
@@ -9302,11 +9420,18 @@ export function buildApp(deps: AppDeps): App {
       size: s.size,
       checksum: s.checksum,
       ...(s.contentType ? { contentType: s.contentType } : {}),
+      // What the review panel can show for the stored bytes: a picture, a player,
+      // a PDF link or nothing. Read from the stored type, so a file kept as
+      // application/octet-stream before the table grew still shows none. The
+      // recorded type describes the first version only, so a record now serving
+      // a later one, which may be another kind of file, names no preview.
+      ...(s.contentType && (rec.headVersion ?? 1) === 1 ? { previewKind: previewKindOf(s.contentType) } : {}),
       ...(s.width && s.height ? { width: s.width, height: s.height } : {}),
       ...(s.approvalId ? { approvalId: s.approvalId } : {}),
       ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),
       ...(s.decidedAt ? { decidedAt: s.decidedAt } : {}),
       ...(s.comment ? { comment: s.comment } : {}),
+      ...(s.withdrawn ? { withdrawn: true } : {}),
       // A template or user tool (plan 299): what it seeds, for the reviewer.
       ...(s.data ? { data: s.data } : {}),
       ...(s.collectionId ? { collectionId: s.collectionId } : {}),
@@ -9320,12 +9445,24 @@ export function buildApp(deps: AppDeps): App {
     };
   };
 
+  /** The resources `approval.act` is checked against for one request, as the
+   *  decide routes check them. */
+  const approvalActResources = (approval: Approval): string[] => [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*'];
+  /**
+   * Whether this person may decide the request's current step: in one of the
+   * step's groups, and holding `approval.act` on the request (plans/357 W2).
+   * Deciding asks both, so seeing a pending submission asks both too.
+   */
+  const mayDecideStep = (approval: Approval, user: { id: string; groups: string[]; role?: string }, grants: Grant[]): boolean =>
+    eligibleForCurrentStep(approval, user.groups)
+    && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'approval.act', approvalActResources(approval), grants);
+
   /**
    * What this caller is to one submission: `mine` when they submitted it,
-   * `inbox` when the approval's current step lets their groups act, and null
-   * when it is neither. The queue rows, the pre-publication preview and the
-   * metadata edit all ask this one question, so the three surfaces cannot
-   * disagree about who is looking at a pending asset.
+   * `inbox` when they may decide the approval's current step, and null when it
+   * is neither. The queue rows, the pre-publication preview and the metadata
+   * edit all ask this one question, and the reviewer email asks mayDecideStep,
+   * so none of them reaches anyone the decision would refuse.
    */
   const submissionRelation = async (
     rec: InstanceAssetRecord, user: { id: string; groups: string[]; role?: string },
@@ -9335,7 +9472,8 @@ export function buildApp(deps: AppDeps): App {
     if (scopedCaller(user)) return null;
     if (!s.approvalId) return null;
     const approval = await store.getApproval(s.approvalId);
-    return approval && eligibleForCurrentStep(approval, user.groups) ? 'inbox' : null;
+    if (!approval || !eligibleForCurrentStep(approval, user.groups)) return null;
+    return mayDecideStep(approval, user, await store.listGrants()) ? 'inbox' : null;
   };
 
   /**
@@ -9347,38 +9485,48 @@ export function buildApp(deps: AppDeps): App {
   const settleAssetSubmission = async (approval: Approval, actorId: string): Promise<boolean> => {
     const settled = await settleSubmission(store, approval, new Date().toISOString());
     if (!settled) return false;
-    const action = settled.state === 'live' ? 'catalog.approve-submission' : 'catalog.return-submission';
-    await audit(`user:${actorId}`, action, `catalog:${settled.record.id}`, {
+    const action = settled.state === 'live' ? 'catalog.approve-submission'
+      : settled.withdrawn ? 'catalog.withdraw-submission' : 'catalog.return-submission';
+    await audit(actorId.startsWith('svc_') ? `service:${actorId}` : `user:${actorId}`, action, `catalog:${settled.record.id}`, {
       approvalId: approval.id, ...(settled.comment ? { comment: settled.comment } : {}),
       ...(settled.collection ? { collection: settled.collection } : {}),
     });
     const submitterId = (settled.record.submission?.by ?? '').replace(/^user:/, '');
     if (!submitterId) return true;
+    const notice = submissionNotice(settled);
     await store.putMessage({
       id: `msg_${randomId(8)}`,
-      kind: 'approval', severity: settled.state === 'live' ? 'info' : 'action',
+      kind: 'approval', severity: notice.severity,
       audience: { users: [submitterId] },
-      title: settled.state === 'live'
-        ? `Published: ${settled.record.entry.name ?? settled.record.id}`
-        : `Returned: ${settled.record.entry.name ?? settled.record.id}`,
-      body: settled.state === 'live'
-        ? 'Your catalog submission was approved and is live.'
-        : `Your catalog submission was returned${settled.comment ? `: “${settled.comment}”` : '.'}`,
+      title: notice.title,
+      body: notice.body,
       cta: { label: 'View', url: '/admin#/catalog' },
       data: { assetId: settled.record.id, state: settled.state },
       dismissible: true,
     });
-    const submitter = await store.getUser(submitterId);
-    notifier.email([submitter?.email],
-      settled.state === 'live'
-        ? `Published: ${settled.record.entry.name ?? settled.record.id}`
-        : `Returned: ${settled.record.entry.name ?? settled.record.id}`,
-      (settled.state === 'live'
-        ? 'Your catalog submission was approved and is live.'
-        : `Your catalog submission was returned${settled.comment ? `: “${settled.comment}”` : '.'}`)
-      + `\n\nView it: ${config.instance.baseUrl}/admin#/catalog`);
-    notifier.event('submission.decided', { assetId: settled.record.id, state: settled.state });
+    if (notice.email !== null) {
+      const submitter = await store.getUser(submitterId);
+      notifier.email([submitter?.email], notice.title, `${notice.email}\n\nView it: ${config.instance.baseUrl}/admin#/catalog`);
+    }
+    notifier.event('submission.decided', { assetId: settled.record.id, state: settled.state, ...(settled.withdrawn ? { withdrawn: true } : {}) });
     return true;
+  };
+
+  /**
+   * The person submitting to the catalog, holding `action` (plans/357 W3). A
+   * service token is refused whatever its role, as the comment on service-token
+   * resolution says: a submission records that a person offered the file, and
+   * with no review chain the file is live at once. A scoped token never reaches
+   * this route, because the scope table opens no scope for it. An opt-in token
+   * path for a token's own renders would be admitted here, before this refusal,
+   * and nowhere else.
+   */
+  const catalogSubmitter = async (req: IncomingMessage, res: ServerResponse, action: 'catalog.submit' | 'catalog.edit'): Promise<UserRecord | null> => {
+    if (!(await memberOf(req)) && (await serviceAccountOf(req))) {
+      sendError(res, 403, 'HUMAN_SUBMISSION_REQUIRED', 'A person submits files to the catalog. A service token cannot submit a file or add a version.');
+      return null;
+    }
+    return requireAction(req, res, action);
   };
 
   router.add('POST', '/api/v1/catalog/submit', async (req, res, ctx) => {
@@ -9390,7 +9538,7 @@ export function buildApp(deps: AppDeps): App {
     // is also why a submit chain does not gate a version: an approver already
     // decided this asset belongs here.
     const targetId = (ctx.url.searchParams.get('assetId') ?? '').trim();
-    const user = await requireAction(req, res, targetId ? 'catalog.edit' : 'catalog.submit');
+    const user = await catalogSubmitter(req, res, targetId ? 'catalog.edit' : 'catalog.submit');
     if (!user) return;
     let target: InstanceAssetRecord | null = null;
     if (targetId) {
@@ -9540,12 +9688,14 @@ export function buildApp(deps: AppDeps): App {
       ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
     });
     // Egress (plans/35 wave 1): a submission entering review reaches the
-    // review step's approvers - the queue is only useful to people who know
-    // something is in it.
+    // people who may decide its first step, the same people its queue row
+    // reaches (submissionRelation) - the queue is only useful to people who
+    // know something is in it.
     if (outcome.approval) {
-      const reviewStep = currentStep(outcome.approval);
+      const review = outcome.approval;
+      const grants = await store.listGrants();
       const queueReviewers = (await store.listUsers()).filter((u) =>
-        !u.disabledAt && u.id !== user.id && (reviewStep ? isEligible(reviewStep, u.groups) : false));
+        !u.disabledAt && u.id !== user.id && mayDecideStep(review, u, grants));
       const assetName = String(outcome.record.entry.name ?? outcome.record.id);
       notifier.email(queueReviewers.map((u) => u.email), `Submission to review: ${assetName}`,
         `${user.email} submitted “${assetName}” to the catalog.\n\nReview it: ${config.instance.baseUrl}/admin#/catalog`);
@@ -9740,13 +9890,24 @@ export function buildApp(deps: AppDeps): App {
       after.collectionId = collectionId ?? null;
     }
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
-    const { collectionId: _prior, ...submissionRest } = rec.submission;
-    const next: InstanceAssetRecord = {
-      ...rec, entry: applyDescriptivePatch(rec.entry, parsed),
-      submission: { ...submissionRest, ...(collectionId ? { collectionId } : {}) },
-    };
-    await store.putInstanceAsset(next);
-    if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
+    // The record is read again under the asset's lock, which settlement also
+    // holds, and the edit applies to that copy. A decision that published or
+    // returned the asset while this request was checked is never written back
+    // to `submitted` from the copy read at the start.
+    const next = await store.withAssetLock(rec.id, async (): Promise<InstanceAssetRecord | string> => {
+      const current = await store.getInstanceAsset(rec.id);
+      if (!current?.submission) return 'removed';
+      if (current.submission.state !== 'submitted') return current.submission.state;
+      const { collectionId: _prior, ...submissionRest } = current.submission;
+      const edited: InstanceAssetRecord = {
+        ...current, entry: applyDescriptivePatch(current.entry, parsed),
+        submission: { ...submissionRest, ...(collectionId ? { collectionId } : {}) },
+      };
+      await store.putInstanceAsset(edited);
+      if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
+      return edited;
+    });
+    if (typeof next === 'string') return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${next}`);
     await audit(`user:${user.id}`, 'catalog.edit-submission', `catalog:${rec.id}`, { before, after, relation });
     sendJson(res, 200, {
       ok: true,
@@ -9774,7 +9935,7 @@ export function buildApp(deps: AppDeps): App {
     const approval = await store.getApproval(approvalId);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'the approval for this submission is gone');
     if (approval.createdBy === user.id) return sendError(res, 403, 'SEPARATION_OF_DUTIES', 'A requester cannot act on their own approval.');
-    if (!(await requireAction(req, res, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*']))) return;
+    if (!(await requireAction(req, res, 'approval.act', approvalActResources(approval)))) return;
     const body = (await readJson(req)) as { action?: string; comment?: string } | null;
     if (body?.action !== 'approve' && body?.action !== 'reject') return sendError(res, 400, 'INVALID_INPUT', 'action must be approve or reject');
     const comment = typeof body.comment === 'string' && body.comment.trim() ? body.comment.slice(0, 2000) : undefined;
@@ -9785,7 +9946,11 @@ export function buildApp(deps: AppDeps): App {
       const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
       return sendError(res, approvalStatus(code), code, (err as Error).message);
     }
-    await store.putApproval(next);
+    // A reviewer who decided the same submission a moment earlier, here or in
+    // the approvals inbox, wins: this decision is not stored and settles nothing.
+    const written = await replaceApproval(store, approval, next);
+    if (!written) return sendError(res, 409, APPROVAL_CHANGED, APPROVAL_CHANGED_MESSAGE);
+    next = written;
     await audit(`user:${user.id}`, body.action === 'approve' ? 'approval.approve' : 'approval.reject',
       `approval:${next.id}`, { state: next.state, step: approval.stepIndex });
     if (isTerminal(next.state)) await settleAssetSubmission(next, user.id);

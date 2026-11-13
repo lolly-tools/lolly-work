@@ -6,6 +6,7 @@ import { readRaw, sendError, sendJson, type createRouter } from '../api/router.t
 import type { SubmitInput, SubmitOutcome } from '../catalog/submit.ts';
 import { submissionServable } from '../catalog/instance-assets.ts';
 import { createApproval, currentStep, isEligible, withdraw, type Approval } from '../approvals/engine.ts';
+import { replaceApproval } from '../approvals/revision.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { randomId } from '../lib/crypto.ts';
 import type { UserRecord } from '../store/types.ts';
@@ -156,7 +157,9 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
       // The company is asked again once the request is stored: one deleted or
       // ended while it was filed keeps no request and no waiting bytes.
       if (!await sameLiveCompany(company.id, company.createdAt)) {
-        await store.putApproval(withdraw(approval, actor.id, new Date().toISOString()));
+        // A reviewer who decided in this moment wins the write; the decision
+        // still applies nothing, because settlement asks for a live company.
+        await replaceApproval(store, approval, withdraw(approval, actor.id, new Date().toISOString()));
         if (blobId) await blobs.delete(blobId).catch(() => undefined);
         return failure(409, 'PROGRAMME_ENDED', 'the company was removed or its partnership ended while the change was filed');
       }
@@ -258,9 +261,9 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
       // Asked before the change and again where it commits, after the scan: the
       // stored decision still says approved, the same company record is live,
       // and the kit is still that base.
-      // The decision is read last, right before the write, to keep the window
-      // for a racing rejection as small as the approvals store allows: decisions
-      // are not compare-and-set (a follow-up for the approvals engine).
+      // The decision is read last, right before the write. Decisions are
+      // compare-and-set (approvals/revision.ts), so no route can store a
+      // rejection over an approval; the read still guards a direct write.
       const stillValid = async (): Promise<boolean> => {
         if (!await sameLiveCompany(subject.companyId, subject.companyCreatedAt)) return false;
         const now = await kitBase(subject.companyId);
@@ -299,7 +302,9 @@ export function registerCompanyKitRoutes(router: ReturnType<typeof createRouter>
     for (const approval of await store.listApprovals()) {
       if (approval.subjectType !== 'partner-kit' || approval.partnerKit?.companyId !== companyId) continue;
       if (approval.partnerKit.blobId) await blobs.delete(approval.partnerKit.blobId);
-      if (approval.state === 'submitted' || approval.state === 'in_review') await store.putApproval(withdraw(approval, approval.createdBy, new Date().toISOString()));
+      // A decision stored after the list was read wins; it applies nothing,
+      // because the company is gone.
+      if (approval.state === 'submitted' || approval.state === 'in_review') await replaceApproval(store, approval, withdraw(approval, approval.createdBy, new Date().toISOString()));
     }
   };
   return { settleApproval, forgetCompany };

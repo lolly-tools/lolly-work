@@ -314,3 +314,50 @@ test('a later page of the history across documents starts at its position, not a
     }
   });
 });
+
+test('migration 0100: a token may ask for approval, a person who asked still blocks erasure, and older rows keep their requester', { skip: !url && 'set LW_TEST_DATABASE_URL to run' }, async () => {
+  const { default: pg } = await import('pg');
+  const { mkdtemp, readdir, copyFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { runMigrations } = await import('../server/src/store/migrate.ts');
+  const { createApproval } = await import('../server/src/approvals/engine.ts');
+  const chain = { id: 'c-0100', name: 'Review', steps: [{ name: 'Brand', approvers: { groups: ['brand'] }, rule: 'any' as const }], onReject: 'return-to-submitter' as const };
+  const ask = (id: string, createdBy: string) => createApproval({ id, subjectType: 'export-review', subjectRef: `export-review:${id}`, title: id, chain, nominees: [], createdBy, now: new Date().toISOString() });
+  const migrations = new URL('../migrations/', import.meta.url).pathname;
+  // Stop one file short, write a person's request the way the old schema held
+  // it, then apply 0100 over it, as an upgrade does.
+  const migrate = async (target: string): Promise<void> => {
+    const before = await mkdtemp(join(tmpdir(), 'lw-0100-'));
+    try {
+      for (const name of (await readdir(migrations)).filter((f) => f.endsWith('.sql') && f < '0100_')) await copyFile(join(migrations, name), join(before, name));
+      await runMigrations(target, before);
+    } finally { await rm(before, { recursive: true, force: true }); }
+    const seed = new pg.Client({ connectionString: target });
+    await seed.connect();
+    try {
+      await seed.query(`insert into users (id, sub, email) values ('u-before', 's-before', 'before@example.invalid')`);
+      await seed.query('insert into approvals (id, state, step_index, created_by, created_at, doc) values ($1, $2, 0, $3, now(), $4::jsonb)',
+        ['apr_before', 'in_review', 'u-before', JSON.stringify(ask('apr_before', 'u-before'))]);
+      await assert.rejects(seed.query('insert into approvals (id, state, step_index, created_by, created_at, doc) values ($1, $2, 0, $3, now(), $4::jsonb)',
+        ['apr_old_token', 'in_review', 'svc_old', JSON.stringify(ask('apr_old_token', 'svc_old'))]), /foreign key/, 'the defect: 0002 refused a token');
+    } finally { await seed.end(); }
+    assert.deepEqual(await runMigrations(target), ['0100_approval_token_requesters.sql']);
+  };
+  await withFreshPostgres(url!, async (store) => {
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    try {
+      const column = async (id: string) => (await admin.query('select created_by_user from approvals where id = $1', [id])).rows[0]?.created_by_user ?? null;
+      assert.equal(await column('apr_before'), 'u-before', 'a row from before the migration keeps its key to users');
+      await store.putApproval(ask('apr_svc', 'svc_tok0100'));
+      assert.equal((await store.getApproval('apr_svc'))?.createdBy, 'svc_tok0100');
+      assert.equal(await column('apr_svc'), null, 'a token is not looked up in users');
+      await assert.rejects(store.putApproval(ask('apr_ghost', 'no-such-person')), /foreign key/, 'a person must still exist');
+      const person = await store.upsertUserBySub({ sub: 's-0100', email: 'asker@example.invalid', groups: [], role: 'member' });
+      await store.putApproval(ask('apr_person', person.id));
+      assert.deepEqual(await store.eraseUserAccount(person.id), { status: 'referenced' }, 'erasure is still refused while a request names the person');
+      assert.deepEqual(await store.eraseUserAccount('u-before'), { status: 'referenced' });
+    } finally { await admin.end(); }
+  }, { migrate });
+});

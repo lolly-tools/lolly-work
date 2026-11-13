@@ -11,11 +11,23 @@ the source. Members' browsers only ever see Lolly Work URLs, never a Cloudinary 
 | Thumbnails from small raster originals | Generated thumbnails for other files |
 | Approval and dates from tags and metadata you choose | Territory, talent or channel clearance |
 
+Sending approved originals to Cloudinary is a separate delivery destination with its own write
+credential: [Configure Cloudinary writes](../delivery.md#configure-cloudinary-writes).
+
+
 ## Onboarding
 
-1. Select the product environment, API region, exact dynamic folder and Lolly Work groups. Agree an approval tag and availability fields if required; the tag represents your own convention rather than a moderation decision.
-2. Seal the API key and secret, then follow the [four-step connection](README.md#connect-a-source-in-four-steps) and the commands in [Lolly Verify](#verify). Budget for API calls and file reads during the pilot.
-3. Run the [Cloudinary tenant check](tenant-check.md#cloudinary), including private and authenticated files, observed versions and original checksums. Test group restrictions and metadata dates before exposing a wider library.
+1. **Scope.** Select the product environment, API region, exact dynamic folder and Lolly Work groups. Agree an approval tag and availability fields if required; the tag represents your own convention rather than a moderation decision.
+2. **Connection.** Seal the API key and secret, then follow the [four-step connection](README.md#connect-a-source-in-four-steps) and the commands in [Verify](#verify). Budget for API calls and file reads during the pilot.
+3. **Tenant check.** Run the [Cloudinary tenant check](tenant-check.md#cloudinary), including private and authenticated files, observed versions and original checksums. Test group restrictions and metadata dates before exposing a wider library.
+
+**Note: Not yet confirmed live**
+
+The driver is not yet confirmed against a live environment. No authenticated Cloudinary account has been
+tested. The driver accepts uploaded `image`, `video` and `raw` resources with `upload`,
+`private` or `authenticated` delivery; external delivery types are skipped with a count and a
+note.
+
 
 ## What you need
 
@@ -30,6 +42,7 @@ the source. Members' browsers only ever see Lolly Work URLs, never a Cloudinary 
 Use the advanced **Providers > Cloudinary** form or `lw`. Lolly Work exposure decides who sees what,
 because a shared service credential does not carry each member's own folder permissions.
 
+
 ## Credential shape
 
 JSON with `apiKey` and `apiSecret`, stored through the write-only credential control or
@@ -41,6 +54,7 @@ enters the catalog.
 ```json
 { "apiKey": "…", "apiSecret": "…" }
 ```
+
 
 ## instance.json
 
@@ -84,6 +98,7 @@ is optional. `metadata.` reads structured metadata and needs `includeMetadata: t
 matching Search entitlement. Use ISO 8601 dates: an invalid date fails the mapping rather than
 removing the gate.
 
+
 ## Verify
 ```bash
 lw providers preview --kind cloudinary --options '{"cloudName":"your-cloud","assetFolder":"Brand/Approved","minGapMs":7500}' --shape
@@ -94,18 +109,19 @@ lw providers sync cloud-media
 lw providers enable cloud-media
 ```
 
-The credential prompt is hidden. Shape reports hold field names and types, never values. Check
-the mapped sample, groups and source scope before enabling, then run the
+The credential prompt is hidden. Shape reports hold field names and types, never values.
+
+**Check: Before you enable the source**
+
+Check the mapped sample, groups and source scope before enabling, then run the
 [Cloudinary check](tenant-check.md#cloudinary), including original checksums and private files.
+
 Contributors changing the driver follow its [maintainer runbook](https://github.com/lolly-tools/lolly-work/blob/main/server/src/catalog/providers/live-verify/cloudinary.md) in
 the Lolly Work repository.
 
+
 ## Notes / limits
 
-- **Not yet confirmed against a live environment.** No authenticated Cloudinary account has been
-  tested. The driver accepts uploaded `image`, `video` and `raw` resources with `upload`,
-  `private` or `authenticated` delivery; external delivery types are skipped with a count and a
-  note.
 - **References follow the observed version.** Each file reference records the version Lolly Work saw,
   and opening it checks identity, folder, version, approval and dates again. A changed file
   needs a refresh. For a fixed local snapshot, materialize the source; this is not a backup of
@@ -122,6 +138,7 @@ the Lolly Work repository.
   Structured metadata and facets can need a paid entitlement.
 - **Claims are not checked.** The connector does not verify metadata, proof decisions or Content
   Credentials in the files. Check the bytes themselves.
+
 
 ## Off-boarding
 

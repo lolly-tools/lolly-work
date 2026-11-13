@@ -34,6 +34,18 @@ Take an independent backup and complete a restore before every application upgra
 Keep previous images, configuration, content and signing keys. A database migration
 may require restoration or forward repair; an older image alone is insufficient.
 
+Owners and admins see a notice in the console when a newer release is published,
+with the upgrade steps for how the app was installed (`install.route`: `helm`,
+`rancher`, `fleet`, `argocd` or `other`). The server reads this repository's
+`index.yaml` once a day, the same plain request `helm repo update` makes, carrying
+nothing about the instance or its people. Turn it off with `updates.check: false`,
+or point `updates.feedUrl` at an internal mirror. The index is not signed, so the
+notice is information only; the steps check the chart's Sigstore bundle. Lolly
+Work never upgrades its own release: its ServiceAccount would need write access
+to every object the chart owns, Secrets and the release record included, which
+is close to cluster-admin for a process people reach over the network. The chart
+grants the app no Kubernetes API rights.
+
 Every install and upgrade runs the migration Job first. Helm removes the previous
 Job (`before-hook-creation`) and waits for it to go, so the last Job and its logs
 stay readable until the next upgrade. `helm rollback` does not run the Job. If an

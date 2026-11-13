@@ -8,6 +8,7 @@ job belongs to the person or service token that submitted the job.
 For a quick render straight to bytes, with no stored job, use `GET /render` ([server
 renders](sharing.md#server-renders)).
 
+
 ## Render once and fetch the file
 
 Save a request as `render.json`, using a tool from your instance:
@@ -32,6 +33,8 @@ lw renders cancel <renderId>
 lw renders retry <renderId> --idempotency-key campaign-qr-retry --json
 lw renders deliver <renderId> --destination campaign-archive --name "Launch QR"
 ```
+
+**Check: What a finished render shows**
 
 `submit` returns the job's id at once. `show` reports its state, the number of attempts and a
 structured failure when one occurs. The output is available after success, and downloading it
@@ -71,7 +74,11 @@ Authentication is required even on an open instance. Creating, running and readi
 current tool visibility, `tool.use` and `export.server`. Each attempt reads the current member or
 service token, so disabling the member, revoking the token or removing the grant stops queued
 work from running. The owner can still cancel after losing a tool grant. These routes share
-`rateLimit.automation`.
+`rateLimit.automation`. A service token minted with scopes reaches them with `render`, and
+sends an output with `delivery` ([service tokens](enterprise-identity.md#service-tokens)). An
+agent holding such a token can submit and follow the same renders and batches, and cancel a
+render, over the organisation MCP endpoint ([connect an agent over MCP](automation-api.md#connect-an-agent-over-mcp)).
+
 
 ## Batches with durable rows
 
@@ -136,6 +143,8 @@ retried batch can hold outputs from different content versions. A direct `lw ren
 creates an independent render; use the batch retry to get a new parent manifest with the
 replacements.
 
+**The batch routes**
+
 | Method and path | Result |
 |---|---|
 | `POST /api/v1/render-batches` | The request above; `202` on creation, `200` on idempotent replay |
@@ -191,6 +200,7 @@ sent: download those rows from their own output URLs. If something breaks after 
 started, the connection closes, and the truncated file has no central directory for an extractor to
 read.
 
+
 ## Be told when a render finishes
 
 Add `callbackUrl` to a render or batch request, and Work sends one signed `POST` when the job
@@ -232,6 +242,7 @@ The URL is part of the request for idempotency, so the same key with another URL
 `409 IDEMPOTENCY_KEY_REUSED`. It is not part of the [render identity](#render-identity), because where
 a result is announced says nothing about what was rendered. A manual retry keeps the URL, and the new
 job makes its own call.
+
 
 ## Verify the produced file
 
@@ -279,6 +290,7 @@ a worker is configured. New durable draft receipts also carry inspection results
 failed or undetermined checks; older receipts without `inspection` have unknown check coverage. A
 verified request always runs fresh and never reuses a draft cache entry.
 
+
 ## Evidence and identity
 
 Every new durable render, batch children included, keeps two records with its output: an
@@ -308,6 +320,8 @@ to for the caller's groups after design-system rules are applied, and any manage
 rules. Profile values, provider credentials, asset bytes and internal storage references are
 never copied into the receipt. Asset digests come from the bytes actually read, not from a
 catalog checksum.
+
+**Leases, caching and storage bounds**
 
 Output and evidence settle under the same worker lease, so a stale attempt cannot replace either.
 Durable attempts bypass the output cache, so observations come from the attempt that produced the
@@ -376,13 +390,18 @@ stored. Outputs made before identities existed, and outputs without a receipt, h
   publication approval. The file check is separate from the proposed `still-2d/1` visual
   conformance suite and from C2PA signing.
 
+
 ## Hosting and recovery
 
-The standalone server starts the runner automatically. Apply `0032_render_resources.sql` and
-`0033_render_batches.sql` through the normal migrations runner. Use PostgreSQL and a persistent
-BlobStore for recovery across restarts; memory mode is for evaluation and loses its data when the
-process exits. Every replica must use the same database, byte store and compatible mounted
-content.
+The standalone server starts the runner automatically.
+
+**Note: Before you rely on recovery**
+
+Apply `0032_render_resources.sql`, `0033_render_batches.sql` and, for callbacks, delivery by
+reference and output retention, `0079_durable_render_parity.sql` through the normal migrations
+runner. Use PostgreSQL and a persistent BlobStore for recovery across restarts; memory mode is for
+evaluation and loses its data when the process exits. Every replica must use the same database,
+byte store and compatible mounted content.
 
 - The runner polls once a second and runs up to two requests per process.
   `LW_BACKGROUND_POLL_MS` changes the poll interval in milliseconds for the render and automation
@@ -419,6 +438,7 @@ subscriptions and collection-wide approval and promotion. Callbacks announce the
 asked for one, and no other event. A successful render alone publishes nothing to a destination, so
 [send the output](delivery.md#delivering-an-automation-output) when it is ready to leave.
 
+
 ## Production still checks and permitted repairs
 
 A durable request can carry `production` beside `verification`. `output-v1` keeps its contract,
@@ -429,6 +449,8 @@ check.
 The engine also offers `lolly/production-motion-v1` to Lolly's CLI and MCP. Lolly Work's governed
 renderer accepts only the still profile and refuses a motion contract when it parses the request,
 so updating the engine pin does not add video rendering to Lolly Work.
+
+**An example request with a contract and a repair plan**
 
 ```json
 {

@@ -4,6 +4,7 @@ Connect a Dropbox folder of approved files and its contents appear in the Lolly 
 for the groups you choose. Lolly Work reads the folder through a Dropbox app you register, and never
 writes to the folder.
 
+
 ## What you need from Dropbox
 
 - **A Dropbox app** you register in the App Console, with the **`files.content.read`** and
@@ -11,6 +12,7 @@ writes to the folder.
   asks for a refresh token itself (`token_access_type=offline`). A scoped app limited to one
   folder is ideal.
 - The app's key and secret are yours; `lw providers auth` captures the refresh token.
+
 
 ## Credential shape
 
@@ -28,6 +30,7 @@ lw providers auth acme-dropbox     # one-time loopback PKCE consent
 [OAuth sources](README.md#kinds-with-a-registered-consent-flow-dropbox-gdrive-o365) explains the
 consent step.
 
+
 ## instance.json / `lw providers add`
 
 ```json
@@ -42,6 +45,7 @@ consent step.
 
 - `options.path` is the folder to federate; the default is the app folder's root.
 
+
 ## Verify
 ```bash
 lw providers auth acme-dropbox
@@ -49,6 +53,7 @@ lw providers health acme-dropbox
 ```
 
 A token-refresh failure means the grant was revoked; run `lw providers auth` again.
+
 
 ## Notes / limits
 
@@ -59,6 +64,7 @@ A token-refresh failure means the grant was revoked; run `lw providers auth` aga
 - **Search matches file names, not contents.**
 - **Fresh downloads.** Each download is a new authenticated request to Dropbox
   (`files/download`), streamed through Lolly Work and pinned to Dropbox's hosts. Nothing is stored.
+
 
 ## Use as an offboarding destination
 

@@ -566,6 +566,28 @@ otel:
     name: ""
     key: ""
 
+# ── Release notice ──────────────────────────────────────────────────────────
+# Owners and admins see a notice in the console when a newer Lolly Work release
+# is published, with the upgrade steps for how you installed it. The server reads
+# the chart repository index once a day, the same plain request `helm repo
+# update` makes, carrying nothing about this instance or its people. The index is
+# not signed, so the notice is information only; the steps check the chart's own
+# Sigstore bundle. Lolly Work never upgrades its own release.
+updates:
+  # Read the index daily and on demand. false: no request, no notice.
+  check: true
+  # stable: releases only. preview: pre-releases too.
+  channel: stable
+  # The chart repository index. Point it at an internal mirror for an air-gapped
+  # or sovereign install (https; the mirror's own origin may be private). With
+  # networkPolicy.allowAllEgress false, allow egress to it.
+  feedUrl: https://github.com/lolly-tools/lolly-work/releases/download/helm-index/index.yaml
+
+install:
+  # Which upgrade steps the notice shows: helm, rancher, fleet, argocd or other.
+  # Rancher's install form sets rancher; set fleet or argocd for GitOps.
+  route: helm
+
 # ── NetworkPolicy ───────────────────────────────────────────────────────────
 # Off by default. When enabled, restricts ingress to the app port and (if you
 # leave egress open) lets the pod reach Postgres, your IdP, and providers.

@@ -62,11 +62,20 @@ export interface AssetSubmission {
   height?: number;
   /** The approval opened for this submission, when policy names a submit chain. */
   approvalId?: string;
-  /** 'user:<id>' who approved or returned it, and when. */
+  /** 'user:<id>' who approved or returned it, and when. On a withdrawal this
+   *  names the submitter, who withdrew the submission. */
   decidedBy?: string;
   decidedAt?: string;
   /** The reviewer's comment, carried onto a return so the submitter reads why. */
   comment?: string;
+  /** Set when the submitter withdrew the submission rather than a reviewer
+   *  returning the asset. The state is still `returned`; no reviewer's name or
+   *  comment is copied. */
+  withdrawn?: boolean;
+  /** Set when the submission failed part-way and its bytes could not be
+   *  deleted at once. The state is `returned`, no queue lists it, and
+   *  sweepDiscardedSubmissions removes the bytes and then the record. */
+  discarded?: boolean;
   /** A template or user tool (plan 299): what the JSON seeds, so a reviewer
    *  reads "Template for Design, 12 values" where a picture would show. */
   data?: DataSubmissionSummary;

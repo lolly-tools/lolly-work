@@ -252,7 +252,11 @@ test('a token reads and withdraws its own requests, and nobody else\'s', async (
   assert.equal((await bearer('other', 'GET', `/api/v1/approvals/${id}`)).status, 404);
   assert.ok(!(await bearer('other', 'GET', '/api/v1/approvals')).body.approvals.some((a: { id: string }) => a.id === id));
   assert.ok((await bearer('rita', 'GET', '/api/v1/approvals')).body.approvals.some((a: { id: string }) => a.id === id));
-  assert.equal((await bearer('other', 'POST', `/api/v1/approvals/${id}/withdraw`, {})).status, 403);
+  // Another token's request reads as a missing one, so withdrawing cannot tell them apart (plans/357 W1).
+  const others = await bearer('other', 'POST', `/api/v1/approvals/${id}/withdraw`, {});
+  const missing = await bearer('other', 'POST', '/api/v1/approvals/apr_missing0/withdraw', {});
+  assert.deepEqual([others.status, others.body], [missing.status, missing.body]);
+  assert.equal(others.status, 404);
   const withdrawn = await tool('rita', 'withdraw_approval', { approvalId: id });
   assert.equal(withdrawn.isError, undefined, JSON.stringify(withdrawn.structuredContent));
   assert.equal((await store.getApproval(id))!.state, 'withdrawn');

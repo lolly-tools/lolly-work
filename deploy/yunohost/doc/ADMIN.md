@@ -37,6 +37,10 @@ Applying the panel adds a WebDAV catalog source and a WebDAV delivery destinatio
 
 Lolly Work takes a whole domain, so the Nextcloud is on another domain or subdomain of this server. The server talks to it directly. The WebDAV connection that the Lolly web app can make from the browser is separate: it is cross-origin from this domain and needs CORS on the Nextcloud and a matching entry in the page's content policy.
 
+## On-device AI
+
+On-device AI features are off: this package's `instance.json` does not allow any, and an upgrade rewrites that file. Turning them on takes `policy.ai` in `instance.json` (the capabilities you allow) and **Managed AI** in the console. The tools then fetch their models from `https://lolli.li`, the Lolly project's release host, through this server. The models are under free licences except the singing voices of the `sing` capability: one is under the OpenRAIL-M licence, which restricts some uses, and the voice models state no licence. Leave `sing` out unless you have checked those terms.
+
 ## Running it
 
 - Service: `lolly-work` (`yunohost service status lolly-work`, log in `/var/log/lolly-work/`).

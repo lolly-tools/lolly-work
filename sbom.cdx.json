@@ -1,22 +1,22 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:c9c1235e-0c80-4770-8e22-a24fd02a726f",
+  "serialNumber": "urn:uuid:2907a06c-dc25-45b5-84ce-b0bdc731b6ab",
   "version": 1,
   "metadata": {
     "tools": [
       {
         "vendor": "lolly",
         "name": "build-sbom",
-        "version": "1.1.3"
+        "version": "1.2.0"
       }
     ],
     "component": {
       "type": "application",
-      "bom-ref": "pkg:npm/lolly-work@1.1.3",
+      "bom-ref": "pkg:npm/lolly-work@1.2.0",
       "name": "lolly-work",
-      "version": "1.1.3",
-      "purl": "pkg:npm/lolly-work@1.1.3",
+      "version": "1.2.0",
+      "purl": "pkg:npm/lolly-work@1.2.0",
       "licenses": [
         {
           "license": {
@@ -1596,10 +1596,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40simplewebauthn/server@14.0.3",
+      "bom-ref": "pkg:npm/%40simplewebauthn/server@14.1.0",
       "name": "@simplewebauthn/server",
-      "version": "14.0.3",
-      "purl": "pkg:npm/%40simplewebauthn/server@14.0.3",
+      "version": "14.1.0",
+      "purl": "pkg:npm/%40simplewebauthn/server@14.1.0",
       "scope": "required",
       "licenses": [
         {
@@ -1611,16 +1611,16 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "0f7f7fd1f88389898657e9eb698f6ceb70f51e8d805ffc1a30bcb6dbff6051a75352ebdb027b2d7dbe1ba5b1d86f066e57964b0d83754a6cc32ae887cca000e1"
+          "content": "1cf451051e15cebe39f9156f6e67fa26e09f19d618712b383e79e7a7d61263620005ae092a71bec31c9b733a01eeb99d2c238c4bf99b05ad992ff05ccf9f1494"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40types/node@26.6.5",
+      "bom-ref": "pkg:npm/%40types/node@26.6.6",
       "name": "@types/node",
-      "version": "26.6.5",
-      "purl": "pkg:npm/%40types/node@26.6.5",
+      "version": "26.6.6",
+      "purl": "pkg:npm/%40types/node@26.6.6",
       "scope": "required",
       "licenses": [
         {
@@ -1632,7 +1632,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "b8ccecbfdb2d0dda1f219071e141a1e19f598179c60bdb1e443b1c8a505c4c701e38593aecc660fe4f5b5957cef9b938a99986fa5e768519cbc14887d8b9c94e"
+          "content": "333423fbc2b1dd7238d0e994004e90a21e7c64c36cb4d34cc27da77dddea5ac7deee70cd4aa24dcdeb389e3873e801f0ad21ce7df48bc1753ac9be3be10e1aa2"
         }
       ]
     },
@@ -2119,10 +2119,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/jose@6.2.13",
+      "bom-ref": "pkg:npm/jose@6.2.15",
       "name": "jose",
-      "version": "6.2.13",
-      "purl": "pkg:npm/jose@6.2.13",
+      "version": "6.2.15",
+      "purl": "pkg:npm/jose@6.2.15",
       "scope": "required",
       "licenses": [
         {
@@ -2134,7 +2134,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "ed3220d74644d71f3661e76237e95cacf36f18c2a07bdc851d00fe421a3f6fccb669d7ee814dc0b2fbc77f15747f3c859654fa97dc428dfe11598f60fd9f4f25"
+          "content": "a9d17a7b0719011b5e7faddf27d00a2993e0c70faded4487e872d761c0f80ab7664af0e9efdae92523c510a73dd1005e192eb7bb5290b4dd8c6501c2d320c8cc"
         }
       ]
     },
@@ -3316,10 +3316,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/ws@8.22.0",
+      "bom-ref": "pkg:npm/ws@8.22.1",
       "name": "ws",
-      "version": "8.22.0",
-      "purl": "pkg:npm/ws@8.22.0",
+      "version": "8.22.1",
+      "purl": "pkg:npm/ws@8.22.1",
       "scope": "required",
       "licenses": [
         {
@@ -3331,7 +3331,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "61d82073df3bf913b40275ad67fed6abd16d36f72b2f56ff44ed2e77d9968d43e00ebb00030412179d6c9b6866d57a1f6d4ff88e4a4612c2c5b1967153ed433a"
+          "content": "a322fa38f6267bf0a6885bcdb86cdea31089e273ab644d8ed45c0cf4c58cd40b06ae2ea72d7076a60fa5340f1a2de5cc49abf427a788552d63eaf50fcd4b4af6"
         }
       ]
     },

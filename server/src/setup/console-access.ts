@@ -21,7 +21,7 @@ export function consoleAccess(principal: PrincipalCtx, grants: Grant[], activity
     [id, requirements.some(action => actions.includes(action))]));
   views.activity = !!views.activity && activityAvailable(activity, principal.role);
   views.agents = !!views.agents && activityAvailable(activity, principal.role);
-  views.instance = ['tools', 'catalog', 'providers', 'design', 'brand-pages', 'flags', 'injectables', 'limits'].some(id => views[id]);
+  views.instance = ['design', 'flags', 'injectables', 'grants', 'tokens', 'chains', 'preview', 'setup', 'limits'].some(id => views[id]);
   views.users = principal.role === 'admin' || principal.role === 'owner';
   for (const id of ['messages', 'projects', 'approvals', 'docs', 'verify']) views[id] = true;
   return { actions, views };

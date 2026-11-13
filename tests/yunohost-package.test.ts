@@ -33,6 +33,8 @@ import { parseConfig, type Secrets } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
+import { csrfVerdict } from '../server/src/iam/csrf.ts';
+import { INVITE_PAGE_HEADERS } from '../server/src/access/invite-routes.ts';
 import { startFakeLdap, type FakeLdap } from './fake-ldap.ts';
 import { pinManifest, readPins, renderTemplate, tarballName, RELEASE_HOST } from '../scripts/yunohost-release.ts';
 
@@ -207,6 +209,14 @@ test('instance.json: the rendered configuration boots and a YunoHost sign-in arr
   // Without the secret nginx adds, the same headers are worth nothing.
   const { 'x-lw-proxy-auth': _drop, ...bare } = ssowat;
   assert.equal((await fetch(`${base}/api/auth/proxy`, { headers: bare, redirect: 'manual' })).status, 403);
+
+  // nginx puts the server's own Referrer-Policy back on the control plane's routes
+  // (the Referrer-Policy test below), so every answer carries one: no-referrer by
+  // default, and strict-origin on a page whose forms must keep their Origin.
+  for (const path of ['/healthz', '/api/auth/config', '/l/no-such-link', '/render/no-such-tool']) {
+    assert.equal((await fetch(`${base}${path}`)).headers.get('referrer-policy'), 'no-referrer', path);
+  }
+  assert.equal((await fetch(`${base}/l/invite/no-such-token`)).headers.get('referrer-policy'), 'strict-origin');
 });
 
 test('manifest: whole domain, Node 24, Postgres, and the permission layout the sign-in relies on', () => {
@@ -282,8 +292,14 @@ test('scripts: present, executable, valid bash, helpers-2.1 names only', () => {
   const install = read('scripts/install');
   assert.ok(install.indexOf('ynh_setup_source --dest_dir="$install_dir"') < install.indexOf('--source_id="shell"'));
   assert.ok(install.indexOf('lollywork_seed_pack') > install.indexOf('--source_id="shell"'));
-  const common = read('scripts/_common.sh');
-  assert.ok(common.indexOf('proxy.inc') < common.indexOf('ynh_config_add_nginx'), 'the includes must exist before nginx -t runs');
+  assert.match(read('scripts/_common.sh'), /lollywork_add_nginx_includes\(\) \{\n\s+ynh_config_add --template="proxy\.inc"/);
+  for (const name of ['install', 'upgrade']) {
+    const s = read(`scripts/${name}`);
+    // package_check decides the app is a web app (and so runs the URL checks and the
+    // change-URL test) with `grep '^ynh_config_add_nginx' scripts/install`.
+    assert.match(s, /^ynh_config_add_nginx$/m, `${name} must call ynh_config_add_nginx at the top level`);
+    assert.ok(s.indexOf('lollywork_add_nginx_includes') < s.search(/^ynh_config_add_nginx$/m), `${name}: the includes must exist before nginx -t runs`);
+  }
   assert.match(read('scripts/upgrade'), /--keep="instance\.json \.env shell"/, 'upgrade must keep the admin-editable files and the shell');
   assert.match(read('scripts/backup'), /ynh_psql_dump_db > db\.sql/);
   assert.match(read('scripts/restore'), /ynh_psql_db_shell < \.\/db\.sql/);
@@ -320,6 +336,25 @@ test('nginx: the includes the scripts write, and a deliberate header set per loc
   assert.match(proxy, /proxy_set_header X-Lw-Proxy-Auth "__PROXY_SECRET__";/);
   assert.match(proxy, /proxy_set_header Upgrade \$http_upgrade;/);
   assert.match(proxy, /proxy_pass http:\/\/127\.0\.0\.1:__PORT__;/);
+});
+
+test('nginx: the control plane keeps the server\'s Referrer-Policy, so a form post keeps its Origin', () => {
+  // The chain this pins. A form post from a no-referrer page carries `Origin: null`
+  // (Fetch, "append a request Origin header"), and the CSRF check refuses that Origin
+  // once the post carries a cookie, as the invitation, access request, link password
+  // and sign-in forms all do. The server sends strict-origin on those pages for that
+  // reason; a fixed no-referrer in nginx replaced it and every such form answered 403.
+  const site = ['https://work.example.org'];
+  assert.match(csrfVerdict('POST', { cookie: 'lw_form=x', origin: 'null' }, site) ?? '', /opaque origin/);
+  assert.equal(csrfVerdict('POST', { cookie: 'lw_form=x', origin: 'https://work.example.org' }, site), null);
+  assert.equal(INVITE_PAGE_HEADERS['referrer-policy'], 'strict-origin');
+  const locations = [...nginx.matchAll(/location\s+(?:=|\^~|~)?\s*([^\s{]+)\s*\{([^{}]*)\}/g)].map((m) => ({ path: m[1]!, body: m[2]! }));
+  const controlPlane = locations.filter((l) => !/shell-headers\.inc;/.test(l.body));
+  assert.ok(controlPlane.some((l) => l.path === '/api/') && controlPlane.some((l) => l.path === '/l/'));
+  for (const l of controlPlane) {
+    const policies = [...l.body.matchAll(/more_set_headers "Referrer-Policy: ([^"]*)";/g)].map((m) => m[1]);
+    assert.deepEqual(policies, ['$upstream_http_referrer_policy'], `${l.path} must put back the server's Referrer-Policy, never a fixed one`);
+  }
 });
 
 test('nginx: the shell header set is the open-source package\'s, directive by directive, when a Lolly checkout is at hand', (t) => {
@@ -367,6 +402,18 @@ test('package: the files YunoHost and its catalog expect, and nothing stray', ()
   assert.match(read('tests.toml'), /install\.subdir/);
   const allowed = new Set(['LICENSE', 'README.md', 'conf', 'config_panel.toml', 'doc', 'manifest.toml', 'scripts', 'tests.toml']);
   for (const entry of readdirSync(PKG)) assert.ok(allowed.has(entry), `unexpected ${entry} in deploy/yunohost/`);
+  // README.md is the output of YunoHost's README generator (deploy/yunohost-package.md
+  // says how to regenerate it). It shows the version, so each revision needs a new one.
+  const readme = read('README.md');
+  assert.match(readme, /This README was automatically generated by/);
+  const version = /^version = "([^"]+)"$/m.exec(manifest)![1]!;
+  assert.ok(readme.includes(`badge/Version-${version.replaceAll('-', '--')}-`), 'README.md shows another version: regenerate it');
+  assert.ok(readme.includes(/^description\.en = "([^"]+)"$/m.exec(manifest)![1]!), 'README.md shows another description: regenerate it');
+  // The catalogue shows the screenshots; YunoHost asks for files under 512 kB.
+  for (const shot of readdirSync(join(PKG, 'doc', 'screenshots'))) {
+    assert.ok(statSync(join(PKG, 'doc', 'screenshots', shot)).size < 512 * 1024, `doc/screenshots/${shot} is over 512 kB`);
+    assert.ok(readme.includes(`./doc/screenshots/${shot}`), `README.md does not show doc/screenshots/${shot}: regenerate it`);
+  }
 });
 
 // The Nextcloud connection: detection, prefilled settings, and the instance.json

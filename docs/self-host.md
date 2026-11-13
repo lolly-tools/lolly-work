@@ -12,8 +12,13 @@ commands.
 
 Trials need no database. Team installs all finish with the same three steps.
 
+
 ## The paths in brief
 
+- **Trying it on a cluster?** The [cluster evaluation](platform-deployment.md#evaluate-on-a-cluster)
+  is one Helm command, with sample people and memory storage.
+- **Have a Kubernetes platform?** [Install on Kubernetes](platform-deployment.md)
+  with the Helm chart, your own PostgreSQL and your identity provider.
 - **Just looking?** Open the public demo at [lolly.work](https://lolly.work). Sign
   in with one click as a sample admin, brand lead, marketer or contractor. Browse
   the console at `/admin` or render a tool from a plain link such as
@@ -23,8 +28,6 @@ Trials need no database. Team installs all finish with the same three steps.
   sample data.
 - **Trying it on your computer?** The [local demo](install.md#1-try-it-on-your-computer)
   runs from source on Node 24 in about two minutes.
-- **Trying it on a cluster?** The [cluster evaluation](platform-deployment.md#evaluate-on-a-cluster)
-  is one Helm command, with sample people and memory storage.
 - **One Linux server for a small team?** The [ready-made package](ready-made-package.md)
   brings Lolly Work, PostgreSQL, the matching web app and automatic HTTPS, with email and
   password sign-in. If you would rather write your own configuration, run
@@ -32,8 +35,6 @@ Trials need no database. Team installs all finish with the same three steps.
   [Node and systemd](install.md#6-bare-metal-systemd).
 - **Already run YunoHost?** [Install the Lolly Work app](install.md#7-yunohost)
   and sign in with your YunoHost accounts.
-- **Have a Kubernetes platform?** [Install on Kubernetes](platform-deployment.md)
-  with the Helm chart, your own PostgreSQL and your identity provider.
 - **Starting from bare VMs on UpCloud or Evroc?** The
   [cloud modules](cloud-deployment.md) create the machine; then follow one of the
   server paths above.
@@ -43,6 +44,7 @@ Every team install ends the same way. The first owner signs in,
 checked sample. After that, connect your
 [identity provider](enterprise-identity.md) if you use one, and read
 [Keep Lolly Work running](operations.md) before you invite people.
+
 
 ## What runs where
 
@@ -54,46 +56,28 @@ server.
 - **macOS** runs the local demo from source, or Linux containers through Docker
   Desktop. See the [macOS steps](install.md#macos).
 - **Windows 11** runs the Linux steps inside WSL 2, or Docker Desktop with Linux
-  containers. See the [Windows steps](install.md#windows). On Windows Server, use a
-  Linux VM or your existing Kubernetes platform.
+  containers. See the [Windows steps](install.md#windows). On Windows Server, use
+  your existing Kubernetes platform or a Linux VM.
 
 The Lolly web app that Lolly Work can serve at `/` needs a secure address (HTTPS, or
 `localhost` while testing) and a browser with WebGPU. See
 [supported environments](/info/start/supported-environments.html).
 
-## YunoHost: choose Lolly Work
+**Downloads for 1.2.0**
 
-There are two Lolly packages for YunoHost, and they are not interchangeable.
-
-- **`lolly-tools/lolly-work_ynh`** is Lolly Work. It includes the Lolly web app, a
-  PostgreSQL database, shared projects, sign-in with your host accounts, roles and
-  the Lolly Work console. Choose this one for a home or team server.
-- **`lolly-tools/lolly_ynh`** serves the static Lolly app only. People work on
-  their own devices, with no server, database or shared projects. Installing it
-  does not install Lolly Work.
-
-There is no in-place upgrade from `lolly_ynh` to `lolly-work_ynh`. If you already
-run static Lolly, install Lolly Work on another domain and check sign-in and moving your
-projects across. Keep the original app until you are satisfied.
-
-Which package versions have passed their checks is recorded in
-[official installation routes](official-installations.md).
-
-**Downloads for 1.1.3**
-
-The [Lolly Work release page](https://github.com/lolly-tools/lolly-work/releases/tag/v1.1.3)
+The [Lolly Work release page](https://github.com/lolly-tools/lolly-work/releases/tag/v1.2.0)
 has the published files, exact source, image digests, checksums and qualification
 results. Treat a release target as ready only when its file is published there and
 its checks are recorded.
 
 | Package | Use it for |
 |---|---|
-| **Lolly Work server image**: `ghcr.io/lolly-tools/lolly-work-server:1.1.3` | Compose and Kubernetes; Linux `amd64` and `arm64` manifests |
-| **Optional render worker**: `ghcr.io/lolly-tools/lolly-work-render-worker:1.1.3` | Browser-based server rendering; configure its authenticated HTTPS transport separately |
-| **Helm chart** 1.1.3: `deploy/helm` in the source code, and the published chart | Lolly Work 1.1.3 on an existing Kubernetes platform. The chart carries the release version; 1.1.3 is its first publication |
+| **Helm chart** 1.2.0: `deploy/helm` in the source code, and the published chart | Lolly Work 1.2.0 on an existing Kubernetes platform. The chart carries the release version; 1.1.3 is its first publication |
+| **Lolly Work server image**: `ghcr.io/lolly-tools/lolly-work-server:1.2.0` | Kubernetes and Compose; Linux `amd64` and `arm64` manifests |
+| **Optional render worker**: `ghcr.io/lolly-tools/lolly-work-render-worker:1.2.0` | Browser-based server rendering; configure its authenticated HTTPS transport separately |
 | **Source code** on the Lolly Work release page | Node and systemd installs, local evaluation, deployment recipes and custom image builds |
 | **[Lolly Work for YunoHost](https://github.com/lolly-tools/lolly-work_ynh)** | The complete server with host accounts; follow the package's version notes |
-| **[Lolly web app 1.1.3](https://lolli.li/lolly-web-1.1.3-ynh1.tar.gz)** | The browser app that matches a Lolly Work installation. Served by Lolly Work 1.1.3, it takes the installation's catalogue key and shows its tools. On its own, this archive is a static web app |
+| **[Lolly web app 1.2.0](https://lolli.li/lolly-web-1.2.0-ynh1.tar.gz)** | The browser app that matches a Lolly Work installation. Served by Lolly Work 1.2.0, it takes the installation's catalogue key and shows its tools. On its own, this archive is a static web app |
 
 The Lolly Work YunoHost archive is an input to the YunoHost installer. It leaves out the
 demo pack and the deployment recipes, so use the source download for a manual
@@ -110,15 +94,15 @@ compare the line for your file:
 
 ```bash
 # Linux or WSL
-sha256sum lolly-web-1.1.1-ynh1.tar.gz
+sha256sum lolly-web-1.2.0-ynh1.tar.gz
 # macOS
-shasum -a 256 lolly-web-1.1.1-ynh1.tar.gz
+shasum -a 256 lolly-web-1.2.0-ynh1.tar.gz
 ```
 
 PowerShell can check the file before you copy it to your server:
 
 ```powershell
-Get-FileHash .\lolly-web-1.1.1-ynh1.tar.gz -Algorithm SHA256
+Get-FileHash .\lolly-web-1.2.0-ynh1.tar.gz -Algorithm SHA256
 ```
 
 The file name and the whole hash must match. Archive checksums cover the
@@ -126,3 +110,23 @@ downloaded files; for container images, the keyless signatures and the release's
 source and image record do that job, as
 [official installation routes](official-installations.md#release-verification)
 explains.
+
+
+## YunoHost: choose Lolly Work
+
+From 1.2.0 there is one Lolly package for YunoHost:
+**`lolly-tools/lolly-work_ynh`**, which is Lolly Work. It includes the Lolly web app, a
+PostgreSQL database, shared projects, sign-in with your host accounts, roles and the
+Lolly Work console. [Install Lolly Work, section 7](install.md#7-yunohost) has the
+steps.
+
+**Note: Already run the static package?**
+
+The static `lolly-tools/lolly_ynh` package, which served only the Lolly app, is
+discontinued and gets no further releases. A guide for replacing a static install
+with Lolly Work on the same domain, with the app kept open to visitors, is coming.
+Until that guide is published, do not upgrade `lolly_ynh` in place with a
+`lolly-work_ynh` package address.
+
+Which package versions have passed their checks is recorded in
+[official installation routes](official-installations.md).

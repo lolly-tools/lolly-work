@@ -78,7 +78,9 @@ await build({
   // with this Build Output API output at the same path).
   entryPoints: [join(ROOT, 'api/_index.ts')],
   outfile: join(FUNC, 'index.mjs'),
-  banner: { js: `${REQUIRE_SHIM}\nglobalThis.__LW_FN_ROOT = import.meta.url;` },
+  // __LW_WORK_VERSION: the release this bundle is, for the release notice; the
+  // function directory carries no package.json to read it from.
+  banner: { js: `${REQUIRE_SHIM}\nglobalThis.__LW_FN_ROOT = import.meta.url;\nglobalThis.__LW_WORK_VERSION = ${JSON.stringify(JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version)};` },
   external: [...NATIVE, ...RUNTIME_DYNAMIC],
 });
 

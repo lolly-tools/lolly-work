@@ -29,3 +29,31 @@ questions:
     type: boolean
     default: false
     group: Networking
+  - variable: install.route
+    label: Upgrade steps for
+    description: Installed from this form, the release notice shows Rancher's upgrade steps. Choose fleet or argocd when Git manages this app.
+    type: enum
+    options:
+      - rancher
+      - helm
+      - fleet
+      - argocd
+      - other
+    default: rancher
+    group: Updates
+  - variable: updates.check
+    label: Check for new releases
+    description: Read the published chart index once a day, a plain request that carries nothing about this instance or its people, and show owners and admins a notice when a newer release is out. The notice is information only; Lolly Work never upgrades itself.
+    type: boolean
+    default: true
+    group: Updates
+  - variable: updates.channel
+    label: Release channel
+    description: stable shows releases only; preview includes pre-releases.
+    type: enum
+    options:
+      - stable
+      - preview
+    default: stable
+    show_if: updates.check=true
+    group: Updates

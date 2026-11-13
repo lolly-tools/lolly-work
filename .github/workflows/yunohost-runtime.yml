@@ -3,17 +3,28 @@ name: YunoHost installation qualification
 
 # Run only after both immutable source archives are published and the package
 # mirror has their generated checksums. This never contacts a Lolly instance.
+# The commit may be on any branch of the package repository (for example
+# `testing`), so a candidate is qualified before it reaches `main`, which the
+# YunoHost catalogue publishes once the app is registered.
 on:
   workflow_dispatch:
     inputs:
       package_commit:
-        description: Full reviewed commit in lolly-tools/lolly-work_ynh
+        description: Full reviewed commit in the package repository
         required: true
         type: string
       package_version:
-        description: Exact package version, for example 1.1.0~ynh3
+        description: Exact package version, for example 1.2.0~ynh3
         required: true
         type: string
+      package_repository:
+        description: The package repository (YunoHost-Apps once it is transferred there)
+        required: true
+        type: choice
+        default: lolly-tools/lolly-work_ynh
+        options:
+          - lolly-tools/lolly-work_ynh
+          - YunoHost-Apps/lolly-work_ynh
 
 permissions:
   contents: read
@@ -29,6 +40,7 @@ jobs:
     env:
       PACKAGE_COMMIT: ${{ inputs.package_commit }}
       PACKAGE_VERSION: ${{ inputs.package_version }}
+      PACKAGE_REPOSITORY: ${{ inputs.package_repository }}
       YNHDEV_BACKEND: incus
       ARCH: amd64
       DIST: bookworm
@@ -40,7 +52,7 @@ jobs:
           [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+~ynh[0-9]+$ ]]
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: lolly-tools/lolly-work_ynh
+          repository: ${{ inputs.package_repository }}
           ref: ${{ inputs.package_commit }}
           path: .qualification/package
           persist-credentials: false
@@ -54,13 +66,27 @@ jobs:
       - name: Verify the package manifest
         run: |
           test "$(git -C .qualification/package rev-parse HEAD)" = "$PACKAGE_COMMIT"
-          # The official upgrade test checks out this immutable old version.
-          git -C .qualification/package cat-file -e 583cdc4af5322e683991a548428859b79084db2d^{tree}
           python3 - <<'PY'
-          import os, pathlib, tomllib
-          manifest = tomllib.loads(pathlib.Path('.qualification/package/manifest.toml').read_text())
+          import json, os, pathlib, re, subprocess, tomllib
+          package = pathlib.Path('.qualification/package')
+          manifest = tomllib.loads((package / 'manifest.toml').read_text())
           if manifest['id'] != 'lolly-work' or manifest['version'] != os.environ['PACKAGE_VERSION']:
               raise SystemExit('The selected package identity/version differs')
+          # Every official test the package must pass: the ones deduced from the
+          # manifest (tests.toml excludes only the sub-path install) plus one
+          # upgrade from each older commit tests.toml names. Those commits must
+          # be in the package's own history, where the upgrade test checks them out.
+          tests = tomllib.loads((package / 'tests.toml').read_text())
+          upgrades = sorted(tests['default'].get('test_upgrade_from', {}))
+          for commit in upgrades:
+              if not re.fullmatch('[0-9a-f]{40}', commit):
+                  raise SystemExit('tests.toml names an upgrade source that is not a full commit')
+              subprocess.run(['git', '-C', str(package), 'cat-file', '-e', commit + '^{tree}'], check=True)
+          expected = [['TEST_PACKAGE_LINTER', ''], ['TEST_INSTALL', 'root'], ['TEST_INSTALL', 'multi'],
+                      ['TEST_UPGRADE', ''], ['TEST_BACKUP_RESTORE', ''], ['TEST_CHANGE_URL', '']]
+          expected += [['TEST_UPGRADE', commit] for commit in upgrades]
+          pathlib.Path('.qualification/expected-tests.json').write_text(json.dumps(expected) + '\n')
+          print(f'Requiring {len(expected)} official tests, including {len(upgrades)} upgrade(s) from older commits')
           PY
       - name: Prepare disposable Incus runner
         run: |
@@ -164,33 +190,6 @@ jobs:
           (proof / 'incus-local-base.verified.actual.json').write_text(json.dumps({'origin': selected['origin'], 'remoteAlias': selected['alias'], 'localAlias': legacy, 'fingerprint': image['fingerprint'], 'architecture': image['architecture'], 'type': image['type'], 'remotePublic': selected['public'], 'localPublic': image['public'], 'sameGenuineImportedFingerprint': True, 'nativeAppInstallationQualified': False}, indent=2) + '\n')
           print('Actual full-fingerprint local base imported and verified: ' + image['fingerprint'])
           PY
-          # The official detector only sees direct Nginx helper calls. This
-          # package's reviewed wrapper calls that helper after writing includes.
-          # Extend only its detector, so real root/URL-change tests are selected.
-          python3 - <<'PY'
-          import difflib, hashlib, json, os, pathlib
-          package = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/package'
-          parser = pathlib.Path('lib/parse_tests_toml.py')
-          original = parser.read_bytes()
-          expected = '07f94c88fa31581c6d755bb59a72fea5eec94a6f0f590390b1643b15ca9601be'
-          sources = {'scripts/install': '1207d9b2d3e847fe734a5acc87737df2def8073eefac2db2c6544a026cd6a7de',
-                     'scripts/_common.sh': '2c224fdf19f4985bfea834b5c3b48e8aba2f172f867c6a17beefdb44e54e7e01'}
-          for name, checksum in sources.items():
-              if hashlib.sha256((package / name).read_bytes()).hexdigest() != checksum:
-                  raise SystemExit('Reviewed real Nginx wrapper source differs')
-          old = b"^ynh_config_add_nginx'"
-          replacement = b'^ynh_config_add_nginx' + bytes([92, 92]) + b"|^lollywork_add_nginx$'"
-          if hashlib.sha256(original).hexdigest() != expected or original.count(old) != 1:
-              raise SystemExit('Pinned checker webapp detector differs')
-          modified = original.replace(old, replacement)
-          proof = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/results'
-          (proof / 'checker-parser.pinned.original.py').write_bytes(original)
-          (proof / 'checker-parser.wrapper-adapted.py').write_bytes(modified)
-          (proof / 'checker-webapp-wrapper.patch').write_text(''.join(difflib.unified_diff(original.decode().splitlines(True), modified.decode().splitlines(True), fromfile='a/lib/parse_tests_toml.py', tofile='b/lib/parse_tests_toml.py')))
-          (proof / 'checker-webapp-compatibility.actual.json').write_text(json.dumps({'upstreamCommit': 'f7d32cadac3cfced282decede024707fba9e6ec6', 'originalSha256': expected, 'modifiedSha256': hashlib.sha256(modified).hexdigest(), 'onlyChange': 'Recognize exact verified lollywork_add_nginx wrapper as a webapp', 'packageSourceChecksums': sources, 'applicationChecksUnchanged': True, 'runtimeQualified': False}, indent=2) + '\n')
-          parser.write_bytes(modified)
-          print('Declared real Nginx wrapper detection; application checks unchanged')
-          PY
           mkdir "$GITHUB_WORKSPACE/.qualification/results/planned-tests"
           python3 lib/parse_tests_toml.py "$GITHUB_WORKSPACE/.qualification/package" \
             --dump-to "$GITHUB_WORKSPACE/.qualification/results/planned-tests"
@@ -198,12 +197,13 @@ jobs:
           import json, os, pathlib
           directory = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/results/planned-tests'
           rows = [json.loads(path.read_bytes()) for path in directory.glob('*.json')]
-          expected = {('TEST_PACKAGE_LINTER', ''), ('TEST_INSTALL', 'root'), ('TEST_INSTALL', 'multi'),
-                      ('TEST_UPGRADE', ''), ('TEST_UPGRADE', '583cdc4af5322e683991a548428859b79084db2d'),
-                      ('TEST_BACKUP_RESTORE', ''), ('TEST_CHANGE_URL', '')}
+          # The unmodified official parser selects the root install and the URL
+          # change only for a web app, which it recognises by a top-level
+          # ynh_config_add_nginx in scripts/install (1.2.0~ynh3 and later).
+          expected = {tuple(row) for row in json.loads((pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/expected-tests.json').read_text())}
           if len(rows) != len(expected) or any(row['test_serie'] != 'default' for row in rows) or {(row['test_type'], row['test_arg']) for row in rows} != expected:
               raise SystemExit('Actual official parser did not select every required URL, upgrade and recovery test')
-          print('Actual official parser selected all seven required application tests')
+          print(f'Actual official parser selected all {len(expected)} required application tests')
           PY
           ./package_check.sh "$GITHUB_WORKSPACE/.qualification/package"
           SH
@@ -212,6 +212,10 @@ jobs:
       - name: Require actual successful installation and recovery results
         run: |
           # package_check itself can exit zero even when an app test fails.
+          # results_0.json has no linter findings, so read them from the linter
+          # package_check installed, at the revision it used, on the same package.
+          (cd .qualification/package_check && python3 package_linter/package_linter.py "$GITHUB_WORKSPACE/.qualification/package" --json) \
+            > .qualification/results/linter-final.json
           python3 - <<'PY'
           import json, os, pathlib
           result = json.loads(pathlib.Path('.qualification/package_check/results_0.json').read_text())
@@ -220,21 +224,39 @@ jobs:
           if result['commit'] != os.environ['PACKAGE_COMMIT'] or result['app_version'] != os.environ['PACKAGE_VERSION']:
               raise SystemExit('Results do not identify the selected package')
           tests = result['tests']
-          required = {('TEST_PACKAGE_LINTER', ''), ('TEST_INSTALL', 'root'),
-                      ('TEST_INSTALL', 'multi'), ('TEST_UPGRADE', ''),
-                      ('TEST_UPGRADE', '583cdc4af5322e683991a548428859b79084db2d'),
-                      ('TEST_BACKUP_RESTORE', ''), ('TEST_CHANGE_URL', '')}
+          required = {tuple(row) for row in json.loads(pathlib.Path('.qualification/expected-tests.json').read_text())}
           observed = {(test['test_type'], test['test_arg']) for test in tests if test['test_serie'] == 'default'}
           if not required.issubset(observed):
               raise SystemExit('Required install, upgrade, recovery or URL-change evidence is missing')
           if any(test['main_result'] != 'success' for test in tests):
               raise SystemExit('An official package test failed')
-          # Levels 1-5 cover install, upgrade, recovery and security/lint errors.
-          # Level 6 requires ownership by YunoHost-Apps; our mirror is upstream.
-          if any(result['level_results'].get(str(level)) is not True for level in range(1, 6)):
-              raise SystemExit('Official installation/recovery/security checks did not pass')
           if any('<style=danger>' in note for test in tests for note in test.get('test_notes', [])):
               raise SystemExit('Official checks reported an unsafe runtime condition')
+          # Levels 2-4: installation in every scenario, upgrade, backup and restore.
+          levels = result['level_results']
+          if any(levels.get(str(level)) is not True for level in (2, 3, 4)):
+              raise SystemExit('Official installation, upgrade or recovery levels did not pass')
+          # Levels 1 and 5 also fail on the linter's critical and error findings.
+          # Until the app is in YunoHost's catalogue, two of those are about
+          # publication, not the package (scripts/check-yunohost-lint.ts keeps the
+          # same list). Any other critical or error finding still fails the run.
+          linter = json.loads(pathlib.Path('.qualification/results/linter-final.json').read_text())
+          publication = {'AppCatalog.is_in_catalog', 'AppCatalog.state_is_working'}
+          findings = list(linter['critical']) + list(linter['error'])
+          package_findings = sorted(set(findings) - publication)
+          pending = sorted(set(findings) & publication)
+          if package_findings:
+              raise SystemExit('The linter reports package errors: ' + ', '.join(package_findings))
+          excused = [level for level in (1, 5) if levels.get(str(level)) is not True]
+          if excused and not pending:
+              raise SystemExit('Levels 1 or 5 failed for a reason the linter does not report')
+          pathlib.Path('.qualification/results/qualification.actual.json').write_text(json.dumps({
+              'commit': result['commit'], 'version': result['app_version'], 'yunohost': result['yunohost_version'],
+              'globalLevel': result['level'], 'levelResults': levels,
+              'levelsFailingOnlyForCatalogPublication': excused, 'catalogPublicationFindings': pending,
+          }, indent=2) + '\n')
+          if excused:
+              print('Levels ' + ' and '.join(map(str, excused)) + ' wait only for catalogue registration: ' + ', '.join(pending))
           print('The exact package passed the official YunoHost installation and recovery checks.')
           PY
       - name: Preserve checker versions and original logs

@@ -31,7 +31,7 @@ to the entries whose files actually ship here.
 
 ## The connect download
 
-`lolly-demo-brand-1.1.3.lolly` is the Lolly Demo instance pack cut by the Lolly
+`lolly-demo-brand-1.2.0.lolly` is the Lolly Demo instance pack cut by the Lolly
 builder for THIS deployment (`node scripts/build-instance-pack.ts --brand
 lolly-demo --instance https://lolly.work`, from the Lolly repository), hosted
 from boot via `instance.connectPack` and offered at `/connect/pack.lolly` + the

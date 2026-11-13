@@ -325,3 +325,18 @@ test('setup is owner gated, readiness describes the actual store, and a reviewer
     assert.equal(JSON.stringify(outageReport).includes('PRIVATE'), false);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); }
 });
+
+test('the settings entry follows delegated settings permissions, including access tokens', () => {
+  const principal = { groups: ['operators'], role: 'member' as const };
+  const denies = ['catalog.read', 'policy.edit', 'catalog.injectable.manage', 'grant.edit', 'token.manage', 'scim.manage', 'instance.config']
+    .map(action => ({ principal: '*', action, resource: '*', effect: 'deny' as const }));
+  assert.equal(consoleAccess(principal, denies).views.instance, false);
+  for (const action of ['token.manage', 'scim.manage', 'grant.edit']) {
+    const access = consoleAccess(principal, [
+      ...denies.filter(grant => grant.action !== action),
+      { principal: 'group:operators', action, resource: '*', effect: 'allow' },
+    ]);
+    assert.equal(access.views.instance, true, `${action} needs a settings entry`);
+    assert.equal(access.views.setup, false, 'the settings entry does not grant server setup');
+  }
+});

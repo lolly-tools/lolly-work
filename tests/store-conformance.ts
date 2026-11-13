@@ -1238,6 +1238,41 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual((await store.listExportReviewsForInputs({ toolId: 'card', format: 'png', inputsDigest: 'd1' })).map(a => a.id), ['apr_r1', 'apr_r2', 'apr_r3']);
   assert.deepEqual(await store.listExportReviewsForInputs({ toolId: 'card', format: 'png', inputsDigest: 'nope' }), []);
 
+  {
+    // A change to a stored approval is compare-and-set on its revision: of two
+    // writes made from the same read, exactly one is kept, whichever store.
+    const raced = createApproval({ id: 'apr_cas', subjectType: 'asset', subjectRef: 'inst/cas', title: 'Raced',
+      chain: brandChain, nominees: [], createdBy: u1.id, now: new Date().toISOString() });
+    await store.putApproval(raced);
+    const read = (await store.getApproval('apr_cas'))!;
+    assert.equal(read.revision, undefined, 'a new approval carries no revision, which reads as 0');
+    const approved = { ...read, state: 'approved' as const, stepIndex: 1, revision: 1,
+      actions: [{ actor: 'reviewer-a', step: 0, action: 'approve' as const, at: new Date().toISOString() }] };
+    const rejected = { ...read, state: 'rejected' as const, revision: 1,
+      actions: [{ actor: 'reviewer-b', step: 0, action: 'reject' as const, comment: 'no', at: new Date().toISOString() }] };
+    const kept = await Promise.all([store.casApproval(approved, 0), store.casApproval(rejected, 0)]);
+    assert.equal(kept.filter(Boolean).length, 1, 'one of two simultaneous decisions is kept');
+    const winner = (await store.getApproval('apr_cas'))!;
+    assert.equal(winner.state, kept[0] ? 'approved' : 'rejected');
+    assert.equal(winner.revision, 1);
+    assert.equal(winner.actions.length, 1, 'the losing action is nowhere in the trail');
+    assert.equal((await store.listApprovals({ state: winner.state })).filter((a) => a.id === 'apr_cas').length, 1,
+      'the state column moved with the document');
+    assert.equal(await store.casApproval({ ...winner, state: 'withdrawn', revision: 1 }, 0), false, 'a stale revision is refused');
+    assert.equal((await store.getApproval('apr_cas'))!.state, winner.state);
+    assert.equal(await store.casApproval({ ...winner, id: 'apr_missing', revision: 1 }, 0), false, 'an approval that is not stored is not created');
+    assert.equal(await store.getApproval('apr_missing'), null);
+    await assert.rejects(store.casApproval({ ...winner, revision: 5 }, 1), TypeError, 'the next revision must follow the expected one');
+
+    // A service token's request names its `svc_` principal, which has no users
+    // row. Postgres refused it on the old key (migration 0100).
+    const tokenAsked = createApproval({ id: 'apr_token', subjectType: 'export-review', subjectRef: 'export-review:t', title: 'From an agent',
+      chain: brandChain, nominees: [], createdBy: 'svc_conformance', now: new Date().toISOString() });
+    await store.putApproval(tokenAsked);
+    assert.equal((await store.getApproval('apr_token'))?.createdBy, 'svc_conformance');
+    assert.deepEqual((await store.listApprovals({ createdBy: 'svc_conformance' })).map((a) => a.id), ['apr_token']);
+  }
+
   // catalog lifecycle: put/get/list round-trip, re-put updates in place
   assert.equal(await store.getLifecycle('acme/logo/primary'), null);
   await store.putLifecycle({ assetId: 'acme/logo/primary', validUntil: '2026-09-30T00:00:00.000Z', onExpiry: 'hide' });

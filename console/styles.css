@@ -229,7 +229,6 @@ h2 { font-size: var(--ui-type-title); font-weight: 650; line-height: 1.35; color
 .tab:hover { color: var(--ink); background: color-mix(in oklab, var(--accent) 7%, transparent); }
 .tab[aria-selected="true"] { color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); font-weight: 600; }
 /* The reused views render their own <h1>; the tab already titles it. */
-.inst-panel > h1:first-child { display: none; }
 @media (prefers-reduced-motion: no-preference) { .tab { transition: color .12s ease, background .12s ease; } }
 
 /* ── design system tab ─────────────────────────────────────────────────────*/
@@ -622,6 +621,8 @@ td .lc-actions { justify-content: flex-end; }
 .cat-detail { display: flex; gap: 16px; align-items: flex-start; }
 .cat-detail-meta { flex: 1 1 auto; min-width: 0; }
 @media (max-width: 560px) { .cat-detail { flex-direction: column; } }
+/* A submitted video, sound or PDF takes the preview's place, wide enough to play. */
+.sub-file-stage { flex: none; width: min(100%, 360px); box-sizing: border-box; }
 
 /* ── projects + multi-edit ─────────────────────────────────────────────── */
 .link-btn { color: var(--accent); text-decoration: none; cursor: pointer; font-weight: 500; }
@@ -892,6 +893,49 @@ th[aria-sort] { cursor: pointer; }
 }
 .alert-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; }
 .alert-item a { white-space: nowrap; }
+
+/* Release notice (update-notice.js): a newer Lolly Work release, for owners and
+   admins. The faint accent wash of the first-run banner; a release that fixes a
+   vulnerability takes the critical colour as a full border, never one edge. */
+.update-notice, .update-current { display: grid; gap: 12px; min-width: 0; }
+.update-notice { background: color-mix(in oklab, var(--accent) 5%, var(--surface)); }
+.update-notice.is-security { border-color: color-mix(in oklab, var(--critical) 55%, var(--hairline)); }
+.update-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 16px; }
+.update-title { display: grid; gap: 6px; min-width: 0; flex: 1 1 320px; }
+.update-title h2 { overflow-wrap: anywhere; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.update-flags { gap: 6px; }
+.update-date { font-size: 12px; }
+.chip.update-security { color: var(--critical); font-weight: 600;
+  border-color: color-mix(in oklab, var(--critical) 55%, var(--hairline)); background: color-mix(in oklab, var(--critical) 10%, transparent); }
+.chip.update-migrates { border-color: color-mix(in oklab, var(--warning) 70%, var(--hairline)); background: color-mix(in oklab, var(--warning) 16%, transparent); }
+.update-migrate { margin: 0; padding: 8px 12px; border-radius: calc(var(--radius) - 2px); line-height: 1.5;
+  background: color-mix(in oklab, var(--warning) 12%, var(--surface)); border: 1px solid color-mix(in oklab, var(--warning) 55%, var(--hairline)); }
+.update-highlights { display: grid; gap: 10px; }
+.update-highlights .section-h { margin: 0; }
+.update-changes { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; line-height: 1.5; }
+.update-kind { margin-right: 2px; }
+.update-kind.kind-security { color: var(--critical); }
+.update-steps > summary { cursor: pointer; font-weight: 600; width: max-content; max-width: 100%; }
+.update-step-list { margin: 12px 0 0; padding-left: 24px; display: grid; gap: 16px; list-style: decimal; }
+.update-step { display: list-item; min-width: 0; }
+.update-step::marker { font-weight: 600; color: var(--ink-2); }
+.update-step > * + * { margin-top: 4px; }
+.update-step-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.update-code { font-family: var(--font-mono, var(--font-mono-sys)); font-size: .92em; white-space: nowrap;
+  padding: 0 4px; border-radius: 4px; background: color-mix(in oklab, var(--ink) 6%, transparent); }
+.update-cmd-row { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.update-cmd { flex: 1 1 auto; min-width: 0; margin: 4px 0 0; padding: 10px 12px; overflow-x: auto; white-space: pre;
+  border: 1px solid var(--hairline); border-radius: calc(var(--radius) - 2px); background: var(--plane); color: var(--ink); font-size: 12px; line-height: 1.55; }
+.update-cmd-row > button { flex: none; margin-top: 4px; }
+.update-checked { margin: 0; font-size: 12px; }
+@media (max-width: 560px) {
+  /* Show the whole command on a phone; Copy still takes it exactly as written. */
+  .update-cmd { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .update-cmd-row { flex-direction: column; align-items: stretch; }
+  .update-cmd-row > button { align-self: flex-start; margin-top: 0; }
+  .update-step-list { padding-left: 18px; }
+}
 
 /* First-run zero-state banner: a faint accent wash, never a dashed edge, which
    in this language means "drop here". The .card hairline is already the edge. */
@@ -1575,3 +1619,29 @@ html.account-inspector-open { overflow: hidden; }
 .cell-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 /* A limit's id can be long; it wraps on a narrow screen rather than widening the table. */
 .limit-id { overflow-wrap: anywhere; font-size: 12px; }
+
+/* Administration uses the same surfaces and controls as the Lolly shell. */
+.rail-group > summary { cursor: pointer; min-height: var(--ui-size-target); display: list-item; }
+.rail-group > summary::marker { color: var(--ui-color-text-muted); }
+.rail-group > summary:focus-visible, .settings-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-section { margin-block: var(--sp-8); }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: var(--sp-6); }
+.settings-link { display: flex; align-items: flex-start; gap: var(--sp-5); padding: var(--ui-space-panel); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--ui-radius-surface); color: var(--ink); text-decoration: none; }
+.settings-link:hover { border-color: var(--accent); }
+.settings-link > span { display: grid; gap: var(--sp-2); }
+.settings-link .nav-ico, .quick-actions .nav-ico { width: var(--ui-size-icon-md); height: var(--ui-size-icon-md); flex: none; margin-top: 3px; }
+.settings-link .muted { font-size: var(--ui-type-caption); }
+.settings-back { margin: 0 0 var(--sp-6); }
+.overview-actions { margin-block: var(--sp-7); }
+.quick-actions { display: flex; flex-wrap: wrap; gap: var(--sp-5); }
+.quick-actions .btn { display: inline-flex; align-items: center; gap: var(--sp-4); min-height: var(--ui-size-target); }
+.overview-detail { border-top: 1px solid var(--hairline); padding-top: var(--sp-4); }
+.overview-detail > summary { min-height: var(--ui-size-target); flex-wrap: wrap; }
+.overview-detail > summary > .muted { margin-left: auto; font-size: var(--ui-type-caption); }
+.overview-detail[open] > summary { margin-bottom: var(--sp-6); }
+.overview-detail h3 { font-size: inherit; margin: 0 0 var(--sp-6); }
+.overview-actions + .grid.tiles > .card { margin-bottom: 0; }
+@media (max-width: 600px) {
+  .quick-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .quick-actions .btn { white-space: normal; }
+}

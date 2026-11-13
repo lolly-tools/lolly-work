@@ -11,12 +11,12 @@ type: application
 # Chart version: the Lolly release version, the same number as appVersion and
 # Work's package.json, so people install one version of everything. Chart-only
 # changes ship with the next release; tests/helm-chart.test.ts fails on drift.
-version: 1.1.3
+version: 1.2.0
 
 # The lolly-work server version this chart is designed against. Used as the
 # default image tag when image.tag is left empty. Keep in sync with the app's
 # package.json "version".
-appVersion: "1.1.3"
+appVersion: "1.2.0"
 
 home: https://lolly.work
 sources:
@@ -31,6 +31,10 @@ keywords:
 maintainers:
   - name: Lolly Work
     url: https://github.com/lolly-tools
+# Release facts, set for each release by scripts/chart-release-annotations.ts
+# (deploy/marketplaces/README.md, "Moving to a new release"). Artifact Hub and
+# Rancher show the artifacthub.io ones; Lolly Work's release notice reads all of
+# them from the chart repository index. tests/helm-chart.test.ts checks their form.
 annotations:
   artifacthub.io/license: MPL-2.0
   artifacthub.io/category: integration-delivery
@@ -39,10 +43,12 @@ annotations:
       url: https://github.com/lolly-tools/lolly-work/blob/main/docs/official-installations.md
     - name: Source and support
       url: https://github.com/lolly-tools/lolly-work
+  artifacthub.io/containsSecurityUpdates: "false"
+  lolly.tools/migrations: "21"
+  lolly.tools/migration-classes: additive=17,maintenance=4
+  lolly.tools/release-notes: https://github.com/lolly-tools/lolly-work/releases/tag/v1.2.0
   artifacthub.io/changes: |
-    - kind: added
-      description: Optional PrometheusRule of suggested alerts and a Grafana dashboard ConfigMap, both off by default.
-    - kind: added
-      description: Official chart distribution, package documentation and Rancher configuration questions.
     - kind: changed
-      description: Default server and render worker image tags follow Work 1.1.3.
+      description: The default demo pack is Lolly Demo in place of SUSE.
+    - kind: changed
+      description: Default server and render worker image tags follow Work 1.2.0.

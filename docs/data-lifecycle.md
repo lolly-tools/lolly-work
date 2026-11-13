@@ -10,6 +10,7 @@ Start with [Account data controls](account-lifecycle.md) for the export, offboar
 
 The inventory describes the product, not one deployment: confirm the database, storage regions, receivers, backup service and retention settings of the server you run. It feeds your organisation's processing record and rights workflow, and it is not a finished privacy assessment. It was first written against the Lolly Work source on 2026-09-11 and has been extended since, so check any newer table in your database against this list.
 
+
 ## What erasing an account changes
 
 `lw users erase USER_ID` runs in one database transaction, and a blocking reference or a failed telemetry update rolls the whole thing back.
@@ -23,6 +24,7 @@ The inventory describes the product, not one deployment: confirm the database, s
 
 `lw users erase-preview USER_ID --json` shows the blocking references first, without changing anything; see [Read-only preview](#read-only-preview).
 
+
 ## Before you erase
 
 Erasure is the last step of offboarding, after access is removed and the shared records are resolved. [Account data controls](account-lifecycle.md) describes each command in full.
@@ -31,6 +33,7 @@ Erasure is the last step of offboarding, after access is removed and the shared 
 - **Resolve shared records.** Review the erasure preview and any holds, and transfer shared project ownership where that is your decision. Resolve retained sessions, links, approvals, message acknowledgements and finished files through their own lifecycle controls; archiving does not erase them. Deleted documents keep counting until the [deleted-document purge](#deleted-documents) removes them.
 - **Erase the account.** Run `lw users erase-preview USER_ID --json`, then `lw users erase USER_ID` once those references are resolved. A refusal leaves the identity and fleet association in place. Success removes the local account, its private credentials and its other identity rows, its telemetry attribution and its fleet last-user association.
 - **Record what remains.** Record the remaining audit history, shared content, device caches, recipients and backup exceptions in the case, and carry the removal record into your restore procedure before a recovered service admits traffic again.
+
 
 ## Read-only preview
 
@@ -44,6 +47,7 @@ This calls `GET /api/v1/users/:id/erasure-preview`. It returns counts for projec
 
 The preview does not change the account or approve erasure. Its response gives its scope as `account-identity-and-telemetry-attribution` and marks `completePersonalDataErasure=false`. It reflects one read, so a reference created afterwards can still block the deletion, which the database enforces when deletion is attempted.
 
+
 ## How erasure works
 
 `lw users erase USER_ID` removes the identity row, clears the user id from telemetry and clears the fleet install rows naming that account, in one transaction. Migration `0069_fleet_attribution.sql` also cleared fleet associations whose account row had already been removed. Shared content is never deleted to make removal succeed.
@@ -52,6 +56,7 @@ Uploads go first. The account's unfinished project-file uploads are removed, par
 
 Its comment read state, the comment notices it received and its mention sends go with the identity row, and the notices it caused in other people's inboxes are deleted in the same transaction. The memory store enforces the same reference rules as PostgreSQL. An archived project still references its owner, so transfer the owner or resolve the record's lifecycle; archiving alone does not unblock erasure.
 
+
 ## Rights requests
 
 A rights request needs a case record before any data changes: verify the requester and the scope, identify the sources and recipients, tell personal content apart from shared business records, assess the holds and retention that apply, and record your organisation's decision. Retrieve only the records in scope for review, redaction and secure delivery. Use the existing correction, ownership-transfer, access-revocation and account operations only where they carry out the decision.
@@ -59,6 +64,7 @@ A rights request needs a case record before any data changes: verify the request
 For a subject access request, gather the identity and reference inventory (`lw users subject-export USER_ID --category <name> --json` pages through the account's direct metadata), the shared records in scope and the external recipient information, through the existing authorized reads, and deliver that collection securely under your case process.
 
 Neither `lw users subject-export` nor `lw users offboard` completes a request. The product does not automate a complete subject export, content-wide erasure, a legal hold across everything a person touched or keeping erased data out of a restore. Your organisation defines the manual procedure for the data it keeps in Lolly Work, or adds its own controls, before relying on the service for that data. A successful account-removal response does not close the case: record the remaining exceptions, external recipient actions and backup handling, then test recovery without bringing erased data back.
+
 
 ## Where data lives
 
@@ -133,6 +139,7 @@ Open a group to see its stores. Each row gives what the store holds and how it i
 
 `migrations/0001_init.sql` through `migrations/0034_audit_mac_and_append_guard.sql`, `0035_collab_receipts.sql`, `0036_collab_journal.sql`, `0038_invitations.sql`, `0039_user_identities.sql`, `0040_project_members.sql`, `0041_project_files.sql`, `0042_password_credentials.sql`, `0043_invitation_links.sql`, `0044_access_requests.sql`, `0045_canvas_comments.sql`, `0047_project_folders.sql`, `0048_passkeys.sql`, `0049_document_agents.sql`, `0050_project_agents.sql`, `0051_canvas_comment_reads.sql`, `0052_comment_notices.sql`, `0060_share_ladder.sql`, `0061_project_user_state.sql`, `0067_oidc_logout.sql`, `0074_automation_callbacks.sql`, `0075_resumable_uploads.sql`, `0076_file_references.sql` and `0079_durable_render_parity.sql`; `server/src/catalog/text-index.ts`, `server/src/uploads/scoped.ts`, `server/src/uploads/files.ts`, `server/src/comments/notices.ts`, `server/src/inbox/comment-notices.ts`, `server/src/projects/files.ts`, `server/src/store/types.ts`, `server/src/store/postgres.ts`, the blob, render and delivery modules, and the matching Lolly shell's `src/bridge/db.ts` and `src/lib/offline-manager.ts`.
 
+
 ## Retention rules
 
 Your organisation decides its own retention schedule, processing record and assessment outcomes, including how it treats its staff's data. The product's built-in durations are these.
@@ -159,6 +166,7 @@ Until the purge, a tombstone still counts in the erasure preview for the people 
 
 `policy.retention.auditDays` and `policy.retention.telemetryDays` default to `0`, which keeps everything; Lolly Work does not pick a duration for you. Comment notices have their own fixed limits, given in the inventory above.
 
+
 ## Session versions
 
 A document's history keeps two things. `session_revisions` holds the newest 20 whole-document revisions, which older shells read. `session_versions` holds the versions people see in History.
@@ -179,6 +187,7 @@ Content no version uses any more is deleted with the last version that used that
 Versions hold no email address. The API names people by their first and last name (or the part of their email before the `@`), agents by their label and guests as "Guest". Audit entries for saves, name and pin changes, restores and deletions hold ids, counts and the pin, never inputs or names.
 
 Source anchors: `migrations/0053_session_versions.sql`, `migrations/0072_session_version_annotations.sql`, `migrations/0076_session_version_history.sql`, `server/src/versions/`, `server/src/collab/rooms.ts` and the version blocks of `server/src/store/types.ts`.
+
 
 ## Activity and new audit data
 

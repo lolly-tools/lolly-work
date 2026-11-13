@@ -16,8 +16,6 @@ ynh_backup "$install_dir"
 # BACKUP THE DATA DIR
 #=================================================
 
-# The instance pack. Not backed up before upgrades (like every data_dir), and
-# kept on remove unless --purge.
 ynh_backup "$data_dir"
 
 #=================================================

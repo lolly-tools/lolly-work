@@ -12,6 +12,8 @@ source resolver instead can produce different indexes and tool bytes.
 - **Copy the raw pack.** Exact identity files under `tools/` and `catalog/`, with signed indexes untouched.
 - **Mount it in Lolly Work.** Lolly Work signs the catalogue for each caller when it serves the pack.
 
+**Note: Studio edits need no new pack**
+
 An [edit from the studio](design-system-administration.md#edit-this-instance-from-the-studio) is not
 in the pack, and needs no new pack. The mounted files stay exactly as this page builds them. Lolly Work
 serves the edited tokens from its own storage at a new address, and the catalogue it signs gives those
@@ -20,7 +22,7 @@ file. The signature on an edit is this instance's, not the release's. The consol
 is serving an edit, with the digest of each revision. Previews and social cards are part of the release,
 so they keep their old colours until the next image.
 
-Run the maintained producer from a qualified Lolly Work checkout with its vendored
+**The command.** Run the maintained producer from a qualified Lolly Work checkout with its vendored
 engine and resolver pinned to the reviewed Lolly source. Use clean, isolated
 Lolly source at a full commit, an extracted final signed release and a fresh
 output directory. The command installs nothing, signs nothing and contacts no
@@ -35,7 +37,15 @@ node scripts/build-instance-pack.ts \
   --node /path/to/node24
 ```
 
-The separately reviewed custody file has this exact structure:
+**Note: Two scripts share this name**
+
+Lolly's own `scripts/build-instance-pack.ts` cuts the distributable `.lolly` brand pack that
+connected apps download, a different file from this raw pack.
+[Downloads for connected apps](design-system-administration.md#downloads-for-connected-apps)
+covers that pack. From Lolly 1.2.0, that script packs variable font files with their whole
+weight range, records each face's real format and takes a licence file for each font family.
+
+**The custody file.** The separately reviewed custody file has this exact structure:
 
 ```json
 {
@@ -64,7 +74,7 @@ bytes. The public pin must contain only `kty`, `crv`, `x` and `y` for P-256;
 private signing material is neither accepted nor needed. The child verifier
 receives this explicit pin, overriding any ambient public-pin setting.
 
-The complete manifest is `{ "version": 1, "files": [...], "totalBytes": N }`.
+**The release manifest.** The complete manifest is `{ "version": 1, "files": [...], "totalBytes": N }`.
 Every row has `path`, `size` and full `sha256`; rows are sorted by relative path.
 It inventories every file in the final extracted tree, including compression
 siblings and retained immutable content. The producer checks every file and rejects
@@ -77,13 +87,13 @@ The complete manifest may list up to 120,000 files, the same bound Lolly Work ap
 to a shell release manifest. The catalogue delivery inventory inside the tree
 keeps its own bound of 100,000 rows.
 
-Release mode requires a modern signed catalogue with a sequence and tool
+**What release mode checks.** Release mode requires a modern signed catalogue with a sequence and tool
 directory hashes. It runs the source-pinned Lolly verifier, checks the complete
 signed logical tool closure and immutable delivery inventory, and validates
 every gzip and Brotli sibling by streaming it to the exact identity size and
 SHA-256. Invalid, orphaned, nested or partially consumed compressed files fail.
 
-The raw output copies exact identity files under `tools/` and `catalog/`, plus
+**What the raw pack holds.** The raw output copies exact identity files under `tools/` and `catalog/`, plus
 every path declared by `catalog/delivery-manifest.json`. This includes addressed
 documentation images under `info/shots/` when the inventory identifies them. Current
 and retained aliases, generated renditions and catalogue indexes remain byte
@@ -92,19 +102,31 @@ in the shell.
 
 The producer omits compression siblings and `catalog/tools/index.sig.json`.
 Lolly Work creates its caller-specific catalogue signature when serving the pack;
-the build envelope would not describe that filtered response. Release mode
-refuses `--exclude`, `--allow-dirty` and nonempty output directories. Any desired
+the build envelope would not describe that filtered response.
+
+**Warning: Exclude files before the catalogue is signed**
+
+Release mode refuses `--exclude`, `--allow-dirty` and nonempty output directories. Any desired
 exclusions must happen before the frontend catalogue is signed. Signed indexes
 are never pruned or reserialized by this mode.
 
-`.lolly-pack-source.json` version 2 keeps the clean commit and profile separate
+**Provenance.** `.lolly-pack-source.json` version 2 keeps the clean commit and profile separate
 from its `derivation` record. That record binds the reviewed custody, full release
 manifest, public-pin file, verifier, tool index and build envelope hashes, plus
 the count of omitted coding siblings. It describes a verified release projection;
 it does not claim generated or retained bytes came directly from Git. A failed
 copy leaves an `incomplete` marker. The final engine inspection must also pass.
 
-For private cohort preparation, provide `rawDerivation` in the reviewed evidence
+**Warning: Two asset ids for one file stop a production boot**
+
+From Lolly Work 1.2.0, a pack whose asset index lets two ids claim one catalogue file is
+refused. A production server exits before it reaches the database and prints the file and
+both ids. Lolly Demo packs built from Lolly 1.1.2 or 1.1.3 are affected. Run
+`node scripts/inspect-pack.ts <pack>` before you mount a pack, and rebuild a refused pack from
+Lolly 1.2.0. The [1.2.0 upgrade notes](release-1-2-0.md#changes-for-api-clients-and-operators)
+have the detail.
+
+**Cohort evidence.** For private cohort preparation, provide `rawDerivation` in the reviewed evidence
 as `{ "custody": { "path": "release-custody.json", "sha256": "..." } }`.
 The preparer independently binds this receipt to the candidate shell's complete
 manifest, existing public pin, source, profile and committed verifier, then checks
