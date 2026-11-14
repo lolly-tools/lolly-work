@@ -56,7 +56,7 @@ jobs:
           run_install: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '26.11.1'
+          node-version: '26.13.1'
       # The test reads the chart's YAML (the yaml package).
       - run: pnpm install --frozen-lockfile
       - name: Check the description and the generator
