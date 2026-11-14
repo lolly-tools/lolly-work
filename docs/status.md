@@ -6,10 +6,7 @@ governed library of brand assets, server renders, links you can turn off, approv
 audit trail.
 
 The current release is Lolly Work 1.2.0, paired with Lolly 1.2.0. The
-[release notes](release-1-2-0.md) list the exact component versions. This page groups what
-the release does into lists: ready to use, worth checking against your own systems first and not
-built yet. A separate list holds work that is finished on Lolly Work's main branch but is not
-in this release.
+[release notes](release-1-2-0.md) list the exact component versions.
 
 [Figure: What Lolly Work 1.2.0 does, what to check on your own systems before you rely on it and what is not built](https://lolly.tools/info/figures/work-status-capabilities.html)
 

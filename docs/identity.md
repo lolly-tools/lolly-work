@@ -75,7 +75,7 @@ account had, so a password that got out stops working everywhere at once.
 
 **Warning: A password link signs in whoever holds it**
 
-Whoever holds a link can sign in as its address, so some links are owner-only:
+Because of that, some links are owner-only:
 
 - a link that leads to an owner: an owner's account, a `bootstrapOwners` address or an
   invitation into an owner group;
@@ -150,8 +150,8 @@ URL that is an IP address turns them off.
 
 **Warning: Signing out everywhere leaves a passkey working**
 
-A passkey is a local credential with no provider session. A provider logout or **Sign out on
-all devices** leaves the passkey in place. To stop passkey sign-in, disable the account or
+A passkey is a local credential with no provider session, so a provider logout leaves the
+passkey in place too. To stop passkey sign-in, disable the account or
 send SCIM `active=false`.
 
 [Set up enterprise identity](enterprise-identity.md#5-operate-and-upgrade) explains how
@@ -177,8 +177,7 @@ needs no sticky sessions, and function-only deployments have the flow too.
 
 ## Who may sign in
 
-Completing a sign-in at the provider proves who a person is, not that they belong.
-`idp.admission` decides that, on every OpenID Connect, GitHub, password and reverse-proxy
+`idp.admission` decides whether a person belongs, on every OpenID Connect, GitHub, password and reverse-proxy
 sign-in, after the provider's token (or the password) is verified and **before** an account
 is written. A refused person gets a 403 page and leaves only an `auth.denied` audit row.
 
@@ -231,9 +230,8 @@ link is left out. With `policy.requests.join` on, a person refused as not invite
 [ask to join](invitations.md#asking-to-join). The page never shows which emails or domains
 are listed.
 
-Admission is checked at every sign-in. Removing someone from the lists blocks their next
-sign-in, and the console's disable ends live sessions at once
-([offboarding](#offboarding-disable-and-revocation)).
+Removing someone from the lists blocks their next sign-in, and the console's disable ends live
+sessions at once ([offboarding](#offboarding-disable-and-revocation)).
 
 **Invitations** admit one address each, with optional groups and an end date. Inviting,
 invite links, requests to join and requests for access have their own page: [Invite people
@@ -473,7 +471,6 @@ Map your own group names without renaming directory groups:
 ```
 
 - The order is owner, admin, approver, author, member, viewer; the highest match wins.
-  Unmatched accounts remain members.
 - Omitted high roles keep their literal defaults, and an explicit empty array turns that
   mapping off.
 - Names are exact, case sensitive and may contain commas. Duplicate assignments and wildcard

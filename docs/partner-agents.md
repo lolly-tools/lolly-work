@@ -23,8 +23,7 @@ the `partner` group.
 
 **Warning: The secret is shown once**
 
-The card shows a new token's secret once. Copy the secret and hand it to the partner's agent
-before you close the card.
+Copy the secret and hand it to the partner's agent before you close the card.
 
 - **Scopes.** `render` and `catalog.read` by default; `documents` and `files` may be added, and so
   may `approvals.request` ([Partner approvals](partner-approvals.md#requests-from-partners-agents)).

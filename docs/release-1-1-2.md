@@ -183,8 +183,7 @@ they stay hidden or fail as described in the Lolly notes.
 
 ## Changes for API clients and operators
 
-These change what an API client or operator sees, so check them before upgrading an
-integration.
+Check these before upgrading an integration.
 
 **Every API and operator change**
 

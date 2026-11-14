@@ -18,7 +18,7 @@ unaffected, and admins and owners are never narrowed.
 
 - **[Your brand](partner-shared-assets.md#what-reaches-a-partner)** Your design system's colours, type and palettes, so every tool draws in your brand.
 - **[Tools](partner-shared-assets.md#choose-its-tools-and-share-its-assets)** Only the tools their programme includes: in the gallery, in search, in server renders and for their agents.
-- **[Shared assets](partner-shared-assets.md)** Only the files shared with their programme or their company. A file shared with everyone does not reach them.
+- **[Shared assets](partner-shared-assets.md)** Only the files shared with their programme or their company.
 - **[Templates](partner-templates.md)** The templates published to them, on their home and in the tool's **Start** chooser. They change only what you left open.
 - **[Their company](partner-co-branding.md)** A card for their company at the top of their home, with its logos and details, which fill in every template that takes them.
 - **[Their agents](partner-agents.md)** A token you issue sees what the company's people see, within limits you set.

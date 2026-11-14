@@ -104,8 +104,7 @@ log service with controlled deletion access, and check receipt and retention the
 
 **Warning: Local logs do not anchor the chain**
 
-Local journald, a local file or `kubectl logs` alone can disappear with the host or deployment,
-so they do not anchor anything.
+Local journald, a local file or `kubectl logs` alone can disappear with the host or deployment.
 
 The timer is unref'd, so it never holds the process open. The defaults are
 
@@ -138,8 +137,7 @@ retired key. The way through depends on whether you still have the old value:
   checks every row it is about to retire against the previous value, and refuses if a row
   verifies under neither.
 - **The old value is gone**, for example because the platform stores secrets write-only. Nothing
-  can check the old MACs again. Record the head first, while a server still runs the old value,
-  and run `retire-key` once every host that writes to this database runs the new one.
+  can check the old MACs again, so follow the steps below in order.
 
 - **Record the head** while the server still runs the old value.
 - **Deploy the new secret** to every host that writes to this database.
