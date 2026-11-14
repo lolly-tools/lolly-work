@@ -1,8 +1,7 @@
 # People and the partnership
 
 A partnership runs from the programme you create to the day access ends, and an end can be undone
-for 30 days. This page covers creating a programme, checking what its partners get, inviting the
-people, a person in two programmes and ending a partnership at once or on a date.
+for 30 days.
 
 ![From invitation to reopening: invite by list or by domain, work in your brand, a notice 14 days and 1 day before the end, the end, when access and links stop, and Reopen within 30 days.](/info/diagrams/work-partners/partnership-lifecycle.svg)
 
@@ -55,8 +54,8 @@ Northwind IT · Resellers, EMEA" and "Changes are not saved to the partner's acc
 
 ## Invite the people
 
-On the programme's page, **Add people** takes a list, with a company and an end date on each line,
-and shows what will happen before anything does. **Domains** lets everyone at a partner's proved
+On the programme's page, **Add people** takes a list, with a company and an end date on each line.
+**Domains** lets everyone at a partner's proved
 domain join the programme and the company when they sign in. Lolly Work sends no email for this,
 so it gives you one message to send yourself.
 

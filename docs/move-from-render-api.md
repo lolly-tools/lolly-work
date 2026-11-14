@@ -18,7 +18,7 @@ Every adapter on this page comes from each vendor's public documentation and fro
 
 ## What each source allows
 
-The move follows the same stages as [leaving a DAM](offboarding.md): connect, pin, recreate, compare, run side by side, then cut over. How much carries across depends on what the vendor's API returns.
+The move follows the same stages as [leaving a DAM](offboarding.md). How much carries across depends on what the vendor's API returns.
 
 | | Bannerbear V5 | Bannerbear V2 | Placid |
 |---|---|---|---|
@@ -55,7 +55,7 @@ Keep what you would miss after the account ends. The inventory folder is the sta
 
 **Warning: `sample` spends credits on your account**
 
-Each sample is a real render, and so **spends credits on your account**. It refuses to run without `--spend-credits`.
+Each sample is a real render. It refuses to run without `--spend-credits`.
 
 ```bash
 lw render-api sample --from placid --template ospo24ysn --token-env PLACID_KEY \
