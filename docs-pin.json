@@ -1,8 +1,8 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "dd9621cb4b191007f49f4acf0752cfff79f463a3",
-  "manifestSha256": "abd8854d4c94b022dd56a6c3effbee0f408048ba28ed0b457e9446960ae7caca",
+  "commit": "7e969a7745f5277402e3b4ee391731197bd033cb",
+  "manifestSha256": "3937b3985cb6da8b05824960ab61d8dbf057451fee29345596b459e49159cd01",
   "files": {
     "account-lifecycle.md": {
       "sha256": "b030ca53a327bdeefb3ad3e2c139ab003387c3cccd3262b1fb0b0cf362b945c1",
