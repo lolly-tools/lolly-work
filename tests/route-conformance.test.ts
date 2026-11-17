@@ -31,6 +31,9 @@ const PRIVATE = cachePolicy('person-private').cacheControl;
 const ROUTE_CLASSES: Record<string, DeliveryClass> = {
   'GET /': 'public-revalidate',
   'GET /*': 'public-revalidate',
+  // The console page stays out of shared caches; its files are public bytes.
+  'GET /admin': 'instance-private',
+  'GET /admin/*': 'public-revalidate',
   'HEAD /*': 'public-revalidate',
   'GET /api/brand': 'public-revalidate',
   'GET /api/brand/auth.css': 'public-revalidate',
@@ -72,6 +75,8 @@ const ROUTE_CLASSES: Record<string, DeliveryClass> = {
 /** Classes a handler may choose for one response with setDeliveryClass, by
  *  route. Person-private is always allowed, because nothing is stricter. */
 const RESPONSE_CLASSES: Record<string, DeliveryClass[]> = {
+  // A `?v=` entry naming the current console revision is immutable; /admin/ is the page.
+  'GET /admin/*': ['public-immutable', 'instance-private'],
   'GET /*': ['public-immutable'],
   'HEAD /*': ['public-immutable'],
   'GET /catalog/*': ['public-bounded'],
@@ -88,8 +93,6 @@ const RESPONSE_CLASSES: Record<string, DeliveryClass[]> = {
  *  class. The list only shrinks: a new GET or HEAD route names its class. */
 const UNDECLARED = [
   'GET /activate',
-  'GET /admin',
-  'GET /admin/*',
   'GET /api/auth/callback',
   'GET /api/auth/config',
   'GET /api/auth/dev',
@@ -232,7 +235,7 @@ const CREDENTIALS: Array<Record<string, string>> = [
 interface Sample { status: number; headers: IncomingHttpHeaders; served: { delivery: DeliveryClass; options: CachePolicyOptions } }
 type Expected = [key: string, path: string, headers: Record<string, string>, delivery: DeliveryClass, status: number];
 let pack: string, shell: string, seed: string, server: Server, port: number, openServer: Server, openPort: number;
-let owner: string, revision: string, shareLink: string, packChecksum: string;
+let owner: string, revision: string, shareLink: string, packChecksum: string, consoleRevision: string;
 let routes: RouteDescription[] = [];
 let served: ServerResponse | undefined;
 /** Each route and the class a sample of it was served under, as 'GET /path public-immutable'. */
@@ -362,6 +365,7 @@ before(async () => {
   owner = login.headers.getSetCookie().find(value => value.startsWith('lw_session='))!.split(';')[0]!;
   const brand = await (await fetch(`http://127.0.0.1:${port}/api/brand`)).json() as { fontsBase: string };
   revision = /^\/api\/brand\/r\/([0-9a-f]{64})\/font\/$/.exec(brand.fontsBase)![1]!;
+  consoleRevision = /\/admin\/app\.js\?v=([0-9a-f]{64})"/.exec(await (await fetch(`http://127.0.0.1:${port}/admin`)).text())![1]!;
   const minted = await fetch(`http://127.0.0.1:${port}/api/v1/links`, { method: 'POST', headers: { cookie: owner, 'content-type': 'application/json' },
     body: JSON.stringify({ kind: 'share', target: { toolId: 'swatch', format: 'svg' } }) });
   assert.equal(minted.status, 201);
@@ -423,6 +427,8 @@ test('one sample per route, anonymous and signed in, answers cachePolicy for its
 test('public, link, dynamic and conditional samples match cachePolicy, and any credential keeps them private', async () => {
   const logo = `/api/brand/r/${revision}/logo/light`, fresh = await sample(routeOf('GET /api/brand/r/:revision/logo/:variant'), logo);
   assert.equal(fresh.status, 200);
+  const consolePage = await sample(routeOf('GET /admin'), '/admin'), consoleTheme = await sample(routeOf('GET /admin/*'), '/admin/theme.css');
+  assert.ok(consolePage.headers.etag && consoleTheme.headers.etag, 'console files carry validators');
   await expectSamples([
     ['GET /l/:id', shareLink, {}, 'link', 200],
     ['GET /api/brand', '/api/brand', {}, 'public-revalidate', 200],
@@ -443,6 +449,15 @@ test('public, link, dynamic and conditional samples match cachePolicy, and any c
     ['HEAD /tools/*', '/tools', {}, 'public-revalidate', 200],
     ['GET /catalog/*', '/catalog/og/swatch.png', {}, 'public-bounded', 200],
     ['HEAD /catalog/*', '/catalog/og/swatch.png', {}, 'public-bounded', 200],
+    ['GET /admin', '/admin', {}, 'instance-private', 200],
+    ['GET /admin', '/admin', { 'if-none-match': String(consolePage.headers.etag) }, 'instance-private', 304],
+    ['GET /admin/*', '/admin/', {}, 'instance-private', 200],
+    ['GET /admin/*', `/admin/app.js?v=${consoleRevision}`, {}, 'public-immutable', 200],
+    ['GET /admin/*', `/admin/styles.css?v=${consoleRevision}`, {}, 'public-immutable', 200],
+    ['GET /admin/*', `/admin/app.js?v=${'0'.repeat(64)}`, {}, 'public-revalidate', 200],
+    ['GET /admin/*', '/admin/theme.css', {}, 'public-revalidate', 200],
+    ['GET /admin/*', '/admin/theme.css', { 'if-none-match': String(consoleTheme.headers.etag) }, 'public-revalidate', 304],
+    ['GET /admin/*', '/admin/fonts/SUSE%5Bwght%5D.woff2', {}, 'public-revalidate', 200],
   ]);
   // Refusals on public routes are private too, whatever the handler wrote.
   const refusals: Array<[string, string, Record<string, string>, number]> = [
@@ -450,6 +465,7 @@ test('public, link, dynamic and conditional samples match cachePolicy, and any c
     ['GET /api/brand/font/:file', '/api/brand/font/Brand.woff2', { range: 'bytes=999999-' }, 416],
     ['GET /*', '/_app/missing.0123456789abcdef.js', {}, 404],
     ['GET /catalog/*', '/catalog/og/missing.png', {}, 404],
+    ['GET /admin/*', `/admin/missing.js?v=${consoleRevision}`, {}, 404],
   ];
   for (const [key, path, headers, status] of refusals) {
     const res = await sample(routeOf(key), path, headers);

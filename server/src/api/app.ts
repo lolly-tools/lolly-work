@@ -43,7 +43,7 @@ import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBy
 import { cachePolicy, publicStaticDeliveryClass, tag as deliveryTag, type DeliveryClass, type TagPrefix } from '@lolly-tools/core/delivery-v1';
 import { shellDirectories } from '../lib/shell-release.ts';
 import { readShotCred } from './shot-provenance.ts';
-import { CONSOLE_ASSET_HEADERS, consoleDocumentHeaders } from './console-headers.ts';
+import { createConsoleDelivery, sendLandingPage } from './console-delivery.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
 import {
   GUEST_COOKIE, SESSION_COOKIE, chainTtlSec, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readMemberSession,
@@ -12984,22 +12984,11 @@ export function buildApp(deps: AppDeps): App {
   const fnRoot = (globalThis as { __LW_FN_ROOT?: string }).__LW_FN_ROOT;
   const dataDir = (rel: string): string =>
     fnRoot ? fileURLToPath(new URL(rel, fnRoot)) : fileURLToPath(new URL(`../../../${rel}`, import.meta.url));
-  const consoleDir = dataDir('console/');
-  const serveConsole = async (res: ServerResponse, rel: string) => {
-    const clean = normalize(rel).replace(/^(\.\.[/\\])+/, '');
-    if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
-    try {
-      const bytes = await readFile(join(consoleDir, clean));
-      const mime = contentType(clean);
-      const headers = mime.startsWith('text/html') ? consoleDocumentHeaders(bytes.toString('utf8')) : CONSOLE_ASSET_HEADERS;
-      res.writeHead(200, { 'content-type': mime, 'cache-control': 'no-cache', ...headers });
-      res.end(bytes);
-    } catch {
-      sendError(res, 404, 'NOT_FOUND', 'no such console file');
-    }
-  };
-  router.add('GET', '/admin', (_req, res) => void serveConsole(res, 'index.html'));
-  router.add('GET', '/admin/*', (_req, res, ctx) => void serveConsole(res, ctx.params['*'] || 'index.html'));
+  // console-delivery.ts sets each file's caching: the HTML revalidates and stays
+  // out of shared caches, a `?v=<revision>` entry is immutable, other files revalidate.
+  const consoleFiles = createConsoleDelivery(dataDir('console/'), contentType);
+  router.add('GET', '/admin', (req, res, ctx) => consoleFiles.serve(req, res, 'index.html', ctx.url), { delivery: 'instance-private' });
+  router.add('GET', '/admin/*', (req, res, ctx) => consoleFiles.serve(req, res, ctx.params['*'] || 'index.html', ctx.url), { delivery: 'public-revalidate' });
 
   // ── deployment docs (docs/), rendered by the console's Docs view. Whoever
   // operates a deploy should not need the repo to read its documentation.
@@ -13538,10 +13527,7 @@ export function buildApp(deps: AppDeps): App {
     // The passwordless testing sandbox serves persona sign-in, docs and the
     // architecture overview when no web shell is mounted. Register this last
     // so every other route still wins.
-    router.add('GET', '/', (_req, res) => {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
-      res.end(demoLandingHtml(config));
-    });
+    router.add('GET', '/', (req, res) => sendLandingPage(req, res, demoLandingHtml(config)), { delivery: 'instance-private' });
   }
 
   // Dev-only CORS: lets a Vite dev-server shell (pnpm run dev:web on another port)
