@@ -22,6 +22,9 @@ test('release archive survives an excluded manifest commit but detects installed
     for (const name of ['yunohost-release.ts', 'console-assets.ts']) {
       cpSync(new URL(`../scripts/${name}`, import.meta.url), join(root, 'scripts', name));
     }
+    // console-assets.ts reads its revision algorithm from the server tree.
+    mkdirSync(join(root, 'server', 'src', 'lib'), { recursive: true });
+    cpSync(new URL('../server/src/lib/console-revision.ts', import.meta.url), join(root, 'server', 'src', 'lib', 'console-revision.ts'));
     writeFileSync(join(root, 'package.json'), '{"type":"module","version":"1.1.0"}\n');
     writeFileSync(join(root, 'console', 'index.html'), '<link href="/admin/styles.css"><script src="/admin/app.js"></script>');
     writeFileSync(join(root, 'console', 'app.js'), 'console.log("fixture");\n');

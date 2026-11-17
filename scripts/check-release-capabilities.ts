@@ -13,6 +13,12 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { mintSessionCookie } from '../server/src/iam/sessions.ts';
 import { checkConsoleAssets, consoleAssetPlan, CONSOLE_DIR } from './console-assets.ts';
+import { cachePolicy } from '@lolly-tools/core/delivery-v1';
+
+const CONSOLE_PAGE = cachePolicy('instance-private').cacheControl;
+const CONSOLE_ENTRY = cachePolicy('public-immutable').cacheControl;
+const CONSOLE_FILE = cachePolicy('public-revalidate').cacheControl;
+const STRONG_TAG = /^"[0-9a-f]{64}(?:-br|-gzip)?"$/;
 import { loadConsoleModuleGraph } from './console-module-check.ts';
 
 // Native module linking is opt-in in Node 24. Keep the existing image/operator
@@ -38,17 +44,29 @@ try {
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
   const base = `http://127.0.0.1:${address.port}`;
+  // Console caching (server/src/api/console-delivery.ts): the page is private and
+  // revalidates against its ETag, the entries it names with the current revision
+  // are immutable, and every other console file revalidates.
   const htmlResponse = await fetch(base + '/admin/');
   assert.equal(htmlResponse.status, 200);
-  assert.equal(htmlResponse.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
+  assert.equal(htmlResponse.headers.get('cache-control'), CONSOLE_PAGE, 'the console page must revalidate and stay out of shared caches');
+  const pageTag = htmlResponse.headers.get('etag');
+  assert.match(pageTag ?? '', STRONG_TAG, 'the console page must carry a strong validator');
   const html = await htmlResponse.text();
   assert.equal(html, consoleAssetPlan().html, 'served HTML must match the generated console entry');
+  const unchanged = await fetch(base + '/admin/', { headers: { 'if-none-match': pageTag! } });
+  assert.equal(unchanged.status, 304, 'a repeat load of the console page must revalidate to 304');
   const stylesheet = /<link\b[^>]*\bhref="(\/admin\/styles\.css\?v=[a-f0-9]{64})"/.exec(html);
   assert.ok(stylesheet, 'shipped HTML must select the current stylesheet');
   const css = await fetch(base + stylesheet[1]);
   assert.equal(css.status, 200);
-  assert.equal(css.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
+  assert.equal(css.headers.get('cache-control'), CONSOLE_ENTRY, 'the revision-named stylesheet must be immutable');
   assert.equal(await css.text(), await readFile(join(CONSOLE_DIR, 'styles.css'), 'utf8'));
+  const stable = await fetch(base + '/admin/theme.css');
+  assert.equal(stable.status, 200);
+  assert.equal(stable.headers.get('cache-control'), CONSOLE_FILE, 'a console file without a revision must revalidate');
+  assert.equal((await fetch(base + '/admin/theme.css', { headers: { 'if-none-match': stable.headers.get('etag')! } })).status, 304, 'a console file must revalidate to 304');
+  assert.equal((await fetch(`${base}/admin/theme.css?v=${consoleAssetPlan().revision}`)).headers.get('cache-control'), CONSOLE_FILE, 'only the entries the page names may be immutable');
   // Plan 76 milestone 4 (R2): the version routes the shell's History feature-detects.
   // An unknown session route answers 404, so a 401 shows the route is in this build.
   assert.equal((await fetch(base + '/api/v1/sessions/release-check/version-missing')).status, 404, 'an unknown session route must answer 404');
@@ -93,7 +111,10 @@ try {
       const entry = await loadConsoleModuleGraph({ html, base, context: dom.getInternalVMContext(), read: async url => {
         const response = await fetch(url);
         assert.equal(response.status, 200, `HTML-selected module must be shipped: ${new URL(url).pathname}`);
-        assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform', 'imported admin modules must stay out of browser and shared caches');
+        const entry = new URL(url).search !== '';
+        assert.equal(response.headers.get('cache-control'), entry ? CONSOLE_ENTRY : CONSOLE_FILE,
+          entry ? 'the revision-named entry module must be immutable' : 'imported admin modules must revalidate');
+        if (!entry) assert.match(response.headers.get('etag') ?? '', STRONG_TAG, 'imported admin modules must carry a strong validator');
         const source = await response.text();
         assert.equal(source, await readFile(join(CONSOLE_DIR, decodeURIComponent(new URL(url).pathname.slice('/admin/'.length))), 'utf8'), 'served module bytes must match the console source');
         return source;

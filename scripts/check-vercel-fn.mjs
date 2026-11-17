@@ -134,15 +134,24 @@ try {
   const consoleDir = join(func, 'console');
   checkConsoleAssets(consoleDir);
   const assets = consoleAssetPlan(consoleDir);
+  // Console caching (server/src/api/console-delivery.ts): the page revalidates
+  // privately, stable addresses revalidate against an ETag, and the revision
+  // entries are immutable. Text is compressed by the function itself.
   const shell = await request('/admin'); assert.equal(shell.status, 200); assert.equal(await shell.text(), assets.html);
+  assert.equal(shell.headers.get('cache-control'), 'private, no-cache, no-transform');
   for (const name of assets.files.filter(name => /\.(?:js|css)$/.test(name))) {
     const module = await request(`/admin/${name}`); assert.equal(module.status, 200);
-    assert.equal(module.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
+    assert.equal(module.headers.get('cache-control'), 'public, max-age=0, s-maxage=0, must-revalidate, no-transform');
+    assert.match(module.headers.get('etag') ?? '', /^"[0-9a-f]{64}(?:-br|-gzip)?"$/);
     assert.equal(await module.text(), readFileSync(join(root, 'console', name), 'utf8'));
   }
   for (const path of [`/admin/app.js?v=${assets.revision}`, `/admin/styles.css?v=${assets.revision}`]) {
-    const selected = await request(path); assert.equal(selected.status, 200);
+    const selected = await request(path, { headers: { 'accept-encoding': 'br' } }); assert.equal(selected.status, 200);
+    assert.equal(selected.headers.get('cache-control'), 'public, max-age=31536000, s-maxage=31536000, immutable, no-transform');
+    assert.equal(selected.headers.get('content-encoding'), 'br');
     assert.equal(await selected.text(), readFileSync(join(consoleDir, new URL(path, 'https://console.invalid').pathname.slice('/admin/'.length)), 'utf8'));
+    const again = await request(path, { headers: { 'accept-encoding': 'br', 'if-none-match': selected.headers.get('etag') } });
+    assert.equal(again.status, 304);
   }
   const login = await request('/api/auth/dev?email=owner%40fixture.test', { redirect: 'manual' });
   assert.equal(login.status, 302);
