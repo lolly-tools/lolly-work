@@ -19,6 +19,7 @@ import { createChainEditor } from './chains.js';
 import { createProviderSetup } from './provider-setup.js';
 import { createOAuthProviderSetup } from './provider-oauth-setup.js';
 import { compareValues } from './table-sort.js';
+import { initialsOf } from './initials.js';
 import { createTagPanel } from './catalog-tags.js';
 import { createSubmitPanel } from './catalog-submit.js';
 import { buildThemeMaps, themeFromTokens, resolveCssColor } from './brand-theme.js';
@@ -4807,7 +4808,7 @@ async function invitationsSection(groupOptions) {
     const check = el('input', { type: 'checkbox', 'aria-label': `Select invitation for ${inv.email}`, checked: selected.has(inv.id) ? 'checked' : null, onchange: () => {
       if (check.checked) selected.add(inv.id); else selected.delete(inv.id); syncSelection();
     } }); rowChecks.set(inv.id, check);
-    const avatar = el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, inv.email.split('@')[0].slice(0, 2).toUpperCase());
+    const avatar = el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, initialsOf('', inv.email));
     const projects = inv.projects ?? [];
     return el('tr', { 'data-invitation-id': inv.id },
       el('td', {}, check),
@@ -5171,7 +5172,7 @@ async function viewUsers(main, params) {
   const nameLink = el('a', { class: 'link-btn', href: '#/users', onclick: (e) => { e.preventDefault(); e.stopPropagation(); open(); } }, u.name);
     return el('tr', { class: 'row-click', onclick: open },
       el('td', {}, el('div', { class: 'invite-account' },
-        el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, (u.name || u.email || '?').split(/[\s.@_-]+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()),
+        el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, initialsOf(u.name, u.email)),
         nameLink), u.disabled ? el('span', { class: 'status revoked', style: 'margin-left:8px' }, 'disabled') : null),
       el('td', { title: u.email }, u.email),
       el('td', {}, u.title ?? '—'),
@@ -5245,7 +5246,7 @@ async function viewUsers(main, params) {
     const closeButton = el('button', { type: 'button', 'aria-label': 'Close account', onclick: () => requestClose() }, 'Close');
     const header = el('div', { class: 'account-header' },
       el('span', { class: 'invite-avatar account-avatar', 'aria-hidden': 'true' },
-        (u.name || u.email || '?').split(/[\s.@_-]+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()),
+        initialsOf(u.name, u.email)),
       el('div', { class: 'account-title' }, el('span', { class: 'account-eyebrow' }, 'Account'), heading,
         el('p', { class: 'sub flush' }, u.email)), closeButton);
     const isCurrent = () => !closed && activeDetail?.dialog === dialog && detailHost.isConnected;

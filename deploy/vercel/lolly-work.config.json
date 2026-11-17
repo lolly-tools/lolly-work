@@ -3,7 +3,7 @@
     "mode": "evaluation"
   },
   "instance": {
-    "name": "Lolly Work \u2014 Demo",
+    "name": "Lolly Work Demo",
     "baseUrl": "https://lolly.work",
     "pack": "packs/demo",
     "connectPack": "lolly-demo-brand-1.2.0.lolly"
