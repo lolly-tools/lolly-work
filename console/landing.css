@@ -138,14 +138,24 @@ button:disabled {
   width: auto;
 }
 .sandbox {
+  /* The warning is carried by the fill and the mark. The edge stays a neutral hairline on every side. */
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
   border: 1px solid var(--baseline);
-  border-left: 3px solid var(--warning);
-  background: var(--surface);
+  background: color-mix(in oklab, var(--warning) 12%, var(--surface));
   padding: 0.9rem 1rem;
   border-radius: var(--radius-sm);
   font-size: 0.875rem;
   color: var(--ink-2);
   margin-bottom: 1.75rem;
+}
+/* Drawn here, not taken from the machine's emoji font, so every visitor sees the same mark.
+   Mixed with the ink so the amber reads on the tinted fill in both themes. */
+.sandbox-mark {
+  flex: none;
+  margin-top: 0.1rem;
+  color: color-mix(in oklab, var(--warning) 62%, var(--ink));
 }
 .sandbox strong {
   color: var(--ink);
@@ -456,9 +466,9 @@ footer {
 .arch-limit {
   margin: 1.1rem 0;
   padding: 0.9rem 1rem;
-  border-left: 2px solid var(--baseline);
+  border: 1px solid var(--baseline);
   background: var(--plane);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  border-radius: var(--radius-sm);
 }
 .arch-limit strong {
   font-size: 0.875rem;

@@ -118,7 +118,7 @@ export function demoLandingHtml(config: InstanceConfig): string {
     <label class="theme-picker" for="landing-theme">Theme <select id="landing-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option><option value="brand">Brand</option></select></label>
   </div>
   <div class="sandbox">
-    <span>⚠️</span>
+    <svg class="sandbox-mark" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
     <div><strong>Public testing sandbox.</strong> Sign-in is passwordless: anyone can enter as any persona, including admin. State is in-memory and resets on redeploy. Do not put anything real or sensitive here.</div>
   </div>
 

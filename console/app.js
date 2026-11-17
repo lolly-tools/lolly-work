@@ -4552,6 +4552,31 @@ function parseInviteEmails(text) {
     .filter(Boolean))];
 }
 
+/**
+ * Up to two letters for an avatar.
+ *
+ * A name gives the first letter of each of its first two words. A qualifier in
+ * brackets is not part of the name, so "Ada (Admin) Ops" is AO and never "A(".
+ * Each word is read from its first letter or digit, so a quote or a dash in
+ * front of a word never shows. An account with no name uses the part of its
+ * email before the @, and the domain never supplies a letter.
+ */
+function initialsOf(name, email) {
+  const words = (text) => String(text ?? '')
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, ' ')
+    .split(/[\s.@_+-]+/)
+    .map((word) => word.replace(/^[^\p{L}\p{N}]+/u, ''))
+    .filter(Boolean);
+  const first = (word) => Array.from(word)[0] ?? '';
+  const named = words(name);
+  if (named.length >= 2) return (first(named[0]) + first(named[1])).toUpperCase();
+  if (named.length === 1) return first(named[0]).toUpperCase();
+  const local = words(String(email ?? '').split('@')[0]);
+  if (local.length >= 2) return (first(local[0]) + first(local[1])).toUpperCase();
+  if (local.length === 1) return Array.from(local[0]).slice(0, 2).join('').toUpperCase();
+  return '?';
+}
+
 /** groupOptions: the groups this viewer may invite into, as names or
  *  {name, source} rows, or null when the viewer may not attach groups at all
  *  (attaching groups needs grant.edit, like editing a person's groups). An
@@ -4807,7 +4832,7 @@ async function invitationsSection(groupOptions) {
     const check = el('input', { type: 'checkbox', 'aria-label': `Select invitation for ${inv.email}`, checked: selected.has(inv.id) ? 'checked' : null, onchange: () => {
       if (check.checked) selected.add(inv.id); else selected.delete(inv.id); syncSelection();
     } }); rowChecks.set(inv.id, check);
-    const avatar = el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, inv.email.split('@')[0].slice(0, 2).toUpperCase());
+    const avatar = el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, initialsOf('', inv.email));
     const projects = inv.projects ?? [];
     return el('tr', { 'data-invitation-id': inv.id },
       el('td', {}, check),
@@ -5171,7 +5196,7 @@ async function viewUsers(main, params) {
   const nameLink = el('a', { class: 'link-btn', href: '#/users', onclick: (e) => { e.preventDefault(); e.stopPropagation(); open(); } }, u.name);
     return el('tr', { class: 'row-click', onclick: open },
       el('td', {}, el('div', { class: 'invite-account' },
-        el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, (u.name || u.email || '?').split(/[\s.@_-]+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()),
+        el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, initialsOf(u.name, u.email)),
         nameLink), u.disabled ? el('span', { class: 'status revoked', style: 'margin-left:8px' }, 'disabled') : null),
       el('td', { title: u.email }, u.email),
       el('td', {}, u.title ?? '—'),
@@ -5245,7 +5270,7 @@ async function viewUsers(main, params) {
     const closeButton = el('button', { type: 'button', 'aria-label': 'Close account', onclick: () => requestClose() }, 'Close');
     const header = el('div', { class: 'account-header' },
       el('span', { class: 'invite-avatar account-avatar', 'aria-hidden': 'true' },
-        (u.name || u.email || '?').split(/[\s.@_-]+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()),
+        initialsOf(u.name, u.email)),
       el('div', { class: 'account-title' }, el('span', { class: 'account-eyebrow' }, 'Account'), heading,
         el('p', { class: 'sub flush' }, u.email)), closeButton);
     const isCurrent = () => !closed && activeDetail?.dialog === dialog && detailHost.isConnected;
