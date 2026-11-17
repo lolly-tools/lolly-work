@@ -2,9 +2,20 @@
 // qualifier in brackets, "Ada (Admin) Ops", drew "A(" in the avatar.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { initialsOf } from '../console/initials.js';
+
+// The helper lives in app.js with the views that use it. Loaded as the other console
+// suites load that file: its imports removed, its boot call removed, in a jsdom window.
+const require = createRequire(import.meta.url);
+const { JSDOM } = require('jsdom');
+const appSource = readFileSync(new URL('../console/app.js', import.meta.url), 'utf8')
+  .replace(/^import .*;$/gm, '').replace(/\nboot\(\);\s*$/, '');
+const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin', runScripts: 'outside-only' });
+dom.window.matchMedia = () => ({ matches: false });
+dom.window.eval(`${appSource}\nwindow.helpers = { initialsOf };`);
+const initialsOf = dom.window.helpers.initialsOf as (name?: string | null, email?: string | null) => string;
 
 test('a qualifier in brackets is not part of the name', () => {
   assert.equal(initialsOf('Ada (Admin) Ops', 'admin@suse.example'), 'AO');
