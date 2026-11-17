@@ -13,7 +13,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request, type IncomingHttpHeaders, type Server } from 'node:http';
-import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
@@ -164,6 +164,40 @@ test('stable addresses revalidate against a strong validator for each coding', a
   for (const path of ['/admin/missing.js', `/admin/missing.js?v=${A}`, '/admin/fonts']) {
     const missing = await read(fixture.port, path);
     assert.equal(missing.status, 404, path); assert.equal(missing.headers['cache-control'], NO_STORE);
+  }
+});
+
+test('a file replaced with bytes of the same length and its old modification time is not answered 304', async () => {
+  // The validator cache was keyed on size and modification time alone. A copy that keeps
+  // times (or a rebuild that restores them) then left the old ETag in force, and a browser
+  // that revalidated kept the old bytes for as long as the server ran.
+  const root = await mkdtemp(join(tmpdir(), 'lw-console-swap-'));
+  const served = await consoleServer(root);
+  try {
+    const path = join(root, 'theme.css');
+    const first = ':root { --ink: #111111; }\n'.repeat(60), second = ':root { --ink: #222222; }\n'.repeat(60);
+    assert.equal(first.length, second.length);
+    // A whole-second time, so the two stats compare exactly on every filesystem.
+    const kept = new Date('2026-01-02T03:04:05.000Z');
+    await writeFile(path, first);
+    await utimes(path, kept, kept);
+    const before = await stat(path);
+    const one = await read(served.port, '/admin/theme.css', { 'accept-encoding': 'br' });
+    assert.equal(one.status, 200);
+    assert.equal((await read(served.port, '/admin/theme.css', { 'accept-encoding': 'br', 'if-none-match': String(one.headers.etag) })).status, 304, 'unchanged bytes revalidate');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await writeFile(path, second);
+    await utimes(path, kept, kept);
+    const after = await stat(path);
+    assert.equal(after.mtime.getTime(), before.mtime.getTime(), 'the modification time is the old one');
+    assert.equal(after.size, before.size);
+    const two = await read(served.port, '/admin/theme.css', { 'accept-encoding': 'br', 'if-none-match': String(one.headers.etag) });
+    assert.equal(two.status, 200, 'the old validator no longer matches');
+    assert.notEqual(two.headers.etag, one.headers.etag);
+    assert.equal(decoded(two).toString('utf8'), second);
+  } finally {
+    await close(served);
+    await rm(root, { recursive: true, force: true });
   }
 });
 

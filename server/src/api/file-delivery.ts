@@ -140,17 +140,17 @@ export function sendBytes(req: IncomingMessage, res: ServerResponse, bytes: Buff
 }
 
 /** Stay within the mounted release even if an individual file is a symlink. */
-async function safeNode(root: string, rel: string, directory: boolean): Promise<{ path: string; modified: Date; size: number } | null> {
+async function safeNode(root: string, rel: string, directory: boolean): Promise<{ path: string; modified: Date; size: number; changed: number } | null> {
   if (!rel || rel.split(/[\\/]/).some(part => part === '..' || part === '.') || rel.includes('\0')) return null;
   try {
     const base = await realpath(root), path = await realpath(resolve(base, rel));
     const trusted = [...projectionRoots].filter(([projection]) => base === projection || base.startsWith(projection + sep)).flatMap(([, sources]) => sources);
     if (![base, ...trusted].some(source => path.startsWith(source + sep))) return null;
     const metadata = await stat(path);
-    return (directory ? metadata.isDirectory() : metadata.isFile()) ? { path, modified: metadata.mtime, size: metadata.size } : null;
+    return (directory ? metadata.isDirectory() : metadata.isFile()) ? { path, modified: metadata.mtime, size: metadata.size, changed: metadata.ctimeMs } : null;
   } catch { return null; }
 }
-export async function safeFile(root: string, rel: string): Promise<{ path: string; modified: Date; size: number } | null> {
+export async function safeFile(root: string, rel: string): Promise<{ path: string; modified: Date; size: number; changed: number } | null> {
   return safeNode(root, rel, false);
 }
 export async function safeDirectory(root: string, rel: string): Promise<boolean> { return !!await safeNode(root, rel, true); }
@@ -159,7 +159,10 @@ export async function sendFile(req: IncomingMessage, res: ServerResponse, root: 
   const file = await safeFile(root, rel); if (!file) return false;
   const preference = !req.headers.range && options.compression !== false && isText(options.contentType) && file.size > 1024 ? preferredEncoding(req.headers['accept-encoding']) : null;
   const sibling = preference ? await safeFile(root, `${rel}.${preference === 'br' ? 'br' : 'gz'}`) : null;
-  const key = `${file.path}/${preference ?? 'identity'}`, version = `${file.modified.getTime()}/${file.size}/${sibling?.modified.getTime() ?? ''}/${sibling?.size ?? ''}`;
+  // The change time is part of the version: a file replaced with bytes of the same length
+  // and its old modification time kept (a copy that preserves times) still changes that,
+  // so its cached validator is not reused and no stale 304 is sent.
+  const key = `${file.path}/${preference ?? 'identity'}`, version = `${file.modified.getTime()}/${file.changed}/${file.size}/${sibling?.modified.getTime() ?? ''}/${sibling?.changed ?? ''}/${sibling?.size ?? ''}`;
   const previous = fileValidators.get(key);
   if (previous?.version === version && !req.headers.range && (req.method === 'HEAD' || matchesEtag(req.headers['if-none-match'], previous.etag))) {
     const headers: Record<string, string> = { 'content-type': options.contentType, etag: previous.etag,
