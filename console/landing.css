@@ -123,12 +123,41 @@ button:disabled {
   font-size: 0.875rem;
   color: var(--muted);
 }
+/* The console's select (.field-select in shell-controls.css), restated with the
+   theme.css tokens this page loads: a borderless embossed box with the chevron.
+   It sits on the page plane, not on a card, so it takes the card surface to
+   keep the same step of contrast in dark themes. */
 .theme-picker select {
-  border: 1px solid var(--baseline);
-  background: var(--surface);
+  box-sizing: border-box;
+  padding: 9px 32px 9px 10px;
   color: var(--ink);
-  padding: 0.4rem 0.6rem;
-  border-radius: var(--radius-sm);
+  background-color: var(--surface);
+  background-image: var(--field-chevron);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: var(--fs-lg);
+  border: 0;
+  border-radius: var(--radius);
+  box-shadow: var(--emboss);
+  font: inherit;
+  font-size: var(--fs-md);
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  transition: box-shadow var(--dur-1), background-position var(--dur-1);
+}
+.theme-picker select:hover {
+  box-shadow: var(--emboss-hover);
+  background-position: right 10px calc(50% + 1px);
+}
+.theme-picker select:focus {
+  outline: none;
+  box-shadow: var(--bevel), 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+  background-position: right 10px calc(50% + 1px);
+}
+.theme-picker select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .founded {
   display: inline-flex;
@@ -161,8 +190,9 @@ button:disabled {
   color: var(--ink);
 }
 .eyebrow {
-  font: 600 0.8rem/1.5 var(--font-mono, var(--font-mono-sys));
-  letter-spacing: 0.065em;
+  font: 600 11px/1.5 var(--font-sans, var(--font-sys));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   color: var(--muted);
 }
 .lede {

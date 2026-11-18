@@ -139,9 +139,9 @@ export function demoLandingHtml(config: InstanceConfig): string {
     <h2 id="downloads-title">Run your own Lolly Work server</h2>
     <p class="lede tight">Keep accounts, shared projects and your team’s tools on infrastructure you control. Choose the installation that fits your platform.</p>
     <div class="features">
+      <div class="feature"><h3>Kubernetes and Rancher</h3><p>Use the Helm chart on your existing Kubernetes, K3s or RKE2 platform, with persistent storage and your organisation’s sign-in.</p><p><a href="/admin#/docs?doc=platform-deployment">Platform guide →</a></p></div>
       <div class="feature"><h3>YunoHost</h3><p><strong>Choose Lolly Work.</strong> Includes the web app, PostgreSQL, shared projects and sign-in with your host’s accounts. The separate Lolly package is the static app.</p><p><a href="/admin#/docs?doc=install&amp;anchor=7-yunohost">Install Lolly Work for YunoHost →</a></p></div>
       <div class="feature"><h3>Linux servers</h3><p>Run the Work server and PostgreSQL with Docker Compose, or use Node and systemd. Add your domain, HTTPS and identity provider.</p><p><a href="/admin#/docs?doc=install">Linux installation →</a></p></div>
-      <div class="feature"><h3>Kubernetes and Rancher</h3><p>Use the Helm chart on your existing Kubernetes, K3s or RKE2 platform, with persistent storage and your organisation’s sign-in.</p><p><a href="/admin#/docs?doc=platform-deployment">Platform guide →</a></p></div>
       <div class="feature"><h3>macOS and Windows</h3><p>Evaluate on macOS with Node or Docker Desktop. On Windows, use WSL 2 or Linux containers. Desktop app downloads install the Lolly client.</p><p><a href="/admin#/docs?doc=install&amp;anchor=before-you-start">Platform prerequisites →</a></p></div>
     </div>
     <div class="row">

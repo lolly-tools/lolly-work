@@ -10,6 +10,8 @@ export function consoleAccess(principal: PrincipalCtx, grants: Grant[], activity
     injectables: ['catalog.injectable.manage'], flags: ['policy.edit'], design: ['catalog.read'], 'brand-pages': ['brand.page.publish'], limits: ['policy.edit'],
     contractors: ['link.create-guest'], grants: ['grant.edit'], preview: ['policy.edit'], audit: ['audit.export'],
     setup: ['instance.config'], tokens: ['token.manage', 'scim.manage'], chains: ['policy.edit'], programmes: ['programme.manage'],
+    // Reading and sending console messages are one permission, so a person without it gets no Messages entry.
+    messages: ['message.send'],
   };
   const actions = [...new Set(Object.values(requirements).flat().concat([
     'brand.switch', 'brand.edit', 'catalog.provider.credential', 'catalog.provider.manage', 'catalog.edit',
@@ -23,6 +25,6 @@ export function consoleAccess(principal: PrincipalCtx, grants: Grant[], activity
   views.agents = !!views.agents && activityAvailable(activity, principal.role);
   views.instance = ['design', 'flags', 'injectables', 'grants', 'tokens', 'chains', 'preview', 'setup', 'limits'].some(id => views[id]);
   views.users = principal.role === 'admin' || principal.role === 'owner';
-  for (const id of ['messages', 'projects', 'approvals', 'docs', 'verify']) views[id] = true;
+  for (const id of ['projects', 'approvals', 'docs', 'verify']) views[id] = true;
   return { actions, views };
 }

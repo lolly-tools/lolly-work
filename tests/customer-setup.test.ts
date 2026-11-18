@@ -235,6 +235,9 @@ test('console capabilities follow explicit denies and delegated grants without d
   assert.equal(access.views.tools, true); assert.equal(access.views.setup, false); assert.equal(access.views.users, false);
   const denied = consoleAccess({ groups: ['admin'], role: 'admin' }, [{ principal: '*', action: 'policy.edit', resource: '*', effect: 'deny' }]);
   assert.equal(denied.views.tools, false); assert.equal(denied.views.overview, true);
+  // Messages is listed only for a person who can read and send them.
+  assert.equal(access.views.messages, false); assert.equal(denied.views.messages, true);
+  assert.equal(access.views.projects, true); assert.equal(access.views.approvals, true);
 });
 
 test('a source compatibility refusal prevents brand activation without changing the active state', async () => {
