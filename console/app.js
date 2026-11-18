@@ -107,6 +107,14 @@ function groupLabel(name) {
   return company ? `${company.name} (company in ${company.programme})` : name;
 }
 
+// A system key read as words: a capital first letter and hyphens as spaces
+// ("brand-manager" reads "Brand manager").
+function keyWords(key) {
+  const text = String(key ?? '').replace(/-+/g, ' ').trim();
+  return text ? text[0].toUpperCase() + text.slice(1) : '';
+}
+const roleLabel = (role) => keyWords(role);
+
 // ── tiny dom helpers ────────────────────────────────────────────────────────
 function el(tag, attrs = {}, ...children) {
   const node = tag.includes(':svg')
@@ -1185,6 +1193,7 @@ async function viewOverview(main) {
     needs.push({ level: 'critical', icon: 'audit', href: '#/audit', text: `Audit chain broken at #${auditHead.chain.badSeq}` });
   }
   const inboxCount = appr?.approvals ? appr.approvals.filter((a) => a.relation === 'inbox').length : 0;
+  noteWaitingCount(appr?.approvals);
   if (inboxCount) {
     needs.push({ level: 'review', icon: 'approvals', href: '#/approvals', text: `${fmt(inboxCount)} approval${inboxCount === 1 ? '' : 's'} waiting on you` });
   }
@@ -1222,7 +1231,7 @@ async function viewOverview(main) {
     main.append(el('p', { class: 'sub', role: 'status' }, 'Some connection or share-link data is unavailable. Refresh the page to try again.'));
   }
   main.append(
-    el('div', { class: 'grid tiles' },
+    el('div', { class: 'grid tiles overview-figures' },
       tile('Exports (14 days)', fmt(exports14)),
       tile('Active people (14 days)', fmt(summary.totals.activeUsers)),
       ...(canView('links') ? [tile('Live share links now', links ? fmt(liveLinks) : 'Unavailable')] : []),
@@ -3820,12 +3829,12 @@ function relTime(iso) {
   return when(iso);
 }
 
-// A step's clearance rule as a legible badge: any → 'any one',
-// {quorum:n} → 'any n', all → 'everyone'.
+// A step's clearance rule as a legible badge: any → 'Any one approves',
+// {quorum:n} → 'Any n approve', all → 'All approve'.
 function ruleLabel(rule) {
-  if (rule === 'all') return 'everyone';
-  if (rule && typeof rule === 'object' && rule.quorum) return `any ${rule.quorum}`;
-  return 'any one';
+  if (rule === 'all') return 'All approve';
+  if (rule && typeof rule === 'object' && rule.quorum) return `Any ${rule.quorum} approve`;
+  return 'Any one approves';
 }
 
 // The full ordered step list, tolerating an older payload that only carried the
@@ -3884,20 +3893,22 @@ function renderStep(a, i, { actionable }) {
   const acts = (a.actions || []).filter((x) => x.step === i && x.action !== 'withdraw');
   const approvedCount = new Set(acts.filter((x) => x.action === 'approve').map((x) => x.actor)).size;
   const quorum = step.rule && typeof step.rule === 'object' ? step.rule.quorum : null;
-  const groups = (step.groups || []).join(', ');
+  // People read group names; the raw ids stay in the title attribute.
+  const groupIds = (step.groups || []).join(', ');
+  const groups = (step.groups || []).map(groupLabel).join(', ');
   const aria = `Step ${i + 1} of ${stepsOf(a).length}, ${step.name}, ${st}` + (groups ? `, ${groups}` : '');
 
   const body = el('div', { class: 'step-body' },
     el('div', { class: 'step-name' }, step.name,
       st === 'current' && actionable ? el('span', { class: 'turn-badge' }, 'Your turn') : null),
     el('div', { class: 'step-sub' },
-      groups ? el('span', { class: 'muted' }, groups) : null,
+      groups ? el('span', { class: 'muted', title: groupIds }, groups) : null,
       el('span', { class: 'rule-badge' }, ruleLabel(step.rule)),
       quorum ? el('span', { class: 'muted' }, `${approvedCount} of ${quorum} approved`) : null),
     // Who acted, with comments, on this node.
     ...acts.map(actQuote),
     // Current, in-progress node on a request card: who we're waiting on.
-    st === 'current' && !actionable && groups ? el('div', { class: 'step-wait muted' }, `Waiting on ${groups}`) : null,
+    st === 'current' && !actionable && groups ? el('div', { class: 'step-wait muted', title: groupIds }, `Waiting on ${groups}`) : null,
     // Routing targets pinged for the current step (nomination = routing, not exclusivity).
     st === 'current' && a.nomineeNames?.length ? el('div', { class: 'step-routed muted' }, `routed to: ${a.nomineeNames.join(', ')}`) : null,
   );
@@ -3929,38 +3940,67 @@ function renderStepper(a, opts) {
   return el('ol', { class: 'stepper' }, ...nodes);
 }
 
-// Inbox footer: comment + approve/reject, preserving the reject-needs-reason UX.
+// Inbox footer. At rest the row is Approve then Reject. Reject swaps the row for
+// a reason field, Reject request and Cancel, because a rejection needs a reason.
 // `review` is the export review's panel state: approving a file needs that panel
 // to have loaded the file, because the token that proves it comes with the bytes.
 function approvalFooter(a, review) {
-  const clearNeed = () => { comment.classList.remove('need'); comment.removeAttribute('aria-invalid'); };
-  const comment = el('input', {
-    class: 'cmt', placeholder: 'Reason (required to reject)', 'aria-label': `Reason for ${a.title}`,
-    oninput: clearNeed,
-  });
   const err = errSpan();
-  const act = async (action) => {
-    const reason = comment.value.trim();
-    if (action === 'reject' && !reason) { comment.classList.add('need'); comment.setAttribute('aria-invalid', 'true'); err.textContent = 'Add a reason before rejecting.'; comment.focus(); return; }
-    clearNeed();
+  const reason = el('input', {
+    class: 'cmt', placeholder: 'Reason for rejecting', 'aria-label': 'Reason for rejecting',
+    oninput: () => clearNeed(),
+    onkeydown: (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); void reject(); }
+      else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); showRest(true); }
+    },
+  });
+  const clearNeed = () => { reason.classList.remove('need'); reason.removeAttribute('aria-invalid'); };
+  // A success calls route(), which rebuilds this view and refreshes the rail count.
+  const act = async (action, comment) => {
     err.textContent = '';
     try {
-      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}), ...(a.brandPage ? { brandPageDigest: a.brandPage.digest } : {}), ...(a.brandEdit ? { brandEditDigest: a.brandEdit.digest } : {}), ...(a.exportReview ? { artifactFingerprint: a.exportReview.fingerprint, ...(review?.token ? { reviewToken: review.token } : {}) } : {}) } });
+      await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: comment || undefined, ...(a.sourceReview ? { sourceFingerprint: a.sourceReview.fingerprint } : {}), ...(a.brandPage ? { brandPageDigest: a.brandPage.digest } : {}), ...(a.brandEdit ? { brandEditDigest: a.brandEdit.digest } : {}), ...(a.exportReview ? { artifactFingerprint: a.exportReview.fingerprint, ...(review?.token ? { reviewToken: review.token } : {}) } : {}) } });
       toast(action === 'approve' ? `Approved “${a.title}”` : `Rejected “${a.title}”`);
       route();
-    } catch (e) { err.textContent = e.message; }
+      return true;
+    } catch (e) { err.textContent = e.message; return false; }
   };
-  const approve = el('button', { class: 'primary', onclick: () => act('approve') }, 'Approve');
+  const approve = el('button', { type: 'button', class: 'primary', onclick: () => act('approve') }, 'Approve');
   if (review) {
     approve.disabled = !review.token;
     review.onReady = () => { approve.disabled = false; };
   }
-  return el('div', { class: 'appr-foot' },
-    el('div', { class: 'appr-act' },
-      comment,
-      approve,
-      armConfirmButton({ class: 'danger' }, 'Reject', 'Really reject?', async (disarm) => { await act('reject'); disarm(); })),
-    err);
+  const rejectBtn = el('button', { type: 'button', onclick: () => showReason() }, 'Reject');
+  const confirm = el('button', { type: 'button', class: 'danger', onclick: () => reject() }, 'Reject request');
+  const cancel = el('button', { type: 'button', onclick: () => showRest(true) }, 'Cancel');
+  const row = el('div', { class: 'appr-act' });
+  let busy = false;
+  const setBusy = (on) => {
+    busy = on;
+    confirm.disabled = on; cancel.disabled = on;
+    if (on) confirm.setAttribute('aria-busy', 'true'); else confirm.removeAttribute('aria-busy');
+  };
+  const showRest = (focus) => {
+    if (busy) return;
+    reason.value = ''; clearNeed(); err.textContent = '';
+    row.replaceChildren(approve, rejectBtn);
+    if (focus) rejectBtn.focus();
+  };
+  const showReason = () => {
+    err.textContent = '';
+    row.replaceChildren(reason, confirm, cancel);
+    reason.focus();
+  };
+  const reject = async () => {
+    if (busy) return;
+    const text = reason.value.trim();
+    if (!text) { reason.classList.add('need'); reason.setAttribute('aria-invalid', 'true'); err.textContent = 'Add a reason before rejecting.'; reason.focus(); return; }
+    clearNeed();
+    setBusy(true);
+    if (!await act('reject', text)) { setBusy(false); reason.focus(); }
+  };
+  showRest(false);
+  return el('div', { class: 'appr-foot' }, row, err);
 }
 
 // Object URLs for the files on screen, released when the view is built again.
@@ -4104,12 +4144,13 @@ function renderApprovalCard(a, { actionable }) {
   return el('div', { class: 'appr-card' },
     el('div', { class: 'appr-head' },
       el('div', { class: 'appr-headmain' },
-        el('div', { class: 'appr-title' }, a.title),
+        // The subject path stays reachable on hover over the title.
+        el('div', { class: 'appr-title', title: a.subjectRef && !a.exportReview && !a.brandPage && !a.brandEdit ? a.subjectRef : null }, a.title),
         el('div', { class: 'appr-meta' },
-          el('span', { class: 'chip' }, a.exportReview ? 'Exported file' : a.brandPage ? 'Brand page' : a.brandEdit ? 'Design system edit' : a.subjectType),
-          a.subjectRef && !a.exportReview && !a.brandPage && !a.brandEdit ? el('span', { class: 'mono' }, a.subjectRef) : null,
-          el('span', { class: 'muted' }, a.chainName),
-          el('span', { class: 'muted' }, a.mine ? 'raised by you' : ['raised by ', a.createdByName ?? a.createdBy], ' · ', relTime(a.createdAt)))),
+          [a.exportReview ? 'Exported file' : a.brandPage ? 'Brand page' : a.brandEdit ? 'Design system edit' : keyWords(a.subjectType),
+            a.chainName,
+            a.mine ? 'raised by you' : `raised by ${a.createdByName ?? a.createdBy}`,
+            relTime(a.createdAt)].filter(Boolean).join(' · '))),
       stateChip(a.state)),
     review ? review.element : null,
     namesToolOnly(a) ? el('p', { class: 'appr-nofile muted' }, 'No file is attached to this request.') : null,
@@ -4137,6 +4178,7 @@ async function viewApprovals(main) {
   approvalFileUrls = [];
   const { approvals } = await api('/api/v1/approvals');
   const inbox = approvals.filter((a) => a.relation === 'inbox');
+  noteWaitingCount(approvals);
   // Open requests first: a member tracking a live request should not scan past
   // finished history to reach it (the server orders on createdAt alone, so the
   // one in-review row sorts last, under four resolved ones).
@@ -7613,7 +7655,7 @@ function visibilityChip(v) {
   const groups = Array.isArray(v.groups) ? v.groups : [];
   return el('span', { class: 'chip-side' },
     el('span', { class: 'chip' }, 'team'),
-    groups.length ? el('span', { class: 'sec', title: groups.join(', ') }, groups.join(', ')) : null);
+    groups.length ? el('span', { class: 'sec', title: groups.join(', ') }, groups.map(groupLabel).join(', ')) : null);
 }
 
 /** Render a value cell for a diff — undefined (unset) reads as a muted dash. */
@@ -8876,6 +8918,12 @@ const NAV_TERMS = {
   design: 'brand palette colour typography logo tokens', flags: 'features toggles',
 };
 
+// The count after the Approvals label, drawn from the cached value.
+function waitingBadge() {
+  const n = waitingCount ?? 0;
+  return el('span', { class: 'nav-count', hidden: n ? null : '', 'aria-label': n ? `${fmt(n)} waiting on you` : null }, n ? fmt(n) : '');
+}
+
 function consoleNavigation(current) {
   const active = SETTINGS_ROUTES.includes(current) ? 'instance' : current;
   const available = NAV_GROUPS.map(group => ({ ...group, ids: group.ids.filter(id => VIEWS[id] && !VIEWS[id].hidden && canView(id)) })).filter(group => group.ids.length);
@@ -8889,7 +8937,8 @@ function consoleNavigation(current) {
       hidden: group.searchOnly ? '' : null,
     }, group.title === 'Settings' ? null : el(group.collapsible ? 'summary' : 'h2', { class: 'rail-group-title' }, group.title),
     ...group.ids.map(id => el('a', { href: `#/${id}`, 'aria-current': id === active && !group.searchOnly ? 'page' : null,
-      title: VIEWS[id].title, 'data-search': NAV_TERMS[id] ?? '' }, navIcon(id), el('span', {}, VIEWS[id].title))));
+      title: VIEWS[id].title, 'data-search': NAV_TERMS[id] ?? '' }, navIcon(id), el('span', {}, VIEWS[id].title),
+    id === 'approvals' && !group.searchOnly ? waitingBadge() : null)));
     return { node, group, beforeSearch: opened };
   });
   const empty = el('p', { class: 'nav-empty', role: 'status', hidden: 'true' }, 'No sections match. Try “people”, “assets” or “settings”.');
@@ -8935,7 +8984,7 @@ function shell(current, content) {
       consoleNavigation(current),
       el('div', { class: 'session' },
         el('div', { class: 'who', title: session?.user?.email ?? '' }, session?.user?.email ?? ''),
-        el('div', {}, session?.user?.role ?? ''),
+        el('div', {}, roleLabel(session?.user?.role)),
         el('p', {}, el('button', { onclick: async () => { await api('/api/auth/logout', { method: 'POST' }); location.reload(); } }, 'Sign out')),
         session?.providerLogoutPath === '/api/auth/logout-provider' ? el('a', { href: '/api/auth/logout-provider' }, 'Sign out of identity provider') : null),
     ),
@@ -9061,6 +9110,39 @@ function showAlertBanner(main, alerts) {
     .observe(main, { childList: true });
 }
 
+// Requests waiting for the signed-in person's decision, shown beside Approvals
+// in the rail. One cached count: the rail renders from it at once and the badge
+// updates in place when a fetch answers. null (unknown, or the fetch failed)
+// shows no badge. The sequence number drops an answer that a newer one beat.
+let waitingCount = null;
+let waitingSeq = 0;
+const countWaiting = (approvals) => approvals.filter((a) => a.relation === 'inbox').length;
+function paintWaitingCount() {
+  const badge = document.querySelector('#rail-nav a[href="#/approvals"] .nav-count');
+  if (!badge) return;
+  const n = waitingCount ?? 0;
+  badge.textContent = n ? fmt(n) : '';
+  badge.hidden = !n;
+  if (n) badge.setAttribute('aria-label', `${fmt(n)} waiting on you`);
+  else badge.removeAttribute('aria-label');
+}
+// A view that already holds the approvals list sets the count from that list.
+function noteWaitingCount(approvals) {
+  if (!Array.isArray(approvals)) return;
+  waitingSeq++;
+  waitingCount = countWaiting(approvals);
+  paintWaitingCount();
+}
+async function refreshWaitingCount() {
+  const seq = ++waitingSeq;
+  let next = null;
+  if (session?.console && canView('approvals')) {
+    try { next = countWaiting((await api('/api/v1/approvals')).approvals ?? []); } catch { next = null; }
+  }
+  if (seq === waitingSeq) { waitingCount = next; paintWaitingCount(); }
+  return waitingCount;
+}
+
 let disposeAgentView = null;
 async function route() {
   if (activeAccountInspector) {
@@ -9098,6 +9180,8 @@ async function route() {
     try { session = await api('/api/auth/session'); }
     catch (failure) { if (failure.status === 401) { await signInGate(); return; } }
   }
+  // Every navigation asks again; the rail below paints the cached count first.
+  const counting = publicMode ? Promise.resolve(null) : refreshWaitingCount();
   // Hash is '#/<view>' with an optional '?query' (deep links: #/users?focus=<id>,
   // #/overview?day=<date>). Split the two; params reach the view as a 2nd arg.
   const { id, params } = consoleRoute(location.hash);
@@ -9114,10 +9198,13 @@ async function route() {
   // to the first section it can open; an explicit #/overview still renders its
   // denial. replaceState (not a hash assignment) keeps the redirect out of
   // history, so Back does not bounce through it again.
+  // A person who cannot see Overview and has requests waiting for a decision
+  // opens on Approvals, so the choice waits for the count.
   const LANDING = { approver: 'approvals', author: 'projects', member: 'projects' };
   const home = LANDING[session?.user?.role ?? ''];
   if (id === 'overview' && !location.hash.includes('overview') && (home || !canView('overview'))) {
-    const landing = [home, 'projects', 'tools', 'approvals', 'docs'].find(id => id && canView(id));
+    const waiting = !canView('overview') && canView('approvals') ? await counting : 0;
+    const landing = waiting > 0 ? 'approvals' : [home, 'projects', 'tools', 'approvals', 'docs'].find(id => id && canView(id));
     try { history.replaceState(null, '', `#/${landing}`); } catch { /* ignore */ }
     return route();
   }
