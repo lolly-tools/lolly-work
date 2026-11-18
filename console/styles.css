@@ -366,7 +366,8 @@ h2 { font-size: var(--ui-type-title); font-weight: 650; line-height: 1.35; color
 .section-tabs [role='tab']:hover:not(:disabled) { background: var(--ui-color-selection-surface); box-shadow: none; }
 .tab-count, .nav-count { display: inline-grid; place-items: center; min-width: 20px; padding: 0 var(--sp-2); font-size: var(--ui-type-caption); border-radius: var(--ui-radius-pill); background: var(--ui-color-surface-raised); font-variant-numeric: tabular-nums; }
 /* Requests waiting on the signed-in person, at the far end of the Approvals row. */
-.nav-count { margin-inline-start: auto; }
+/* On the rail the count is a call to act, so the chip is tinted with the accent and reads on any row. */
+.nav-count { margin-inline-start: auto; min-height: 20px; font-weight: 600; background: color-mix(in oklab, var(--accent) 14%, transparent); color: var(--ink); }
 /* Collapsed rail: a dot at the icon's top right stands in for the number. The
    number stays in the page for screen readers. */
 :root[data-rail='collapsed'] .rail nav a { position: relative; }
