@@ -11,6 +11,25 @@ body {
 }
 .boot { padding: 2rem; color: var(--muted); }
 
+/* ── One disclosure arrow ───────────────────────────────────────────────────
+   Every <summary> draws the arrow that the Lolly app's section cards draw: two
+   hairlines that point along the line when the section is shut and down when
+   it is open. No browser triangle and no text glyph. The arrow follows the
+   label; a summary that is a full row sends the arrow to the row's far end. */
+summary { list-style: none; cursor: pointer; }
+summary::-webkit-details-marker { display: none; }
+summary::after {
+  content: ''; display: inline-block; flex: none;
+  width: 7px; height: 7px; margin-inline: 8px 2px; vertical-align: middle;
+  border-right: 1.25px solid currentColor; border-bottom: 1.25px solid currentColor;
+  transform: translateY(-1px) rotate(-45deg);
+  transition: transform var(--dur-1) ease;
+  color: var(--accent); opacity: .75;
+}
+summary:dir(rtl)::after { transform: translateY(-1px) rotate(135deg); }
+details[open] > summary::after { transform: translateY(-2px) rotate(45deg); color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { summary::after { transition: none; } }
+
 /* ── shell ─────────────────────────────────────────────────────────────── */
 .app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; min-height: 100dvh; }
 .rail {
@@ -349,8 +368,6 @@ h2 { font-size: var(--ui-type-title); font-weight: 650; line-height: 1.35; color
 .section-panel > .stack, .section-panel > .card { margin-top: 0; }
 .invite-compose { margin-bottom: var(--sp-7); }
 .invite-compose > summary { display: flex; align-items: center; gap: var(--sp-4); cursor: pointer; width: fit-content; padding: var(--sp-4) var(--sp-7); border-radius: var(--ui-radius-control); background: var(--ui-color-surface-raised); box-shadow: var(--ui-effect-bevel), var(--ui-elevation-control); font-weight: 600; }
-.invite-compose > summary::after { content: '+'; margin-left: var(--sp-4); }
-.invite-compose[open] > summary::after { content: '−'; }
 .invite-compose .card { max-width: 760px; }
 .invite-compose .formrow { max-width: 320px; }
 .invitations-card { margin-top: 0; }
@@ -408,7 +425,7 @@ label:has(> .field-check), label:has(> .field-radio) { display: flex; align-item
 .empty { color: var(--muted); padding: 18px 0; }
 
 details.tbl { margin-top: 10px; }
-details.tbl summary { color: var(--muted); font-size: 12px; cursor: pointer; width: max-content; }
+details.tbl summary { color: var(--muted); font-size: 12px; width: max-content; }
 
 /* ── tables ────────────────────────────────────────────────────────────── */
 /* One calm, dense, scannable style for every table. Header lives in <thead>
@@ -824,7 +841,10 @@ main:focus, h1[tabindex="-1"]:focus, h2[tabindex="-1"]:focus, h3[tabindex="-1"]:
 .col-sort:hover { color: var(--ink-2); filter: none; }
 .col-sort.active { color: var(--ink); }
 .col-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
-.sort-caret { font-size: 9px; min-width: 7px; }
+.sort-caret { display: inline-block; width: 7px; height: 7px; margin-inline-start: 6px; }
+.sort-caret[data-dir] { border-right: 1.25px solid currentColor; border-bottom: 1.25px solid currentColor; }
+.sort-caret[data-dir='asc'] { transform: translateY(2px) rotate(-135deg); }
+.sort-caret[data-dir='desc'] { transform: translateY(-2px) rotate(45deg); }
 th[aria-sort] { cursor: pointer; }
 
 /* Sections behind a disclosure (progressive disclosure) */
@@ -833,10 +853,7 @@ th[aria-sort] { cursor: pointer; }
    top-level section, and air under the summary once opened. */
 .filters-more { margin-top: 10px; }
 .filters-more[open] > summary { margin-bottom: 4px; }
-.ov-section > summary, .compose-section > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; min-height: 24px; padding: 3px 0; }
-.ov-section > summary::-webkit-details-marker, .compose-section > summary::-webkit-details-marker { display: none; }
-.ov-section > summary::before, .compose-section > summary::before { content: '▸'; color: var(--muted); font-size: 11px; transition: transform .12s ease; }
-.ov-section[open] > summary::before, .compose-section[open] > summary::before { transform: rotate(90deg); }
+.ov-section > summary, .compose-section > summary { display: flex; align-items: center; gap: 8px; min-height: 24px; padding: 3px 0; }
 .ov-section > summary .section-h, .compose-section > summary .section-h { margin: 0; }
 /* A section head that contains cards reads above them: 15px, sentence case, full
    ink, so a real heading in a summary escapes the micro-label rule. The person
@@ -851,7 +868,7 @@ th[aria-sort] { cursor: pointer; }
 .flag-groups > .data-tbl, .flag-groups > .tbl-scroll, .flag-groups > .empty { margin-top: 8px; }
 .flag-groups-add { display: flex; align-items: flex-end; }
 .flag-groups .search-select, .flag-groups .search-select input { display: flex; width: 100%; }
-.appr-steps > summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); width: max-content; }
+.appr-steps > summary { font-size: 12.5px; color: var(--ink-2); width: max-content; }
 .appr-steps > summary:hover { color: var(--ink); }
 .appr-steps[open] > summary { margin-bottom: 8px; }
 
@@ -975,7 +992,7 @@ th[aria-sort] { cursor: pointer; }
 
 /* Audit view: the "what hash-chained means" progressive-disclosure explainer */
 .chain-explain { margin: 10px 0 4px; }
-.chain-explain > summary { cursor: pointer; font-size: 13px; font-weight: 500; color: var(--ink-2); width: max-content; }
+.chain-explain > summary { font-size: 13px; font-weight: 500; color: var(--ink-2); width: max-content; }
 .chain-explain > summary:hover { color: var(--ink); }
 .chain-explain > p { margin-top: 8px; max-width: 68ch; }
 tr.row-click { cursor: pointer; }
@@ -1168,10 +1185,8 @@ html.account-inspector-open { overflow: hidden; }
 .doc-paths { font-family: var(--font-sans, var(--font-sys)); display: grid; gap: 10px; margin: 0 0 18px; }
 .doc-path-choice { border: 1px solid var(--grid); border-radius: 12px; background: var(--surface); overflow: hidden; }
 .doc-path-choice[open] { border-color: var(--accent); }
-.doc-path-choice summary { display: grid; grid-template-columns: 30px minmax(0, 1fr) 16px; gap: 10px; align-items: center; cursor: pointer; list-style: none; min-height: 64px; padding: 12px; font-weight: 600; }
-.doc-path-choice summary::-webkit-details-marker { display: none; }
-.doc-path-choice summary::after { content: '+'; color: var(--accent); text-align: center; }
-.doc-path-choice[open] summary::after { content: '−'; }
+.doc-path-choice summary { display: grid; grid-template-columns: 30px minmax(0, 1fr) 16px; gap: 10px; align-items: center; min-height: 64px; padding: 12px; font-weight: 600; }
+.doc-path-choice summary::after { margin: 0; justify-self: center; }
 .doc-path-choice summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; border-radius: 10px; }
 .doc-path-number { font-family: var(--font-mono, var(--font-mono-sys)); display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); font-size: 12px; }
 .doc-path-body { padding: 0 16px 4px; }
@@ -1443,9 +1458,7 @@ html.account-inspector-open { overflow: hidden; }
 .invite-compose > summary .nav-ico { width: var(--ui-size-icon-md); height: var(--ui-size-icon-md); flex: none; }
 :root input.field-check, :root input.field-radio { width: var(--fs-xl); height: var(--fs-xl); min-width: var(--fs-xl); padding: 0; }
 .section-tabs .tab-count[hidden] { display: none; }
-.activity-summary > summary { display: flex; align-items: center; gap: var(--sp-6); cursor: pointer; font-weight: 600; }
-.activity-summary > summary::before { content: '›'; }
-.activity-summary[open] > summary::before { transform: rotate(90deg); }
+.activity-summary > summary { display: flex; align-items: center; gap: var(--sp-6); font-weight: 600; }
 .activity-summary > summary .muted { margin-left: auto; font-size: var(--ui-type-caption); font-weight: 400; }
 .activity-summary[open] > summary { margin-bottom: var(--sp-7); }
 @media (max-width: 600px) {
@@ -1456,11 +1469,11 @@ html.account-inspector-open { overflow: hidden; }
 @media (min-width: 601px) { main { padding-inline-end: 72px; } }
 .invite-account > span:last-child { white-space: nowrap; }
 .invite-provenance { font-size: var(--ui-type-caption); margin-top: var(--sp-2); max-width: 34ch; }
-.provider-connect > summary, .provider-search > summary { cursor: pointer; font-size: var(--ui-type-title); font-weight: 600; }
+.provider-connect > summary, .provider-search > summary { font-size: var(--ui-type-title); font-weight: 600; }
 .provider-connect[open] > summary, .provider-search[open] > summary { margin-bottom: var(--sp-7); }
 .provider-search > .card { padding: 0; margin: 0; border: 0; }
 /* Hidden tags (plan 299): the Catalog view's card and the provider panel. */
-.tag-card > summary { cursor: pointer; font-size: var(--ui-type-title); font-weight: 600; }
+.tag-card > summary { font-size: var(--ui-type-title); font-weight: 600; }
 .tag-card[open] > summary { margin-bottom: var(--sp-7); }
 .tag-card > .card { padding: 0; margin: 0; border: 0; }
 .tag-card > .card > .list-bar:first-child { display: none; }
@@ -1523,7 +1536,6 @@ html.account-inspector-open { overflow: hidden; }
 .bp-actions, .bp-takedown { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .bp-remove { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; font-weight: 400; letter-spacing: normal; text-transform: none; color: var(--muted); }
 .bp-details { margin-top: 4px; }
-.bp-details > summary { cursor: pointer; }
 .bp-history { display: grid; gap: 10px; margin-top: 8px; }
 .bp-revision { display: grid; gap: 2px; }
 .bp-revision-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -1612,7 +1624,7 @@ html.account-inspector-open { overflow: hidden; }
 .template-takes { margin-top: 2px; }
 .preview-drawing { margin-top: var(--sp-3); max-width: 22rem; }
 .preview-drawing img { display: block; width: 100%; height: auto; border: 1px solid var(--hairline); border-radius: var(--radius); background: #fff; }
-.company-history summary { cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.company-history summary { font-size: 13px; color: var(--ink-2); }
 .company-history[open] summary { margin-bottom: var(--sp-3); }
 
 /* A table cell of several lines (agent tokens, plans/82 M7): one block, so a narrow screen stacks them. */
@@ -1621,8 +1633,7 @@ html.account-inspector-open { overflow: hidden; }
 .limit-id { overflow-wrap: anywhere; font-size: 12px; }
 
 /* Administration uses the same surfaces and controls as the Lolly shell. */
-.rail-group > summary { cursor: pointer; min-height: var(--ui-size-target); display: list-item; }
-.rail-group > summary::marker { color: var(--ui-color-text-muted); }
+.rail-group > summary { min-height: var(--ui-size-target); display: flex; align-items: center; justify-content: space-between; }
 .rail-group > summary:focus-visible, .settings-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .settings-section { margin-block: var(--sp-8); }
 .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: var(--sp-6); }
@@ -1637,7 +1648,8 @@ html.account-inspector-open { overflow: hidden; }
 .quick-actions .btn { display: inline-flex; align-items: center; gap: var(--sp-4); min-height: var(--ui-size-target); }
 .overview-detail { border-top: 1px solid var(--hairline); padding-top: var(--sp-4); }
 .overview-detail > summary { min-height: var(--ui-size-target); flex-wrap: wrap; }
-.overview-detail > summary > .muted { margin-left: auto; font-size: var(--ui-type-caption); }
+.overview-detail > summary > .section-h { flex: 1 1 auto; }
+.overview-detail > summary > .muted { font-size: var(--ui-type-caption); }
 .overview-detail[open] > summary { margin-bottom: var(--sp-6); }
 .overview-detail h3 { font-size: inherit; margin: 0 0 var(--sp-6); }
 .overview-actions + .grid.tiles > .card { margin-bottom: 0; }

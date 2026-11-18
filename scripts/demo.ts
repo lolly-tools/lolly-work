@@ -477,10 +477,10 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
   }> = [
     { project: summit, by: brand, toolId: 'certificate', toolVersion: '1.2.2',
       inputs: { certKind: 'appreciation', firstname: 'Ada', lastname: 'Lovelace', awardtopic: 'Keynote, Lolly Summit 2026', presenterTitle: 'Keynote Speaker' },
-      label: 'Keynote certificate — Ada', ageDays: 3 },
+      label: 'Keynote certificate: Ada', ageDays: 3 },
     { project: summit, by: marketer, toolId: 'certificate', toolVersion: '1.2.2',
       inputs: { certKind: 'appreciation', firstname: 'Grace', lastname: 'Hopper', awardtopic: 'Track host, Lolly Summit 2026', presenterTitle: 'Track Host' },
-      label: 'Certificate — Grace', ageDays: 2 },
+      label: 'Certificate: Grace', ageDays: 2 },
     { project: summit, by: marketer, toolId: 'qr-code', toolVersion: '2.0.0',
       inputs: { url: 'https://summit.lolly.example/register', color: BRAND_ACCENT },
       label: 'Registration QR', ageDays: 2 },
@@ -756,16 +756,16 @@ export function demoApprovals(seeded: SeedResult, now = Date.now()): Approval[] 
     createApproval({ id: `apr_${randomId(6)}`, subjectType: 'asset', subjectRef, title, chain, nominees: [], createdBy: marketer.id, now: iso(-ageDays * DAY) });
 
   // A: pending at Brand sign-off (brand's inbox).
-  const a = raise('Summit keynote certificate — brand check', 'certificate/summit-keynote', 2);
+  const a = raise('Summit keynote certificate: brand check', 'certificate/summit-keynote', 2);
   // B: fully approved (brand clears step 0, admin clears step 1).
-  let b = raise('Booth QR — approved run', 'qr-code/booth', 3);
+  let b = raise('Booth QR: approved run', 'qr-code/booth', 3);
   b = applyAction(b, brandActor, 'approve', undefined, iso(-3 * DAY + 3_600_000));
   b = applyAction(b, adminActor, 'approve', 'Looks good, ship it.', iso(-2 * DAY));
   // C: rejected at Brand sign-off, with a comment.
   let c = raise('Sponsor logo lockup', 'certificate/sponsor', 4);
-  c = applyAction(c, brandActor, 'reject', 'Logo clear space is too tight — please redo.', iso(-4 * DAY + 7_200_000));
+  c = applyAction(c, brandActor, 'reject', 'Logo clear space is too tight. Please redo.', iso(-4 * DAY + 7_200_000));
   // D: pending at Legal sign-off (admin's inbox) - brand cleared step 0.
-  let d = raise('Registration deck — legal review', 'deck-studio/registration', 1);
+  let d = raise('Registration deck: legal review', 'deck-studio/registration', 1);
   d = applyAction(d, brandActor, 'approve', undefined, iso(-1 * DAY + 3_600_000));
   return [a, b, c, d];
 }
@@ -843,7 +843,7 @@ const ROOM_SPECS: Array<{ sessionLabel: string; startedMinAgo: number; opsApplie
     ],
   },
   {
-    sessionLabel: 'Keynote certificate — Ada', startedMinAgo: 26, opsApplied: 216,
+    sessionLabel: 'Keynote certificate: Ada', startedMinAgo: 26, opsApplied: 216,
     members: [
       { email: 'brand@lolly.example', role: 'writer', joinedMinAgo: 26 },
       { email: 'contractor@lolly.example', role: 'observer', joinedMinAgo: 21 },
@@ -1056,16 +1056,16 @@ export async function seedViaHttp(base: string): Promise<{ telemetryEvents: numb
     jpost(base, `/api/v1/approvals/${id}/act`, { action, ...(comment ? { comment } : {}) }, cookie);
 
   // A: pending at Brand sign-off (brand's inbox). Nominate brand for the ping.
-  await submit('Summit keynote certificate — brand check', 'certificate/summit-keynote');
+  await submit('Summit keynote certificate: brand check', 'certificate/summit-keynote');
   // B: fully approved (brand clears step 0, admin clears step 1 → approved).
-  const b = await submit('Booth QR — approved run', 'qr-code/booth');
+  const b = await submit('Booth QR: approved run', 'qr-code/booth');
   await act(b.id, brand, 'approve');
   await act(b.id, admin, 'approve', 'Looks good, ship it.');
   // C: rejected with a comment at Brand sign-off.
   const c = await submit('Sponsor logo lockup', 'certificate/sponsor');
-  await act(c.id, brand, 'reject', 'Logo clear space is too tight — please redo.');
+  await act(c.id, brand, 'reject', 'Logo clear space is too tight. Please redo.');
   // D: pending at Legal sign-off (admin's inbox) - brand cleared step 0.
-  const dApr = await submit('Registration deck — legal review', 'deck-studio/registration');
+  const dApr = await submit('Registration deck: legal review', 'deck-studio/registration');
   await act(dApr.id, brand, 'approve');
   const approvals = 4;
 

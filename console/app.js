@@ -282,7 +282,7 @@ function dataTable(cols, rows, opts = {}) {
       if (btn) {
         btn.classList.toggle('active', active);
         const caret = btn.querySelector('.sort-caret');
-        if (caret) caret.textContent = active ? (sDir === 1 ? '▲' : '▼') : '';
+        if (caret) { if (active) caret.dataset.dir = sDir === 1 ? 'asc' : 'desc'; else delete caret.dataset.dir; }
       }
     }
     if (mobileSort) mobileSort.value = sDir ? `${sIdx}:${sDir}` : '';
@@ -320,9 +320,9 @@ function dataTable(cols, rows, opts = {}) {
   // Phone card layout (styles.css .tbl-cards): each cell carries its column
   // header as data-label so a stacked row still names its values. 4+ columns
   // is the "too wide to side-scroll" heuristic; narrower tables stay tables.
-  // Node labels (e.g. People's server-sort buttons) contribute their text, sans
-  // any sort caret — "Name", not "Name▲" — for the card-layout data-labels.
-  const labelText = (c) => (typeof c.label === 'string' ? c.label : c.label?.textContent ?? '').replace(/[▲▼]/g, '').trim();
+  // Node labels (e.g. People's server-sort buttons) contribute their text. The
+  // sort arrow is drawn in CSS, so the label holds the column name alone.
+  const labelText = (c) => (typeof c.label === 'string' ? c.label : c.label?.textContent ?? '').trim();
   for (const tr of original) {
     for (let i = 0; i < tr.children.length; i++) {
       const l = labelText(norm[i] ?? {});
@@ -952,9 +952,9 @@ function activityLine(item, names) {
     case 'auth.login': push('signed in', p.provider ? ` via ${p.provider}` : ''); break;
     case 'auth.password.link.issue': push('issued a ', p.purpose === 'reset' ? 'password' : 'sign-in', ' link for ', el('b', {}, email || 'someone')); break;
     case 'auth.password.set': push('set the password for ', el('b', {}, email || 'an account')); break;
-    case 'link.create': push('created a ', el('b', {}, `${p.kind || 'share'} link`), p.toolId ? [' for ', actToolObj(p.toolId)] : '', s ? [' — ', actConsoleObj('link', s.id, 'link')] : ''); break;
+    case 'link.create': push('created a ', el('b', {}, `${p.kind || 'share'} link`), p.toolId ? [' for ', actToolObj(p.toolId)] : '', s ? [': ', actConsoleObj('link', s.id, 'link')] : ''); break;
     case 'link.revoke': push('revoked ', actConsoleObj('link', s?.id, 'a link')); break;
-    case 'session.create': push('created a session', p.toolId ? [' of ', actToolObj(p.toolId)] : '', s ? [' — ', actSessionObj(s.id, p.toolId)] : '', p.projectId ? [' in ', actProjectObj(p.projectId)] : ''); break;
+    case 'session.create': push('created a session', p.toolId ? [' of ', actToolObj(p.toolId)] : '', s ? [': ', actSessionObj(s.id, p.toolId)] : '', p.projectId ? [' in ', actProjectObj(p.projectId)] : ''); break;
     case 'session.update': push('edited ', s ? actSessionObj(s.id, p.toolId) : 'a session', p.toolId ? [' of ', actToolObj(p.toolId)] : ''); break;
     case 'session.delete': push('deleted a session', p.toolId ? [' of ', actToolObj(p.toolId)] : ''); break;
     case 'sessions.bulk': push('bulk-edited sessions'); break;
@@ -1168,7 +1168,6 @@ async function viewOverview(main) {
 
   main.append(
     el('h1', {}, 'Overview'),
-    el('p', { class: 'sub' }, 'Review what needs attention and manage your workspace.'),
   );
   // A newer Lolly Work release, until dismissed for that version (update-notice.js).
   if (updates && shouldShowBanner(updates)) main.append(updateNotice(updates, updateDeps(), { banner: true }));
@@ -1183,7 +1182,7 @@ async function viewOverview(main) {
   // urgency is never brand-themed). Icon and tint travel together on the pill.
   const needs = [];
   if (auditHead?.chain && auditHead.chain.ok === false) {
-    needs.push({ level: 'critical', icon: 'audit', href: '#/audit', text: `Audit chain broken at #${auditHead.chain.badSeq} — investigate now` });
+    needs.push({ level: 'critical', icon: 'audit', href: '#/audit', text: `Audit chain broken at #${auditHead.chain.badSeq}` });
   }
   const inboxCount = appr?.approvals ? appr.approvals.filter((a) => a.relation === 'inbox').length : 0;
   if (inboxCount) {
@@ -1284,7 +1283,7 @@ async function viewOverview(main) {
             ? lineChart(sess.shell.perDay, [{ key: 'seconds', label: 'Seconds' }])
             : el('p', { class: 'empty' }, 'No web shell sessions recorded yet.')),
       ),
-      el('p', { class: 'sub', style: 'margin-top:10px' }, 'CLI sessions are short or instant by design and are intentionally not captured here — these figures cover the tool editor and the web shell only.'),
+      el('p', { class: 'sub', style: 'margin-top:10px' }, 'These figures cover the tool editor and the web app. CLI sessions are not counted.'),
     ),
   );
 
@@ -1299,7 +1298,7 @@ async function viewOverview(main) {
   main.append(
     el('details', { class: 'ov-section overview-detail' },
       el('summary', {}, el('h2', { class: 'section-h' }, 'Assets and projects')),
-      el('p', { class: 'sub' }, 'What this deployment serves, how it gets used, and where the work lives. Popularity and export figures cover the last 14 days; inventory is current.'),
+      el('p', { class: 'sub' }, 'Popularity and exports cover the last 14 days. Inventory is current.'),
       el('div', { class: 'grid tiles' },
         tile('Catalog items', fmt(cat.total)),
         tile('Live', fmt(byState.live)),
@@ -1320,7 +1319,7 @@ async function viewOverview(main) {
         el('div', { class: 'card' }, el('h2', {}, 'Most-downloaded catalog items'),
           topDownloads.length
             ? hbarChart(topDownloads.map((a) => ({ label: a.assetId, value: a.count })), { color: SERIES[2] })
-            : el('p', { class: 'empty' }, 'No catalog downloads recorded yet — shells emit this when a catalog asset is saved as a file.')),
+            : el('p', { class: 'empty' }, 'No catalog downloads recorded yet.')),
         el('div', { class: 'card' }, el('h2', {}, 'Projects by item count'),
           (proj.top ?? []).length
             ? hbarChart(proj.top.map((p) => ({ label: p.archived ? `${p.name} (archived)` : p.name, value: p.items })), { color: SERIES[2] })
@@ -1339,7 +1338,7 @@ async function viewOverview(main) {
               ], { color: SERIES[2] })
             : el('p', { class: 'empty' }, 'No catalog items in this deployment.')),
       ),
-      el('p', { class: 'sub', style: 'margin-top:10px' }, 'Transforms, crops and other edits are counted as tool activity above; per-item download and transform attribution needs the shells to emit those events. Internal deployment — utilisation is shown in full.'),
+      el('p', { class: 'sub', style: 'margin-top:10px' }, 'Crops and other edits count as tool activity above. Per-item download figures need the apps to report those events.'),
     ),
   );
 }
@@ -1347,12 +1346,12 @@ async function viewOverview(main) {
 // ── activity view (its own section, listed under Overview) ──────────────────
 async function viewActivity(main, params) {
   const actHost = el('div', { class: 'act-host' });
-  const hdr = await activityHeader('All audited events per day — the feed below is the detail.', [
+  const hdr = await activityHeader('All audited events per day.', [
     { key: 'a', label: 'Events', match: ['*'] },
   ]);
   main.replaceChildren(
     el('h1', {}, 'Activity'),
-    el('p', { class: 'sub' }, 'What people are doing, newest first: share links, sessions, downloads, approvals and more. Click a name to open that person, a tool or session to open it in Lolly, or a date to filter to that day.'),
+    el('p', { class: 'sub' }, 'What people are doing, newest first. Names, tools, sessions and dates are links.'),
     ...(hdr ? [hdr] : []),
     actHost,
   );
@@ -1504,7 +1503,7 @@ async function viewLimits(main) {
   const changed = limits.filter((l) => l.source !== 'built-in').length;
   main.append(
     el('h1', {}, 'Limits and quotas'),
-    el('p', { class: 'sub' }, `Every limit this deployment enforces, with its value now and where the value comes from: ${fmt(limits.length)} limits, ${fmt(changed)} set by configuration or the environment. Agent tokens show their own limits and use on each programme’s Agent tokens card.`),
+    el('p', { class: 'sub' }, `${fmt(limits.length)} limits, ${fmt(changed)} set by configuration or the environment. Agent tokens show their own limits on each programme’s Agent tokens card.`),
     ...areas.map((area) => el('div', { class: 'card stack limits-area' },
       el('h2', {}, area),
       // Two columns, so a phone keeps the value and its source beside the limit.
@@ -1590,7 +1589,7 @@ async function viewDesignSystem(main) {
     : null;
   const sourceCard = sources.length ? el('div', { class: 'card stack' },
     el('h2', { class: 'flush' }, 'Design tokens from connected sources'),
-    el('p', { class: 'sub' }, 'Token sets federated live from your connected design sources (e.g. Penpot). They inherit into this design system read-only — the active brand still comes from the mounted pack. To pin a set as an instance-owned snapshot, use Search & import on the Sources tab.'),
+    el('p', { class: 'sub' }, 'Token sets read live from your connected design sources, such as Penpot. They are read-only here, and the active brand still comes from the mounted pack. To keep a set as a snapshot, use Search & import on the Sources tab.'),
     ...sources.map((s) => el('div', { class: 'ds-group' },
       el('div', { class: 'list-bar' },
         el('div', { class: 'detail-h' }, s.name),
@@ -1670,13 +1669,13 @@ async function viewDesignSystem(main) {
 
   const cards = [
     el('div', { class: 'card stack' },
-      el('h2', {}, brand.name ? `Palette — ${brand.name}` : 'Palette'),
+      el('h2', {}, brand.name ? `Palette: ${brand.name}` : 'Palette'),
       el('p', { class: 'sub' }, `${lightRows.length} colour tokens, resolved exactly as the tools read them.`),
       ...groupedSwatches(lightRows)),
   ];
   if (darkRows.length) {
     cards.push(el('div', { class: 'card stack' },
-      el('h2', {}, 'Palette — dark theme'),
+      el('h2', {}, 'Palette: dark theme'),
       el('p', { class: 'sub' }, `${darkRows.length} tokens the dark theme overrides.`),
       ...groupedSwatches(darkRows)));
   }
@@ -1988,8 +1987,8 @@ async function viewFeatureFlags(main) {
   ]);
   main.replaceChildren(
     el('h1', {}, 'Feature flags'),
-    el('p', { class: 'sub' }, 'Default state and toggle visibility for the shell’s per-user feature flags. A member who hasn’t set one gets the default here; hiding a toggle removes it from their profile while the default still applies. Set a flag Off and Hidden to stage a seasonal surprise (Pride, April 1), then flip it On on the day. Changes reach connected shells on their next poll.'),
-    el('p', { class: 'sub' }, 'A group rule sets either setting for members of one group, so a team can pilot a feature. A group rule wins over the setting for everyone. When a member’s groups have different rules, Off wins over On and Hidden wins over Shown.'),
+    el('p', { class: 'sub' }, 'Set each feature’s default and whether people see its toggle. A hidden toggle keeps its default. Changes reach connected apps on their next poll.'),
+    el('p', { class: 'sub' }, 'A group rule wins over the setting for everyone. When a member’s groups disagree, Off wins over On and Hidden wins over Shown.'),
     ...(hdr ? [hdr] : []),
     serviceHost,
     list);
@@ -2018,7 +2017,7 @@ async function viewFleet(main) {
   const shells = new Set(clients.map((c) => c.info.shell)).size;
   const engines = new Set(clients.map((c) => c.info.engine).filter(Boolean)).size;
   const lastSeen = clients.map((c) => c.lastSeenAt).filter(Boolean).sort().at(-1);
-  const hdr = await activityHeader('Sign-ins and guest sessions per day — the traffic behind the fleet below.', [
+  const hdr = await activityHeader('Sign-ins and guest sessions per day.', [
     { key: 'a', label: 'Sign-ins', match: ['auth.login'] },
     { key: 'b', label: 'Guest sessions', match: ['guest.admit'] },
   ]);
@@ -2062,7 +2061,7 @@ async function viewFleet(main) {
     el('div', { class: 'card stack' },
       el('h2', {}, 'Installs'),
       el('p', { class: 'muted', style: 'margin-top:-4px' },
-        'Devices registered while signed in — no heartbeat, rows refresh only when the person uses the instance. Forgetting is bookkeeping; the next signed-in use re-registers.'),
+        'Devices registered while signed in. A row refreshes when the person uses the instance. A forgotten device registers again on its next signed-in use.'),
       installs.length
         ? dataTable(
             ['Name', 'Shell', 'Engine', 'Platform', 'Last used by', { label: 'Last seen', sort: 'date' }, ''],
@@ -2168,7 +2167,7 @@ async function viewFleet(main) {
     return [el('div', { class: 'card stack' },
       el('h2', {}, 'Pending device sign-ins'),
       el('p', { class: 'muted', style: 'margin-top:-4px' },
-        'Codes waiting for a person to confirm at /activate. Deny anything you don’t recognise — approval only ever happens on the activate page, typed by the person it signs in.'),
+        'Codes waiting for a person to confirm at /activate. Deny anything you don’t recognise. Only the person signing in can approve, on the activate page.'),
       dataTable(['Code', 'Client', { label: 'Requested', sort: 'date' }, ''], pending.map(row), {})),
     ];
   }
@@ -2234,7 +2233,7 @@ async function renderRooms(main) {
   ]);
   main.replaceChildren(
     el('h1', {}, 'Live rooms'),
-    el('p', { class: 'sub' }, 'Who is collaborating on this deployment right now, and whether they can write. Counters and display names only: no input value, cursor position or keystroke ever reaches this view.'),
+    el('p', { class: 'sub' }, 'Who is collaborating right now, and whether they can write. This view receives display names and counts only.'),
     ...(hdr ? [hdr] : []),
     el('p', {}, el('button', { onclick: () => renderRooms(main) }, 'Refresh')),
     el('div', { class: 'card stack' },
@@ -2283,7 +2282,7 @@ async function viewLinks(main) {
   ]);
   main.replaceChildren(
     el('h1', {}, 'Share links'),
-    el('p', { class: 'sub' }, 'Every share, embed, download and guest link this deployment has minted, with its full signed URL. Links are minted elsewhere: the apps and the API mint share, embed and download links, and guest links are minted under Contractors. Copy a link to hand it over; revoking kills it immediately, including live guest sessions.'),
+    el('p', { class: 'sub' }, 'Every share, embed, download and guest link from this deployment. Revoking a link ends it at once, with any live guest session.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Minted links'),
@@ -3215,7 +3214,7 @@ function renderCollectionEditor(existing, known, nameOf, host, opener) {
     el('div', { class: 'stack' },
       el('h3', { class: 'detail-h' }, 'Assets, in the order they are shown'),
       el('p', { class: 'sub', style: 'margin:0 0 8px' },
-        'You can only add assets you can see yourself — a collection link hands its members to a bearer, so it can never reach further than its curator could.'),
+        'You can only add assets you can see yourself. A collection link never reaches further than its curator could.'),
       el('p', {}, picker),
       membersHost),
     creating
@@ -3247,7 +3246,7 @@ async function viewCatalog(main) {
   const detailHost = el('div', { class: 'stack' });
   const onInspect = (entry) => openCatalogInspect(entry, detailHost);
 
-  const hdr = await activityHeader('Catalog changes per day — providers, injectables and lifecycle.', [
+  const hdr = await activityHeader('Catalog changes per day.', [
     { key: 'a', label: 'Changes', match: ['catalog.'] },
   ]);
   // Submit (plans/31 section 3, plan 299): the console's own upload door to
@@ -3269,7 +3268,7 @@ async function viewCatalog(main) {
   })() : null;
   main.append(
     el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Assets'),
-      el('p', { class: 'sub' }, 'Manage shared assets, expiry dates and availability. Open an asset for its preview and details.')),
+      el('p', { class: 'sub' }, 'Shared assets, their expiry dates and availability.')),
       submitAction),
     ...(hdr ? [hdr] : []),
     submitHost,
@@ -3354,7 +3353,7 @@ async function viewTools(main) {
   ]);
   main.append(
     el('h1', {}, 'Tools'),
-    el('p', { class: 'sub' }, 'Govern who sees each tool and what they may change: lock inputs to brand presets, restrict them to approved choices, or hide them outright. Admins hold this by default; grant policy.edit to a brand group to delegate stewardship.'),
+    el('p', { class: 'sub' }, 'Choose who sees each tool and which inputs they can change.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Tools and their policies'),
@@ -3434,18 +3433,18 @@ function providerRow(p, panels) {
 // SaaS sources follow, plainly labelled.
 const PROVIDER_INTEGRATIONS = [
   { kind: 'git', name: 'Git repository', blurb: 'Sync design assets from any git host (Forgejo, Gitea, GitLab, Codeberg, GitHub) through a repository manifest.', options: '{"rawBase": "https://git.your-host.example/org/brand/raw/branch/main", "manifestPath": "lolly-catalog.json"}' },
-  { kind: 's3', name: 'S3-compatible storage', blurb: 'Federate a bucket from any S3-compatible object store — MinIO, Ceph, Garage, Mulga Spinifex S3, or a public cloud.', options: '{"bucket": "…", "prefix": "brand/", "endpoint": "https://s3.your-host.example", "region": "us-east-1"}' },
-  { kind: 'webdav', name: 'WebDAV storage', blurb: 'Any WebDAV server the org runs — Nextcloud, ownCloud, Apache mod_dav — federated read-only over the open protocol.', options: '{"baseUrl": "https://cloud.your-host.example", "flavor": "nextcloud", "root": "Brand"}' },
-  { kind: 'penpot', name: 'Penpot', blurb: 'Open, self-hostable design tool — federate your design tokens (DTCG) so /design and brand themes inherit from Penpot, and search-and-import boards as catalog media.', options: '{"baseUrl": "https://design.your-host.example", "teamId": "…"}', mapping: '{"typeMap": {"tokens": "tokens", "board": "image"}, "defaultType": "image"}' },
+  { kind: 's3', name: 'S3-compatible storage', blurb: 'A bucket from any S3-compatible object store: MinIO, Ceph, Garage, Mulga Spinifex S3 or a public cloud.', options: '{"bucket": "…", "prefix": "brand/", "endpoint": "https://s3.your-host.example", "region": "us-east-1"}' },
+  { kind: 'webdav', name: 'WebDAV storage', blurb: 'Any WebDAV server you run, such as Nextcloud, ownCloud or Apache mod_dav. Read-only.', options: '{"baseUrl": "https://cloud.your-host.example", "flavor": "nextcloud", "root": "Brand"}' },
+  { kind: 'penpot', name: 'Penpot', blurb: 'Open, self-hostable design tool. The design system reads your DTCG tokens from Penpot, and boards import as catalog media.', options: '{"baseUrl": "https://design.your-host.example", "teamId": "…"}', mapping: '{"typeMap": {"tokens": "tokens", "board": "image"}, "defaultType": "image"}' },
   { kind: 'gdrive', name: 'Google Drive', blurb: 'Pull a shared Drive folder into the catalog.', options: '{"folderId": "…"}' },
   { kind: 'dropbox', name: 'Dropbox', blurb: 'Mirror a Dropbox folder of approved assets.', options: '{"path": "/Brand"}' },
   { kind: 'o365', name: 'Microsoft 365 / SharePoint', blurb: 'Read a SharePoint library or OneDrive path.', options: '{"driveId": "…", "itemPath": "Brand/Approved"}' },
   { kind: 'brandfolder', name: 'Brandfolder', blurb: 'Connect a Brandfolder DAM as a read-only source.', options: '{"brandfolderId": "…"}' },
-  { kind: 'optimizely-cmp', name: 'Optimizely CMP', blurb: 'Optimizely CMP web DAM — federate read-only, and optionally publish lolly-made media back out.', options: '{"publish": true}' },
-  { kind: 'imagerelay', name: 'Image Relay', blurb: 'Image Relay DAM — read-only, with the exit path (materialize → cut over) for off-boarding.', options: '{"folderId": "…", "recursive": true}' },
-  { kind: 'canto', name: 'Canto', blurb: 'Canto DAM — read-only, with the exit path (materialize → cut over) for off-boarding.', options: '{"tenant": "acme", "approvedStates": ["approved"]}' },
-  { kind: 'acquia-dam', name: 'Acquia DAM / Widen', blurb: 'The Widen enterprise DAM — read-only, with native release/expiry dates and approval.', options: '{"query": "…", "approvedStatuses": ["active"]}' },
-  { kind: 'intelligencebank', name: 'IntelligenceBank', blurb: 'IntelligenceBank — federate the v3 Graph API read-only, with the exit path for off-boarding.', options: '{"platformUrl": "https://acme.intelligencebank.com", "approvedStates": ["Approved"]}' },
+  { kind: 'optimizely-cmp', name: 'Optimizely CMP', blurb: 'Optimizely CMP web DAM. Read-only, with optional publishing of Lolly-made media back out.', options: '{"publish": true}' },
+  { kind: 'imagerelay', name: 'Image Relay', blurb: 'Image Relay DAM. Read-only, with the exit path (materialize → cut over) for off-boarding.', options: '{"folderId": "…", "recursive": true}' },
+  { kind: 'canto', name: 'Canto', blurb: 'Canto DAM. Read-only, with the exit path (materialize → cut over) for off-boarding.', options: '{"tenant": "acme", "approvedStates": ["approved"]}' },
+  { kind: 'acquia-dam', name: 'Acquia DAM / Widen', blurb: 'The Widen enterprise DAM. Read-only, with native release and expiry dates and approval.', options: '{"query": "…", "approvedStatuses": ["active"]}' },
+  { kind: 'intelligencebank', name: 'IntelligenceBank', blurb: 'IntelligenceBank over the v3 Graph API. Read-only, with the exit path for off-boarding.', options: '{"platformUrl": "https://acme.intelligencebank.com", "approvedStates": ["Approved"]}' },
   { kind: 'cloudinary', name: 'Cloudinary', blurb: 'Read a shared media library by stable asset ID. Original downloads stay behind Work access checks.', options: '{"cloudName": "your-cloud", "assetFolder": "Brand/Approved", "region": "us"}' },
   { kind: 'orange-logic', name: 'Orange Logic', blurb: 'Search an organisation DAM and use permitted renditions. Protected originals require a separate API.', options: '{"baseUrl": "https://dam.your-host.example", "query": "ParentFolderIdentifier:APPROVED", "formats": ["TR1", "WebHigh"]}' },
   { kind: 'mock', name: 'Mock (dev)', blurb: 'A synthetic in-memory source for local development.', options: '{}' },
@@ -3566,18 +3565,18 @@ async function viewProviders(main, params = new URLSearchParams()) {
       try {
         const r = await api(`/api/v1/catalog/providers/${p.id}/credential`, { method: 'PUT', body: { secret: secretInput.value, ...(expiresInput.value ? { expiresAt: expiresInput.value } : {}) } });
         secretInput.value = '';
-        status.textContent = `Stored (${r.fingerprint}) — health ok.`;
+        status.textContent = `Stored (${r.fingerprint}). Health ok.`;
         setTimeout(route, 900);
       } catch (e) { status.textContent = e.message; saveBtn.disabled = false; }
     } }, 'Verify & store');
     panelHost.replaceChildren(el('div', { class: 'card stack' },
       el('div', { class: 'list-bar' },
-        el('h2', { class: 'flush' }, `Credential — ${p.label}`),
+        el('h2', { class: 'flush' }, `Credential: ${p.label}`),
         el('button', { onclick: () => panelHost.replaceChildren() }, 'Close')),
-      el('p', { class: 'sub' }, 'The key is verified against the provider, sealed at rest, and never shown again — only its fingerprint. Replacing it re-runs the same check before anything is overwritten.'),
+      el('p', { class: 'sub' }, 'The key is verified against the provider and sealed at rest. Only its fingerprint is shown again. Replacing it runs the same check first.'),
       el('div', { class: 'formrow' },
         field('Secret', secretInput),
-        field('Expires (optional — the vendor’s schedule)', expiresInput)),
+        field('Expires (optional)', expiresInput)),
       el('p', {}, saveBtn),
       status));
     secretInput.focus();
@@ -3669,7 +3668,7 @@ async function viewProviders(main, params = new URLSearchParams()) {
               el('p', {}, el('span', { class: 'status revoked' }, 'failed'), ` ${detail ?? ''}`),
               ...notes.map((n) => el('p', { class: 'muted' }, n)))
           : el('div', {},
-              el('p', {}, el('span', { class: 'status live' }, 'connection ok'), ` — sample of ${r.sample.length} mapped asset${r.sample.length === 1 ? '' : 's'}:`),
+              el('p', {}, el('span', { class: 'status live' }, 'connection ok'), ` Sample of ${r.sample.length} mapped asset${r.sample.length === 1 ? '' : 's'}:`),
               el('ul', {}, ...r.sample.map((s) => el('li', {}, `${s.name} `, el('span', { class: 'muted' }, `(${s.type}${s.tags?.length ? ` · ${s.tags.join(', ')}` : ''})`)))),
               ...notes.map((n) => el('p', { class: 'muted' }, n))));
       } catch (e) { addErr.textContent = e.message; }
@@ -3688,7 +3687,7 @@ async function viewProviders(main, params = new URLSearchParams()) {
       el('div', { class: 'list-bar' },
         el('h2', { class: 'flush' }, `Connect ${integration.name}`),
         el('button', { onclick: () => panelHost.replaceChildren() }, 'Close')),
-      el('p', { class: 'sub' }, 'Test the connection first — the dry run verifies the key against the provider and previews how assets will map, without saving anything. New sources are created disabled: set a key on the row below, then enable.'),
+      el('p', { class: 'sub' }, 'Test the connection first. The test checks the key and previews how assets will map, and saves nothing. A new source starts disabled: set a key on its row, then enable.'),
       el('div', { class: 'formrow' },
         field('Id', idInput),
         field('Label', labelInput)),
@@ -3718,7 +3717,7 @@ async function viewProviders(main, params = new URLSearchParams()) {
   // single result into the catalog as an instance-owned snapshot. The curation gate —
   // experimentation stays upstream (e.g. in Penpot), only picked assets land here.
   const searchImportPanel = () => {
-    const qInput = el('input', { placeholder: 'Search connected sources — e.g. a Penpot board' });
+    const qInput = el('input', { placeholder: 'Search connected sources' });
     const out = el('div', {});
     const status = errSpan();
     const run = async () => {
@@ -3752,7 +3751,7 @@ async function viewProviders(main, params = new URLSearchParams()) {
     qInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') run(); });
     return el('div', { class: 'card stack' },
       el('h2', {}, 'Search & import'),
-      el('p', { class: 'sub' }, 'Live-search connected sources and import a result into the catalog as an instance-owned copy — keep experimentation upstream (e.g. in Penpot), land only curated assets here, with full rigor.'),
+      el('p', { class: 'sub' }, 'Search connected sources and import a result into the catalog as a copy this instance owns.'),
       el('div', { class: 'form-inline' }, field('Query', qInput), el('button', { class: 'primary', onclick: run }, 'Search')),
       out, status);
   };
@@ -4151,7 +4150,7 @@ async function viewApprovals(main) {
   ]);
   main.append(
     el('h1', {}, 'Approvals'),
-    el('p', { class: 'sub' }, 'Requests routed to your groups arrive under Waiting on you, and the ones you raised are tracked below. You never review your own request.'),
+    el('p', { class: 'sub' }, 'Someone else always reviews your own requests.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Waiting on you'),
@@ -4235,7 +4234,7 @@ async function viewMessages(main) {
   ]);
   main.append(
     el('h1', {}, 'Messages'),
-    el('p', { class: 'sub' }, 'Announcements, upgrade reminders and policy notices, delivered to connected apps. The count shows how many people have acknowledged each one.'),
+    el('p', { class: 'sub' }, 'Notices sent to people in their Lolly apps.'),
     ...(hdr ? [hdr] : []),
     // Lead with the sent-log; composing is a deliberate action one click away.
     el('div', { class: 'card stack' },
@@ -4249,7 +4248,7 @@ async function viewMessages(main) {
               el('td', {}, severityChip(m.severity)),
               el('td', {}, humanizeAudience(m.audience)),
               numCell(m.acks))), { sortable: true, filter: messages.length > 8 })
-        : el('p', { class: 'empty' }, 'No messages sent yet — compose one below to reach connected shells.')),
+        : el('p', { class: 'empty' }, 'No messages sent yet.')),
     el('details', { class: 'compose-section', open: messages.length === 0 ? 'true' : null },
       el('summary', {}, el('span', { class: 'section-h' }, 'Send a message')),
       form),
@@ -4303,7 +4302,7 @@ async function viewAudit(main, params) {
     el('h1', {}, 'Audit'),
     search,
     el('p', { class: 'sub' }, `${matched ?? total} matching events across the full history. ${events.length} on this page.`),
-    el('p', { class: 'sub' }, 'A tamper-evident record of every governed action on this deployment — sign-ins, grant and policy edits, approvals, link mints and revocations, catalog changes. It is append-only: entries are never edited or deleted, only added.'),
+    el('p', { class: 'sub' }, 'A tamper-evident record of every governed action. Entries are added and never edited or deleted.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
       el('div', { class: 'chain-badge' },
@@ -5187,7 +5186,7 @@ async function viewUsers(main, params) {
         state.page = 1;
         refetch();
       },
-    }, label, active ? el('span', { class: 'sort-caret', 'aria-hidden': 'true' }, state.dir === 'asc' ? '▲' : '▼') : null);
+    }, label, active ? el('span', { class: 'sort-caret', 'data-dir': state.dir === 'asc' ? 'asc' : 'desc', 'aria-hidden': 'true' }) : null);
   };
 
   function userRow(u) {
@@ -5373,7 +5372,7 @@ async function viewUsers(main, params) {
           cell('Account ID', el('div', { class: 'stack' }, el('span', { class: 'mono' }, u.id), copyButton(() => u.id, 'Copy ID'))),
           cell('Last seen', when(u.lastSeenAt)),
           ...(password ? [cell('Password', password.set ? (password.lockedUntil ? 'Set, locked' : 'Set') : 'Not set')] : [])),
-        el('p', { class: 'sub', style: 'margin:8px 0 0' }, `Name, email, title and role are managed by ${idpName()} — read-only here. Role is derived from group membership.`));
+        el('p', { class: 'sub', style: 'margin:8px 0 0' }, `${idpName()} manages name, email, title and role. Role follows group membership.`));
     }
 
     // Email and password: a one-time link to set or replace this person's
@@ -5459,7 +5458,7 @@ async function viewUsers(main, params) {
       const entries = localGroups().map((g) => {
         const cb = el('input', { type: 'checkbox', ...(checkedSet.has(g.name) ? { checked: 'checked' } : {}) });
         cb.addEventListener('change', () => { if (cb.checked) groupDraft.add(g.name); else groupDraft.delete(g.name); saveBtn.disabled = !groupsDirty(); updateDraftNotice(); });
-        return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', { title: g.name }, groupLabel(g.name)), g.description && !programmeGroupNames.has(g.name) ? el('span', { class: 'muted' }, ` — ${g.description}`) : null) };
+        return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', { title: g.name }, groupLabel(g.name)), g.description && !programmeGroupNames.has(g.name) ? el('span', { class: 'muted' }, ` · ${g.description}`) : null) };
       });
 
       const saveBtn = el('button', { class: 'primary', onclick: async () => {
@@ -5554,10 +5553,10 @@ async function viewUsers(main, params) {
       } }, 'Grant access');
 
       return el('div', { class: 'stack' },
-        el('p', { class: 'sub' }, 'Grants this person a tool outside their groups’ visibility — a per-user allow for tool.use on that one tool. It changes only this person, not their groups.'),
+        el('p', { class: 'sub' }, 'Give this person one tool their groups do not see. Their groups stay as they are.'),
         toolGrants.length
           ? dataTable(['Tool', { label: 'Actions', w: '1%' }], grantRows)
-          : el('p', { class: 'empty' }, 'No individual tool grants — this person sees only their groups’ tools.'),
+          : el('p', { class: 'empty' }, 'This person sees only their groups’ tools.'),
         options.length
           ? el('div', { class: 'formrow newgrp' }, field('Add tool', toolSel), el('div', {}, el('label', {}, ' '), addBtn))
           : (tools.length ? el('p', { class: 'muted' }, 'Every tool is already granted individually.') : el('p', { class: 'muted' }, 'No tools available to grant.')),
@@ -5599,7 +5598,7 @@ async function viewUsers(main, params) {
         el('p', { style: 'margin:0 0 6px' },
           u.disabled ? el('span', { class: 'status revoked' }, 'disabled') : el('span', { class: 'status live' }, 'active'),
           el('span', { class: 'sub', style: 'margin:0 0 0 10px' }, u.disabled
-            ? 'Locked out — their sessions are refused immediately. Re-enabling restores access.'
+            ? 'Locked out. Their sessions are refused. Re-enabling restores access.'
             : 'Disabling locks the account instantly and kills live sessions. Disabling an owner is owner-only.')),
         el('p', {}, btn, ' ', revokeBtn), err, revokeErr);
     }
@@ -5661,7 +5660,7 @@ async function copyToClipboard(text) {
 function copyButton(getText, label = 'Copy link') {
   const btn = el('button', { onclick: async () => {
     const ok = await copyToClipboard(getText());
-    announce(ok ? 'Link copied to clipboard' : 'Copy failed — select the link manually');
+    announce(ok ? 'Link copied to clipboard' : 'Copy failed. Select the link and copy it by hand');
     btn.textContent = ok ? 'Copied' : 'Copy failed';
     setTimeout(() => { btn.textContent = label; }, 1600);
   } }, label);
@@ -5745,7 +5744,7 @@ async function viewProgrammes(main, params) {
 
   main.append(
     el('h1', {}, 'Partner programmes'),
-    el('p', { class: 'sub' }, 'Name each kind of partner you work with and choose what its people get. Someone in a programme sees only the tools and collections their programmes include, plus your design system’s tokens, fonts and palettes. Nothing shared with everyone reaches them.'),
+    el('p', { class: 'sub' }, 'Name each kind of partner and choose what its people get. They see only what their programmes include, plus your design system’s tokens, fonts and palettes.'),
     programmes.length ? el('div', { class: 'stack' }, ...programmes.map(card)) : el('p', { class: 'empty' }, 'No programmes yet.'),
     createForm,
   );
@@ -7557,7 +7556,7 @@ async function viewContractors(main) {
     err.textContent = '';
     result.replaceChildren();
     const ttlHours = Number(ttlInput.value);
-    if (!Number.isFinite(ttlHours) || ttlHours < 1) { err.textContent = 'Expiry is required — enter at least 1 hour.'; return; }
+    if (!Number.isFinite(ttlHours) || ttlHours < 1) { err.textContent = 'Enter an expiry of at least 1 hour.'; return; }
     if (!tools.length) { err.textContent = 'No tools are available to scope a guest link.'; return; }
     mintBtn.disabled = true;
     try {
@@ -7599,7 +7598,7 @@ async function viewContractors(main) {
   ]);
   main.replaceChildren(
     el('h1', {}, 'Contractors'),
-    el('p', { class: 'sub' }, 'External collaborators work through expiring, tool-scoped guest links instead of accounts. Mint a link, hand it over, and revoke it the moment the engagement ends. Revoking kills any live guest session immediately.'),
+    el('p', { class: 'sub' }, 'A guest link gives an outside collaborator one tool for a set time, with no account. Revoking a link ends its live session at once.'),
     form,
     listHost,
     ...(hdr ? [hdr] : []));
@@ -7663,10 +7662,9 @@ async function renderProjectList(main) {
       await renderProjectList(main);
     } catch (ex) { err.textContent = ex.message; }
   } },
-    el('h2', {}, 'New project'),
     el('div', { class: 'formrow' },
-      field('Name', el('input', { name: 'name', required: 'true', maxlength: 200, placeholder: 'e.g. Summit 2026' })),
-      field('Groups that can see it', el('input', { name: 'groups', placeholder: 'team-eng, brand-team' }))),
+      field('Name', el('input', { name: 'name', required: 'true', maxlength: 200, placeholder: 'Summit 2026' })),
+      field('Groups that can see it', el('input', { name: 'groups', placeholder: 'Empty keeps it private' }))),
     el('p', {}, el('button', { class: 'primary' }, 'Create project')),
     err);
 
@@ -7737,17 +7735,29 @@ async function renderProjectList(main) {
     { key: 'b', label: 'Conflicts', match: ['session.conflict'] },
     { key: 'c', label: 'Deletions', match: ['session.delete'] },
   ]);
+  // The list leads. The create form folds under the heading's action, as Add
+  // grant does on Permissions, and stands open while there is no project.
+  const canCreate = canAction('project.create');
+  const composer = canCreate
+    ? el('details', { class: 'compose-section', open: projects.length ? null : 'true' },
+        el('summary', {}, el('span', { class: 'section-h' }, 'New project')), form)
+    : null;
+  const openComposer = canCreate
+    ? el('button', { type: 'button', class: 'primary page-action', onclick: () => {
+        composer.open = true; scrollIntoViewMotionSafe(composer); form.elements.name.focus({ preventScroll: true });
+      } }, navIcon('projects'), 'New project')
+    : null;
   main.replaceChildren(
-    el('h1', {}, 'Projects'),
-    el('p', { class: 'sub' }, 'Folders for saved tool sessions. A team project lists the groups that can see it, and a private project is yours alone. Open a project to see its sessions and change a field across all of them at once.'),
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Projects'),
+      el('p', { class: 'sub' }, 'Folders of saved work, shared with groups or kept private.')), openComposer),
     ...(hdr ? [hdr] : []),
-    canAction('project.create') ? form : null,
     el('div', { class: 'card stack' },
       projects.length
         ? dataTable(
             ['Project', 'Visibility', { label: 'Sessions', num: true }, 'Updated', 'State', ''],
             rows)
-        : el('p', { class: 'empty' }, 'No projects yet. Create one above, or they will appear as teams sync sessions from the shells.')));
+        : el('p', { class: 'empty' }, 'No projects yet.')),
+    composer);
 }
 
 async function renderProjectDetail(main, projectId, projectName) {
@@ -7770,7 +7780,7 @@ async function renderProjectDetail(main, projectId, projectName) {
   main.replaceChildren(
     el('a', { class: 'back-link', href: '#/projects', onclick: (e) => { e.preventDefault(); renderProjectList(main); } }, '← Projects'),
     el('h1', {}, projectName),
-    el('p', { class: 'sub' }, 'Every saved session in this project, and a multi-edit to set inputs across a whole tool at once.'),
+    el('p', { class: 'sub' }, 'Saved sessions in this project.'),
     sessionsCard,
     projectTransferCard(projectId, { el, api, download: (value, filename) => {
       const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2) + '\n'], { type: 'application/json' }));
@@ -7803,7 +7813,7 @@ function multiEditPanel(main, projectId, projectName, toolIds) {
 
   return el('div', { class: 'card stack' },
     el('h2', {}, 'Multi-edit'),
-    el('p', { class: 'sub' }, 'Set one or more inputs across every session of a tool in this project. Preview the exact change, then apply — each session keeps a revision.'),
+    el('p', { class: 'sub' }, 'Set inputs across every session of one tool. Preview the change, then apply. Each session keeps a revision.'),
     el('div', { class: 'formrow' },
       field('Tool', toolSel),
       field('Fields to set', pairsInput)),
@@ -8377,7 +8387,7 @@ function shotCredLine(c, file, url, themeClass = '') {
     : null;
 
   const label = ['Content Credentials', c.signer ? `signed by ${c.signer}` : '', c.kind, c.dimensions, c.day, c.generator,
-    c.ai ? (c.ai === 'generated' ? 'AI generated' : 'AI edited') : ''].filter(Boolean).join(' — ');
+    c.ai ? (c.ai === 'generated' ? 'AI generated' : 'AI edited') : ''].filter(Boolean).join(' · ');
   const line = el('span', { class: 'shot-cred-line', id }, row1, row2);
   const wrap = el('span', { class: `shot-cred${c.ai ? ' shot-cred--ai' : ''}${themeClass ? ` ${themeClass}` : ''}` },
     el('button', {
@@ -8724,7 +8734,7 @@ function verifyCard(report, verdict, name) {
 async function viewVerify(main, params) {
   main.replaceChildren(
     el('h1', {}, 'Verify a Content Credential'),
-    el('p', { class: 'sub' }, 'Your browser checks the file’s own bytes, so you never have to take this deployment’s word for it. Drop a signed SVG, PNG, JPG or PDF below, or arrive here from a screenshot’s “Check it yourself” link.'));
+    el('p', { class: 'sub' }, 'Your browser checks the file’s own bytes. Drop a signed SVG, PNG, JPG or PDF below.'));
   const host = el('div', {});
   const input = el('input', { type: 'file', accept: '.svg,.png,.jpg,.jpeg,.pdf', style: 'display:none',
     onchange: (e) => { const f = e.target.files?.[0]; if (f) verifyFile(f); } });
@@ -9316,7 +9326,7 @@ async function boot() {
     return;
   }
   if (session.kind !== 'member') {
-    gate([el('p', { class: 'gate-lede' }, 'You’re here on a guest link. The console is for deployment members — sign in with your work account to manage the deployment.')]);
+    gate([el('p', { class: 'gate-lede' }, 'You’re here on a guest link. Sign in with your work account to manage the deployment.')]);
     return;
   }
   // Signed in: richer theming from the governed catalog (same tokens as the gate
