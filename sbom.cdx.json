@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:fefcee83-ad6a-465c-85c5-2200e4d0ae14",
+  "serialNumber": "urn:uuid:3d0cf4b0-cae1-47e7-8bd3-ccb01317958d",
   "version": 1,
   "metadata": {
     "tools": [
@@ -2602,10 +2602,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/prettier@3.9.10",
+      "bom-ref": "pkg:npm/prettier@3.10.1",
       "name": "prettier",
-      "version": "3.9.10",
-      "purl": "pkg:npm/prettier@3.9.10",
+      "version": "3.10.1",
+      "purl": "pkg:npm/prettier@3.10.1",
       "scope": "required",
       "licenses": [
         {
@@ -2617,7 +2617,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "b241874c7d586fd42f6930b88569d14f3118b42a40a45d143013f3fadff464fccff2285e7e8fdbb4a77e400ee9504d1f13003549b4bf36687211cb2d75738874"
+          "content": "ef4be9dd9518a0f9456c5f6e8937571d4502184229edde3eea9fbc0d86e49b68cfef1ff78bfa5a5d517a768a52237cddfc2122b6b64dd6b7388bce715a699796"
         }
       ]
     },
