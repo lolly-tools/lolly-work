@@ -86,13 +86,13 @@ export function createBrandSources(pack: string, tokensHeads: Record<string, str
         const catalogRoot = await realpath(join(mounted, 'brands', profile.name, 'catalog'));
         const localTools = join(mounted, 'brands', profile.name, 'tools');
         specs.push({ id: `profile:${profile.name}`, name: profile.name, label: profile.name,
-          roots: { profile: profile.name, catalogRoot, toolRoots: [join(mounted, 'tools'), ...(existsSync(localTools) ? [localTools] : [])], assetRoots: [], exclude: new Set() } });
+          roots: { profile: profile.name, catalogRoot, toolRoots: [join(mounted, 'tools'), ...(existsSync(localTools) ? [localTools] : [])], assetRoots: [], exclude: new Set(), unlist: new Set() } });
       }
       defaultId = `profile:${legacy.active ?? legacy.profiles[0]!.name}`;
     } else {
       const catalogRoot = await realpath(join(mounted, 'catalog')).catch(() => join(mounted, 'catalog'));
       specs.push({ id: 'mounted', name: 'mounted', label: 'Mounted catalogue', roots: {
-        profile: 'materialized', catalogRoot, toolRoots: [join(mounted, 'tools')], assetRoots: [], exclude: new Set(),
+        profile: 'materialized', catalogRoot, toolRoots: [join(mounted, 'tools')], assetRoots: [], exclude: new Set(), unlist: new Set(),
       } });
     }
     const temporary = await mkdtemp(join(tmpdir(), 'lw-brand-sources-'));
