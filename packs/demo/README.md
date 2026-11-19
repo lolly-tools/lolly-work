@@ -31,12 +31,12 @@ to the entries whose files actually ship here.
 
 ## The connect download
 
-`lolly-demo-brand-1.2.0.lolly` is the Lolly Demo instance pack cut by the Lolly
+`lolly-demo-brand-1.2.1.lolly` is the Lolly Demo instance pack cut by the Lolly
 builder for THIS deployment (`node scripts/build-instance-pack.ts --brand
 lolly-demo --instance https://lolly.work`, from the Lolly repository), hosted
 from boot via `instance.connectPack` and offered at `/connect/pack.lolly` + the
 instance manifest's `connect.packUrl`. It carries Lolly Demo's tokens, its
-variable fonts with their OFL texts, six logo slots and 116 catalog assets; no
+variable fonts with their OFL texts, six logo slots and 114 catalog assets; no
 audio, LUTs, 3D models or photos. It is UNSIGNED (no signing key in the build
 environment), which the hosting surfaces label dev-only - a key-pinned app
 build will refuse it, a plain one imports it. Rebuild it with the same command

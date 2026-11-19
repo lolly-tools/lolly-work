@@ -4,8 +4,8 @@ name: Lolly Work
 applicationSuite: Lolly
 url: "https://github.com/lolly-tools/lolly-work"
 landingURL: "https://lolly.work"
-softwareVersion: "1.2.0"
-releaseDate: "2026-11-09"
+softwareVersion: "1.2.1"
+releaseDate: "2026-11-19"
 logo: console/icon.svg
 
 platforms:
@@ -42,7 +42,7 @@ localisation:
 dependsOn:
   open:
     - name: Lolly
-      versionMin: "1.2.0"
+      versionMin: "1.2.1"
     - name: PostgreSQL
     - name: Node.js
       versionMin: "24"
