@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "b14498ff6313619a2b077d2f283844c85bf3127e",
+  "commit": "fa68788c45502bf5c6a849ea9e7610570ab62ff7",
   "manifestSha256": "d93d4ae8f6f4d172aa1efb205cfc6cc8f054185c519fa8af97288465b1ae193b",
   "files": {
     "account-lifecycle.md": {
@@ -17,7 +17,7 @@
       "source": "docs/work/ai-policy.md"
     },
     "api.md": {
-      "sha256": "96cd76bb169158e0b4a59f581dfebf8ded425ea4e87a90dd43fa15b5655038ca",
+      "sha256": "08d8d5e835e3f0ca9045298ea5e4635c06849888d76b3701673dcde0a165b1ba",
       "source": "docs/work/api.md"
     },
     "approvals.md": {
@@ -29,7 +29,7 @@
       "source": "docs/work/audit.md"
     },
     "automation-api.md": {
-      "sha256": "e20c11f1971e29f3a01a5bb46ec2fd708f49a07f9e6fd3c75dccb2f0f663cd8e",
+      "sha256": "78ad6a2c8f7993c7c76e944e4b2d3792bea4548cfe7bce74f439e561d6d60624",
       "source": "docs/work/automation-api.md"
     },
     "aws-compatible.md": {
@@ -45,7 +45,7 @@
       "source": "docs/work/catalog.md"
     },
     "cli.md": {
-      "sha256": "f969000c5ccf4af6324a35c676c530e1234611ea3de74fd6e94ac667adcdad77",
+      "sha256": "dd071beec4f4d4b054317662d98bcaa76762f3afff159cedfe13c41917b0526c",
       "source": "docs/work/cli.md"
     },
     "cloud-deployment.md": {
@@ -81,7 +81,7 @@
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
-      "sha256": "26ac5cf2d5e2ddaaaf5e43d73dfd936c2c30ae2b2b749ad6fd40f86640617b3f",
+      "sha256": "c31e3671c29017d143a6f3cf269e90ac4053dea31f3c8950e4f613aa235a151e",
       "source": "docs/work/document-agents.md"
     },
     "edge-cdn.md": {
@@ -105,7 +105,7 @@
       "source": "docs/work/identity-providers.md"
     },
     "identity.md": {
-      "sha256": "3c7c5ada23db49da9502e3e975c7dbccd4e94a9eb693aa6dee871ececadac2e9",
+      "sha256": "79289df930f6d06c28994477d01aca4567875c234e91f5663341249b650831ff",
       "source": "docs/work/identity.md"
     },
     "img/helm-icon-color.svg": {
@@ -133,7 +133,7 @@
       "source": "docs/work/instance-pack-production.md"
     },
     "invitations.md": {
-      "sha256": "6d67bcd42a0d44b3af213504926f2268326852987e3862755e96462cea00398a",
+      "sha256": "6605200abc4b421a2602dc9e9d87ce3853d527a7abf1f67a5b92e49a7a2a3fac",
       "source": "docs/work/invitations.md"
     },
     "LICENSE": {
@@ -189,7 +189,7 @@
       "source": "docs/work/partner-shared-assets.md"
     },
     "partner-templates.md": {
-      "sha256": "11c989204bb27e452a94cf88dfa7ea4c8809f8d4c2f89ada08af929723a46716",
+      "sha256": "a9968bf31589efe0ea88445bc70fe7a80c86b93d882db2a98693f1ce7c444986",
       "source": "docs/work/partner-templates.md"
     },
     "past-releases.md": {
@@ -305,7 +305,7 @@
       "source": "docs/work/renders.md"
     },
     "resumable-uploads.md": {
-      "sha256": "906d89540bfaa745e851bb18721e3f91d774a3eefedbcabab11bd68fe1042ecb",
+      "sha256": "1ea71a775860349f41daf28c020c88ceeef1ea5292d81ecbc79d8307058479a8",
       "source": "docs/work/resumable-uploads.md"
     },
     "run-a-partner-programme.md": {
@@ -697,7 +697,7 @@
       "source": "docs/shots/work/tool-policy.svg"
     },
     "status.md": {
-      "sha256": "77d005a58dd730e13ce10f373a8869aca6d7330c6bea9ced9d320bf77ae39c27",
+      "sha256": "dd61a8f16182a3b4ec5a1b693ccacba44b60f2ced0cd193efa63648d4667b64d",
       "source": "docs/work/status.md"
     },
     "team-projects.md": {
