@@ -115,7 +115,7 @@ test('the physical modern release proves the full authored safe tree, exact mate
   const args = ['--tools', join(dist, 'tools'), '--index', join(dist, 'catalog/tools/index.json'), '--out', join(dist, 'catalog/tools/index.sig.json'), '--materialize'];
   sign(root, keys, args);
   assert.notDeepEqual(readFileSync(join(dist, 'tools/probe/card.html')), readFileSync(join(root, 'community/probe/card.html')));
-  assert.notDeepEqual(readFileSync(join(dist, 'catalog/previews/bundle.json')), readFileSync(join(root, 'brands/lolly-start/catalog/previews/bundle.json')));
+  // Lolly #1031 stopped rewriting previews/bundle.json, so whether its bytes change depends on the pin; the exact derivation check covers both.
   for (const extension of ['gz', 'br']) {
     const identity = readFileSync(join(dist, 'tools/probe/template.html'));
     put(dist, `tools/probe/template.html.${extension}`, extension === 'gz' ? gzipSync(identity) : brotliCompressSync(identity));
