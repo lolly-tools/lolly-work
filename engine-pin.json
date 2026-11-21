@@ -1,5 +1,5 @@
 {
-  "generatedFrom": "d739cd3ee86d9ade251129fd27a051e61fee51e7",
+  "generatedFrom": "b14498ff6313619a2b077d2f283844c85bf3127e",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.8.0",
@@ -8,10 +8,10 @@
     "contentHash": "d9c546aedc0e4ea23190bb109079836c49435c7d038a5206a351356b702489ff"
   },
   "engine": {
-    "version": "1.348.0",
-    "tarball": "lolly-engine-1.348.0.tgz",
-    "tarballSha256": "e3c488260507a4d9e85ec2a6b5cdf8d00fe08e8c5d3f72650f449d839586191b",
-    "contentHash": "627b5298b981d66bbb3dbd59b6eb152ab0264814014d29d26c21cbeb663e2694"
+    "version": "1.349.0",
+    "tarball": "lolly-engine-1.349.0.tgz",
+    "tarballSha256": "be5d1bded4eb59fb2e6efd5afc92acbc0182452bc6deae1441ea056dc44bc19b",
+    "contentHash": "7083f63e36da6558603e098454723d5a1fb84b5dd0a2ef2fcec1c0b382e7ac6c"
   },
   "schemas": {
     "asset-ref.schema.json": "1e610bd8369b1f4756306709af95bb009aa39981a9776343f92f1c00c51bc3cd",
@@ -19,6 +19,7 @@
     "blocks-wire-order.json": "f31d8d7789985f7431cacac493bd0428e2e9bce16f8d6f4da4514ae7c4445a10",
     "brand-page-v1.schema.json": "7247afb3c92b529d69755718a44c55d961502ec941371bbc3e42d64f525164ef",
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
+    "browser-free-v1.schema.json": "cab49c6093fc5bf530666b31e654552f5c9838a3019510ac64e838692ae3363d",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "51df61a10a3e2d95a98999ca0ef584170953a1f7b808626f9e16569d72d82cda",
     "canvas-op.schema.json": "c9cfbdd56a0e6c1dd81ddebe5ac7b9e4fc8ce5a789c708123b069b523eb15e60",
