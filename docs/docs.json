@@ -86,49 +86,49 @@
           "slug": "run-a-partner-programme",
           "path": "run-a-partner-programme.md",
           "title": "Run a partner programme",
-          "summary": "For partner teams: what partners get and see, how a programme fits together and where to start, with a guide for each subject from co-branding to ending a partnership."
+          "summary": "For partner teams: what partners get and see, how a programme fits together and where to start, with a guide for each subject."
         },
         {
           "slug": "partner-co-branding",
           "path": "partner-co-branding.md",
           "title": "Co-branding and partner kits",
-          "summary": "Give each partner company its details, logos for light and dark surfaces and a partner kit, see what partners see of their company, and what a co-branded file records."
+          "summary": "Give each partner company its details, logos for light and dark surfaces and a partner kit, and what a co-branded file records."
         },
         {
           "slug": "partner-templates",
           "path": "partner-templates.md",
           "title": "Partner templates",
-          "summary": "Publish ready pieces to a partner programme, fill inputs from each company's details, keep a tool to its templates, and bring out new versions or retire a template."
+          "summary": "Publish ready pieces to a partner programme, fill inputs from each company's details, and bring out new versions or retire a template."
         },
         {
           "slug": "partner-approvals",
           "path": "partner-approvals.md",
           "title": "Partner approvals",
-          "summary": "The reviews a partner team can turn on, all off by default: contact edits, partner kit changes, requests from partners' agents and one approval for a template's variants."
+          "summary": "The reviews a team can turn on, off by default: contact edits, partner kit changes, requests from partners' agents and one approval for a template's variants."
         },
         {
           "slug": "partner-shared-assets",
           "path": "partner-shared-assets.md",
           "title": "Shared assets and licences",
-          "summary": "What reaches partners: collections, provider folders, the licence gate, files marked as your own, sharing a held file anyway, and the credits that travel with links."
+          "summary": "What reaches partners: collections, provider folders, the licence gate, files marked as your own, and the credits that travel with links."
         },
         {
           "slug": "partner-agents",
           "path": "partner-agents.md",
           "title": "Partners' agents",
-          "summary": "Give a partner's AI agent a token that sees what the company's people see: scopes, expiry, limits and usage, and the brand and company context it reads over MCP."
+          "summary": "Give a partner's AI agent a token that sees what the company's people see: scopes, expiry, limits and usage, and the context it reads over MCP."
         },
         {
           "slug": "partner-people",
           "path": "partner-people.md",
           "title": "People and the partnership",
-          "summary": "Create a partner programme, check what partners get, invite people by list or domain, then end a partnership at once or on a date with a notice, and reopen an end."
+          "summary": "Create a partner programme, invite people by list or domain, then end a partnership at once or on a date with a notice, and reopen an end."
         },
         {
           "slug": "partner-programmes",
           "path": "partner-programmes.md",
           "title": "Partner programmes",
-          "summary": "The reference for partner programmes: tools and files, company details and logos, templates, licences, ending a partnership, agent tokens, routes and audit events."
+          "summary": "The reference for partner programmes: tools and files, company details and logos, templates, licences, agent tokens, routes and audit events."
         },
         {
           "slug": "design-system-administration",
@@ -188,7 +188,7 @@
           "slug": "move-from-render-api",
           "path": "move-from-render-api.md",
           "title": "Move from a hosted render API",
-          "summary": "Move image production from Bannerbear or Placid to your own server, one template at a time: read the account, import or rebuild designs, keep your request shapes, and compare before you cut over."
+          "summary": "Move image production from Bannerbear or Placid to your own server: read the account, import or rebuild designs and compare before you cut over."
         },
         {
           "slug": "renders",
@@ -242,7 +242,7 @@
           "slug": "provider-optimizely-cmp",
           "path": "providers/optimizely-cmp.md",
           "title": "Optimizely CMP integration with Lolly",
-          "summary": "Connect Optimizely CMP to Lolly Work with scoped onboarding and optional export publishing. Understand offboarding limits before planning self-hosted S3 storage."
+          "summary": "Connect Optimizely CMP to Lolly Work with scoped onboarding and optional export publishing. Understand offboarding limits before planning S3 storage."
         },
         {
           "slug": "provider-imagerelay",
@@ -278,7 +278,7 @@
           "slug": "provider-orange-logic",
           "path": "providers/orange-logic.md",
           "title": "Orange Logic integration with Lolly",
-          "summary": "Connect Orange Logic renditions to Lolly Work with scoped onboarding. Understand offboarding limits and self-hosted S3 storage; protected originals block cutover."
+          "summary": "Connect Orange Logic renditions to Lolly Work with scoped onboarding. Understand offboarding limits and S3 storage; protected originals block cutover."
         },
         {
           "slug": "provider-penpot",
@@ -333,7 +333,7 @@
           "slug": "self-host",
           "path": "self-host.md",
           "title": "Run Lolly Work",
-          "summary": "Pick the path that matches what you have: Kubernetes, the public demo, a trial on your computer, one Linux server or YunoHost. Downloads and checksums for the current release."
+          "summary": "Pick the path that matches what you have: Kubernetes, the public demo, a trial on your computer, one Linux server or YunoHost."
         },
         {
           "slug": "overview",
@@ -345,13 +345,13 @@
           "slug": "install",
           "path": "install.md",
           "title": "Install Lolly Work",
-          "summary": "From a source checkout to a running instance on one server: try it locally, make it yours, add PostgreSQL and secrets, then run it with Compose, systemd or YunoHost."
+          "summary": "From a source checkout to a running instance on one server: try it locally, add PostgreSQL and secrets, then run it with Compose, systemd or YunoHost."
         },
         {
           "slug": "ready-made-package",
           "path": "ready-made-package.md",
           "title": "Install the ready-made package",
-          "summary": "One Docker Compose folder with Lolly Work, PostgreSQL, the matching web app and automatic HTTPS, for a fresh VM, UpCloud, Dokploy or Coolify, with backup, restore and update steps."
+          "summary": "One Docker Compose folder with Lolly Work, PostgreSQL, the matching web app and automatic HTTPS, with backup, restore and update steps."
         },
         {
           "slug": "official-installations",
@@ -375,13 +375,13 @@
           "slug": "edge-cdn",
           "path": "edge-cdn.md",
           "title": "Put a CDN in front of Lolly Work",
-          "summary": "Serve Lolly Work's public files through Bunny or Cloudflare: the per-hostname jurisdiction rule, configuration and credentials, the settings that must stay off, purges and the probe."
+          "summary": "Serve Lolly Work's public files through Bunny or Cloudflare: the per-hostname jurisdiction rule, configuration and credentials, purges and the probe."
         },
         {
           "slug": "aws-compatible",
           "path": "aws-compatible.md",
           "title": "Run Lolly Work on AWS or MulgaDC Spinifex",
-          "summary": "Run Lolly Work on AWS or on MulgaDC Spinifex: EKS with the chart, the Lolly appliance, one VM or managed PostgreSQL and S3, behind a load balancer if you like, with the issues two Spinifex test runs found."
+          "summary": "Run Lolly Work on AWS or on MulgaDC Spinifex: EKS with the chart, the Lolly appliance, one VM or managed PostgreSQL and S3."
         },
         {
           "slug": "wasm-deployment",
@@ -429,7 +429,7 @@
           "slug": "operations",
           "path": "operations.md",
           "title": "Keep Lolly Work running",
-          "summary": "Upgrades, backups and restores, secret rotation, health and storage alerts, rate limits, scan hooks, notifications and SIEM forwarding, in the order the jobs come round."
+          "summary": "Upgrades, backups and restores, secret rotation, health and storage alerts, rate limits, scan hooks, notifications and SIEM forwarding."
         },
         {
           "slug": "metrics",
@@ -459,13 +459,13 @@
           "slug": "release-1-2-0",
           "path": "release-1-2-0.md",
           "title": "Release 1.2.0",
-          "summary": "The current release: Lolly Work 1.2.0 paired with Lolly 1.2.0, what Lolly 1.2.0 needs from Lolly Work, partner programmes, changes since 1.1.3, migrations and YunoHost packaging."
+          "summary": "The current release: Lolly Work 1.2.0 paired with Lolly 1.2.0, partner programmes, changes since 1.1.3, migrations and YunoHost packaging."
         },
         {
           "slug": "release-1-1-3",
           "path": "release-1-1-3.md",
           "title": "Release 1.1.3",
-          "summary": "Lolly Work 1.1.3 paired with Lolly 1.1.3, what Lolly 1.1.3 needs from Lolly Work, changes since 1.1.2, migrations, the first published chart and YunoHost packaging."
+          "summary": "Lolly Work 1.1.3 paired with Lolly 1.1.3, changes since 1.1.2, migrations, the first published chart and YunoHost packaging."
         },
         {
           "slug": "release-1-1-2",

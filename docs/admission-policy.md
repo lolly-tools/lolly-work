@@ -1,8 +1,7 @@
 # Admission policy with Kubewarden
 
-This page is for a platform team that runs [Kubewarden](https://www.kubewarden.io/)
-and wants admission policy for Lolly Work's pods. Lolly Work publishes what its pods
-need as data and a ready policy set built from published Kubewarden policies. Nothing
+Lolly Work publishes what its pods need as data and a ready policy set built from
+published [Kubewarden](https://www.kubewarden.io/) policies. Nothing
 is installed with the Helm chart: a cluster without Kubewarden runs Lolly Work unchanged, and
 the set applies only to namespaces you label. For running Kubewarden itself, and for
 rehearsing in audit mode first, see
@@ -78,7 +77,7 @@ cosign verify ghcr.io/lolly-tools/lolly-work-server@sha256:<digest> \
 reach anything: PostgreSQL, your identity provider, catalog sources, mail relays and
 the SIEM receiver. The render worker accepts connections from the control plane only,
 on port 8791. Its NetworkPolicy lets it reach cluster DNS and public addresses on
-ports 80 and 443, and its own code refuses the same private, shared, loopback,
+ports 80 and 443. Its own code refuses the same private, shared, loopback,
 link-local (which includes cloud metadata at `169.254.169.254`), documentation and
 multicast ranges, so a rendered page cannot reach the cluster or the metadata service.
 The requirements file lists every range.
@@ -171,7 +170,7 @@ message of the policy for its rule, and the script exits with status 0.
 
 ## Behaviour of the published policies
 
-Qualifying the set turned up four things about the published policies that shaped it:
+Qualifying the set turned up four things about the published policies that shaped the set:
 
 - `verify-image-signatures` reads its prefix setting as `url_prefix`, although its
   README shows `urlPrefix`, and it appends `/` to the prefix. A prefix ending in
@@ -195,7 +194,7 @@ Qualifying the set turned up four things about the published policies that shape
 
 The run below is the set's recorded qualification. The
 [1.2.0 release notes](release-1-2-0.md#deployment) record the policy set as unchanged since
-1.1.3, and the requirements file now carries chart 1.2.0; no later run is recorded.
+1.1.3, and the requirements file now has chart 1.2.0; no later run is recorded.
 
 On 2026-10-27 the set ran on Kubewarden 1.38.2 (`admission-controller` chart 6.1.0)
 with K3s 1.35.5 in k3d, on arm64. Lolly Work 1.1.2 and its render worker, pinned by digest,
