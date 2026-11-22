@@ -96,7 +96,7 @@ key with `openssl pkcs8 -topk8 -nocrypt -in leaf-key.pem -out leaf-key.pkcs8.pem
 
 ## On Kubernetes (Helm)
 
-The chart carries the **key** in its Secret. The **certificate** is public, so mount it
+The chart has the **key** in its Secret. The **certificate** is public, so mount it
 yourself and point `certFile` at the mount:
 
 ```yaml

@@ -13,7 +13,7 @@ registration and trust policy; a Lolly Work session does not sign a person into 
 
 - **[Prepare the deployment](#1-prepare-the-deployment)** Final address, secrets, database and network access.
 - **[Register the client](#2-register-the-client)** Redirect, logout and scope settings at your provider.
-- **[Configure admission and assurance](#3-configure-admission-and-optional-assurance)** Who may sign in, and which claims a sign-in must carry.
+- **[Configure admission and assurance](#3-configure-admission-and-optional-assurance)** Who may sign in, and which claims a sign-in must include.
 - **[Qualify before opening access](#4-qualify-before-opening-access)** Sign-in, sign-out, logout, disable and key rotation on a candidate.
 - **[Operate and upgrade](#5-operate-and-upgrade)** Offboarding, migrations, rollback and monitoring.
 
@@ -322,7 +322,7 @@ lw tokens create --label governance-sync --role admin --days 90
   scope opens.
 - A scope only narrows. A route must pass the scope and then the role and grants, so no scope gives
   a token an action its role lacks. A token with scopes and no role takes the `automation` role,
-  which holds the actions the scopes need without the rest of the admin role. No person can hold
+  which has the actions the scopes need without the rest of the admin role. No person can hold
   that role.
 - A token with no scopes needs a role, any but `guest` or `automation`, and reaches all that the role
   allows. Use this for automation no scope covers yet, such as governance export and apply or
