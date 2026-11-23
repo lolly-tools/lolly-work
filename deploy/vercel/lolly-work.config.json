@@ -6,7 +6,7 @@
     "name": "Lolly Work Demo",
     "baseUrl": "https://lolly.work",
     "pack": "packs/demo",
-    "connectPack": "lolly-demo-brand-1.2.1.lolly"
+    "connectPack": "lolly-demo-brand-1.2.2.lolly"
   },
   "idp": {
     "issuer": "",
