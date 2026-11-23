@@ -43,10 +43,12 @@ annotations:
       url: https://github.com/lolly-tools/lolly-work/blob/main/docs/official-installations.md
     - name: Source and support
       url: https://github.com/lolly-tools/lolly-work
-  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/containsSecurityUpdates: "true"
   lolly.tools/migrations: "0"
   lolly.tools/migration-classes: additive=0,maintenance=0
   lolly.tools/release-notes: https://github.com/lolly-tools/lolly-work/releases/tag/v1.2.2
   artifacthub.io/changes: |
+    - kind: security
+      description: The pinned Lolly 1.2.2 carries security fixes for JPEG XL (libjxl 0.13.0), tracker modules (libopenmpt 0.8.10) and camera raw reading.
     - kind: changed
       description: Default server and render worker image tags follow Work 1.2.2.
