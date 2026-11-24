@@ -282,9 +282,9 @@ test('the chart mounts the record only when a ConfigMap is named, and the policy
   assert.deepEqual(volume.configMap, { name: 'lolly-work-admission', optional: true, items: [{ key: 'report.json', path: 'report.json' }] });
   assert.ok(policy('lolly-work-volumes').spec.settings.allowedTypes.includes('configMap'));
   const server = spec.containers[0];
-  const mount = server.volumeMounts.find((m: Doc) => m.name === 'admission-report');
+  const mount: Doc = server.volumeMounts.find((m: Doc) => m.name === 'admission-report');
+  // No subPath: a subPath mount would never see an updated ConfigMap.
   assert.deepEqual(mount, { name: 'admission-report', mountPath: '/run/admission-report', readOnly: true });
-  assert.equal(mount.subPath, undefined, 'a subPath mount would never see an updated ConfigMap');
   assert.equal(server.env.find((e: Doc) => e.name === 'LW_ADMISSION_REPORT_FILE').value, '/run/admission-report/report.json');
   assert.equal(spec.automountServiceAccountToken, false, 'the record needs no Kubernetes API access');
 });
