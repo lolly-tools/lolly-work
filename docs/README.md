@@ -74,6 +74,7 @@ Edit the [canonical source](https://github.com/lolly-tools/lolly/tree/main/docs/
 - [Put a CDN in front of Lolly Work](edge-cdn.md)
 - [Run Lolly Work on AWS or MulgaDC Spinifex](aws-compatible.md)
 - [WebAssembly and Kubewarden choices](wasm-deployment.md)
+- [How Lolly uses Kubewarden](kubewarden.md)
 - [Admission policy with Kubewarden](admission-policy.md)
 - [Set up enterprise identity](enterprise-identity.md)
 - [Sign-in provider recipes](identity-providers.md)

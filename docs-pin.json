@@ -1,15 +1,15 @@
 {
   "version": 1,
   "repository": "https://github.com/lolly-tools/lolly",
-  "commit": "1b6b31b548c627dab68df32ad90e8f513a41af38",
-  "manifestSha256": "57a7bd4a79bd1b15ac4c299eb303cadc24ed553cd717421b05bfe0c80a30de08",
+  "commit": "d21a25278875ae7678c65e4885d9f831b3df8908",
+  "manifestSha256": "a9f6a649f261447df8da25262294d6aeff611a601634e4afcd4beafde436dee4",
   "files": {
     "account-lifecycle.md": {
       "sha256": "b030ca53a327bdeefb3ad3e2c139ab003387c3cccd3262b1fb0b0cf362b945c1",
       "source": "docs/work/account-lifecycle.md"
     },
     "admission-policy.md": {
-      "sha256": "e8df93c3f9b030c0e5c9f656f973b513a1ff98ea97f60ca9a92b2c9b05f0d89b",
+      "sha256": "3751a80477d446c978ae90330e0f7eb796d057b3ef852730f054eb5cb988fcc7",
       "source": "docs/work/admission-policy.md"
     },
     "ai-policy.md": {
@@ -53,7 +53,7 @@
       "source": "docs/work/cloud-deployment.md"
     },
     "configuration.md": {
-      "sha256": "4f858c6a76a9364d53888468ef5d8ab605cb172c576789ce11c2ef57735152f3",
+      "sha256": "6ec8feaf7308677f937e7a4142a8d614e131b53abb389bdd06b7129df0e721b9",
       "source": "docs/work/configuration.md"
     },
     "customer-setup.md": {
@@ -77,7 +77,7 @@
       "source": "docs/work/design-system-administration.md"
     },
     "docs.json": {
-      "sha256": "d743f2091042072af2dce424ec403640676bc78644b51837efb245df73291f64",
+      "sha256": "8ab3a23bef1cf9fa97bbbd49d6f5cf57917796a61570ca8c17cc9ce77eb293f7",
       "source": "docs/manifest.json"
     },
     "document-agents.md": {
@@ -135,6 +135,10 @@
     "invitations.md": {
       "sha256": "6605200abc4b421a2602dc9e9d87ce3853d527a7abf1f67a5b92e49a7a2a3fac",
       "source": "docs/work/invitations.md"
+    },
+    "kubewarden.md": {
+      "sha256": "f8f30d462327db1dd3c86602bfc2b5a77308649534d47fef8ab7cf5d09d6778d",
+      "source": "docs/work/kubewarden.md"
     },
     "LICENSE": {
       "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
@@ -281,7 +285,7 @@
       "source": "docs/work/providers/webdav.md"
     },
     "README.md": {
-      "sha256": "2f6e58ee3af2b4b1afbf190ce687e578c2f1b81e350d8d090a26414714f5d61f",
+      "sha256": "68d03306a2c717ef2a5aa1c1e96c98a9269b8e3cea3246c331f54b77d29c4e20",
       "source": "scripts/export-work-docs.ts"
     },
     "ready-made-package.md": {
@@ -709,7 +713,7 @@
       "source": "docs/work/telemetry.md"
     },
     "wasm-deployment.md": {
-      "sha256": "69e9a694ad84355cc6f63f608dabeb6ddd5036be345f2819b70aed7c6bc8c9cb",
+      "sha256": "60ab09d2e5100b40bcb3ae77f5e5032f28d5047ef15f794f51f480b6c83c7f91",
       "source": "docs/work/wasm-deployment.md"
     }
   }
