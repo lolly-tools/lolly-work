@@ -72,10 +72,17 @@ enforces it.
   private member can reach the response (`server/src/catalog/signing.ts`,
   `tests/catalog-public-key.test.ts`). The Lolly web app reads the route only from
   the origin that served its own code, and accepts the key only for envelopes
-  that carry its keyId; static hosts and the desktop and mobile apps keep their
-  build-time key. Whoever operates that origin already controls the web app's
-  scripts, so the route adds no trust, provided one operator runs the whole
-  origin, `/api/` included.
+  that carry its keyId; static hosts keep their build-time key. Whoever operates
+  that origin already controls the web app's scripts, so for the web app the
+  route adds no trust, provided one operator runs the whole origin, `/api/`
+  included. From Lolly 1.2.2, a desktop or mobile app reads the same route from
+  an instance the person connects to, shows the key ID on connect and accepts
+  that key for that instance only. This trusts the instance's TLS certificate
+  at the moment of connecting and the person's choice to connect. A key that
+  later differs is refused until the person connects again. The app also keeps
+  the session the server renews. People who connected with an older app must
+  connect once more. A `.lolly` setup pack is still checked against the app's
+  build-time key.
 - **Engine integrity** — the vendored engine is a pinned snapshot;
   `scripts/verify-engine-pin.ts` recomputes its content hashes against
   `engine-pin.json` before every test run and in CI, so a locally patched

@@ -11,12 +11,12 @@ type: application
 # Chart version: the Lolly release version, the same number as appVersion and
 # Work's package.json, so people install one version of everything. Chart-only
 # changes ship with the next release; tests/helm-chart.test.ts fails on drift.
-version: 1.2.1
+version: 1.2.2
 
 # The lolly-work server version this chart is designed against. Used as the
 # default image tag when image.tag is left empty. Keep in sync with the app's
 # package.json "version".
-appVersion: "1.2.1"
+appVersion: "1.2.2"
 
 home: https://lolly.work
 sources:
@@ -43,12 +43,12 @@ annotations:
       url: https://github.com/lolly-tools/lolly-work/blob/main/docs/official-installations.md
     - name: Source and support
       url: https://github.com/lolly-tools/lolly-work
-  artifacthub.io/containsSecurityUpdates: "false"
-  lolly.tools/migrations: "1"
-  lolly.tools/migration-classes: additive=0,maintenance=1
-  lolly.tools/release-notes: https://github.com/lolly-tools/lolly-work/releases/tag/v1.2.1
+  artifacthub.io/containsSecurityUpdates: "true"
+  lolly.tools/migrations: "0"
+  lolly.tools/migration-classes: additive=0,maintenance=0
+  lolly.tools/release-notes: https://github.com/lolly-tools/lolly-work/releases/tag/v1.2.2
   artifacthub.io/changes: |
-    - kind: added
-      description: A release notice in the console for owners and admins, with the updates and install.route values.
+    - kind: security
+      description: The pinned Lolly 1.2.2 carries security fixes for JPEG XL (libjxl 0.13.0), tracker modules (libopenmpt 0.8.10) and camera raw reading.
     - kind: changed
-      description: Default server and render worker image tags follow Work 1.2.1.
+      description: Default server and render worker image tags follow Work 1.2.2.
