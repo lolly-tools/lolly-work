@@ -12,7 +12,11 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { parseAllDocuments } from 'yaml';
 import { REQUIREMENTS_FILE, buildRequirements, serialise } from '../scripts/kubewarden-requirements.ts';
-import { UNSIGNED_IMAGE, podsFromRender, probes } from '../scripts/kubewarden-preflight.ts';
+import { UNSIGNED_IMAGE, buildReport, kubewardenVersion, noDecision, podsFromRender, probes, refusedBy } from '../scripts/kubewarden-preflight.ts';
+import { ADMISSION_REPORT_MAX_BYTES, admissionCheck, parseAdmissionReport, podAdmissionCheck } from '../server/src/setup/admission-report.ts';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const helm = spawnSync('helm', ['version', '--short'], { encoding: 'utf8' });
 const noHelm = helm.error || helm.status !== 0 ? 'install helm to regenerate the requirements (no cluster needed)' : false;
@@ -185,4 +189,102 @@ spec:
     assert.deepEqual(probe.pod.metadata.labels, base.metadata.labels);
   }
   assert.deepEqual(base.spec.containers[0].securityContext.capabilities, { drop: ['ALL'] }, 'probes copy, never change, the base pod');
+});
+
+const activePolicy = (name: string, over: Doc = {}): Doc => ({
+  metadata: { name }, spec: { module: `registry://ghcr.io/kubewarden/policies/${name}:v1.0.0`, mode: 'protect' },
+  status: { policyStatus: 'active', mode: 'protect' }, ...over,
+});
+const cleanRun = () => buildReport({
+  checkedAt: '2026-11-23T20:00:00.000Z', namespace: 'lolly-work',
+  policyServers: [{ metadata: { name: 'default' }, spec: { image: 'ghcr.io/kubewarden/adm-controller/policy-server:v1.39.0' } }],
+  policies: [activePolicy('lolly-work-volumes'), activePolicy('lolly-work-privileged')],
+  pods: [{ name: 'lolly-work-preflight', admitted: true }],
+  probes: [{ expect: 'privileged container', refused: true, by: 'clusterwide-lolly-work-privileged.kubewarden.admission' }],
+});
+
+test('the preflight record names Kubewarden, its version and each policy, and is clean only when every answer is', () => {
+  assert.equal(kubewardenVersion('ghcr.io/kubewarden/adm-controller/policy-server:v1.39.0'), '1.39.0');
+  assert.equal(kubewardenVersion('registry.example/policy-server:v1.39.0-rc.4@sha256:' + 'a'.repeat(64)), '1.39.0-rc.4');
+  assert.equal(kubewardenVersion('registry.example/policy-server:latest'), null);
+  assert.equal(refusedBy('Error from server: admission webhook "clusterwide-lolly-work-volumes.kubewarden.admission" denied the request: no'), 'clusterwide-lolly-work-volumes.kubewarden.admission');
+  assert.equal(refusedBy('Error from server (Forbidden): exceeded quota'), null);
+  // A Policy Server past its evaluation limit refuses without deciding; the preflight asks again.
+  assert.equal(noDecision('admission webhook "kw.cap.lolly-work-image-sources.kubewarden.admission" denied the request: Policy execution interrupted because it exceeded the allowed execution time'), true);
+  assert.equal(noDecision('admission webhook "kw.cap.lolly-work-apparmor.kubewarden.admission" denied the request without explanation'), true);
+  assert.equal(noDecision('Internal error occurred: failed calling webhook "kw.cap.lolly-work-volumes.kubewarden.admission": context deadline exceeded'), true);
+  assert.equal(noDecision('admission webhook "kw.cap.lolly-work-privileged.kubewarden.admission" denied the request: Privileged container is not allowed'), false);
+
+  const report = cleanRun();
+  assert.equal(report.source, 'kubewarden');
+  assert.equal(report.kubewarden.version, '1.39.0');
+  assert.deepEqual(report.policies.map(p => p.name), ['lolly-work-privileged', 'lolly-work-volumes']);
+  assert.equal(report.ok, true);
+
+  const base = { checkedAt: report.checkedAt, namespace: 'lolly-work', policyServers: [], pods: report.pods, probes: report.probes };
+  assert.equal(buildReport({ ...base, policies: [] }).ok, false, 'a cluster without the set is never a clean record');
+  assert.equal(buildReport({ ...base, policies: [activePolicy('lolly-work-volumes', { status: { policyStatus: 'pending', mode: 'protect' } })] }).ok, false);
+  assert.equal(buildReport({ ...base, policies: [activePolicy('lolly-work-volumes', { status: { policyStatus: 'active', mode: 'monitor' } })] }).ok, false, 'monitor mode refuses nothing');
+  assert.equal(buildReport({ ...base, policies: [activePolicy('lolly-work-volumes')], pods: [{ name: 'p', admitted: false }] }).ok, false);
+  assert.equal(buildReport({ ...base, policies: [activePolicy('lolly-work-volumes')], probes: [{ expect: 'root user', refused: false, by: null }] }).ok, false);
+  assert.equal(buildReport({ ...base, policies: [activePolicy('lolly-work-volumes')] }).kubewarden.version, null, 'no Policy Server read, no version claimed');
+});
+
+test('Setup shows the Kubewarden record as a dated record, and nothing when none is configured', () => {
+  const now = Date.parse('2026-11-25T00:00:00Z');
+  assert.equal(podAdmissionCheck({}, now), null, 'an install without Kubewarden shows no line');
+
+  const record = parseAdmissionReport(JSON.stringify(cleanRun()));
+  assert.ok(record);
+  assert.deepEqual(admissionCheck(record, now), { id: 'pod-admission', status: 'pass',
+    message: 'Reported by Kubewarden 1.39.0 for namespace lolly-work on 2026-11-23: 2 of 2 policies active and enforcing, 1 of 1 Lolly Work pod admitted, 1 of 1 test pod refused. This is the record your platform team made with the preflight, not a live reading.' });
+
+  const stale = admissionCheck(record, Date.parse('2027-03-01T00:00:00Z'));
+  assert.equal(stale.status, 'warning');
+  assert.match(stale.message, /The record is 97 days old/);
+
+  // The counts are recomputed: a record that calls itself clean while a policy is pending is not shown as clean.
+  const forged = { ...cleanRun(), ok: true };
+  forged.policies[0]!.active = false;
+  const lowered = admissionCheck(parseAdmissionReport(JSON.stringify(forged)), now);
+  assert.equal(lowered.status, 'warning');
+  assert.match(lowered.message, /1 of 2 policies active and enforcing.*The record is not clean/);
+
+  const noProbes = admissionCheck(parseAdmissionReport(JSON.stringify({ ...cleanRun(), probes: [] })), now);
+  assert.equal(noProbes.status, 'pass');
+  assert.match(noProbes.message, /no test pods sent/);
+
+  for (const bad of ['', 'not json', '[]', JSON.stringify({ ...cleanRun(), source: 'other' }), JSON.stringify({ ...cleanRun(), version: 2 }),
+    JSON.stringify({ ...cleanRun(), namespace: '<b>x</b>' }), JSON.stringify({ ...cleanRun(), checkedAt: 'yesterday' }), JSON.stringify({ ...cleanRun(), policies: 'all' })]) {
+    assert.equal(parseAdmissionReport(bad), null, bad.slice(0, 40));
+  }
+  assert.equal(parseAdmissionReport(JSON.stringify({ ...cleanRun(), kubewarden: { version: '<script>' } }))!.version, null, 'a version that is not a version is left out');
+
+  const dir = mkdtempSync(join(tmpdir(), 'lw-admission-'));
+  const file = join(dir, 'report.json');
+  writeFileSync(file, JSON.stringify(cleanRun()));
+  assert.equal(podAdmissionCheck({ LW_ADMISSION_REPORT_FILE: file }, now)!.status, 'pass');
+  assert.match(podAdmissionCheck({ LW_ADMISSION_REPORT_FILE: join(dir, 'missing.json') }, now)!.message, /could not be read/);
+  writeFileSync(file, ' '.repeat(ADMISSION_REPORT_MAX_BYTES + 1));
+  assert.match(podAdmissionCheck({ LW_ADMISSION_REPORT_FILE: file }, now)!.message, /could not be read/);
+});
+
+test('the chart mounts the record only when a ConfigMap is named, and the policy set admits the mount', { skip: noHelm }, () => {
+  const render = (...args: string[]) => {
+    const r = spawnSync('helm', ['template', 'lolly', new URL('../deploy/helm', import.meta.url).pathname,
+      '--set', 'secrets.sessionSecret=test', '--set', 'secrets.linkSecret=test', ...args], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return parseAllDocuments(r.stdout).map(d => d.toJSON()).find((doc: Doc) => doc?.kind === 'Deployment' && doc.metadata.labels['app.kubernetes.io/component'] !== 'render-worker')!.spec.template.spec;
+  };
+  assert.ok(!JSON.stringify(render()).includes('admission'), 'off by default');
+  const spec = render('--set', 'admissionReport.existingConfigMap=lolly-work-admission');
+  const volume = spec.volumes.find((v: Doc) => v.name === 'admission-report');
+  assert.deepEqual(volume.configMap, { name: 'lolly-work-admission', optional: true, items: [{ key: 'report.json', path: 'report.json' }] });
+  assert.ok(policy('lolly-work-volumes').spec.settings.allowedTypes.includes('configMap'));
+  const server = spec.containers[0];
+  const mount: Doc = server.volumeMounts.find((m: Doc) => m.name === 'admission-report');
+  // No subPath: a subPath mount would never see an updated ConfigMap.
+  assert.deepEqual(mount, { name: 'admission-report', mountPath: '/run/admission-report', readOnly: true });
+  assert.equal(server.env.find((e: Doc) => e.name === 'LW_ADMISSION_REPORT_FILE').value, '/run/admission-report/report.json');
+  assert.equal(spec.automountServiceAccountToken, false, 'the record needs no Kubernetes API access');
 });

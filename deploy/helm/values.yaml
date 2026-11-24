@@ -683,6 +683,15 @@ extraEnv: []
   # - name: LW_SOMETHING
   #   value: "value"
 
+# Kubewarden admission record (optional; deploy/kubewarden/README.md). When your
+# platform team runs Kubewarden, scripts/kubewarden-preflight.ts --report writes
+# what Kubewarden answered about these pods. Store that file in a ConfigMap under
+# the key report.json and name the ConfigMap here: the Setup page then shows the
+# record to administrators, dated and named as Kubewarden's. Empty shows nothing.
+# Lolly Work reads the mounted file only; it gets no Kubernetes API access.
+admissionReport:
+  existingConfigMap: ""
+
 # Extra volumes / mounts on the Deployment (e.g. a mounted seed config).
 extraVolumes: []
 extraVolumeMounts: []

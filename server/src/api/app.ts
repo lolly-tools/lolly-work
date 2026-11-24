@@ -115,6 +115,7 @@ import { registerCatalogRightsRoutes } from '../catalog/rights-routes.ts';
 import { AssetScanBoundExceeded, composeRightsRecords, loadRightsEngine, rightsAnswer } from '../catalog/rights.ts';
 import { decidePartnerRightsDefault, partnerRightsState, type PartnerRightsState } from '../catalog/rights-mode.ts';
 import { partnerRightsCheck } from '../setup/checks.ts';
+import { podAdmissionCheck } from '../setup/admission-report.ts';
 import { CHOICE_NOTE_MAX, currentFingerprint, exitRightsChoices, pinLookup, type PinLookup } from '../programmes/rights.ts';
 import { collectionCredits, pageCreditLine } from '../links/credits.ts';
 import { registerTemplateRoutes } from '../programmes/template-routes.ts';
@@ -5056,8 +5057,10 @@ export function buildApp(deps: AppDeps): App {
     if (!(await requireAction(req, res, 'instance.config'))) return;
     const report = await setupReport();
     const [reachable, pending] = await Promise.all([store.ping().catch(() => false), store.pendingMigrations().catch(() => null)]);
+    const podAdmission = podAdmissionCheck();
     const checks = [...report.checks,
       await licenceGateSetupCheck(),
+      ...(podAdmission ? [podAdmission] : []),
       { id: 'database-live', status: reachable ? 'pass' : 'fail', message: reachable ? 'The store answered this check.' : 'The store cannot answer. Check database availability.' },
       { id: 'schema', status: pending === null || pending.length ? 'fail' : 'pass', message: pending === null
         ? 'The schema check is unavailable. Check database availability.' : pending.length ? 'Apply pending migrations before acceptance.' : 'No pending migrations.' },

@@ -251,6 +251,7 @@ export async function createSetupWizard({ el, field, api }) {
     'web-shell': [0, 'Employee application'], 'shell-contract': [0, 'Matched employee client'], 'identity-live': [1, 'Customer identity journey'],
     'renderer-live': [4, 'Matched worker canary'], pack: [3, 'Pack compatibility'], 'database-live': [0, 'Store connectivity'], schema: [0, 'Database schema'],
     'partner-rights': [3, 'Licence gate for partners'],
+    'pod-admission': [0, 'Pod admission, from Kubewarden'],
   };
   function updateFinish() {
     const checked = render?.state === 'succeeded' && evidence?.inspection?.checks.length === 5 && evidence.inspection.checks.every(check => check.state === 'pass');
