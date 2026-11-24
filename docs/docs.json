@@ -390,6 +390,12 @@
           "summary": "Optional WebAssembly tracks: evaluating Kubewarden admission policies and preparing a component host. A normal install needs neither."
         },
         {
+          "slug": "kubewarden",
+          "path": "kubewarden.md",
+          "title": "How Lolly uses Kubewarden",
+          "summary": "Where Lolly uses Kubewarden, what its policies check on a Lolly Work cluster, what an administrator sees in Setup and which Kubewarden release the policy set is qualified against."
+        },
+        {
           "slug": "admission-policy",
           "path": "admission-policy.md",
           "title": "Admission policy with Kubewarden",
