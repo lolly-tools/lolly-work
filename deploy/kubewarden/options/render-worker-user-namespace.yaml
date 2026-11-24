@@ -17,7 +17,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/capabilities-psp:v1.0.15@sha256:3958f505c82bc7bac5c16e05d0d54d155e8d31593116394b3213f7d23cd18198
+  module: registry://ghcr.io/kubewarden/policies/capabilities-psp:v1.0.16@sha256:29ea35500f19b59fdf92ffc361055016bc208a23920b39a6481ccd5412aa14cb
   mode: protect
   mutating: false
   namespaceSelector:
@@ -43,7 +43,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/cel-policy:v1.6.5@sha256:b443c79065564741f6bf7f907018c495e9df2f31fe8f919db6635750de3d1a29
+  module: registry://ghcr.io/kubewarden/policies/cel-policy:v1.6.6@sha256:7782bcf5a18f9e1dc5ed19e102ea239d790aee237514ac82cbb9239e58c8eac2
   mode: protect
   mutating: false
   namespaceSelector:

@@ -40,7 +40,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/allow-privilege-escalation-psp:v1.0.15@sha256:de2e55ca8a42c0861de08a9429b7c9c4df4235408a06856f9be20f2e9d7fc985
+  module: registry://ghcr.io/kubewarden/policies/allow-privilege-escalation-psp:v1.0.16@sha256:1643e4f22820278069ff89de3107b2db033c3ff4cadd9fa3a71e0f9d63971939
   mode: protect
   mutating: false
   namespaceSelector:
@@ -66,7 +66,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/capabilities-psp:v1.0.15@sha256:3958f505c82bc7bac5c16e05d0d54d155e8d31593116394b3213f7d23cd18198
+  module: registry://ghcr.io/kubewarden/policies/capabilities-psp:v1.0.16@sha256:29ea35500f19b59fdf92ffc361055016bc208a23920b39a6481ccd5412aa14cb
   mode: protect
   mutating: false
   namespaceSelector:
@@ -94,7 +94,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/capabilities-psp:v1.0.15@sha256:3958f505c82bc7bac5c16e05d0d54d155e8d31593116394b3213f7d23cd18198
+  module: registry://ghcr.io/kubewarden/policies/capabilities-psp:v1.0.16@sha256:29ea35500f19b59fdf92ffc361055016bc208a23920b39a6481ccd5412aa14cb
   mode: protect
   mutating: false
   namespaceSelector:
@@ -155,7 +155,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/allowed-fsgroups-psp:v1.0.14@sha256:20eccd02411a6fbe3773fc4cc1faf0d753dbfe91bf2c01b40357b7795852fe4a
+  module: registry://ghcr.io/kubewarden/policies/allowed-fsgroups-psp:v1.0.15@sha256:efa1b8f864295527c45154d77c3b40863d045acd3adfd65e588ab0e1e0ae4c25
   mode: protect
   mutating: false
   namespaceSelector:
@@ -178,7 +178,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/host-namespaces-psp:v1.1.13@sha256:575568d86815b3ad330d82bb1de76a5543451fc00d9b06dae0ea2f26d5836bfb
+  module: registry://ghcr.io/kubewarden/policies/host-namespaces-psp:v1.1.14@sha256:b8a8c24a0ab2c1cce1dce77fa3ba506295eeaf9cadde340a9359cb919341f2db
   mode: protect
   mutating: false
   namespaceSelector:
@@ -227,7 +227,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/readonly-root-filesystem-psp:v1.0.15@sha256:6d28782b97d06fd5b0210f1bd54cd5bd440704fbefbc7c7607251a1d734ff27d
+  module: registry://ghcr.io/kubewarden/policies/readonly-root-filesystem-psp:v1.0.16@sha256:af0cc5ab4ace1e56d6d148bcdc4e27f67cf50cf68d6eaaeac87c25e5a43e1bfb
   mode: protect
   mutating: false
   namespaceSelector:
@@ -278,7 +278,7 @@ spec:
   # annotation, so it cannot see securityContext.appArmorProfile, which the
   # chart uses on Kubernetes 1.30 and later. This CEL rule checks the field
   # on the pod and on every container, and the annotation as well.
-  module: registry://ghcr.io/kubewarden/policies/cel-policy:v1.6.5@sha256:b443c79065564741f6bf7f907018c495e9df2f31fe8f919db6635750de3d1a29
+  module: registry://ghcr.io/kubewarden/policies/cel-policy:v1.6.6@sha256:7782bcf5a18f9e1dc5ed19e102ea239d790aee237514ac82cbb9239e58c8eac2
   mode: protect
   mutating: false
   namespaceSelector:
@@ -324,7 +324,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/trusted-repos:v2.1.6@sha256:d230e38189e5eaf2806f258e596db3f5920a14811d12e1173d7d1dd28cf37045
+  module: registry://ghcr.io/kubewarden/policies/trusted-repos:v2.1.7@sha256:279e171103bda052ae7301de7c037f655172ec8ebb54896f523b2a0cb583f8a9
   mode: protect
   mutating: false
   namespaceSelector:
@@ -351,7 +351,7 @@ metadata:
     app.kubernetes.io/part-of: lolly-work-policy-set
 spec:
   policyServer: default
-  module: registry://ghcr.io/kubewarden/policies/verify-image-signatures:v1.0.13@sha256:9f23d6453b3b4958b365d2ae3663781929047229d93a893c90e6bc9fabf17762
+  module: registry://ghcr.io/kubewarden/policies/verify-image-signatures:v1.0.14@sha256:3758f0984aa3e9851c79b29287a584a45cfdca291a8f862069de2486d2388d3e
   mode: protect
   # Mutating so each admitted Pod runs the digest that was verified, even when
   # the chart names a tag.
@@ -374,7 +374,7 @@ spec:
       # Signed keyless by lolly-work's release workflow at a release tag.
       # The policy reads url_prefix (snake case) and appends "/" to it, so the
       # prefix ends at refs/tags/. Signatures are Sigstore bundles stored as OCI
-      # referrers (cosign 3); Kubewarden 1.38 verifies them.
+      # referrers (cosign 3); Kubewarden 1.38 and later verify them.
       - image: "ghcr.io/lolly-tools/lolly-work-server*"
         keylessPrefix:
           - issuer: https://token.actions.githubusercontent.com

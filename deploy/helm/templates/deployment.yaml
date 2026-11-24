@@ -144,6 +144,10 @@ spec:
             # (auto-migrate at boot) has to come back or the pods never start.
             - name: LW_AUTO_MIGRATE
               value: {{ .Values.migrate.enabled | ternary "false" "true" | quote }}
+            {{- if .Values.admissionReport.existingConfigMap }}
+            - name: LW_ADMISSION_REPORT_FILE
+              value: /run/admission-report/report.json
+            {{- end }}
             {{- include "lolly-work.otelEnv" . | nindent 12 }}
             {{- include "lolly-work.updatesEnv" . | nindent 12 }}
             {{- include "lolly-work.secretEnv" . | nindent 12 }}
@@ -160,6 +164,13 @@ spec:
             {{- if .Values.renderWorker.enabled }}
             - name: render-trust
               mountPath: /run/render-trust
+              readOnly: true
+            {{- end }}
+            {{- if .Values.admissionReport.existingConfigMap }}
+            # A directory mount, not a subPath: an updated ConfigMap then reaches
+            # the running pod, and the server reads the file on each Setup request.
+            - name: admission-report
+              mountPath: /run/admission-report
               readOnly: true
             {{- end }}
             - name: config
@@ -191,6 +202,14 @@ spec:
         - name: config
           configMap:
             name: {{ include "lolly-work.fullname" . }}-config
+        {{- if .Values.admissionReport.existingConfigMap }}
+        # Optional, so a missing ConfigMap never keeps the pod from starting.
+        - name: admission-report
+          configMap:
+            name: {{ .Values.admissionReport.existingConfigMap | quote }}
+            optional: true
+            items: [{ key: report.json, path: report.json }]
+        {{- end }}
         - name: tmp
           {{- include "lolly-work.emptyDir" (dict "sizeLimit" .Values.tmp.sizeLimit "name" "tmp.sizeLimit") | nindent 10 }}
         {{- if eq .Values.pack.type "pvc" }}
