@@ -60,6 +60,7 @@ export {
   PSD_BLEND_TO_CSS, CSS_TO_PSD_BLEND, XCF_MODE_TO_CSS, psdBlendToCss, xcfModeToCss,
 } from './raster-layers.ts';
 export type { CssBlendMode, RasterLayer, LayeredRasterDoc, InflateFn } from './raster-layers.ts';
+export { resolveRender, renderWhenMatches, RENDER_WHEN_KEYS } from './render-when.ts';
 export { buildInputModel, summarizeInputs, CREDENTIAL_READABLE_TYPES, normalizeTableValue, deriveExportFilename, matchesShowIf, tokenRestoreRefsOf, DEFAULT_FILE_MAX_BYTES } from './inputs.ts';
 export type { TableValue, TableColumnEditor, ShowIf, InputWriteOptions } from './inputs.ts';
 export { parseUrlState, serializeUrlState, serializeHdr, encodeBlocksCompact, encodeTableCompact, decodeTableCompact, RESERVED, HDR_DEFAULTS, VIDEO_CODEC_STRINGS, parseVideoParams, hasVideoParams, parseSpots, parseTextSetting, parsePartnerKitParam, formatPartnerKitParam, readPartnerKitAttachment } from './url-mode.ts';
@@ -97,6 +98,8 @@ export type { BrandPageWrite } from './brand-page-address.ts';
 export { extractFileMetadata, extractXmpPacket, readFileDesignRecord, readMpfIndex, appendedIsExpected, META_GROUP_ORDER, META_GROUP_LABEL } from './file-metadata.ts';
 export type { FileMetadata, MetaField, MetaGroup } from './file-metadata.ts';
 export { softwareName, softwareOrigins, xmlProvenanceFields } from './software-origin.ts';
+export { VERIFY_FINDING_IDS, verifyFindings, verifyHashFailed, verifyRights, verifySoftware, fillFindingText } from './verify-findings.ts';
+export type { VerifyEvidence, VerifyFinding, VerifyFindingId, VerifyFindingsInput, VerifyFindingsReport, VerifyRights, VerifySoftware, VerifyStrength, VerifyTone } from './verify-findings.ts';
 export type { SoftwareOrigin, SoftwareEvidence, SoftwareRole } from './software-origin.ts';
 // Image-metadata byte stampers + the metadata carry (plans/144 Wave 1). The
 // stampers graduated here from the web shell's bridge/export-image-meta.ts
@@ -1051,7 +1054,7 @@ export type { CompiledDesignTool } from './design-tool/compiler.ts';
 export { compileSessionTool } from './design-tool/session-compiler.ts';
 export type { SessionToolSource } from './design-tool/session-compiler.ts';
 export { designExportSize, assertDesignValues } from './design-tool/policy.ts';
-export { buildStudioScene, studioFinish, STUDIO_FINISHES, studioTime, studioAnimated, studioLightMotion } from './studio3d.ts';
+export { buildStudioScene, studioFinish, STUDIO_FINISHES, studioTime, studioAnimated, studioLightMotion, studioWantsClip, studioClipSeconds, studioClipSampleTimes, STUDIO_CLIP_INDEX_MAX, STUDIO_CLIP_BOUND_STEPS } from './studio3d.ts';
 export { studioActiveIndex, studioActiveValues, studioCameraEdit, studioFocusEdit, studioCollectionRows, studioCollectionSize, studioSubjectIds, studioSubjectEdit, studioSheetSize, STUDIO_COLLECTION_LIMIT, STUDIO_SHEET_PIXELS } from './studio3d-collection.ts';
 export { studioCameraPose, studioRestPose, studioCameraTravels, studioCameraKeyFromView, studioAddCameraKey, studioCameraFromKey, STUDIO_CAMERA_KEY_LIMIT } from './studio3d-camera-path.ts';
 export { studioOrbitLight, studioScaleLightDistance, studioPlaceableLights, studioLightEdit, STUDIO_LIGHT_TARGET, STUDIO_LIGHT_RANGE, STUDIO_PRESET_LIGHT_POSITIONS, STUDIO_KEY_CARD_OFFSET } from './studio3d-lights.ts';
