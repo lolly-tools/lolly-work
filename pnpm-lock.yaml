@@ -101,8 +101,8 @@ importers:
         specifier: ^1.9.1
         version: 1.9.1
       sql-formatter:
-        specifier: ^15.9.0
-        version: 15.9.0
+        specifier: ^15.9.1
+        version: 15.10.0
       terser:
         specifier: ^5.51.2
         version: 5.51.2
@@ -931,8 +931,8 @@ packages:
     resolution: {integrity: sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg==}
     engines: {node: '>= 10.x'}
 
-  sql-formatter@15.9.0:
-    resolution: {integrity: sha512-3A/N+v+mA5/PDU+FlO4uTFE0L/Mmg63c/Ny161Qv2b1Mxp9IX8War+LLmq17LA/Kgu4KXAR7iutK2JaHWJMMtw==}
+  sql-formatter@15.10.0:
+    resolution: {integrity: sha512-9cdsDFzPQukym8i9Eedc72L9y/2wEi2pQZVE/3eXthFjDOnvvmzCIk+N6miWbBixdWXU2qdV92V7PLnvlNgEfA==}
     hasBin: true
 
   terser@5.51.2:
@@ -1776,7 +1776,7 @@ snapshots:
 
   split2@4.2.0: {}
 
-  sql-formatter@15.9.0:
+  sql-formatter@15.10.0:
     dependencies:
       argparse: 2.0.1
       nearley: 2.20.1

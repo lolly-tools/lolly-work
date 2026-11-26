@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:3d0cf4b0-cae1-47e7-8bd3-ccb01317958d",
+  "serialNumber": "urn:uuid:934067af-df9d-4a0a-8808-ff0d232b62cd",
   "version": 1,
   "metadata": {
     "tools": [
@@ -2959,10 +2959,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/sql-formatter@15.9.0",
+      "bom-ref": "pkg:npm/sql-formatter@15.10.0",
       "name": "sql-formatter",
-      "version": "15.9.0",
-      "purl": "pkg:npm/sql-formatter@15.9.0",
+      "version": "15.10.0",
+      "purl": "pkg:npm/sql-formatter@15.10.0",
       "scope": "required",
       "licenses": [
         {
@@ -2974,7 +2974,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "dc0fcdfaffa6039fcf0d4f8594ee2e4c51342ff32683addcfcdcb5eb542fd9bd4cc69f485fc59aafe2cb9aad7b2c0fca82ee0a5c047b8aeb4ad8968758930cb7"
+          "content": "f5c76c0c5ccf42e9329bc8bd11e75cef62fdcbfdb0122da9419544ff7797b611630ce9efbe6cc2224f8dea68966c18b17565d4daa755f7657b3cb9ef94d8047c"
         }
       ]
     },
