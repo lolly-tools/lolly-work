@@ -6,6 +6,28 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.360.0
+
+- `host.pdf.stamp` takes an optional `classic: true` (`PdfStampOpts`). The stamped PDF is then saved with a classic cross-reference table and no object streams, the form `host.c2pa.sign` can attach a Content Credential to. Pages' Sign and the older Sign tool pass it only when the credential is on, so a signed PDF with a credential downloads in one step.
+- Without the option `stamp` saves exactly as before, and `host.c2pa.sign` is unchanged for every caller: a PDF whose cross-reference is a stream is still refused there.
+- A host that predates the option ignores it and saves the compact form. Sign then says the credential could not be added, as it did before.
+- No method of the bridge changed. Additive.
+
+## 1.359.0
+
+- A 3D Studio camera leg can follow the design system's motion tokens. `cameraEase` takes five more values beside `smooth`, `flow` and `linear`: `standard`, `emphasised` and `exit` ease each leg on `motion.curve.<name>`, and `gentle` and `bouncy` on `motion.spring.<name>`. `studioCameraPose` evaluates them through `kfEaseAt`, the evaluator Sequence keyframes use, so a shell that has installed the system's tokens with `setKfEaseTokens` plays the live value and any other host plays the fixed value in `STUDIO_SYSTEM_EASES` (the Lolly Demo curves and springs). A spring runs in real time over the leg's own length, so on a long leg the camera arrives early and holds the key; every value is held inside the range a saved key takes, because a spring passes its key before it settles. `STUDIO_CAMERA_EASES` lists the eight values and `StudioSceneV1.cameraMotion.ease` admits them.
+- `smooth`, `flow` and `linear` evaluate exactly as before, so a recipe that does not ask for a new value draws the same frames.
+
+## 1.358.0
+
+- Input notices: a hook can put a message under an input. A hook result may carry the reserved key `inputNotices`, `{ [inputId]: { tone: 'info' | 'warning' | 'error', text } | null }`. A result that carries the key replaces the whole set (`{}` clears every notice) and a result without the key leaves the set as it was, the rule an omitted extra already follows. The key is read from every patch the runtime merges, so a late `onInit` or `onInput` result, a `report()` and a Worker-run hook all carry notices under the rules their patches already follow; the hook-worker protocol is unchanged because the patch crosses whole.
+- `runtime.getNotices()` returns the set in force, keyed by input id, and every `subscribe` emission carries the same object as `state.notices`. The object keeps its identity until the set changes, so a shell can skip work on an equal set. Notices live apart from input values and extras: they never reach the template, `serializeUrlState`, the values a session saves, an export or a credential.
+- `inputs.ts` gains the pure `readInputNotices(raw, inputIds)` and `sameInputNotices(a, b)`. Text is plain text: control characters become spaces, the ends are trimmed and the rest is cut to `INPUT_NOTICE_TEXT_MAX` (240). An entry for an id the tool does not declare, or one that is not `{ tone, text }` with a known tone and some text, is left out and logged once per id.
+- The SDK (`@lolly-tools/core` 1.9.0) exports `INPUT_NOTICES_KEY`, `INPUT_NOTICE_TONES`, `INPUT_NOTICE_TEXT_MAX` and the types `InputNotice`, `InputNotices` and `InputNoticeTone`; the engine re-exports them with `InputNoticeMap`.
+- `loadTool` refuses a manifest that declares an input with the id `inputNotices`. No tool in the tree does.
+- A tool that relies on the key needs `engineVersion` `>=1.358.0`. On an older engine the key is an ordinary extra: nothing is shown and nothing breaks.
+- No method of the bridge changed. Additive.
+
 ## 1.357.0
 
 - A glTF model in 3D Studio can play one of its baked animation clips. `buildStudioScene` reads two new values, `playClip` and `clipIndex` (the ids the older `3d` tool used), and writes `clip: { index }` onto every `glb` source in the recipe, the lone subject and each model in an arrangement. `StudioSourceV1.clip` is optional: a recipe that does not ask for a clip carries no such key and builds exactly as before, so a link or a session saved before this release draws the pose the file was imported in. `StudioSourceInfo` gains the optional `clips` (each clip's name and length) and `playing` (the index in use), and the SDK exports `StudioClipInfo`.
